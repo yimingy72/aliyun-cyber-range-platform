@@ -40,4 +40,7 @@ test('database bootstrap exposes postgres + prisma contract', () => {
     }),
   );
   assert.equal(typeof pkg.scripts['prisma:generate'], 'string');
+  assert.equal(typeof pkg.scripts.test, 'string');
+  assert.match(pkg.scripts.test, /\bprisma validate\b/);
+  assert.match(pkg.scripts.test, /schema-config\.test\.mjs/);
 });
