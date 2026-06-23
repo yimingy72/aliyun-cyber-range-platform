@@ -1,0 +1,13 @@
+{
+  "name": "aliyun-cyber-range-platform",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "pnpm --parallel --stream --filter @aliyun-cyber-range/api --filter @aliyun-cyber-range/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres"
+  }
+}
