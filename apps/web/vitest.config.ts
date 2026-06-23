@@ -5,7 +5,6 @@ export default defineConfig({
     jsx: 'automatic'
   },
   test: {
-    environment: 'jsdom',
-    globals: true
+    environment: 'jsdom'
   }
 });
