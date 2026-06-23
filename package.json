@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "pnpm --parallel --stream --filter @aliyun-cyber-range/api --filter @aliyun-cyber-range/web dev",
     "build": "pnpm -r build",
-    "test": "pnpm -r test",
+    "test": "pnpm -r test && node --test test/workspace-smoke.test.mjs",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres"
