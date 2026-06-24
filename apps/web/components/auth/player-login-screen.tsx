@@ -1,3 +1,4 @@
+import type { FormEvent } from 'react';
 import Link from 'next/link';
 
 type PlayerLoginScreenProps = {
@@ -5,6 +6,10 @@ type PlayerLoginScreenProps = {
 };
 
 export function PlayerLoginScreen({ adminHref = '/admin/login' }: PlayerLoginScreenProps) {
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+  };
+
   return (
     <main className="auth-route auth-route-player">
       <section className="auth-hero">
@@ -21,7 +26,7 @@ export function PlayerLoginScreen({ adminHref = '/admin/login' }: PlayerLoginScr
           <p>请输入比赛分发的账号信息。</p>
         </div>
 
-        <form className="auth-form">
+        <form aria-label="选手登录表单" className="auth-form" method="post" onSubmit={handleSubmit}>
           <label>
             <span>账号</span>
             <input name="account" type="text" placeholder="请输入账号" />
