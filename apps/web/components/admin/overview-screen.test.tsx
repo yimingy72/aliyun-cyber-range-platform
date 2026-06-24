@@ -41,5 +41,10 @@ describe('OverviewScreen', () => {
     expect(screen.getByText('创建中任务')).toBeTruthy();
     expect(screen.getByText('失败实例')).toBeTruthy();
     expect(screen.getByText('最近任务')).toBeTruthy();
+    expect(screen.queryByText('Running')).toBeNull();
+    expect(screen.queryByText('Provisioning')).toBeNull();
+    expect(screen.queryByText('Failures')).toBeNull();
+    expect(screen.queryByText('Templates')).toBeNull();
+    expect(screen.queryByText('Recent Jobs')).toBeNull();
   });
 });

@@ -81,7 +81,7 @@ export function OverviewScreen({
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>运行中靶场</h2>
-            <span>Running</span>
+            <span>运行态</span>
           </div>
           <p className="admin-description">{runningCount}</p>
         </article>
@@ -89,7 +89,7 @@ export function OverviewScreen({
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>创建中任务</h2>
-            <span>Provisioning</span>
+            <span>编排中</span>
           </div>
           <p className="admin-description">{runningJobsCount}</p>
         </article>
@@ -97,7 +97,7 @@ export function OverviewScreen({
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>失败实例</h2>
-            <span>Failures</span>
+            <span>异常告警</span>
           </div>
           <p className="admin-description">{failedCount}</p>
         </article>
@@ -105,7 +105,7 @@ export function OverviewScreen({
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>模板数量</h2>
-            <span>Templates</span>
+            <span>模板库</span>
           </div>
           <p className="admin-description">{snapshot?.rangeTemplates.length ?? 0}</p>
         </article>
@@ -113,7 +113,7 @@ export function OverviewScreen({
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>最近任务</h2>
-            <span>Recent Jobs</span>
+            <span>最近编排</span>
           </div>
 
           {recentJobs.length ? (
@@ -135,7 +135,7 @@ export function OverviewScreen({
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>异常实例</h2>
-            <span>Failures</span>
+            <span>故障定位</span>
           </div>
 
           {failingInstances.length ? (
