@@ -3,8 +3,32 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { AdminApiError, fetchAdminBootstrap, fetchCloudConfig } from '../../../lib/admin-api';
-import type { AdminBootstrapData, CloudConfigSnapshot } from '../../../lib/admin-types';
+import { createDefaultEnterpriseTopologySpec, DEFAULT_TEMPLATE_MODULE_PATH } from '../../../lib/admin-template-defaults';
+import {
+  AdminApiError,
+  createCompetition,
+  createRangeTemplate,
+  createTeam,
+  deleteCompetition,
+  deleteRangeTemplate,
+  deleteTeam,
+  fetchAdminBootstrap,
+  fetchCloudConfig,
+  updateCompetition,
+  updateRangeTemplate,
+  updateTeam,
+} from '../../../lib/admin-api';
+import type {
+  AdminBootstrapData,
+  CloudConfigSnapshot,
+  Competition,
+  CompetitionInput,
+  RangeTemplate,
+  RangeTemplateCreateInput,
+  RangeTemplateUpdateInput,
+  Team,
+  TeamInput,
+} from '../../../lib/admin-types';
 import { useAdminSession } from '../use-admin-session';
 import { CloudConfigPanel } from './cloud-config-panel';
 import { CompetitionsPanel } from './competitions-panel';
@@ -25,7 +49,9 @@ const TAB_STRIP_STYLE = {
 } as const;
 
 const TAB_STYLE = {
-  border: '1px solid rgba(24, 44, 74, 0.14)',
+  borderWidth: '1px',
+  borderStyle: 'solid',
+  borderColor: 'rgba(24, 44, 74, 0.14)',
   borderRadius: '999px',
   background: '#ffffff',
   color: '#0f2038',
@@ -54,6 +80,7 @@ export function SettingsScreen({
   const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot | null>(null);
   const [bootstrapErrorMessage, setBootstrapErrorMessage] = useState<string | null>(null);
   const [cloudConfigErrorMessage, setCloudConfigErrorMessage] = useState<string | null>(null);
+  const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [isLoadingBootstrap, setIsLoadingBootstrap] = useState(false);
   const [isLoadingCloudConfig, setIsLoadingCloudConfig] = useState(false);
 
@@ -67,6 +94,7 @@ export function SettingsScreen({
       setCloudConfig(null);
       setBootstrapErrorMessage(null);
       setCloudConfigErrorMessage(null);
+      setActionErrorMessage(null);
       setIsLoadingBootstrap(false);
       setIsLoadingCloudConfig(false);
       return;
@@ -76,6 +104,7 @@ export function SettingsScreen({
 
     setBootstrapErrorMessage(null);
     setCloudConfigErrorMessage(null);
+    setActionErrorMessage(null);
     setIsLoadingBootstrap(true);
     setIsLoadingCloudConfig(true);
 
@@ -144,6 +173,255 @@ export function SettingsScreen({
     };
   }, [apiBaseUrl, router, session.isReady, session.token]);
 
+  function upsertCompetitionInSnapshot(savedCompetition: Competition) {
+    setSnapshot((previous) => {
+      if (!previous) {
+        return previous;
+      }
+
+      const alreadyExists = previous.competitions.some((competition) => competition.id === savedCompetition.id);
+
+      return {
+        ...previous,
+        competitions: alreadyExists
+          ? previous.competitions.map((competition) =>
+              competition.id === savedCompetition.id ? savedCompetition : competition,
+            )
+          : [savedCompetition, ...previous.competitions],
+      };
+    });
+  }
+
+  function upsertTeamInSnapshot(savedTeam: Team) {
+    setSnapshot((previous) => {
+      if (!previous) {
+        return previous;
+      }
+
+      const alreadyExists = previous.teams.some((team) => team.id === savedTeam.id);
+
+      return {
+        ...previous,
+        teams: alreadyExists ? previous.teams.map((team) => (team.id === savedTeam.id ? savedTeam : team)) : [savedTeam, ...previous.teams],
+      };
+    });
+  }
+
+  function upsertTemplateInSnapshot(savedTemplate: RangeTemplate) {
+    setSnapshot((previous) => {
+      if (!previous) {
+        return previous;
+      }
+
+      const alreadyExists = previous.rangeTemplates.some((template) => template.id === savedTemplate.id);
+
+      return {
+        ...previous,
+        rangeTemplates: alreadyExists
+          ? previous.rangeTemplates.map((template) => (template.id === savedTemplate.id ? savedTemplate : template))
+          : [savedTemplate, ...previous.rangeTemplates],
+      };
+    });
+  }
+
+  function handleProtectedActionError(error: unknown, fallbackMessage: string): never {
+    if (isUnauthorizedError(error)) {
+      session.logout();
+      router.replace('/admin/login');
+      throw error;
+    }
+
+    setActionErrorMessage(fallbackMessage);
+    throw error;
+  }
+
+  async function handleCreateCompetition(payload: CompetitionInput): Promise<Competition> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const savedCompetition = await createCompetition(apiBaseUrl, session.token, payload);
+      upsertCompetitionInSnapshot(savedCompetition);
+      return savedCompetition;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '比赛保存失败，请检查输入后重试。');
+    }
+  }
+
+  async function handleUpdateCompetition(id: string, payload: CompetitionInput): Promise<Competition> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const savedCompetition = await updateCompetition(apiBaseUrl, session.token, id, payload);
+      upsertCompetitionInSnapshot(savedCompetition);
+      return savedCompetition;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '比赛保存失败，请检查输入后重试。');
+    }
+  }
+
+  async function handleDeleteCompetition(id: string) {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      await deleteCompetition(apiBaseUrl, session.token, id);
+      setSnapshot((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          competitions: previous.competitions.filter((competition) => competition.id !== id),
+          teams: previous.teams.filter((team) => team.competitionId !== id),
+        };
+      });
+    } catch (error: unknown) {
+      handleProtectedActionError(error, '比赛删除失败，请稍后重试。');
+    }
+  }
+
+  async function handleCreateTeam(payload: TeamInput): Promise<Team> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const savedTeam = await createTeam(apiBaseUrl, session.token, payload);
+      upsertTeamInSnapshot(savedTeam);
+      return savedTeam;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '队伍保存失败，请检查输入后重试。');
+    }
+  }
+
+  async function handleUpdateTeam(id: string, payload: TeamInput): Promise<Team> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const savedTeam = await updateTeam(apiBaseUrl, session.token, id, payload);
+      upsertTeamInSnapshot(savedTeam);
+      return savedTeam;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '队伍保存失败，请检查输入后重试。');
+    }
+  }
+
+  async function handleDeleteTeam(id: string) {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      await deleteTeam(apiBaseUrl, session.token, id);
+      setSnapshot((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          teams: previous.teams.filter((team) => team.id !== id),
+        };
+      });
+    } catch (error: unknown) {
+      handleProtectedActionError(error, '队伍删除失败，请稍后重试。');
+    }
+  }
+
+  async function handleCreateTemplate(payload: {
+    name: string;
+    slug: string;
+    version: string;
+    modulePathOrRef: string;
+  }): Promise<RangeTemplate> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const createPayload: RangeTemplateCreateInput = {
+        ...payload,
+        modulePathOrRef: payload.modulePathOrRef || DEFAULT_TEMPLATE_MODULE_PATH,
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+        topologySpec: createDefaultEnterpriseTopologySpec(),
+        variableSchema: {
+          vpc_cidr: 'string',
+        },
+        outputSchema: {
+          public_entry: 'object',
+        },
+      };
+      const savedTemplate = await createRangeTemplate(apiBaseUrl, session.token, createPayload);
+      upsertTemplateInSnapshot(savedTemplate);
+      return savedTemplate;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '模板保存失败，请检查输入后重试。');
+    }
+  }
+
+  async function handleUpdateTemplate(id: string, payload: RangeTemplateUpdateInput): Promise<RangeTemplate> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const savedTemplate = await updateRangeTemplate(apiBaseUrl, session.token, id, payload);
+      upsertTemplateInSnapshot(savedTemplate);
+      return savedTemplate;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '模板保存失败，请检查输入后重试。');
+    }
+  }
+
+  async function handleDeleteTemplate(id: string) {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      await deleteRangeTemplate(apiBaseUrl, session.token, id);
+      setSnapshot((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          rangeTemplates: previous.rangeTemplates.filter((template) => template.id !== id),
+        };
+      });
+    } catch (error: unknown) {
+      handleProtectedActionError(error, '模板删除失败，请稍后重试。');
+    }
+  }
+
   if (!session.isReady) {
     return (
       <main className="admin-shell">
@@ -166,7 +444,7 @@ export function SettingsScreen({
     );
   }
 
-  if (isLoadingBootstrap && isLoadingCloudConfig && !snapshot && !cloudConfig) {
+  if (!snapshot && isLoadingBootstrap) {
     return (
       <main className="admin-shell">
         <section className="admin-panel admin-login-panel">
@@ -186,6 +464,7 @@ export function SettingsScreen({
       </section>
 
       {bootstrapErrorMessage ? <p className="admin-error">{bootstrapErrorMessage}</p> : null}
+      {actionErrorMessage ? <p className="admin-error">{actionErrorMessage}</p> : null}
 
       <div role="tablist" aria-label="基础配置标签" style={TAB_STRIP_STYLE}>
         {tabs.map((tab) => (
@@ -205,9 +484,31 @@ export function SettingsScreen({
       </div>
 
       <div id={`settings-panel-${activeTab}`} role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`}>
-        {activeTab === '比赛' ? <CompetitionsPanel competitions={snapshot?.competitions ?? []} /> : null}
-        {activeTab === '队伍' ? <TeamsPanel teams={snapshot?.teams ?? []} /> : null}
-        {activeTab === '模板' ? <TemplatesPanel templates={snapshot?.rangeTemplates ?? []} /> : null}
+        {activeTab === '比赛' ? (
+          <CompetitionsPanel
+            competitions={snapshot?.competitions ?? []}
+            onCreate={handleCreateCompetition}
+            onUpdate={handleUpdateCompetition}
+            onDelete={handleDeleteCompetition}
+          />
+        ) : null}
+        {activeTab === '队伍' ? (
+          <TeamsPanel
+            teams={snapshot?.teams ?? []}
+            competitions={snapshot?.competitions ?? []}
+            onCreate={handleCreateTeam}
+            onUpdate={handleUpdateTeam}
+            onDelete={handleDeleteTeam}
+          />
+        ) : null}
+        {activeTab === '模板' ? (
+          <TemplatesPanel
+            templates={snapshot?.rangeTemplates ?? []}
+            onCreate={handleCreateTemplate}
+            onUpdate={handleUpdateTemplate}
+            onDelete={handleDeleteTemplate}
+          />
+        ) : null}
         {activeTab === '云配置' ? (
           <>
             {cloudConfigErrorMessage ? <p className="admin-error">{cloudConfigErrorMessage}</p> : null}

@@ -2,12 +2,16 @@ import type {
   AdminBootstrapData,
   CloudConfigSnapshot,
   Competition,
+  CompetitionInput,
   ProvisionJob,
   ProvisionJobStep,
   RangeInstance,
   RangeInstanceDetail,
   RangeTemplate,
+  RangeTemplateCreateInput,
+  RangeTemplateUpdateInput,
   Team,
+  TeamInput,
 } from './admin-types';
 
 export class AdminApiError extends Error {
@@ -100,4 +104,106 @@ export async function fetchCloudConfig(
   });
 
   return readJson<CloudConfigSnapshot>(response);
+}
+
+export async function createCompetition(apiBaseUrl: string, token: string, payload: CompetitionInput) {
+  const response = await fetch(`${apiBaseUrl}/admin/competitions`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<Competition>(response);
+}
+
+export async function updateCompetition(apiBaseUrl: string, token: string, id: string, payload: CompetitionInput) {
+  const response = await fetch(`${apiBaseUrl}/admin/competitions/${id}`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<Competition>(response);
+}
+
+export async function deleteCompetition(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/competitions/${id}`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new AdminApiError(response.status);
+  }
+}
+
+export async function createTeam(apiBaseUrl: string, token: string, payload: TeamInput) {
+  const response = await fetch(`${apiBaseUrl}/admin/teams`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<Team>(response);
+}
+
+export async function updateTeam(apiBaseUrl: string, token: string, id: string, payload: TeamInput) {
+  const response = await fetch(`${apiBaseUrl}/admin/teams/${id}`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<Team>(response);
+}
+
+export async function deleteTeam(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/teams/${id}`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new AdminApiError(response.status);
+  }
+}
+
+export async function createRangeTemplate(
+  apiBaseUrl: string,
+  token: string,
+  payload: RangeTemplateCreateInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/range-templates`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<RangeTemplate>(response);
+}
+
+export async function updateRangeTemplate(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: RangeTemplateUpdateInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/range-templates/${id}`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<RangeTemplate>(response);
+}
+
+export async function deleteRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/range-templates/${id}`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new AdminApiError(response.status);
+  }
 }

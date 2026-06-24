@@ -54,6 +54,38 @@ export function CloudConfigPanel({ config }: CloudConfigPanelProps) {
               <span>{preferences.length ? preferences.join(' / ') : '未配置'}</span>
             </div>
           </li>
+          <li>
+            <div className="admin-list-copy">
+              <strong>系统镜像</strong>
+              <span>{renderValue(config.imageId)}</span>
+            </div>
+          </li>
+          <li>
+            <div className="admin-list-copy">
+              <strong>实例密码</strong>
+              <span>{config.instancePasswordConfigured ? '已配置' : '未配置'}</span>
+            </div>
+          </li>
+          <li>
+            <div className="admin-list-copy">
+              <strong>Provider 离线包</strong>
+              <span>{config.providerZipPathConfigured ? '已配置' : '未配置'}</span>
+            </div>
+          </li>
+          <li>
+            <div className="admin-list-copy">
+              <strong>计划前校验</strong>
+              <span>{config.readyForPlan ? '已满足' : '缺少配置'}</span>
+            </div>
+          </li>
+          {config.checks.map((check) => (
+            <li key={check.key}>
+              <div className="admin-list-copy">
+                <strong>{check.label}</strong>
+                <span>{check.configured ? `${check.label}已配置` : `${check.label}未配置`}</span>
+              </div>
+            </li>
+          ))}
         </ul>
       ) : (
         <p className="admin-empty">暂无云配置。</p>

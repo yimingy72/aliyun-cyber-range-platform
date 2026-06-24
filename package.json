@@ -13,6 +13,9 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
+    "compose:up": "docker compose up -d --build",
+    "compose:down": "docker compose down",
+    "compose:logs": "docker compose logs -f web api postgres",
     "db:local:start": "bash scripts/dev/start-postgres.sh",
     "db:local:stop": "bash scripts/dev/stop-postgres.sh"
   }

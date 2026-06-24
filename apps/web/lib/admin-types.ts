@@ -1,8 +1,10 @@
+export type CompetitionStatus = 'draft' | 'scheduled' | 'active' | 'completed';
+
 export type Competition = {
   id: string;
   name: string;
   description?: string | null;
-  status?: string;
+  status?: CompetitionStatus | string;
 };
 
 export type Team = {
@@ -20,6 +22,69 @@ export type RangeTemplate = {
   version: string;
   modulePathOrRef?: string | null;
 };
+
+export type CompetitionInput = {
+  name: string;
+  description?: string;
+  status?: CompetitionStatus;
+};
+
+export type TeamInput = {
+  competitionId: string;
+  name: string;
+  contactName?: string;
+  contactEmailOrPhone?: string;
+};
+
+export type RangeTemplateNetworkZone = {
+  key: string;
+  name: string;
+  purpose: string;
+  cidr: string;
+  isPublicEntry?: boolean;
+};
+
+export type RangeTemplateHost = {
+  key: string;
+  name: string;
+  zoneKey: string;
+  role: string;
+  privateIp: string;
+  exposePublic?: boolean;
+};
+
+export type RangeTemplateEntryProtocol = {
+  protocol: string;
+  port: number;
+};
+
+export type RangeTemplatePublicEntry = {
+  hostKey: string;
+  protocols: RangeTemplateEntryProtocol[];
+};
+
+export type RangeTemplateTopologySpec = {
+  vpcCidr: string;
+  networkZones: RangeTemplateNetworkZone[];
+  hosts: RangeTemplateHost[];
+  publicEntry: RangeTemplatePublicEntry;
+  executionPolicies?: Record<string, unknown>;
+};
+
+export type RangeTemplateCreateInput = {
+  name: string;
+  slug: string;
+  version: string;
+  modulePathOrRef: string;
+  cloudProvider: 'alibaba_cloud';
+  iacType: 'opentofu' | 'terraform';
+  topologySpec: RangeTemplateTopologySpec;
+  variableSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  defaultNetworkPolicy?: Record<string, unknown>;
+};
+
+export type RangeTemplateUpdateInput = Partial<RangeTemplateCreateInput>;
 
 export type RangeAccessEntry = {
   hostRole?: string | null;
@@ -78,6 +143,16 @@ export type CloudConfigSnapshot = {
   provisionerMode: string;
   instanceTypeStrategy: string;
   instanceTypePreferences: string[];
+  imageId: string;
+  instancePasswordConfigured: boolean;
+  providerZipPathConfigured: boolean;
+  readyForPlan: boolean;
+  checks: Array<{
+    key: string;
+    label: string;
+    configured: boolean;
+    required: boolean;
+  }>;
 };
 
 export type AdminBootstrapData = {

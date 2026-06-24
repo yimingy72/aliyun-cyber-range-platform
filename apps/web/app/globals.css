@@ -229,12 +229,14 @@ body {
 }
 
 .admin-form input,
+.admin-form select,
 .admin-form textarea,
 .admin-form button {
   font: inherit;
 }
 
 .admin-form input,
+.admin-form select,
 .admin-form textarea {
   width: 100%;
   border: 1px solid rgba(66, 97, 93, 0.16);
