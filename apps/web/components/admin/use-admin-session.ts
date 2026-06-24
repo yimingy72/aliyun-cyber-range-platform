@@ -1,15 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 
-import { clearAdminToken, readAdminToken, writeAdminToken } from '../../lib/admin-auth-storage';
+import { clearAdminToken, readAdminToken, subscribeAdminToken, writeAdminToken } from '../../lib/admin-auth-storage';
 
 export function useAdminSession() {
-  const [token, setToken] = useState<string | null>(null);
+  const token = useSyncExternalStore(subscribeAdminToken, readAdminToken, () => null);
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    setToken(readAdminToken());
     setIsReady(true);
   }, []);
 
@@ -17,11 +16,10 @@ export function useAdminSession() {
     token,
     isReady,
     login(nextToken: string) {
-      setToken(writeAdminToken(nextToken));
+      return writeAdminToken(nextToken);
     },
     logout() {
       clearAdminToken();
-      setToken(null);
     },
   };
 }

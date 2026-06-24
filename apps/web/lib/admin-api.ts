@@ -10,6 +10,16 @@ import type {
   Team,
 } from './admin-types';
 
+export class AdminApiError extends Error {
+  constructor(
+    readonly status: number,
+    message = `Admin API request failed with status ${status}`,
+  ) {
+    super(message);
+    this.name = 'AdminApiError';
+  }
+}
+
 function createAdminHeaders(token: string) {
   return {
     Authorization: `Bearer ${token}`,
@@ -19,7 +29,7 @@ function createAdminHeaders(token: string) {
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(`Admin API request failed with status ${response.status}`);
+    throw new AdminApiError(response.status);
   }
 
   return (await response.json()) as T;
