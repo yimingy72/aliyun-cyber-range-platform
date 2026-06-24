@@ -52,8 +52,10 @@ export function SettingsScreen({
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>('比赛');
   const [snapshot, setSnapshot] = useState<AdminBootstrapData | null>(null);
   const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [bootstrapErrorMessage, setBootstrapErrorMessage] = useState<string | null>(null);
+  const [cloudConfigErrorMessage, setCloudConfigErrorMessage] = useState<string | null>(null);
+  const [isLoadingBootstrap, setIsLoadingBootstrap] = useState(false);
+  const [isLoadingCloudConfig, setIsLoadingCloudConfig] = useState(false);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -63,26 +65,28 @@ export function SettingsScreen({
     if (!session.token) {
       setSnapshot(null);
       setCloudConfig(null);
-      setErrorMessage(null);
-      setIsLoading(false);
+      setBootstrapErrorMessage(null);
+      setCloudConfigErrorMessage(null);
+      setIsLoadingBootstrap(false);
+      setIsLoadingCloudConfig(false);
       return;
     }
 
     let isActive = true;
 
-    setSnapshot(null);
-    setCloudConfig(null);
-    setErrorMessage(null);
-    setIsLoading(true);
+    setBootstrapErrorMessage(null);
+    setCloudConfigErrorMessage(null);
+    setIsLoadingBootstrap(true);
+    setIsLoadingCloudConfig(true);
 
-    void Promise.all([fetchAdminBootstrap(apiBaseUrl, session.token), fetchCloudConfig(apiBaseUrl, session.token)])
-      .then(([bootstrapPayload, cloudConfigPayload]) => {
+    fetchAdminBootstrap(apiBaseUrl, session.token)
+      .then((bootstrapPayload) => {
         if (!isActive) {
           return;
         }
 
         setSnapshot(bootstrapPayload);
-        setCloudConfig(cloudConfigPayload);
+        setBootstrapErrorMessage(null);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -95,14 +99,44 @@ export function SettingsScreen({
           return;
         }
 
-        setErrorMessage('基础配置加载失败，请刷新页面后重试。');
+        setBootstrapErrorMessage('基础配置加载失败，请刷新页面后重试。');
       })
       .finally(() => {
         if (!isActive) {
           return;
         }
 
-        setIsLoading(false);
+        setIsLoadingBootstrap(false);
+      });
+
+    fetchCloudConfig(apiBaseUrl, session.token)
+      .then((cloudConfigPayload) => {
+        if (!isActive) {
+          return;
+        }
+
+        setCloudConfig(cloudConfigPayload);
+        setCloudConfigErrorMessage(null);
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+
+        setCloudConfigErrorMessage('云配置加载失败，请稍后重试。');
+      })
+      .finally(() => {
+        if (!isActive) {
+          return;
+        }
+
+        setIsLoadingCloudConfig(false);
       });
 
     return () => {
@@ -132,7 +166,7 @@ export function SettingsScreen({
     );
   }
 
-  if (isLoading && !snapshot && !cloudConfig) {
+  if (isLoadingBootstrap && isLoadingCloudConfig && !snapshot && !cloudConfig) {
     return (
       <main className="admin-shell">
         <section className="admin-panel admin-login-panel">
@@ -151,7 +185,7 @@ export function SettingsScreen({
         <p className="admin-description">把比赛、队伍、模板与云配置集中到一个页内工作台中管理。</p>
       </section>
 
-      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+      {bootstrapErrorMessage ? <p className="admin-error">{bootstrapErrorMessage}</p> : null}
 
       <div role="tablist" aria-label="基础配置标签" style={TAB_STRIP_STYLE}>
         {tabs.map((tab) => (
@@ -174,7 +208,12 @@ export function SettingsScreen({
         {activeTab === '比赛' ? <CompetitionsPanel competitions={snapshot?.competitions ?? []} /> : null}
         {activeTab === '队伍' ? <TeamsPanel teams={snapshot?.teams ?? []} /> : null}
         {activeTab === '模板' ? <TemplatesPanel templates={snapshot?.rangeTemplates ?? []} /> : null}
-        {activeTab === '云配置' ? <CloudConfigPanel config={cloudConfig} /> : null}
+        {activeTab === '云配置' ? (
+          <>
+            {cloudConfigErrorMessage ? <p className="admin-error">{cloudConfigErrorMessage}</p> : null}
+            <CloudConfigPanel config={cloudConfig} />
+          </>
+        ) : null}
       </div>
     </div>
   );

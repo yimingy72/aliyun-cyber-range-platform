@@ -146,4 +146,16 @@ describe('SettingsScreen', () => {
     expect(window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)).toBeNull();
     expect(screen.queryByText('基础配置加载失败，请刷新页面后重试。')).toBeNull();
   });
+
+  it('keeps bootstrap data visible when cloud config fails', async () => {
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, 'dev-admin-token');
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    fetchCloudConfigMock.mockRejectedValue(new Error('cloud config unavailable'));
+
+    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('基础配置');
+    await screen.findByText('总决赛');
+    expect(screen.queryByText('暂无比赛配置。')).toBeNull();
+  });
 });
