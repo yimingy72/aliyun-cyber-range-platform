@@ -4,7 +4,7 @@ import { useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-import { writeAdminToken } from '../../lib/admin-auth-storage';
+import { useAdminSession } from '../admin/use-admin-session';
 
 type AdminLoginScreenProps = {
   apiBaseUrl?: string;
@@ -14,6 +14,7 @@ export function AdminLoginScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
 }: AdminLoginScreenProps) {
   const router = useRouter();
+  const { login } = useAdminSession();
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -38,9 +39,15 @@ export function AdminLoginScreen({
         return;
       }
 
-      const payload = (await response.json()) as { token: string };
+      const payload = (await response.json()) as { token?: unknown };
+      const nextToken = typeof payload.token === 'string' ? payload.token.trim() : '';
 
-      writeAdminToken(payload.token);
+      if (!nextToken) {
+        setErrorMessage('管理员登录失败，服务返回了无效会话。');
+        return;
+      }
+
+      login(nextToken);
       router.replace('/admin');
     } catch {
       setErrorMessage('管理员登录失败，请稍后重试。');

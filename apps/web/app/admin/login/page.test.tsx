@@ -64,4 +64,53 @@ describe('AdminLoginPage', () => {
       expect(replace).toHaveBeenCalledWith('/admin');
     });
   });
+
+  it('shows an error and does not redirect when the response token is missing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          profile: { username: 'admin' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<AdminLoginPage />);
+
+    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('管理员登录失败，服务返回了无效会话。')).toBeTruthy();
+    });
+
+    expect(window.localStorage.getItem('aliyun-cyber-range-admin-token')).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('shows an error and does not redirect when the response token is blank', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          token: '   ',
+          profile: { username: 'admin' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<AdminLoginPage />);
+
+    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('管理员登录失败，服务返回了无效会话。')).toBeTruthy();
+    });
+
+    expect(window.localStorage.getItem('aliyun-cyber-range-admin-token')).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
+  });
 });
