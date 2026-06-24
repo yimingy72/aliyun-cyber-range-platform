@@ -1,3 +1,5 @@
+'use client';
+
 import type { FormEvent } from 'react';
 import Link from 'next/link';
 
