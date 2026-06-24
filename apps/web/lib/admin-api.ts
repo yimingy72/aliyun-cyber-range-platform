@@ -91,7 +91,10 @@ export async function triggerRangeAction(
   return readJson<ProvisionJob>(response);
 }
 
-export async function fetchCloudConfig(apiBaseUrl: string, token: string) {
+export async function fetchCloudConfig(
+  apiBaseUrl: string,
+  token: string,
+): Promise<CloudConfigSnapshot> {
   const response = await fetch(`${apiBaseUrl}/admin/system-config`, {
     headers: createAdminHeaders(token),
   });

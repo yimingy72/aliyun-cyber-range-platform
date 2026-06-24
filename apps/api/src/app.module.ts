@@ -10,6 +10,8 @@ import { RangeInstancesController } from './admin/range-instances.controller';
 import { RangeInstancesService } from './admin/range-instances.service';
 import { RangeTemplatesController } from './admin/range-templates.controller';
 import { RangeTemplatesService } from './admin/range-templates.service';
+import { SystemConfigController } from './admin/system-config.controller';
+import { SystemConfigService } from './admin/system-config.service';
 import { TeamsController } from './admin/teams.controller';
 import { TeamsService } from './admin/teams.service';
 import { ProvisionJobsController } from './admin/provision-jobs.controller';
@@ -32,6 +34,7 @@ import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
     RangeTemplatesController,
     RangeInstancesController,
     ProvisionJobsController,
+    SystemConfigController,
   ],
   providers: [
     AdminAuthGuard,
@@ -41,6 +44,7 @@ import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
     RangeTemplatesService,
     RangeInstancesService,
     ProvisionJobsService,
+    SystemConfigService,
     CidrPoolService,
     ProvisioningWorkerService,
     PrismaService,
