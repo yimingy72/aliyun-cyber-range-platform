@@ -1,46 +1,125 @@
 # 阿里云综合靶场竞赛平台实施计划
 
 - 日期：2026-06-23
+- 状态：当前有效实施基线
+- 最近更新：2026-06-24
 - 关联设计文档：[2026-06-23-cloud-cyber-range-saas-design.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/specs/2026-06-23-cloud-cyber-range-saas-design.md)
-- 目标阶段：第一阶段 PoC
+- 当前活跃子计划：[2026-06-23-enterprise-range-bootstrap-plan.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/plans/2026-06-23-enterprise-range-bootstrap-plan.md)
 
 ## 1. 计划目标
 
-本计划的目标不是一次性做完整 SaaS，而是尽快交付一个可运行的最小闭环：
+本计划的目标，不是把平台一次性做成完整 SaaS，而是按最短可验证路径交付一个真正符合需求的第一阶段闭环：
 
-`管理员创建比赛/队伍 -> 选择靶场模板 -> 平台为队伍创建独立 VPC + ECS 靶场 -> 平台展示状态与入口 -> 平台销毁靶场`
+`比赛 -> 队伍 -> 模板 -> 独立企业网络型靶场 -> 公网入口 / 状态 / 日志 -> 整套销毁`
 
-实施策略：
+从现在开始，任何实施顺序都必须服从这件事：
 
-- 先打通最短链路，再补后台页面
-- 先保证创建/销毁/状态可靠，再谈扩展
-- 先做单体单仓，再为后续拆分预留边界
+- 先做企业网络型靶场骨架
+- 再做模板表达能力
+- 再做编排与状态日志
+- 最后再补后台可视化和可选增强
 
-## 2. 总体里程碑
+## 1.1 2026-06-24 进度快照
 
-### Milestone 0：工程初始化
+### 已完成
 
-目标：把仓库变成可开发、可运行、可迭代的基础项目。
+- 企业网络型 `OpenTofu` 主线已切到 `alicloud-enterprise-range`
+- `RangeTemplate.topologySpec` 已能表达固定拓扑蓝图骨架
+- `RangeInstance.accessEntry / resourceSummary / errorSummary` 已打通模型、仓储与回写链路
+- `ProvisionJob / ProvisionJobStepLog` 已支持详情查询与步骤日志展示
+- Worker 已具备原子 claim 能力，同一 `ProvisionJob` 并发执行时不会重复触发底层 provisioner
+- 本地 smoke 脚本已兼容 `ALICLOUD_IMAGE_ID` 与 `OPENTOFU_IMAGE_ID` 两套镜像变量口径
+- `OpenTofu` 真实执行链路已补 `validate` 预校验步骤，Runner、Provisioner 与 smoke 脚本已统一为 `init -> validate -> plan -> apply/output -> destroy`
+- 已新增非破坏性 `plan-only` smoke 入口，可先验证 `init / validate / plan` 再决定是否放行真实创建
+- 2026-06-24 已完成一次真实阿里云 RAM 非破坏性联调：
+  - `sts GetCallerIdentity` 成功
+  - `cn-hangzhou` / `cn-hangzhou-h` 可读
+  - 公共镜像查询成功
+  - `pnpm iac:smoke:plan` 成功产出 12 个待创建资源的企业网络型靶场执行计划
+- 2026-06-24 已完成一次真实阿里云受控创建/销毁联调：
+  - 首次 `apply` 暴露出 `cn-hangzhou-h` 不支持 `ecs.c7.large`
+  - 切换到 `ecs.t6-c1m2.large` 后，成功创建并销毁：
+    - 1 个 VPC
+    - 3 个 vSwitch
+    - 3 台 ECS
+    - 1 个 DMZ EIP 与绑定关系
+  - 创建阶段曾得到真实公网入口 `47.98.149.209`
+  - 销毁完成后 `terraform.tfstate` 资源数已回到 `0`
+- 已将实例规格默认策略从硬编码规格切换为 `auto`：
+  - smoke 脚本和 API provisioner 均支持按可用区动态解析真实可售的 ECS 规格
+  - 预校验基于 `aliyun ecs DescribeAvailableResource`
+  - 若配置了偏好列表，则优先选择偏好列表中当前可售的规格
+  - 若偏好列表没有命中，则回退到该可用区返回的首个可售规格
+- smoke 清理链路已补强：
+  - 即使 `apply` 中途失败，只要 state 中发现残留资源，退出时也会尝试自动 `destroy`
+- 管理后台已具备：
+  - 比赛、队伍、模板、实例基础管理
+  - 实例详情查看
+  - 任务中心列表
+  - 任务详情与步骤日志查看
+  - 直接触发实例 `create / destroy`
 
-交付物：
+### 进行中
 
-- 前后端单仓项目骨架
-- PostgreSQL 本地开发环境
-- Docker Compose 开发环境
-- 基础环境变量管理
-- 基础日志能力
+- Milestone 3 后端编排主链路仍在继续收口
+- 当前已经具备“后台触发任务 + 详情回写 + 步骤日志可见 + OpenTofu 预校验 + 真实云 plan-only 验证”的基础闭环
+- 还没有完全收口到“真实阿里云创建/销毁 + 稳定输出解析 + 失败日志固化 + apply/destroy 级别可重复验证”的程度
 
-验收标准：
+### 未完成
 
-- 本地一条命令能启动数据库和应用
-- 管理后台首页可访问
-- API 健康检查可访问
+- 更多地域/可用区下的真实 OpenTofu `apply / destroy` 回归验证
+- 真实云输出到 `accessEntry / resourceSummary` 的完整映射验证
+- 更稳健的任务重试、执行保护和异常补偿
+- 生产化的异步执行形态、过期回收和更完整运维能力
 
-### Milestone 1：核心领域模型与后台骨架
+### 下一步建议顺序
 
-目标：建立最小可支撑编排的平台数据骨架。
+1. 把“实例规格预校验/自动解析”的结果继续暴露到任务日志与实例详情
+2. 继续做更多地域/可用区的真实回归验证，校准默认偏好列表
+3. 视联调结果决定是否把模板级规格偏好纳入 `RangeTemplate.topologySpec`
+4. 在后端链路稳定后，再扩展更完整的运维、重试和回收能力
 
-交付物：
+## 2. 当前仓库现实
+
+截至 2026-06-23，仓库里已经存在一些有价值的基础能力，但其中一部分只代表“技术通路验证”，不应继续被当作当前主线。
+
+### 2.1 已有基础
+
+- monorepo、API、Web、Prisma、测试基线已建立
+- 后台对象管理已具备基础骨架
+- `RangeInstance / ProvisionJob / ProvisionJobStepLog` 已有初步代码结构
+- OpenTofu Runner 与阿里云 Provider 验证链路已具备雏形
+
+### 2.2 已有但需要降级定位的内容
+
+- `alicloud-vpc-single-ecs` 模块
+- `single-ecs` 示例 root module
+- 以 `allocatedCidr` 为中心的部分实现
+
+这些内容可以保留为历史通路验证，但不应再驱动后续里程碑排序。
+
+### 2.3 当前最关键的纠偏点
+
+1. IaC 主线要从 `single-ecs` 切换到 `enterprise-range`
+2. `RangeTemplate` 要从“模块壳”升级为“靶场蓝图”
+3. `DMZ + EIP` 公网入口要进入核心模型
+4. `CIDR 池优先` 要降级为可选增强
+
+## 3. 里程碑重排
+
+### Milestone 0：工程 Bootstrap
+
+状态：已有基础，可视为历史完成阶段
+
+目标：
+
+- 保持工作区、数据库、API、Web 的基础开发体验稳定
+
+### Milestone 1：后台对象与数据基线
+
+状态：核心基线已完成，后续仅按真实编排需求微调
+
+目标：
 
 - `Competition`
 - `Team`
@@ -49,126 +128,114 @@
 - `ProvisionJob`
 - `ProvisionJobStepLog`
 
-验收标准：
+验收重点：
 
-- 管理员可登录后台
-- 可创建比赛
-- 可创建队伍
-- 可录入靶场模板元数据
-- 数据库迁移可重复执行
+- 管理后台能稳定管理核心对象
+- 实例与任务对象不再停留在“字段存在”，而是服务于真实企业网络靶场场景
 
-### Milestone 2：最小 IaC 执行能力
+### Milestone 2：企业网络型 IaC Bootstrap
 
-目标：在不接复杂业务流程的前提下，先跑通最小阿里云环境创建与销毁。
+状态：骨架已完成，后续进入真实云验证与模块细化
 
-交付物：
+目标：
 
-- 一份最小 OpenTofu 模块
-- Runner 执行器原型
-- 本地/服务端执行工作目录规范
-- 输出结果采集能力
+- 用 OpenTofu 落下第一版真实企业网络型靶场骨架
+- 模块目标从 `single-ecs` 升级为：
+  - `single-vpc`
+  - `multi-vswitch`
+  - `multi-ecs`
+  - `dmz-eip`
 
-验收标准：
+验收重点：
 
-- 可通过命令或内部接口触发：
-  - 创建 1 个 VPC
-  - 创建 1 台 ECS
-  - 读取 outputs
-  - 执行 destroy
-- 执行日志和退出码可落库或落文件
+- 示例 root module 能通过 `fmt` 与 `validate`
+- 模块输出能明确表达公网入口与资源摘要
 
-### Milestone 3：编排主链路打通
+### Milestone 3：模板表达与编排主链路
 
-目标：让“后台操作 -> 任务创建 -> Runner 执行 -> 状态回写”真正贯通。
+状态：进行中，当前主线
 
-交付物：
+目标：
 
-- `ProvisionJob` 状态机
-- 应用内 Worker
-- 创建靶场 API
-- 销毁靶场 API
-- 实例状态回写
+- 扩展 `RangeTemplate`，表达固定拓扑蓝图
+- 将后台操作真正打通到任务系统
+- 回写 `accessEntry / resourceSummary / errorSummary`
 
-验收标准：
+验收重点：
 
-- 后台点击“创建靶场”后可自动生成任务
-- 任务执行成功后实例状态为 `running`
-- 输出访问入口可展示在后台
-- 销毁成功后实例状态为 `destroyed`
+- 创建任务可为某队伍生成一整套实例
+- 后台可看到步骤日志、错误摘要和公网入口
+- 真实 OpenTofu 执行结果能稳定回写到实例详情
 
-### Milestone 4：管理台可视化与异常处理
+### Milestone 4：后台可视化与运维操作
 
-目标：让平台从“能跑”升级为“能用、能排错”。
+状态：部分完成，仍需继续补运维动作
 
-交付物：
+目标：
 
-- 环境实例列表页
-- 任务中心页
-- 步骤日志查看页
-- 异常实例视图
-- 重试操作
+- 实例列表
+- 实例详情
+- 任务中心
+- 步骤日志页
+- 重试与回收操作
 
-验收标准：
+验收重点：
 
-- 管理员能看见任务过程
-- 创建失败能看到错误摘要
-- 可对失败任务执行重试
-- 可对残留环境执行销毁
+- 管理员能知道实例现在是否可用、卡在哪一步、入口是什么、下一步该做什么
 
-### Milestone 5：稳定性与模板收敛
+### Milestone 5：可选增强
 
-目标：为后续扩展到多机综合靶场和混合云资源做准备。
+目标：
 
-交付物：
+- CIDR 池正式化
+- 过期回收
+- 混合云资源模板
+- 更多资源类型
+- 自动化补偿
 
-- 多机 ECS 靶场模板 v1
-- CIDR 池分配逻辑
-- 过期回收任务
-- 模板版本化约定
-- 镜像生产流程说明
+说明：
 
-验收标准：
+- 只有在前四个里程碑稳定后，才进入这里
 
-- 可创建一套多台 ECS 的综合靶场
-- 可按队伍分配独立网段
-- 到期环境可自动进入销毁流程
+## 4. 从现在开始的推荐执行顺序
 
-## 3. 推荐实施顺序
+### 4.1 当前立刻要做
 
-推荐不要按“先前端、后后端、最后云脚本”的顺序开发，而是按下面顺序推进：
+1. 继续把真实 OpenTofu `create / destroy` 执行链路跑通
+2. 固化 `accessEntry / resourceSummary` 的真实输出映射
+3. 引入阿里云 RAM 测试联调，做非破坏性 smoke test
 
-1. 仓库基础骨架
-2. 数据模型与管理后台最小 CRUD
-3. 最小 OpenTofu 模块
-4. Runner 执行器
-5. ProvisionJob 状态机
-6. 创建链路
-7. 销毁链路
-8. 任务日志与异常处理
-9. 多机综合靶场模板
+### 4.2 随后要做
 
-## 4. 建议代码结构
+4. 继续补 Worker / Runner / StepLog 的稳定性与重试能力
+5. 加强实例销毁、异常实例处理和任务防重入
+6. 视联调结果补齐模块变量、初始化脚本与入口策略
 
-第一版建议使用单仓结构：
+### 4.3 最后再做
+
+7. 更完整的管理台运维页面和异常处理视图
+8. 可选增强，如自动过期回收、混合云资源、CIDR 池正式化
+
+## 5. 代码结构方向
+
+继续使用当前单仓结构，但主抽象要改为围绕“模板蓝图 + 实例编排”。
 
 ```text
 apps/
-  web/                # Next.js 管理后台 + 轻官网
-  api/                # NestJS API + Worker
+  api/
+  web/
 
 packages/
-  database/           # Prisma schema, migrations, seed
-  shared/             # 类型、常量、DTO、状态枚举
-  iac-runner/         # OpenTofu 执行封装
-  template-sdk/       # 模板元数据校验、变量渲染
+  database/
+  iac-runner/
 
 infra/
   opentofu/
     modules/
-      alicloud-vpc-single-ecs/
-      alicloud-range-multi-ecs/
+      alicloud-enterprise-range/
+    examples/
+      alicloud-enterprise-range/
   packer/
-    templates/
 
 docs/
   superpowers/
@@ -176,195 +243,66 @@ docs/
     plans/
 ```
 
-## 5. 每个里程碑的具体任务
+说明：
 
-### 5.1 Milestone 0 任务拆解
+- `alicloud-vpc-single-ecs` 可以保留为历史验证模块
+- 当前主验证入口应逐步切到 `alicloud-enterprise-range`
 
-- 初始化 `pnpm workspace`
-- 创建 `apps/web`
-- 创建 `apps/api`
-- 创建 `packages/database`
-- 接入 PostgreSQL
-- 配置 Prisma
-- 配置 Docker Compose
-- 建立 `.env.example`
-- 增加基础日志与 health check
+## 6. 当前阶段的验收门槛
 
-建议完成后立即验证：
+### 6.1 Milestone 2 验收门槛
 
-- `web` 可启动
-- `api` 可启动
-- `db` 可连接
+- 企业网络型模块具备多子网、多主机、DMZ EIP 骨架
+- `tofu fmt -check -recursive infra/opentofu`
+- `tofu validate infra/opentofu/examples/alicloud-enterprise-range`
+- 输出中存在公网入口相关字段
 
-### 5.2 Milestone 1 任务拆解
+### 6.2 Milestone 3 验收门槛
 
-- 设计 Prisma schema
-- 创建数据库迁移
-- 实现管理员登录最小方案
-- 完成比赛管理 CRUD
-- 完成队伍管理 CRUD
-- 完成模板管理 CRUD
-- 完成环境实例列表基础接口
+- 后台可创建实例和创建任务
+- 任务执行可回写状态与步骤日志
+- 实例详情明确展示公网入口和资源摘要
+- 至少一条真实阿里云靶场创建/销毁链路完成受控验证
 
-建议先不做复杂 RBAC。
+## 7. 明确延期的事项
 
-### 5.3 Milestone 2 任务拆解
+以下内容不要抢跑：
 
-- 编写阿里云 Provider 基础配置
-- 建立最小 `alicloud-vpc-single-ecs` 模块
-- 约定变量输入格式
-- 约定 outputs 格式
-- 封装 `init/plan/apply/output/destroy`
-- 约定工作目录生命周期
+- 高级 CIDR 池编排
+- 完整多云抽象
+- 拖拽式拓扑设计器
+- 复杂消息队列和微服务拆分
+- 判题系统和计分功能
 
-这里的重点不是页面，而是：
+## 8. 风险与应对
 
-- Runner 稳定执行
-- Runner 可收集结果
-- Runner 失败时可诊断
-
-### 5.4 Milestone 3 任务拆解
-
-- 实现 `ProvisionJob` 创建逻辑
-- 实现应用内 Worker 轮询
-- 增加任务加锁与并发保护
-- 增加创建靶场服务
-- 增加销毁靶场服务
-- 回写实例状态与访问入口
-- 增加操作审计记录
-
-这里是第一阶段最核心的里程碑。
-
-### 5.5 Milestone 4 任务拆解
-
-- 环境实例页展示状态与操作按钮
-- 任务中心页展示最近任务
-- 任务详情页展示步骤日志
-- 增加“重试创建/重试销毁”
-- 增加“异常实例”筛选
-
-第一版 UI 不追求炫，但必须可判断：
-
-- 任务卡在哪一步
-- 环境现在是什么状态
-- 管理员下一步该点什么
-
-### 5.6 Milestone 5 任务拆解
-
-- 把最小单机模板扩展为多机模板
-- 设计模板版本字段与兼容规则
-- 增加 CIDR 池管理
-- 实现过期回收 Worker
-- 补充镜像版本记录
-- 编写第一版运维手册
-
-## 6. 测试与验证安排
-
-### 6.1 开发早期测试
-
-每完成一个里程碑至少做 3 类检查：
-
-- 单元测试
-- 本地集成测试
-- 手工演练
-
-### 6.2 最关键的真实验证链路
-
-从 Milestone 2 开始，必须反复验证：
-
-`创建 VPC -> 创建 ECS -> 获取输出 -> destroy`
-
-等 Milestone 5 时再升级到：
-
-`创建 VPC -> 创建多台 ECS -> 写回入口 -> destroy`
-
-### 6.3 回归清单
-
-每次改动后至少检查：
-
-- 重复点击不会重复创建任务
-- 同一实例不会被并发创建两次
-- 创建失败不会误显示成功
-- 销毁失败环境能被重新处理
-- 审计日志能追踪操作来源
-
-## 7. 风险与应对
-
-### 风险 1：阿里云资源创建慢或不稳定
+### 风险 1：继续沿用旧模块导致主线偏离
 
 应对：
 
-- 所有云操作异步化
-- 每一步都记录日志与耗时
-- 不在 HTTP 请求中同步等待
+- 旧计划全部标记为历史/废弃基线
+- 新实现优先围绕 `enterprise-range` 路径落地
 
-### 风险 2：IaC 执行目录混乱导致串环境
-
-应对：
-
-- 约定每个 `ProvisionJob` 独立工作目录
-- 工作目录与实例 ID、任务 ID 绑定
-- destroy 默认回到对应实例目录
-
-### 风险 3：镜像准备过慢拖慢整体节奏
+### 风险 2：模板模型改得太晚，后端越做越偏
 
 应对：
 
-- 先用最小基础镜像验证流程
-- 再逐步引入 Packer 预制镜像
-- 不把第一阶段卡死在复杂镜像工厂上
+- 在编排收口前先升级模板表达能力
+- 不要继续围绕 `modulePathOrRef + allocatedCidr` 单薄模型扩展
 
-### 风险 4：后台做太多，主链路迟迟不通
+### 风险 3：把可选能力做成当前核心
 
 应对：
 
-- 所有开发排期都以创建/销毁闭环优先
-- 页面和视觉优化排在主链路之后
+- `CIDR 池`、混合云和自动补偿一律延后
+- 先围绕固定拓扑和独立公网入口完成第一阶段闭环
 
-## 8. 第一周建议行动
+## 9. 会话压缩后的恢复入口
 
-如果你准备正式开工，我建议第一周只做下面这些：
+如果后续会话被压缩，优先阅读：
 
-1. 初始化 monorepo、Next.js、NestJS、Prisma、PostgreSQL
-2. 建立 6 个核心表
-3. 完成管理员登录和比赛/队伍/模板最小 CRUD
-4. 写第一份最小 OpenTofu 模块
-5. 手工从命令行跑通最小阿里云创建/销毁
+1. [2026-06-23-cloud-cyber-range-saas-design.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/specs/2026-06-23-cloud-cyber-range-saas-design.md)
+2. [2026-06-23-cloud-cyber-range-saas-implementation-plan.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/plans/2026-06-23-cloud-cyber-range-saas-implementation-plan.md)
+3. [2026-06-23-enterprise-range-bootstrap-plan.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/plans/2026-06-23-enterprise-range-bootstrap-plan.md)
 
-只要第一周能做到第 5 点，整个项目就已经走在很对的路上了。
-
-## 9. 第二周建议行动
-
-1. 做 `ProvisionJob` 状态机
-2. 做应用内 Worker
-3. 把后台按钮接到创建任务
-4. 回写实例状态和 outputs
-5. 打通销毁流程
-
-第二周结束的目标是：
-
-> 管理员在后台点一下，就真的能为队伍拉起一套最小靶场，再从后台销毁。
-
-## 10. 可延期事项
-
-这些内容可以明确后移，不要抢第一阶段资源：
-
-- 多租户
-- 复杂权限
-- 选手前台
-- 品牌官网精修
-- 多云抽象真实落地
-- 混合云资源模板
-- 模板市场
-- 复杂告警系统
-
-## 11. 完成判断
-
-当下面这些都成立时，可以认为 implementation plan 已执行到第一阶段目标：
-
-- 管理员能管理比赛、队伍、模板
-- 平台能按队伍创建独立 VPC 靶场
-- 平台能展示状态、入口、日志
-- 平台能销毁资源
-- 失败可见、可重试、可定位
-- 一套最小多机靶场能在真实阿里云环境稳定重复创建和销毁
+只要先看这三份，就不会再回到旧路线。

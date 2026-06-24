@@ -3,3 +3,10 @@ node_modules/
 .next/
 dist/
 *.tsbuildinfo
+packages/database/generated/
+.local/
+infra/opentofu/examples/**/.terraform/
+infra/opentofu/examples/**/.terraform.lock.hcl
+infra/opentofu/examples/**/.smoke/
+infra/opentofu/examples/**/terraform.tfstate
+infra/opentofu/examples/**/terraform.tfstate.backup

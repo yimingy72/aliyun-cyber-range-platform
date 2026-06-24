@@ -1,0 +1,19 @@
+{
+  "name": "@aliyun-cyber-range/iac-runner",
+  "private": true,
+  "main": "dist/open-tofu-runner.js",
+  "types": "dist/open-tofu-runner.d.ts",
+  "exports": {
+    ".": "./dist/open-tofu-runner.js",
+    "./workspace-layout": "./dist/workspace-layout.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

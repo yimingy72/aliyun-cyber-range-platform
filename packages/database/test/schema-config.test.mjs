@@ -39,8 +39,48 @@ test('database bootstrap exposes postgres + prisma contract', () => {
       database: env.POSTGRES_DB,
     }),
   );
+  assert.equal(typeof env.ADMIN_USERNAME, 'string');
+  assert.equal(typeof env.ADMIN_PASSWORD, 'string');
+  assert.equal(typeof env.ADMIN_TOKEN, 'string');
+  assert.equal(typeof env.NEXT_PUBLIC_API_BASE_URL, 'string');
+  assert.match(schema, /model Competition/);
+  assert.match(schema, /model Team/);
+  assert.match(schema, /model RangeTemplate/);
+  assert.match(schema, /topologySpec\s+Json\?/);
+  assert.match(schema, /model RangeInstance/);
+  assert.match(schema, /model ProvisionJob/);
+  assert.match(schema, /model ProvisionJobStepLog/);
+  assert.match(schema, /enum RangeInstanceStatus/);
+  assert.match(schema, /enum ProvisionJobStatus/);
+  assert.match(schema, /output\s*=\s*"\.\.\/generated\/client"/);
   assert.equal(typeof pkg.scripts['prisma:generate'], 'string');
   assert.equal(typeof pkg.scripts.test, 'string');
   assert.match(pkg.scripts.test, /\bprisma validate\b/);
   assert.match(pkg.scripts.test, /schema-config\.test\.mjs/);
+});
+
+test('database package includes a checked-in migration baseline', () => {
+  const migrationsDir = new URL('../prisma/migrations', import.meta.url);
+
+  assert.equal(fs.existsSync(migrationsDir), true);
+
+  const entries = fs.readdirSync(migrationsDir, { withFileTypes: true });
+
+  assert.equal(
+    entries.some((entry) => entry.isDirectory()),
+    true,
+  );
+});
+
+test('workspace exposes real-postgres local scripts and deploy migration command', () => {
+  const rootPackage = JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'));
+  const databasePackage = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const startScriptPath = new URL('../../../scripts/dev/start-postgres.sh', import.meta.url);
+  const stopScriptPath = new URL('../../../scripts/dev/stop-postgres.sh', import.meta.url);
+
+  assert.equal(typeof rootPackage.scripts['db:local:start'], 'string');
+  assert.equal(typeof rootPackage.scripts['db:local:stop'], 'string');
+  assert.equal(typeof databasePackage.scripts['prisma:migrate:deploy'], 'string');
+  assert.equal(fs.existsSync(startScriptPath), true);
+  assert.equal(fs.existsSync(stopScriptPath), true);
 });

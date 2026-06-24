@@ -5,10 +5,15 @@
   "scripts": {
     "dev": "pnpm --parallel --stream --filter @aliyun-cyber-range/api --filter @aliyun-cyber-range/web dev",
     "build": "pnpm -r build",
-    "test": "pnpm -r test && node --test test/workspace-smoke.test.mjs",
-    "verify:bootstrap": "pnpm test && pnpm build && docker compose config",
+    "test": "pnpm -r test && node --test test/*.test.mjs",
+    "verify:bootstrap": "pnpm test && pnpm build && pnpm iac:validate && docker compose config",
+    "iac:validate": "bash scripts/dev/validate-opentofu-example.sh",
+    "iac:smoke": "bash scripts/dev/smoke-opentofu-enterprise-range.sh",
+    "iac:smoke:plan": "bash scripts/dev/smoke-opentofu-enterprise-range.sh --plan-only",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "db:logs": "docker compose logs -f postgres"
+    "db:logs": "docker compose logs -f postgres",
+    "db:local:start": "bash scripts/dev/start-postgres.sh",
+    "db:local:stop": "bash scripts/dev/stop-postgres.sh"
   }
 }

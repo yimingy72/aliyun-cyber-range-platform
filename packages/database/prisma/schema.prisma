@@ -1,8 +1,177 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../generated/client"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum CompetitionStatus {
+  draft
+  scheduled
+  active
+  completed
+}
+
+enum CloudProvider {
+  alibaba_cloud
+}
+
+enum IacType {
+  opentofu
+  terraform
+}
+
+enum RangeInstanceStatus {
+  draft
+  pending_create
+  creating
+  running
+  create_failed
+  pending_destroy
+  destroying
+  destroy_failed
+  destroyed
+}
+
+enum ProvisionJobType {
+  create
+  destroy
+  retry
+  refresh_status
+}
+
+enum ProvisionJobStatus {
+  pending
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+enum ProvisionJobStepStatus {
+  pending
+  running
+  succeeded
+  failed
+}
+
+model Competition {
+  id                String             @id @default(cuid())
+  name              String
+  description       String?            @db.Text
+  status            CompetitionStatus  @default(draft)
+  startAt           DateTime?
+  endAt             DateTime?
+  defaultTemplateId String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  defaultTemplate   RangeTemplate?     @relation("CompetitionDefaultTemplate", fields: [defaultTemplateId], references: [id], onDelete: SetNull)
+  teams             Team[]
+  rangeInstances    RangeInstance[]
+
+  @@index([status])
+}
+
+model Team {
+  id                  String          @id @default(cuid())
+  competitionId       String
+  name                String
+  contactName         String?
+  contactEmailOrPhone String?
+  notes               String?         @db.Text
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  competition         Competition     @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  rangeInstances      RangeInstance[]
+
+  @@unique([competitionId, name])
+  @@index([competitionId])
+}
+
+model RangeTemplate {
+  id                       String          @id @default(cuid())
+  name                     String
+  slug                     String
+  version                  String
+  cloudProvider            CloudProvider   @default(alibaba_cloud)
+  iacType                  IacType         @default(opentofu)
+  modulePathOrRef          String
+  topologySpec             Json?
+  variableSchema           Json
+  outputSchema             Json
+  defaultNetworkPolicy     Json?
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  competitionsAsDefault    Competition[]   @relation("CompetitionDefaultTemplate")
+  rangeInstances           RangeInstance[]
+
+  @@unique([slug, version])
+}
+
+model RangeInstance {
+  id              String              @id @default(cuid())
+  competitionId   String
+  teamId          String
+  templateId      String
+  status          RangeInstanceStatus @default(draft)
+  allocatedCidr   String?
+  cloudProvider   CloudProvider       @default(alibaba_cloud)
+  accessEntry     Json?
+  resourceSummary Json?
+  errorSummary    String?             @db.Text
+  expiresAt       DateTime?
+  lastJobId       String?             @unique
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  competition     Competition         @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  team            Team                @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  template        RangeTemplate       @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  jobs            ProvisionJob[]
+  lastJob         ProvisionJob?       @relation("RangeInstanceLastJob", fields: [lastJobId], references: [id], onDelete: SetNull)
+
+  @@index([competitionId])
+  @@index([teamId])
+  @@index([templateId])
+  @@index([status])
+}
+
+model ProvisionJob {
+  id              String               @id @default(cuid())
+  rangeInstanceId String
+  jobType         ProvisionJobType
+  status          ProvisionJobStatus   @default(pending)
+  triggeredBy     String
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  retryCount      Int                  @default(0)
+  errorSummary    String?              @db.Text
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  rangeInstance   RangeInstance        @relation(fields: [rangeInstanceId], references: [id], onDelete: Cascade)
+  stepLogs        ProvisionJobStepLog[]
+  lastForInstance RangeInstance?       @relation("RangeInstanceLastJob")
+
+  @@index([rangeInstanceId])
+  @@index([status])
+}
+
+model ProvisionJobStepLog {
+  id            String                 @id @default(cuid())
+  jobId         String
+  stepName      String
+  status        ProvisionJobStepStatus @default(pending)
+  message       String?
+  stdoutExcerpt String?                @db.Text
+  stderrExcerpt String?                @db.Text
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  job           ProvisionJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([status])
 }

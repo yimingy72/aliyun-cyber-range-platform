@@ -1,104 +1,113 @@
-# Platform Bootstrap Implementation Plan
+# 平台 Bootstrap 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **历史计划说明**
+>
+> - 本文件记录的是仓库最早期的工程 bootstrap 阶段，主要用于回溯工作区、API、Web、Prisma 的初始搭建过程。
+> - 它不是当前执行基线，也不应用于继续推进企业网络型综合靶场主线。
+> - 当前有效文档请优先阅读：
+>   - [2026-06-23-cloud-cyber-range-saas-design.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/specs/2026-06-23-cloud-cyber-range-saas-design.md)
+>   - [2026-06-23-cloud-cyber-range-saas-implementation-plan.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/plans/2026-06-23-cloud-cyber-range-saas-implementation-plan.md)
+>   - [2026-06-23-enterprise-range-bootstrap-plan.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/plans/2026-06-23-enterprise-range-bootstrap-plan.md)
 
-**Goal:** Build the first working slice of the platform: a monorepo workspace with a runnable NestJS API health endpoint, a minimal Next.js operator homepage, and a validated PostgreSQL/Prisma bootstrap package.
+> **面向代理执行者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 按任务逐步实现本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Architecture:** Keep the repo as a modular monorepo with `apps/` for runtime surfaces and `packages/` for shared or infrastructure-adjacent code. Treat the bootstrap as a thin vertical slice: validate workspace wiring first, then add API behavior, then web behavior, then database/bootstrap configuration validation.
+**目标：** 构建平台第一条可运行的纵向切片：一个 monorepo 工作区、一个可运行的 NestJS API 健康检查接口、一个最小可用的 Next.js 运维首页，以及一个通过校验的 PostgreSQL/Prisma bootstrap 包。
 
-**Tech Stack:** pnpm workspace, TypeScript, NestJS, Next.js App Router, Vitest, Jest, Docker Compose, PostgreSQL, Prisma
+**架构：** 保持仓库为模块化 monorepo，`apps/` 用于承载运行时应用表面，`packages/` 用于承载共享代码或靠近基础设施的代码。将 bootstrap 视为一条轻量纵向切片：先验证 workspace 连接是否正确，再补齐 API 行为，再补齐 Web 行为，最后补齐数据库与 bootstrap 配置校验。
+
+**技术栈：** pnpm workspace、TypeScript、NestJS、Next.js App Router、Vitest、Jest、Docker Compose、PostgreSQL、Prisma
 
 ---
 
-## Scope Check
+## 范围检查
 
-The full spec covers multiple independent subsystems: admin product, domain model, orchestration engine, IaC runner, image pipeline, and visual system. This plan intentionally covers only the first executable sub-project:
+完整规格覆盖了多个相互独立的子系统：admin 产品面、领域模型、编排引擎、IaC 执行器、镜像流水线和视觉系统。本计划有意只覆盖第一个可执行子项目：
 
 - monorepo bootstrap
-- API health endpoint
-- web bootstrap page
-- PostgreSQL + Prisma bootstrap wiring
+- API 健康检查接口
+- Web bootstrap 页面
+- PostgreSQL + Prisma bootstrap 连线
 
-Later plans should cover:
+后续计划应继续覆盖：
 
-- competition/team/template CRUD
-- range instance and provision jobs
-- OpenTofu runner
-- orchestrator state machine
+- 比赛、队伍、模板 CRUD
+- 靶场实例与供应作业
+- OpenTofu 执行器
+- 编排器状态机
 
-## File Structure
+## 文件结构
 
-### Root workspace files
+### 根工作区文件
 
-- Create: `package.json`
-  Responsibility: workspace scripts for dev, build, test, and database lifecycle
-- Create: `pnpm-workspace.yaml`
-  Responsibility: declare `apps/*` and `packages/*` package roots
-- Create: `tsconfig.base.json`
-  Responsibility: shared TypeScript compiler defaults
-- Create: `.env.example`
-  Responsibility: document local development environment variables
-- Create: `docker-compose.yml`
-  Responsibility: local PostgreSQL bootstrap
-- Create: `test/workspace-smoke.test.mjs`
-  Responsibility: smoke-check root workspace contract
+- 新建：`package.json`
+  职责：提供工作区级开发、构建、测试和数据库生命周期脚本
+- 新建：`pnpm-workspace.yaml`
+  职责：声明 `apps/*` 与 `packages/*` 包根目录
+- 新建：`tsconfig.base.json`
+  职责：提供共享的 TypeScript 编译默认配置
+- 新建：`.env.example`
+  职责：记录本地开发所需环境变量
+- 新建：`docker-compose.yml`
+  职责：提供本地 PostgreSQL bootstrap
+- 新建：`test/workspace-smoke.test.mjs`
+  职责：对根工作区契约进行 smoke 校验
 
-### API files
+### API 文件
 
-- Create: `apps/api/package.json`
-  Responsibility: API dependencies and scripts
-- Create: `apps/api/tsconfig.json`
-  Responsibility: API TypeScript config
-- Create: `apps/api/tsconfig.build.json`
-  Responsibility: API build-only TypeScript config
-- Create: `apps/api/jest.config.js`
-  Responsibility: API test runner config
-- Create: `apps/api/src/app.controller.ts`
-  Responsibility: HTTP endpoints for bootstrap phase
-- Create: `apps/api/src/app.module.ts`
-  Responsibility: bootstrap module wiring
-- Create: `apps/api/src/main.ts`
-  Responsibility: Nest application startup
-- Create: `apps/api/test/health.e2e-spec.ts`
-  Responsibility: failing-then-passing health endpoint contract
+- 新建：`apps/api/package.json`
+  职责：定义 API 依赖与脚本
+- 新建：`apps/api/tsconfig.json`
+  职责：定义 API 的 TypeScript 配置
+- 新建：`apps/api/tsconfig.build.json`
+  职责：定义仅用于构建的 API TypeScript 配置
+- 新建：`apps/api/jest.config.js`
+  职责：定义 API 测试运行器配置
+- 新建：`apps/api/src/app.controller.ts`
+  职责：承载 bootstrap 阶段的 HTTP 接口
+- 新建：`apps/api/src/app.module.ts`
+  职责：承载 bootstrap 模块装配
+- 新建：`apps/api/src/main.ts`
+  职责：负责 Nest 应用启动
+- 新建：`apps/api/test/health.e2e-spec.ts`
+  职责：先失败后通过的健康检查接口契约测试
 
-### Web files
+### Web 文件
 
-- Create: `apps/web/package.json`
-  Responsibility: web dependencies and scripts
-- Create: `apps/web/tsconfig.json`
-  Responsibility: Next.js TypeScript config
-- Create: `apps/web/next-env.d.ts`
-  Responsibility: Next.js generated type references
-- Create: `apps/web/vitest.config.ts`
-  Responsibility: jsdom test runner config
-- Create: `apps/web/app/layout.tsx`
-  Responsibility: root document shell and metadata
-- Create: `apps/web/app/page.tsx`
-  Responsibility: operator-facing bootstrap homepage
-- Create: `apps/web/app/page.test.tsx`
-  Responsibility: failing-then-passing homepage behavior test
-- Create: `apps/web/app/globals.css`
-  Responsibility: minimal visual system for bootstrap page
+- 新建：`apps/web/package.json`
+  职责：定义 Web 依赖与脚本
+- 新建：`apps/web/tsconfig.json`
+  职责：定义 Next.js TypeScript 配置
+- 新建：`apps/web/next-env.d.ts`
+  职责：提供 Next.js 自动生成的类型引用
+- 新建：`apps/web/vitest.config.ts`
+  职责：定义 jsdom 测试运行器配置
+- 新建：`apps/web/app/layout.tsx`
+  职责：定义根文档壳层与元数据
+- 新建：`apps/web/app/page.tsx`
+  职责：定义面向运维方的 bootstrap 首页
+- 新建：`apps/web/app/page.test.tsx`
+  职责：先失败后通过的首页行为测试
+- 新建：`apps/web/app/globals.css`
+  职责：定义 bootstrap 页面的最小视觉系统
 
-### Database package files
+### 数据库包文件
 
-- Create: `packages/database/package.json`
-  Responsibility: Prisma package scripts and dependencies
-- Create: `packages/database/prisma/schema.prisma`
-  Responsibility: bootstrap datasource and client generator
-- Create: `packages/database/test/schema-config.test.mjs`
-  Responsibility: validate Prisma bootstrap contract and env agreement
+- 新建：`packages/database/package.json`
+  职责：定义 Prisma 包脚本与依赖
+- 新建：`packages/database/prisma/schema.prisma`
+  职责：定义 bootstrap 数据源与 client 生成器
+- 新建：`packages/database/test/schema-config.test.mjs`
+  职责：校验 Prisma bootstrap 契约与环境变量约定
 
-## Task 1: Establish the root workspace contract
+## 任务 1：建立根工作区契约
 
-**Files:**
-- Create: `test/workspace-smoke.test.mjs`
-- Create: `package.json`
-- Create: `pnpm-workspace.yaml`
-- Create: `tsconfig.base.json`
+**文件：**
+- 新建：`test/workspace-smoke.test.mjs`
+- 新建：`package.json`
+- 新建：`pnpm-workspace.yaml`
+- 新建：`tsconfig.base.json`
 
-- [ ] **Step 1: Write the failing workspace smoke test**
+- [ ] **步骤 1：先写会失败的工作区 smoke 测试**
 
 ```js
 import test from 'node:test';
@@ -118,19 +127,19 @@ test('root workspace declares scripts and package globs', () => {
 });
 ```
 
-- [ ] **Step 2: Run the smoke test to verify it fails**
+- [ ] **步骤 2：运行 smoke 测试并确认它失败**
 
-Run:
+执行：
 
 ```bash
 node --test test/workspace-smoke.test.mjs
 ```
 
-Expected:
+预期：
 
-- FAIL because `package.json` and `pnpm-workspace.yaml` do not exist yet
+- FAIL，因为 `package.json` 和 `pnpm-workspace.yaml` 还不存在
 
-- [ ] **Step 3: Write the minimal root workspace files**
+- [ ] **步骤 3：写入最小可用的根工作区文件**
 
 `package.json`
 
@@ -179,38 +188,38 @@ packages:
 }
 ```
 
-- [ ] **Step 4: Re-run the workspace smoke test**
+- [ ] **步骤 4：重新运行工作区 smoke 测试**
 
-Run:
+执行：
 
 ```bash
 node --test test/workspace-smoke.test.mjs
 ```
 
-Expected:
+预期：
 
 - PASS
 
-- [ ] **Step 5: Commit the root workspace contract**
+- [ ] **步骤 5：提交根工作区契约**
 
 ```bash
 git add package.json pnpm-workspace.yaml tsconfig.base.json test/workspace-smoke.test.mjs
 git commit -m "chore: establish workspace bootstrap"
 ```
 
-## Task 2: Add a passing API health endpoint
+## 任务 2：补齐并通过 API 健康检查接口
 
-**Files:**
-- Create: `apps/api/package.json`
-- Create: `apps/api/tsconfig.json`
-- Create: `apps/api/tsconfig.build.json`
-- Create: `apps/api/jest.config.js`
-- Create: `apps/api/test/health.e2e-spec.ts`
-- Create: `apps/api/src/app.controller.ts`
-- Create: `apps/api/src/app.module.ts`
-- Create: `apps/api/src/main.ts`
+**文件：**
+- 新建：`apps/api/package.json`
+- 新建：`apps/api/tsconfig.json`
+- 新建：`apps/api/tsconfig.build.json`
+- 新建：`apps/api/jest.config.js`
+- 新建：`apps/api/test/health.e2e-spec.ts`
+- 新建：`apps/api/src/app.controller.ts`
+- 新建：`apps/api/src/app.module.ts`
+- 新建：`apps/api/src/main.ts`
 
-- [ ] **Step 1: Write the failing API health endpoint test**
+- [ ] **步骤 1：先写会失败的 API 健康检查测试**
 
 `apps/api/test/health.e2e-spec.ts`
 
@@ -249,20 +258,20 @@ describe('Health endpoint', () => {
 });
 ```
 
-- [ ] **Step 2: Run the API test to verify it fails**
+- [ ] **步骤 2：运行 API 测试并确认它失败**
 
-Run:
+执行：
 
 ```bash
 pnpm install
 pnpm --filter @aliyun-cyber-range/api test -- health.e2e-spec.ts
 ```
 
-Expected:
+预期：
 
-- FAIL with `404 Not Found` or module bootstrap failure until the API files exist
+- FAIL，表现为 `404 Not Found`，或在 API 文件尚未存在时出现模块 bootstrap 失败
 
-- [ ] **Step 3: Write the minimal API implementation**
+- [ ] **步骤 3：写入最小可用的 API 实现**
 
 `apps/api/package.json`
 
@@ -381,38 +390,38 @@ async function bootstrap() {
 void bootstrap();
 ```
 
-- [ ] **Step 4: Run the API test to verify it passes**
+- [ ] **步骤 4：重新运行 API 测试并确认通过**
 
-Run:
+执行：
 
 ```bash
 pnpm --filter @aliyun-cyber-range/api test -- health.e2e-spec.ts
 ```
 
-Expected:
+预期：
 
 - PASS
 
-- [ ] **Step 5: Commit the API bootstrap slice**
+- [ ] **步骤 5：提交 API bootstrap 切片**
 
 ```bash
 git add apps/api
 git commit -m "feat: add api health endpoint bootstrap"
 ```
 
-## Task 3: Add a passing operator homepage
+## 任务 3：补齐并通过运维首页
 
-**Files:**
-- Create: `apps/web/package.json`
-- Create: `apps/web/tsconfig.json`
-- Create: `apps/web/next-env.d.ts`
-- Create: `apps/web/vitest.config.ts`
-- Create: `apps/web/app/page.test.tsx`
-- Create: `apps/web/app/layout.tsx`
-- Create: `apps/web/app/page.tsx`
-- Create: `apps/web/app/globals.css`
+**文件：**
+- 新建：`apps/web/package.json`
+- 新建：`apps/web/tsconfig.json`
+- 新建：`apps/web/next-env.d.ts`
+- 新建：`apps/web/vitest.config.ts`
+- 新建：`apps/web/app/page.test.tsx`
+- 新建：`apps/web/app/layout.tsx`
+- 新建：`apps/web/app/page.tsx`
+- 新建：`apps/web/app/globals.css`
 
-- [ ] **Step 1: Write the failing web page test**
+- [ ] **步骤 1：先写会失败的 Web 页面测试**
 
 `apps/web/app/page.test.tsx`
 
@@ -432,19 +441,19 @@ describe('HomePage', () => {
 });
 ```
 
-- [ ] **Step 2: Run the web test to verify it fails**
+- [ ] **步骤 2：运行 Web 测试并确认它失败**
 
-Run:
+执行：
 
 ```bash
 pnpm --filter @aliyun-cyber-range/web test -- page.test.tsx
 ```
 
-Expected:
+预期：
 
-- FAIL because the page does not yet render the expected heading
+- FAIL，因为页面尚未渲染预期标题
 
-- [ ] **Step 3: Write the minimal web implementation**
+- [ ] **步骤 3：写入最小可用的 Web 实现**
 
 `apps/web/package.json`
 
@@ -623,35 +632,35 @@ body {
 }
 ```
 
-- [ ] **Step 4: Run the web test to verify it passes**
+- [ ] **步骤 4：重新运行 Web 测试并确认通过**
 
-Run:
+执行：
 
 ```bash
 pnpm --filter @aliyun-cyber-range/web test -- page.test.tsx
 ```
 
-Expected:
+预期：
 
 - PASS
 
-- [ ] **Step 5: Commit the web bootstrap slice**
+- [ ] **步骤 5：提交 Web bootstrap 切片**
 
 ```bash
 git add apps/web
 git commit -m "feat: add operator bootstrap homepage"
 ```
 
-## Task 4: Validate PostgreSQL and Prisma bootstrap wiring
+## 任务 4：校验 PostgreSQL 与 Prisma bootstrap 连线
 
-**Files:**
-- Create: `.env.example`
-- Create: `docker-compose.yml`
-- Create: `packages/database/package.json`
-- Create: `packages/database/prisma/schema.prisma`
-- Create: `packages/database/test/schema-config.test.mjs`
+**文件：**
+- 新建：`.env.example`
+- 新建：`docker-compose.yml`
+- 新建：`packages/database/package.json`
+- 新建：`packages/database/prisma/schema.prisma`
+- 新建：`packages/database/test/schema-config.test.mjs`
 
-- [ ] **Step 1: Write the failing database bootstrap test**
+- [ ] **步骤 1：先写会失败的数据库 bootstrap 测试**
 
 `packages/database/test/schema-config.test.mjs`
 
@@ -671,19 +680,19 @@ test('database bootstrap exposes postgres + prisma contract', () => {
 });
 ```
 
-- [ ] **Step 2: Run the database bootstrap test to verify it fails**
+- [ ] **步骤 2：运行数据库 bootstrap 测试并确认它失败**
 
-Run:
+执行：
 
 ```bash
 node --test packages/database/test/schema-config.test.mjs
 ```
 
-Expected:
+预期：
 
-- FAIL because the env file, schema, or package contract is missing
+- FAIL，因为环境文件、schema 或包契约缺失
 
-- [ ] **Step 3: Write the minimal database bootstrap files**
+- [ ] **步骤 3：写入最小可用的数据库 bootstrap 文件**
 
 `.env.example`
 
@@ -759,38 +768,38 @@ datasource db {
 }
 ```
 
-- [ ] **Step 4: Run the database bootstrap verification**
+- [ ] **步骤 4：运行数据库 bootstrap 校验**
 
-Run:
+执行：
 
 ```bash
 pnpm --filter @aliyun-cyber-range/database test
 docker compose config
 ```
 
-Expected:
+预期：
 
-- database bootstrap test PASS
-- `docker compose config` exits successfully and renders a valid config
+- 数据库 bootstrap 测试 PASS
+- `docker compose config` 成功退出并渲染出合法配置
 
-- [ ] **Step 5: Commit the database bootstrap slice**
+- [ ] **步骤 5：提交数据库 bootstrap 切片**
 
 ```bash
 git add .env.example docker-compose.yml packages/database
 git commit -m "chore: add postgres and prisma bootstrap wiring"
 ```
 
-## Task 5: Validate the whole bootstrap slice together
+## 任务 5：整体验证整个 bootstrap 切片
 
-**Files:**
-- Modify: `package.json`
-- Modify: `apps/api/package.json`
-- Modify: `apps/web/package.json`
-- Modify: `packages/database/package.json`
+**文件：**
+- 修改：`package.json`
+- 修改：`apps/api/package.json`
+- 修改：`apps/web/package.json`
+- 修改：`packages/database/package.json`
 
-- [ ] **Step 1: Write the failing full-bootstrap verification checklist**
+- [ ] **步骤 1：写出会失败的全量 bootstrap 验证清单**
 
-Create a local checklist in your working notes and treat these as red-state verification commands:
+在你的工作笔记里创建一份本地清单，并把下面这些命令视为红灯态验证命令：
 
 ```text
 1. pnpm install
@@ -801,9 +810,9 @@ Create a local checklist in your working notes and treat these as red-state veri
 6. pnpm --filter @aliyun-cyber-range/database test
 ```
 
-- [ ] **Step 2: Run the full verification to identify failures**
+- [ ] **步骤 2：运行全量验证以识别失败项**
 
-Run:
+执行：
 
 ```bash
 pnpm install
@@ -814,13 +823,13 @@ docker compose config
 pnpm --filter @aliyun-cyber-range/database test
 ```
 
-Expected:
+预期：
 
-- Any remaining failures should be concrete dependency or config mismatches, not vague bootstrap problems
+- 剩余失败项应当都是具体的依赖或配置不匹配，而不是模糊的 bootstrap 问题
 
-- [ ] **Step 3: Make the minimal fixes needed to get a clean bootstrap**
+- [ ] **步骤 3：做出让 bootstrap 变绿所需的最小修复**
 
-Typical final fixes at this stage:
+这个阶段常见的最终修复如下：
 
 `apps/api/package.json`
 
@@ -864,9 +873,9 @@ Typical final fixes at this stage:
 }
 ```
 
-- [ ] **Step 4: Re-run the full verification and confirm it is green**
+- [ ] **步骤 4：重新运行全量验证并确认全部为绿色**
 
-Run:
+执行：
 
 ```bash
 pnpm install
@@ -877,12 +886,12 @@ docker compose config
 pnpm --filter @aliyun-cyber-range/database test
 ```
 
-Expected:
+预期：
 
-- all tests PASS
-- `docker compose config` succeeds
+- 所有测试 PASS
+- `docker compose config` 执行成功
 
-- [ ] **Step 5: Commit the green bootstrap baseline**
+- [ ] **步骤 5：提交绿色 bootstrap 基线**
 
 ```bash
 git add package.json pnpm-workspace.yaml tsconfig.base.json .env.example docker-compose.yml apps/api apps/web packages/database test/workspace-smoke.test.mjs

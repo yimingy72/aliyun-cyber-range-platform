@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { configureApp } from '../src/bootstrap/configure-app';
 import { AppModule } from '../src/app.module';
 
 describe('Health endpoint', () => {
@@ -13,6 +14,7 @@ describe('Health endpoint', () => {
     }).compile();
 
     app = moduleRef.createNestApplication();
+    configureApp(app);
     await app.init();
   });
 
