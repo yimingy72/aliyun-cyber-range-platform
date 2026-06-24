@@ -17,8 +17,7 @@ export function useAdminSession() {
     token,
     isReady,
     login(nextToken: string) {
-      writeAdminToken(nextToken);
-      setToken(nextToken);
+      setToken(writeAdminToken(nextToken));
     },
     logout() {
       clearAdminToken();

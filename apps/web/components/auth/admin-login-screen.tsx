@@ -40,9 +40,9 @@ export function AdminLoginScreen({
       }
 
       const payload = (await response.json()) as { token?: unknown };
-      const nextToken = typeof payload.token === 'string' ? payload.token.trim() : '';
+      const nextToken = typeof payload.token === 'string' ? payload.token : null;
 
-      if (!nextToken) {
+      if (!nextToken?.trim()) {
         setErrorMessage('管理员登录失败，服务返回了无效会话。');
         return;
       }
