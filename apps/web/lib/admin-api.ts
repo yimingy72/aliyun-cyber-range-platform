@@ -5,6 +5,7 @@ import type {
   CompetitionInput,
   ProvisionJob,
   ProvisionJobStep,
+  RangeInstanceCreateInput,
   RangeInstance,
   RangeInstanceDetail,
   RangeTemplate,
@@ -61,6 +62,20 @@ export async function fetchAdminBootstrap(apiBaseUrl: string, token: string): Pr
 export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string, id: string) {
   const response = await fetch(`${apiBaseUrl}/admin/range-instances/${id}`, {
     headers: createAdminHeaders(token),
+  });
+
+  return readJson<RangeInstanceDetail>(response);
+}
+
+export async function createRangeInstance(
+  apiBaseUrl: string,
+  token: string,
+  payload: RangeInstanceCreateInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/range-instances`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
   });
 
   return readJson<RangeInstanceDetail>(response);

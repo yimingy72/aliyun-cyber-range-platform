@@ -106,16 +106,26 @@ export type RangeInstance = {
   id: string;
   status: string;
   teamId: string;
+  competitionId?: string | null;
+  templateId?: string | null;
   lastJobId?: string | null;
   errorSummary?: string | null;
   expiresAt?: string | null;
   accessEntry?: RangeAccessEntry | null;
   resourceSummary?: RangeResourceSummary | null;
+  allocatedCidr?: string | null;
 };
 
 export type RangeInstanceDetail = RangeInstance & {
   competitionId: string;
   templateId: string;
+};
+
+export type RangeInstanceCreateInput = {
+  competitionId: string;
+  teamId: string;
+  templateId: string;
+  expiresAt?: string;
 };
 
 export type ProvisionJob = {
@@ -125,6 +135,8 @@ export type ProvisionJob = {
   status: string;
   triggeredBy: string;
   errorSummary?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 };
 
 export type ProvisionJobStep = {
@@ -135,6 +147,8 @@ export type ProvisionJobStep = {
   message?: string | null;
   stdoutExcerpt?: string | null;
   stderrExcerpt?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 };
 
 export type CloudConfigSnapshot = {

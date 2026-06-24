@@ -1,20 +1,29 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
   AdminApiError,
+  createRangeInstance,
   fetchAdminBootstrap,
   fetchProvisionJobDetail,
   fetchRangeInstanceDetail,
   triggerRangeAction,
 } from '../../lib/admin-api';
-import type { AdminBootstrapData, ProvisionJob, ProvisionJobStep, RangeInstance, RangeInstanceDetail } from '../../lib/admin-types';
+import type {
+  AdminBootstrapData,
+  ProvisionJob,
+  ProvisionJobStep,
+  RangeInstance,
+  RangeInstanceCreateInput,
+  RangeInstanceDetail,
+} from '../../lib/admin-types';
 import { useAdminSession } from './use-admin-session';
 
 type RangeInstancesScreenProps = {
   apiBaseUrl?: string;
+  pollIntervalMs?: number;
 };
 
 type ExtendedRangeInstance = RangeInstance & {
@@ -48,6 +57,13 @@ type FilterState = {
   status: string;
 };
 
+type CreateInstanceFormState = {
+  competitionId: string;
+  teamId: string;
+  templateId: string;
+  expiresAt: string;
+};
+
 const TWO_COLUMN_LAYOUT = {
   display: 'grid',
   gap: '1.5rem',
@@ -61,17 +77,50 @@ const FILTER_GRID = {
   gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))',
 } as const;
 
+const EMPTY_CREATE_FORM: CreateInstanceFormState = {
+  competitionId: '',
+  teamId: '',
+  templateId: '',
+  expiresAt: '',
+};
+
+const ACTIVE_INSTANCE_STATUSES = new Set(['pending_create', 'creating', 'pending_destroy', 'destroying']);
+
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
 }
 
 function getStatusLabel(status: string) {
+  if (status === 'draft') {
+    return '草稿';
+  }
+
+  if (status === 'pending_create') {
+    return '待创建';
+  }
+
+  if (status === 'creating') {
+    return '创建中';
+  }
+
   if (status === 'running') {
     return '运行中';
   }
 
   if (status === 'create_failed') {
     return '创建失败';
+  }
+
+  if (status === 'pending_destroy') {
+    return '待销毁';
+  }
+
+  if (status === 'destroying') {
+    return '销毁中';
+  }
+
+  if (status === 'destroy_failed') {
+    return '销毁失败';
   }
 
   if (status === 'destroyed') {
@@ -141,8 +190,23 @@ function getResolvedStepSummary(step: ExtendedProvisionJobStep) {
   return step.message ?? step.stderrExcerpt ?? step.stdoutExcerpt ?? step.status;
 }
 
+function normalizeExpiresAtInput(value: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = new Date(value);
+
+  if (Number.isNaN(normalized.getTime())) {
+    return undefined;
+  }
+
+  return normalized.toISOString();
+}
+
 export function RangeInstancesScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  pollIntervalMs = 2500,
 }: RangeInstancesScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
@@ -156,9 +220,11 @@ export function RangeInstancesScreen({
     templateId: 'all',
     status: 'all',
   });
+  const [createForm, setCreateForm] = useState<CreateInstanceFormState>(EMPTY_CREATE_FORM);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [isCreatingInstance, setIsCreatingInstance] = useState(false);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
   const detailRequestIdRef = useRef(0);
 
@@ -222,13 +288,49 @@ export function RangeInstancesScreen({
     return new Map((snapshot?.competitions ?? []).map((item) => [item.id, item]));
   }, [snapshot]);
 
+  const competitions = snapshot?.competitions ?? [];
+  const teams = snapshot?.teams ?? [];
+  const rangeTemplates = snapshot?.rangeTemplates ?? [];
+
   const teamsById = useMemo(() => {
-    return new Map((snapshot?.teams ?? []).map((item) => [item.id, item]));
-  }, [snapshot]);
+    return new Map(teams.map((item) => [item.id, item]));
+  }, [teams]);
 
   const templatesById = useMemo(() => {
-    return new Map((snapshot?.rangeTemplates ?? []).map((item) => [item.id, item]));
-  }, [snapshot]);
+    return new Map(rangeTemplates.map((item) => [item.id, item]));
+  }, [rangeTemplates]);
+
+  const resolvedCreateCompetitionId = useMemo(() => {
+    if (competitions.some((competition) => competition.id === createForm.competitionId)) {
+      return createForm.competitionId;
+    }
+
+    return competitions[0]?.id ?? '';
+  }, [competitions, createForm.competitionId]);
+
+  const createTeams = useMemo(() => {
+    if (!resolvedCreateCompetitionId) {
+      return teams;
+    }
+
+    return teams.filter((team) => team.competitionId === resolvedCreateCompetitionId);
+  }, [resolvedCreateCompetitionId, teams]);
+
+  const resolvedCreateTeamId = useMemo(() => {
+    if (createTeams.some((team) => team.id === createForm.teamId)) {
+      return createForm.teamId;
+    }
+
+    return createTeams[0]?.id ?? '';
+  }, [createForm.teamId, createTeams]);
+
+  const resolvedCreateTemplateId = useMemo(() => {
+    if (rangeTemplates.some((template) => template.id === createForm.templateId)) {
+      return createForm.templateId;
+    }
+
+    return rangeTemplates[0]?.id ?? '';
+  }, [createForm.templateId, rangeTemplates]);
 
   const jobsByInstanceId = useMemo(() => {
     const map = new Map<string, ExtendedProvisionJob>();
@@ -264,27 +366,69 @@ export function RangeInstancesScreen({
     });
   }, [filters, snapshot]);
 
-  async function handleViewDetail(instanceId: string) {
+  function upsertInstanceInSnapshot(instance: ExtendedRangeInstanceDetail | ExtendedRangeInstance) {
+    setSnapshot((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const hasExisting = current.rangeInstances.some((item) => item.id === instance.id);
+
+      return {
+        ...current,
+        rangeInstances: hasExisting
+          ? current.rangeInstances.map((item) => (item.id === instance.id ? { ...item, ...instance } : item))
+          : [instance, ...current.rangeInstances],
+      };
+    });
+  }
+
+  function upsertJobInSnapshot(job: ExtendedProvisionJob) {
+    setSnapshot((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        provisionJobs: [job, ...current.provisionJobs.filter((item) => item.id !== job.id)],
+      };
+    });
+  }
+
+  async function refreshSelectedInstance(
+    instanceId: string,
+    options: {
+      background?: boolean;
+      requestId?: number;
+      showLoading?: boolean;
+    } = {},
+  ) {
     if (!session.token) {
       return;
     }
 
-    const requestId = detailRequestIdRef.current + 1;
+    const requestId = options.requestId ?? detailRequestIdRef.current + 1;
+
     detailRequestIdRef.current = requestId;
-    setSelectedInstanceId(instanceId);
-    setSelectedDetail(null);
-    setSelectedJobState({ job: null, steps: [] });
-    setErrorMessage(null);
-    setIsLoadingDetail(true);
+
+    if (options.showLoading) {
+      setIsLoadingDetail(true);
+    }
 
     try {
-      const detail = (await fetchRangeInstanceDetail(apiBaseUrl, session.token, instanceId)) as ExtendedRangeInstanceDetail;
+      const detail = (await fetchRangeInstanceDetail(
+        apiBaseUrl,
+        session.token,
+        instanceId,
+      )) as ExtendedRangeInstanceDetail;
 
       if (detailRequestIdRef.current !== requestId) {
         return;
       }
 
       setSelectedDetail(detail);
+      upsertInstanceInSnapshot(detail);
 
       if (!detail.lastJobId) {
         setSelectedJobState({ job: null, steps: [] });
@@ -297,10 +441,14 @@ export function RangeInstancesScreen({
         return;
       }
 
+      const nextJob = jobDetail.job as ExtendedProvisionJob;
+      const nextSteps = jobDetail.steps as ExtendedProvisionJobStep[];
+
       setSelectedJobState({
-        job: jobDetail.job as ExtendedProvisionJob,
-        steps: jobDetail.steps as ExtendedProvisionJobStep[],
+        job: nextJob,
+        steps: nextSteps,
       });
+      upsertJobInSnapshot(nextJob);
     } catch (error: unknown) {
       if (detailRequestIdRef.current !== requestId) {
         return;
@@ -312,11 +460,77 @@ export function RangeInstancesScreen({
         return;
       }
 
-      setErrorMessage('实例详情加载失败，请稍后重试。');
+      if (!options.background) {
+        setErrorMessage('实例详情加载失败，请稍后重试。');
+      }
     } finally {
-      if (detailRequestIdRef.current === requestId) {
+      if (detailRequestIdRef.current === requestId && options.showLoading) {
         setIsLoadingDetail(false);
       }
+    }
+  }
+
+  async function handleViewDetail(instanceId: string) {
+    setSelectedInstanceId(instanceId);
+    setSelectedDetail(null);
+    setSelectedJobState({ job: null, steps: [] });
+    setErrorMessage(null);
+    await refreshSelectedInstance(instanceId, { showLoading: true });
+  }
+
+  async function handleCreateInstance(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!session.token) {
+      return;
+    }
+
+    const payload: RangeInstanceCreateInput = {
+      competitionId: resolvedCreateCompetitionId,
+      teamId: resolvedCreateTeamId,
+      templateId: resolvedCreateTemplateId,
+      expiresAt: normalizeExpiresAtInput(createForm.expiresAt),
+    };
+
+    if (!payload.competitionId || !payload.teamId || !payload.templateId) {
+      setErrorMessage('请先选择比赛、队伍和靶场模板。');
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsCreatingInstance(true);
+
+    try {
+      const created = (await createRangeInstance(
+        apiBaseUrl,
+        session.token,
+        payload,
+      )) as ExtendedRangeInstanceDetail;
+
+      upsertInstanceInSnapshot(created);
+      setSelectedInstanceId(created.id);
+      setSelectedDetail(created);
+      setSelectedJobState({ job: null, steps: [] });
+      setFilters((current) => ({
+        ...current,
+        competitionId: current.competitionId === 'all' ? current.competitionId : created.competitionId,
+        teamId: current.teamId === 'all' ? current.teamId : created.teamId,
+        templateId: current.templateId === 'all' ? current.templateId : created.templateId,
+      }));
+      setCreateForm((current) => ({
+        ...current,
+        expiresAt: '',
+      }));
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('实例创建失败，请检查比赛、队伍和模板配置后重试。');
+    } finally {
+      setIsCreatingInstance(false);
     }
   }
 
@@ -330,25 +544,27 @@ export function RangeInstancesScreen({
 
     try {
       const job = (await triggerRangeAction(apiBaseUrl, session.token, selectedDetail.id, action, 'admin')) as ExtendedProvisionJob;
+      const pendingStatus = action === 'create' ? 'pending_create' : 'pending_destroy';
 
-      setSnapshot((current) => {
-        if (!current) {
-          return current;
-        }
-
-        return {
-          ...current,
-          rangeInstances: current.rangeInstances.map((instance) =>
-            instance.id === selectedDetail.id ? { ...instance, lastJobId: job.id } : instance,
-          ),
-          provisionJobs: [job, ...current.provisionJobs.filter((existingJob) => existingJob.id !== job.id)],
-        };
+      upsertInstanceInSnapshot({
+        ...selectedDetail,
+        status: pendingStatus,
+        lastJobId: job.id,
       });
-
-      setSelectedJobState((current) => ({
+      setSelectedDetail((current) =>
+        current
+          ? {
+              ...current,
+              status: pendingStatus,
+              lastJobId: job.id,
+            }
+          : current,
+      );
+      upsertJobInSnapshot(job);
+      setSelectedJobState({
         job,
         steps: [],
-      }));
+      });
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -361,6 +577,18 @@ export function RangeInstancesScreen({
       setIsSubmittingAction(null);
     }
   }
+
+  useEffect(() => {
+    if (!selectedDetail?.id || !selectedDetail.lastJobId || !ACTIVE_INSTANCE_STATUSES.has(selectedDetail.status)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void refreshSelectedInstance(selectedDetail.id, { background: true });
+    }, pollIntervalMs);
+
+    return () => window.clearTimeout(timer);
+  }, [apiBaseUrl, pollIntervalMs, refreshSelectedInstance, selectedDetail?.id, selectedDetail?.lastJobId, selectedDetail?.status]);
 
   if (!session.isReady) {
     return (
@@ -404,6 +632,106 @@ export function RangeInstancesScreen({
       </section>
 
       {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+
+      <section className="admin-panel">
+        <div className="admin-section-header">
+          <h2>创建实例</h2>
+          <span>按队伍分配独立靶场</span>
+        </div>
+
+        <form className="admin-form" onSubmit={(event) => void handleCreateInstance(event)}>
+          <label>
+            <span>所属比赛</span>
+            <select
+              aria-label="所属比赛"
+              value={resolvedCreateCompetitionId}
+              onChange={(event) =>
+                setCreateForm((current) => ({
+                  ...current,
+                  competitionId: event.target.value,
+                  teamId: '',
+                }))
+              }
+              disabled={isCreatingInstance || !competitions.length}
+            >
+              {competitions.length ? (
+                competitions.map((competition) => (
+                  <option key={competition.id} value={competition.id}>
+                    {competition.name}
+                  </option>
+                ))
+              ) : (
+                <option value="">暂无可选比赛</option>
+              )}
+            </select>
+          </label>
+
+          <label>
+            <span>所属队伍</span>
+            <select
+              aria-label="所属队伍"
+              value={resolvedCreateTeamId}
+              onChange={(event) => setCreateForm((current) => ({ ...current, teamId: event.target.value }))}
+              disabled={isCreatingInstance || !createTeams.length}
+            >
+              {createTeams.length ? (
+                createTeams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))
+              ) : (
+                <option value="">当前比赛下暂无队伍</option>
+              )}
+            </select>
+          </label>
+
+          <label>
+            <span>靶场模板</span>
+            <select
+              aria-label="靶场模板"
+              value={resolvedCreateTemplateId}
+              onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))}
+              disabled={isCreatingInstance || !rangeTemplates.length}
+            >
+              {rangeTemplates.length ? (
+                rangeTemplates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {getTemplateLabel(template)}
+                  </option>
+                ))
+              ) : (
+                <option value="">暂无可选模板</option>
+              )}
+            </select>
+          </label>
+
+          <label>
+            <span>过期时间</span>
+            <input
+              aria-label="过期时间"
+              type="datetime-local"
+              value={createForm.expiresAt}
+              onChange={(event) => setCreateForm((current) => ({ ...current, expiresAt: event.target.value }))}
+              disabled={isCreatingInstance}
+            />
+          </label>
+
+          <div className="admin-inline-actions">
+            <button
+              type="submit"
+              disabled={
+                isCreatingInstance ||
+                !resolvedCreateCompetitionId ||
+                !resolvedCreateTeamId ||
+                !resolvedCreateTemplateId
+              }
+            >
+              {isCreatingInstance ? '创建中...' : '创建实例'}
+            </button>
+          </div>
+        </form>
+      </section>
 
       <section className="admin-panel">
         <div className="admin-section-header">

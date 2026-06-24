@@ -1,12 +1,14 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
+  createRangeInstanceMock,
   fetchAdminBootstrapMock,
   fetchRangeInstanceDetailMock,
   fetchProvisionJobDetailMock,
   triggerRangeActionMock,
 } = vi.hoisted(() => ({
+  createRangeInstanceMock: vi.fn(),
   fetchAdminBootstrapMock: vi.fn(),
   fetchRangeInstanceDetailMock: vi.fn(),
   fetchProvisionJobDetailMock: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock('./use-admin-session', () => ({
 }));
 
 vi.mock('../../lib/admin-api', () => ({
+  createRangeInstance: createRangeInstanceMock,
   fetchAdminBootstrap: fetchAdminBootstrapMock,
   fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
   fetchProvisionJobDetail: fetchProvisionJobDetailMock,
@@ -39,6 +42,7 @@ import { RangeInstancesScreen } from './range-instances-screen';
 
 describe('RangeInstancesScreen', () => {
   beforeEach(() => {
+    createRangeInstanceMock.mockReset();
     fetchAdminBootstrapMock.mockReset();
     fetchRangeInstanceDetailMock.mockReset();
     fetchProvisionJobDetailMock.mockReset();
@@ -46,7 +50,45 @@ describe('RangeInstancesScreen', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
+  });
+
+  it('creates a draft range instance from the admin page', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [],
+      provisionJobs: [],
+    });
+    createRangeInstanceMock.mockResolvedValue({
+      id: 'range-1',
+      competitionId: 'competition-1',
+      teamId: 'team-1',
+      templateId: 'template-1',
+      status: 'draft',
+      errorSummary: null,
+      expiresAt: null,
+      accessEntry: null,
+      resourceSummary: null,
+      lastJobId: null,
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+
+    await waitFor(() => {
+      expect(createRangeInstanceMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', {
+        competitionId: 'competition-1',
+        teamId: 'team-1',
+        templateId: 'template-1',
+      });
+    });
+
+    await screen.findByText('range-1');
+    expect(screen.getByText('状态：草稿')).toBeTruthy();
   });
 
   it('filters instances and shows recent job detail in the detail panel', async () => {
@@ -135,8 +177,8 @@ describe('RangeInstancesScreen', () => {
     await screen.findByText('靶场实例');
     fireEvent.change(screen.getByLabelText('比赛筛选'), { target: { value: 'competition-1' } });
 
-    expect(screen.getByText('总决赛')).toBeTruthy();
-    expect(screen.getByText('企业攻防靶场')).toBeTruthy();
+    expect(screen.getByText(/比赛：总决赛/)).toBeTruthy();
+    expect(screen.getByText(/模板：企业攻防靶场/)).toBeTruthy();
     expect(screen.queryByText('range-2')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '查看实例 range-1' }));
@@ -290,5 +332,97 @@ describe('RangeInstancesScreen', () => {
     await screen.findByText(/任务 ID：job-new/);
     expect(screen.queryByText('旧步骤日志')).toBeNull();
     expect(screen.getByText('暂无步骤日志。')).toBeTruthy();
+  });
+
+  it('refreshes instance detail and latest steps after create job starts', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [
+        {
+          id: 'range-1',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'draft',
+          lastJobId: null,
+          errorSummary: null,
+          accessEntry: null,
+        },
+      ],
+      provisionJobs: [],
+    });
+    fetchRangeInstanceDetailMock
+      .mockResolvedValueOnce({
+        id: 'range-1',
+        status: 'draft',
+        teamId: 'team-1',
+        competitionId: 'competition-1',
+        templateId: 'template-1',
+        lastJobId: null,
+        accessEntry: null,
+        resourceSummary: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'range-1',
+        status: 'running',
+        teamId: 'team-1',
+        competitionId: 'competition-1',
+        templateId: 'template-1',
+        lastJobId: 'job-1',
+        accessEntry: {
+          hostRole: 'dmz',
+          publicIp: '47.1.1.1',
+          url: 'https://range.local/range-1',
+        },
+        resourceSummary: {
+          mode: 'dry-run',
+          vpcId: 'vpc-123',
+        },
+      });
+    fetchProvisionJobDetailMock.mockResolvedValue({
+      job: {
+        id: 'job-1',
+        rangeInstanceId: 'range-1',
+        jobType: 'create',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+      },
+      steps: [
+        {
+          id: 'step-1',
+          jobId: 'job-1',
+          stepName: 'collect_outputs',
+          status: 'succeeded',
+          message: '已写入入口信息',
+        },
+      ],
+    });
+    triggerRangeActionMock.mockResolvedValue({
+      id: 'job-1',
+      rangeInstanceId: 'range-1',
+      jobType: 'create',
+      status: 'pending',
+      triggeredBy: 'admin',
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" pollIntervalMs={10} />);
+
+    await screen.findByText('靶场实例');
+    fireEvent.click(screen.getByRole('button', { name: '查看实例 range-1' }));
+    await screen.findByRole('button', { name: '发起创建' });
+    fireEvent.click(screen.getByRole('button', { name: '发起创建' }));
+
+    await waitFor(() => {
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'create', 'admin');
+    });
+
+    await waitFor(() => {
+      expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(2);
+      expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'job-1');
+      expect(screen.getByText('状态：运行中')).toBeTruthy();
+      expect(screen.getByText(/collect_outputs\s*\/\s*成功\s*\/\s*已写入入口信息/)).toBeTruthy();
+    });
   });
 });
