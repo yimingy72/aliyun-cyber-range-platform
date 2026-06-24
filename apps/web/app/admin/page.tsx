@@ -1,5 +1,5 @@
-import { AdminConsole } from './admin-console';
+import { OverviewScreen } from '../../components/admin/overview-screen';
 
 export default function AdminPage() {
-  return <AdminConsole />;
+  return <OverviewScreen />;
 }
