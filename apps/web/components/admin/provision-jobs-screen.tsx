@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { AdminApiError, fetchAdminBootstrap, fetchProvisionJobDetail } from '../../lib/admin-api';
@@ -11,24 +11,106 @@ type ProvisionJobsScreenProps = {
   apiBaseUrl?: string;
 };
 
+type ExtendedProvisionJob = ProvisionJob & {
+  startedAt?: string | null;
+  finishedAt?: string | null;
+};
+
+type ExtendedProvisionJobStep = ProvisionJobStep & {
+  startedAt?: string | null;
+  finishedAt?: string | null;
+};
+
+const TWO_COLUMN_LAYOUT = {
+  display: 'grid',
+  gap: '1.5rem',
+  gridTemplateColumns: 'minmax(0, 1.2fr) minmax(22rem, 1fr)',
+  alignItems: 'start',
+} as const;
+
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
 }
 
-function getJobLabel(job: ProvisionJob) {
-  if (job.jobType === 'create') {
+function getJobLabel(jobType: string) {
+  if (jobType === 'create') {
     return '创建';
   }
 
-  if (job.jobType === 'destroy') {
+  if (jobType === 'destroy') {
     return '销毁';
   }
 
-  return job.jobType;
+  return jobType;
 }
 
-function getStepMessage(step: ProvisionJobStep) {
+function getStatusLabel(status: string) {
+  if (status === 'running') {
+    return '运行中';
+  }
+
+  if (status === 'failed') {
+    return '失败';
+  }
+
+  if (status === 'succeeded') {
+    return '成功';
+  }
+
+  if (status === 'pending') {
+    return '处理中';
+  }
+
+  return status;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) {
+    return '暂无';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+    .format(date)
+    .replace(/\//g, '-');
+}
+
+function getResolvedSignal(step: ExtendedProvisionJobStep) {
   return step.message ?? step.stderrExcerpt ?? step.stdoutExcerpt ?? step.status;
+}
+
+function getParsedInsights(job: ExtendedProvisionJob, steps: ExtendedProvisionJobStep[]) {
+  const insights = new Set<string>();
+
+  if (job.errorSummary) {
+    insights.add(`失败原因：${job.errorSummary}`);
+  }
+
+  for (const step of steps) {
+    if (step.message) {
+      insights.add(`消息：${step.message}`);
+    }
+
+    const ipMatch = (step.stdoutExcerpt ?? step.stderrExcerpt ?? '').match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+    if (ipMatch) {
+      insights.add(`入口 IP：${ipMatch[0]}`);
+    }
+  }
+
+  return Array.from(insights);
 }
 
 export function ProvisionJobsScreen({
@@ -37,8 +119,8 @@ export function ProvisionJobsScreen({
   const router = useRouter();
   const session = useAdminSession();
   const [snapshot, setSnapshot] = useState<AdminBootstrapData | null>(null);
-  const [selectedJob, setSelectedJob] = useState<ProvisionJob | null>(null);
-  const [selectedSteps, setSelectedSteps] = useState<ProvisionJobStep[]>([]);
+  const [selectedJob, setSelectedJob] = useState<ExtendedProvisionJob | null>(null);
+  const [selectedSteps, setSelectedSteps] = useState<ExtendedProvisionJobStep[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
@@ -96,6 +178,10 @@ export function ProvisionJobsScreen({
     };
   }, [apiBaseUrl, router, session.isReady, session.token]);
 
+  const jobs = useMemo(() => {
+    return (snapshot?.provisionJobs ?? []) as ExtendedProvisionJob[];
+  }, [snapshot]);
+
   async function handleViewDetail(jobId: string) {
     if (!session.token) {
       return;
@@ -106,8 +192,8 @@ export function ProvisionJobsScreen({
 
     try {
       const detail = await fetchProvisionJobDetail(apiBaseUrl, session.token, jobId);
-      setSelectedJob(detail.job);
-      setSelectedSteps(detail.steps);
+      setSelectedJob(detail.job as ExtendedProvisionJob);
+      setSelectedSteps(detail.steps as ExtendedProvisionJobStep[]);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -154,33 +240,38 @@ export function ProvisionJobsScreen({
     );
   }
 
+  const parsedInsights = selectedJob ? getParsedInsights(selectedJob, selectedSteps) : [];
+  const currentStep = selectedSteps.find((step) => step.status === 'running' || !step.finishedAt) ?? selectedSteps[0] ?? null;
+
   return (
     <div className="admin-screen">
       <section className="admin-hero">
         <p className="auth-eyebrow">后台二级页</p>
         <h1>编排任务</h1>
-        <p className="admin-description">集中查看实例创建、销毁等编排任务，并在详情区追踪步骤日志。</p>
+        <p className="admin-description">保持任务列表与步骤详情并列，便于从失败摘要快速钻取到时间线和标准输出。</p>
       </section>
 
       {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
 
-      <section className="admin-grid">
+      <section style={TWO_COLUMN_LAYOUT}>
         <article className="admin-panel">
           <div className="admin-section-header">
             <h2>任务列表</h2>
-            <span>{snapshot?.provisionJobs.length ?? 0} 个任务</span>
+            <span>{jobs.length} 个任务</span>
           </div>
 
-          {snapshot?.provisionJobs.length ? (
+          {jobs.length ? (
             <ul className="admin-list">
-              {snapshot.provisionJobs.map((job) => (
+              {jobs.map((job) => (
                 <li key={job.id}>
                   <div className="admin-list-copy">
                     <strong>{job.id}</strong>
-                    <span>实例：{job.rangeInstanceId}</span>
-                    <span>类型：{getJobLabel(job)}</span>
-                    <span>状态：{job.status}</span>
+                    <span>任务类型：{getJobLabel(job.jobType)}</span>
+                    <span>关联实例：{job.rangeInstanceId}</span>
                     <span>触发人：{job.triggeredBy}</span>
+                    <span>开始时间：{formatDateTime(job.startedAt)}</span>
+                    <span>当前状态：{getStatusLabel(job.status)}</span>
+                    <span>失败摘要：{job.errorSummary ?? '无'}</span>
                   </div>
                   <div className="admin-list-actions">
                     <button type="button" onClick={() => void handleViewDetail(job.id)}>
@@ -197,7 +288,7 @@ export function ProvisionJobsScreen({
 
         <article className="admin-panel">
           <div className="admin-section-header">
-            <h2>步骤日志</h2>
+            <h2>任务详情</h2>
             <span>{selectedJob?.id ?? '未选择'}</span>
           </div>
 
@@ -206,10 +297,24 @@ export function ProvisionJobsScreen({
           ) : selectedJob ? (
             <>
               <div className="admin-list-copy">
-                <strong>{selectedJob.id}</strong>
-                <span>实例：{selectedJob.rangeInstanceId}</span>
-                <span>类型：{getJobLabel(selectedJob)}</span>
-                <span>状态：{selectedJob.status}</span>
+                <strong>任务概览</strong>
+                <span>任务类型：{getJobLabel(selectedJob.jobType)}</span>
+                <span>关联实例：{selectedJob.rangeInstanceId}</span>
+                <span>触发人：{selectedJob.triggeredBy}</span>
+                <span>开始时间：{formatDateTime(selectedJob.startedAt)}</span>
+                <span>当前状态：{getStatusLabel(selectedJob.status)}</span>
+                <span>失败摘要：{selectedJob.errorSummary ?? '无'}</span>
+                <span>当前步骤：{currentStep ? currentStep.stepName : '暂无'}</span>
+              </div>
+
+              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
+                <strong>已解析出的关键信息</strong>
+                {parsedInsights.length ? parsedInsights.map((item) => <span key={item}>{item}</span>) : <span>暂无关键信息。</span>}
+              </div>
+
+              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
+                <strong>步骤日志</strong>
+                <span>时间线视图</span>
               </div>
 
               {selectedSteps.length ? (
@@ -218,8 +323,13 @@ export function ProvisionJobsScreen({
                     <li key={step.id}>
                       <div className="admin-list-copy">
                         <strong>{step.stepName}</strong>
-                        <span>状态：{step.status}</span>
-                        <span>{getStepMessage(step)}</span>
+                        <span>状态：{getStatusLabel(step.status)}</span>
+                        <span>开始：{formatDateTime(step.startedAt)}</span>
+                        <span>结束：{formatDateTime(step.finishedAt)}</span>
+                        <span>消息：{step.message ?? '暂无'}</span>
+                        <span>标准输出摘要：{step.stdoutExcerpt ?? '暂无'}</span>
+                        <span>标准错误摘要：{step.stderrExcerpt ?? '暂无'}</span>
+                        <span>解析结果：{getResolvedSignal(step)}</span>
                       </div>
                     </li>
                   ))}
@@ -229,7 +339,7 @@ export function ProvisionJobsScreen({
               )}
             </>
           ) : (
-            <p className="admin-empty">请选择一个任务查看步骤日志。</p>
+            <p className="admin-empty">请选择一个任务查看时间线、输出摘要和解析信息。</p>
           )}
         </article>
       </section>
