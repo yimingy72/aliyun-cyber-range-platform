@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { AdminApiError, fetchAdminBootstrap, fetchProvisionJobDetail } from '../../lib/admin-api';
@@ -124,6 +124,7 @@ export function ProvisionJobsScreen({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const detailRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -187,14 +188,25 @@ export function ProvisionJobsScreen({
       return;
     }
 
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
     setErrorMessage(null);
     setIsLoadingDetail(true);
 
     try {
       const detail = await fetchProvisionJobDetail(apiBaseUrl, session.token, jobId);
+
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setSelectedJob(detail.job as ExtendedProvisionJob);
       setSelectedSteps(detail.steps as ExtendedProvisionJobStep[]);
     } catch (error: unknown) {
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
+
       if (isUnauthorizedError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -203,7 +215,9 @@ export function ProvisionJobsScreen({
 
       setErrorMessage('任务详情加载失败，请稍后重试。');
     } finally {
-      setIsLoadingDetail(false);
+      if (detailRequestIdRef.current === requestId) {
+        setIsLoadingDetail(false);
+      }
     }
   }
 

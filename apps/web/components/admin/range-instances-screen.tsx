@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
@@ -126,11 +126,15 @@ function getTemplateLabel(template: AdminBootstrapData['rangeTemplates'][number]
 }
 
 function getActionLabels(instance: RangeInstance) {
-  if (instance.status === 'destroyed') {
+  if (instance.status === 'draft' || instance.status === 'create_failed' || instance.status === 'destroyed') {
     return ['create'] as Array<'create' | 'destroy'>;
   }
 
-  return ['create', 'destroy'] as Array<'create' | 'destroy'>;
+  if (instance.status === 'running' || instance.status === 'destroy_failed') {
+    return ['destroy'] as Array<'create' | 'destroy'>;
+  }
+
+  return [] as Array<'create' | 'destroy'>;
 }
 
 function getResolvedStepSummary(step: ExtendedProvisionJobStep) {
@@ -156,6 +160,7 @@ export function RangeInstancesScreen({
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
+  const detailRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -229,7 +234,20 @@ export function RangeInstancesScreen({
     const map = new Map<string, ExtendedProvisionJob>();
 
     for (const job of snapshot?.provisionJobs ?? []) {
-      map.set(job.rangeInstanceId, job as ExtendedProvisionJob);
+      const nextJob = job as ExtendedProvisionJob;
+      const currentJob = map.get(job.rangeInstanceId);
+
+      if (!currentJob) {
+        map.set(job.rangeInstanceId, nextJob);
+        continue;
+      }
+
+      const currentStartedAt = currentJob.startedAt ?? '';
+      const nextStartedAt = nextJob.startedAt ?? '';
+
+      if (nextStartedAt > currentStartedAt) {
+        map.set(job.rangeInstanceId, nextJob);
+      }
     }
 
     return map;
@@ -262,6 +280,8 @@ export function RangeInstancesScreen({
       return;
     }
 
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
     setSelectedInstanceId(instanceId);
     setSelectedDetail(null);
     setSelectedJobState({ job: null, steps: [] });
@@ -270,6 +290,11 @@ export function RangeInstancesScreen({
 
     try {
       const detail = (await fetchRangeInstanceDetail(apiBaseUrl, session.token, instanceId)) as ExtendedRangeInstanceDetail;
+
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setSelectedDetail(detail);
 
       if (!detail.lastJobId) {
@@ -278,11 +303,20 @@ export function RangeInstancesScreen({
       }
 
       const jobDetail = await fetchProvisionJobDetail(apiBaseUrl, session.token, detail.lastJobId);
+
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setSelectedJobState({
         job: jobDetail.job as ExtendedProvisionJob,
         steps: jobDetail.steps as ExtendedProvisionJobStep[],
       });
     } catch (error: unknown) {
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
+
       if (isUnauthorizedError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -291,7 +325,9 @@ export function RangeInstancesScreen({
 
       setErrorMessage('实例详情加载失败，请稍后重试。');
     } finally {
-      setIsLoadingDetail(false);
+      if (detailRequestIdRef.current === requestId) {
+        setIsLoadingDetail(false);
+      }
     }
   }
 
@@ -316,9 +352,14 @@ export function RangeInstancesScreen({
           rangeInstances: current.rangeInstances.map((instance) =>
             instance.id === selectedDetail.id ? { ...instance, lastJobId: job.id } : instance,
           ),
-          provisionJobs: [job, ...current.provisionJobs],
+          provisionJobs: [job, ...current.provisionJobs.filter((existingJob) => existingJob.id !== job.id)],
         };
       });
+
+      setSelectedJobState((current) => ({
+        ...current,
+        job,
+      }));
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
