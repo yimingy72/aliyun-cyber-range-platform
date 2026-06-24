@@ -165,7 +165,7 @@ describe('RangeInstancesScreen', () => {
         },
       ],
       provisionJobs: [
-        { id: 'job-new', rangeInstanceId: 'range-1', jobType: 'destroy', status: 'pending', triggeredBy: 'admin', startedAt: '2026-06-24T10:00:00.000Z' },
+        { id: 'job-new', rangeInstanceId: 'range-1', jobType: 'destroy', status: 'pending', triggeredBy: 'admin' },
         { id: 'job-old', rangeInstanceId: 'range-1', jobType: 'create', status: 'succeeded', triggeredBy: 'admin', startedAt: '2026-06-24T09:00:00.000Z' },
       ],
     });
@@ -205,5 +205,90 @@ describe('RangeInstancesScreen', () => {
 
     await screen.findByText(/最近任务：处理中/);
     expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'destroy', 'admin');
+  });
+
+  it('keeps the first job in backend order as latest even when pending jobs have no startedAt', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [
+        {
+          id: 'range-1',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'running',
+          lastJobId: 'job-pending',
+          errorSummary: null,
+          accessEntry: { publicIp: '47.1.1.1' },
+        },
+      ],
+      provisionJobs: [
+        { id: 'job-pending', rangeInstanceId: 'range-1', jobType: 'destroy', status: 'pending', triggeredBy: 'admin' },
+        { id: 'job-old', rangeInstanceId: 'range-1', jobType: 'create', status: 'succeeded', triggeredBy: 'admin', startedAt: '2026-06-24T09:00:00.000Z' },
+      ],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText(/最近任务：处理中/);
+    expect(screen.queryByText(/最近任务：成功/)).toBeNull();
+  });
+
+  it('clears old step logs after triggering a new pending job', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [
+        {
+          id: 'range-1',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'running',
+          lastJobId: 'job-old',
+          errorSummary: null,
+          accessEntry: { publicIp: '47.1.1.1' },
+        },
+      ],
+      provisionJobs: [
+        { id: 'job-old', rangeInstanceId: 'range-1', jobType: 'create', status: 'succeeded', triggeredBy: 'admin', startedAt: '2026-06-24T09:00:00.000Z' },
+      ],
+    });
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'running',
+      teamId: 'team-1',
+      competitionId: 'competition-1',
+      templateId: 'template-1',
+      lastJobId: 'job-old',
+      accessEntry: { publicIp: '47.1.1.1' },
+      resourceSummary: { vpcId: 'vpc-123' },
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({
+      job: { id: 'job-old', rangeInstanceId: 'range-1', jobType: 'create', status: 'succeeded', triggeredBy: 'admin' },
+      steps: [{ id: 'step-old', jobId: 'job-old', stepName: 'allocate-eip', status: 'succeeded', message: '旧步骤日志' }],
+    });
+    triggerRangeActionMock.mockResolvedValue({
+      id: 'job-new',
+      rangeInstanceId: 'range-1',
+      jobType: 'destroy',
+      status: 'pending',
+      triggeredBy: 'admin',
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('靶场实例');
+    fireEvent.click(screen.getByRole('button', { name: '查看实例 range-1' }));
+    await screen.findByText(/allocate-eip\s*\/\s*成功\s*\/\s*旧步骤日志/);
+
+    fireEvent.click(screen.getByRole('button', { name: '发起销毁' }));
+
+    await screen.findByText(/任务 ID：job-new/);
+    expect(screen.queryByText('旧步骤日志')).toBeNull();
+    expect(screen.getByText('暂无步骤日志。')).toBeTruthy();
   });
 });

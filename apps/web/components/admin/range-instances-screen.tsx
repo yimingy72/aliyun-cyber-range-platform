@@ -234,19 +234,8 @@ export function RangeInstancesScreen({
     const map = new Map<string, ExtendedProvisionJob>();
 
     for (const job of snapshot?.provisionJobs ?? []) {
-      const nextJob = job as ExtendedProvisionJob;
-      const currentJob = map.get(job.rangeInstanceId);
-
-      if (!currentJob) {
-        map.set(job.rangeInstanceId, nextJob);
-        continue;
-      }
-
-      const currentStartedAt = currentJob.startedAt ?? '';
-      const nextStartedAt = nextJob.startedAt ?? '';
-
-      if (nextStartedAt > currentStartedAt) {
-        map.set(job.rangeInstanceId, nextJob);
+      if (!map.has(job.rangeInstanceId)) {
+        map.set(job.rangeInstanceId, job as ExtendedProvisionJob);
       }
     }
 
@@ -357,8 +346,8 @@ export function RangeInstancesScreen({
       });
 
       setSelectedJobState((current) => ({
-        ...current,
         job,
+        steps: [],
       }));
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
