@@ -123,6 +123,82 @@ Expected: PASS，保存草稿会提交稳定的 `compiledSpec`。
 
 - [x] **Step 6: Commit**
 
+### Task 7: 企业靶场默认骨架生成器
+
+**Status:** 已完成首轮闭环
+
+**Files:**
+- Create: `apps/web/lib/template-topology-skeleton.ts`
+- Modify: `apps/web/components/admin/template-editor/template-editor-screen.tsx`
+- Modify: `apps/web/components/admin/template-editor/template-editor-screen.test.tsx`
+
+- [x] **Step 1: 先写失败测试，定义编辑器可一键生成企业靶场默认骨架**
+
+```tsx
+it('bootstraps an enterprise range skeleton into the editor', async () => {
+  render(<TemplateEditorScreen template={templateFixture} />);
+
+  fireEvent.click(screen.getByRole('button', { name: '生成企业骨架' }));
+
+  expect(screen.getByRole('button', { name: /DMZ 交换机/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /办公网主机/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /数据库主机/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /公网出口路由/ })).toBeTruthy();
+});
+```
+
+- [x] **Step 2: 运行测试，确认先失败**
+
+Run: `pnpm --filter @aliyun-cyber-range/web test -- components/admin/template-editor/template-editor-screen.test.tsx`
+
+Expected: FAIL，编辑器尚无“一键生成企业骨架”入口。
+
+- [x] **Step 3: 新建默认骨架生成器，返回标准企业靶场节点集**
+
+```ts
+export function createEnterpriseRangeSkeleton(): TemplateNode[] {
+  return [
+    { id: 'switch-dmz', kind: 'switch', label: 'DMZ 交换机', zoneKey: 'dmz', cidr: '10.70.10.0/24', purpose: 'public-entry', enableNat: false },
+    { id: 'switch-office', kind: 'switch', label: '办公区交换机', zoneKey: 'office', cidr: '10.70.20.0/24', purpose: 'user-workstations', enableNat: false },
+    { id: 'switch-server', kind: 'switch', label: '服务器区交换机', zoneKey: 'server', cidr: '10.70.30.0/24', purpose: 'application-servers', enableNat: false },
+    { id: 'host-dmz-entry', kind: 'host', label: 'DMZ 入口主机', zoneKey: 'dmz', role: 'entry', privateIp: '10.70.10.10', exposePublic: true, image: 'aliyun_linux_3_x64_20G_alibase' },
+    { id: 'host-office-client', kind: 'host', label: '办公网主机', zoneKey: 'office', role: 'workstation', privateIp: '10.70.20.10', exposePublic: false, image: 'aliyun_linux_3_x64_20G_alibase' },
+    { id: 'host-server-db', kind: 'host', label: '数据库主机', zoneKey: 'server', role: 'db', privateIp: '10.70.30.20', exposePublic: false, image: 'aliyun_linux_3_x64_20G_alibase' },
+    { id: 'router-egress', kind: 'router', label: '公网出口路由', routeRole: 'egress', egressType: 'internet', bindEip: true },
+  ];
+}
+```
+
+- [x] **Step 4: 在编辑器工具栏加入“生成企业骨架”，注入默认节点**
+
+```tsx
+<button type="button" onClick={handleBootstrapEnterpriseSkeleton}>生成企业骨架</button>
+```
+
+```tsx
+function handleBootstrapEnterpriseSkeleton() {
+  const nextNodes = createEnterpriseRangeSkeleton();
+  setNodes(nextNodes);
+  setSelectedNodeId(nextNodes[0]?.id ?? null);
+  setStatusMessage('已生成企业靶场默认骨架');
+}
+```
+
+- [x] **Step 5: 重新运行测试，确认转绿**
+
+Run: `pnpm --filter @aliyun-cyber-range/web test -- components/admin/template-editor/template-editor-screen.test.tsx`
+
+Expected: PASS，编辑器可一键注入标准企业靶场默认拓扑节点。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/web/lib/template-topology-skeleton.ts \
+  apps/web/components/admin/template-editor/template-editor-screen.tsx \
+  apps/web/components/admin/template-editor/template-editor-screen.test.tsx
+git commit -m "feat: add enterprise topology skeleton bootstrap"
+```
+
 ```bash
 git add apps/web/lib/template-compiler.ts \
   apps/web/components/admin/template-editor/template-editor-screen.tsx \

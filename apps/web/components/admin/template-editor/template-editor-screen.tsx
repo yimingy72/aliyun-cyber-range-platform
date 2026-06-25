@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { fetchAdminBootstrap, publishRangeTemplate, updateRangeTemplate } from '../../../lib/admin-api';
 import type { RangeTemplate, RangeTemplateTopologySpec } from '../../../lib/admin-types';
 import { compileTopologyGraph } from '../../../lib/template-compiler';
+import { createEnterpriseRangeSkeleton } from '../../../lib/template-topology-skeleton';
 import { useAdminSession } from '../use-admin-session';
 import { TemplateCanvas } from './template-canvas';
 import { TemplateNodePalette } from './template-node-palette';
@@ -164,6 +165,13 @@ export function TemplateEditorScreen({
     setNodes((previous) => previous.map((node) => (node.id === nodeId ? nextNode : node)));
   }
 
+  function handleBootstrapEnterpriseSkeleton() {
+    const nextNodes = createEnterpriseRangeSkeleton();
+    setNodes(nextNodes);
+    setSelectedNodeId(nextNodes[0]?.id ?? null);
+    setStatusMessage('已生成企业靶场默认骨架');
+  }
+
   async function handleSaveDraft() {
     if (!template || !session.token) {
       return;
@@ -262,6 +270,9 @@ export function TemplateEditorScreen({
           </p>
         </div>
         <div className="admin-inline-actions">
+          <button type="button" disabled={isSubmitting} onClick={handleBootstrapEnterpriseSkeleton}>
+            生成企业骨架
+          </button>
           <button type="button" disabled={isSubmitting} onClick={() => void handleSaveDraft()}>
             保存草稿
           </button>

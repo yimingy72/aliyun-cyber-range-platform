@@ -1,0 +1,71 @@
+import type { TemplateNode } from '../components/admin/template-editor/template-property-panel';
+
+export function createEnterpriseRangeSkeleton(): TemplateNode[] {
+  return [
+    {
+      id: 'switch-dmz',
+      kind: 'switch',
+      label: 'DMZ 交换机',
+      zoneKey: 'dmz',
+      cidr: '10.70.10.0/24',
+      purpose: 'public-entry',
+      enableNat: false,
+    },
+    {
+      id: 'switch-office',
+      kind: 'switch',
+      label: '办公区交换机',
+      zoneKey: 'office',
+      cidr: '10.70.20.0/24',
+      purpose: 'user-workstations',
+      enableNat: false,
+    },
+    {
+      id: 'switch-server',
+      kind: 'switch',
+      label: '服务器区交换机',
+      zoneKey: 'server',
+      cidr: '10.70.30.0/24',
+      purpose: 'application-servers',
+      enableNat: false,
+    },
+    {
+      id: 'host-dmz-entry',
+      kind: 'host',
+      label: 'DMZ 入口主机',
+      zoneKey: 'dmz',
+      role: 'entry',
+      privateIp: '10.70.10.10',
+      exposePublic: true,
+      image: 'aliyun_linux_3_x64_20G_alibase',
+    },
+    {
+      id: 'host-office-client',
+      kind: 'host',
+      label: '办公网主机',
+      zoneKey: 'office',
+      role: 'workstation',
+      privateIp: '10.70.20.10',
+      exposePublic: false,
+      image: 'aliyun_linux_3_x64_20G_alibase',
+    },
+    {
+      id: 'host-server-db',
+      kind: 'host',
+      label: '数据库主机',
+      zoneKey: 'server',
+      role: 'db',
+      privateIp: '10.70.30.20',
+      exposePublic: false,
+      image: 'aliyun_linux_3_x64_20G_alibase',
+    },
+    {
+      id: 'router-egress',
+      kind: 'router',
+      label: '公网出口路由',
+      routeRole: 'egress',
+      egressType: 'internet',
+      bindEip: true,
+    },
+  ];
+}

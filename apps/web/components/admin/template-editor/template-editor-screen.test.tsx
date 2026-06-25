@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { updateRangeTemplateMock, publishRangeTemplateMock } = vi.hoisted(() => ({
   updateRangeTemplateMock: vi.fn(),
@@ -24,6 +24,12 @@ vi.mock('../use-admin-session', () => ({
     logout: () => undefined,
   }),
 }));
+
+afterEach(() => {
+  cleanup();
+  updateRangeTemplateMock.mockReset();
+  publishRangeTemplateMock.mockReset();
+});
 
 describe('TemplateEditorScreen', () => {
   it('renders a topology editor workspace with palette, canvas, and property panel', () => {
@@ -179,6 +185,7 @@ describe('TemplateEditorScreen', () => {
   });
 
   it('compiles topology graph into compiledSpec when saving draft', async () => {
+    updateRangeTemplateMock.mockClear();
     updateRangeTemplateMock.mockResolvedValue({
       id: 'template-1',
       name: '企业攻防靶场',
@@ -226,27 +233,63 @@ describe('TemplateEditorScreen', () => {
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: '主机 ECS / 跳板机 / 域控 / 数据库' })[0]!);
+    fireEvent.change(screen.getByLabelText('主机名称'), { target: { value: '边界主机' } });
+    fireEvent.change(screen.getByLabelText('所属区域'), { target: { value: 'dmz-a' } });
+    fireEvent.change(screen.getByLabelText('主机角色'), { target: { value: 'entry' } });
+    fireEvent.change(screen.getByLabelText('私网 IP'), { target: { value: '10.0.1.10' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'aliyun_linux_3_x64_20G_alibase' } });
     fireEvent.click(screen.getAllByRole('button', { name: '保存草稿' })[0]!);
 
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'template-1',
-        expect.objectContaining({
-          compiledSpec: expect.objectContaining({
-            schemaVersion: '1.0.0',
-            resources: expect.arrayContaining([
-              expect.objectContaining({ id: 'host-1', type: 'host' }),
-            ]),
-          }),
-        }),
-      );
+      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    const latestPayload = updateRangeTemplateMock.mock.calls.at(-1)?.[3];
+    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
     expect(latestPayload?.compiledSpec).toBeTruthy();
     expect(latestPayload?.compiledSpec).not.toHaveProperty('topologySpec');
+    expect(updateRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1', {
+      topologyGraph: expect.any(Object),
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        resources: [
+          {
+            id: 'host-1',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: '边界主机',
+              zoneKey: 'dmz-a',
+              role: 'entry',
+              privateIp: '10.0.1.10',
+              exposePublic: true,
+              image: 'aliyun_linux_3_x64_20G_alibase',
+            },
+          },
+        ],
+      },
+      topologySpec: expect.any(Object),
+    });
+    expect(latestPayload?.compiledSpec?.resources[0]).toEqual({
+      id: 'host-1',
+      type: 'host',
+      provider: 'alibaba_cloud',
+      config: {
+        label: '边界主机',
+        zoneKey: 'dmz-a',
+        role: 'entry',
+        privateIp: '10.0.1.10',
+        exposePublic: true,
+        image: 'aliyun_linux_3_x64_20G_alibase',
+      },
+    });
+    expect(Object.keys(latestPayload?.compiledSpec?.resources[0]?.config ?? {}).sort()).toEqual([
+      'exposePublic',
+      'image',
+      'label',
+      'privateIp',
+      'role',
+      'zoneKey',
+    ]);
   });
 
   it('publishes the template and refreshes published and draft version status', async () => {
@@ -308,5 +351,40 @@ describe('TemplateEditorScreen', () => {
 
     expect(screen.getByText('模板已发布，并已生成新的草稿版本')).toBeTruthy();
     expect(screen.getByText('已发布 v1.2.0 / 草稿 v1.2.0')).toBeTruthy();
+  });
+
+  it('bootstraps an enterprise range skeleton into the editor', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '生成企业骨架' }));
+
+    expect(screen.getByRole('button', { name: /DMZ 交换机/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /办公网主机/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /数据库主机/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /公网出口路由/ })).toBeTruthy();
+    expect(screen.getByText('已生成企业靶场默认骨架')).toBeTruthy();
   });
 });
