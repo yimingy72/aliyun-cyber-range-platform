@@ -11,6 +11,7 @@ import {
   ProvisionJobStepLogRecord,
   RangeInstanceRecord,
   RangeTemplateRecord,
+  RangeTemplateVersionRecord,
   TeamRecord,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
@@ -24,6 +25,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const competitions: CompetitionRecord[] = [];
   const teams: TeamRecord[] = [];
   const rangeTemplates: RangeTemplateRecord[] = [];
+  const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
   const rangeInstances: RangeInstanceRecord[] = [];
   const provisionJobs: ProvisionJobRecord[] = [];
   const provisionJobStepLogs: ProvisionJobStepLogRecord[] = [];
@@ -34,6 +36,15 @@ export function createMemoryAdminRepository(): AdminRepository {
   const now = () => new Date();
   const clone = <T extends Record<string, unknown>>(record: T): T => ({ ...record });
   const cloneList = <T extends Record<string, unknown>>(records: T[]): T[] => records.map((record) => clone(record));
+  const assignIfDefined = <T extends Record<string, unknown>, K extends keyof T>(
+    target: T,
+    key: K,
+    value: T[K] | undefined,
+  ) => {
+    if (value !== undefined) {
+      target[key] = value;
+    }
+  };
 
   return {
     async listCompetitions() {
@@ -136,6 +147,22 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(rangeTemplates);
     },
     async createRangeTemplate(input: CreateRangeTemplateInput) {
+      const draftVersion: RangeTemplateVersionRecord = {
+        id: nextId(),
+        templateId: '',
+        version: input.version,
+        status: 'draft',
+        modulePathOrRef: input.modulePathOrRef,
+        topologySpec: input.topologySpec,
+        topologyGraph: input.topologyGraph,
+        compiledSpec: input.compiledSpec,
+        variableSchema: input.variableSchema ?? {},
+        outputSchema: input.outputSchema ?? {},
+        defaultNetworkPolicy: input.defaultNetworkPolicy ?? null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+
       const record: RangeTemplateRecord = {
         id: nextId(),
         name: input.name,
@@ -145,13 +172,25 @@ export function createMemoryAdminRepository(): AdminRepository {
         iacType: input.iacType ?? 'opentofu',
         modulePathOrRef: input.modulePathOrRef,
         topologySpec: input.topologySpec,
+        topologyGraph: input.topologyGraph,
+        compiledSpec: input.compiledSpec,
         variableSchema: input.variableSchema ?? {},
         outputSchema: input.outputSchema ?? {},
         defaultNetworkPolicy: input.defaultNetworkPolicy ?? null,
+        currentDraftVersionId: draftVersion.id,
+        currentPublishedVersionId: null,
+        currentDraftVersion: null,
+        currentPublishedVersion: null,
+        versions: [],
         createdAt: now(),
         updatedAt: now(),
       };
 
+      draftVersion.templateId = record.id;
+      record.currentDraftVersion = clone(draftVersion);
+      record.versions = [clone(draftVersion)];
+
+      rangeTemplateVersions.unshift(draftVersion);
       rangeTemplates.unshift(record);
 
       return clone(record);
@@ -163,18 +202,68 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async updateRangeTemplate(id: string, input: UpdateRangeTemplateInput) {
       const record = rangeTemplates.find((template) => template.id === id)!;
+      const draftVersion = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
+
+      assignIfDefined(record, 'name', input.name);
+      assignIfDefined(record, 'slug', input.slug);
+      assignIfDefined(record, 'version', input.version);
+      assignIfDefined(record, 'cloudProvider', input.cloudProvider);
+      assignIfDefined(record, 'iacType', input.iacType);
+      assignIfDefined(record, 'modulePathOrRef', input.modulePathOrRef);
+      assignIfDefined(record, 'topologySpec', input.topologySpec);
+      assignIfDefined(record, 'topologyGraph', input.topologyGraph);
+      assignIfDefined(record, 'compiledSpec', input.compiledSpec);
+      assignIfDefined(record, 'variableSchema', input.variableSchema);
+      assignIfDefined(record, 'outputSchema', input.outputSchema);
+      assignIfDefined(record, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
+      record.updatedAt = now();
+
+      assignIfDefined(draftVersion, 'version', input.version);
+      assignIfDefined(draftVersion, 'modulePathOrRef', input.modulePathOrRef);
+      assignIfDefined(draftVersion, 'topologySpec', input.topologySpec);
+      assignIfDefined(draftVersion, 'topologyGraph', input.topologyGraph);
+      assignIfDefined(draftVersion, 'compiledSpec', input.compiledSpec);
+      assignIfDefined(draftVersion, 'variableSchema', input.variableSchema);
+      assignIfDefined(draftVersion, 'outputSchema', input.outputSchema);
+      assignIfDefined(draftVersion, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
+      draftVersion.updatedAt = now();
+
+      record.currentDraftVersion = clone(draftVersion);
+      record.versions = cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id));
+
+      return clone(record);
+    },
+    async publishRangeTemplate(id: string) {
+      const record = rangeTemplates.find((template) => template.id === id)!;
+      const currentDraft = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
+
+      currentDraft.status = 'published';
+      currentDraft.updatedAt = now();
+
+      const nextDraft: RangeTemplateVersionRecord = {
+        ...clone(currentDraft),
+        id: nextId(),
+        status: 'draft',
+        createdAt: now(),
+        updatedAt: now(),
+      };
+
+      rangeTemplateVersions.unshift(nextDraft);
 
       Object.assign(record, {
-        name: input.name ?? record.name,
-        slug: input.slug ?? record.slug,
-        version: input.version ?? record.version,
-        cloudProvider: input.cloudProvider ?? record.cloudProvider,
-        iacType: input.iacType ?? record.iacType,
-        modulePathOrRef: input.modulePathOrRef ?? record.modulePathOrRef,
-        topologySpec: input.topologySpec ?? record.topologySpec,
-        variableSchema: input.variableSchema ?? record.variableSchema,
-        outputSchema: input.outputSchema ?? record.outputSchema,
-        defaultNetworkPolicy: input.defaultNetworkPolicy ?? record.defaultNetworkPolicy,
+        version: currentDraft.version,
+        modulePathOrRef: currentDraft.modulePathOrRef,
+        topologySpec: currentDraft.topologySpec,
+        topologyGraph: currentDraft.topologyGraph,
+        compiledSpec: currentDraft.compiledSpec,
+        variableSchema: currentDraft.variableSchema,
+        outputSchema: currentDraft.outputSchema,
+        defaultNetworkPolicy: currentDraft.defaultNetworkPolicy,
+        currentPublishedVersionId: currentDraft.id,
+        currentDraftVersionId: nextDraft.id,
+        currentPublishedVersion: clone(currentDraft),
+        currentDraftVersion: clone(nextDraft),
+        versions: cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id)),
         updatedAt: now(),
       });
 
@@ -185,6 +274,12 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       if (index >= 0) {
         rangeTemplates.splice(index, 1);
+      }
+
+      for (let i = rangeTemplateVersions.length - 1; i >= 0; i -= 1) {
+        if (rangeTemplateVersions[i].templateId === id) {
+          rangeTemplateVersions.splice(i, 1);
+        }
       }
     },
     async listRangeInstances() {

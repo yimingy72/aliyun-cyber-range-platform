@@ -24,6 +24,12 @@ enum IacType {
   terraform
 }
 
+enum RangeTemplateVersionStatus {
+  draft
+  published
+  archived
+}
+
 enum RangeInstanceStatus {
   draft
   pending_create
@@ -100,15 +106,44 @@ model RangeTemplate {
   iacType                  IacType         @default(opentofu)
   modulePathOrRef          String
   topologySpec             Json?
+  topologyGraph            Json?
+  compiledSpec             Json?
   variableSchema           Json
   outputSchema             Json
   defaultNetworkPolicy     Json?
+  currentDraftVersionId    String?         @unique
+  currentPublishedVersionId String?        @unique
   createdAt                DateTime        @default(now())
   updatedAt                DateTime        @updatedAt
   competitionsAsDefault    Competition[]   @relation("CompetitionDefaultTemplate")
   rangeInstances           RangeInstance[]
+  versions                 RangeTemplateVersion[]
+  currentDraftVersion      RangeTemplateVersion? @relation("RangeTemplateCurrentDraftVersion", fields: [currentDraftVersionId], references: [id], onDelete: SetNull)
+  currentPublishedVersion  RangeTemplateVersion? @relation("RangeTemplateCurrentPublishedVersion", fields: [currentPublishedVersionId], references: [id], onDelete: SetNull)
 
   @@unique([slug, version])
+}
+
+model RangeTemplateVersion {
+  id                   String                     @id @default(cuid())
+  templateId           String
+  version              String
+  status               RangeTemplateVersionStatus @default(draft)
+  modulePathOrRef      String
+  topologySpec         Json?
+  topologyGraph        Json?
+  compiledSpec         Json?
+  variableSchema       Json
+  outputSchema         Json
+  defaultNetworkPolicy Json?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  template             RangeTemplate              @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  currentDraftFor      RangeTemplate?             @relation("RangeTemplateCurrentDraftVersion")
+  currentPublishedFor  RangeTemplate?             @relation("RangeTemplateCurrentPublishedVersion")
+
+  @@index([templateId])
+  @@index([status])
 }
 
 model RangeInstance {

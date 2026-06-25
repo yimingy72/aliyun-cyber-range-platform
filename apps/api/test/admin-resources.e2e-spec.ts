@@ -285,11 +285,77 @@ describe('Admin resources', () => {
       })
       .expect(201);
 
-    expect(response.body.currentDraftVersion).toEqual(
+    expect(response.body).toEqual(
       expect.objectContaining({
         topologyGraph: expect.objectContaining({ schemaVersion: '1.0.0' }),
         compiledSpec: expect.objectContaining({ schemaVersion: '1.0.0' }),
+        currentDraftVersion: expect.objectContaining({
+          topologyGraph: expect.objectContaining({ schemaVersion: '1.0.0' }),
+          compiledSpec: expect.objectContaining({ schemaVersion: '1.0.0' }),
+        }),
       }),
+    );
+  });
+
+  it('rejects null topologyGraph on template creation', async () => {
+    await request(app.getHttpServer())
+      .post('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'Invalid Null Graph Template',
+        slug: 'invalid-null-graph-template',
+        version: 'v1',
+        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+        topologySpec: fixtureTopologySpec,
+        topologyGraph: null,
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toContain('topologyGraph must be an object');
+      });
+
+    const listResponse = await request(app.getHttpServer())
+      .get('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(listResponse.body).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: 'invalid-null-graph-template',
+        }),
+      ]),
+    );
+  });
+
+  it('rejects array compiledSpec on template creation', async () => {
+    await request(app.getHttpServer())
+      .post('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'Invalid Array Compiled Template',
+        slug: 'invalid-array-compiled-template',
+        version: 'v1',
+        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+        topologySpec: fixtureTopologySpec,
+        compiledSpec: [],
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toContain('compiledSpec must be an object');
+      });
+
+    const listResponse = await request(app.getHttpServer())
+      .get('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(listResponse.body).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: 'invalid-array-compiled-template',
+        }),
+      ]),
     );
   });
 
@@ -371,6 +437,19 @@ describe('Admin resources', () => {
           ],
           edges: [],
         },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          resources: [
+            {
+              id: 'ecs-entry',
+              type: 'alicloud_instance',
+              config: {
+                zoneKey: 'dmz',
+                privateIp: '10.70.10.10',
+              },
+            },
+          ],
+        },
         topologySpec: {
           vpcCidr: '10.70.0.0/16',
           networkZones: [
@@ -417,6 +496,22 @@ describe('Admin resources', () => {
       expect.objectContaining({
         id: templateId,
         version: 'v1.1.0',
+        topologyGraph: expect.objectContaining({
+          nodes: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'host-1',
+              label: '边界主机',
+            }),
+          ]),
+        }),
+        compiledSpec: expect.objectContaining({
+          resources: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'ecs-entry',
+              type: 'alicloud_instance',
+            }),
+          ]),
+        }),
         currentDraftVersion: expect.objectContaining({
           version: 'v1.1.0',
           topologyGraph: expect.objectContaining({
@@ -440,6 +535,61 @@ describe('Admin resources', () => {
           version: 'v1',
         }),
       }),
+    );
+  });
+
+  it('rejects invalid topologyGraph and compiledSpec on template update', async () => {
+    const originalTemplateList = await request(app.getHttpServer())
+      .get('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    const originalTemplate = originalTemplateList.body.find(
+      (template: { id: string }) => template.id === templateId,
+    );
+
+    expect(originalTemplate).toBeDefined();
+
+    await request(app.getHttpServer())
+      .patch(`/admin/range-templates/${templateId}`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        topologyGraph: [],
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toContain('topologyGraph must be an object');
+      });
+
+    await request(app.getHttpServer())
+      .patch(`/admin/range-templates/${templateId}`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        compiledSpec: null,
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toContain('compiledSpec must be an object');
+      });
+
+    const afterInvalidUpdateList = await request(app.getHttpServer())
+      .get('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    const afterInvalidUpdate = afterInvalidUpdateList.body.find(
+      (template: { id: string }) => template.id === templateId,
+    );
+
+    expect(afterInvalidUpdate).toBeDefined();
+
+    expect(afterInvalidUpdate.topologyGraph).toEqual(originalTemplate.topologyGraph);
+    expect(afterInvalidUpdate.compiledSpec).toEqual(originalTemplate.compiledSpec);
+    expect(afterInvalidUpdate.currentDraftVersion.topologyGraph).toEqual(
+      originalTemplate.currentDraftVersion.topologyGraph,
+    );
+    expect(afterInvalidUpdate.currentDraftVersion.compiledSpec).toEqual(
+      originalTemplate.currentDraftVersion.compiledSpec,
     );
   });
 

@@ -139,6 +139,11 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async listRangeTemplates(): Promise<RangeTemplateRecord[]> {
     return this.prisma.rangeTemplate.findMany({
+      include: {
+        currentDraftVersion: true,
+        currentPublishedVersion: true,
+        versions: true,
+      },
       orderBy: {
         createdAt: 'desc',
       },
@@ -150,48 +155,222 @@ export class PrismaAdminRepository implements AdminRepository {
       where: {
         id,
       },
+      include: {
+        currentDraftVersion: true,
+        currentPublishedVersion: true,
+        versions: true,
+      },
     }) as Promise<RangeTemplateRecord | null>;
   }
 
   async createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord> {
-    return this.prisma.rangeTemplate.create({
-      data: {
-        name: input.name,
-        slug: input.slug,
-        version: input.version,
-        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
-        iacType: input.iacType ?? 'opentofu',
-        modulePathOrRef: input.modulePathOrRef,
-        topologySpec: input.topologySpec as Prisma.InputJsonValue,
-        variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
-        outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
-        ...(input.defaultNetworkPolicy
-          ? {
-              defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
-            }
-          : {}),
-      },
-    }) as Promise<RangeTemplateRecord>;
+    return this.prisma.$transaction(async (tx) => {
+      const template = await tx.rangeTemplate.create({
+        data: {
+          name: input.name,
+          slug: input.slug,
+          version: input.version,
+          cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+          iacType: input.iacType ?? 'opentofu',
+          modulePathOrRef: input.modulePathOrRef,
+          topologySpec: input.topologySpec as Prisma.InputJsonValue,
+          topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
+          outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
+          ...(input.defaultNetworkPolicy
+            ? {
+                defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
+              }
+            : {}),
+        },
+      });
+
+      const draftVersion = await tx.rangeTemplateVersion.create({
+        data: {
+          templateId: template.id,
+          version: input.version,
+          status: 'draft',
+          modulePathOrRef: input.modulePathOrRef,
+          topologySpec: input.topologySpec as Prisma.InputJsonValue,
+          topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
+          outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
+          ...(input.defaultNetworkPolicy
+            ? {
+                defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
+              }
+            : {}),
+        },
+      });
+
+      await tx.rangeTemplate.update({
+        where: { id: template.id },
+        data: {
+          currentDraftVersionId: draftVersion.id,
+        },
+      });
+
+      return tx.rangeTemplate.findUnique({
+        where: { id: template.id },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+          versions: true,
+        },
+      }) as Promise<RangeTemplateRecord>;
+    });
   }
 
   async updateRangeTemplate(id: string, input: UpdateRangeTemplateInput): Promise<RangeTemplateRecord> {
-    return this.prisma.rangeTemplate.update({
-      where: {
-        id,
-      },
-      data: {
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.slug ? { slug: input.slug } : {}),
-        ...(input.version ? { version: input.version } : {}),
-        ...(input.cloudProvider ? { cloudProvider: input.cloudProvider } : {}),
-        ...(input.iacType ? { iacType: input.iacType } : {}),
-        ...(input.modulePathOrRef ? { modulePathOrRef: input.modulePathOrRef } : {}),
-        ...(input.topologySpec ? { topologySpec: input.topologySpec as Prisma.InputJsonValue } : {}),
-        ...(input.variableSchema ? { variableSchema: input.variableSchema as Prisma.InputJsonValue } : {}),
-        ...(input.outputSchema ? { outputSchema: input.outputSchema as Prisma.InputJsonValue } : {}),
-        ...(input.defaultNetworkPolicy ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue } : {}),
-      },
-    }) as Promise<RangeTemplateRecord>;
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.rangeTemplate.findUniqueOrThrow({
+        where: { id },
+        include: { currentDraftVersion: true },
+      });
+
+      if (existing.currentDraftVersionId) {
+        await tx.rangeTemplateVersion.update({
+          where: { id: existing.currentDraftVersionId },
+          data: {
+            ...(input.version !== undefined ? { version: input.version } : {}),
+            ...(input.modulePathOrRef !== undefined ? { modulePathOrRef: input.modulePathOrRef } : {}),
+            ...(input.topologySpec !== undefined ? { topologySpec: input.topologySpec as Prisma.InputJsonValue } : {}),
+            ...(input.topologyGraph !== undefined
+              ? {
+                  topologyGraph: input.topologyGraph as
+                    | Prisma.InputJsonValue
+                    | Prisma.NullableJsonNullValueInput,
+                }
+              : {}),
+            ...(input.compiledSpec !== undefined
+              ? {
+                  compiledSpec: input.compiledSpec as
+                    | Prisma.InputJsonValue
+                    | Prisma.NullableJsonNullValueInput,
+                }
+              : {}),
+            ...(input.variableSchema !== undefined
+              ? { variableSchema: input.variableSchema as Prisma.InputJsonValue }
+              : {}),
+            ...(input.outputSchema !== undefined ? { outputSchema: input.outputSchema as Prisma.InputJsonValue } : {}),
+            ...(input.defaultNetworkPolicy !== undefined
+              ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
+              : {}),
+          },
+        });
+      }
+
+      await tx.rangeTemplate.update({
+        where: { id },
+        data: {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.slug !== undefined ? { slug: input.slug } : {}),
+          ...(input.version !== undefined ? { version: input.version } : {}),
+          ...(input.cloudProvider !== undefined ? { cloudProvider: input.cloudProvider } : {}),
+          ...(input.iacType !== undefined ? { iacType: input.iacType } : {}),
+          ...(input.modulePathOrRef !== undefined ? { modulePathOrRef: input.modulePathOrRef } : {}),
+          ...(input.topologySpec !== undefined ? { topologySpec: input.topologySpec as Prisma.InputJsonValue } : {}),
+          ...(input.topologyGraph !== undefined
+            ? {
+                topologyGraph: input.topologyGraph as
+                  | Prisma.InputJsonValue
+                  | Prisma.NullableJsonNullValueInput,
+              }
+            : {}),
+          ...(input.compiledSpec !== undefined
+            ? {
+                compiledSpec: input.compiledSpec as
+                  | Prisma.InputJsonValue
+                  | Prisma.NullableJsonNullValueInput,
+              }
+            : {}),
+          ...(input.variableSchema !== undefined ? { variableSchema: input.variableSchema as Prisma.InputJsonValue } : {}),
+          ...(input.outputSchema !== undefined ? { outputSchema: input.outputSchema as Prisma.InputJsonValue } : {}),
+          ...(input.defaultNetworkPolicy !== undefined
+            ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
+            : {}),
+        },
+      });
+
+      return tx.rangeTemplate.findUnique({
+        where: { id },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+          versions: true,
+        },
+      }) as Promise<RangeTemplateRecord>;
+    });
+  }
+
+  async publishRangeTemplate(id: string): Promise<RangeTemplateRecord> {
+    return this.prisma.$transaction(async (tx) => {
+      const template = await tx.rangeTemplate.findUniqueOrThrow({
+        where: { id },
+        include: { currentDraftVersion: true },
+      });
+
+      if (!template.currentDraftVersion) {
+        throw new Error('Current draft version not found');
+      }
+
+      const publishedVersion = await tx.rangeTemplateVersion.update({
+        where: { id: template.currentDraftVersion.id },
+        data: { status: 'published' },
+      });
+
+      const nextDraft = await tx.rangeTemplateVersion.create({
+        data: {
+          templateId: template.id,
+          version: publishedVersion.version,
+          status: 'draft',
+          modulePathOrRef: publishedVersion.modulePathOrRef,
+          topologySpec: publishedVersion.topologySpec as Prisma.InputJsonValue,
+          topologyGraph: publishedVersion.topologyGraph as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          compiledSpec: publishedVersion.compiledSpec as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          variableSchema: publishedVersion.variableSchema as Prisma.InputJsonValue,
+          outputSchema: publishedVersion.outputSchema as Prisma.InputJsonValue,
+          defaultNetworkPolicy: publishedVersion.defaultNetworkPolicy as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+        },
+      });
+
+      await tx.rangeTemplate.update({
+        where: { id: template.id },
+        data: {
+          version: publishedVersion.version,
+          modulePathOrRef: publishedVersion.modulePathOrRef,
+          topologySpec: publishedVersion.topologySpec as Prisma.InputJsonValue,
+          topologyGraph: publishedVersion.topologyGraph as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          compiledSpec: publishedVersion.compiledSpec as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          variableSchema: publishedVersion.variableSchema as Prisma.InputJsonValue,
+          outputSchema: publishedVersion.outputSchema as Prisma.InputJsonValue,
+          defaultNetworkPolicy: publishedVersion.defaultNetworkPolicy as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          currentPublishedVersionId: publishedVersion.id,
+          currentDraftVersionId: nextDraft.id,
+        },
+      });
+
+      return tx.rangeTemplate.findUnique({
+        where: { id: template.id },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+          versions: true,
+        },
+      }) as Promise<RangeTemplateRecord>;
+    });
   }
 
   async deleteRangeTemplate(id: string): Promise<void> {
