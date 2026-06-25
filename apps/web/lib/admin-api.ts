@@ -19,6 +19,7 @@ export class AdminApiError extends Error {
   constructor(
     readonly status: number,
     message = `Admin API request failed with status ${status}`,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = 'AdminApiError';
@@ -34,7 +35,23 @@ function createAdminHeaders(token: string) {
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new AdminApiError(response.status);
+    let details: unknown;
+
+    try {
+      details = await response.json();
+    } catch {
+      details = null;
+    }
+
+    const message =
+      details &&
+      typeof details === 'object' &&
+      'message' in details &&
+      typeof (details as { message?: unknown }).message === 'string'
+        ? (details as { message: string }).message
+        : `Admin API request failed with status ${response.status}`;
+
+    throw new AdminApiError(response.status, message, details);
   }
 
   return (await response.json()) as T;
@@ -98,7 +115,7 @@ export async function triggerRangeAction(
   apiBaseUrl: string,
   token: string,
   id: string,
-  action: 'create' | 'destroy',
+  action: 'create' | 'destroy' | 'retry',
   triggeredBy: string,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/range-instances/${id}/${action}`, {
@@ -207,6 +224,15 @@ export async function updateRangeTemplate(
     method: 'PATCH',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
+  });
+
+  return readJson<RangeTemplate>(response);
+}
+
+export async function publishRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/range-templates/${id}/publish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
   });
 
   return readJson<RangeTemplate>(response);

@@ -15,9 +15,15 @@ const {
   triggerRangeActionMock: vi.fn(),
 }));
 
+const { pushMock, replaceMock } = vi.hoisted(() => ({
+  pushMock: vi.fn(),
+  replaceMock: vi.fn(),
+}));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
-    replace: vi.fn(),
+    push: pushMock,
+    replace: replaceMock,
   }),
 }));
 
@@ -47,6 +53,8 @@ describe('RangeInstancesScreen', () => {
     fetchRangeInstanceDetailMock.mockReset();
     fetchProvisionJobDetailMock.mockReset();
     triggerRangeActionMock.mockReset();
+    pushMock.mockReset();
+    replaceMock.mockReset();
   });
 
   afterEach(() => {
@@ -54,11 +62,19 @@ describe('RangeInstancesScreen', () => {
     cleanup();
   });
 
-  it('creates a draft range instance from the admin page', async () => {
+  it('creates and immediately starts a range instance from the admin page', async () => {
     fetchAdminBootstrapMock.mockResolvedValue({
       competitions: [{ id: 'competition-1', name: '总决赛' }],
       teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
-      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeTemplates: [
+        {
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1',
+          currentPublishedVersionId: 'published-1',
+        },
+      ],
       rangeInstances: [],
       provisionJobs: [],
     });
@@ -74,10 +90,39 @@ describe('RangeInstancesScreen', () => {
       resourceSummary: null,
       lastJobId: null,
     });
+    triggerRangeActionMock.mockResolvedValue({
+      id: 'job-1',
+      rangeInstanceId: 'range-1',
+      jobType: 'create',
+      status: 'pending',
+      triggeredBy: 'admin',
+    });
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      competitionId: 'competition-1',
+      teamId: 'team-1',
+      templateId: 'template-1',
+      status: 'pending_create',
+      errorSummary: null,
+      expiresAt: null,
+      accessEntry: null,
+      resourceSummary: null,
+      lastJobId: 'job-1',
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({
+      job: {
+        id: 'job-1',
+        rangeInstanceId: 'range-1',
+        jobType: 'create',
+        status: 'pending',
+        triggeredBy: 'admin',
+      },
+      steps: [],
+    });
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.click(await screen.findByRole('button', { name: '创建并启动' }));
 
     await waitFor(() => {
       expect(createRangeInstanceMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', {
@@ -86,9 +131,37 @@ describe('RangeInstancesScreen', () => {
         templateId: 'template-1',
       });
     });
+    expect(triggerRangeActionMock).toHaveBeenCalledWith(
+      'http://localhost:3001',
+      'dev-admin-token',
+      'range-1',
+      'create',
+      'admin',
+    );
 
-    await screen.findByText('range-1');
-    expect(screen.getByText('状态：草稿')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText('状态：待创建')).toBeTruthy();
+    });
+  });
+
+  it('only offers published templates in the create form', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [
+        { id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1', currentPublishedVersionId: 'published-1' },
+        { id: 'template-2', name: '草稿模板', slug: 'draft-range', version: 'v2', currentPublishedVersionId: null },
+      ],
+      rangeInstances: [],
+      provisionJobs: [],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('创建实例');
+    const createTemplateSelect = screen.getByLabelText('靶场模板');
+    expect(createTemplateSelect.textContent ?? '').toContain('企业攻防靶场');
+    expect(createTemplateSelect.textContent ?? '').not.toContain('草稿模板');
   });
 
   it('filters instances and shows recent job detail in the detail panel', async () => {
@@ -127,6 +200,13 @@ describe('RangeInstancesScreen', () => {
           errorSummary: '规格不可售',
           expiresAt: '2026-07-01T08:00:00.000Z',
           accessEntry: { publicIp: '47.2.2.2', url: 'https://range-2.example.com' },
+          recoverySummary: {
+            category: 'capacity',
+            severity: 'warning',
+            canRetry: true,
+            summary: '当前可用区没有匹配的可售实例规格',
+            suggestions: ['切换可用区或调整实例规格偏好后再重试。'],
+          },
         },
       ],
       provisionJobs: [
@@ -187,6 +267,57 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getByText(/公网 IP：47.1.1.1/)).toBeTruthy();
     expect(screen.getByText('最近一次任务')).toBeTruthy();
     expect(screen.getByText(/allocate-eip\s*\/\s*成功\s*\/\s*已分配公网入口/)).toBeTruthy();
+  });
+
+  it('filters instances by recovery category', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [
+        {
+          id: 'range-capacity',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'create_failed',
+          lastJobId: 'job-capacity',
+          errorSummary: 'No saleable ECS instance type found',
+          recoverySummary: {
+            category: 'capacity',
+            severity: 'warning',
+            canRetry: true,
+            summary: '当前可用区没有匹配的可售实例规格',
+            suggestions: ['切换可用区或调整实例规格偏好后再重试。'],
+          },
+        },
+        {
+          id: 'range-credentials',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'create_failed',
+          lastJobId: 'job-credentials',
+          errorSummary: 'Missing required OpenTofu setting',
+          recoverySummary: {
+            category: 'credentials',
+            severity: 'critical',
+            canRetry: false,
+            summary: 'Runner 缺少必要的云凭证或环境配置',
+            suggestions: ['检查阿里云 AccessKey、区域配置和 Runner 环境变量。'],
+          },
+        },
+      ],
+      provisionJobs: [],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('靶场实例');
+    fireEvent.change(screen.getByLabelText('恢复分类筛选'), { target: { value: 'credentials' } });
+
+    expect(screen.getByText('range-credentials')).toBeTruthy();
+    expect(screen.queryByText('range-capacity')).toBeNull();
   });
 
   it('uses the latest job summary and only shows legal actions for the selected instance', async () => {
@@ -424,5 +555,162 @@ describe('RangeInstancesScreen', () => {
       expect(screen.getByText('状态：运行中')).toBeTruthy();
       expect(screen.getByText(/collect_outputs\s*\/\s*成功\s*\/\s*已写入入口信息/)).toBeTruthy();
     });
+  });
+
+  it('shows failed step summary and retry action for create_failed instances', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [
+        {
+          id: 'range-1',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'create_failed',
+          lastJobId: 'job-failed',
+          errorSummary: 'OpenTofu plan failed',
+          accessEntry: null,
+        },
+      ],
+      provisionJobs: [
+        { id: 'job-failed', rangeInstanceId: 'range-1', jobType: 'create', status: 'failed', triggeredBy: 'admin', errorSummary: 'OpenTofu plan failed' },
+      ],
+    });
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'create_failed',
+      teamId: 'team-1',
+      competitionId: 'competition-1',
+      templateId: 'template-1',
+      lastJobId: 'job-failed',
+      errorSummary: 'OpenTofu plan failed',
+      accessEntry: null,
+      resourceSummary: null,
+      recoverySummary: {
+        category: 'capacity',
+        severity: 'warning',
+        canRetry: true,
+        summary: '当前可用区没有匹配的可售实例规格',
+        suggestions: ['切换可用区或调整实例规格偏好后再重试。'],
+      },
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({
+      job: {
+        id: 'job-failed',
+        rangeInstanceId: 'range-1',
+        jobType: 'create',
+        status: 'failed',
+        triggeredBy: 'admin',
+        errorSummary: 'OpenTofu plan failed',
+      },
+      steps: [
+        {
+          id: 'step-1',
+          jobId: 'job-failed',
+          stepName: 'tofu_plan',
+          status: 'failed',
+          message: '规格不可售',
+          stderrExcerpt: 'No saleable ECS instance type found',
+        },
+      ],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('靶场实例');
+    fireEvent.click(screen.getByRole('button', { name: '查看实例 range-1' }));
+
+    await screen.findByText('最近失败步骤');
+    expect(screen.getByText(/当前阶段：tofu_plan \/ 失败/)).toBeTruthy();
+    expect(screen.getByText(/失败原因：OpenTofu plan failed/)).toBeTruthy();
+    expect(screen.getByText(/摘要：规格不可售/)).toBeTruthy();
+    expect(screen.getByText(/错误输出：No saleable ECS instance type found/)).toBeTruthy();
+    expect(screen.getByText(/分类：规格容量/)).toBeTruthy();
+    expect(screen.getByText(/摘要：当前可用区没有匹配的可售实例规格/)).toBeTruthy();
+    expect(screen.getByText(/可重试：是/)).toBeTruthy();
+    expect(screen.getByText(/切换可用区或调整实例规格偏好后再重试。/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '查看任务详情' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看任务详情' }));
+    expect(pushMock).toHaveBeenCalledWith('/admin/provision-jobs?jobId=job-failed');
+
+    triggerRangeActionMock.mockResolvedValueOnce({
+      id: 'job-retry',
+      rangeInstanceId: 'range-1',
+      jobType: 'retry',
+      status: 'pending',
+      triggeredBy: 'admin',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '重试创建' }));
+    expect(triggerRangeActionMock).toHaveBeenCalledWith(
+      'http://localhost:3001',
+      'dev-admin-token',
+      'range-1',
+      'retry',
+      'admin',
+    );
+  });
+
+  it('disables retry when structured recovery summary marks the failure as non-retryable', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [{ id: 'competition-1', name: '总决赛' }],
+      teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1' }],
+      rangeTemplates: [{ id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' }],
+      rangeInstances: [
+        {
+          id: 'range-2',
+          teamId: 'team-1',
+          competitionId: 'competition-1',
+          templateId: 'template-1',
+          status: 'create_failed',
+          lastJobId: 'job-credentials',
+          errorSummary: 'Missing required OpenTofu setting',
+          accessEntry: null,
+        },
+      ],
+      provisionJobs: [{ id: 'job-credentials', rangeInstanceId: 'range-2', jobType: 'create', status: 'failed', triggeredBy: 'admin' }],
+    });
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-2',
+      status: 'create_failed',
+      teamId: 'team-1',
+      competitionId: 'competition-1',
+      templateId: 'template-1',
+      lastJobId: 'job-credentials',
+      errorSummary: 'Missing required OpenTofu setting',
+      accessEntry: null,
+      resourceSummary: null,
+      recoverySummary: {
+        category: 'credentials',
+        severity: 'critical',
+        canRetry: false,
+        summary: 'Runner 缺少必要的云凭证或环境配置',
+        suggestions: ['检查阿里云 AccessKey、区域配置和 Runner 环境变量。'],
+      },
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({
+      job: {
+        id: 'job-credentials',
+        rangeInstanceId: 'range-2',
+        jobType: 'create',
+        status: 'failed',
+        triggeredBy: 'admin',
+        errorSummary: 'Missing required OpenTofu setting',
+      },
+      steps: [],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('靶场实例');
+    fireEvent.click(screen.getByRole('button', { name: '查看实例 range-2' }));
+
+    await screen.findByText(/分类：云凭证配置/);
+    expect(screen.getByText(/可重试：否/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

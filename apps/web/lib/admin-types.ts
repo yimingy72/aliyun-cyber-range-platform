@@ -48,9 +48,17 @@ export type RangeTemplateCompiledResource = {
   config: Record<string, unknown>;
 };
 
+export type RangeTemplateCompiledTopology = {
+  vpcCidr: string;
+  publicEntryHostKey: string;
+  networkZoneKeys: string[];
+  hostKeys: string[];
+};
+
 export type RangeTemplateCompiledSpec = {
   schemaVersion: string;
   resources: RangeTemplateCompiledResource[];
+  topology?: RangeTemplateCompiledTopology;
 };
 
 export type CompetitionInput = {
@@ -133,9 +141,19 @@ export type RangeAccessEntry = {
 export type RangeResourceSummary = {
   mode?: string | null;
   vpcId?: string | null;
+  natGatewayIds?: Record<string, string> | null;
+  eipAllocationIds?: Record<string, string> | null;
   topologySpec?: {
     vpcCidr?: string | null;
   } | null;
+};
+
+export type RangeRecoverySummary = {
+  category: 'capacity' | 'quota' | 'credentials' | 'provider_setup' | 'template_blueprint' | 'unknown';
+  severity: 'warning' | 'critical';
+  canRetry: boolean;
+  summary: string;
+  suggestions: string[];
 };
 
 export type RangeInstance = {
@@ -150,11 +168,13 @@ export type RangeInstance = {
   accessEntry?: RangeAccessEntry | null;
   resourceSummary?: RangeResourceSummary | null;
   allocatedCidr?: string | null;
+  recoverySummary?: RangeRecoverySummary | null;
 };
 
 export type RangeInstanceDetail = RangeInstance & {
   competitionId: string;
   templateId: string;
+  recoverySummary?: RangeRecoverySummary | null;
 };
 
 export type RangeInstanceCreateInput = {

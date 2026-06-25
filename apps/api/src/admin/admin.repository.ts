@@ -85,6 +85,12 @@ export type RangeTemplateCompiledSpec = {
     provider?: string;
     config: Record<string, unknown>;
   }>;
+  topology?: {
+    vpcCidr: string;
+    publicEntryHostKey: string;
+    networkZoneKeys: string[];
+    hostKeys: string[];
+  };
   topologySpec?: RangeTemplateTopologySpec | null;
   variables?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
@@ -129,7 +135,9 @@ export type RangeResourceSummary = {
   vpcId?: string | null;
   subnetIds?: Record<string, string> | null;
   hostIds?: Record<string, string> | null;
+  natGatewayIds?: Record<string, string> | null;
   eipAllocationId?: string | null;
+  eipAllocationIds?: Record<string, string> | null;
   topologySpec?: RangeResourceTopologySummary;
 };
 
@@ -292,6 +300,7 @@ export type CreateProvisionJobInput = {
   jobType: ProvisionJobType;
   triggeredBy: string;
   status?: ProvisionJobStatus;
+  retryCount?: number;
 };
 
 export type UpdateProvisionJobInput = Partial<{

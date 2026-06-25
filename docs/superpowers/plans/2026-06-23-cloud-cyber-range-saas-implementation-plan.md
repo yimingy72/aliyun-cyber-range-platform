@@ -2,7 +2,7 @@
 
 - 日期：2026-06-23
 - 状态：当前有效实施基线
-- 最近更新：2026-06-24
+- 最近更新：2026-06-25
 - 关联设计文档：[2026-06-23-cloud-cyber-range-saas-design.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/specs/2026-06-23-cloud-cyber-range-saas-design.md)
 - 当前活跃子计划：[2026-06-23-enterprise-range-bootstrap-plan.md](/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/superpowers/plans/2026-06-23-enterprise-range-bootstrap-plan.md)
 
@@ -15,11 +15,11 @@
 从现在开始，任何实施顺序都必须服从这件事：
 
 - 先做企业网络型靶场骨架
-- 再做模板表达能力
+- 再做模板版本化与可视化拓扑编辑能力
 - 再做编排与状态日志
 - 最后再补后台可视化和可选增强
 
-## 1.1 2026-06-24 进度快照
+## 1.1 2026-06-25 进度快照
 
 ### 已完成
 
@@ -31,6 +31,8 @@
 - 本地 smoke 脚本已兼容 `ALICLOUD_IMAGE_ID` 与 `OPENTOFU_IMAGE_ID` 两套镜像变量口径
 - `OpenTofu` 真实执行链路已补 `validate` 预校验步骤，Runner、Provisioner 与 smoke 脚本已统一为 `init -> validate -> plan -> apply/output -> destroy`
 - 已新增非破坏性 `plan-only` smoke 入口，可先验证 `init / validate / plan` 再决定是否放行真实创建
+- 镜像策略已升级为“固定镜像先校验、`auto` 时按偏好列表解析真实可用系统镜像”
+- OpenTofu Runner 与 smoke 脚本默认不再透传本机代理环境到执行容器，避免 `apply` 阶段调用阿里云 API 假性卡住
 - 2026-06-24 已完成一次真实阿里云 RAM 非破坏性联调：
   - `sts GetCallerIdentity` 成功
   - `cn-hangzhou` / `cn-hangzhou-h` 可读
@@ -50,6 +52,10 @@
   - 预校验基于 `aliyun ecs DescribeAvailableResource`
   - 若配置了偏好列表，则优先选择偏好列表中当前可售的规格
   - 若偏好列表没有命中，则回退到该可用区返回的首个可售规格
+- 已将镜像默认策略补齐为 `auto`：
+  - smoke 脚本和 API provisioner 均支持按地域解析真实存在的系统镜像
+  - 若显式配置固定 `image_id`，会在渲染变量前先做区域有效性校验，避免 `apply` 阶段才发现镜像不存在
+  - 2026-06-25 真实 smoke test 已用 `instance_type=auto` 与 `image_id=auto` 成功创建并销毁 16 个阿里云资源
 - smoke 清理链路已补强：
   - 即使 `apply` 中途失败，只要 state 中发现残留资源，退出时也会尝试自动 `destroy`
 - 管理后台已具备：
@@ -58,12 +64,21 @@
   - 任务中心列表
   - 任务详情与步骤日志查看
   - 直接触发实例 `create / destroy`
+- 已完成对参考编排页的结构调研，确认第一版模板编辑器应采用：
+  - 顶部工具条
+  - 左侧节点素材库
+  - 中央拓扑画布
+  - 右侧属性面板
+- 已确认参考实现中的第一批节点参数范围：
+  - 主机节点：镜像、CPU、内存、主机名、启动优先级、启动等待时间、多网卡、固定私网 IP、辅助 IP、安全组规则
+  - 交换机节点：网段配置、ACL 配置、NAT 网关、SNAT 开关、DNAT 规则
+  - 路由器节点：DNS 等网络控制字段
 
 ### 进行中
 
 - Milestone 3 后端编排主链路仍在继续收口
-- 当前已经具备“后台触发任务 + 详情回写 + 步骤日志可见 + OpenTofu 预校验 + 真实云 plan-only 验证”的基础闭环
-- 还没有完全收口到“真实阿里云创建/销毁 + 稳定输出解析 + 失败日志固化 + apply/destroy 级别可重复验证”的程度
+- 当前已经具备“后台触发任务 + 详情回写 + 步骤日志可见 + OpenTofu 预校验 + 真实云 create/output/destroy 可重复验证”的基础闭环
+- 后续重点已从“打通第一条真实链路”转向“把更多模板资源持续接入统一资源图编排，并补更多地域/可用区回归”
 
 ### 未完成
 
@@ -71,13 +86,15 @@
 - 真实云输出到 `accessEntry / resourceSummary` 的完整映射验证
 - 更稳健的任务重试、执行保护和异常补偿
 - 生产化的异步执行形态、过期回收和更完整运维能力
+- 模板版本模型、拓扑 JSON、发布编译模型尚未落库
+- 可视化拓扑编辑器尚未开始实现
 
 ### 下一步建议顺序
 
-1. 把“实例规格预校验/自动解析”的结果继续暴露到任务日志与实例详情
-2. 继续做更多地域/可用区的真实回归验证，校准默认偏好列表
-3. 视联调结果决定是否把模板级规格偏好纳入 `RangeTemplate.topologySpec`
-4. 在后端链路稳定后，再扩展更完整的运维、重试和回收能力
+1. 先补模板中心的数据模型重构：`RangeTemplate + RangeTemplateVersion + TopologyGraph JSON + compiled publish model`
+2. 在 Web 端落第一版可视化拓扑编辑器骨架与节点属性面板
+3. 打通“草稿保存 -> 发布校验 -> 已发布版本实例化引用”链路
+4. 再继续做更多真实云回归验证，收紧 `accessEntry / resourceSummary` 映射与失败日志
 
 ## 2. 当前仓库现实
 
@@ -157,13 +174,16 @@
 
 目标：
 
-- 扩展 `RangeTemplate`，表达固定拓扑蓝图
+- 建立 `RangeTemplateVersion` 与发布模型
+- 扩展 `RangeTemplate.topologySpec`，表达固定拓扑蓝图
+- 引入平台内部 `TopologyGraph JSON`
 - 将后台操作真正打通到任务系统
 - 回写 `accessEntry / resourceSummary / errorSummary`
 
 验收重点：
 
-- 创建任务可为某队伍生成一整套实例
+- 管理员可以创建、编辑、保存、发布多个综合靶场模板
+- 创建任务引用的是“已发布模板版本”，而不是易变草稿
 - 后台可看到步骤日志、错误摘要和公网入口
 - 真实 OpenTofu 执行结果能稳定回写到实例详情
 
@@ -173,6 +193,7 @@
 
 目标：
 
+- 模板可视化拓扑编辑器
 - 实例列表
 - 实例详情
 - 任务中心
@@ -202,19 +223,21 @@
 ### 4.1 当前立刻要做
 
 1. 继续把真实 OpenTofu `create / destroy` 执行链路跑通
-2. 固化 `accessEntry / resourceSummary` 的真实输出映射
-3. 引入阿里云 RAM 测试联调，做非破坏性 smoke test
+2. 重构模板中心为“模板身份 + 模板版本 + 发布编译产物”
+3. 落第一版可视化拓扑编辑器骨架
+4. 固化 `accessEntry / resourceSummary` 的真实输出映射
+5. 引入阿里云 RAM 测试联调，做非破坏性 smoke test
 
 ### 4.2 随后要做
 
-4. 继续补 Worker / Runner / StepLog 的稳定性与重试能力
-5. 加强实例销毁、异常实例处理和任务防重入
-6. 视联调结果补齐模块变量、初始化脚本与入口策略
+6. 继续补 Worker / Runner / StepLog 的稳定性与重试能力
+7. 加强实例销毁、异常实例处理和任务防重入
+8. 视联调结果补齐模块变量、初始化脚本与入口策略
 
 ### 4.3 最后再做
 
-7. 更完整的管理台运维页面和异常处理视图
-8. 可选增强，如自动过期回收、混合云资源、CIDR 池正式化
+9. 更完整的管理台运维页面和异常处理视图
+10. 可选增强，如自动过期回收、混合云资源、CIDR 池正式化
 
 ## 5. 代码结构方向
 

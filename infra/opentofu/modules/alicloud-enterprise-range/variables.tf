@@ -13,6 +13,92 @@ variable "vpc_cidr" {
   description = "CIDR block used by the per-team VPC."
 }
 
+variable "entry_host_key" {
+  type        = string
+  description = "Template host key exposed as the public DMZ entrypoint."
+  default     = ""
+}
+
+variable "network_zones" {
+  type = list(object({
+    key             = string
+    name            = string
+    cidr            = string
+    purpose         = string
+    is_public_entry = bool
+  }))
+  description = "Structured network zone definitions compiled from the published template."
+  default     = []
+}
+
+variable "hosts" {
+  type = list(object({
+    key           = string
+    name          = string
+    zone_key      = string
+    private_ip    = string
+    role          = string
+    expose_public = bool
+  }))
+  description = "Structured host definitions compiled from the published template."
+  default     = []
+}
+
+variable "nat_gateways" {
+  type = list(object({
+    key          = string
+    name         = string
+    zone_key     = string
+    snat_enabled = bool
+  }))
+  description = "Structured nat gateway definitions compiled from the published template."
+  default     = []
+}
+
+variable "eips" {
+  type = list(object({
+    key              = string
+    name             = string
+    bind_target_type = string
+    bind_target_key  = string
+    bandwidth_mbps   = number
+  }))
+  description = "Structured EIP definitions compiled from the published template."
+  default     = []
+}
+
+variable "security_group_rules" {
+  type = list(object({
+    key             = string
+    name            = string
+    target_host_key = string
+    direction       = string
+    policy          = string
+    protocol        = string
+    port_range      = string
+    source_cidr     = string
+    priority        = number
+  }))
+  description = "Structured security group rules compiled from the published template."
+  default     = []
+}
+
+variable "acls" {
+  type = list(object({
+    key         = string
+    name        = string
+    zone_key    = string
+    direction   = string
+    policy      = string
+    protocol    = string
+    port_range  = string
+    source_cidr = string
+    priority    = number
+  }))
+  description = "Structured network ACL rules compiled from the published template."
+  default     = []
+}
+
 variable "dmz_cidr" {
   type        = string
   description = "CIDR block used by the DMZ subnet."

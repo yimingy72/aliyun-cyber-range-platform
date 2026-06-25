@@ -105,6 +105,11 @@ describe('Admin resource validation', () => {
       })
       .expect(201);
 
+    await request(app.getHttpServer())
+      .post(`/admin/range-templates/${template.body.id}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
     const instance = await request(app.getHttpServer())
       .post('/admin/range-instances')
       .set('authorization', 'Bearer dev-admin-token')
@@ -256,6 +261,62 @@ describe('Admin resource validation', () => {
       .expect(400);
   });
 
+  it('rejects publishing a template when compiled topology summary mismatches topology spec', async () => {
+    const template = await request(app.getHttpServer())
+      .post('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'Broken compiled topology template',
+        slug: 'broken-compiled-topology-template',
+        version: 'v1',
+        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+        topologySpec: {
+          vpcCidr: '10.70.0.0/16',
+          networkZones: [
+            {
+              key: 'dmz',
+              name: 'DMZ',
+              purpose: 'public-entry',
+              cidr: '10.70.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'dmz-entry',
+              name: 'DMZ Entry',
+              zoneKey: 'dmz',
+              role: 'entry',
+              privateIp: '10.70.10.10',
+              exposePublic: true,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'dmz-entry',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          resources: [],
+          topology: {
+            vpcCidr: '10.70.0.0/16',
+            publicEntryHostKey: 'wrong-host',
+            networkZoneKeys: ['dmz'],
+            hostKeys: ['dmz-entry'],
+          },
+        },
+      })
+      .expect(201);
+
+    const publishResponse = await request(app.getHttpServer())
+      .post(`/admin/range-templates/${template.body.id}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(400);
+
+    expect(String(publishResponse.body.message)).toContain('compiledSpec topology does not match topologySpec');
+  });
+
   it('rejects templates when public entry host is missing from hosts', async () => {
     await request(app.getHttpServer())
       .post('/admin/range-templates')
@@ -321,6 +382,28 @@ describe('Admin resource validation', () => {
 
     await request(app.getHttpServer())
       .post(`/admin/range-instances/${fixture.rangeInstanceId}/create`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        triggeredBy: 'admin',
+      })
+      .expect(409);
+  });
+
+  it('rejects retrying a running range instance', async () => {
+    const fixture = await createProvisioningFixture();
+
+    await request(app.getHttpServer())
+      .post(`/admin/range-instances/${fixture.rangeInstanceId}/create`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        triggeredBy: 'admin',
+      })
+      .expect(201);
+
+    await waitForRangeInstanceStatus(fixture.rangeInstanceId, 'running');
+
+    await request(app.getHttpServer())
+      .post(`/admin/range-instances/${fixture.rangeInstanceId}/retry`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         triggeredBy: 'admin',

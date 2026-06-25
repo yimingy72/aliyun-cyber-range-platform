@@ -458,6 +458,7 @@ export class PrismaAdminRepository implements AdminRepository {
         jobType: input.jobType,
         triggeredBy: input.triggeredBy,
         status: input.status ?? 'pending',
+        retryCount: input.retryCount ?? 0,
       },
     }) as Promise<ProvisionJobRecord>;
   }

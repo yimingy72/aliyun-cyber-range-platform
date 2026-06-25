@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 
-import { fetchAdminBootstrap, publishRangeTemplate, updateRangeTemplate } from '../../../lib/admin-api';
-import type { RangeTemplate, RangeTemplateTopologySpec } from '../../../lib/admin-types';
+import { AdminApiError, fetchAdminBootstrap, publishRangeTemplate, updateRangeTemplate } from '../../../lib/admin-api';
+import type { RangeTemplate } from '../../../lib/admin-types';
 import { compileTopologyGraph } from '../../../lib/template-compiler';
+import { syncTopologySpecFromNodes } from '../../../lib/template-topology-sync';
 import { createEnterpriseRangeSkeleton } from '../../../lib/template-topology-skeleton';
 import { useAdminSession } from '../use-admin-session';
 import { TemplateCanvas } from './template-canvas';
@@ -24,6 +25,34 @@ type DraftTopologyGraph = {
   edges: Array<Record<string, unknown>>;
 };
 
+function readPublishErrorMessage(error: unknown) {
+  if (error instanceof AdminApiError) {
+    const details = error.details;
+
+    if (details && typeof details === 'object' && 'message' in details) {
+      const message = (details as { message?: unknown }).message;
+
+      if (Array.isArray(message) && message.every((item) => typeof item === 'string')) {
+        return `模板发布失败：${message.join('；')}`;
+      }
+
+      if (typeof message === 'string' && message.trim().length > 0) {
+        return `模板发布失败：${message}`;
+      }
+    }
+
+    if (error.message.trim().length > 0) {
+      return `模板发布失败：${error.message}`;
+    }
+  }
+
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return `模板发布失败：${error.message}`;
+  }
+
+  return '模板发布失败，请检查模板拓扑与编译结果';
+}
+
 function readNodesFromTemplate(template: RangeTemplate | null): TemplateNode[] {
   const topologyGraph = template?.currentDraftVersion?.topologyGraph;
   const rawNodes = topologyGraph && typeof topologyGraph === 'object' ? (topologyGraph as { nodes?: unknown }).nodes : [];
@@ -39,7 +68,15 @@ function readNodesFromTemplate(template: RangeTemplate | null): TemplateNode[] {
       }
 
       const candidate = node as Partial<TemplateNode> & { id?: unknown; kind?: unknown; label?: unknown };
-      const kind = candidate.kind === 'switch' || candidate.kind === 'router' ? candidate.kind : 'host';
+      const kind =
+        candidate.kind === 'switch' ||
+        candidate.kind === 'router' ||
+        candidate.kind === 'nat_gateway' ||
+        candidate.kind === 'eip' ||
+        candidate.kind === 'acl' ||
+        candidate.kind === 'security_group_rule'
+          ? candidate.kind
+          : 'host';
 
       if (kind === 'switch') {
         return {
@@ -61,6 +98,57 @@ function readNodesFromTemplate(template: RangeTemplate | null): TemplateNode[] {
           routeRole: typeof candidate.routeRole === 'string' ? candidate.routeRole : 'egress',
           egressType: typeof candidate.egressType === 'string' ? candidate.egressType : 'internet',
           bindEip: typeof candidate.bindEip === 'boolean' ? candidate.bindEip : false,
+        } satisfies TemplateNode;
+      }
+
+      if (kind === 'nat_gateway') {
+        return {
+          id: typeof candidate.id === 'string' ? candidate.id : `node-${index + 1}`,
+          kind: 'nat_gateway',
+          label: typeof candidate.label === 'string' ? candidate.label : `NAT 网关 ${index + 1}`,
+          zoneKey: typeof candidate.zoneKey === 'string' ? candidate.zoneKey : 'dmz',
+          snatEnabled: typeof candidate.snatEnabled === 'boolean' ? candidate.snatEnabled : false,
+        } satisfies TemplateNode;
+      }
+
+      if (kind === 'eip') {
+        return {
+          id: typeof candidate.id === 'string' ? candidate.id : `node-${index + 1}`,
+          kind: 'eip',
+          label: typeof candidate.label === 'string' ? candidate.label : `EIP ${index + 1}`,
+          bindTargetType: candidate.bindTargetType === 'nat_gateway' ? 'nat_gateway' : 'host',
+          bindTargetKey: typeof candidate.bindTargetKey === 'string' ? candidate.bindTargetKey : 'host-dmz-entry',
+          bandwidthMbps: typeof candidate.bandwidthMbps === 'number' ? candidate.bandwidthMbps : 10,
+        } satisfies TemplateNode;
+      }
+
+      if (kind === 'acl') {
+        return {
+          id: typeof candidate.id === 'string' ? candidate.id : `node-${index + 1}`,
+          kind: 'acl',
+          label: typeof candidate.label === 'string' ? candidate.label : `ACL ${index + 1}`,
+          zoneKey: typeof candidate.zoneKey === 'string' ? candidate.zoneKey : 'dmz',
+          direction: typeof candidate.direction === 'string' ? candidate.direction : 'inbound',
+          policy: typeof candidate.policy === 'string' ? candidate.policy : 'allow',
+          protocol: typeof candidate.protocol === 'string' ? candidate.protocol : 'tcp',
+          portRange: typeof candidate.portRange === 'string' ? candidate.portRange : '22/22',
+          sourceCidr: typeof candidate.sourceCidr === 'string' ? candidate.sourceCidr : '0.0.0.0/0',
+          priority: typeof candidate.priority === 'number' ? candidate.priority : 1,
+        } satisfies TemplateNode;
+      }
+
+      if (kind === 'security_group_rule') {
+        return {
+          id: typeof candidate.id === 'string' ? candidate.id : `node-${index + 1}`,
+          kind: 'security_group_rule',
+          label: typeof candidate.label === 'string' ? candidate.label : `安全组规则 ${index + 1}`,
+          targetHostKey: typeof candidate.targetHostKey === 'string' ? candidate.targetHostKey : 'host-dmz-entry',
+          direction: typeof candidate.direction === 'string' ? candidate.direction : 'ingress',
+          policy: typeof candidate.policy === 'string' ? candidate.policy : 'accept',
+          protocol: typeof candidate.protocol === 'string' ? candidate.protocol : 'tcp',
+          portRange: typeof candidate.portRange === 'string' ? candidate.portRange : '22/22',
+          sourceCidr: typeof candidate.sourceCidr === 'string' ? candidate.sourceCidr : '0.0.0.0/0',
+          priority: typeof candidate.priority === 'number' ? candidate.priority : 1,
         } satisfies TemplateNode;
       }
 
@@ -146,6 +234,49 @@ export function TemplateEditorScreen({
               egressType: 'internet',
               bindEip: false,
             }
+          : kind === 'nat_gateway'
+            ? {
+                id: `${kind}-${nextIndex}`,
+                kind: 'nat_gateway',
+                label: `NAT 网关 ${nextIndex}`,
+                zoneKey: 'dmz',
+                snatEnabled: false,
+              }
+            : kind === 'eip'
+              ? {
+                  id: `${kind}-${nextIndex}`,
+                  kind: 'eip',
+                  label: `EIP ${nextIndex}`,
+                  bindTargetType: 'host',
+                  bindTargetKey: 'host-dmz-entry',
+                  bandwidthMbps: 10,
+                }
+              : kind === 'acl'
+                ? {
+                    id: `${kind}-${nextIndex}`,
+                    kind: 'acl',
+                    label: `ACL ${nextIndex}`,
+                    zoneKey: 'dmz',
+                    direction: 'inbound',
+                    policy: 'allow',
+                    protocol: 'tcp',
+                    portRange: '22/22',
+                    sourceCidr: '0.0.0.0/0',
+                    priority: 1,
+                  }
+                : kind === 'security_group_rule'
+                  ? {
+                      id: `${kind}-${nextIndex}`,
+                      kind: 'security_group_rule',
+                      label: `安全组规则 ${nextIndex}`,
+                      targetHostKey: 'host-dmz-entry',
+                      direction: 'ingress',
+                      policy: 'accept',
+                      protocol: 'tcp',
+                      portRange: '22/22',
+                      sourceCidr: '0.0.0.0/0',
+                      priority: 1,
+                    }
           : {
               id: `${kind}-${nextIndex}`,
               kind: 'host',
@@ -184,13 +315,9 @@ export function TemplateEditorScreen({
       nodes,
       edges: [],
     };
-    const topologySpec: RangeTemplateTopologySpec =
-      template.currentDraftVersion?.topologySpec ?? template.currentPublishedVersion?.topologySpec ?? {
-        vpcCidr: '10.0.0.0/16',
-        networkZones: [],
-        hosts: [],
-        publicEntry: { hostKey: '', protocols: [] },
-      };
+    const topologySpec = syncTopologySpecFromNodes({
+      nodes,
+    });
     const compiledSpec = compileTopologyGraph({
       nodes,
     });
@@ -221,6 +348,8 @@ export function TemplateEditorScreen({
       setTemplate(nextTemplate);
       setNodes(readNodesFromTemplate(nextTemplate));
       setStatusMessage('模板已发布，并已生成新的草稿版本');
+    } catch (error) {
+      setStatusMessage(readPublishErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }

@@ -14,6 +14,7 @@ import {
   deleteTeam,
   fetchAdminBootstrap,
   fetchCloudConfig,
+  publishRangeTemplate,
   updateCompetition,
   updateRangeTemplate,
   updateTeam,
@@ -422,6 +423,26 @@ export function SettingsScreen({
     }
   }
 
+  async function handlePublishTemplate(id: string): Promise<RangeTemplate> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+
+    try {
+      const savedTemplate = await publishRangeTemplate(apiBaseUrl, session.token, id);
+      upsertTemplateInSnapshot(savedTemplate);
+      return savedTemplate;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '模板发布失败，请稍后重试。');
+    }
+  }
+
+  function handleOpenTemplateEditor(id: string) {
+    router.push(`/admin/templates/${id}`);
+  }
+
   if (!session.isReady) {
     return (
       <main className="admin-shell">
@@ -506,6 +527,8 @@ export function SettingsScreen({
             templates={snapshot?.rangeTemplates ?? []}
             onCreate={handleCreateTemplate}
             onUpdate={handleUpdateTemplate}
+            onPublish={handlePublishTemplate}
+            onOpenEditor={handleOpenTemplateEditor}
             onDelete={handleDeleteTemplate}
           />
         ) : null}

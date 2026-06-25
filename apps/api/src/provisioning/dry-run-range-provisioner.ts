@@ -7,10 +7,19 @@ import {
   RangeProvisioner,
   type RangeProvisionStepReporter,
 } from './provisioning.types';
+import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
 
 @Injectable()
 export class DryRunRangeProvisioner implements RangeProvisioner {
   async create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult> {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: input.rangeInstanceId,
+      templateModulePath: input.templateModulePath,
+      topologySpec: input.topologySpec,
+      compiledSpec: input.compiledSpec,
+      allocatedCidr: input.allocatedCidr,
+    });
+
     await simulateStep(input.reportStep, 'render_template', 'Dry-run rendered enterprise range inputs.');
     await simulateStep(input.reportStep, 'tofu_init', 'Dry-run simulated OpenTofu init.');
     await simulateStep(input.reportStep, 'tofu_plan', 'Dry-run simulated OpenTofu plan.');
@@ -27,13 +36,8 @@ export class DryRunRangeProvisioner implements RangeProvisioner {
       },
       resourceSummary: {
         mode: 'dry-run',
-        modulePath: input.templateModulePath,
-        topologySpec: {
-          vpcCidr: input.topologySpec.vpcCidr,
-          publicEntryHostKey: input.topologySpec.publicEntry.hostKey,
-          networkZoneKeys: input.topologySpec.networkZones.map((zone) => zone.key),
-          hostKeys: input.topologySpec.hosts.map((host) => host.key),
-        },
+        modulePath: plan.modulePath,
+        topologySpec: plan.topologySummary,
       },
     };
   }

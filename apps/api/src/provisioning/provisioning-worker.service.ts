@@ -5,6 +5,8 @@ import {
   AdminRepository,
   ProvisionJobRecord,
   RangeInstanceRecord,
+  RangeTemplateCompiledSpec,
+  RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
 import {
   RANGE_PROVISIONER,
@@ -51,8 +53,16 @@ export class ProvisioningWorkerService {
       return;
     }
 
-    if (!template.topologySpec) {
-      await this.failJob(job, instance, 'Template topology spec not found');
+    const publishedVersion = template.currentPublishedVersion;
+    const templateModulePath = publishedVersion?.modulePathOrRef ?? template.modulePathOrRef;
+    const compiledSpec = this.getCompiledSpec(publishedVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
+    const topologySpec =
+      this.getCompiledTopologySpec(compiledSpec) ??
+      publishedVersion?.topologySpec ??
+      template.topologySpec;
+
+    if (!topologySpec && !compiledSpec) {
+      await this.failJob(job, instance, 'Template provisioning blueprint not found');
       return;
     }
 
@@ -62,7 +72,9 @@ export class ProvisioningWorkerService {
     const reportStep = this.createStepReporter(job.id);
 
     try {
-      if (job.jobType === 'create') {
+      const effectiveJobType = this.resolveEffectiveJobType(job, instance);
+
+      if (effectiveJobType === 'create') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
             status: 'creating',
@@ -71,9 +83,10 @@ export class ProvisioningWorkerService {
 
         const result = await this.rangeProvisioner.create({
           rangeInstanceId: instance.id,
-          templateModulePath: template.modulePathOrRef,
+          templateModulePath,
           allocatedCidr: instance.allocatedCidr,
-          topologySpec: template.topologySpec,
+          topologySpec,
+          compiledSpec,
           reportStep,
         });
 
@@ -85,7 +98,7 @@ export class ProvisioningWorkerService {
             errorSummary: null,
           });
         });
-      } else if (job.jobType === 'destroy') {
+      } else if (effectiveJobType === 'destroy') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
             status: 'destroying',
@@ -94,9 +107,10 @@ export class ProvisioningWorkerService {
 
         await this.rangeProvisioner.destroy({
           rangeInstanceId: instance.id,
-          templateModulePath: template.modulePathOrRef,
+          templateModulePath,
           allocatedCidr: instance.allocatedCidr,
-          topologySpec: template.topologySpec,
+          topologySpec,
+          compiledSpec,
           reportStep,
         });
 
@@ -118,6 +132,44 @@ export class ProvisioningWorkerService {
 
       await this.failJob(job, instance, message);
     }
+  }
+
+  private resolveEffectiveJobType(job: ProvisionJobRecord, instance: RangeInstanceRecord) {
+    if (job.jobType === 'retry') {
+      if (instance.status === 'pending_create' || instance.status === 'create_failed') {
+        return 'create' as const;
+      }
+
+      if (instance.status === 'pending_destroy' || instance.status === 'destroy_failed') {
+        return 'destroy' as const;
+      }
+
+      throw new Error(`Retry job cannot resolve action from instance status: ${instance.status}`);
+    }
+
+    return job.jobType;
+  }
+
+  private getCompiledTopologySpec(
+    compiledSpec: RangeTemplateCompiledSpec | null | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!compiledSpec) {
+      return null;
+    }
+
+    const candidate = compiledSpec.topologySpec;
+
+    return candidate ?? null;
+  }
+
+  private getCompiledSpec(
+    compiledSpec: Record<string, unknown> | null | undefined,
+  ): RangeTemplateCompiledSpec | null {
+    if (!compiledSpec) {
+      return null;
+    }
+
+    return compiledSpec as RangeTemplateCompiledSpec;
   }
 
   private async failJob(job: ProvisionJobRecord, instance: RangeInstanceRecord, message: string) {

@@ -70,6 +70,8 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
     });
+    await repository.publishRangeTemplate(template.id);
+
     const instance = await repository.createRangeInstance({
       competitionId: competition.id,
       teamId: team.id,
@@ -124,6 +126,339 @@ describe('ProvisioningWorkerService concurrency', () => {
       expect.objectContaining({
         id: instance.id,
         status: 'running',
+      }),
+    );
+  });
+
+  it('prefers published compiled topologySpec over the legacy published topologySpec during provisioning', async () => {
+    const repository = createMemoryAdminRepository();
+    const competition = await repository.createCompetition({
+      name: 'Compiled Topology Drill',
+    });
+    const team = await repository.createTeam({
+      competitionId: competition.id,
+      name: 'Red Team',
+    });
+    const template = await repository.createRangeTemplate({
+      name: 'Compiled Template',
+      slug: 'compiled-template-concurrency',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.88.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.88.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'legacy-entry',
+            name: 'Legacy Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.88.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'legacy-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        resources: [],
+        topologySpec: {
+          vpcCidr: '10.99.0.0/16',
+          networkZones: [
+            {
+              key: 'dmz',
+              name: 'DMZ',
+              purpose: 'public-entry',
+              cidr: '10.99.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'compiled-entry',
+              name: 'Compiled Entry',
+              zoneKey: 'dmz',
+              role: 'entry',
+              privateIp: '10.99.10.10',
+              exposePublic: true,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'compiled-entry',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+      } as Record<string, unknown>,
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      competitionId: competition.id,
+      teamId: team.id,
+      templateId: template.id,
+      status: 'pending_create',
+      allocatedCidr: '10.99.0.0/16',
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn().mockResolvedValue({
+        accessEntry: {
+          hostRole: 'dmz',
+          publicIp: '47.99.0.10',
+          privateIp: '10.99.10.10',
+          ssh: 'ssh root@47.99.0.10',
+        },
+        resourceSummary: {
+          mode: 'opentofu',
+          vpcId: 'vpc-compiled-priority',
+          topologySpec: {
+            vpcCidr: '10.99.0.0/16',
+            publicEntryHostKey: 'compiled-entry',
+            networkZoneKeys: ['dmz'],
+            hostKeys: ['compiled-entry'],
+          },
+        },
+      }),
+      destroy: jest.fn(),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner);
+
+    await worker.process(job.id);
+
+    expect(provisioner.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topologySpec: expect.objectContaining({
+          vpcCidr: '10.99.0.0/16',
+          publicEntry: expect.objectContaining({ hostKey: 'compiled-entry' }),
+        }),
+      }),
+    );
+  });
+
+  it('passes published compiled resources into provisioning alongside the published topologySpec', async () => {
+    const repository = createMemoryAdminRepository();
+    const competition = await repository.createCompetition({
+      name: 'Compiled Resources Drill',
+    });
+    const team = await repository.createTeam({
+      competitionId: competition.id,
+      name: 'Blue Team',
+    });
+    const template = await repository.createRangeTemplate({
+      name: 'Compiled Resources Template',
+      slug: 'compiled-resources-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.66.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.66.10.0/24',
+            isPublicEntry: true,
+          },
+          {
+            key: 'office',
+            name: 'Office',
+            purpose: 'user-workstations',
+            cidr: '10.66.20.0/24',
+          },
+          {
+            key: 'server',
+            name: 'Server',
+            purpose: 'application-servers',
+            cidr: '10.66.30.0/24',
+          },
+        ],
+        hosts: [
+          {
+            key: 'host-dmz-entry',
+            name: 'DMZ 入口',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.66.10.10',
+            exposePublic: true,
+          },
+          {
+            key: 'host-office-client',
+            name: '办公网主机',
+            zoneKey: 'office',
+            role: 'workstation',
+            privateIp: '10.66.20.10',
+          },
+          {
+            key: 'host-server-app',
+            name: '服务器主机',
+            zoneKey: 'server',
+            role: 'app',
+            privateIp: '10.66.30.10',
+          },
+        ],
+        publicEntry: {
+          hostKey: 'host-dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.66.0.0/16',
+          publicEntryHostKey: 'host-dmz-entry',
+          networkZoneKeys: ['dmz', 'office', 'server'],
+          hostKeys: ['host-dmz-entry', 'host-office-client', 'host-server-app'],
+        },
+        resources: [
+          {
+            id: 'switch-dmz',
+            type: 'switch',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'DMZ 子网',
+              zoneKey: 'dmz',
+              cidr: '10.66.10.0/24',
+              purpose: 'public-entry',
+            },
+          },
+          {
+            id: 'switch-office',
+            type: 'switch',
+            provider: 'alibaba_cloud',
+            config: {
+              label: '办公网子网',
+              zoneKey: 'office',
+              cidr: '10.66.20.0/24',
+              purpose: 'user-workstations',
+            },
+          },
+          {
+            id: 'switch-server',
+            type: 'switch',
+            provider: 'alibaba_cloud',
+            config: {
+              label: '服务器区子网',
+              zoneKey: 'server',
+              cidr: '10.66.30.0/24',
+              purpose: 'application-servers',
+            },
+          },
+          {
+            id: 'host-dmz-entry',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'DMZ 入口',
+              zoneKey: 'dmz',
+              role: 'entry',
+              privateIp: '10.66.10.10',
+              exposePublic: true,
+            },
+          },
+          {
+            id: 'host-office-client',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: '办公网主机',
+              zoneKey: 'office',
+              role: 'workstation',
+              privateIp: '10.66.20.10',
+            },
+          },
+          {
+            id: 'host-server-app',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: '服务器主机',
+              zoneKey: 'server',
+              role: 'app',
+              privateIp: '10.66.30.10',
+            },
+          },
+        ],
+      } as Record<string, unknown>,
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      competitionId: competition.id,
+      teamId: team.id,
+      templateId: template.id,
+      status: 'pending_create',
+      allocatedCidr: '10.66.0.0/16',
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn().mockResolvedValue({
+        accessEntry: {
+          hostRole: 'dmz',
+          publicIp: '47.66.0.10',
+          privateIp: '10.66.10.10',
+          ssh: 'ssh root@47.66.0.10',
+        },
+        resourceSummary: {
+          mode: 'opentofu',
+          vpcId: 'vpc-compiled-resources',
+          topologySpec: {
+            vpcCidr: '10.66.0.0/16',
+            publicEntryHostKey: 'host-dmz-entry',
+            networkZoneKeys: ['dmz', 'office', 'server'],
+            hostKeys: ['host-dmz-entry', 'host-office-client', 'host-server-app'],
+          },
+        },
+      }),
+      destroy: jest.fn(),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner);
+
+    await worker.process(job.id);
+
+    expect(provisioner.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topologySpec: expect.objectContaining({
+          vpcCidr: '10.66.0.0/16',
+          publicEntry: expect.objectContaining({ hostKey: 'host-dmz-entry' }),
+        }),
+        compiledSpec: expect.objectContaining({
+          topology: expect.objectContaining({ vpcCidr: '10.66.0.0/16' }),
+          resources: expect.arrayContaining([
+            expect.objectContaining({ id: 'host-dmz-entry', type: 'host' }),
+            expect.objectContaining({ id: 'switch-dmz', type: 'switch' }),
+          ]),
+        }),
       }),
     );
   });

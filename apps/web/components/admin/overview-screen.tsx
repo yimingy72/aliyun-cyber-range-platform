@@ -27,6 +27,30 @@ function isUnauthorizedError(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 401;
 }
 
+function getRecoveryCategoryLabel(category?: string | null) {
+  if (category === 'capacity') {
+    return '规格容量';
+  }
+
+  if (category === 'quota') {
+    return '资源配额';
+  }
+
+  if (category === 'credentials') {
+    return '云凭证配置';
+  }
+
+  if (category === 'provider_setup') {
+    return 'Provider / Runner 配置';
+  }
+
+  if (category === 'template_blueprint') {
+    return '模板蓝图';
+  }
+
+  return '未知';
+}
+
 export function OverviewScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
 }: OverviewScreenProps) {
@@ -128,6 +152,21 @@ export function OverviewScreen({
   const failingInstances =
     snapshot?.rangeInstances.filter((item) => item.status.includes('failed') || item.errorSummary).slice(0, 5) ?? [];
   const recentJobs = snapshot?.provisionJobs.slice(0, 5) ?? [];
+  const recoveryCategoryCounts = new Map<string, number>();
+
+  for (const instance of snapshot?.rangeInstances ?? []) {
+    const category = instance.recoverySummary?.category;
+
+    if (!category) {
+      continue;
+    }
+
+    recoveryCategoryCounts.set(category, (recoveryCategoryCounts.get(category) ?? 0) + 1);
+  }
+
+  const topRecoveryCategories = Array.from(recoveryCategoryCounts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 3);
 
   return (
     <div className="admin-screen">
@@ -175,6 +214,23 @@ export function OverviewScreen({
 
           <article className="admin-panel">
             <div className="admin-section-header">
+              <h2>高频失败分类</h2>
+              <span>恢复聚合</span>
+            </div>
+
+            {topRecoveryCategories.length ? (
+              topRecoveryCategories.map(([category, count]) => (
+                <p key={category} className="admin-description">
+                  {getRecoveryCategoryLabel(category)}：{count}
+                </p>
+              ))
+            ) : (
+              <p className="admin-empty">当前没有结构化失败分类。</p>
+            )}
+          </article>
+
+          <article className="admin-panel">
+            <div className="admin-section-header">
               <h2>最近任务</h2>
               <span>最近编排</span>
             </div>
@@ -207,6 +263,7 @@ export function OverviewScreen({
                   <li key={instance.id}>
                     <div className="admin-list-copy">
                       <strong>{instance.id}</strong>
+                      <span>恢复分类：{getRecoveryCategoryLabel(instance.recoverySummary?.category)}</span>
                       <span>{instance.errorSummary ?? `状态：${instance.status}`}</span>
                     </div>
                   </li>

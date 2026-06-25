@@ -24,6 +24,12 @@ export class RangeTemplatesController {
     return this.rangeTemplatesService.update(id, body);
   }
 
+  @Post(':id/publish')
+  @HttpCode(200)
+  publish(@Param('id') id: string) {
+    return this.rangeTemplatesService.publish(id);
+  }
+
   @Delete(':id')
   @HttpCode(204)
   async delete(@Param('id') id: string) {

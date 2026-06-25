@@ -38,7 +38,20 @@ const bootstrapPayload = {
   rangeTemplates: [{ id: 'template-1', slug: 'enterprise-range', version: 'v1' }],
   rangeInstances: [
     { id: 'range-1', teamId: 'team-1', status: 'running', errorSummary: null, lastJobId: 'job-1' },
-    { id: 'range-2', teamId: 'team-1', status: 'create_failed', errorSummary: 'EIP failed', lastJobId: 'job-2' },
+    {
+      id: 'range-2',
+      teamId: 'team-1',
+      status: 'create_failed',
+      errorSummary: 'EIP failed',
+      lastJobId: 'job-2',
+      recoverySummary: {
+        category: 'quota',
+        severity: 'warning',
+        canRetry: true,
+        summary: '云资源配额不足导致编排失败',
+        suggestions: ['检查 EIP、ECS、VPC 配额是否足够，释放旧资源后再重试。'],
+      },
+    },
   ],
   provisionJobs: [
     { id: 'job-1', rangeInstanceId: 'range-1', jobType: 'create', status: 'succeeded', triggeredBy: 'admin' },
@@ -108,6 +121,9 @@ describe('OverviewScreen', () => {
     expect(screen.queryByText('Failures')).toBeNull();
     expect(screen.queryByText('Templates')).toBeNull();
     expect(screen.queryByText('Recent Jobs')).toBeNull();
+    expect(screen.getByText('高频失败分类')).toBeTruthy();
+    expect(screen.getByText(/资源配额：1/)).toBeTruthy();
+    expect(screen.getByText(/恢复分类：资源配额/)).toBeTruthy();
   });
 
   it('shows a loading state instead of zero-state content before the admin session is ready', () => {

@@ -31,6 +31,13 @@ export class SystemConfigService {
       normalizeOptionalEnvValue(process.env.OPENTOFU_IMAGE_ID) ??
       normalizeOptionalEnvValue(process.env.ALICLOUD_IMAGE_ID) ??
       'unset';
+    const imageStrategy = imageId;
+    const imageIdPreferences = (process.env.OPENTOFU_IMAGE_ID_PREFERENCES ??
+      process.env.ALICLOUD_IMAGE_ID_PREFERENCES ??
+      '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
     const instancePasswordConfigured = Boolean(
       normalizeOptionalEnvValue(process.env.OPENTOFU_INSTANCE_PASSWORD),
     );
@@ -88,6 +95,8 @@ export class SystemConfigService {
       provisionerMode,
       instanceTypeStrategy,
       instanceTypePreferences,
+      imageStrategy,
+      imageIdPreferences,
       imageId,
       instancePasswordConfigured,
       providerZipPathConfigured,

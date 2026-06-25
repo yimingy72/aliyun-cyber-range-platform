@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import { AdminApiError, fetchAdminBootstrap, fetchProvisionJobDetail } from '../../lib/admin-api';
 import type { AdminBootstrapData, ProvisionJob, ProvisionJobStep } from '../../lib/admin-types';
@@ -113,10 +113,35 @@ function getParsedInsights(job: ExtendedProvisionJob, steps: ExtendedProvisionJo
   return Array.from(insights);
 }
 
+function getRecoveryCategoryLabel(category?: string | null) {
+  if (category === 'capacity') {
+    return '规格容量';
+  }
+
+  if (category === 'quota') {
+    return '资源配额';
+  }
+
+  if (category === 'credentials') {
+    return '云凭证配置';
+  }
+
+  if (category === 'provider_setup') {
+    return 'Provider / Runner 配置';
+  }
+
+  if (category === 'template_blueprint') {
+    return '模板蓝图';
+  }
+
+  return '未知';
+}
+
 export function ProvisionJobsScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
 }: ProvisionJobsScreenProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const session = useAdminSession();
   const [snapshot, setSnapshot] = useState<AdminBootstrapData | null>(null);
   const [selectedJob, setSelectedJob] = useState<ExtendedProvisionJob | null>(null);
@@ -182,6 +207,19 @@ export function ProvisionJobsScreen({
   const jobs = useMemo(() => {
     return (snapshot?.provisionJobs ?? []) as ExtendedProvisionJob[];
   }, [snapshot]);
+  const instancesById = useMemo(() => {
+    return new Map((snapshot?.rangeInstances ?? []).map((instance) => [instance.id, instance]));
+  }, [snapshot]);
+
+  useEffect(() => {
+    const targetJobId = searchParams.get('jobId');
+
+    if (!targetJobId || !session.token || !jobs.some((job) => job.id === targetJobId) || selectedJob?.id === targetJobId) {
+      return;
+    }
+
+    void handleViewDetail(targetJobId);
+  }, [apiBaseUrl, jobs, searchParams, selectedJob?.id, session.token]);
 
   async function handleViewDetail(jobId: string) {
     if (!session.token) {
@@ -256,6 +294,7 @@ export function ProvisionJobsScreen({
 
   const parsedInsights = selectedJob ? getParsedInsights(selectedJob, selectedSteps) : [];
   const currentStep = selectedSteps.find((step) => step.status === 'running' || !step.finishedAt) ?? selectedSteps[0] ?? null;
+  const selectedInstance = selectedJob ? instancesById.get(selectedJob.rangeInstanceId) : null;
 
   return (
     <div className="admin-screen">
@@ -276,15 +315,16 @@ export function ProvisionJobsScreen({
 
           {jobs.length ? (
             <ul className="admin-list">
-              {jobs.map((job) => (
-                <li key={job.id}>
-                  <div className="admin-list-copy">
-                    <strong>{job.id}</strong>
-                    <span>任务类型：{getJobLabel(job.jobType)}</span>
-                    <span>关联实例：{job.rangeInstanceId}</span>
-                    <span>触发人：{job.triggeredBy}</span>
-                    <span>开始时间：{formatDateTime(job.startedAt)}</span>
-                    <span>当前状态：{getStatusLabel(job.status)}</span>
+                {jobs.map((job) => (
+                  <li key={job.id}>
+                    <div className="admin-list-copy">
+                      <strong>{job.id}</strong>
+                      <span>任务类型：{getJobLabel(job.jobType)}</span>
+                      <span>关联实例：{job.rangeInstanceId}</span>
+                      <span>恢复分类：{getRecoveryCategoryLabel(instancesById.get(job.rangeInstanceId)?.recoverySummary?.category)}</span>
+                      <span>触发人：{job.triggeredBy}</span>
+                      <span>开始时间：{formatDateTime(job.startedAt)}</span>
+                      <span>当前状态：{getStatusLabel(job.status)}</span>
                     <span>失败摘要：{job.errorSummary ?? '无'}</span>
                   </div>
                   <div className="admin-list-actions">
@@ -314,6 +354,7 @@ export function ProvisionJobsScreen({
                 <strong>任务概览</strong>
                 <span>任务类型：{getJobLabel(selectedJob.jobType)}</span>
                 <span>关联实例：{selectedJob.rangeInstanceId}</span>
+                <span>恢复分类：{getRecoveryCategoryLabel(selectedInstance?.recoverySummary?.category)}</span>
                 <span>触发人：{selectedJob.triggeredBy}</span>
                 <span>开始时间：{formatDateTime(selectedJob.startedAt)}</span>
                 <span>当前状态：{getStatusLabel(selectedJob.status)}</span>

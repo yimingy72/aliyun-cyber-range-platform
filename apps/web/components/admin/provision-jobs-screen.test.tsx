@@ -6,9 +6,17 @@ const { fetchAdminBootstrapMock, fetchProvisionJobDetailMock } = vi.hoisted(() =
   fetchProvisionJobDetailMock: vi.fn(),
 }));
 
+const { replaceMock, searchParamsGetMock } = vi.hoisted(() => ({
+  replaceMock: vi.fn(),
+  searchParamsGetMock: vi.fn(),
+}));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
-    replace: vi.fn(),
+    replace: replaceMock,
+  }),
+  useSearchParams: () => ({
+    get: searchParamsGetMock,
   }),
 }));
 
@@ -32,6 +40,9 @@ describe('ProvisionJobsScreen', () => {
   beforeEach(() => {
     fetchAdminBootstrapMock.mockReset();
     fetchProvisionJobDetailMock.mockReset();
+    replaceMock.mockReset();
+    searchParamsGetMock.mockReset();
+    searchParamsGetMock.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -43,7 +54,20 @@ describe('ProvisionJobsScreen', () => {
       competitions: [],
       teams: [],
       rangeTemplates: [],
-      rangeInstances: [],
+      rangeInstances: [
+        {
+          id: 'range-1',
+          status: 'create_failed',
+          teamId: 'team-1',
+          recoverySummary: {
+            category: 'quota',
+            severity: 'warning',
+            canRetry: true,
+            summary: '云资源配额不足导致编排失败',
+            suggestions: ['检查 EIP、ECS、VPC 配额是否足够，释放旧资源后再重试。'],
+          },
+        },
+      ],
       provisionJobs: [
         {
           id: 'job-1',
@@ -85,11 +109,13 @@ describe('ProvisionJobsScreen', () => {
 
     await screen.findByText('编排任务');
     expect(screen.getByText(/失败摘要：EIP 分配失败/)).toBeTruthy();
+    expect(screen.getByText(/恢复分类：资源配额/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '查看任务 job-1' }));
 
     await screen.findByText('步骤日志');
     expect(screen.getAllByText(/开始时间：2026-06-24 17:30:00/).length).toBeGreaterThan(0);
     expect(screen.getByText(/标准输出摘要：requestRegion=cn-hangzhou/)).toBeTruthy();
+    expect(screen.getAllByText(/恢复分类：资源配额/).length).toBeGreaterThan(0);
   });
 
   it('keeps the last clicked job detail when slower earlier requests resolve later', async () => {
@@ -168,5 +194,42 @@ describe('ProvisionJobsScreen', () => {
     expect(await screen.findByText(/当前步骤：release-eip/)).toBeTruthy();
     expect(screen.queryByText(/当前步骤：allocate-eip/)).toBeNull();
     expect(screen.queryByText('旧请求返回')).toBeNull();
+  });
+
+  it('auto-opens the requested job from search params', async () => {
+    searchParamsGetMock.mockReturnValue('job-2');
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [],
+      teams: [],
+      rangeTemplates: [],
+      rangeInstances: [],
+      provisionJobs: [
+        { id: 'job-1', rangeInstanceId: 'range-1', jobType: 'create', status: 'running', triggeredBy: 'admin' },
+        { id: 'job-2', rangeInstanceId: 'range-2', jobType: 'destroy', status: 'failed', triggeredBy: 'ops' },
+      ],
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({
+      job: {
+        id: 'job-2',
+        rangeInstanceId: 'range-2',
+        jobType: 'destroy',
+        status: 'failed',
+        triggeredBy: 'ops',
+      },
+      steps: [
+        {
+          id: 'step-2',
+          jobId: 'job-2',
+          stepName: 'release-eip',
+          status: 'failed',
+          message: '资源释放失败',
+        },
+      ],
+    });
+
+    render(<ProvisionJobsScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText(/当前步骤：release-eip/)).toBeTruthy();
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'job-2');
   });
 });

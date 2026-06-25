@@ -155,6 +155,11 @@ describe('Admin provisioning failures', () => {
       })
       .expect(201);
 
+    await request(app.getHttpServer())
+      .post(`/admin/range-templates/${template.body.id}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
     const instance = await request(app.getHttpServer())
       .post('/admin/range-instances')
       .set('authorization', 'Bearer dev-admin-token')
@@ -220,6 +225,94 @@ describe('Admin provisioning failures', () => {
           stderrExcerpt: 'simulated stderr from fake plan',
         }),
       ]),
+    );
+  });
+
+  it('creates a retry job for a failed create instance and increments retryCount', async () => {
+    const competition = await request(app.getHttpServer())
+      .post('/admin/competitions')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ name: 'Retry Drill' })
+      .expect(201);
+
+    const team = await request(app.getHttpServer())
+      .post('/admin/teams')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ competitionId: competition.body.id, name: 'Retry Team' })
+      .expect(201);
+
+    const template = await request(app.getHttpServer())
+      .post('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'Retry Template',
+        slug: `retry-template-${Date.now()}`,
+        version: 'v1',
+        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+        topologySpec: {
+          vpcCidr: '10.76.0.0/16',
+          networkZones: [
+            { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.76.10.0/24', isPublicEntry: true },
+            { key: 'office', name: 'Office', purpose: 'user-workstations', cidr: '10.76.20.0/24' },
+            { key: 'server', name: 'Server', purpose: 'application-servers', cidr: '10.76.30.0/24' },
+          ],
+          hosts: [
+            { key: 'dmz-entry', name: 'DMZ Entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.76.10.10', exposePublic: true },
+            { key: 'office-client', name: 'Office Client', zoneKey: 'office', role: 'workstation', privateIp: '10.76.20.10' },
+            { key: 'server-app', name: 'Server App', zoneKey: 'server', role: 'app', privateIp: '10.76.30.10' },
+          ],
+          publicEntry: { hostKey: 'dmz-entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+        },
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/range-templates/${template.body.id}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    const instance = await request(app.getHttpServer())
+      .post('/admin/range-instances')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        competitionId: competition.body.id,
+        teamId: team.body.id,
+        templateId: template.body.id,
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/range-instances/${instance.body.id}/create`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ triggeredBy: 'admin' })
+      .expect(201);
+
+    await waitForRangeInstanceStatus(instance.body.id, 'create_failed');
+
+    const retryResponse = await request(app.getHttpServer())
+      .post(`/admin/range-instances/${instance.body.id}/retry`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ triggeredBy: 'admin' })
+      .expect(201);
+
+    expect(retryResponse.body).toEqual(
+      expect.objectContaining({
+        rangeInstanceId: instance.body.id,
+        jobType: 'retry',
+        status: 'pending',
+        retryCount: 1,
+      }),
+    );
+
+    const pendingInstance = await waitForRangeInstanceStatus(instance.body.id, 'pending_create');
+
+    expect(pendingInstance).toEqual(
+      expect.objectContaining({
+        id: instance.body.id,
+        status: 'pending_create',
+        lastJobId: retryResponse.body.id,
+        errorSummary: null,
+      }),
     );
   });
 });

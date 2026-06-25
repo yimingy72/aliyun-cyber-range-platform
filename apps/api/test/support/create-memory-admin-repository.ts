@@ -340,7 +340,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         triggeredBy: input.triggeredBy,
         startedAt: null,
         finishedAt: null,
-        retryCount: 0,
+        retryCount: input.retryCount ?? 0,
         errorSummary: null,
         createdAt: now(),
         updatedAt: now(),

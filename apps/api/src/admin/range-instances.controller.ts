@@ -33,4 +33,9 @@ export class RangeInstancesController {
   triggerDestroy(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
     return this.rangeInstancesService.triggerDestroy(id, body.triggeredBy);
   }
+
+  @Post(':id/retry')
+  triggerRetry(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.triggerRetry(id, body.triggeredBy);
+  }
 }

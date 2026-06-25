@@ -55,6 +55,7 @@ type FilterState = {
   teamId: string;
   templateId: string;
   status: string;
+  recoveryCategory: string;
 };
 
 type CreateInstanceFormState = {
@@ -190,6 +191,140 @@ function getResolvedStepSummary(step: ExtendedProvisionJobStep) {
   return step.message ?? step.stderrExcerpt ?? step.stdoutExcerpt ?? step.status;
 }
 
+function getCurrentStage(steps: ExtendedProvisionJobStep[]) {
+  const runningStep = steps.find((step) => step.status === 'running' || step.status === 'pending');
+
+  if (runningStep) {
+    return `${runningStep.stepName} / ${getStatusLabel(runningStep.status)}`;
+  }
+
+  const latestFinishedStep = [...steps]
+    .reverse()
+    .find((step) => step.status === 'succeeded' || step.status === 'failed');
+
+  if (latestFinishedStep) {
+    return `${latestFinishedStep.stepName} / ${getStatusLabel(latestFinishedStep.status)}`;
+  }
+
+  return '暂无';
+}
+
+function getLatestFailedStep(steps: ExtendedProvisionJobStep[]) {
+  return [...steps].reverse().find((step) => step.status === 'failed') ?? null;
+}
+
+function getJobInsights(
+  job: ExtendedProvisionJob | null,
+  steps: ExtendedProvisionJobStep[],
+  accessEntry: RangeInstance['accessEntry'] | null | undefined,
+) {
+  const insights = new Set<string>();
+
+  if (job?.errorSummary) {
+    insights.add(`失败原因：${job.errorSummary}`);
+  }
+
+  if (accessEntry?.publicIp) {
+    insights.add(`公网入口：${accessEntry.publicIp}`);
+  }
+
+  for (const step of steps) {
+    if (step.message) {
+      insights.add(`步骤消息：${step.message}`);
+    }
+
+    const ipMatch = (step.stdoutExcerpt ?? step.stderrExcerpt ?? '').match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+
+    if (ipMatch) {
+      insights.add(`日志 IP：${ipMatch[0]}`);
+    }
+  }
+
+  return Array.from(insights).slice(0, 4);
+}
+
+function getRecoverySuggestions(job: ExtendedProvisionJob | null, steps: ExtendedProvisionJobStep[]) {
+  const suggestions = new Set<string>();
+  const combined = [job?.errorSummary, ...steps.flatMap((step) => [step.message, step.stderrExcerpt, step.stdoutExcerpt])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (!combined) {
+    return [] as string[];
+  }
+
+  if (
+    combined.includes('no saleable ecs instance type') ||
+    combined.includes('规格不可售') ||
+    combined.includes('instance type')
+  ) {
+    suggestions.add('建议动作：切换可用区或调整实例规格偏好后重试。');
+  }
+
+  if (combined.includes('quota') || combined.includes('配额')) {
+    suggestions.add('建议动作：检查 EIP、ECS 或 VPC 配额是否足够。');
+  }
+
+  if (combined.includes('missing required opentofu setting') || combined.includes('access key')) {
+    suggestions.add('建议动作：检查阿里云凭证、区域和 Runner 环境变量配置。');
+  }
+
+  if (combined.includes('provider zip') || combined.includes('provider zip does not exist')) {
+    suggestions.add('建议动作：检查阿里云 Provider 包路径与 Runner 挂载。');
+  }
+
+  if (combined.includes('topology') || combined.includes('blueprint')) {
+    suggestions.add('建议动作：回到模板中心重新发布模板，确认蓝图编译产物完整。');
+  }
+
+  return Array.from(suggestions).slice(0, 3);
+}
+
+function getRecoveryCategoryLabel(category?: string | null) {
+  if (category === 'capacity') {
+    return '规格容量';
+  }
+
+  if (category === 'quota') {
+    return '资源配额';
+  }
+
+  if (category === 'credentials') {
+    return '云凭证配置';
+  }
+
+  if (category === 'provider_setup') {
+    return 'Provider / Runner 配置';
+  }
+
+  if (category === 'template_blueprint') {
+    return '模板蓝图';
+  }
+
+  return '未知';
+}
+
+function getActionButtonLabel(instance: RangeInstance, action: 'create' | 'destroy') {
+  if (action === 'create') {
+    return instance.status === 'create_failed' ? '重试创建' : '发起创建';
+  }
+
+  return instance.status === 'destroy_failed' ? '重试销毁' : '发起销毁';
+}
+
+function getActionTrigger(instance: RangeInstance, action: 'create' | 'destroy') {
+  if (action === 'create' && instance.status === 'create_failed') {
+    return 'retry' as const;
+  }
+
+  if (action === 'destroy' && instance.status === 'destroy_failed') {
+    return 'retry' as const;
+  }
+
+  return action;
+}
+
 function normalizeExpiresAtInput(value: string) {
   if (!value) {
     return undefined;
@@ -219,6 +354,7 @@ export function RangeInstancesScreen({
     teamId: 'all',
     templateId: 'all',
     status: 'all',
+    recoveryCategory: 'all',
   });
   const [createForm, setCreateForm] = useState<CreateInstanceFormState>(EMPTY_CREATE_FORM);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -316,6 +452,10 @@ export function RangeInstancesScreen({
     return teams.filter((team) => team.competitionId === resolvedCreateCompetitionId);
   }, [resolvedCreateCompetitionId, teams]);
 
+  const publishedTemplates = useMemo(() => {
+    return rangeTemplates.filter((template) => Boolean(template.currentPublishedVersionId));
+  }, [rangeTemplates]);
+
   const resolvedCreateTeamId = useMemo(() => {
     if (createTeams.some((team) => team.id === createForm.teamId)) {
       return createForm.teamId;
@@ -325,12 +465,12 @@ export function RangeInstancesScreen({
   }, [createForm.teamId, createTeams]);
 
   const resolvedCreateTemplateId = useMemo(() => {
-    if (rangeTemplates.some((template) => template.id === createForm.templateId)) {
+    if (publishedTemplates.some((template) => template.id === createForm.templateId)) {
       return createForm.templateId;
     }
 
-    return rangeTemplates[0]?.id ?? '';
-  }, [createForm.templateId, rangeTemplates]);
+    return publishedTemplates[0]?.id ?? '';
+  }, [createForm.templateId, publishedTemplates]);
 
   const jobsByInstanceId = useMemo(() => {
     const map = new Map<string, ExtendedProvisionJob>();
@@ -343,6 +483,22 @@ export function RangeInstancesScreen({
 
     return map;
   }, [snapshot]);
+
+  const latestFailedStep = useMemo(() => {
+    return getLatestFailedStep(selectedJobState.steps);
+  }, [selectedJobState.steps]);
+
+  const currentStage = useMemo(() => {
+    return getCurrentStage(selectedJobState.steps);
+  }, [selectedJobState.steps]);
+
+  const selectedJobInsights = useMemo(() => {
+    return getJobInsights(selectedJobState.job, selectedJobState.steps, selectedDetail?.accessEntry);
+  }, [selectedDetail?.accessEntry, selectedJobState.job, selectedJobState.steps]);
+
+  const recoverySuggestions = useMemo(() => {
+    return getRecoverySuggestions(selectedJobState.job, selectedJobState.steps);
+  }, [selectedJobState.job, selectedJobState.steps]);
 
   const visibleInstances = useMemo(() => {
     return ((snapshot?.rangeInstances ?? []) as ExtendedRangeInstance[]).filter((instance) => {
@@ -362,9 +518,26 @@ export function RangeInstancesScreen({
         return false;
       }
 
+      if (
+        filters.recoveryCategory !== 'all' &&
+        (instance.recoverySummary?.category ?? 'none') !== filters.recoveryCategory
+      ) {
+        return false;
+      }
+
       return true;
     });
   }, [filters, snapshot]);
+
+  const recoveryCategories = useMemo(() => {
+    return Array.from(
+      new Set(
+        ((snapshot?.rangeInstances ?? []) as ExtendedRangeInstance[])
+          .map((instance) => instance.recoverySummary?.category)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+  }, [snapshot]);
 
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstanceDetail | ExtendedRangeInstance) {
     setSnapshot((current) => {
@@ -506,11 +679,23 @@ export function RangeInstancesScreen({
         session.token,
         payload,
       )) as ExtendedRangeInstanceDetail;
+      const job = (await triggerRangeAction(
+        apiBaseUrl,
+        session.token,
+        created.id,
+        'create',
+        'admin',
+      )) as ExtendedProvisionJob;
+      const pendingDetail: ExtendedRangeInstanceDetail = {
+        ...created,
+        status: 'pending_create',
+        lastJobId: job.id,
+      };
 
-      upsertInstanceInSnapshot(created);
+      upsertInstanceInSnapshot(pendingDetail);
       setSelectedInstanceId(created.id);
-      setSelectedDetail(created);
-      setSelectedJobState({ job: null, steps: [] });
+      setSelectedDetail(pendingDetail);
+      setSelectedJobState({ job, steps: [] });
       setFilters((current) => ({
         ...current,
         competitionId: current.competitionId === 'all' ? current.competitionId : created.competitionId,
@@ -521,6 +706,8 @@ export function RangeInstancesScreen({
         ...current,
         expiresAt: '',
       }));
+
+      void refreshSelectedInstance(created.id, { background: true });
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -528,7 +715,7 @@ export function RangeInstancesScreen({
         return;
       }
 
-      setErrorMessage('实例创建失败，请检查比赛、队伍和模板配置后重试。');
+      setErrorMessage('实例创建或启动失败，请检查比赛、队伍与模板发布状态后重试。');
     } finally {
       setIsCreatingInstance(false);
     }
@@ -543,8 +730,12 @@ export function RangeInstancesScreen({
     setIsSubmittingAction(action);
 
     try {
-      const job = (await triggerRangeAction(apiBaseUrl, session.token, selectedDetail.id, action, 'admin')) as ExtendedProvisionJob;
-      const pendingStatus = action === 'create' ? 'pending_create' : 'pending_destroy';
+      const trigger = getActionTrigger(selectedDetail, action);
+      const job = (await triggerRangeAction(apiBaseUrl, session.token, selectedDetail.id, trigger, 'admin')) as ExtendedProvisionJob;
+      const pendingStatus =
+        action === 'destroy' || (trigger === 'retry' && selectedDetail.status === 'destroy_failed')
+          ? 'pending_destroy'
+          : 'pending_create';
 
       upsertInstanceInSnapshot({
         ...selectedDetail,
@@ -572,7 +763,11 @@ export function RangeInstancesScreen({
         return;
       }
 
-      setErrorMessage(action === 'create' ? '创建任务发起失败，请稍后重试。' : '销毁任务发起失败，请稍后重试。');
+      setErrorMessage(
+        action === 'create'
+          ? '创建或恢复任务发起失败，请稍后重试。'
+          : '销毁或恢复任务发起失败，请稍后重试。',
+      );
     } finally {
       setIsSubmittingAction(null);
     }
@@ -692,16 +887,16 @@ export function RangeInstancesScreen({
               aria-label="靶场模板"
               value={resolvedCreateTemplateId}
               onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))}
-              disabled={isCreatingInstance || !rangeTemplates.length}
+              disabled={isCreatingInstance || !publishedTemplates.length}
             >
-              {rangeTemplates.length ? (
-                rangeTemplates.map((template) => (
+              {publishedTemplates.length ? (
+                publishedTemplates.map((template) => (
                   <option key={template.id} value={template.id}>
                     {getTemplateLabel(template)}
                   </option>
                 ))
               ) : (
-                <option value="">暂无可选模板</option>
+                <option value="">暂无已发布模板</option>
               )}
             </select>
           </label>
@@ -721,13 +916,13 @@ export function RangeInstancesScreen({
             <button
               type="submit"
               disabled={
-                isCreatingInstance ||
-                !resolvedCreateCompetitionId ||
-                !resolvedCreateTeamId ||
-                !resolvedCreateTemplateId
-              }
+                  isCreatingInstance ||
+                  !resolvedCreateCompetitionId ||
+                  !resolvedCreateTeamId ||
+                  !resolvedCreateTemplateId
+                }
             >
-              {isCreatingInstance ? '创建中...' : '创建实例'}
+              {isCreatingInstance ? '创建并启动中...' : '创建并启动'}
             </button>
           </div>
         </form>
@@ -803,6 +998,22 @@ export function RangeInstancesScreen({
               ))}
             </select>
           </label>
+
+          <label>
+            <span>恢复分类筛选</span>
+            <select
+              aria-label="恢复分类筛选"
+              value={filters.recoveryCategory}
+              onChange={(event) => setFilters((current) => ({ ...current, recoveryCategory: event.target.value }))}
+            >
+              <option value="all">全部分类</option>
+              {recoveryCategories.map((category) => (
+                <option key={category} value={category}>
+                  {getRecoveryCategoryLabel(category)}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       </section>
 
@@ -830,6 +1041,7 @@ export function RangeInstancesScreen({
                       <span>比赛：{competition?.name ?? competitionId ?? '暂无'}</span>
                       <span>模板：{getTemplateLabel(template)}</span>
                       <span>状态：{getStatusLabel(instance.status)}</span>
+                      <span>恢复分类：{getRecoveryCategoryLabel(instance.recoverySummary?.category)}</span>
                       <span>
                         公网入口：{instance.accessEntry?.publicIp ?? instance.accessEntry?.url ?? '暂无'}
                       </span>
@@ -896,12 +1108,54 @@ export function RangeInstancesScreen({
                     <span>任务 ID：{selectedJobState.job.id}</span>
                     <span>类型：{selectedJobState.job.jobType}</span>
                     <span>状态：{getStatusLabel(selectedJobState.job.status)}</span>
+                    <span>当前阶段：{currentStage}</span>
                     <span>触发人：{selectedJobState.job.triggeredBy}</span>
                     <span>开始时间：{formatDateTime(selectedJobState.job.startedAt)}</span>
+                    <span>结束时间：{formatDateTime(selectedJobState.job.finishedAt)}</span>
                     <span>失败摘要：{selectedJobState.job.errorSummary ?? '无'}</span>
                   </>
                 ) : (
                   <span>暂无最近任务。</span>
+                )}
+              </div>
+
+              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
+                <strong>运行洞察</strong>
+                {selectedJobInsights.length ? (
+                  selectedJobInsights.map((insight) => <span key={insight}>{insight}</span>)
+                ) : (
+                  <span>暂无可解析洞察。</span>
+                )}
+              </div>
+
+              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
+                <strong>最近失败步骤</strong>
+                {latestFailedStep ? (
+                  <>
+                    <span>步骤：{latestFailedStep.stepName}</span>
+                    <span>状态：{getStatusLabel(latestFailedStep.status)}</span>
+                    <span>摘要：{getResolvedStepSummary(latestFailedStep)}</span>
+                    <span>错误输出：{latestFailedStep.stderrExcerpt ?? '暂无'}</span>
+                  </>
+                ) : (
+                  <span>暂无失败步骤。</span>
+                )}
+              </div>
+
+              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
+                <strong>恢复建议</strong>
+                {selectedDetail.recoverySummary ? (
+                  <>
+                    <span>分类：{getRecoveryCategoryLabel(selectedDetail.recoverySummary.category)}</span>
+                    <span>级别：{selectedDetail.recoverySummary.severity === 'critical' ? '关键' : '提示'}</span>
+                    <span>摘要：{selectedDetail.recoverySummary.summary}</span>
+                    <span>可重试：{selectedDetail.recoverySummary.canRetry ? '是' : '否'}</span>
+                    {selectedDetail.recoverySummary.suggestions.map((suggestion) => <span key={suggestion}>{suggestion}</span>)}
+                  </>
+                ) : recoverySuggestions.length ? (
+                  recoverySuggestions.map((suggestion) => <span key={suggestion}>{suggestion}</span>)
+                ) : (
+                  <span>暂无恢复建议，建议进入任务详情查看完整时间线。</span>
                 )}
               </div>
 
@@ -919,22 +1173,31 @@ export function RangeInstancesScreen({
               </div>
 
               <div className="admin-list-actions" style={{ marginTop: '1rem' }}>
-                {getActionLabels(selectedDetail).includes('create') ? (
+                {selectedJobState.job ? (
                   <button
                     type="button"
                     disabled={isSubmittingAction !== null}
+                    onClick={() => router.push(`/admin/provision-jobs?jobId=${selectedJobState.job!.id}`)}
+                  >
+                    查看任务详情
+                  </button>
+                ) : null}
+                {getActionLabels(selectedDetail).includes('create') ? (
+                  <button
+                    type="button"
+                    disabled={isSubmittingAction !== null || selectedDetail.recoverySummary?.canRetry === false}
                     onClick={() => void handleTriggerAction('create')}
                   >
-                    {isSubmittingAction === 'create' ? '创建中...' : '发起创建'}
+                    {isSubmittingAction === 'create' ? '创建中...' : getActionButtonLabel(selectedDetail, 'create')}
                   </button>
                 ) : null}
                 {getActionLabels(selectedDetail).includes('destroy') ? (
                   <button
                     type="button"
-                    disabled={isSubmittingAction !== null}
+                    disabled={isSubmittingAction !== null || selectedDetail.recoverySummary?.canRetry === false}
                     onClick={() => void handleTriggerAction('destroy')}
                   >
-                    {isSubmittingAction === 'destroy' ? '销毁中...' : '发起销毁'}
+                    {isSubmittingAction === 'destroy' ? '销毁中...' : getActionButtonLabel(selectedDetail, 'destroy')}
                   </button>
                 ) : null}
               </div>

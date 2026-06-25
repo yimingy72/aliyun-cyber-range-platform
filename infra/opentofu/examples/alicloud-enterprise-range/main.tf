@@ -10,6 +10,13 @@ module "range" {
   resource_name_prefix = var.resource_name_prefix
   zone_id              = var.zone_id
   vpc_cidr             = var.vpc_cidr
+  entry_host_key       = var.entry_host_key
+  network_zones        = var.network_zones
+  hosts                = var.hosts
+  nat_gateways         = var.nat_gateways
+  eips                 = var.eips
+  security_group_rules = var.security_group_rules
+  acls                 = var.acls
   dmz_cidr             = var.dmz_cidr
   office_cidr          = var.office_cidr
   server_cidr          = var.server_cidr

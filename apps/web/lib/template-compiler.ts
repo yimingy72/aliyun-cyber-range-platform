@@ -1,7 +1,8 @@
-import type { RangeTemplateCompiledSpec } from './admin-types';
+import type { RangeTemplateCompiledSpec, RangeTemplateTopologySpec } from './admin-types';
 import type { TemplateNode } from '../components/admin/template-editor/template-property-panel';
 
 type CompileTopologyGraphInput = {
+  topologySpec?: RangeTemplateTopologySpec | null;
   nodes: TemplateNode[];
 };
 
@@ -18,6 +19,16 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
       provider: 'alibaba_cloud',
       config: compileNodeConfig(node),
     })),
+    ...(input.topologySpec
+      ? {
+          topology: {
+            vpcCidr: input.topologySpec.vpcCidr,
+            publicEntryHostKey: input.topologySpec.publicEntry.hostKey,
+            networkZoneKeys: input.topologySpec.networkZones.map((zone) => zone.key),
+            hostKeys: input.topologySpec.hosts.map((host) => host.key),
+          },
+        }
+      : {}),
   };
 }
 
@@ -46,6 +57,41 @@ function compileNodeConfig(node: TemplateNode): Record<string, unknown> {
         routeRole: node.routeRole,
         egressType: node.egressType,
         bindEip: node.bindEip,
+      };
+    case 'nat_gateway':
+      return {
+        label: node.label,
+        zoneKey: node.zoneKey,
+        snatEnabled: node.snatEnabled,
+      };
+    case 'eip':
+      return {
+        label: node.label,
+        bindTargetType: node.bindTargetType,
+        bindTargetKey: node.bindTargetKey,
+        bandwidthMbps: node.bandwidthMbps,
+      };
+    case 'acl':
+      return {
+        label: node.label,
+        zoneKey: node.zoneKey,
+        direction: node.direction,
+        policy: node.policy,
+        protocol: node.protocol,
+        portRange: node.portRange,
+        sourceCidr: node.sourceCidr,
+        priority: node.priority,
+      };
+    case 'security_group_rule':
+      return {
+        label: node.label,
+        targetHostKey: node.targetHostKey,
+        direction: node.direction,
+        policy: node.policy,
+        protocol: node.protocol,
+        portRange: node.portRange,
+        sourceCidr: node.sourceCidr,
+        priority: node.priority,
       };
     default:
       return assertNever(node, `Unsupported template node kind: ${String((node as { kind?: unknown }).kind)}`);

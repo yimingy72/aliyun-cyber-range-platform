@@ -29,6 +29,9 @@ SMOKE_DESTROYED="0"
 SMOKE_KEEP_RESOURCES="${SMOKE_KEEP_RESOURCES:-0}"
 SMOKE_EXECUTION_MODE="${SMOKE_EXECUTION_MODE:-full}"
 DEFAULT_AUTO_INSTANCE_TYPE_PREFERENCES="ecs.u1-c1m2.large,ecs.e-c1m2.large,ecs.t6-c1m2.large,ecs.c6t.large,ecs.hfc6.large,ecs.sn1ne.large,ecs.sn1.medium,ecs.n1.medium,ecs.c7.large,ecs.g7.large,ecs.c6.large,ecs.g6.large"
+DEFAULT_AUTO_IMAGE_ID_PREFERENCES="ubuntu_24_04_x64_20G_alibase_20260615.vhd,ubuntu_22_04_x64_20G_alibase_20260615.vhd,debian_12_14_x64_20G_alibase_20260609.vhd,centos_stream_9_x64_20G_alibase_20260616.vhd"
+SMOKE_TEMPLATE_MODE="${SMOKE_TEMPLATE_MODE:-resource-driven}"
+TOFU_DOCKER_PASSTHROUGH_PROXY="${TOFU_DOCKER_PASSTHROUGH_PROXY:-0}"
 
 normalize_optional_value() {
   local value="${1:-}"
@@ -254,16 +257,20 @@ run_tofu_docker() {
   detect_host_cert_bundle
   prepare_alicloud_provider_mirror
 
-  docker_env_args=(
-    -e HTTPS_PROXY
-    -e HTTP_PROXY
-    -e ALL_PROXY
-    -e https_proxy
-    -e http_proxy
-    -e all_proxy
-    -e NO_PROXY
-    -e no_proxy
-  )
+  docker_env_args=()
+
+  if [ "$TOFU_DOCKER_PASSTHROUGH_PROXY" = "1" ]; then
+    docker_env_args=(
+      -e HTTPS_PROXY
+      -e HTTP_PROXY
+      -e ALL_PROXY
+      -e https_proxy
+      -e http_proxy
+      -e all_proxy
+      -e NO_PROXY
+      -e no_proxy
+    )
+  fi
 
   if [ -n "$TOFU_CLI_CONFIG_FILE_DOCKER" ]; then
     docker_env_args+=(-e TF_CLI_CONFIG_FILE=/tmp/tofu-docker.tfrc)
@@ -386,6 +393,19 @@ read_instance_type_preferences() {
   printf '%s' "$DEFAULT_AUTO_INSTANCE_TYPE_PREFERENCES"
 }
 
+read_image_id_preferences() {
+  local configured
+
+  configured="$(normalize_optional_value "${OPENTOFU_IMAGE_ID_PREFERENCES:-${ALICLOUD_IMAGE_ID_PREFERENCES:-}}")"
+
+  if [ -n "$configured" ]; then
+    printf '%s' "$configured"
+    return
+  fi
+
+  printf '%s' "$DEFAULT_AUTO_IMAGE_ID_PREFERENCES"
+}
+
 resolve_auto_instance_type() {
   local access_key="$1"
   local secret_key="$2"
@@ -483,6 +503,73 @@ resolve_requested_instance_type() {
   resolve_auto_instance_type "$@"
 }
 
+resolve_requested_image_id() {
+  local access_key="$1"
+  local secret_key="$2"
+  local region="$3"
+  local requested_image_id
+  local image_id_preferences
+  local images_json
+
+  requested_image_id="$(normalize_optional_value "${OPENTOFU_IMAGE_ID:-${ALICLOUD_IMAGE_ID:-}}")"
+  image_id_preferences="$(read_image_id_preferences)"
+
+  if ! command -v aliyun >/dev/null 2>&1; then
+    echo "missing required command for image resolution: aliyun" >&2
+    exit 1
+  fi
+
+  images_json="$({
+    env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY -u https_proxy -u http_proxy -u all_proxy -u NO_PROXY -u no_proxy \
+      ALICLOUD_ACCESS_KEY="$access_key" \
+      ALICLOUD_SECRET_KEY="$secret_key" \
+      aliyun ecs DescribeImages \
+        --RegionId "$region" \
+        --ImageOwnerAlias system \
+        --Status Available \
+        --OSType linux \
+        --Architecture x86_64 \
+        --PageSize 100
+  })"
+
+  printf '%s' "$images_json" | REQUESTED_IMAGE_ID="$requested_image_id" IMAGE_ID_PREFERENCES="$image_id_preferences" REGION_ID="$region" node -e '
+    const fs = require("node:fs");
+
+    const input = fs.readFileSync(0, "utf8").trim();
+    const requestedImageId = (process.env.REQUESTED_IMAGE_ID || "").trim();
+    const regionId = (process.env.REGION_ID || "").trim();
+    const preferences = (process.env.IMAGE_ID_PREFERENCES || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const payload = JSON.parse(input);
+    const availableImageIds = (payload?.Images?.Image || [])
+      .filter((image) => image?.Status === "Available" && typeof image?.ImageId === "string")
+      .map((image) => image.ImageId.trim())
+      .filter(Boolean);
+
+    if (requestedImageId && requestedImageId.toLowerCase() !== "auto") {
+      if (!availableImageIds.includes(requestedImageId)) {
+        console.error(`Configured image ID is not available in region ${regionId}: ${requestedImageId}`);
+        process.exit(1);
+      }
+
+      process.stdout.write(requestedImageId);
+      process.exit(0);
+    }
+
+    const selectedImageId = preferences.find((candidate) => availableImageIds.includes(candidate)) || availableImageIds[0];
+
+    if (!selectedImageId) {
+      console.error(`No saleable ECS system image found in region ${regionId}`);
+      process.exit(1);
+    }
+
+    process.stdout.write(selectedImageId);
+  '
+}
+
 write_smoke_tfvars() {
   mkdir -p "$SMOKE_DIR"
 
@@ -493,12 +580,13 @@ write_smoke_tfvars() {
   secret_key="$(require_env_value ALICLOUD_SECRET_KEY)"
   region="$(require_env_value ALICLOUD_REGION)"
   zone_id="$(require_env_value ALICLOUD_ZONE_ID)"
-  image_id="$(require_first_env_value ALICLOUD_IMAGE_ID OPENTOFU_IMAGE_ID)"
   instance_password="$(require_env_value OPENTOFU_INSTANCE_PASSWORD)"
   instance_type="$(resolve_requested_instance_type "$access_key" "$secret_key" "$region" "$zone_id")"
+  image_id="$(resolve_requested_image_id "$access_key" "$secret_key" "$region")"
   resource_name_prefix="${SMOKE_RESOURCE_NAME_PREFIX:-smoke-${SMOKE_RUN_ID}}"
 
   echo "[smoke] resolved instance type: $instance_type"
+  echo "[smoke] resolved image id: $image_id"
 
   ACCESS_KEY="$access_key" \
   SECRET_KEY="$secret_key" \
@@ -515,10 +603,11 @@ write_smoke_tfvars() {
   DMZ_PRIVATE_IP="${ALICLOUD_RANGE_DMZ_PRIVATE_IP:-10.70.10.10}" \
   OFFICE_PRIVATE_IP="${ALICLOUD_RANGE_OFFICE_PRIVATE_IP:-10.70.20.10}" \
   SERVER_PRIVATE_IP="${ALICLOUD_RANGE_SERVER_PRIVATE_IP:-10.70.30.10}" \
+  TEMPLATE_MODE="$SMOKE_TEMPLATE_MODE" \
   node -e '
     const fs = require("node:fs");
     const filePath = process.argv[1];
-    const data = {
+    const base = {
       access_key: process.env.ACCESS_KEY,
       secret_key: process.env.SECRET_KEY,
       region: process.env.REGION,
@@ -535,6 +624,36 @@ write_smoke_tfvars() {
       image_id: process.env.IMAGE_ID,
       instance_password: process.env.INSTANCE_PASSWORD,
     };
+    const data = process.env.TEMPLATE_MODE === "resource-driven"
+      ? {
+          ...base,
+          entry_host_key: "dmz-entry",
+          network_zones: [
+            { key: "dmz", name: "DMZ", cidr: process.env.DMZ_CIDR, purpose: "public-entry", is_public_entry: true },
+            { key: "office", name: "Office", cidr: process.env.OFFICE_CIDR, purpose: "user-workstations", is_public_entry: false },
+            { key: "server", name: "Server", cidr: process.env.SERVER_CIDR, purpose: "application-servers", is_public_entry: false },
+          ],
+          hosts: [
+            { key: "dmz-entry", name: "DMZ Entry", zone_key: "dmz", private_ip: process.env.DMZ_PRIVATE_IP, role: "entry", expose_public: true },
+            { key: "office-client", name: "Office Client", zone_key: "office", private_ip: process.env.OFFICE_PRIVATE_IP, role: "workstation", expose_public: false },
+            { key: "server-app", name: "Server App", zone_key: "server", private_ip: process.env.SERVER_PRIVATE_IP, role: "app", expose_public: false },
+          ],
+          nat_gateways: [
+            { key: "nat-office", name: "Office NAT", zone_key: "office", snat_enabled: true },
+          ],
+          eips: [
+            { key: "eip-entry", name: "Entry EIP", bind_target_type: "host", bind_target_key: "dmz-entry", bandwidth_mbps: 30 },
+            { key: "eip-office-nat", name: "Office NAT EIP", bind_target_type: "nat_gateway", bind_target_key: "nat-office", bandwidth_mbps: 30 },
+          ],
+          security_group_rules: [
+            { key: "sg-entry-ssh", name: "Entry SSH", target_host_key: "dmz-entry", direction: "ingress", policy: "accept", protocol: "tcp", port_range: "22/22", source_cidr: "0.0.0.0/0", priority: 1 },
+            { key: "sg-entry-http", name: "Entry HTTP", target_host_key: "dmz-entry", direction: "ingress", policy: "accept", protocol: "tcp", port_range: "80/80", source_cidr: "0.0.0.0/0", priority: 2 },
+          ],
+          acls: [
+            { key: "acl-office-inbound", name: "Office ACL", zone_key: "office", direction: "inbound", policy: "accept", protocol: "tcp", port_range: "3389/3389", source_cidr: process.env.VPC_CIDR, priority: 10 },
+          ],
+        }
+      : base;
     fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
   ' "$SMOKE_TFVARS_PATH"
 }

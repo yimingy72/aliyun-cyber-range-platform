@@ -11,8 +11,10 @@ const {
   createRangeTemplateMock,
   updateRangeTemplateMock,
   deleteRangeTemplateMock,
+  publishRangeTemplateMock,
   fetchAdminBootstrapMock,
   fetchCloudConfigMock,
+  pushMock,
   replaceMock,
 } = vi.hoisted(() => ({
   createCompetitionMock: vi.fn(),
@@ -24,13 +26,16 @@ const {
   createRangeTemplateMock: vi.fn(),
   updateRangeTemplateMock: vi.fn(),
   deleteRangeTemplateMock: vi.fn(),
+  publishRangeTemplateMock: vi.fn(),
   fetchAdminBootstrapMock: vi.fn(),
   fetchCloudConfigMock: vi.fn(),
+  pushMock: vi.fn(),
   replaceMock: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
+    push: pushMock,
     replace: replaceMock,
   }),
 }));
@@ -49,6 +54,7 @@ vi.mock('../../../lib/admin-api', async () => {
     createRangeTemplate: createRangeTemplateMock,
     updateRangeTemplate: updateRangeTemplateMock,
     deleteRangeTemplate: deleteRangeTemplateMock,
+    publishRangeTemplate: publishRangeTemplateMock,
     fetchAdminBootstrap: fetchAdminBootstrapMock,
     fetchCloudConfig: fetchCloudConfigMock,
   };
@@ -62,7 +68,19 @@ import * as adminSessionModule from '../use-admin-session';
 const bootstrapPayload = {
   competitions: [{ id: 'competition-1', name: '总决赛', status: 'scheduled' }],
   teams: [{ id: 'team-1', name: '蓝队', competitionId: 'competition-1', contactName: '王教练' }],
-  rangeTemplates: [{ id: 'template-1', slug: 'enterprise-range', version: 'v1', name: '企业攻防靶场' }],
+  rangeTemplates: [
+    {
+      id: 'template-1',
+      slug: 'enterprise-range',
+      version: 'v1',
+      name: '企业攻防靶场',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      currentDraftVersionId: 'draft-1',
+      currentPublishedVersionId: 'published-1',
+      currentDraftVersion: { id: 'draft-1', status: 'draft', version: 'v1.1.0' },
+      currentPublishedVersion: { id: 'published-1', status: 'published', version: 'v1' },
+    },
+  ],
   rangeInstances: [],
   provisionJobs: [],
 };
@@ -123,6 +141,8 @@ describe('SettingsScreen', () => {
     createRangeTemplateMock.mockReset();
     updateRangeTemplateMock.mockReset();
     deleteRangeTemplateMock.mockReset();
+    publishRangeTemplateMock.mockReset();
+    pushMock.mockReset();
   });
 
   afterEach(() => {
@@ -363,12 +383,19 @@ describe('SettingsScreen', () => {
       version: 'v1.1.0',
       name: '企业攻防靶场',
       modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      currentDraftVersionId: 'draft-1',
+      currentPublishedVersionId: 'published-1',
+      currentDraftVersion: { id: 'draft-1', status: 'draft', version: 'v1.1.0' },
+      currentPublishedVersion: { id: 'published-1', status: 'published', version: 'v1' },
     });
 
     render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
 
     await screen.findByRole('tab', { name: '比赛' });
     fireEvent.click(screen.getByRole('tab', { name: '模板' }));
+
+    await screen.findByText('已发布 v1');
+    expect(screen.getByText('草稿 v1.1.0')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('模板名称'), {
       target: { value: '企业攻防靶场 V2' },
@@ -413,5 +440,36 @@ describe('SettingsScreen', () => {
         version: 'v1.1.0',
       }),
     );
+  });
+
+  it('navigates to the template editor and publishes the current draft version', async () => {
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, 'dev-admin-token');
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
+    publishRangeTemplateMock.mockResolvedValue({
+      id: 'template-1',
+      slug: 'enterprise-range',
+      version: 'v1.1.0',
+      name: '企业攻防靶场',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      currentDraftVersionId: 'draft-2',
+      currentPublishedVersionId: 'published-2',
+      currentDraftVersion: { id: 'draft-2', status: 'draft', version: 'v1.1.0' },
+      currentPublishedVersion: { id: 'published-2', status: 'published', version: 'v1.1.0' },
+    });
+
+    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByRole('tab', { name: '比赛' });
+    fireEvent.click(screen.getByRole('tab', { name: '模板' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '进入模板编辑器 enterprise-range' }));
+    expect(pushMock).toHaveBeenCalledWith('/admin/templates/template-1');
+
+    fireEvent.click(screen.getByRole('button', { name: '发布模板 enterprise-range' }));
+
+    await screen.findByText('已发布 v1.1.0');
+    expect(screen.getByText('草稿 v1.1.0')).toBeTruthy();
+    expect(publishRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1');
   });
 });

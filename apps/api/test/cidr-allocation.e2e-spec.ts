@@ -154,6 +154,11 @@ describe('CIDR allocation', () => {
 
     templateId = templateResponse.body.id as string;
 
+    await request(app.getHttpServer())
+      .post(`/admin/range-templates/${templateId}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
     const rangeInstanceResponse = await request(app.getHttpServer())
       .post('/admin/range-instances')
       .set('authorization', 'Bearer dev-admin-token')

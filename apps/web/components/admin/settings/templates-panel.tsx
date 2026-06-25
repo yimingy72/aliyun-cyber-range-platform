@@ -16,6 +16,8 @@ type TemplatesPanelProps = {
   templates: RangeTemplate[];
   onCreate: (payload: TemplateDraft) => Promise<RangeTemplate>;
   onUpdate: (id: string, payload: RangeTemplateUpdateInput) => Promise<RangeTemplate>;
+  onPublish: (id: string) => Promise<RangeTemplate>;
+  onOpenEditor: (id: string) => void;
   onDelete: (id: string) => Promise<void>;
 };
 
@@ -26,7 +28,7 @@ const EMPTY_FORM: TemplateDraft = {
   modulePathOrRef: DEFAULT_TEMPLATE_MODULE_PATH,
 };
 
-export function TemplatesPanel({ templates, onCreate, onUpdate, onDelete }: TemplatesPanelProps) {
+export function TemplatesPanel({ templates, onCreate, onUpdate, onPublish, onOpenEditor, onDelete }: TemplatesPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<TemplateDraft>(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -144,8 +146,26 @@ export function TemplatesPanel({ templates, onCreate, onUpdate, onDelete }: Temp
                 <strong>{template.name?.trim() || template.slug}</strong>
                 <span>{template.version}</span>
                 <span>{template.modulePathOrRef?.trim() || DEFAULT_TEMPLATE_MODULE_PATH}</span>
+                <span>{template.currentPublishedVersion ? `已发布 ${template.currentPublishedVersion.version}` : '未发布'}</span>
+                {template.currentDraftVersion ? <span>{`草稿 ${template.currentDraftVersion.version}`}</span> : null}
               </div>
               <div className="admin-list-actions">
+                <button
+                  type="button"
+                  aria-label={`进入模板编辑器 ${template.slug}`}
+                  disabled={isSubmitting}
+                  onClick={() => onOpenEditor(template.id)}
+                >
+                  编辑器
+                </button>
+                <button
+                  type="button"
+                  aria-label={`发布模板 ${template.slug}`}
+                  disabled={isSubmitting || !template.currentDraftVersionId}
+                  onClick={() => void onPublish(template.id)}
+                >
+                  发布
+                </button>
                 <button
                   type="button"
                   aria-label={`编辑模板 ${template.slug}`}

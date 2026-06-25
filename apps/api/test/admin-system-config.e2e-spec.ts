@@ -18,7 +18,9 @@ describe('Admin system config', () => {
     process.env.RANGE_PROVISIONER_MODE = 'dry-run';
     process.env.OPENTOFU_INSTANCE_TYPE = 'auto';
     process.env.OPENTOFU_INSTANCE_TYPE_PREFERENCES = 'ecs.t6-c1m2.large,ecs.c7.large';
-    process.env.OPENTOFU_IMAGE_ID = 'ubuntu_22_04_x64_20G_alibase_20260615.vhd';
+    process.env.OPENTOFU_IMAGE_ID = 'auto';
+    process.env.OPENTOFU_IMAGE_ID_PREFERENCES =
+      'ubuntu_24_04_x64_20G_alibase_20260615.vhd,ubuntu_22_04_x64_20G_alibase_20260615.vhd';
     process.env.OPENTOFU_INSTANCE_PASSWORD = 'TempRangePassw0rd!';
     process.env.ALICLOUD_PROVIDER_ZIP_PATH = '/tmp/provider.zip';
     process.env.ALICLOUD_ACCESS_KEY = 'test-ak';
@@ -50,7 +52,12 @@ describe('Admin system config', () => {
       provisionerMode: 'dry-run',
       instanceTypeStrategy: 'auto',
       instanceTypePreferences: ['ecs.t6-c1m2.large', 'ecs.c7.large'],
-      imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+      imageStrategy: 'auto',
+      imageIdPreferences: [
+        'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+      ],
+      imageId: 'auto',
       instancePasswordConfigured: true,
       providerZipPathConfigured: true,
       readyForPlan: true,
@@ -68,6 +75,7 @@ describe('Admin system config', () => {
 
   it('marks plan readiness as false when required OpenTofu inputs are missing', async () => {
     delete process.env.OPENTOFU_IMAGE_ID;
+    delete process.env.OPENTOFU_IMAGE_ID_PREFERENCES;
     delete process.env.OPENTOFU_INSTANCE_PASSWORD;
     delete process.env.ALICLOUD_PROVIDER_ZIP_PATH;
 

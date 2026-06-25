@@ -1,6 +1,7 @@
 import type {
   ProvisionJobStepStatus,
   RangeAccessEntry,
+  RangeTemplateCompiledSpec,
   RangeResourceSummary,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
@@ -23,7 +24,8 @@ export type RangeProvisionCreateInput = {
   rangeInstanceId: string;
   templateModulePath: string;
   allocatedCidr: string | null;
-  topologySpec: RangeTemplateTopologySpec;
+  topologySpec?: RangeTemplateTopologySpec | null;
+  compiledSpec?: RangeTemplateCompiledSpec | null;
   reportStep?: RangeProvisionStepReporter;
 };
 
@@ -36,7 +38,8 @@ export type RangeProvisionDestroyInput = {
   rangeInstanceId: string;
   templateModulePath: string;
   allocatedCidr: string | null;
-  topologySpec: RangeTemplateTopologySpec;
+  topologySpec?: RangeTemplateTopologySpec | null;
+  compiledSpec?: RangeTemplateCompiledSpec | null;
   reportStep?: RangeProvisionStepReporter;
 };
 

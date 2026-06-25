@@ -27,6 +27,7 @@
 - 单租户管理员后台
 - `Competition / Team / RangeTemplate / RangeInstance / ProvisionJob / ProvisionJobStepLog`
 - 阿里云靶场模板管理
+- 模板版本化与可视化拓扑编辑器
 - 一队一套独立靶场实例
 - 一套靶场独享一个 VPC
 - 单 VPC 下的多网络区 / 多子网 / 多 ECS 企业网络拓扑
@@ -38,7 +39,6 @@
 - 多租户组织体系
 - 用户前台、报名、支付、套餐、计费
 - 题目系统、Flag 判题、积分榜
-- 拖拽式靶场设计器
 - 完整多云抽象层
 - 高级 CIDR 池编排
 - 大规模自动补偿与复杂调度系统
@@ -92,7 +92,8 @@
 
 - 实例化时复制的是固定蓝图，不是运行时随意拼装
 - 模板需稳定表达网络区、主机角色、连通关系和访问入口
-- 第一阶段不做自由拖拽式拓扑编辑
+- 第一阶段需要后台内置的可视化拓扑编辑器
+- 但发布后的模板版本仍应是固定蓝图，不能让运行中的实例随编辑漂移
 
 ### 4.4 模板需表达固定私网地址规划
 
@@ -156,6 +157,13 @@
 
 `RangeTemplate` 不是“模块路径 + 少量变量”的薄封装，而是一套完整靶场蓝图。
 
+第一阶段推荐采用双层模型：
+
+- `RangeTemplate` 负责模板身份、slug、归档状态、默认云配置引用
+- `RangeTemplateVersion` 负责版本内容、草稿/已发布状态、拓扑 JSON、编译产物
+
+编辑器操作的是草稿版本；实例化只能引用已发布版本，避免模板边编辑边影响运行中的实例。
+
 第一阶段建议让模板至少表达以下信息：
 
 ### 7.1 基础信息
@@ -174,21 +182,38 @@
 - 哪个网络区承担公网入口
 - 区与区之间的设计关系
 
+第一阶段应把以下节点作为一等对象建模：
+
+- `host`
+- `switch`
+- `router`
+
 ### 7.3 主机定义
 
 - 主机名称
 - 所属网络区
-- 规格
-- 镜像
+- 规格策略：固定规格或 `auto` + 偏好列表
+- 镜像策略：固定镜像或 `auto` + 偏好列表
 - 固定私网 IP
 - 角色标签，如 `entry / jump / dc / db / app`
 - 是否需要公网暴露
+- 多网卡挂接关系
+- 每张网卡的辅助 IP
+- 每张网卡的安全规则
+- 启动优先级与启动等待时间
 
 ### 7.4 访问入口定义
 
 - 哪台主机承担公网入口
 - 入口协议与端口
 - 平台创建完成后如何返回给管理员和队伍
+
+公网入口必须是模板核心能力，不应只在 IaC 输出阶段临时推断。模板层至少要能表达：
+
+- 入口节点角色
+- 入口暴露方式：`EIP` 或 `DNAT`
+- 入口协议说明，如 `SSH / RDP / HTTP / HTTPS`
+- 返回文案与访问指引
 
 ### 7.5 执行策略
 
@@ -197,6 +222,15 @@
 - 是否需要安全组预置规则
 - 是否需要 `cloud-init`
 - 是否需要附加初始化脚本
+- 规格与镜像是否允许平台在实例化前做真实可售/可用预校验
+
+此外，第一阶段模板蓝图还应稳定保存：
+
+- 交换机网段配置
+- 交换机 ACL 规则
+- NAT 网关 `SNAT / DNAT` 规则
+- 路由器 DNS 配置
+- 节点间连线关系
 
 ### 7.6 第一阶段的数据落地建议
 
@@ -205,8 +239,56 @@
 建议方向：
 
 - `RangeTemplate` 保留基础元数据字段
-- 增加一个明确的 `blueprint` 或 `topologySpec` 结构保存网络区、主机、入口和执行策略
+- 增加一个明确的 `topologySpec` 结构保存网络区、主机、入口和执行策略
 - `modulePathOrRef` 只表示 IaC 实现入口，不再代表完整模板本身
+- 运行时默认不应把本机代理环境无差别透传到底层 OpenTofu 执行器，避免真实云 API 轮询阶段出现假性阻塞
+
+### 7.7 TopologyGraph JSON 建议
+
+编辑器状态不应直接等同于 OpenTofu 变量，平台内部应保留一份稳定的拓扑 JSON。
+
+建议至少包含：
+
+- `nodes[]`
+- `edges[]`
+- `viewport`
+- `templateMeta`
+- `publishConfig`
+
+其中：
+
+- `hostNode` 负责 ECS/边界机/域控/数据库等主机配置
+- `switchNode` 负责区域、子网、ACL、NAT 等网络配置
+- `routerNode` 负责出口/DNS/后续路由策略配置
+
+### 7.8 第一版节点字段基线
+
+结合当前参考实现调研结果，第一版节点字段建议至少覆盖以下范围。
+
+#### Host Node
+
+- 基础信息：`name`、`deviceType`、`imageRef`、`hostname`、`cpu`、`memoryGb`、`description`
+- 启动控制：`bootPriority`、`bootDelaySec`
+- 网卡：`nics[]`
+- 单张网卡：`switchId`、`privateIp`、`secondaryIps[]`
+- 网卡安全规则：`direction`、`protocol`、`sourceCidr`、`destinationCidr`、`portRange`、`action`、`priority`
+- 角色补充：`isEntryPoint`、`entryProtocols[]`、`systemUsername`、`systemPasswordRef`
+
+#### Switch Node
+
+- 基础信息：`name`、`zoneKey`、`description`
+- 网段配置：`cidr`
+- ACL 规则：与主机安全规则类似，但作用域为网段级
+- NAT 配置：`snat.enabled`、`dnatRules[]`
+- 单条 DNAT 规则：`targetHostId`、`externalPort`、`internalPort`、`protocol`
+
+#### Router Node
+
+- 基础信息：`name`、`description`
+- 网络控制：`dnsServers[]`
+- 后续预留：默认路由、跨区域连通控制、出口策略
+
+这些字段不要求第一阶段全部映射成真实阿里云资源，但要求模板层能保存、校验、发布这些信息。
 
 ## 8. 实例模型
 
@@ -284,6 +366,7 @@
 
 - `Admin Web`：管理员控制台
 - `Platform API`：后台 API 与认证、校验、对象管理
+- `Template Editor`：可视化拓扑编辑器、节点属性面板、版本发布校验
 - `Provision Orchestrator`：创建/销毁状态机与任务执行流程
 - `IaC Runner`：封装 OpenTofu 执行和输出采集
 - `Template Registry`：模板元数据和蓝图管理
@@ -394,8 +477,21 @@ UI 风格建议：
 
 - 信息密度高但层级清楚
 - 首页突出比赛、队伍、实例、任务四条主线
+- 模板编辑页采用“顶部工具条 + 左侧节点素材库 + 中央画布 + 右侧属性面板”的专业编排结构
 - 实例详情页突出公网入口、资源摘要、任务过程、异常摘要
 - 后续详细设计可使用 `ui-ux-pro-max` 系列技能进一步扩展
+
+### 14.1 模板编辑器交互基线
+
+第一阶段模板编辑器建议采用以下结构：
+
+- 左侧素材库：至少提供主机、交换机、路由器
+- 中央画布：支持放置、移动、连线、缩放
+- 右侧属性面板：始终显示当前选中节点的配置项
+- 顶部工具条：保存草稿、校验、发布、查看版本
+- 右键菜单：只承担快捷操作，不作为唯一配置入口
+
+这种结构更适合综合渗透靶场的高参数密度场景，不建议第一版走纯弹窗式配置。
 
 ## 15. 当前有效实现优先级
 
@@ -403,10 +499,11 @@ UI 风格建议：
 
 1. 重写并固定企业网络型靶场设计与计划基线
 2. 把 `single-ecs bootstrap` 升级为企业网络型 OpenTofu 骨架
-3. 扩展 `RangeTemplate`，让它能表达拓扑蓝图
-4. 扩展 `RangeInstance.accessEntry / resourceSummary`
-5. 收口编排、步骤日志、状态回写
-6. 最后再回到后台展示和可选增强
+3. 引入 `RangeTemplateVersion + TopologyGraph JSON + compiled publish model`
+4. 建立可视化拓扑编辑器与节点 schema
+5. 扩展 `RangeInstance.accessEntry / resourceSummary`
+6. 收口编排、步骤日志、状态回写
+7. 最后再回到后台展示和可选增强
 
 ## 16. 第一阶段完成标准
 

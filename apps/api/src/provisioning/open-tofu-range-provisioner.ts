@@ -14,6 +14,7 @@ import {
 } from '@aliyun-cyber-range/iac-runner';
 
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
+import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
 import {
   type RangeProvisionCreateInput,
   type RangeProvisionCreateResult,
@@ -21,7 +22,6 @@ import {
   type RangeProvisioner,
   type RangeProvisionStepReporter,
 } from './provisioning.types';
-import type { RangeTemplateHost, RangeTemplateNetworkZone, RangeTemplateTopologySpec } from '../admin/admin.repository';
 
 type OpenTofuProvisionerEnv = Partial<
   Pick<
@@ -30,6 +30,8 @@ type OpenTofuProvisionerEnv = Partial<
     | 'ALICLOUD_SECRET_KEY'
     | 'ALICLOUD_REGION'
     | 'ALICLOUD_ZONE_ID'
+    | 'ALICLOUD_IMAGE_ID'
+    | 'ALICLOUD_IMAGE_ID_PREFERENCES'
     | 'ALICLOUD_INSTANCE_TYPE'
     | 'ALICLOUD_INSTANCE_TYPE_PREFERENCES'
     | 'ALICLOUD_PROVIDER_ZIP_PATH'
@@ -39,11 +41,13 @@ type OpenTofuProvisionerEnv = Partial<
     | 'OPENTOFU_INSTANCE_TYPE'
     | 'OPENTOFU_INSTANCE_TYPE_PREFERENCES'
     | 'OPENTOFU_IMAGE_ID'
+    | 'OPENTOFU_IMAGE_ID_PREFERENCES'
     | 'OPENTOFU_INSTANCE_PASSWORD'
     | 'OPENTOFU_ALLOWED_INGRESS_CIDR'
     | 'OPENTOFU_SYSTEM_DISK_CATEGORY'
     | 'OPENTOFU_SYSTEM_DISK_SIZE'
     | 'OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT'
+    | 'OPENTOFU_PASSTHROUGH_PROXY'
     | 'HTTPS_PROXY'
     | 'HTTP_PROXY'
     | 'ALL_PROXY'
@@ -71,7 +75,9 @@ type OpenTofuOutputs = {
     vpc_id?: string;
     subnet_ids?: Record<string, string>;
     host_ids?: Record<string, string>;
+    nat_gateway_ids?: Record<string, string>;
     eip_allocation_id?: string;
+    eip_allocation_ids?: Record<string, string>;
   }>;
 };
 
@@ -90,6 +96,7 @@ type OpenTofuRangeProvisionerOptions = {
   workspacesRootDir?: string;
   env?: OpenTofuProvisionerEnv;
   availableInstanceTypeResolver?: AvailableInstanceTypeResolver;
+  availableImageIdResolver?: AvailableImageIdResolver;
 };
 
 type CreateRangeProvisionerFromEnvOptions = OpenTofuRangeProvisionerOptions;
@@ -115,6 +122,16 @@ type AvailableInstanceTypeResolver = (
   input: AvailableInstanceTypeResolverInput,
 ) => Promise<string>;
 
+type AvailableImageIdResolverInput = {
+  accessKey: string;
+  secretKey: string;
+  regionId: string;
+  requestedImageId?: string;
+  preferredImageIds: string[];
+};
+
+type AvailableImageIdResolver = (input: AvailableImageIdResolverInput) => Promise<string>;
+
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
 const PROVIDER_MIRROR_REGISTRY_PATH = path.join(
   'registry.opentofu.org',
@@ -135,6 +152,22 @@ const DEFAULT_AUTO_INSTANCE_TYPE_PREFERENCES = [
   'ecs.c6.large',
   'ecs.g6.large',
 ];
+const DEFAULT_AUTO_IMAGE_ID_PREFERENCES = [
+  'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+  'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+  'debian_12_14_x64_20G_alibase_20260609.vhd',
+  'centos_stream_9_x64_20G_alibase_20260616.vhd',
+];
+const PROXY_ENV_KEYS = [
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'ALL_PROXY',
+  'https_proxy',
+  'http_proxy',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+] as const;
 const execFileAsync = promisify(execFile);
 
 export function createRangeProvisionerFromEnv(
@@ -160,6 +193,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private readonly workspacesRootDir: string;
   private readonly env: OpenTofuProvisionerEnv;
   private readonly availableInstanceTypeResolver: AvailableInstanceTypeResolver;
+  private readonly availableImageIdResolver: AvailableImageIdResolver;
 
   constructor(options: OpenTofuRangeProvisionerOptions = {}) {
     this.env = {
@@ -179,9 +213,19 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       });
     this.availableInstanceTypeResolver =
       options.availableInstanceTypeResolver ?? resolveAvailableAliyunInstanceType;
+    this.availableImageIdResolver =
+      options.availableImageIdResolver ?? resolveAvailableAliyunImageId;
   }
 
   async create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult> {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: input.rangeInstanceId,
+      templateModulePath: input.templateModulePath,
+      topologySpec: input.topologySpec,
+      compiledSpec: input.compiledSpec,
+      allocatedCidr: input.allocatedCidr,
+    });
+
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
       const preparedWorkspace = await this.prepareWorkspace(input);
 
@@ -284,13 +328,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         vpcId: resourceSummary?.vpc_id ?? null,
         subnetIds: resourceSummary?.subnet_ids ?? null,
         hostIds: resourceSummary?.host_ids ?? null,
+        natGatewayIds: resourceSummary?.nat_gateway_ids ?? null,
         eipAllocationId: resourceSummary?.eip_allocation_id ?? null,
-        topologySpec: {
-          vpcCidr: input.topologySpec.vpcCidr,
-          publicEntryHostKey: input.topologySpec.publicEntry.hostKey,
-          networkZoneKeys: input.topologySpec.networkZones.map((zone) => zone.key),
-          hostKeys: input.topologySpec.hosts.map((host) => host.key),
-        },
+        eipAllocationIds: resourceSummary?.eip_allocation_ids ?? null,
+        topologySpec: plan.topologySummary,
       },
     };
   }
@@ -378,25 +419,81 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   }
 
   private async buildVariables(input: RangeProvisionCreateInput | RangeProvisionDestroyInput) {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: input.rangeInstanceId,
+      templateModulePath: input.templateModulePath,
+      topologySpec: input.topologySpec,
+      compiledSpec: input.compiledSpec,
+      allocatedCidr: input.allocatedCidr,
+    });
     const zoneId = requireEnvValue(this.env.ALICLOUD_ZONE_ID, 'ALICLOUD_ZONE_ID');
     const instanceType = await this.resolveInstanceType(zoneId);
-    const imageId = requireEnvValue(this.env.OPENTOFU_IMAGE_ID, 'OPENTOFU_IMAGE_ID');
+    const imageId = await this.resolveImageId();
     const instancePassword = requireEnvValue(
       this.env.OPENTOFU_INSTANCE_PASSWORD,
       'OPENTOFU_INSTANCE_PASSWORD',
     );
-    const networkPlan = readEnterpriseNetworkPlan(input.topologySpec, input.allocatedCidr);
-
     return {
-      resource_name_prefix: createResourceNamePrefix(input.rangeInstanceId),
+      resource_name_prefix: plan.resourceNamePrefix,
       zone_id: zoneId,
-      vpc_cidr: networkPlan.vpcCidr,
-      dmz_cidr: networkPlan.dmzCidr,
-      office_cidr: networkPlan.officeCidr,
-      server_cidr: networkPlan.serverCidr,
-      dmz_private_ip: networkPlan.dmzPrivateIp,
-      office_private_ip: networkPlan.officePrivateIp,
-      server_private_ip: networkPlan.serverPrivateIp,
+      vpc_cidr: plan.network.vpcCidr,
+      entry_host_key: plan.entryHostKey,
+      network_zones: plan.networkZones.map((zone) => ({
+        key: zone.key,
+        name: zone.name,
+        cidr: zone.cidr,
+        purpose: zone.purpose,
+        is_public_entry: zone.isPublicEntry,
+      })),
+      hosts: plan.hostDefinitions.map((host) => ({
+        key: host.key,
+        name: host.name,
+        zone_key: host.zoneKey,
+        private_ip: host.privateIp,
+        role: host.role,
+        expose_public: host.exposePublic,
+      })),
+      nat_gateways: plan.natGateways.map((natGateway) => ({
+        key: natGateway.key,
+        name: natGateway.name,
+        zone_key: natGateway.zoneKey,
+        snat_enabled: natGateway.snatEnabled,
+      })),
+      eips: plan.eipDefinitions.map((eip) => ({
+        key: eip.key,
+        name: eip.name,
+        bind_target_type: eip.bindTargetType,
+        bind_target_key: eip.bindTargetKey,
+        bandwidth_mbps: eip.bandwidthMbps,
+      })),
+      security_group_rules: plan.securityGroupRules.map((rule) => ({
+        key: rule.key,
+        name: rule.name,
+        target_host_key: rule.targetHostKey,
+        direction: rule.direction,
+        policy: rule.policy,
+        protocol: rule.protocol,
+        port_range: rule.portRange,
+        source_cidr: rule.sourceCidr,
+        priority: rule.priority,
+      })),
+      acls: plan.aclDefinitions.map((acl) => ({
+        key: acl.key,
+        name: acl.name,
+        zone_key: acl.zoneKey,
+        direction: acl.direction,
+        policy: acl.policy,
+        protocol: acl.protocol,
+        port_range: acl.portRange,
+        source_cidr: acl.sourceCidr,
+        priority: acl.priority,
+      })),
+      dmz_cidr: plan.network.dmzCidr,
+      office_cidr: plan.network.officeCidr,
+      server_cidr: plan.network.serverCidr,
+      dmz_private_ip: plan.hosts.publicEntry.privateIp,
+      office_private_ip: plan.hosts.officePrimary.privateIp,
+      server_private_ip: plan.hosts.serverPrimary.privateIp,
       instance_type: instanceType,
       image_id: imageId,
       instance_password: instancePassword,
@@ -446,6 +543,25 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
   }
 
+  private async resolveImageId() {
+    const requestedImageId = normalizeOptionalEnvValue(
+      this.env.OPENTOFU_IMAGE_ID ?? this.env.ALICLOUD_IMAGE_ID,
+    );
+    const accessKey = requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY');
+    const secretKey = requireEnvValue(this.env.ALICLOUD_SECRET_KEY, 'ALICLOUD_SECRET_KEY');
+    const regionId = requireEnvValue(this.env.ALICLOUD_REGION, 'ALICLOUD_REGION');
+
+    return this.availableImageIdResolver({
+      accessKey,
+      secretKey,
+      regionId,
+      ...(requestedImageId && requestedImageId.toLowerCase() !== 'auto'
+        ? { requestedImageId }
+        : {}),
+      preferredImageIds: readImageIdPreferences(this.env),
+    });
+  }
+
   private async buildRunnerEnv(): Promise<NodeJS.ProcessEnv> {
     const accessKey = requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY');
     const secretKey = requireEnvValue(this.env.ALICLOUD_SECRET_KEY, 'ALICLOUD_SECRET_KEY');
@@ -453,12 +569,22 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const providerZipPath = this.env.ALICLOUD_PROVIDER_ZIP_PATH?.trim();
 
     const runnerEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...this.env,
+      ...omitProxyEnv(process.env),
+      ...omitProxyEnv(this.env),
       ALICLOUD_ACCESS_KEY: accessKey,
       ALICLOUD_SECRET_KEY: secretKey,
       ALICLOUD_REGION: region,
     };
+
+    if (normalizeOptionalEnvValue(this.env.OPENTOFU_PASSTHROUGH_PROXY) === '1') {
+      for (const key of PROXY_ENV_KEYS) {
+        const value = this.env[key] ?? process.env[key];
+
+        if (value) {
+          runnerEnv[key] = value;
+        }
+      }
+    }
 
     if (!providerZipPath) {
       return runnerEnv;
@@ -545,6 +671,23 @@ function readInstanceTypePreferences(env: OpenTofuProvisionerEnv) {
   return preferences.length > 0 ? preferences : DEFAULT_AUTO_INSTANCE_TYPE_PREFERENCES;
 }
 
+function readImageIdPreferences(env: OpenTofuProvisionerEnv) {
+  const configuredPreferences = normalizeOptionalEnvValue(
+    env.OPENTOFU_IMAGE_ID_PREFERENCES ?? env.ALICLOUD_IMAGE_ID_PREFERENCES,
+  );
+
+  if (!configuredPreferences) {
+    return DEFAULT_AUTO_IMAGE_ID_PREFERENCES;
+  }
+
+  const preferences = configuredPreferences
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return preferences.length > 0 ? preferences : DEFAULT_AUTO_IMAGE_ID_PREFERENCES;
+}
+
 async function resolveAvailableAliyunInstanceType(
   input: AvailableInstanceTypeResolverInput,
 ): Promise<string> {
@@ -596,6 +739,57 @@ async function resolveAvailableAliyunInstanceType(
   return selectedInstanceType;
 }
 
+async function resolveAvailableAliyunImageId(
+  input: AvailableImageIdResolverInput,
+): Promise<string> {
+  const args = [
+    'ecs',
+    'DescribeImages',
+    '--RegionId',
+    input.regionId,
+    '--ImageOwnerAlias',
+    'system',
+    '--Status',
+    'Available',
+    '--OSType',
+    'linux',
+    '--Architecture',
+    'x86_64',
+    '--PageSize',
+    '100',
+  ];
+
+  const { stdout } = await execFileAsync('aliyun', args, {
+    env: {
+      ...omitProxyEnv(process.env),
+      ALICLOUD_ACCESS_KEY: input.accessKey,
+      ALICLOUD_SECRET_KEY: input.secretKey,
+    },
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const availableImageIds = extractAvailableImageIds(JSON.parse(stdout.trim()));
+
+  if (input.requestedImageId) {
+    if (!availableImageIds.includes(input.requestedImageId)) {
+      throw new Error(
+        `Configured image ID is not available in region ${input.regionId}: ${input.requestedImageId}`,
+      );
+    }
+
+    return input.requestedImageId;
+  }
+
+  const selectedImageId =
+    input.preferredImageIds.find((candidate) => availableImageIds.includes(candidate)) ??
+    availableImageIds[0];
+
+  if (!selectedImageId) {
+    throw new Error(`No saleable ECS system image found in region ${input.regionId}`);
+  }
+
+  return selectedImageId;
+}
+
 function extractAvailableInstanceTypes(payload: unknown) {
   const availableZones =
     (payload as {
@@ -630,6 +824,33 @@ function extractAvailableInstanceTypes(payload: unknown) {
   ];
 }
 
+function extractAvailableImageIds(payload: unknown) {
+  const images =
+    (payload as {
+      Images?: {
+        Image?: Array<{
+          ImageId?: string;
+          Status?: string;
+        }>;
+      };
+    })?.Images?.Image ?? [];
+
+  return images
+    .filter((image) => image.Status === 'Available' && typeof image.ImageId === 'string')
+    .map((image) => image.ImageId!.trim())
+    .filter(Boolean);
+}
+
+function omitProxyEnv<T extends NodeJS.ProcessEnv | OpenTofuProvisionerEnv>(env: T): T {
+  const sanitized = { ...env };
+
+  for (const key of PROXY_ENV_KEYS) {
+    delete sanitized[key];
+  }
+
+  return sanitized;
+}
+
 function resolveWorkspaceRootDir(options: {
   projectRootDir: string;
   workspacesRootDir?: string;
@@ -643,76 +864,8 @@ function resolveWorkspaceRootDir(options: {
     : path.resolve(options.projectRootDir, candidate);
 }
 
-function createResourceNamePrefix(rangeInstanceId: string) {
-  const normalized = rangeInstanceId.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase();
-
-  return `range-${normalized.slice(0, 9) || 'instance'}`;
-}
-
 function readOutputValue<T>(output: OpenTofuOutputValue<T> | undefined): T | null {
   return output?.value ?? null;
-}
-
-function readEnterpriseNetworkPlan(
-  topologySpec: RangeTemplateTopologySpec,
-  allocatedCidr: string | null,
-) {
-  const vpcCidr = requireEnvValue(topologySpec.vpcCidr, 'topologySpec.vpcCidr');
-
-  if (allocatedCidr && allocatedCidr !== vpcCidr) {
-    throw new Error(
-      `Allocated CIDR ${allocatedCidr} does not match template topology VPC CIDR ${vpcCidr}`,
-    );
-  }
-
-  const dmzZone = findZone(topologySpec, 'dmz');
-  const officeZone = findZone(topologySpec, 'office');
-  const serverZone = findZone(topologySpec, 'server');
-  const dmzHost = findPublicEntryHost(topologySpec);
-  const officeHost = findHostByZone(topologySpec, 'office');
-  const serverHost = findHostByZone(topologySpec, 'server');
-
-  return {
-    vpcCidr,
-    dmzCidr: dmzZone.cidr,
-    officeCidr: officeZone.cidr,
-    serverCidr: serverZone.cidr,
-    dmzPrivateIp: dmzHost.privateIp,
-    officePrivateIp: officeHost.privateIp,
-    serverPrivateIp: serverHost.privateIp,
-  };
-}
-
-function findZone(topologySpec: RangeTemplateTopologySpec, key: string): RangeTemplateNetworkZone {
-  const zone = topologySpec.networkZones.find((item) => item.key === key);
-
-  if (!zone) {
-    throw new Error(`Template topology is missing required network zone: ${key}`);
-  }
-
-  return zone;
-}
-
-function findPublicEntryHost(topologySpec: RangeTemplateTopologySpec): RangeTemplateHost {
-  const host = topologySpec.hosts.find((item) => item.key === topologySpec.publicEntry.hostKey);
-
-  if (!host) {
-    throw new Error(
-      `Template topology public entry host not found: ${topologySpec.publicEntry.hostKey}`,
-    );
-  }
-
-  return host;
-}
-
-function findHostByZone(topologySpec: RangeTemplateTopologySpec, zoneKey: string): RangeTemplateHost {
-  const host = topologySpec.hosts.find((item) => item.zoneKey === zoneKey);
-
-  if (!host) {
-    throw new Error(`Template topology is missing required host in zone: ${zoneKey}`);
-  }
-
-  return host;
 }
 
 async function runProvisionStep<T>(
