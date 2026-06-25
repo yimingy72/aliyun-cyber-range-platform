@@ -1,9 +1,8 @@
-import type { RangeTemplateCompiledSpec, RangeTemplateTopologySpec } from './admin-types';
+import type { RangeTemplateCompiledSpec } from './admin-types';
 import type { TemplateNode } from '../components/admin/template-editor/template-property-panel';
 
 type CompileTopologyGraphInput = {
   nodes: TemplateNode[];
-  topologySpec?: RangeTemplateTopologySpec | null;
 };
 
 export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTemplateCompiledSpec {
@@ -15,6 +14,5 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
       provider: 'alibaba_cloud',
       config: node,
     })),
-    topologySpec: input.topologySpec ?? null,
   };
 }

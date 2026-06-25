@@ -185,7 +185,6 @@ export function TemplateEditorScreen({
       };
     const compiledSpec = compileTopologyGraph({
       nodes,
-      topologySpec,
     });
 
     try {

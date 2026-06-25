@@ -51,7 +51,6 @@ export type RangeTemplateCompiledResource = {
 export type RangeTemplateCompiledSpec = {
   schemaVersion: string;
   resources: RangeTemplateCompiledResource[];
-  topologySpec: RangeTemplateTopologySpec | null;
 };
 
 export type CompetitionInput = {

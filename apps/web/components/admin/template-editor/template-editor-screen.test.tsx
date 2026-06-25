@@ -243,6 +243,10 @@ describe('TemplateEditorScreen', () => {
         }),
       );
     });
+
+    const latestPayload = updateRangeTemplateMock.mock.calls.at(-1)?.[3];
+    expect(latestPayload?.compiledSpec).toBeTruthy();
+    expect(latestPayload?.compiledSpec).not.toHaveProperty('topologySpec');
   });
 
   it('publishes the template and refreshes published and draft version status', async () => {
