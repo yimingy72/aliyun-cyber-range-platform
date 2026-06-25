@@ -21,6 +21,37 @@ export type RangeTemplate = {
   slug: string;
   version: string;
   modulePathOrRef?: string | null;
+  currentDraftVersionId?: string | null;
+  currentPublishedVersionId?: string | null;
+  currentDraftVersion?: {
+    id: string;
+    status: 'draft' | 'published' | 'archived' | string;
+    version: string;
+    topologySpec?: RangeTemplateTopologySpec | null;
+    topologyGraph?: Record<string, unknown> | null;
+    compiledSpec?: RangeTemplateCompiledSpec | null;
+  } | null;
+  currentPublishedVersion?: {
+    id: string;
+    status: 'draft' | 'published' | 'archived' | string;
+    version: string;
+    topologySpec?: RangeTemplateTopologySpec | null;
+    topologyGraph?: Record<string, unknown> | null;
+    compiledSpec?: RangeTemplateCompiledSpec | null;
+  } | null;
+};
+
+export type RangeTemplateCompiledResource = {
+  id: string;
+  type: string;
+  provider: 'alibaba_cloud';
+  config: Record<string, unknown>;
+};
+
+export type RangeTemplateCompiledSpec = {
+  schemaVersion: string;
+  resources: RangeTemplateCompiledResource[];
+  topologySpec: RangeTemplateTopologySpec | null;
 };
 
 export type CompetitionInput = {
@@ -79,12 +110,18 @@ export type RangeTemplateCreateInput = {
   cloudProvider: 'alibaba_cloud';
   iacType: 'opentofu' | 'terraform';
   topologySpec: RangeTemplateTopologySpec;
+  topologyGraph?: Record<string, unknown>;
+  compiledSpec?: RangeTemplateCompiledSpec;
   variableSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   defaultNetworkPolicy?: Record<string, unknown>;
 };
 
-export type RangeTemplateUpdateInput = Partial<RangeTemplateCreateInput>;
+export type RangeTemplateUpdateInput = Partial<RangeTemplateCreateInput> & {
+  topologySpec?: RangeTemplateTopologySpec | null;
+  topologyGraph?: Record<string, unknown> | null;
+  compiledSpec?: RangeTemplateCompiledSpec | null;
+};
 
 export type RangeAccessEntry = {
   hostRole?: string | null;
