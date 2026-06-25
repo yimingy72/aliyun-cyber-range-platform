@@ -152,6 +152,14 @@ export class CreateRangeTemplateDto {
 
   @IsOptional()
   @IsObject()
+  topologyGraph?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  compiledSpec?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
   variableSchema?: Record<string, unknown>;
 
   @IsOptional()
@@ -196,6 +204,14 @@ export class UpdateRangeTemplateDto {
   @ValidateNested()
   @Type(() => RangeTemplateTopologySpecDto)
   topologySpec?: RangeTemplateTopologySpecDto;
+
+  @IsOptional()
+  @IsObject()
+  topologyGraph?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  compiledSpec?: Record<string, unknown>;
 
   @IsOptional()
   @IsObject()

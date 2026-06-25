@@ -3,6 +3,7 @@ export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 export type CompetitionStatus = 'draft' | 'scheduled' | 'active' | 'completed';
 export type CloudProvider = 'alibaba_cloud';
 export type IacType = 'opentofu' | 'terraform';
+export type RangeTemplateVersionStatus = 'draft' | 'published' | 'archived';
 export type RangeInstanceStatus =
   | 'draft'
   | 'pending_create'
@@ -50,6 +51,59 @@ export type RangeTemplateTopologySpec = {
   hosts: RangeTemplateHost[];
   publicEntry: RangeTemplatePublicEntry;
   executionPolicies?: Record<string, unknown>;
+};
+
+export type TopologyGraphNode = {
+  id: string;
+  kind: string;
+  position?: { x: number; y: number };
+  data: Record<string, unknown>;
+};
+
+export type TopologyGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  kind?: string;
+  data?: Record<string, unknown>;
+};
+
+export type RangeTemplateTopologyGraph = {
+  schemaVersion: string;
+  nodes: TopologyGraphNode[];
+  edges: TopologyGraphEdge[];
+  viewport?: Record<string, unknown>;
+  templateMeta?: Record<string, unknown>;
+  publishConfig?: Record<string, unknown>;
+};
+
+export type RangeTemplateCompiledSpec = {
+  schemaVersion: string;
+  resources: Array<{
+    id: string;
+    type: string;
+    provider?: string;
+    config: Record<string, unknown>;
+  }>;
+  topologySpec?: RangeTemplateTopologySpec | null;
+  variables?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+};
+
+export type RangeTemplateVersionRecord = {
+  id: string;
+  templateId: string;
+  version: string;
+  status: RangeTemplateVersionStatus;
+  modulePathOrRef: string;
+  topologySpec: RangeTemplateTopologySpec | null;
+  topologyGraph?: Record<string, unknown> | null;
+  compiledSpec?: Record<string, unknown> | null;
+  variableSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  defaultNetworkPolicy: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 export type RangeAccessEntry = {
@@ -111,9 +165,16 @@ export type RangeTemplateRecord = {
   iacType: IacType;
   modulePathOrRef: string;
   topologySpec: RangeTemplateTopologySpec | null;
+  topologyGraph?: Record<string, unknown> | null;
+  compiledSpec?: Record<string, unknown> | null;
   variableSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   defaultNetworkPolicy: Record<string, unknown> | null;
+  currentDraftVersionId: string | null;
+  currentPublishedVersionId: string | null;
+  currentDraftVersion?: RangeTemplateVersionRecord | null;
+  currentPublishedVersion?: RangeTemplateVersionRecord | null;
+  versions?: RangeTemplateVersionRecord[];
   createdAt: Date;
   updatedAt: Date;
 };
@@ -194,6 +255,8 @@ export type CreateRangeTemplateInput = {
   iacType?: IacType;
   modulePathOrRef: string;
   topologySpec: RangeTemplateTopologySpec;
+  topologyGraph?: Record<string, unknown>;
+  compiledSpec?: Record<string, unknown>;
   variableSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   defaultNetworkPolicy?: Record<string, unknown>;
@@ -274,6 +337,7 @@ export interface AdminRepository {
   createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord>;
   getRangeTemplateById(id: string): Promise<RangeTemplateRecord | null>;
   updateRangeTemplate(id: string, input: UpdateRangeTemplateInput): Promise<RangeTemplateRecord>;
+  publishRangeTemplate(id: string): Promise<RangeTemplateRecord>;
   deleteRangeTemplate(id: string): Promise<void>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
   createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord>;

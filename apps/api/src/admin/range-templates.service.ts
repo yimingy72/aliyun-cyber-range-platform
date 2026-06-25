@@ -17,6 +17,8 @@ export class RangeTemplatesService {
   }
 
   create(input: CreateRangeTemplateInput) {
+    this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
+    this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
     this.validateTopologySpec(input.topologySpec);
 
     return this.adminRepository.createRangeTemplate(input);
@@ -35,7 +37,28 @@ export class RangeTemplatesService {
       this.validateTopologySpec(topologySpec);
     }
 
+    this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
+    this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
+
     return this.adminRepository.updateRangeTemplate(id, input);
+  }
+
+  async publish(id: string) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    const topologySpec = existingTemplate.currentDraftVersion?.topologySpec ?? existingTemplate.topologySpec;
+
+    if (!topologySpec) {
+      throw new BadRequestException('Template topology spec not found');
+    }
+
+    this.validateTopologySpec(topologySpec);
+
+    return this.adminRepository.publishRangeTemplate(id);
   }
 
   async delete(id: string) {
@@ -76,6 +99,16 @@ export class RangeTemplatesService {
       throw new BadRequestException(
         `Public entry host does not exist in hosts: ${topologySpec.publicEntry.hostKey}`,
       );
+    }
+  }
+
+  private validateOptionalJsonObject(value: Record<string, unknown> | undefined, fieldName: string) {
+    if (value === undefined) {
+      return;
+    }
+
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new BadRequestException(`${fieldName} must be an object`);
     }
   }
 }

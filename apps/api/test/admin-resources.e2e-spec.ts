@@ -8,6 +8,62 @@ import { AppModule } from '../src/app.module';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('Admin resources', () => {
+  const fixtureTopologySpec = {
+    vpcCidr: '10.70.0.0/16',
+    networkZones: [
+      {
+        key: 'dmz',
+        name: 'DMZ',
+        purpose: 'public-entry',
+        cidr: '10.70.10.0/24',
+        isPublicEntry: true,
+      },
+      {
+        key: 'office',
+        name: 'Office',
+        purpose: 'user-workstations',
+        cidr: '10.70.20.0/24',
+      },
+      {
+        key: 'server',
+        name: 'Server',
+        purpose: 'application-servers',
+        cidr: '10.70.30.0/24',
+      },
+    ],
+    hosts: [
+      {
+        key: 'dmz-entry',
+        name: 'DMZ Entry',
+        zoneKey: 'dmz',
+        role: 'entry',
+        privateIp: '10.70.10.10',
+        exposePublic: true,
+      },
+      {
+        key: 'office-client',
+        name: 'Office Client',
+        zoneKey: 'office',
+        role: 'workstation',
+        privateIp: '10.70.20.10',
+      },
+      {
+        key: 'server-app',
+        name: 'Server App',
+        zoneKey: 'server',
+        role: 'app',
+        privateIp: '10.70.30.10',
+      },
+    ],
+    publicEntry: {
+      hostKey: 'dmz-entry',
+      protocols: [
+        { protocol: 'ssh', port: 22 },
+        { protocol: 'http', port: 80 },
+      ],
+    },
+  };
+
   let app: INestApplication;
   let competitionId: string;
   let teamId: string;
@@ -139,61 +195,7 @@ describe('Admin resources', () => {
         cloudProvider: 'alibaba_cloud',
         iacType: 'opentofu',
         modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-        topologySpec: {
-          vpcCidr: '10.70.0.0/16',
-          networkZones: [
-            {
-              key: 'dmz',
-              name: 'DMZ',
-              purpose: 'public-entry',
-              cidr: '10.70.10.0/24',
-              isPublicEntry: true,
-            },
-            {
-              key: 'office',
-              name: 'Office',
-              purpose: 'user-workstations',
-              cidr: '10.70.20.0/24',
-            },
-            {
-              key: 'server',
-              name: 'Server',
-              purpose: 'application-servers',
-              cidr: '10.70.30.0/24',
-            },
-          ],
-          hosts: [
-            {
-              key: 'dmz-entry',
-              name: 'DMZ Entry',
-              zoneKey: 'dmz',
-              role: 'entry',
-              privateIp: '10.70.10.10',
-              exposePublic: true,
-            },
-            {
-              key: 'office-client',
-              name: 'Office Client',
-              zoneKey: 'office',
-              role: 'workstation',
-              privateIp: '10.70.20.10',
-            },
-            {
-              key: 'server-app',
-              name: 'Server App',
-              zoneKey: 'server',
-              role: 'app',
-              privateIp: '10.70.30.10',
-            },
-          ],
-          publicEntry: {
-            hostKey: 'dmz-entry',
-            protocols: [
-              { protocol: 'ssh', port: 22 },
-              { protocol: 'http', port: 80 },
-            ],
-          },
-        },
+        topologySpec: fixtureTopologySpec,
         variableSchema: {
           vpc_cidr: 'string',
         },
@@ -206,24 +208,31 @@ describe('Admin resources', () => {
     expect(createResponse.body).toEqual(
       expect.objectContaining({
         id: expect.any(String),
+        name: 'Enterprise Practice Range',
         slug: 'enterprise-practice-range',
-        version: 'v1',
-        topologySpec: expect.objectContaining({
-          networkZones: expect.arrayContaining([
-            expect.objectContaining({
-              key: 'dmz',
-              isPublicEntry: true,
+        currentDraftVersionId: expect.any(String),
+        currentPublishedVersionId: null,
+        currentDraftVersion: expect.objectContaining({
+          id: expect.any(String),
+          status: 'draft',
+          version: 'v1',
+          topologySpec: expect.objectContaining({
+            networkZones: expect.arrayContaining([
+              expect.objectContaining({
+                key: 'dmz',
+                isPublicEntry: true,
+              }),
+            ]),
+            hosts: expect.arrayContaining([
+              expect.objectContaining({
+                key: 'dmz-entry',
+                role: 'entry',
+                exposePublic: true,
+              }),
+            ]),
+            publicEntry: expect.objectContaining({
+              hostKey: 'dmz-entry',
             }),
-          ]),
-          hosts: expect.arrayContaining([
-            expect.objectContaining({
-              key: 'dmz-entry',
-              role: 'entry',
-              exposePublic: true,
-            }),
-          ]),
-          publicEntry: expect.objectContaining({
-            hostKey: 'dmz-entry',
           }),
         }),
       }),
@@ -239,14 +248,74 @@ describe('Admin resources', () => {
     expect(listResponse.body).toEqual([
       expect.objectContaining({
         slug: 'enterprise-practice-range',
-        version: 'v1',
-        topologySpec: expect.objectContaining({
-          networkZones: expect.any(Array),
-          hosts: expect.any(Array),
-          publicEntry: expect.any(Object),
+        currentDraftVersionId: expect.any(String),
+        currentPublishedVersionId: null,
+        currentDraftVersion: expect.objectContaining({
+          status: 'draft',
+          version: 'v1',
+          topologySpec: expect.objectContaining({
+            networkZones: expect.any(Array),
+            hosts: expect.any(Array),
+            publicEntry: expect.any(Object),
+          }),
         }),
       }),
     ]);
+  });
+
+  it('accepts topologyGraph and compiledSpec alongside topologySpec', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/admin/range-templates')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'Hybrid Template',
+        slug: 'hybrid-template',
+        version: 'v1',
+        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+        topologySpec: fixtureTopologySpec,
+        topologyGraph: {
+          schemaVersion: '1.0.0',
+          nodes: [{ id: 'switch-dmz', kind: 'switch', data: { cidr: '10.70.10.0/24' } }],
+          edges: [],
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          resources: [{ id: 'switch-dmz', type: 'switch', config: { cidr: '10.70.10.0/24' } }],
+        },
+      })
+      .expect(201);
+
+    expect(response.body.currentDraftVersion).toEqual(
+      expect.objectContaining({
+        topologyGraph: expect.objectContaining({ schemaVersion: '1.0.0' }),
+        compiledSpec: expect.objectContaining({ schemaVersion: '1.0.0' }),
+      }),
+    );
+  });
+
+  it('publishes a template and keeps a fresh draft version for later edits', async () => {
+    const publishResponse = await request(app.getHttpServer())
+      .post(`/admin/range-templates/${templateId}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(publishResponse.body).toEqual(
+      expect.objectContaining({
+        id: templateId,
+        currentPublishedVersionId: expect.any(String),
+        currentDraftVersionId: expect.any(String),
+        currentPublishedVersion: expect.objectContaining({
+          status: 'published',
+          version: 'v1',
+        }),
+        currentDraftVersion: expect.objectContaining({
+          status: 'draft',
+          version: 'v1',
+        }),
+      }),
+    );
+
+    expect(publishResponse.body.currentDraftVersionId).not.toBe(publishResponse.body.currentPublishedVersionId);
   });
 
   it('updates competitions, teams, and templates', async () => {
@@ -287,6 +356,21 @@ describe('Admin resources', () => {
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         version: 'v1.1.0',
+        topologyGraph: {
+          schemaVersion: '1.0.0',
+          nodes: [
+            {
+              id: 'host-1',
+              kind: 'host',
+              label: '边界主机',
+              zoneKey: 'dmz',
+              role: 'entry',
+              privateIp: '10.70.10.10',
+              exposePublic: true,
+            },
+          ],
+          edges: [],
+        },
         topologySpec: {
           vpcCidr: '10.70.0.0/16',
           networkZones: [
@@ -333,13 +417,70 @@ describe('Admin resources', () => {
       expect.objectContaining({
         id: templateId,
         version: 'v1.1.0',
-        topologySpec: expect.objectContaining({
-          hosts: expect.arrayContaining([
-            expect.objectContaining({
-              key: 'server-db',
-              role: 'db',
-            }),
-          ]),
+        currentDraftVersion: expect.objectContaining({
+          version: 'v1.1.0',
+          topologyGraph: expect.objectContaining({
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'host-1',
+                label: '边界主机',
+              }),
+            ]),
+          }),
+          topologySpec: expect.objectContaining({
+            hosts: expect.arrayContaining([
+              expect.objectContaining({
+                key: 'server-db',
+                role: 'db',
+              }),
+            ]),
+          }),
+        }),
+        currentPublishedVersion: expect.objectContaining({
+          version: 'v1',
+        }),
+      }),
+    );
+  });
+
+  it('publishes updated draft changes into a new published template version', async () => {
+    const publishResponse = await request(app.getHttpServer())
+      .post(`/admin/range-templates/${templateId}/publish`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(publishResponse.body).toEqual(
+      expect.objectContaining({
+        id: templateId,
+        version: 'v1.1.0',
+        currentPublishedVersion: expect.objectContaining({
+          version: 'v1.1.0',
+          topologyGraph: expect.objectContaining({
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'host-1',
+                label: '边界主机',
+              }),
+            ]),
+          }),
+          topologySpec: expect.objectContaining({
+            hosts: expect.arrayContaining([
+              expect.objectContaining({
+                key: 'server-db',
+                role: 'db',
+              }),
+            ]),
+          }),
+        }),
+        currentDraftVersion: expect.objectContaining({
+          topologyGraph: expect.objectContaining({
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'host-1',
+                label: '边界主机',
+              }),
+            ]),
+          }),
         }),
       }),
     );
