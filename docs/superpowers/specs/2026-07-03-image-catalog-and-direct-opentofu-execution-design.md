@@ -73,6 +73,20 @@
    - 实时快照层
    - 平台目录层
 
+### Confirmed Product Choices
+
+本次设计已确认的关键取舍如下：
+
+- 总体方案选择 `A`
+  - 运行时直接消费模板最终值
+  - 平台维护镜像目录
+- 实例规格策略选择 `B`
+  - 平台维护固定 `CPU/内存 -> instance_type` 映射
+  - 不再运行时自动查询规格
+- 镜像中心第一阶段仅面向 `SystemCloudConfig.defaultRegion`
+  - 不提供页面级 Region 切换
+  - 公共镜像和自定义镜像都以当前默认 Region 为查询上下文
+
 ### Why this approach
 
 - 最适合容器化
@@ -186,7 +200,7 @@
 ### A. 公共镜像查询
 
 1. 管理员进入镜像中心
-2. 后端根据当前 `SystemCloudConfig` 调用阿里云 ECS OpenAPI `DescribeImages`
+2. 后端根据当前 `SystemCloudConfig.defaultRegion` 调用阿里云 ECS OpenAPI `DescribeImages`
 3. 按 `public` 范围返回实时镜像
 4. 写入“镜像实时快照”表
 5. 前端展示列表
@@ -194,7 +208,7 @@
 
 ### B. 自定义镜像查询
 
-1. 后端调用 `DescribeImages`
+1. 后端根据当前 `SystemCloudConfig.defaultRegion` 调用 `DescribeImages`
 2. 只读取当前账号的自定义镜像
 3. 快照表中按 `accountUid` 隔离保存
 4. 平台目录中也按 `accountUid` 隔离
@@ -257,9 +271,21 @@
 
 2. `自定义镜像`
    - 按当前账号实时拉取
+   - 仅拉取当前默认 Region
    - 搜索
    - 显示当前账号上下文
    - 收录到平台目录
+
+### 第一阶段 Region 范围
+
+第一阶段镜像中心不做 Region 切换器。
+
+所有镜像读取都以：
+
+- 当前 `SystemCloudConfig`
+- 当前 `defaultRegion`
+
+为唯一上下文。
 
 ### 编排器
 
@@ -331,6 +357,7 @@ ECS 属性面板需要从当前自由文本模式演进为：
 
 - 镜像中心：实时查询公共镜像与自定义镜像
 - 支持收录到平台目录
+- 查询范围仅限当前默认 Region
 
 ### Phase 3
 
