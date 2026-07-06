@@ -1,667 +1,1241 @@
 'use client';
 
-type TemplateNodeBase = {
-  id: string;
-  kind: 'host' | 'switch' | 'router' | 'nat_gateway' | 'eip' | 'acl' | 'security_group_rule';
-  label: string;
-};
-
-export type HostTemplateNode = TemplateNodeBase & {
-  kind: 'host';
-  zoneKey: string;
-  role: string;
-  privateIp: string;
-  exposePublic: boolean;
-  image: string;
-};
-
-export type SwitchTemplateNode = TemplateNodeBase & {
-  kind: 'switch';
-  zoneKey: string;
-  cidr: string;
-  purpose: string;
-  enableNat: boolean;
-};
-
-export type RouterTemplateNode = TemplateNodeBase & {
-  kind: 'router';
-  routeRole: string;
-  egressType: string;
-  bindEip: boolean;
-};
-
-export type NatGatewayTemplateNode = TemplateNodeBase & {
-  kind: 'nat_gateway';
-  zoneKey: string;
-  snatEnabled: boolean;
-};
-
-export type EipTemplateNode = TemplateNodeBase & {
-  kind: 'eip';
-  bindTargetType: 'host' | 'nat_gateway';
-  bindTargetKey: string;
-  bandwidthMbps: number;
-};
-
-export type AclTemplateNode = TemplateNodeBase & {
-  kind: 'acl';
-  zoneKey: string;
-  direction: string;
-  policy: string;
-  protocol: string;
-  portRange: string;
-  sourceCidr: string;
-  priority: number;
-};
-
-export type SecurityGroupRuleTemplateNode = TemplateNodeBase & {
-  kind: 'security_group_rule';
-  targetHostKey: string;
-  direction: string;
-  policy: string;
-  protocol: string;
-  portRange: string;
-  sourceCidr: string;
-  priority: number;
-};
-
-export type TemplateNode =
-  | HostTemplateNode
-  | SwitchTemplateNode
-  | RouterTemplateNode
-  | NatGatewayTemplateNode
-  | EipTemplateNode
-  | AclTemplateNode
-  | SecurityGroupRuleTemplateNode;
+import React, { type ReactNode, useEffect, useRef } from 'react';
+import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
+import type {
+  EcsTemplateNode,
+  RouterTemplateNode,
+  SwitchTemplateNode,
+  TemplateNode,
+} from '../../../lib/scenario-graph';
+export type {
+  EcsTemplateNode,
+  RouterTemplateNode,
+  SwitchTemplateNode,
+  TemplateNode,
+} from '../../../lib/scenario-graph';
 
 type TemplatePropertyPanelProps = {
   selectedNode: TemplateNode | null;
+  allNodes: TemplateNode[];
+  platformImageAssets?: PlatformImageAsset[];
+  instanceTypeAvailability?: InstanceTypeAvailabilitySnapshot | null;
+  linkedSwitchIdsByHostId?: Record<string, string[]>;
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void;
 };
 
-function renderHostFields(selectedNode: HostTemplateNode, onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void) {
+type EcsTemplateNodeWithPlatformImageAssetId = EcsTemplateNode & {
+  platformImageAssetId?: string;
+};
+
+type PropertyFieldProps = {
+  label: string;
+  hint?: string;
+  className?: string;
+  children: ReactNode;
+};
+
+type PropertyGroupProps = {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+  actionClassName?: string;
+  formClassName?: string;
+  headClassName?: string;
+  children: ReactNode;
+};
+
+function parseMultiLineList(value: string) {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function formatMultiLineList(values: string[] | undefined) {
+  return (values ?? []).join('\n');
+}
+
+function parseCidrParts(cidr: string) {
+  const [ipPart = '', prefixPart = '24'] = cidr.split('/');
+  const octets = ipPart.split('.');
+
+  return {
+    first: octets[0] || '10',
+    second: octets[1] || '10',
+    third: octets[2] || '1',
+    prefix: prefixPart || '24',
+  };
+}
+
+function buildCidrFromParts(parts: { first: string; second: string; third: string; prefix: string }) {
+  const first = String(Math.max(0, Math.min(255, Number(parts.first) || 0)));
+  const second = String(Math.max(0, Math.min(255, Number(parts.second) || 0)));
+  const third = String(Math.max(0, Math.min(255, Number(parts.third) || 0)));
+  const prefix = String(Math.max(17, Math.min(29, Number(parts.prefix) || 24)));
+
+  return `${first}.${second}.${third}.0/${prefix}`;
+}
+
+function parseIpv4ToNumber(value: string) {
+  const octets = value.split('.').map((item) => Number(item));
+
+  if (octets.length !== 4 || octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) {
+    return null;
+  }
+
+  return (((octets[0]! << 24) >>> 0) + ((octets[1]! << 16) >>> 0) + ((octets[2]! << 8) >>> 0) + (octets[3] ?? 0)) >>> 0;
+}
+
+function isIpv4InCidr(ip: string, cidr: string) {
+  const [networkIp = '', prefixText = ''] = cidr.split('/');
+  const ipNumber = parseIpv4ToNumber(ip);
+  const networkNumber = parseIpv4ToNumber(networkIp);
+  const prefix = Number(prefixText);
+
+  if (ipNumber === null || networkNumber === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+    return false;
+  }
+
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (ipNumber & mask) === (networkNumber & mask);
+}
+
+function isCompleteIpv4(value: string) {
+  return parseIpv4ToNumber(value) !== null;
+}
+
+function PropertyField({ label, hint, className, children }: PropertyFieldProps) {
+  return (
+    <label className={className ? `template-property-field ${className}` : 'template-property-field'}>
+      <span className="template-property-field-label">{label}</span>
+      {children}
+      {hint ? <small className="template-property-field-hint">{hint}</small> : null}
+    </label>
+  );
+}
+
+function PropertyGroup({
+  title,
+  description,
+  action,
+  actionClassName,
+  formClassName,
+  headClassName,
+  children,
+}: PropertyGroupProps) {
+  return (
+    <section className="template-property-group">
+      <div className={headClassName ? `template-property-group-head ${headClassName}` : 'template-property-group-head'}>
+        <div className="template-property-group-copy">
+          <strong>{title}</strong>
+          {description ? <span>{description}</span> : null}
+        </div>
+        {action ? (
+          <div className={actionClassName ? `template-property-group-action ${actionClassName}` : 'template-property-group-action'}>
+            {action}
+          </div>
+        ) : null}
+      </div>
+      <div className={formClassName ? `template-property-form ${formClassName}` : 'template-property-form'}>{children}</div>
+    </section>
+  );
+}
+
+function renderHostFields(
+  selectedNode: EcsTemplateNode,
+  allNodes: TemplateNode[],
+  platformImageAssets: PlatformImageAsset[],
+  instanceTypeAvailability: InstanceTypeAvailabilitySnapshot | null,
+  linkedSwitchIdsByHostId: Record<string, string[]>,
+  onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
+) {
+  const selectedNodeWithPlatformImageAsset = selectedNode as EcsTemplateNodeWithPlatformImageAssetId;
+  const nicItems = selectedNode.nics ?? [];
+  const allSwitchOptions = allNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
+  const linkedSwitchIds = linkedSwitchIdsByHostId[selectedNode.id] ?? [];
+  const switchOptions =
+    linkedSwitchIds.length > 0
+      ? allSwitchOptions.filter((node) => linkedSwitchIds.includes(node.id))
+      : allSwitchOptions;
+  const switchById = new Map(allSwitchOptions.map((node) => [node.id, node]));
+  const enabledPlatformImageAssets = platformImageAssets.filter((item) => item.enabled);
+  const fallbackPlatformImageAsset =
+    selectedNode.imageId || selectedNode.imageName || selectedNode.image
+      ? {
+          id:
+            selectedNodeWithPlatformImageAsset.platformImageAssetId ??
+            selectedNode.imageCatalogItemId ??
+            selectedNode.imageId ??
+            selectedNode.image ??
+            `${selectedNode.id}-current-image`,
+          displayName: selectedNode.imageName ?? selectedNode.image,
+          imageId: selectedNode.imageId ?? selectedNode.image,
+          provider: 'alibaba_cloud' as const,
+          accountUid: null,
+          accountScopeKey: '',
+          regionId: '',
+          sourceScope: 'public' as const,
+          enabled: true,
+          sourceSnapshotId: null,
+          createdAt: null,
+          updatedAt: null,
+        }
+      : null;
+  const selectedPlatformImageAsset =
+    (selectedNodeWithPlatformImageAsset.platformImageAssetId
+      ? enabledPlatformImageAssets.find((item) => item.id === selectedNodeWithPlatformImageAsset.platformImageAssetId) ?? null
+      : null) ??
+    (selectedNode.imageId
+      ? enabledPlatformImageAssets.find((item) => item.imageId === selectedNode.imageId) ?? null
+      : null) ??
+    fallbackPlatformImageAsset;
+  const platformImageOptions =
+    selectedPlatformImageAsset && !enabledPlatformImageAssets.some((item) => item.id === selectedPlatformImageAsset.id)
+      ? [selectedPlatformImageAsset, ...enabledPlatformImageAssets]
+      : enabledPlatformImageAssets;
+
+  function handleAddNic() {
+    const nextIndex = nicItems.length + 1;
+    onUpdateNode(selectedNode.id, {
+      ...selectedNode,
+      nics: [
+        ...nicItems,
+        {
+          id: `${selectedNode.id}-nic-${nextIndex}`,
+          switchId: '',
+          privateIp: '',
+          secondaryIps: [],
+          securityGroupRules: [],
+        },
+      ],
+    });
+  }
+
+  function handleDeleteNic(nicId: string) {
+    if (nicItems.length <= 1) {
+      return;
+    }
+
+    onUpdateNode(selectedNode.id, {
+      ...selectedNode,
+      nics: nicItems.filter((item) => item.id !== nicId),
+    });
+  }
+
+  function handleAddNicSecurityRule(nicId: string) {
+    onUpdateNode(selectedNode.id, {
+      ...selectedNode,
+      nics: nicItems.map((item) =>
+        item.id === nicId
+          ? {
+              ...item,
+              securityGroupRules: [
+                ...item.securityGroupRules,
+                {
+                  key: `${nicId}-sg-${item.securityGroupRules.length + 1}`,
+                  direction: 'ingress',
+                  protocol: 'tcp',
+                  portRange: '22/22',
+                  sourceCidr: '0.0.0.0/0',
+                  policy: 'accept',
+                  priority: item.securityGroupRules.length + 1,
+                },
+              ],
+            }
+          : item,
+      ),
+    });
+  }
+
   return (
     <>
-      <label>
-        <span>主机名称</span>
-        <input
-          aria-label="主机名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>所属区域</span>
-        <input
-          aria-label="所属区域"
-          value={selectedNode.zoneKey}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              zoneKey: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>主机角色</span>
-        <input
-          aria-label="主机角色"
-          value={selectedNode.role}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              role: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>私网 IP</span>
-        <input
-          aria-label="私网 IP"
-          value={selectedNode.privateIp}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              privateIp: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>镜像</span>
-        <input
-          aria-label="镜像"
-          value={selectedNode.image}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              image: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label className="template-property-check">
-        <input
-          type="checkbox"
-          checked={selectedNode.exposePublic}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              exposePublic: event.target.checked,
-            })
-          }
-        />
-        <span>允许公网暴露</span>
-      </label>
+      <PropertyGroup
+        title="基础信息"
+        action={<span className="template-property-group-badge">ECS</span>}
+        actionClassName="template-property-group-action-badge"
+        formClassName="template-property-form-grid"
+        headClassName="template-property-group-head-badge"
+      >
+        <PropertyField label="名称">
+          <input
+            aria-label="名称"
+            value={selectedNode.label}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                label: event.target.value,
+                instanceName: event.target.value,
+              })
+            }
+          />
+        </PropertyField>
+        <PropertyField label="主机名">
+          <input
+            aria-label="主机名"
+            value={selectedNode.hostName ?? ''}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                hostName: event.target.value,
+              })
+            }
+          />
+        </PropertyField>
+        <PropertyField label="镜像名">
+          <select
+            aria-label="镜像名"
+            value={selectedPlatformImageAsset?.id ?? selectedNodeWithPlatformImageAsset.platformImageAssetId ?? ''}
+            onChange={(event) => {
+              const nextPlatformImageAsset = platformImageOptions.find((item) => item.id === event.target.value) ?? null;
+              const nextNode: EcsTemplateNodeWithPlatformImageAssetId = {
+                ...selectedNode,
+                imageCatalogItemId: undefined,
+                platformImageAssetId: nextPlatformImageAsset?.id,
+                image: nextPlatformImageAsset?.displayName ?? selectedNode.image,
+                imageName: nextPlatformImageAsset?.displayName ?? selectedNode.imageName,
+                imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
+                imageStrategy: {
+                  mode: 'fixed',
+                  imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
+                },
+              };
+
+              onUpdateNode(selectedNode.id, nextNode);
+            }}
+          >
+            <option value="">请选择平台镜像</option>
+            {platformImageOptions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.displayName}
+              </option>
+            ))}
+          </select>
+        </PropertyField>
+        <PropertyField label="启动优先级">
+          <input
+            aria-label="启动优先级"
+            type="number"
+            value={selectedNode.bootPriority ?? 1}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                bootPriority: Number(event.target.value) || 1,
+              })
+            }
+          />
+        </PropertyField>
+        <PropertyField label="CPU">
+          <input
+            aria-label="CPU"
+            type="number"
+            value={selectedNode.cpu ?? 1}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                cpu: Number(event.target.value) || 1,
+              })
+            }
+          />
+        </PropertyField>
+        <PropertyField label="内存">
+          <input
+            aria-label="内存"
+            type="number"
+            value={selectedNode.memory ?? 2}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                memory: Number(event.target.value) || 1,
+              })
+            }
+          />
+        </PropertyField>
+        {instanceTypeAvailability?.warning ? (
+          <div className="template-property-warning-note" role="status">
+            {instanceTypeAvailability.warning}
+          </div>
+        ) : null}
+      </PropertyGroup>
+
+      <PropertyGroup
+        title="网卡配置"
+        action={
+          <button type="button" className="template-property-inline-button" onClick={handleAddNic}>
+            添加网卡
+          </button>
+        }
+      >
+        {nicItems.map((nic, index) => {
+          const selectedSwitch = switchById.get(nic.switchId) ?? null;
+          const ipHint = selectedSwitch ? `仅允许 ${selectedSwitch.cidr} 网段` : '仅允许已连接交换机的网段';
+          const ipError =
+            selectedSwitch && nic.privateIp && isCompleteIpv4(nic.privateIp) && !isIpv4InCidr(nic.privateIp, selectedSwitch.cidr)
+              ? `私网 IP 不在 ${selectedSwitch.cidr} 网段内`
+              : undefined;
+          const secondaryIpError =
+            selectedSwitch &&
+            nic.secondaryIps.some((ip) => isCompleteIpv4(ip) && !isIpv4InCidr(ip, selectedSwitch.cidr))
+              ? `辅助 IP 不在 ${selectedSwitch.cidr} 网段内`
+              : undefined;
+
+          return (
+            <div key={nic.id} className="template-property-card">
+            <div className="template-property-card-head">
+              <strong className="template-property-card-title">网卡 {index + 1}</strong>
+              <div className="template-property-card-actions">
+                <button
+                  type="button"
+                  className="template-property-inline-button"
+                  onClick={() => handleAddNicSecurityRule(nic.id)}
+                >
+                  添加安全规则 {index + 1}
+                </button>
+                <button
+                  type="button"
+                  className="template-property-inline-button is-danger"
+                  disabled={nicItems.length <= 1}
+                  aria-label={`删除网卡 ${index + 1}`}
+                  onClick={() => handleDeleteNic(nic.id)}
+                >
+                  删除网卡
+                </button>
+              </div>
+            </div>
+            <div className="template-property-card-grid">
+              <PropertyField label="交换机标识" className="template-property-field-full">
+                <select
+                  aria-label={`交换机标识 ${index + 1}`}
+                  value={nic.switchId}
+                  onChange={(event) => {
+                    const nextSwitch = switchById.get(event.target.value) ?? null;
+
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nics: nicItems.map((item) =>
+                        item.id === nic.id
+                          ? {
+                              ...item,
+                              switchId: event.target.value,
+                            }
+                          : item,
+                      ),
+                    });
+                  }}
+                >
+                  <option value="">未连接交换机</option>
+                  {switchOptions.map((switchNode) => (
+                    <option key={switchNode.id} value={switchNode.id}>
+                      {switchNode.label}
+                    </option>
+                  ))}
+                </select>
+              </PropertyField>
+              <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
+                <input
+                  aria-label={`私网 IP ${index + 1}`}
+                  disabled={!selectedSwitch}
+                  value={nic.privateIp}
+                  onChange={(event) => {
+                    const nextValue = event.target.value.trim();
+
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nics: nicItems.map((item) =>
+                        item.id === nic.id
+                          ? {
+                              ...item,
+                              privateIp: nextValue,
+                            }
+                          : item,
+                      ),
+                    });
+                  }}
+                />
+              </PropertyField>
+              <PropertyField label="辅助 IP" hint={secondaryIpError ?? ipHint} className="template-property-field-full">
+                <input
+                  aria-label={`辅助 IP ${index + 1}`}
+                  disabled={!selectedSwitch}
+                  value={nic.secondaryIps.join(',')}
+                  onChange={(event) => {
+                    const nextIps = parseMultiLineList(event.target.value);
+
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nics: nicItems.map((item) =>
+                        item.id === nic.id
+                          ? {
+                              ...item,
+                              secondaryIps: selectedSwitch ? nextIps : [],
+                            }
+                          : item,
+                      ),
+                    });
+                  }}
+                />
+              </PropertyField>
+            </div>
+            {nic.securityGroupRules.map((rule, ruleIndex) => (
+              <div key={rule.key} className="template-property-card template-property-card-sub">
+                <div className="template-property-card-head">
+                  <strong className="template-property-card-title">安全规则 {index + 1}-{ruleIndex + 1}</strong>
+                  <button
+                    type="button"
+                    className="template-property-inline-button is-danger"
+                    aria-label={`删除安全规则 ${index + 1}-${ruleIndex + 1}`}
+                    onClick={() =>
+                      onUpdateNode(selectedNode.id, {
+                        ...selectedNode,
+                        nics: nicItems.map((item) =>
+                          item.id === nic.id
+                            ? {
+                                ...item,
+                                securityGroupRules: item.securityGroupRules.filter(
+                                  (securityRule) => securityRule.key !== rule.key,
+                                ),
+                              }
+                            : item,
+                        ),
+                      })
+                    }
+                  >
+                    删除
+                  </button>
+                </div>
+                <div className="template-property-card-grid">
+                  <PropertyField label="方向">
+                    <select
+                      aria-label={`安全方向 ${index + 1}-${ruleIndex + 1}`}
+                      value={rule.direction}
+                      onChange={(event) =>
+                        onUpdateNode(selectedNode.id, {
+                          ...selectedNode,
+                          nics: nicItems.map((item) =>
+                            item.id === nic.id
+                              ? {
+                                  ...item,
+                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
+                                    securityRule.key === rule.key
+                                      ? { ...securityRule, direction: event.target.value as typeof securityRule.direction }
+                                      : securityRule,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    >
+                      <option value="ingress">ingress</option>
+                      <option value="egress">egress</option>
+                    </select>
+                  </PropertyField>
+                  <PropertyField label="协议">
+                    <select
+                      aria-label={`安全协议 ${index + 1}-${ruleIndex + 1}`}
+                      value={rule.protocol}
+                      onChange={(event) =>
+                        onUpdateNode(selectedNode.id, {
+                          ...selectedNode,
+                          nics: nicItems.map((item) =>
+                            item.id === nic.id
+                              ? {
+                                  ...item,
+                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
+                                    securityRule.key === rule.key
+                                      ? { ...securityRule, protocol: event.target.value }
+                                      : securityRule,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    >
+                      <option value="tcp">tcp</option>
+                      <option value="udp">udp</option>
+                      <option value="icmp">icmp</option>
+                      <option value="all">all</option>
+                    </select>
+                  </PropertyField>
+                  <PropertyField label="端口范围">
+                    <input
+                      aria-label={`安全端口 ${index + 1}-${ruleIndex + 1}`}
+                      value={rule.portRange}
+                      onChange={(event) =>
+                        onUpdateNode(selectedNode.id, {
+                          ...selectedNode,
+                          nics: nicItems.map((item) =>
+                            item.id === nic.id
+                              ? {
+                                  ...item,
+                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
+                                    securityRule.key === rule.key
+                                      ? { ...securityRule, portRange: event.target.value }
+                                      : securityRule,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </PropertyField>
+                  <PropertyField label="安全策略">
+                    <select
+                      aria-label={`安全策略 ${index + 1}-${ruleIndex + 1}`}
+                      value={rule.policy}
+                      onChange={(event) =>
+                        onUpdateNode(selectedNode.id, {
+                          ...selectedNode,
+                          nics: nicItems.map((item) =>
+                            item.id === nic.id
+                              ? {
+                                  ...item,
+                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
+                                    securityRule.key === rule.key
+                                      ? { ...securityRule, policy: event.target.value as typeof securityRule.policy }
+                                      : securityRule,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    >
+                      <option value="accept">accept</option>
+                      <option value="drop">drop</option>
+                    </select>
+                  </PropertyField>
+                  <PropertyField label="安全优先级">
+                    <input
+                      aria-label={`安全优先级 ${index + 1}-${ruleIndex + 1}`}
+                      type="number"
+                      value={rule.priority}
+                      onChange={(event) =>
+                        onUpdateNode(selectedNode.id, {
+                          ...selectedNode,
+                          nics: nicItems.map((item) =>
+                            item.id === nic.id
+                              ? {
+                                  ...item,
+                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
+                                    securityRule.key === rule.key
+                                      ? { ...securityRule, priority: Number(event.target.value) || 1 }
+                                      : securityRule,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </PropertyField>
+                  <PropertyField label="源网段">
+                    <input
+                      aria-label={`安全源网段 ${index + 1}-${ruleIndex + 1}`}
+                      value={rule.sourceCidr}
+                      onChange={(event) =>
+                        onUpdateNode(selectedNode.id, {
+                          ...selectedNode,
+                          nics: nicItems.map((item) =>
+                            item.id === nic.id
+                              ? {
+                                  ...item,
+                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
+                                    securityRule.key === rule.key
+                                      ? { ...securityRule, sourceCidr: event.target.value }
+                                      : securityRule,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </PropertyField>
+                </div>
+              </div>
+            ))}
+            </div>
+          );
+        })}
+      </PropertyGroup>
+
+      <PropertyGroup title="初始化脚本">
+        <div className="template-property-field">
+          <textarea
+            aria-label="初始化脚本"
+            rows={4}
+            value={selectedNode.initScript}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                initScript: event.target.value,
+              })
+            }
+          />
+        </div>
+      </PropertyGroup>
     </>
   );
 }
 
-function renderSwitchFields(selectedNode: SwitchTemplateNode, onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void) {
+function renderSwitchFields(
+  selectedNode: SwitchTemplateNode,
+  allNodes: TemplateNode[],
+  onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
+) {
+  const aclRules = selectedNode.aclRules ?? [];
+  const dnatMappings = selectedNode.nat?.dnatMappings ?? [];
+  const hostOptions = allNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs');
+  const cidrParts = parseCidrParts(selectedNode.cidr);
+  function handleAddAclRule() {
+    const nextIndex = aclRules.length + 1;
+    onUpdateNode(selectedNode.id, {
+      ...selectedNode,
+      aclRules: [
+        ...aclRules,
+        {
+          key: `${selectedNode.id}-acl-${nextIndex}`,
+          direction: 'inbound',
+          protocol: 'tcp',
+          portRange: '22/22',
+          sourceCidr: '0.0.0.0/0',
+          destinationCidr: selectedNode.cidr,
+          policy: 'allow',
+          priority: nextIndex,
+        },
+      ],
+    });
+  }
+
+  function handleAddDnatRule() {
+    const nextIndex = dnatMappings.length + 1;
+    onUpdateNode(selectedNode.id, {
+      ...selectedNode,
+      nat: {
+        snatEnabled: selectedNode.nat?.snatEnabled ?? false,
+        dnatMappings: [
+          ...dnatMappings,
+          {
+            key: `${selectedNode.id}-dnat-${nextIndex}`,
+            targetHostId: '',
+            externalPort: 8080,
+            internalPort: 80,
+            protocol: 'tcp',
+          },
+        ],
+      },
+    });
+  }
+
   return (
     <>
-      <label>
-        <span>交换机名称</span>
-        <input
-          aria-label="交换机名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>区域标识</span>
-        <input
-          aria-label="区域标识"
-          value={selectedNode.zoneKey}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              zoneKey: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>子网 CIDR</span>
-        <input
-          aria-label="子网 CIDR"
-          value={selectedNode.cidr}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              cidr: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>区域用途</span>
-        <input
-          aria-label="区域用途"
-          value={selectedNode.purpose}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              purpose: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label className="template-property-check">
-        <input
-          type="checkbox"
-          checked={selectedNode.enableNat}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              enableNat: event.target.checked,
-            })
-          }
-        />
-        <span>启用 NAT 能力</span>
-      </label>
+      <PropertyGroup
+        title="基础信息"
+        action={<span className="template-property-group-badge">交换机</span>}
+        actionClassName="template-property-group-action-badge"
+        formClassName="template-property-form-grid template-property-form-grid-switch"
+        headClassName="template-property-group-head-badge"
+      >
+        <PropertyField label="名称">
+          <input
+            aria-label="交换机名称"
+            value={selectedNode.label}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                label: event.target.value,
+              })
+            }
+          />
+        </PropertyField>
+        <PropertyField label="描述" className="template-property-field-switch-description-inline">
+          <textarea
+            aria-label="描述"
+            rows={3}
+            placeholder="请输入描述"
+            value={selectedNode.description ?? ''}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                description: event.target.value,
+              })
+            }
+          />
+        </PropertyField>
+      </PropertyGroup>
+
+      <PropertyGroup title="网段配置" formClassName="template-property-form">
+        <div className="template-switch-cidr-field">
+          <div className="template-switch-cidr-shell">
+            <input
+              className="template-switch-cidr-octet"
+              aria-label="CIDR 第一段"
+              value={cidrParts.first}
+              onChange={(event) =>
+                onUpdateNode(selectedNode.id, {
+                  ...selectedNode,
+                  cidr: buildCidrFromParts({
+                    first: event.target.value,
+                    second: cidrParts.second,
+                    third: cidrParts.third,
+                    prefix: cidrParts.prefix,
+                  }),
+                })
+              }
+            />
+            <span className="template-switch-cidr-separator">.</span>
+            <input
+              className="template-switch-cidr-octet"
+              aria-label="CIDR 第二段"
+              value={cidrParts.second}
+              onChange={(event) =>
+                onUpdateNode(selectedNode.id, {
+                  ...selectedNode,
+                  cidr: buildCidrFromParts({
+                    first: cidrParts.first,
+                    second: event.target.value,
+                    third: cidrParts.third,
+                    prefix: cidrParts.prefix,
+                  }),
+                })
+              }
+            />
+            <span className="template-switch-cidr-separator">.</span>
+            <input
+              className="template-switch-cidr-octet"
+              aria-label="CIDR 第三段"
+              value={cidrParts.third}
+              onChange={(event) =>
+                onUpdateNode(selectedNode.id, {
+                  ...selectedNode,
+                  cidr: buildCidrFromParts({
+                    first: cidrParts.first,
+                    second: cidrParts.second,
+                    third: event.target.value,
+                    prefix: cidrParts.prefix,
+                  }),
+                })
+              }
+            />
+            <span className="template-switch-cidr-separator">.</span>
+            <input
+              className="template-switch-cidr-octet template-switch-cidr-octet-readonly"
+              aria-label="CIDR 第四段"
+              value="0"
+              readOnly
+              tabIndex={-1}
+            />
+            <span className="template-switch-cidr-slash">/</span>
+            <input
+              className="template-switch-cidr-prefix"
+              aria-label="CIDR 前缀"
+              value={cidrParts.prefix}
+              onChange={(event) =>
+                onUpdateNode(selectedNode.id, {
+                  ...selectedNode,
+                  cidr: buildCidrFromParts({
+                    first: cidrParts.first,
+                    second: cidrParts.second,
+                    third: cidrParts.third,
+                    prefix: event.target.value,
+                  }),
+                })
+              }
+            />
+          </div>
+        </div>
+      </PropertyGroup>
+
+      <PropertyGroup
+        title="ACL 配置"
+        action={
+          <button type="button" className="template-property-inline-button" onClick={handleAddAclRule}>
+            添加 ACL 规则
+          </button>
+        }
+      >
+        {aclRules.length === 0 ? <p className="template-property-empty-note">暂无 ACL 规则</p> : null}
+        {aclRules.map((rule, index) => (
+          <div key={rule.key} className="template-property-card">
+            <div className="template-property-card-head">
+              <strong className="template-property-card-title">ACL 规则 {index + 1}</strong>
+              <button
+                type="button"
+                className="template-property-inline-button is-danger"
+                aria-label={`删除 ACL 规则 ${index + 1}`}
+                onClick={() =>
+                  onUpdateNode(selectedNode.id, {
+                    ...selectedNode,
+                    aclRules: aclRules.filter((item) => item.key !== rule.key),
+                  })
+                }
+              >
+                删除
+              </button>
+            </div>
+            <div className="template-property-card-grid template-property-card-grid-compact">
+              <PropertyField label="方向">
+                <select
+                  aria-label={`ACL 方向 ${index + 1}`}
+                  value={rule.direction}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, direction: event.target.value as typeof item.direction } : item,
+                      ),
+                    })
+                  }
+                >
+                  <option value="inbound">inbound</option>
+                  <option value="outbound">outbound</option>
+                </select>
+              </PropertyField>
+              <PropertyField label="协议">
+                <select
+                  aria-label={`ACL 协议 ${index + 1}`}
+                  value={rule.protocol}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, protocol: event.target.value } : item,
+                      ),
+                    })
+                  }
+                >
+                  <option value="tcp">tcp</option>
+                  <option value="udp">udp</option>
+                  <option value="icmp">icmp</option>
+                  <option value="all">all</option>
+                </select>
+              </PropertyField>
+              <PropertyField label="端口范围">
+                <input
+                  aria-label={`ACL 端口范围 ${index + 1}`}
+                  value={rule.portRange}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, portRange: event.target.value } : item,
+                      ),
+                    })
+                  }
+                />
+              </PropertyField>
+              <PropertyField label="ACL 策略">
+                <select
+                  aria-label={`ACL 策略 ${index + 1}`}
+                  value={rule.policy}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, policy: event.target.value as typeof item.policy } : item,
+                      ),
+                    })
+                  }
+                >
+                  <option value="allow">allow</option>
+                  <option value="drop">drop</option>
+                </select>
+              </PropertyField>
+              <PropertyField label="ACL 优先级">
+                <input
+                  aria-label={`ACL 优先级 ${index + 1}`}
+                  type="number"
+                  value={rule.priority}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, priority: Number(event.target.value) || 1 } : item,
+                      ),
+                    })
+                  }
+                />
+              </PropertyField>
+              <PropertyField label="源网段" className="template-property-field-full">
+                <input
+                  aria-label={`ACL 源网段 ${index + 1}`}
+                  value={rule.sourceCidr}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, sourceCidr: event.target.value } : item,
+                      ),
+                    })
+                  }
+                />
+              </PropertyField>
+              <PropertyField label="目标网段" className="template-property-field-full">
+                <input
+                  aria-label={`ACL 目标网段 ${index + 1}`}
+                  value={rule.destinationCidr ?? ''}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      aclRules: aclRules.map((item) =>
+                        item.key === rule.key ? { ...item, destinationCidr: event.target.value } : item,
+                      ),
+                    })
+                  }
+                />
+              </PropertyField>
+            </div>
+          </div>
+        ))}
+      </PropertyGroup>
+
+      <PropertyGroup
+        title="NAT 配置"
+        action={
+          <button type="button" className="template-property-inline-button" onClick={handleAddDnatRule}>
+            添加 DNAT 规则
+          </button>
+        }
+      >
+        <label className="template-property-check template-property-check-card">
+          <input
+            type="checkbox"
+            checked={selectedNode.nat?.snatEnabled ?? false}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                nat: {
+                  snatEnabled: event.target.checked,
+                  dnatMappings: selectedNode.nat?.dnatMappings ?? [],
+                },
+              })
+            }
+          />
+          <span>允许访问互联网（SNAT）</span>
+        </label>
+        {dnatMappings.length === 0 ? <p className="template-property-empty-note">暂无 DNAT 规则</p> : null}
+        {dnatMappings.map((mapping, index) => (
+          <div key={mapping.key} className="template-property-card">
+            <div className="template-property-card-head">
+              <strong className="template-property-card-title">DNAT 规则 {index + 1}</strong>
+              <button
+                type="button"
+                className="template-property-inline-button is-danger"
+                aria-label={`删除 DNAT 规则 ${index + 1}`}
+                onClick={() =>
+                  onUpdateNode(selectedNode.id, {
+                    ...selectedNode,
+                    nat: {
+                      snatEnabled: selectedNode.nat?.snatEnabled ?? false,
+                      dnatMappings: dnatMappings.filter((item) => item.key !== mapping.key),
+                    },
+                  })
+                }
+              >
+                删除
+              </button>
+            </div>
+            <div className="template-property-card-grid template-property-card-grid-compact">
+              <PropertyField label="目标主机" className="template-property-field-full">
+                <select
+                  aria-label={`DNAT 目标主机 ${index + 1}`}
+                  value={mapping.targetHostId}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nat: {
+                        snatEnabled: selectedNode.nat?.snatEnabled ?? false,
+                        dnatMappings: dnatMappings.map((item) =>
+                          item.key === mapping.key ? { ...item, targetHostId: event.target.value } : item,
+                        ),
+                      },
+                    })
+                  }
+                >
+                  <option value="">未选择</option>
+                  {hostOptions.map((host) => (
+                    <option key={host.id} value={host.id}>
+                      {host.label}
+                    </option>
+                  ))}
+                </select>
+              </PropertyField>
+              <PropertyField label="公网端口">
+                <input
+                  aria-label={`DNAT 公网端口 ${index + 1}`}
+                  type="number"
+                  value={mapping.externalPort}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nat: {
+                        snatEnabled: selectedNode.nat?.snatEnabled ?? false,
+                        dnatMappings: dnatMappings.map((item) =>
+                          item.key === mapping.key ? { ...item, externalPort: Number(event.target.value) || 0 } : item,
+                        ),
+                      },
+                    })
+                  }
+                />
+              </PropertyField>
+              <PropertyField label="内网端口">
+                <input
+                  aria-label={`DNAT 内网端口 ${index + 1}`}
+                  type="number"
+                  value={mapping.internalPort}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nat: {
+                        snatEnabled: selectedNode.nat?.snatEnabled ?? false,
+                        dnatMappings: dnatMappings.map((item) =>
+                          item.key === mapping.key ? { ...item, internalPort: Number(event.target.value) || 0 } : item,
+                        ),
+                      },
+                    })
+                  }
+                />
+              </PropertyField>
+              <PropertyField label="协议">
+                <select
+                  aria-label={`DNAT 协议 ${index + 1}`}
+                  value={mapping.protocol}
+                  onChange={(event) =>
+                    onUpdateNode(selectedNode.id, {
+                      ...selectedNode,
+                      nat: {
+                        snatEnabled: selectedNode.nat?.snatEnabled ?? false,
+                        dnatMappings: dnatMappings.map((item) =>
+                          item.key === mapping.key ? { ...item, protocol: event.target.value as typeof item.protocol } : item,
+                        ),
+                      },
+                    })
+                  }
+                >
+                  <option value="tcp">tcp</option>
+                  <option value="udp">udp</option>
+                </select>
+              </PropertyField>
+            </div>
+          </div>
+        ))}
+      </PropertyGroup>
     </>
   );
 }
 
-function renderRouterFields(selectedNode: RouterTemplateNode, onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void) {
-  return (
-    <>
-      <label>
-        <span>路由节点名称</span>
-        <input
-          aria-label="路由节点名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>路由角色</span>
-        <input
-          aria-label="路由角色"
-          value={selectedNode.routeRole}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              routeRole: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>出口类型</span>
-        <input
-          aria-label="出口类型"
-          value={selectedNode.egressType}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              egressType: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label className="template-property-check">
-        <input
-          type="checkbox"
-          checked={selectedNode.bindEip}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              bindEip: event.target.checked,
-            })
-          }
-        />
-        <span>绑定公网出口 EIP</span>
-      </label>
-    </>
-  );
-}
-
-function renderNatGatewayFields(
-  selectedNode: NatGatewayTemplateNode,
+function renderRouterFields(
+  selectedNode: RouterTemplateNode,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
 ) {
   return (
     <>
-      <label>
-        <span>NAT 网关名称</span>
-        <input
-          aria-label="NAT 网关名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>所属区域</span>
-        <input
-          aria-label="所属区域"
-          value={selectedNode.zoneKey}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              zoneKey: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label className="template-property-check">
-        <input
-          type="checkbox"
-          checked={selectedNode.snatEnabled}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              snatEnabled: event.target.checked,
-            })
-          }
-        />
-        <span>启用 SNAT</span>
-      </label>
+      <PropertyGroup
+        title="基础信息"
+        action={<span className="template-property-group-badge">路由器</span>}
+        actionClassName="template-property-group-action-badge"
+        formClassName="template-property-form-grid template-property-form-grid-switch"
+        headClassName="template-property-group-head-badge"
+      >
+        <PropertyField label="名称">
+          <input
+            aria-label="名称"
+            value={selectedNode.label}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                label: event.target.value,
+              })
+            }
+          />
+        </PropertyField>
+        <PropertyField label="描述" className="template-property-field-switch-description-inline">
+          <textarea
+            aria-label="路由描述"
+            rows={3}
+            placeholder="请输入描述"
+            value={selectedNode.description ?? ''}
+            onChange={(event) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                description: event.target.value,
+              })
+            }
+          />
+        </PropertyField>
+      </PropertyGroup>
     </>
   );
 }
 
-function renderEipFields(selectedNode: EipTemplateNode, onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void) {
-  return (
-    <>
-      <label>
-        <span>EIP 名称</span>
-        <input
-          aria-label="EIP 名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>绑定目标类型</span>
-        <input
-          aria-label="绑定目标类型"
-          value={selectedNode.bindTargetType}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              bindTargetType: event.target.value === 'nat_gateway' ? 'nat_gateway' : 'host',
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>绑定目标标识</span>
-        <input
-          aria-label="绑定目标标识"
-          value={selectedNode.bindTargetKey}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              bindTargetKey: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>带宽 Mbps</span>
-        <input
-          aria-label="带宽 Mbps"
-          type="number"
-          value={selectedNode.bandwidthMbps}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              bandwidthMbps: Number(event.target.value) || 0,
-            })
-          }
-        />
-      </label>
-    </>
-  );
-}
-
-function renderAclFields(selectedNode: AclTemplateNode, onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void) {
-  return (
-    <>
-      <label>
-        <span>ACL 名称</span>
-        <input
-          aria-label="ACL 名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>所属区域</span>
-        <input
-          aria-label="所属区域"
-          value={selectedNode.zoneKey}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              zoneKey: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>方向</span>
-        <input
-          aria-label="方向"
-          value={selectedNode.direction}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              direction: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>策略</span>
-        <input
-          aria-label="策略"
-          value={selectedNode.policy}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              policy: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>协议</span>
-        <input
-          aria-label="协议"
-          value={selectedNode.protocol}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              protocol: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>端口范围</span>
-        <input
-          aria-label="端口范围"
-          value={selectedNode.portRange}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              portRange: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>来源网段</span>
-        <input
-          aria-label="来源网段"
-          value={selectedNode.sourceCidr}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              sourceCidr: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>优先级</span>
-        <input
-          aria-label="优先级"
-          type="number"
-          value={selectedNode.priority}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              priority: Number(event.target.value) || 0,
-            })
-          }
-        />
-      </label>
-    </>
-  );
-}
-
-function renderSecurityGroupRuleFields(
-  selectedNode: SecurityGroupRuleTemplateNode,
+function renderNodeGroups(
+  selectedNode: TemplateNode,
+  allNodes: TemplateNode[],
+  platformImageAssets: PlatformImageAsset[],
+  instanceTypeAvailability: InstanceTypeAvailabilitySnapshot | null,
+  linkedSwitchIdsByHostId: Record<string, string[]>,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
 ) {
-  return (
-    <>
-      <label>
-        <span>安全组规则名称</span>
-        <input
-          aria-label="安全组规则名称"
-          value={selectedNode.label}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              label: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>目标主机标识</span>
-        <input
-          aria-label="目标主机标识"
-          value={selectedNode.targetHostKey}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              targetHostKey: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>方向</span>
-        <input
-          aria-label="方向"
-          value={selectedNode.direction}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              direction: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>策略</span>
-        <input
-          aria-label="策略"
-          value={selectedNode.policy}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              policy: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>协议</span>
-        <input
-          aria-label="协议"
-          value={selectedNode.protocol}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              protocol: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>端口范围</span>
-        <input
-          aria-label="端口范围"
-          value={selectedNode.portRange}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              portRange: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>来源网段</span>
-        <input
-          aria-label="来源网段"
-          value={selectedNode.sourceCidr}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              sourceCidr: event.target.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        <span>优先级</span>
-        <input
-          aria-label="优先级"
-          type="number"
-          value={selectedNode.priority}
-          onChange={(event) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              priority: Number(event.target.value) || 0,
-            })
-          }
-        />
-      </label>
-    </>
-  );
+  switch (selectedNode.kind) {
+    case 'ecs':
+      return renderHostFields(
+        selectedNode,
+        allNodes,
+        platformImageAssets,
+        instanceTypeAvailability,
+        linkedSwitchIdsByHostId,
+        onUpdateNode,
+      );
+    case 'switch':
+      return renderSwitchFields(selectedNode, allNodes, onUpdateNode);
+    case 'router':
+      return renderRouterFields(selectedNode, onUpdateNode);
+    default:
+      return null;
+  }
 }
 
-export function TemplatePropertyPanel({ selectedNode, onUpdateNode }: TemplatePropertyPanelProps) {
+export function TemplatePropertyPanel({
+  selectedNode,
+  allNodes,
+  platformImageAssets = [],
+  instanceTypeAvailability = null,
+  linkedSwitchIdsByHostId = {},
+  onUpdateNode,
+}: TemplatePropertyPanelProps) {
+  const shellRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (shellRef.current) {
+      shellRef.current.scrollTop = 0;
+    }
+  }, [selectedNode?.id]);
+
   return (
-    <aside className="template-editor-panel">
-      <div className="admin-section-header">
+    <aside className="template-editor-panel template-property-panel">
+      <div className="admin-section-header template-property-panel-header">
         <h2>属性面板</h2>
-        <span>节点配置</span>
       </div>
 
-      <div className="template-property-placeholder">
+      <div ref={shellRef} className="template-property-shell">
         {selectedNode ? (
-          <div className="template-property-form">
-            {selectedNode.kind === 'host' ? renderHostFields(selectedNode, onUpdateNode) : null}
-            {selectedNode.kind === 'switch' ? renderSwitchFields(selectedNode, onUpdateNode) : null}
-            {selectedNode.kind === 'router' ? renderRouterFields(selectedNode, onUpdateNode) : null}
-            {selectedNode.kind === 'nat_gateway' ? renderNatGatewayFields(selectedNode, onUpdateNode) : null}
-            {selectedNode.kind === 'eip' ? renderEipFields(selectedNode, onUpdateNode) : null}
-            {selectedNode.kind === 'acl' ? renderAclFields(selectedNode, onUpdateNode) : null}
-            {selectedNode.kind === 'security_group_rule'
-              ? renderSecurityGroupRuleFields(selectedNode, onUpdateNode)
-              : null}
+          <div className="template-property-stack">
+            {renderNodeGroups(
+              selectedNode,
+              allNodes,
+              platformImageAssets,
+              instanceTypeAvailability,
+              linkedSwitchIdsByHostId,
+              onUpdateNode,
+            )}
           </div>
         ) : (
-          <>
-            <p>选择一个节点后在这里编辑参数。</p>
-            <ul>
-              <li>主机：ECS、边界入口、域控、数据库</li>
-              <li>交换机：子网、区域、ACL、NAT</li>
-              <li>路由器：出口、DNS、路由策略</li>
-              <li>NAT 网关 / EIP / ACL / 安全组规则：云侧网络控制资源</li>
-            </ul>
-          </>
+          <div className="template-property-placeholder">
+            <strong>选择节点后配置</strong>
+          </div>
         )}
       </div>
     </aside>
