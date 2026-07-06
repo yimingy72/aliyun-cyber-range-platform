@@ -6,12 +6,14 @@ const {
   fetchRangeInstanceDetailMock,
   saveRangeInstanceDraftMock,
   discardRangeInstanceDraftMock,
+  runRangeInstanceNodeActionMock,
   pushMock,
   replaceMock,
 } = vi.hoisted(() => ({
   fetchRangeInstanceDetailMock: vi.fn(),
   saveRangeInstanceDraftMock: vi.fn(),
   discardRangeInstanceDraftMock: vi.fn(),
+  runRangeInstanceNodeActionMock: vi.fn(),
   pushMock: vi.fn(),
   replaceMock: vi.fn(),
 }));
@@ -35,6 +37,7 @@ vi.mock('../../lib/admin-api', () => ({
   fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
   saveRangeInstanceDraft: saveRangeInstanceDraftMock,
   discardRangeInstanceDraft: discardRangeInstanceDraftMock,
+  runRangeInstanceNodeAction: runRangeInstanceNodeActionMock,
 }));
 
 vi.mock('./use-admin-session', () => ({
@@ -75,6 +78,10 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getByRole('button', { name: '节点目录' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '拓扑结构' })).toBeTruthy();
     expect(screen.getByText('ECS 1')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '关机' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重启' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '更多' })).toBeTruthy();
   });
 
   it('saves and discards instance draft changes from the property panel', async () => {

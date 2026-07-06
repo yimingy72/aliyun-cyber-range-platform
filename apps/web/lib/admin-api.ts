@@ -125,6 +125,23 @@ export async function applyRangeInstanceDraft(apiBaseUrl: string, token: string,
   return readJson<ProvisionJob>(response);
 }
 
+export async function runRangeInstanceNodeAction(
+  apiBaseUrl: string,
+  token: string,
+  rangeInstanceId: string,
+  nodeId: string,
+  action: 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+  payload: Record<string, string>,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${rangeInstanceId}/nodes/${nodeId}/actions/${action}`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<Record<string, unknown>>(response);
+}
+
 export async function createRangeInstance(
   apiBaseUrl: string,
   token: string,

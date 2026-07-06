@@ -9,6 +9,7 @@ import { PlatformImagesController } from './admin/platform-images.controller';
 import { AdminSessionController } from './admin/admin-session.controller';
 import { AdminSessionService } from './admin/admin-session.service';
 import { RangeInstancesService } from './admin/range-instances.service';
+import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
 import { RangesController } from './admin/ranges.controller';
 import { RangeTemplatesService } from './admin/range-templates.service';
 import { ScenariosController } from './admin/scenarios.controller';
@@ -42,6 +43,7 @@ import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
     AdminSessionService,
     RangeTemplatesService,
     RangeInstancesService,
+    RangeInstanceNodeActionsService,
     ProvisionJobsService,
     SystemConfigService,
     CidrPoolService,

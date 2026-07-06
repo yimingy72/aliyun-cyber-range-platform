@@ -3,12 +3,16 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { AdminAuthGuard } from './admin-auth.guard';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { CreateRangeInstanceDto, LaunchRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
+import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { RangeInstancesService } from './range-instances.service';
 
 @Controller('admin/ranges')
 @UseGuards(AdminAuthGuard)
 export class RangesController {
-  constructor(private readonly rangeInstancesService: RangeInstancesService) {}
+  constructor(
+    private readonly rangeInstancesService: RangeInstancesService,
+    private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
+  ) {}
 
   @Get()
   list() {
@@ -63,5 +67,15 @@ export class RangesController {
   @Post(':id/apply')
   applyDraft(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
     return this.rangeInstancesService.applyDraft(id, body.triggeredBy);
+  }
+
+  @Post(':id/nodes/:nodeId/actions/:action')
+  runNodeAction(
+    @Param('id') id: string,
+    @Param('nodeId') nodeId: string,
+    @Param('action') action: string,
+    @Body() body: Record<string, string>,
+  ) {
+    return this.rangeInstanceNodeActionsService.run(id, nodeId, action, body);
   }
 }

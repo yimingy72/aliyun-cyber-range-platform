@@ -4,7 +4,7 @@ import React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { AdminApiError, applyRangeInstanceDraft, fetchRangeInstanceDetail } from '../../lib/admin-api';
+import { AdminApiError, applyRangeInstanceDraft, fetchRangeInstanceDetail, runRangeInstanceNodeAction } from '../../lib/admin-api';
 import type { RangeInstanceDetail } from '../../lib/admin-types';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { RangeInstancePropertyPanel } from './range-instance-property-panel';
@@ -280,6 +280,28 @@ export function RangeInstanceDetailScreen({
     }
   }
 
+  async function handleNodeAction(nodeId: string, action: 'stop' | 'reboot' | 'open-vnc' | 'pack-image') {
+    if (!session.token || !detail) {
+      return;
+    }
+
+    setErrorMessage(null);
+
+    try {
+      await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, nodeId, action, {
+        ...(action === 'pack-image' ? { displayName: `${nodeId}-snapshot` } : {}),
+      });
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('节点操作失败，请稍后重试。');
+    }
+  }
+
   function handleEditedNodeLabelChange(value: string) {
     if (!selectedNodeId || !draftGraph || typeof draftGraph !== 'object') {
       return;
@@ -372,7 +394,11 @@ export function RangeInstanceDetailScreen({
               <div className="range-instance-detail-content">
                 <div className="range-instance-detail-main">
                   {activeTab === 'directory' ? (
-                    <RangeInstanceNodeDirectory nodes={nodes} onSelectNode={setSelectedNodeId} />
+                    <RangeInstanceNodeDirectory
+                      nodes={nodes}
+                      onSelectNode={setSelectedNodeId}
+                      onNodeAction={handleNodeAction}
+                    />
                   ) : (
                     <RangeInstanceTopologyWorkbench nodes={nodes} onSelectNode={setSelectedNodeId} />
                   )}
