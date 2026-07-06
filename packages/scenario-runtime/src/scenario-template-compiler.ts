@@ -1,4 +1,4 @@
-import type { CompiledProvisionSpec } from '../../../apps/web/lib/compiled-provision-spec';
+import type { CompiledProvisionSpec } from './compiled-provision-spec';
 import type { ScenarioTemplateSpec } from './scenario-template-spec';
 
 export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): CompiledProvisionSpec {

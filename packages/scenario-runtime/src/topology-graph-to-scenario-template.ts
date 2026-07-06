@@ -1,5 +1,5 @@
-import { resolveFixedInstanceType } from '../../../apps/web/lib/instance-type-catalog';
-import type { TemplateNode } from '../../../apps/web/lib/scenario-graph';
+import { resolveFixedInstanceType } from './instance-type-catalog';
+import type { TemplateNode } from './scenario-graph';
 import type {
   ScenarioTemplateAclRule,
   ScenarioTemplateAccessConfig,
