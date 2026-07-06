@@ -1,3 +1,4 @@
+import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -154,7 +155,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('操作')).toBeNull();
   });
 
-  it('opens the detail dialog for the selected range instance', async () => {
+  it('navigates to the standalone detail workbench when clicking 查看详情', async () => {
     fetchAdminBootstrapMock.mockResolvedValue({
       competitions: [],
       teams: [],
@@ -176,92 +177,12 @@ describe('RangeInstancesScreen', () => {
         { id: 'job-1', rangeInstanceId: 'range-1', jobType: 'create', status: 'running', triggeredBy: 'admin', startedAt: '2026-06-29T09:00:00.000Z' },
       ],
     });
-    fetchRangeInstanceDetailMock.mockResolvedValue({
-      id: 'range-1',
-      name: '蓝队靶场 01',
-      status: 'running',
-      teamId: 'team-1',
-      templateId: 'template-1',
-      lastJobId: 'job-1',
-      createdAt: '2026-06-29T09:00:00.000Z',
-      accessEntry: { publicIp: '47.1.1.1' },
-      resourceSummary: { mode: 'dedicated', vpcId: 'vpc-123', topologySpec: { vpcCidr: '172.16.0.0/16' } },
-    });
-    fetchProvisionJobDetailMock.mockResolvedValue({
-      job: {
-        id: 'job-1',
-        rangeInstanceId: 'range-1',
-        jobType: 'create',
-        status: 'running',
-        triggeredBy: 'admin',
-        startedAt: '2026-06-29T09:00:00.000Z',
-      },
-      steps: [],
-    });
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }));
 
-    await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: '实例详情' })).toBeTruthy();
-      expect(screen.getByText('实例基础信息')).toBeTruthy();
-      expect(screen.getByText('实例名：蓝队靶场 01')).toBeTruthy();
-      expect(screen.getByText('靶场名：企业攻防靶场')).toBeTruthy();
-    });
-  });
-
-  it('auto-opens the requested instance detail from the route query', async () => {
-    searchParamsState.value = 'instanceId=range-1';
-    fetchAdminBootstrapMock.mockResolvedValue({
-      competitions: [],
-      teams: [],
-      rangeTemplates: [
-        { id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' },
-      ],
-      rangeInstances: [
-        {
-          id: 'range-1',
-          name: '蓝队靶场 01',
-          templateId: 'template-1',
-          status: 'running',
-          createdAt: '2026-06-29T09:00:00.000Z',
-          lastJobId: 'job-1',
-        },
-      ],
-      provisionJobs: [
-        { id: 'job-1', rangeInstanceId: 'range-1', jobType: 'create', status: 'running', triggeredBy: 'admin', startedAt: '2026-06-29T09:00:00.000Z' },
-      ],
-    });
-    fetchRangeInstanceDetailMock.mockResolvedValue({
-      id: 'range-1',
-      name: '蓝队靶场 01',
-      status: 'running',
-      templateId: 'template-1',
-      lastJobId: 'job-1',
-      createdAt: '2026-06-29T09:00:00.000Z',
-      accessEntry: { publicIp: '47.1.1.1' },
-      resourceSummary: { mode: 'dedicated', vpcId: 'vpc-123', topologySpec: { vpcCidr: '172.16.0.0/16' } },
-    });
-    fetchProvisionJobDetailMock.mockResolvedValue({
-      job: {
-        id: 'job-1',
-        rangeInstanceId: 'range-1',
-        jobType: 'create',
-        status: 'running',
-        triggeredBy: 'admin',
-        startedAt: '2026-06-29T09:00:00.000Z',
-      },
-      steps: [],
-    });
-
-    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: '实例详情' })).toBeTruthy();
-      expect(screen.getByText('实例基础信息')).toBeTruthy();
-      expect(screen.getByText('实例名：蓝队靶场 01')).toBeTruthy();
-    });
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
   });
 
   it('triggers a destroy lifecycle action from the list row', async () => {
