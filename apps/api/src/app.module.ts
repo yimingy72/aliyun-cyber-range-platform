@@ -1,19 +1,19 @@
 import { Module } from '@nestjs/common';
+import path from 'node:path';
 
 import { ADMIN_REPOSITORY } from './admin/admin.repository';
 import { AdminAuthGuard } from './admin/admin-auth.guard';
+import { ImageCatalogController } from './admin/image-catalog.controller';
+import { ImageCatalogService } from './admin/image-catalog.service';
+import { PlatformImagesController } from './admin/platform-images.controller';
 import { AdminSessionController } from './admin/admin-session.controller';
 import { AdminSessionService } from './admin/admin-session.service';
-import { CompetitionsController } from './admin/competitions.controller';
-import { CompetitionsService } from './admin/competitions.service';
-import { RangeInstancesController } from './admin/range-instances.controller';
 import { RangeInstancesService } from './admin/range-instances.service';
-import { RangeTemplatesController } from './admin/range-templates.controller';
+import { RangesController } from './admin/ranges.controller';
 import { RangeTemplatesService } from './admin/range-templates.service';
+import { ScenariosController } from './admin/scenarios.controller';
 import { SystemConfigController } from './admin/system-config.controller';
 import { SystemConfigService } from './admin/system-config.service';
-import { TeamsController } from './admin/teams.controller';
-import { TeamsService } from './admin/teams.service';
 import { ProvisionJobsController } from './admin/provision-jobs.controller';
 import { ProvisionJobsService } from './admin/provision-jobs.service';
 import { AppController } from './app.controller';
@@ -29,18 +29,17 @@ import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
   controllers: [
     AppController,
     AdminSessionController,
-    CompetitionsController,
-    TeamsController,
-    RangeTemplatesController,
-    RangeInstancesController,
+    ScenariosController,
+    RangesController,
     ProvisionJobsController,
     SystemConfigController,
+    ImageCatalogController,
+    PlatformImagesController,
   ],
   providers: [
     AdminAuthGuard,
+    ImageCatalogService,
     AdminSessionService,
-    CompetitionsService,
-    TeamsService,
     RangeTemplatesService,
     RangeInstancesService,
     ProvisionJobsService,
@@ -58,7 +57,7 @@ import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
       provide: RANGE_PROVISIONER,
       useFactory: () =>
         createRangeProvisionerFromEnv({
-          projectRootDir: process.cwd(),
+          projectRootDir: path.resolve(__dirname, '..', '..', '..'),
         }),
     },
   ],
