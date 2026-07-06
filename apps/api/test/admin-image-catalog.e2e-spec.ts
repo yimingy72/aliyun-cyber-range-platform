@@ -380,6 +380,119 @@ describe('Admin image catalog APIs', () => {
     expect(listResponse.body).toEqual({ items: [] });
   });
 
+  it('rejects collecting a platform image asset from a snapshot outside the current account and region scope', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: 'foreign-account',
+      regionId: 'cn-shanghai',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-foreignsnapshot',
+          sourceImageName: 'Foreign Snapshot',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: 'foreign-account',
+      regionId: 'cn-shanghai',
+      scope: 'custom',
+    });
+
+    app = await createApp(repository);
+
+    await request(app.getHttpServer())
+      .post('/admin/platform-images')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        snapshotId: snapshot.id,
+        displayName: 'Should Not Collect',
+      })
+      .expect(404);
+
+    const listResponse = await request(app.getHttpServer())
+      .get('/admin/platform-images')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(listResponse.body).toEqual({ items: [] });
+  });
+
+  it('rejects platform asset mutations for assets outside the current account and region scope', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: 'foreign-account',
+      regionId: 'cn-shanghai',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-foreignasset',
+          sourceImageName: 'Foreign Asset Source',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: 'foreign-account',
+      regionId: 'cn-shanghai',
+      scope: 'custom',
+    });
+
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Foreign Asset',
+    });
+
+    app = await createApp(repository);
+
+    await request(app.getHttpServer())
+      .patch(`/admin/platform-images/${asset.id}`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ displayName: 'Renamed Foreign Asset' })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post(`/admin/platform-images/${asset.id}/disable`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post(`/admin/platform-images/${asset.id}/enable`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .delete(`/admin/platform-images/${asset.id}`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(404);
+
+    const foreignAssets = await repository.listPlatformImageAssets({
+      accountScopeKey: toAccountScopeKey('foreign-account'),
+      regionId: 'cn-shanghai',
+    });
+
+    expect(foreignAssets).toEqual([
+      expect.objectContaining({
+        id: asset.id,
+        displayName: 'Foreign Asset',
+        enabled: true,
+      }),
+    ]);
+  });
+
   it('DELETE /admin/image-catalog/custom/:snapshotId removes linked platform assets after cloud delete succeeds', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));

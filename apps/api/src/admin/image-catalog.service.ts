@@ -88,21 +88,33 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
+    const accountContext = await this.systemConfigService.getAccountContext();
+
+    if (!this.isSnapshotInScope(snapshot, accountContext)) {
+      throw new NotFoundException('Image snapshot not found');
+    }
+
     return this.adminRepository.collectPlatformImageAsset({
       snapshotId,
       displayName,
     });
   }
 
-  renamePlatformAsset(id: string, displayName: string) {
+  async renamePlatformAsset(id: string, displayName: string) {
+    await this.getScopedPlatformAssetOrThrow(id);
+
     return this.adminRepository.updatePlatformImageAsset(id, { displayName });
   }
 
-  setPlatformAssetEnabled(id: string, enabled: boolean) {
+  async setPlatformAssetEnabled(id: string, enabled: boolean) {
+    await this.getScopedPlatformAssetOrThrow(id);
+
     return this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
   }
 
   async removePlatformAsset(id: string): Promise<void> {
+    await this.getScopedPlatformAssetOrThrow(id);
+
     await this.adminRepository.deletePlatformImageAsset(id);
   }
 
@@ -195,6 +207,32 @@ export class ImageCatalogService {
     ]);
 
     return { snapshots, catalogItems };
+  }
+
+  private async getScopedPlatformAssetOrThrow(id: string): Promise<PlatformImageAssetRecord> {
+    const { items } = await this.listPlatformAssets();
+    const asset = items.find((item) => item.id === id);
+
+    if (!asset) {
+      throw new NotFoundException('Platform image asset not found');
+    }
+
+    return asset;
+  }
+
+  private isSnapshotInScope(
+    snapshot: CloudImageSnapshotRecord,
+    accountContext: {
+      provider: string;
+      accountUid: string | null;
+      defaultRegion: string;
+    },
+  ) {
+    return (
+      snapshot.provider === accountContext.provider &&
+      snapshot.accountUid === accountContext.accountUid &&
+      snapshot.regionId === accountContext.defaultRegion
+    );
   }
 
   private async syncScope(
