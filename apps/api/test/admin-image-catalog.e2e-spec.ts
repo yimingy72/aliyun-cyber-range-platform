@@ -1,12 +1,14 @@
+import { toAccountScopeKey } from '../src/admin/image-account-scope';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('Admin image catalog platform asset persistence baseline', () => {
   it('collects a platform image asset once per provider account scope region and image', async () => {
     const repository = createMemoryAdminRepository();
+    const accountUid = '1234567890';
 
     await repository.reconcileImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: '1234567890',
+      accountUid,
       regionId: 'cn-hangzhou',
       scope: 'public',
       snapshots: [
@@ -22,7 +24,7 @@ describe('Admin image catalog platform asset persistence baseline', () => {
 
     const [publicSnapshot] = await repository.listImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: '1234567890',
+      accountUid,
       regionId: 'cn-hangzhou',
       scope: 'public',
     });
@@ -58,7 +60,7 @@ describe('Admin image catalog platform asset persistence baseline', () => {
     expect(secondAsset.id).toBe(firstAsset.id);
 
     const assets = await platformAssetRepository.listPlatformImageAssets({
-      accountScopeKey: 'aliyun::1234567890',
+      accountScopeKey: toAccountScopeKey(accountUid),
       regionId: 'cn-hangzhou',
     });
 
