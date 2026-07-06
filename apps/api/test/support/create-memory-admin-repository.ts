@@ -94,6 +94,16 @@ export function createMemoryAdminRepository(): AdminRepository {
     (filter.imageId === undefined || record.imageId === filter.imageId) &&
     (filter.sourceSnapshotId === undefined || record.sourceSnapshotId === filter.sourceSnapshotId);
 
+  const findPlatformImageAssetOrThrow = (id: string) => {
+    const record = platformImageAssets.find((asset) => asset.id === id);
+
+    if (!record) {
+      throw new Error(`Platform image asset not found: ${id}`);
+    }
+
+    return record;
+  };
+
   return {
     async listRangeTemplates() {
       return cloneList(rangeTemplates);
@@ -541,6 +551,13 @@ export function createMemoryAdminRepository(): AdminRepository {
           record.scope === input.scope &&
           !imageIds.has(record.imageId)
         ) {
+          for (const asset of platformImageAssets) {
+            if (asset.sourceSnapshotId === record.id) {
+              asset.sourceSnapshotId = null;
+              asset.updatedAt = now();
+            }
+          }
+
           imageSnapshots.splice(index, 1);
         }
       }
@@ -649,7 +666,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async updatePlatformImageAsset(id: string, input: { displayName: string }) {
-      const record = platformImageAssets.find((asset) => asset.id === id)!;
+      const record = findPlatformImageAssetOrThrow(id);
 
       Object.assign(record, {
         displayName: input.displayName,
@@ -659,7 +676,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async setPlatformImageAssetEnabled(id: string, enabled: boolean) {
-      const record = platformImageAssets.find((asset) => asset.id === id)!;
+      const record = findPlatformImageAssetOrThrow(id);
 
       Object.assign(record, {
         enabled,
@@ -669,11 +686,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async deletePlatformImageAsset(id: string) {
-      const index = platformImageAssets.findIndex((asset) => asset.id === id);
+      findPlatformImageAssetOrThrow(id);
 
-      if (index >= 0) {
-        platformImageAssets.splice(index, 1);
-      }
+      const index = platformImageAssets.findIndex((asset) => asset.id === id);
+      platformImageAssets.splice(index, 1);
     },
     async deletePlatformImageAssetsBySnapshotId(snapshotId: string) {
       for (let index = platformImageAssets.length - 1; index >= 0; index -= 1) {
