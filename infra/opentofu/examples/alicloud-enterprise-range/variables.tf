@@ -107,6 +107,20 @@ variable "hosts" {
   default     = []
 }
 
+variable "host_network_interfaces" {
+  type = list(object({
+    host_key = string
+    interfaces = list(object({
+      device_index = number
+      zone_key     = string
+      private_ip   = string
+      description  = optional(string)
+    }))
+  }))
+  description = "Structured secondary host network interfaces forwarded to the enterprise range module."
+  default     = []
+}
+
 variable "nat_gateways" {
   type = list(object({
     key          = string
@@ -160,4 +174,55 @@ variable "acls" {
   }))
   description = "Structured ACL definitions forwarded to the enterprise range module."
   default     = []
+}
+
+variable "snat_entries" {
+  type = list(object({
+    key             = string
+    name            = string
+    nat_gateway_key = string
+    source_zone_key = string
+    eip_key         = string
+  }))
+  description = "Structured SNAT entry definitions forwarded to the enterprise range module."
+  default     = []
+}
+
+variable "dnat_entries" {
+  type = list(object({
+    key              = string
+    name             = string
+    nat_gateway_key  = string
+    eip_key          = string
+    backend_host_key = string
+    external_port    = number
+    internal_port    = number
+    protocol         = string
+  }))
+  description = "Structured DNAT entry definitions forwarded to the enterprise range module."
+  default     = []
+}
+
+variable "bootstrap_scripts" {
+  type = list(object({
+    key              = string
+    name             = string
+    type             = string
+    content          = string
+    target_host_keys = list(string)
+  }))
+  description = "Structured bootstrap scripts forwarded to the enterprise range module."
+  default     = []
+}
+
+variable "runtime_selections" {
+  type = object({
+    image_policies         = any
+    instance_type_policies = any
+  })
+  description = "Resolved runtime policy metadata forwarded to the enterprise range module for diagnostics."
+  default = {
+    image_policies         = {}
+    instance_type_policies = {}
+  }
 }

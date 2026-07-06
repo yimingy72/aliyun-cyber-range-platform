@@ -47,7 +47,7 @@ describe('AdminLoginPage', () => {
     vi.clearAllMocks();
   });
 
-  it('stores the admin token and redirects to /admin after a successful login', async () => {
+  it('stores the admin token and redirects to /admin/scenarios after a successful login', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -61,6 +61,7 @@ describe('AdminLoginPage', () => {
     render(<AdminLoginPage />);
 
     expect(screen.queryByDisplayValue('change-me')).toBeNull();
+    expect(screen.queryByText('选手入口')).toBeNull();
 
     fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
     fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
@@ -68,8 +69,16 @@ describe('AdminLoginPage', () => {
 
     await waitFor(() => {
       expect(window.localStorage.getItem('aliyun-cyber-range-admin-token')).toBe('dev-admin-token');
-      expect(replace).toHaveBeenCalledWith('/admin');
+      expect(replace).toHaveBeenCalledWith('/admin/scenarios');
     });
+  });
+
+  it('renders a single admin-only login experience without player entry copy', () => {
+    render(<AdminLoginPage />);
+
+    expect(screen.getByRole('heading', { name: '管理员登录' })).toBeTruthy();
+    expect(screen.queryByText(/选手/)).toBeNull();
+    expect(screen.queryByRole('link', { name: '选手入口' })).toBeNull();
   });
 
   it('normalizes shared admin tokens before persisting them', () => {
@@ -100,6 +109,18 @@ describe('AdminLoginPage', () => {
     expect(result.current.token).toBeNull();
     expect(window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)).toBeNull();
     expect(readAdminToken()).toBeNull();
+  });
+
+  it('restores the persisted admin token once the admin session is ready', async () => {
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, 'persisted-admin-token');
+
+    const { result } = renderHook(() => useAdminSession());
+
+    await waitFor(() => {
+      expect(result.current.isReady).toBe(true);
+    });
+
+    expect(result.current.token).toBe('persisted-admin-token');
   });
 
   it('shows an error and does not redirect when the response token is missing', async () => {

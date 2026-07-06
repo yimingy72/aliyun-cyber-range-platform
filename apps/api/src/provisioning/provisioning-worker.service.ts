@@ -8,6 +8,7 @@ import {
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
+import { SystemConfigService } from '../admin/system-config.service';
 import {
   RANGE_PROVISIONER,
   type RangeProvisionStepEvent,
@@ -15,17 +16,31 @@ import {
   RangeProvisioner,
 } from './provisioning.types';
 
+const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
+
 @Injectable()
 export class ProvisioningWorkerService {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     @Inject(RANGE_PROVISIONER) private readonly rangeProvisioner: RangeProvisioner,
+    private readonly systemConfigService: SystemConfigService,
   ) {}
 
-  dispatch(jobId: string) {
-    queueMicrotask(() => {
-      void this.process(jobId);
-    });
+  dispatch(_jobId: string) {
+    // ponytail: API role only enqueues in DB; the dedicated worker loop claims jobs later.
+  }
+
+  async runLoop(): Promise<void> {
+    while (true) {
+      const pendingJob = (await this.adminRepository.listProvisionJobs()).find((job) => job.status === 'pending');
+
+      if (pendingJob) {
+        await this.process(pendingJob.id);
+        continue;
+      }
+
+      await sleep(readWorkerPollIntervalMs());
+    }
   }
 
   async process(jobId: string) {
@@ -46,6 +61,11 @@ export class ProvisioningWorkerService {
       return;
     }
 
+    if (!instance.templateId) {
+      await this.failJob(job, instance, 'Template not found');
+      return;
+    }
+
     const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
 
     if (!template) {
@@ -53,15 +73,27 @@ export class ProvisioningWorkerService {
       return;
     }
 
-    const publishedVersion = template.currentPublishedVersion;
-    const templateModulePath = publishedVersion?.modulePathOrRef ?? template.modulePathOrRef;
-    const compiledSpec = this.getCompiledSpec(publishedVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
+    const sourceVersion = instance.sourceTemplateVersionId
+      ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
+      : template.currentDraftVersion ?? template.currentPublishedVersion;
+
+    if (instance.sourceTemplateVersionId && !sourceVersion) {
+      await this.failJob(job, instance, 'Template source version not found');
+      return;
+    }
+
+    const templateModulePath = sourceVersion?.modulePathOrRef ?? template.modulePathOrRef;
+    const compiledProvisionSpec =
+      this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
+      this.getCompiledProvisionSpec(template.compiledProvisionSpec);
+    const compiledSpec = this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
     const topologySpec =
+      this.getTopologySpecFromCompiledProvisionSpec(compiledProvisionSpec) ??
       this.getCompiledTopologySpec(compiledSpec) ??
-      publishedVersion?.topologySpec ??
+      sourceVersion?.topologySpec ??
       template.topologySpec;
 
-    if (!topologySpec && !compiledSpec) {
+    if (!topologySpec && !compiledSpec && !compiledProvisionSpec) {
       await this.failJob(job, instance, 'Template provisioning blueprint not found');
       return;
     }
@@ -73,6 +105,7 @@ export class ProvisioningWorkerService {
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
+      const runtimeConfig = await this.systemConfigService.getSnapshot();
 
       if (effectiveJobType === 'create') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
@@ -85,7 +118,9 @@ export class ProvisioningWorkerService {
           rangeInstanceId: instance.id,
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
+          runtimeConfig,
           topologySpec,
+          compiledProvisionSpec,
           compiledSpec,
           reportStep,
         });
@@ -109,7 +144,9 @@ export class ProvisioningWorkerService {
           rangeInstanceId: instance.id,
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
+          runtimeConfig,
           topologySpec,
+          compiledProvisionSpec,
           compiledSpec,
           reportStep,
         });
@@ -170,6 +207,90 @@ export class ProvisioningWorkerService {
     }
 
     return compiledSpec as RangeTemplateCompiledSpec;
+  }
+
+  private getCompiledProvisionSpec(
+    compiledProvisionSpec: Record<string, unknown> | null | undefined,
+  ): Record<string, unknown> | null {
+    if (!compiledProvisionSpec) {
+      return null;
+    }
+
+    return compiledProvisionSpec;
+  }
+
+  private getTopologySpecFromCompiledProvisionSpec(
+    compiledProvisionSpec: Record<string, unknown> | null | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!compiledProvisionSpec) {
+      return null;
+    }
+
+    const topology = this.readJsonObject(compiledProvisionSpec.topology);
+    const networkZones = this.readJsonArray(compiledProvisionSpec.networkZones);
+    const hosts = this.readJsonArray(compiledProvisionSpec.hosts);
+    const entryHostKey = typeof topology?.entryHostKey === 'string' ? topology.entryHostKey : null;
+    const vpcCidr = typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : null;
+
+    if (!entryHostKey || !vpcCidr || networkZones.length === 0 || hosts.length === 0) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: networkZones.flatMap((zoneValue) => {
+        const zone = this.readJsonObject(zoneValue);
+        if (!zone || typeof zone.key !== 'string' || typeof zone.name !== 'string' || typeof zone.cidr !== 'string') {
+          return [];
+        }
+
+        return [{
+          key: zone.key,
+          name: zone.name,
+          purpose: typeof zone.purpose === 'string' ? zone.purpose : zone.key,
+          cidr: zone.cidr,
+          ...(zone.isPublicEntry === true ? { isPublicEntry: true } : {}),
+        }];
+      }),
+      hosts: hosts.flatMap((hostValue) => {
+        const host = this.readJsonObject(hostValue);
+        if (
+          !host ||
+          typeof host.key !== 'string' ||
+          typeof host.name !== 'string' ||
+          typeof host.zoneKey !== 'string' ||
+          typeof host.role !== 'string' ||
+          typeof host.primaryPrivateIp !== 'string'
+        ) {
+          return [];
+        }
+
+        return [{
+          key: host.key,
+          name: host.name,
+          zoneKey: host.zoneKey,
+          role: host.role,
+          privateIp: host.primaryPrivateIp,
+          ...(host.exposePublic === true ? { exposePublic: true } : {}),
+        }];
+      }),
+      publicEntry: {
+        hostKey: entryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
+  }
+
+  private readJsonObject(value: unknown): Record<string, unknown> | null {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return null;
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private readJsonArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
   }
 
   private async failJob(job: ProvisionJobRecord, instance: RangeInstanceRecord, message: string) {
@@ -259,4 +380,16 @@ export class ProvisioningWorkerService {
       throw error;
     }
   }
+}
+
+function readWorkerPollIntervalMs() {
+  const configuredValue = Number(process.env.PROVISIONING_WORKER_POLL_INTERVAL_MS ?? DEFAULT_WORKER_POLL_INTERVAL_MS);
+
+  return Number.isFinite(configuredValue) && configuredValue > 0
+    ? configuredValue
+    : DEFAULT_WORKER_POLL_INTERVAL_MS;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

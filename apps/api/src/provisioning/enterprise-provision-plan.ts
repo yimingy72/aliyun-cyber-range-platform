@@ -75,6 +75,29 @@ type CompiledAclResource = CompiledResource & {
   };
 };
 
+type CompiledSnatEntryResource = CompiledResource & {
+  type: 'snat_entry';
+  config: {
+    label?: string;
+    natGatewayKey?: string;
+    sourceZoneKey?: string;
+    eipKey?: string;
+  };
+};
+
+type CompiledDnatEntryResource = CompiledResource & {
+  type: 'dnat_entry';
+  config: {
+    label?: string;
+    natGatewayKey?: string;
+    eipKey?: string;
+    backendHostKey?: string;
+    externalPort?: number;
+    internalPort?: number;
+    protocol?: string;
+  };
+};
+
 export type EnterpriseProvisionPlan = {
   resourceNamePrefix: string;
   modulePath: string;
@@ -141,6 +164,43 @@ export type EnterpriseProvisionPlan = {
     sourceCidr: string;
     priority: number;
   }>;
+  snatEntries: Array<{
+    key: string;
+    name: string;
+    natGatewayKey: string;
+    sourceZoneKey: string;
+    eipKey: string;
+  }>;
+  dnatEntries: Array<{
+    key: string;
+    name: string;
+    natGatewayKey: string;
+    eipKey: string;
+    backendHostKey: string;
+    externalPort: number;
+    internalPort: number;
+    protocol: string;
+  }>;
+  hostNetworkInterfaces: Array<{
+    hostKey: string;
+    interfaces: Array<{
+      deviceIndex: number;
+      zoneKey: string;
+      privateIp: string;
+      description?: string;
+    }>;
+  }>;
+  bootstrapScripts: Array<{
+    key: string;
+    name: string;
+    type: 'cloud-init' | 'shell';
+    content: string;
+    targetHostKeys: string[];
+  }>;
+  runtimeSelections: {
+    imagePolicies: Record<string, unknown>;
+    instanceTypePolicies: Record<string, unknown>;
+  };
   hosts: {
     publicEntry: RangeTemplateHost;
     officePrimary: RangeTemplateHost;
@@ -148,20 +208,29 @@ export type EnterpriseProvisionPlan = {
   };
 };
 
+type CompiledProvisionSpecRecord = Record<string, unknown>;
+
 export function buildEnterpriseProvisionPlan(input: {
   rangeInstanceId: string;
   templateModulePath: string;
   topologySpec?: RangeTemplateTopologySpec | null;
+  compiledProvisionSpec?: CompiledProvisionSpecRecord | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
   allocatedCidr: string | null;
 }): EnterpriseProvisionPlan {
-  const topologySpec = input.topologySpec ?? buildTopologySpecFromCompiledSpec(input.compiledSpec);
+  const topologySpec =
+    input.topologySpec ??
+    buildTopologySpecFromCompiledProvisionSpec(input.compiledProvisionSpec) ??
+    buildTopologySpecFromCompiledSpec(input.compiledSpec);
 
   if (!topologySpec) {
     throw new Error('Missing provisioning blueprint: topologySpec or compiledSpec.resources is required');
   }
 
-  const vpcCidr = requireValue(resolveVpcCidr(topologySpec, input.compiledSpec), 'topologySpec.vpcCidr');
+  const vpcCidr = requireValue(
+    resolveVpcCidr(topologySpec, input.compiledProvisionSpec, input.compiledSpec),
+    'topologySpec.vpcCidr',
+  );
 
   if (input.allocatedCidr && input.allocatedCidr !== vpcCidr) {
     throw new Error(
@@ -169,16 +238,29 @@ export function buildEnterpriseProvisionPlan(input: {
     );
   }
 
-  const dmzZone = findZone(topologySpec, 'dmz');
-  const officeZone = findZone(topologySpec, 'office');
-  const serverZone = findZone(topologySpec, 'server');
   const publicEntry = findPublicEntryHost(topologySpec);
-  const officePrimary = findHostByZone(topologySpec, 'office');
-  const serverPrimary = findHostByZone(topologySpec, 'server');
-  const natGateways = buildNatGatewaysFromCompiledSpec(input.compiledSpec);
-  const eipDefinitions = buildEipsFromCompiledSpec(input.compiledSpec);
-  const securityGroupRules = buildSecurityGroupRulesFromCompiledSpec(input.compiledSpec);
-  const aclDefinitions = buildAclDefinitionsFromCompiledSpec(input.compiledSpec);
+  const compatibilityZones = deriveCompatibilityZones(topologySpec, publicEntry.zoneKey);
+  const compatibilityHosts = deriveCompatibilityHosts(topologySpec, publicEntry, compatibilityZones);
+  const natGateways =
+    buildNatGatewaysFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
+    buildNatGatewaysFromCompiledSpec(input.compiledSpec);
+  const eipDefinitions =
+    buildEipsFromCompiledProvisionSpec(input.compiledProvisionSpec) || buildEipsFromCompiledSpec(input.compiledSpec);
+  const securityGroupRules =
+    buildSecurityGroupRulesFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
+    buildSecurityGroupRulesFromCompiledSpec(input.compiledSpec);
+  const aclDefinitions =
+    buildAclDefinitionsFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
+    buildAclDefinitionsFromCompiledSpec(input.compiledSpec);
+  const snatEntries =
+    buildSnatEntriesFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
+    buildSnatEntriesFromCompiledSpec(input.compiledSpec);
+  const dnatEntries =
+    buildDnatEntriesFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
+    buildDnatEntriesFromCompiledSpec(input.compiledSpec);
+  const hostNetworkInterfaces = buildHostNetworkInterfacesFromCompiledProvisionSpec(input.compiledProvisionSpec);
+  const bootstrapScripts = buildBootstrapScriptsFromCompiledProvisionSpec(input.compiledProvisionSpec);
+  const runtimeSelections = buildRuntimeSelectionsFromCompiledProvisionSpec(input.compiledProvisionSpec);
 
   return {
     resourceNamePrefix: createResourceNamePrefix(input.rangeInstanceId),
@@ -192,9 +274,9 @@ export function buildEnterpriseProvisionPlan(input: {
     },
     network: {
       vpcCidr,
-      dmzCidr: dmzZone.cidr,
-      officeCidr: officeZone.cidr,
-      serverCidr: serverZone.cidr,
+      dmzCidr: compatibilityZones.dmz.cidr,
+      officeCidr: compatibilityZones.office.cidr,
+      serverCidr: compatibilityZones.server.cidr,
     },
     networkZones: topologySpec.networkZones.map((zone) => ({
       key: zone.key,
@@ -215,10 +297,15 @@ export function buildEnterpriseProvisionPlan(input: {
     eipDefinitions,
     securityGroupRules,
     aclDefinitions,
+    snatEntries,
+    dnatEntries,
+    hostNetworkInterfaces,
+    bootstrapScripts,
+    runtimeSelections,
     hosts: {
       publicEntry,
-      officePrimary,
-      serverPrimary,
+      officePrimary: compatibilityHosts.officePrimary,
+      serverPrimary: compatibilityHosts.serverPrimary,
     },
   };
 }
@@ -286,11 +373,75 @@ function buildTopologySpecFromCompiledSpec(
   };
 }
 
+function buildTopologySpecFromCompiledProvisionSpec(
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined,
+): RangeTemplateTopologySpec | null {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  const topology = readRecord(compiledProvisionSpec.topology);
+  const networkZones = readArray(compiledProvisionSpec.networkZones);
+  const hosts = readArray(compiledProvisionSpec.hosts);
+  const vpcCidr = typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : null;
+  const entryHostKey = typeof topology?.entryHostKey === 'string' ? topology.entryHostKey : null;
+
+  if (!vpcCidr || !entryHostKey || networkZones.length === 0 || hosts.length === 0) {
+    return null;
+  }
+
+  return {
+    vpcCidr,
+    networkZones: networkZones.flatMap((zoneValue) => {
+      const zone = readRecord(zoneValue);
+      if (!zone || typeof zone.key !== 'string' || typeof zone.name !== 'string' || typeof zone.cidr !== 'string') {
+        return [];
+      }
+
+      return [{
+        key: zone.key,
+        name: zone.name,
+        purpose: typeof zone.purpose === 'string' ? zone.purpose : zone.key,
+        cidr: zone.cidr,
+        ...(zone.isPublicEntry === true ? { isPublicEntry: true } : {}),
+      }];
+    }),
+    hosts: hosts.flatMap((hostValue) => {
+      const host = readRecord(hostValue);
+      if (
+        !host ||
+        typeof host.key !== 'string' ||
+        typeof host.name !== 'string' ||
+        typeof host.zoneKey !== 'string' ||
+        typeof host.role !== 'string' ||
+        typeof host.primaryPrivateIp !== 'string'
+      ) {
+        return [];
+      }
+
+      return [{
+        key: host.key,
+        name: host.name,
+        zoneKey: host.zoneKey,
+        role: host.role,
+        privateIp: host.primaryPrivateIp,
+        ...(host.exposePublic === true ? { exposePublic: true } : {}),
+      }];
+    }),
+    publicEntry: {
+      hostKey: entryHostKey,
+      protocols: [{ protocol: 'ssh', port: 22 }],
+    },
+  };
+}
+
 function resolveVpcCidr(
   topologySpec: RangeTemplateTopologySpec,
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined,
   compiledSpec: RangeTemplateCompiledSpec | null | undefined,
 ) {
-  return topologySpec.vpcCidr || compiledSpec?.topology?.vpcCidr || '';
+  const topology = readRecord(compiledProvisionSpec?.topology);
+  return topologySpec.vpcCidr || (typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : '') || compiledSpec?.topology?.vpcCidr || '';
 }
 
 function isCompiledHostResource(resource: CompiledResource): resource is CompiledHostResource {
@@ -319,6 +470,14 @@ function isCompiledAclResource(resource: CompiledResource): resource is Compiled
   return resource.type === 'acl';
 }
 
+function isCompiledSnatEntryResource(resource: CompiledResource): resource is CompiledSnatEntryResource {
+  return resource.type === 'snat_entry';
+}
+
+function isCompiledDnatEntryResource(resource: CompiledResource): resource is CompiledDnatEntryResource {
+  return resource.type === 'dnat_entry';
+}
+
 function buildNatGatewaysFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {
   if (!compiledSpec) {
     return [];
@@ -330,6 +489,26 @@ function buildNatGatewaysFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpe
     zoneKey: requireValue(resource.config.zoneKey, `compiledSpec.resources[${resource.id}].config.zoneKey`),
     snatEnabled: Boolean(resource.config.snatEnabled),
   }));
+}
+
+function buildNatGatewaysFromCompiledProvisionSpec(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  return readArray(compiledProvisionSpec.natGateways).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.zoneKey !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      zoneKey: record.zoneKey,
+      snatEnabled: true,
+    }];
+  });
 }
 
 function buildEipsFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {
@@ -351,6 +530,27 @@ function buildEipsFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | nul
         ? resource.config.bandwidthMbps
         : 10,
   }));
+}
+
+function buildEipsFromCompiledProvisionSpec(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  return readArray(compiledProvisionSpec.eips).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.bindTargetKey !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      bindTargetType: record.bindTargetType === 'nat_gateway' ? ('nat_gateway' as const) : ('host' as const),
+      bindTargetKey: record.bindTargetKey,
+      bandwidthMbps: typeof record.bandwidthMbps === 'number' ? record.bandwidthMbps : 10,
+    }];
+  });
 }
 
 function buildSecurityGroupRulesFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {
@@ -389,6 +589,33 @@ function buildSecurityGroupRulesFromCompiledSpec(compiledSpec: RangeTemplateComp
   }));
 }
 
+function buildSecurityGroupRulesFromCompiledProvisionSpec(
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined,
+) {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  return readArray(compiledProvisionSpec.securityGroupRules).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.targetHostKey !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      targetHostKey: record.targetHostKey,
+      direction: typeof record.direction === 'string' ? record.direction : 'ingress',
+      policy: typeof record.policy === 'string' ? record.policy : 'accept',
+      protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
+      portRange: typeof record.portRange === 'string' ? record.portRange : '22/22',
+      sourceCidr: typeof record.sourceCidr === 'string' ? record.sourceCidr : '0.0.0.0/0',
+      priority: typeof record.priority === 'number' ? record.priority : 1,
+    }];
+  });
+}
+
 function buildAclDefinitionsFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {
   if (!compiledSpec) {
     return [];
@@ -422,20 +649,228 @@ function buildAclDefinitionsFromCompiledSpec(compiledSpec: RangeTemplateCompiled
   }));
 }
 
+function buildAclDefinitionsFromCompiledProvisionSpec(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  return readArray(compiledProvisionSpec.aclRules).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.zoneKey !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      zoneKey: record.zoneKey,
+      direction: typeof record.direction === 'string' ? record.direction : 'inbound',
+      policy: typeof record.policy === 'string' ? record.policy : 'accept',
+      protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
+      portRange: typeof record.portRange === 'string' ? record.portRange : '22/22',
+      sourceCidr: typeof record.sourceCidr === 'string' ? record.sourceCidr : '0.0.0.0/0',
+      priority: typeof record.priority === 'number' ? record.priority : 1,
+    }];
+  });
+}
+
+function buildSnatEntriesFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {
+  if (!compiledSpec) {
+    return [];
+  }
+
+  return compiledSpec.resources.filter(isCompiledSnatEntryResource).map((resource) => ({
+    key: resource.id,
+    name: resource.config.label ?? resource.id,
+    natGatewayKey: requireValue(
+      resource.config.natGatewayKey,
+      `compiledSpec.resources[${resource.id}].config.natGatewayKey`,
+    ),
+    sourceZoneKey: requireValue(
+      resource.config.sourceZoneKey,
+      `compiledSpec.resources[${resource.id}].config.sourceZoneKey`,
+    ),
+    eipKey: requireValue(resource.config.eipKey, `compiledSpec.resources[${resource.id}].config.eipKey`),
+  }));
+}
+
+function buildSnatEntriesFromCompiledProvisionSpec(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  return readArray(compiledProvisionSpec.snatEntries).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.zoneKey !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      natGatewayKey: requireValue(
+        typeof record.natGatewayKey === 'string' ? record.natGatewayKey : undefined,
+        `compiledProvisionSpec.snatEntries[${record.key}].natGatewayKey`,
+      ),
+      sourceZoneKey: record.zoneKey,
+      eipKey: requireValue(
+        typeof record.eipKey === 'string' ? record.eipKey : undefined,
+        `compiledProvisionSpec.snatEntries[${record.key}].eipKey`,
+      ),
+    }];
+  });
+}
+
+function buildDnatEntriesFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {
+  if (!compiledSpec) {
+    return [];
+  }
+
+  return compiledSpec.resources.filter(isCompiledDnatEntryResource).map((resource) => ({
+    key: resource.id,
+    name: resource.config.label ?? resource.id,
+    natGatewayKey: requireValue(
+      resource.config.natGatewayKey,
+      `compiledSpec.resources[${resource.id}].config.natGatewayKey`,
+    ),
+    eipKey: requireValue(resource.config.eipKey, `compiledSpec.resources[${resource.id}].config.eipKey`),
+    backendHostKey: requireValue(
+      resource.config.backendHostKey,
+      `compiledSpec.resources[${resource.id}].config.backendHostKey`,
+    ),
+    externalPort:
+      typeof resource.config.externalPort === 'number' && Number.isFinite(resource.config.externalPort)
+        ? resource.config.externalPort
+        : 0,
+    internalPort:
+      typeof resource.config.internalPort === 'number' && Number.isFinite(resource.config.internalPort)
+        ? resource.config.internalPort
+        : 0,
+    protocol: requireValue(resource.config.protocol, `compiledSpec.resources[${resource.id}].config.protocol`),
+  }));
+}
+
+function buildDnatEntriesFromCompiledProvisionSpec(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
+  if (!compiledProvisionSpec) {
+    return null;
+  }
+
+  return readArray(compiledProvisionSpec.dnatEntries).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.hostKey !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      natGatewayKey: requireValue(
+        typeof record.natGatewayKey === 'string' ? record.natGatewayKey : undefined,
+        `compiledProvisionSpec.dnatEntries[${record.key}].natGatewayKey`,
+      ),
+      eipKey: requireValue(
+        typeof record.eipKey === 'string' ? record.eipKey : undefined,
+        `compiledProvisionSpec.dnatEntries[${record.key}].eipKey`,
+      ),
+      backendHostKey: record.hostKey,
+      externalPort: typeof record.externalPort === 'number' ? record.externalPort : 0,
+      internalPort: typeof record.internalPort === 'number' ? record.internalPort : 0,
+      protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
+    }];
+  });
+}
+
+function buildHostNetworkInterfacesFromCompiledProvisionSpec(
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined,
+) {
+  if (!compiledProvisionSpec) {
+    return [];
+  }
+
+  return readArray(compiledProvisionSpec.hosts).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string') {
+      return [];
+    }
+
+    const interfaces = readArray(record.networkInterfaces).flatMap((interfaceValue) => {
+      const nic = readRecord(interfaceValue);
+      if (!nic || typeof nic.zoneKey !== 'string' || typeof nic.privateIp !== 'string') {
+        return [];
+      }
+
+      return [{
+        deviceIndex: typeof nic.deviceIndex === 'number' ? nic.deviceIndex : 0,
+        zoneKey: nic.zoneKey,
+        privateIp: nic.privateIp,
+        ...(typeof nic.description === 'string' ? { description: nic.description } : {}),
+      }];
+    });
+
+    return [{
+      hostKey: record.key,
+      interfaces,
+    }];
+  });
+}
+
+function buildBootstrapScriptsFromCompiledProvisionSpec(
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined,
+) {
+  if (!compiledProvisionSpec) {
+    return [];
+  }
+
+  return readArray(compiledProvisionSpec.bootstrapScripts).flatMap((value) => {
+    const record = readRecord(value);
+    if (!record || typeof record.key !== 'string' || typeof record.content !== 'string') {
+      return [];
+    }
+
+    return [{
+      key: record.key,
+      name: typeof record.name === 'string' ? record.name : record.key,
+      type: record.type === 'cloud-init' ? ('cloud-init' as const) : ('shell' as const),
+      content: record.content,
+      targetHostKeys: readArray(record.targetHostKeys).filter((item): item is string => typeof item === 'string'),
+    }];
+  });
+}
+
+function buildRuntimeSelectionsFromCompiledProvisionSpec(
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined,
+) {
+  if (!compiledProvisionSpec) {
+    return {
+      imagePolicies: {},
+      instanceTypePolicies: {},
+    };
+  }
+
+  const runtimeSelections = readRecord(compiledProvisionSpec.runtimeSelections);
+
+  return {
+    imagePolicies: readRecord(runtimeSelections?.imagePolicies) ?? {},
+    instanceTypePolicies: readRecord(runtimeSelections?.instanceTypePolicies) ?? {},
+  };
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function readArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function createResourceNamePrefix(rangeInstanceId: string) {
   const normalized = rangeInstanceId.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase();
 
   return `range-${normalized.slice(0, 9) || 'instance'}`;
-}
-
-function findZone(topologySpec: RangeTemplateTopologySpec, key: string): RangeTemplateNetworkZone {
-  const zone = topologySpec.networkZones.find((item) => item.key === key);
-
-  if (!zone) {
-    throw new Error(`Template topology is missing required network zone: ${key}`);
-  }
-
-  return zone;
 }
 
 function findPublicEntryHost(topologySpec: RangeTemplateTopologySpec): RangeTemplateHost {
@@ -450,14 +885,55 @@ function findPublicEntryHost(topologySpec: RangeTemplateTopologySpec): RangeTemp
   return host;
 }
 
-function findHostByZone(topologySpec: RangeTemplateTopologySpec, zoneKey: string): RangeTemplateHost {
-  const host = topologySpec.hosts.find((item) => item.zoneKey === zoneKey);
+function deriveCompatibilityZones(
+  topologySpec: RangeTemplateTopologySpec,
+  entryZoneKey: string,
+): {
+  dmz: RangeTemplateNetworkZone;
+  office: RangeTemplateNetworkZone;
+  server: RangeTemplateNetworkZone;
+} {
+  const entryZone = topologySpec.networkZones.find((item) => item.key === entryZoneKey) ?? topologySpec.networkZones[0];
 
-  if (!host) {
-    throw new Error(`Template topology is missing required host in zone: ${zoneKey}`);
+  if (!entryZone) {
+    throw new Error('Template topology does not define any network zone');
   }
 
-  return host;
+  const remainingZones = topologySpec.networkZones.filter((item) => item.key !== entryZone.key);
+
+  return {
+    dmz: entryZone,
+    office: remainingZones[0] ?? entryZone,
+    server: remainingZones[1] ?? remainingZones[0] ?? entryZone,
+  };
+}
+
+function deriveCompatibilityHosts(
+  topologySpec: RangeTemplateTopologySpec,
+  publicEntry: RangeTemplateHost,
+  zones: {
+    dmz: RangeTemplateNetworkZone;
+    office: RangeTemplateNetworkZone;
+    server: RangeTemplateNetworkZone;
+  },
+): {
+  officePrimary: RangeTemplateHost;
+  serverPrimary: RangeTemplateHost;
+} {
+  const nonEntryHosts = topologySpec.hosts.filter((item) => item.key !== publicEntry.key);
+  const officePrimary =
+    nonEntryHosts.find((item) => item.zoneKey === zones.office.key) ??
+    nonEntryHosts[0] ??
+    publicEntry;
+  const serverPrimary =
+    nonEntryHosts.find((item) => item.zoneKey === zones.server.key && item.key !== officePrimary.key) ??
+    nonEntryHosts.find((item) => item.key !== officePrimary.key) ??
+    officePrimary;
+
+  return {
+    officePrimary,
+    serverPrimary,
+  };
 }
 
 function requireValue(value: string | undefined, fieldName: string) {

@@ -125,6 +125,10 @@ export class CreateRangeTemplateDto {
   @IsNotEmpty()
   name!: string;
 
+  @IsOptional()
+  @IsString()
+  description?: string;
+
   @IsString()
   @IsNotEmpty()
   slug!: string;
@@ -156,6 +160,14 @@ export class CreateRangeTemplateDto {
 
   @IsOptional()
   @IsObject()
+  scenarioTemplateSpec?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  compiledProvisionSpec?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
   compiledSpec?: Record<string, unknown>;
 
   @IsOptional()
@@ -176,6 +188,10 @@ export class UpdateRangeTemplateDto {
   @IsString()
   @IsNotEmpty()
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 
   @IsOptional()
   @IsString()
@@ -208,6 +224,14 @@ export class UpdateRangeTemplateDto {
   @IsOptional()
   @IsObject()
   topologyGraph?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  scenarioTemplateSpec?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  compiledProvisionSpec?: Record<string, unknown>;
 
   @IsOptional()
   @IsObject()

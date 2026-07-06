@@ -13,6 +13,12 @@ variable "vpc_cidr" {
   description = "CIDR block used by the per-team VPC."
 }
 
+variable "secondary_vpc_cidrs" {
+  type        = list(string)
+  description = "Additional IPv4 CIDR blocks attached to the VPC for extra switch ranges."
+  default     = ["172.16.0.0/16", "192.168.0.0/16"]
+}
+
 variable "entry_host_key" {
   type        = string
   description = "Template host key exposed as the public DMZ entrypoint."
@@ -39,8 +45,23 @@ variable "hosts" {
     private_ip    = string
     role          = string
     expose_public = bool
+    instance_type = optional(string)
   }))
   description = "Structured host definitions compiled from the published template."
+  default     = []
+}
+
+variable "host_network_interfaces" {
+  type = list(object({
+    host_key = string
+    interfaces = list(object({
+      device_index = number
+      zone_key     = string
+      private_ip   = string
+      description  = optional(string)
+    }))
+  }))
+  description = "Structured secondary host network interfaces compiled from the published template."
   default     = []
 }
 
@@ -97,6 +118,57 @@ variable "acls" {
   }))
   description = "Structured network ACL rules compiled from the published template."
   default     = []
+}
+
+variable "snat_entries" {
+  type = list(object({
+    key             = string
+    name            = string
+    nat_gateway_key = string
+    source_zone_key = string
+    eip_key         = string
+  }))
+  description = "Structured SNAT entry definitions compiled from the published template."
+  default     = []
+}
+
+variable "dnat_entries" {
+  type = list(object({
+    key              = string
+    name             = string
+    nat_gateway_key  = string
+    eip_key          = string
+    backend_host_key = string
+    external_port    = number
+    internal_port    = number
+    protocol         = string
+  }))
+  description = "Structured DNAT entry definitions compiled from the published template."
+  default     = []
+}
+
+variable "bootstrap_scripts" {
+  type = list(object({
+    key              = string
+    name             = string
+    type             = string
+    content          = string
+    target_host_keys = list(string)
+  }))
+  description = "Structured bootstrap scripts compiled from the published template."
+  default     = []
+}
+
+variable "runtime_selections" {
+  type = object({
+    image_policies         = any
+    instance_type_policies = any
+  })
+  description = "Resolved runtime policy metadata forwarded for diagnostics and traceability."
+  default = {
+    image_policies         = {}
+    instance_type_policies = {}
+  }
 }
 
 variable "dmz_cidr" {

@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import { useAdminSession } from '../admin/use-admin-session';
@@ -48,7 +47,7 @@ export function AdminLoginScreen({
       }
 
       login(nextToken);
-      router.replace('/admin');
+      router.replace('/admin/scenarios');
     } catch {
       setErrorMessage('管理员登录失败，请稍后重试。');
     } finally {
@@ -57,49 +56,80 @@ export function AdminLoginScreen({
   }
 
   return (
-    <main className="auth-route auth-route-admin">
-      <section className="auth-hero">
-        <p className="auth-eyebrow">靶场编排与运维控制台</p>
-        <h1>管理员登录</h1>
-        <p className="auth-description">
-          进入后台后，你将看到靶场总览、靶场实例、编排任务和基础配置，重点关注实例状态、公网入口和失败排障。
-        </p>
-      </section>
-
-      <section className="auth-card">
-        <div className="auth-card-header">
-          <h2>登录管理后台</h2>
-          <p>请使用平台管理员账号登录。</p>
+    <main className="admin-workspace admin-login-workspace">
+      <aside className="admin-sidebar admin-login-sidebar">
+        <div className="admin-brand">
+          <div className="admin-brand-copy">
+            <strong>综合靶场平台</strong>
+            <span>阿里云企业网络型靶场编排与实例管理工作台</span>
+          </div>
         </div>
 
-        <form className="auth-form" method="post" onSubmit={handleSubmit}>
-          <label>
-            <span>管理员账号</span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} />
-          </label>
+        <section className="admin-sidebar-section admin-sidebar-section-status" aria-label="登录环境状态">
+          <div>
+            <span className="admin-sidebar-label">访问入口</span>
+            <strong>统一后台登录</strong>
+          </div>
+          <span className="admin-status-dot admin-status-dot-live">在线</span>
+        </section>
 
-          <label>
-            <span>登录密码</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="请输入管理员密码"
-            />
-          </label>
+        <section className="admin-sidebar-section admin-sidebar-section-tip admin-login-note" aria-label="登录页说明">
+          <span className="admin-sidebar-label">当前阶段能力</span>
+          <strong>靶场编排优先</strong>
+          <p>登录成功后将进入当前可落地的主工作台，用于继续靶场编排、实例查看与云配置管理。</p>
+        </section>
+      </aside>
 
-          {errorMessage ? <p className="form-error">{errorMessage}</p> : null}
+      <section className="admin-main-shell admin-login-main-shell">
+        <header className="admin-topbar admin-login-topbar">
+          <div className="admin-topbar-heading">
+            <h1>管理员登录</h1>
+            <span>使用统一后台账号进入靶场编排与实例管理工作台。</span>
+          </div>
 
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? '正在登录...' : '登录管理后台'}
-          </button>
-        </form>
+          <div className="admin-topbar-meta">
+            <div className="admin-topbar-badge-group" aria-label="后台入口标签">
+              <span className="admin-topbar-badge">工作台 / 靶场编排</span>
+              <span className="admin-topbar-badge">角色 / 管理员</span>
+            </div>
+          </div>
+        </header>
 
-        <p className="auth-helper">
-          如果你是参赛队伍，请返回
-          <Link href="/login">选手入口</Link>
-          。
-        </p>
+        <section className="admin-main-content admin-login-content">
+          <section className="admin-panel admin-login-panel admin-login-form-panel">
+            <div className="admin-section-header admin-login-header">
+              <div>
+                <span>统一后台入口</span>
+                <h2>登录管理后台</h2>
+              </div>
+            </div>
+
+            <p className="admin-description admin-login-description">请使用平台管理员账号登录，继续进入靶场编排主工作台。</p>
+
+            <form aria-label="管理员登录表单" className="admin-form" method="post" onSubmit={handleSubmit}>
+              <label>
+                <span>管理员账号</span>
+                <input value={username} onChange={(event) => setUsername(event.target.value)} />
+              </label>
+
+              <label>
+                <span>登录密码</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="请输入管理员密码"
+                />
+              </label>
+
+              {errorMessage ? <p className="form-error">{errorMessage}</p> : null}
+
+              <button type="submit" disabled={isSubmitting}>
+                {isSubmitting ? '正在登录...' : '登录管理后台'}
+              </button>
+            </form>
+          </section>
+        </section>
       </section>
     </main>
   );

@@ -33,6 +33,28 @@ DEFAULT_AUTO_IMAGE_ID_PREFERENCES="ubuntu_24_04_x64_20G_alibase_20260615.vhd,ubu
 SMOKE_TEMPLATE_MODE="${SMOKE_TEMPLATE_MODE:-resource-driven}"
 TOFU_DOCKER_PASSTHROUGH_PROXY="${TOFU_DOCKER_PASSTHROUGH_PROXY:-0}"
 
+warn_proxy_passthrough_strategy() {
+  local proxy_detected="0"
+
+  for proxy_var in HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy; do
+    if [ -n "${!proxy_var:-}" ]; then
+      proxy_detected="1"
+      break
+    fi
+  done
+
+  if [ "$proxy_detected" = "0" ]; then
+    return
+  fi
+
+  if [ "$TOFU_DOCKER_PASSTHROUGH_PROXY" = "1" ]; then
+    echo "[smoke] warning: TOFU_DOCKER_PASSTHROUGH_PROXY=1，OpenTofu 容器将透传本机代理；这可能导致阿里云 apply 阶段假性卡住。"
+    return
+  fi
+
+  echo "[smoke] detected local proxy env; defaulting TOFU_DOCKER_PASSTHROUGH_PROXY=0 for real Aliyun API calls."
+}
+
 normalize_optional_value() {
   local value="${1:-}"
 
@@ -638,6 +660,14 @@ write_smoke_tfvars() {
             { key: "office-client", name: "Office Client", zone_key: "office", private_ip: process.env.OFFICE_PRIVATE_IP, role: "workstation", expose_public: false },
             { key: "server-app", name: "Server App", zone_key: "server", private_ip: process.env.SERVER_PRIVATE_IP, role: "app", expose_public: false },
           ],
+          host_network_interfaces: [
+            {
+              host_key: "server-app",
+              interfaces: [
+                { device_index: 1, zone_key: "office", private_ip: "10.70.20.30", description: "pivot" },
+              ],
+            },
+          ],
           nat_gateways: [
             { key: "nat-office", name: "Office NAT", zone_key: "office", snat_enabled: true },
           ],
@@ -652,6 +682,35 @@ write_smoke_tfvars() {
           acls: [
             { key: "acl-office-inbound", name: "Office ACL", zone_key: "office", direction: "inbound", policy: "accept", protocol: "tcp", port_range: "3389/3389", source_cidr: process.env.VPC_CIDR, priority: 10 },
           ],
+          snat_entries: [
+            { key: "snat-office", name: "Office SNAT", nat_gateway_key: "nat-office", source_zone_key: "office", eip_key: "eip-office-nat" },
+          ],
+          dnat_entries: [
+            { key: "dnat-entry-http", name: "Entry HTTP DNAT", nat_gateway_key: "nat-office", eip_key: "eip-office-nat", backend_host_key: "server-app", external_port: 8080, internal_port: 80, protocol: "tcp" },
+          ],
+          bootstrap_scripts: [
+            {
+              key: "server-bootstrap",
+              name: "Server Bootstrap",
+              type: "shell",
+              content: "#!/bin/bash\necho smoke-ready >/tmp/range-smoke.txt",
+              target_host_keys: ["server-app"],
+            },
+          ],
+          runtime_selections: {
+            image_policies: {
+              server: {
+                mode: "fixed",
+                imageId: process.env.IMAGE_ID,
+              },
+            },
+            instance_type_policies: {
+              server: {
+                mode: "prefer-list",
+                preferredInstanceTypes: [process.env.INSTANCE_TYPE],
+              },
+            },
+          },
         }
       : base;
     fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
@@ -660,6 +719,7 @@ write_smoke_tfvars() {
 
 main() {
   parse_args "$@"
+  warn_proxy_passthrough_strategy
   write_smoke_tfvars
 
   echo "[smoke] enterprise range tfvars written to $SMOKE_TFVARS_PATH"

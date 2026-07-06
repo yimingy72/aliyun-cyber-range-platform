@@ -16,6 +16,7 @@ export class DryRunRangeProvisioner implements RangeProvisioner {
       rangeInstanceId: input.rangeInstanceId,
       templateModulePath: input.templateModulePath,
       topologySpec: input.topologySpec,
+      compiledProvisionSpec: input.compiledProvisionSpec,
       compiledSpec: input.compiledSpec,
       allocatedCidr: input.allocatedCidr,
     });

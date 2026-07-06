@@ -34,33 +34,22 @@ export class RangeInstancesService {
   }
 
   async create(input: CreateRangeInstanceInput) {
-    const [competition, team, template] = await Promise.all([
-      this.adminRepository.getCompetitionById(input.competitionId),
-      this.adminRepository.getTeamById(input.teamId),
-      this.adminRepository.getRangeTemplateById(input.templateId),
-    ]);
-
-    if (!competition) {
-      throw new NotFoundException('Competition not found');
-    }
-
-    if (!team) {
-      throw new NotFoundException('Team not found');
-    }
+    const template = await this.adminRepository.getRangeTemplateById(input.templateId);
 
     if (!template) {
       throw new NotFoundException('Range template not found');
     }
 
-    if (!template.currentPublishedVersionId) {
-      throw new ConflictException('Range template must be published before creating range instances');
+    const sourceTemplateVersionId = template.currentDraftVersionId ?? template.currentPublishedVersionId;
+
+    if (!sourceTemplateVersionId) {
+      throw new ConflictException('Range template does not have an active template version');
     }
 
-    if (team.competitionId !== competition.id) {
-      throw new ConflictException('Team does not belong to the selected competition');
-    }
-
-    return this.adminRepository.createRangeInstance(input);
+    return this.adminRepository.createRangeInstance({
+      ...input,
+      sourceTemplateVersionId,
+    });
   }
 
   async triggerCreate(id: string, triggeredBy: string) {
@@ -71,14 +60,22 @@ export class RangeInstancesService {
         throw new NotFoundException('Range instance not found');
       }
 
+       if (!instance.templateId) {
+        throw new ConflictException('Range instance no longer references an active template');
+      }
+
       const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
 
       if (!template) {
         throw new NotFoundException('Range template not found');
       }
 
-      if (!template.currentPublishedVersionId) {
-        throw new ConflictException('Range template must be published before creating range instances');
+      const sourceTemplateVersion = instance.sourceTemplateVersionId
+        ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
+        : template.currentDraftVersion ?? template.currentPublishedVersion;
+
+      if (instance.sourceTemplateVersionId && !sourceTemplateVersion) {
+        throw new ConflictException('Range instance source template version not found');
       }
 
       if (!['draft', 'create_failed', 'destroyed'].includes(instance.status)) {
@@ -92,8 +89,12 @@ export class RangeInstancesService {
         .filter((value): value is string => Boolean(value));
 
       const cidrPool = this.cidrPoolService.getPool();
-      const publishedTopologySpec = template.currentPublishedVersion?.topologySpec ?? template.topologySpec;
-      const fixedVpcCidr = publishedTopologySpec?.vpcCidr ?? null;
+      const effectiveTopologySpec =
+        sourceTemplateVersion?.topologySpec ??
+        template.currentDraftVersion?.topologySpec ??
+        template.currentPublishedVersion?.topologySpec ??
+        template.topologySpec;
+      const fixedVpcCidr = effectiveTopologySpec?.vpcCidr ?? null;
 
       const allocatedCidr =
         instance.allocatedCidr ??
@@ -127,6 +128,10 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
+    if (!instance.templateId) {
+      throw new ConflictException('Range instance no longer references an active template');
+    }
+
     if (!['running', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Range instance cannot start a destroy job from the current status');
     }
@@ -152,6 +157,10 @@ export class RangeInstancesService {
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (!instance.templateId) {
+      throw new ConflictException('Range instance no longer references an active template');
     }
 
     if (!['create_failed', 'destroy_failed'].includes(instance.status)) {
@@ -181,6 +190,20 @@ export class RangeInstancesService {
     this.provisioningWorkerService.dispatch(job.id);
 
     return job;
+  }
+
+  async delete(id: string) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+
+    if (!instance) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    if (instance.status !== 'create_failed') {
+      throw new ConflictException('Only create_failed instances can be deleted');
+    }
+
+    await this.adminRepository.deleteRangeInstance(id);
   }
 
   private async attachRecoverySummary(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {

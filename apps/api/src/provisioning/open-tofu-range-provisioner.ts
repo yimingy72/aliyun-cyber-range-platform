@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { createHmac, randomUUID } from 'node:crypto';
 
 import {
   OpenTofuRunner,
@@ -13,13 +12,18 @@ import {
   type OpenTofuWorkspaceCommandOptions,
 } from '@aliyun-cyber-range/iac-runner';
 
+import type { RangeTemplateCompiledSpec } from '../admin/admin.repository';
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
 import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
+import { resolveFixedInstanceType } from './instance-type-catalog';
+import { AlibabaCloudOpenTofuRenderer } from './renderers/alibaba-cloud-opentofu-renderer';
+import { buildRootWrapperFiles } from './root-wrapper-template';
 import {
   type RangeProvisionCreateInput,
   type RangeProvisionCreateResult,
   type RangeProvisionDestroyInput,
   type RangeProvisioner,
+  type ResolvedProvisioningRuntimeConfig,
   type RangeProvisionStepReporter,
 } from './provisioning.types';
 
@@ -75,9 +79,16 @@ type OpenTofuOutputs = {
     vpc_id?: string;
     subnet_ids?: Record<string, string>;
     host_ids?: Record<string, string>;
+    secondary_network_interface_ids?: Record<string, string>;
     nat_gateway_ids?: Record<string, string>;
+    snat_entry_ids?: Record<string, string>;
+    dnat_entry_ids?: Record<string, string>;
     eip_allocation_id?: string;
     eip_allocation_ids?: Record<string, string>;
+    bootstrap_host_keys?: string[];
+    runtime_selections?: Record<string, unknown>;
+    resolved_instance_type?: string;
+    resolved_image_id?: string;
   }>;
 };
 
@@ -116,6 +127,7 @@ type AvailableInstanceTypeResolverInput = {
   zoneId: string;
   systemDiskCategory?: string;
   preferredInstanceTypes: string[];
+  strictPreferredInstanceTypes?: boolean;
 };
 
 type AvailableInstanceTypeResolver = (
@@ -131,6 +143,19 @@ type AvailableImageIdResolverInput = {
 };
 
 type AvailableImageIdResolver = (input: AvailableImageIdResolverInput) => Promise<string>;
+
+type HostInstanceResolutionHint = {
+  instanceTypePolicyKey?: string;
+  requestedCpu?: number;
+  requestedMemoryGiB?: number;
+  finalInstanceType?: string;
+  finalImageId?: string;
+  instanceTypeStrategy?: {
+    mode?: string;
+    instanceType?: string;
+    preferredInstanceTypes: string[];
+  };
+};
 
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
 const PROVIDER_MIRROR_REGISTRY_PATH = path.join(
@@ -168,7 +193,10 @@ const PROXY_ENV_KEYS = [
   'NO_PROXY',
   'no_proxy',
 ] as const;
-const execFileAsync = promisify(execFile);
+const ALICLOUD_RPC_FORMAT = 'JSON';
+const ALICLOUD_RPC_SIGNATURE_METHOD = 'HMAC-SHA1';
+const ALICLOUD_RPC_SIGNATURE_VERSION = '1.0';
+const ALICLOUD_RPC_API_VERSION = '2014-05-26';
 
 export function createRangeProvisionerFromEnv(
   options: CreateRangeProvisionerFromEnvOptions = {},
@@ -194,6 +222,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private readonly env: OpenTofuProvisionerEnv;
   private readonly availableInstanceTypeResolver: AvailableInstanceTypeResolver;
   private readonly availableImageIdResolver: AvailableImageIdResolver;
+  private readonly renderer: AlibabaCloudOpenTofuRenderer;
 
   constructor(options: OpenTofuRangeProvisionerOptions = {}) {
     this.env = {
@@ -215,6 +244,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       options.availableInstanceTypeResolver ?? resolveAvailableAliyunInstanceType;
     this.availableImageIdResolver =
       options.availableImageIdResolver ?? resolveAvailableAliyunImageId;
+    this.renderer = new AlibabaCloudOpenTofuRenderer();
   }
 
   async create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult> {
@@ -222,12 +252,15 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       rangeInstanceId: input.rangeInstanceId,
       templateModulePath: input.templateModulePath,
       topologySpec: input.topologySpec,
+      compiledProvisionSpec: input.compiledProvisionSpec,
       compiledSpec: input.compiledSpec,
       allocatedCidr: input.allocatedCidr,
     });
 
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
-      const preparedWorkspace = await this.prepareWorkspace(input);
+      const preparedWorkspace = await this.prepareWorkspace(input, {
+        preserveWorkspaceState: false,
+      });
 
       return {
         result: preparedWorkspace,
@@ -298,6 +331,20 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         env: workspace.runnerEnv,
       });
 
+      const collectedResourceSummary = readOutputValue(collectedOutputs.resource_summary);
+      const collectOutputTags = [
+        collectedResourceSummary?.resolved_instance_type
+          ? `instanceType=${collectedResourceSummary.resolved_instance_type}`
+          : null,
+        collectedResourceSummary?.resolved_image_id ? `imageId=${collectedResourceSummary.resolved_image_id}` : null,
+        collectedResourceSummary?.snat_entry_ids
+          ? `snat=${Object.keys(collectedResourceSummary.snat_entry_ids).join(',')}`
+          : null,
+        collectedResourceSummary?.dnat_entry_ids
+          ? `dnat=${Object.keys(collectedResourceSummary.dnat_entry_ids).join(',')}`
+          : null,
+      ].filter((value): value is string => Boolean(value));
+
       await fs.writeFile(
         workspace.outputsFilePath,
         `${JSON.stringify(collectedOutputs, null, 2)}\n`,
@@ -306,7 +353,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
       return {
         result: collectedOutputs,
-        message: `Collected OpenTofu outputs into ${workspace.outputsFilePath}`,
+        message: `Collected OpenTofu outputs into ${workspace.outputsFilePath}${collectOutputTags.length > 0 ? ` (${collectOutputTags.join(' | ')})` : ''}`,
       };
     });
 
@@ -328,9 +375,16 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         vpcId: resourceSummary?.vpc_id ?? null,
         subnetIds: resourceSummary?.subnet_ids ?? null,
         hostIds: resourceSummary?.host_ids ?? null,
+        secondaryNetworkInterfaceIds: resourceSummary?.secondary_network_interface_ids ?? null,
         natGatewayIds: resourceSummary?.nat_gateway_ids ?? null,
+        snatEntryIds: resourceSummary?.snat_entry_ids ?? null,
+        dnatEntryIds: resourceSummary?.dnat_entry_ids ?? null,
         eipAllocationId: resourceSummary?.eip_allocation_id ?? null,
         eipAllocationIds: resourceSummary?.eip_allocation_ids ?? null,
+        bootstrapHostKeys: resourceSummary?.bootstrap_host_keys ?? null,
+        runtimeSelections: resourceSummary?.runtime_selections ?? null,
+        resolvedInstanceType: resourceSummary?.resolved_instance_type ?? null,
+        resolvedImageId: resourceSummary?.resolved_image_id ?? null,
         topologySpec: plan.topologySummary,
       },
     };
@@ -338,7 +392,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
   async destroy(input: RangeProvisionDestroyInput): Promise<void> {
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
-      const preparedWorkspace = await this.prepareWorkspace(input);
+      const preparedWorkspace = await this.prepareWorkspace(input, {
+        preserveWorkspaceState: true,
+      });
 
       return {
         result: preparedWorkspace,
@@ -391,6 +447,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
   private async prepareWorkspace(
     input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
+    options: {
+      preserveWorkspaceState: boolean;
+    },
   ): Promise<PreparedWorkspace> {
     const moduleDir = path.resolve(this.projectRootDir, input.templateModulePath);
     const workspaceDir = path.join(this.workspacesRootDir, input.rangeInstanceId);
@@ -399,15 +458,23 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const varsFilePath = path.join(workspaceDir, 'range.auto.tfvars.json');
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
+    if (!options.preserveWorkspaceState) {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
     await fs.mkdir(workspaceDir, { recursive: true });
-    await fs.cp(moduleDir, workspaceDir, {
-      recursive: true,
-    });
+
+    const wrapperFiles = buildRootWrapperFiles(moduleDir);
+
+    await Promise.all(
+      Object.entries(wrapperFiles).map(async ([fileName, contents]) => {
+        await fs.writeFile(path.join(workspaceDir, fileName), contents, 'utf8');
+      }),
+    );
 
     const variables = await this.buildVariables(input);
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
-    const runnerEnv = await this.buildRunnerEnv();
+    const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
 
     return {
       workspaceDir,
@@ -423,103 +490,68 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       rangeInstanceId: input.rangeInstanceId,
       templateModulePath: input.templateModulePath,
       topologySpec: input.topologySpec,
+      compiledProvisionSpec: input.compiledProvisionSpec,
       compiledSpec: input.compiledSpec,
       allocatedCidr: input.allocatedCidr,
     });
-    const zoneId = requireEnvValue(this.env.ALICLOUD_ZONE_ID, 'ALICLOUD_ZONE_ID');
-    const instanceType = await this.resolveInstanceType(zoneId);
-    const imageId = await this.resolveImageId();
+    const runtimeConfig = this.resolveRuntimeConfig(input.runtimeConfig);
+    const zoneId = runtimeConfig.defaultZoneId;
+    const hostProvisioningHints = buildHostInstanceResolutionHints(
+      input.compiledProvisionSpec,
+      input.compiledSpec,
+    );
+    const hostInstanceTypes = await this.resolveHostInstanceTypes({
+      plan,
+      hostProvisioningHints,
+      runtimeConfig,
+    });
+    const preferredHostInstanceType =
+      hostInstanceTypes[plan.entryHostKey] ?? hostInstanceTypes[plan.hostDefinitions[0]?.key ?? ''];
+    const instanceType = preferredHostInstanceType
+      ? preferredHostInstanceType
+      : await this.resolveInstanceType(runtimeConfig);
+    const hostImageIds = resolveFinalHostImageIds({
+      hostProvisioningHints,
+      hostKeys: plan.hostDefinitions.map((host) => host.key),
+      preferredHostKey: plan.entryHostKey,
+    });
+    const finalHostImageId = resolveGlobalHostImageId(hostImageIds);
+    const imageId = finalHostImageId
+      ? finalHostImageId
+      : await this.resolveImageId(runtimeConfig);
     const instancePassword = requireEnvValue(
       this.env.OPENTOFU_INSTANCE_PASSWORD,
       'OPENTOFU_INSTANCE_PASSWORD',
     );
-    return {
-      resource_name_prefix: plan.resourceNamePrefix,
-      zone_id: zoneId,
-      vpc_cidr: plan.network.vpcCidr,
-      entry_host_key: plan.entryHostKey,
-      network_zones: plan.networkZones.map((zone) => ({
-        key: zone.key,
-        name: zone.name,
-        cidr: zone.cidr,
-        purpose: zone.purpose,
-        is_public_entry: zone.isPublicEntry,
-      })),
-      hosts: plan.hostDefinitions.map((host) => ({
-        key: host.key,
-        name: host.name,
-        zone_key: host.zoneKey,
-        private_ip: host.privateIp,
-        role: host.role,
-        expose_public: host.exposePublic,
-      })),
-      nat_gateways: plan.natGateways.map((natGateway) => ({
-        key: natGateway.key,
-        name: natGateway.name,
-        zone_key: natGateway.zoneKey,
-        snat_enabled: natGateway.snatEnabled,
-      })),
-      eips: plan.eipDefinitions.map((eip) => ({
-        key: eip.key,
-        name: eip.name,
-        bind_target_type: eip.bindTargetType,
-        bind_target_key: eip.bindTargetKey,
-        bandwidth_mbps: eip.bandwidthMbps,
-      })),
-      security_group_rules: plan.securityGroupRules.map((rule) => ({
-        key: rule.key,
-        name: rule.name,
-        target_host_key: rule.targetHostKey,
-        direction: rule.direction,
-        policy: rule.policy,
-        protocol: rule.protocol,
-        port_range: rule.portRange,
-        source_cidr: rule.sourceCidr,
-        priority: rule.priority,
-      })),
-      acls: plan.aclDefinitions.map((acl) => ({
-        key: acl.key,
-        name: acl.name,
-        zone_key: acl.zoneKey,
-        direction: acl.direction,
-        policy: acl.policy,
-        protocol: acl.protocol,
-        port_range: acl.portRange,
-        source_cidr: acl.sourceCidr,
-        priority: acl.priority,
-      })),
-      dmz_cidr: plan.network.dmzCidr,
-      office_cidr: plan.network.officeCidr,
-      server_cidr: plan.network.serverCidr,
-      dmz_private_ip: plan.hosts.publicEntry.privateIp,
-      office_private_ip: plan.hosts.officePrimary.privateIp,
-      server_private_ip: plan.hosts.serverPrimary.privateIp,
-      instance_type: instanceType,
-      image_id: imageId,
-      instance_password: instancePassword,
-      allowed_ingress_cidr: this.env.OPENTOFU_ALLOWED_INGRESS_CIDR ?? '0.0.0.0/0',
+    return this.renderer.render({
+      plan,
+      rangeInstanceId: input.rangeInstanceId,
+      zoneId,
+      instanceType,
+      hostInstanceTypes,
+      imageId,
+      hostImageIds,
+      instancePassword,
+      allowedIngressCidr: this.env.OPENTOFU_ALLOWED_INGRESS_CIDR ?? '0.0.0.0/0',
       ...(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT
         ? {
-            internet_max_bandwidth_out: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT),
+            internetMaxBandwidthOut: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT),
           }
         : {}),
       ...(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY
         ? {
-            system_disk_category: this.env.OPENTOFU_SYSTEM_DISK_CATEGORY,
+            systemDiskCategory: this.env.OPENTOFU_SYSTEM_DISK_CATEGORY,
           }
         : {}),
       ...(this.env.OPENTOFU_SYSTEM_DISK_SIZE
         ? {
-            system_disk_size: Number(this.env.OPENTOFU_SYSTEM_DISK_SIZE),
+            systemDiskSize: Number(this.env.OPENTOFU_SYSTEM_DISK_SIZE),
           }
         : {}),
-      tags: {
-        range_instance_id: input.rangeInstanceId,
-      },
-    };
+    });
   }
 
-  private async resolveInstanceType(zoneId: string) {
+  private async resolveInstanceType(runtimeConfig: ResolvedProvisioningRuntimeConfig) {
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
@@ -527,34 +559,89 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     if (requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto') {
       return requestedInstanceType;
     }
-
-    const accessKey = requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY');
-    const secretKey = requireEnvValue(this.env.ALICLOUD_SECRET_KEY, 'ALICLOUD_SECRET_KEY');
-    const regionId = requireEnvValue(this.env.ALICLOUD_REGION, 'ALICLOUD_REGION');
     const systemDiskCategory = normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
 
     return this.availableInstanceTypeResolver({
-      accessKey,
-      secretKey,
-      regionId,
-      zoneId,
+      accessKey: runtimeConfig.accessKeyId,
+      secretKey: runtimeConfig.accessKeySecret,
+      regionId: runtimeConfig.defaultRegion,
+      zoneId: runtimeConfig.defaultZoneId,
       ...(systemDiskCategory ? { systemDiskCategory } : {}),
       preferredInstanceTypes: readInstanceTypePreferences(this.env),
     });
   }
 
-  private async resolveImageId() {
+  private async resolveHostInstanceTypes(input: {
+    plan: ReturnType<typeof buildEnterpriseProvisionPlan>;
+    hostProvisioningHints: Map<string, HostInstanceResolutionHint>;
+    runtimeConfig: ResolvedProvisioningRuntimeConfig;
+  }) {
+    const requestedInstanceType = normalizeOptionalEnvValue(
+      this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
+    );
+
+    if (requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto') {
+      return Object.fromEntries(
+        input.plan.hostDefinitions.map((host) => [host.key, requestedInstanceType]),
+      );
+    }
+
+    const systemDiskCategory = normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
+    const defaultPreferences = readInstanceTypePreferences(this.env);
+    const resolutionCache = new Map<string, Promise<string>>();
+    const resolvedHostInstanceTypes: Record<string, string> = {};
+
+    for (const host of input.plan.hostDefinitions) {
+      const resolutionPolicy = resolveHostInstanceTypePolicy({
+        runtimeSelections: input.plan.runtimeSelections.instanceTypePolicies,
+        runtimeHint: input.hostProvisioningHints.get(host.key),
+      });
+      if (resolutionPolicy.fixedInstanceType) {
+        resolvedHostInstanceTypes[host.key] = resolutionPolicy.fixedInstanceType;
+        continue;
+      }
+
+      const preferredInstanceTypes =
+        resolutionPolicy.preferredInstanceTypes.length > 0
+          ? resolutionPolicy.preferredInstanceTypes
+          : defaultPreferences;
+      const cacheKey = `${resolutionPolicy.strictPreferredInstanceTypes ? 'strict' : 'loose'}:${preferredInstanceTypes.join(',')}`;
+
+      let resolutionPromise = resolutionCache.get(cacheKey);
+      if (!resolutionPromise) {
+        resolutionPromise = this.availableInstanceTypeResolver({
+          accessKey: input.runtimeConfig.accessKeyId,
+          secretKey: input.runtimeConfig.accessKeySecret,
+          regionId: input.runtimeConfig.defaultRegion,
+          zoneId: input.runtimeConfig.defaultZoneId,
+          ...(systemDiskCategory ? { systemDiskCategory } : {}),
+          preferredInstanceTypes,
+          ...(resolutionPolicy.strictPreferredInstanceTypes
+            ? { strictPreferredInstanceTypes: true }
+            : {}),
+        });
+        resolutionCache.set(cacheKey, resolutionPromise);
+      }
+
+      resolvedHostInstanceTypes[host.key] = await resolutionPromise;
+    }
+
+    return resolvedHostInstanceTypes;
+  }
+
+  private async resolveImageId(runtimeConfig: ResolvedProvisioningRuntimeConfig) {
     const requestedImageId = normalizeOptionalEnvValue(
       this.env.OPENTOFU_IMAGE_ID ?? this.env.ALICLOUD_IMAGE_ID,
     );
-    const accessKey = requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY');
-    const secretKey = requireEnvValue(this.env.ALICLOUD_SECRET_KEY, 'ALICLOUD_SECRET_KEY');
-    const regionId = requireEnvValue(this.env.ALICLOUD_REGION, 'ALICLOUD_REGION');
+
+    if (requestedImageId && requestedImageId.toLowerCase() !== 'auto') {
+      return requestedImageId;
+    }
 
     return this.availableImageIdResolver({
-      accessKey,
-      secretKey,
-      regionId,
+      accessKey: runtimeConfig.accessKeyId,
+      secretKey: runtimeConfig.accessKeySecret,
+      regionId: runtimeConfig.defaultRegion,
       ...(requestedImageId && requestedImageId.toLowerCase() !== 'auto'
         ? { requestedImageId }
         : {}),
@@ -562,18 +649,17 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
   }
 
-  private async buildRunnerEnv(): Promise<NodeJS.ProcessEnv> {
-    const accessKey = requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY');
-    const secretKey = requireEnvValue(this.env.ALICLOUD_SECRET_KEY, 'ALICLOUD_SECRET_KEY');
-    const region = requireEnvValue(this.env.ALICLOUD_REGION, 'ALICLOUD_REGION');
+  private async buildRunnerEnv(
+    runtimeConfig: ResolvedProvisioningRuntimeConfig = this.resolveRuntimeConfig(),
+  ): Promise<NodeJS.ProcessEnv> {
     const providerZipPath = this.env.ALICLOUD_PROVIDER_ZIP_PATH?.trim();
 
     const runnerEnv: NodeJS.ProcessEnv = {
       ...omitProxyEnv(process.env),
       ...omitProxyEnv(this.env),
-      ALICLOUD_ACCESS_KEY: accessKey,
-      ALICLOUD_SECRET_KEY: secretKey,
-      ALICLOUD_REGION: region,
+      ALICLOUD_ACCESS_KEY: runtimeConfig.accessKeyId,
+      ALICLOUD_SECRET_KEY: runtimeConfig.accessKeySecret,
+      ALICLOUD_REGION: runtimeConfig.defaultRegion,
     };
 
     if (normalizeOptionalEnvValue(this.env.OPENTOFU_PASSTHROUGH_PROXY) === '1') {
@@ -618,6 +704,25 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     return {
       ...runnerEnv,
       TF_CLI_CONFIG_FILE: cliConfigFilePath,
+    };
+  }
+
+  private resolveRuntimeConfig(
+    runtimeConfig?: ResolvedProvisioningRuntimeConfig,
+  ): ResolvedProvisioningRuntimeConfig {
+    return {
+      accessKeyId:
+        normalizeOptionalEnvValue(runtimeConfig?.accessKeyId) ??
+        requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY'),
+      accessKeySecret:
+        normalizeOptionalEnvValue(runtimeConfig?.accessKeySecret) ??
+        requireEnvValue(this.env.ALICLOUD_SECRET_KEY, 'ALICLOUD_SECRET_KEY'),
+      defaultRegion:
+        normalizeOptionalEnvValue(runtimeConfig?.defaultRegion) ??
+        requireEnvValue(this.env.ALICLOUD_REGION, 'ALICLOUD_REGION'),
+      defaultZoneId:
+        normalizeOptionalEnvValue(runtimeConfig?.defaultZoneId) ??
+        requireEnvValue(this.env.ALICLOUD_ZONE_ID, 'ALICLOUD_ZONE_ID'),
     };
   }
 }
@@ -671,6 +776,233 @@ function readInstanceTypePreferences(env: OpenTofuProvisionerEnv) {
   return preferences.length > 0 ? preferences : DEFAULT_AUTO_INSTANCE_TYPE_PREFERENCES;
 }
 
+function deriveInstanceTypePreferencesForResources(
+  cpu: number | undefined,
+  memoryGiB: number | undefined,
+) {
+  const fixedInstanceType = resolveFixedInstanceType(cpu, memoryGiB);
+  return fixedInstanceType ? [fixedInstanceType] : [];
+}
+
+function buildHostInstanceResolutionHints(
+  compiledProvisionSpec: Record<string, unknown> | null | undefined,
+  compiledSpec: RangeTemplateCompiledSpec | null | undefined,
+) {
+  const hints = new Map<string, HostInstanceResolutionHint>();
+
+  const compiledProvisionHosts = Array.isArray(compiledProvisionSpec?.hosts) ? compiledProvisionSpec.hosts : [];
+  for (const hostValue of compiledProvisionHosts) {
+    const hostRecord = readObjectRecord(hostValue);
+    if (!hostRecord || typeof hostRecord.key !== 'string') {
+      continue;
+    }
+
+    const existing = hints.get(hostRecord.key) ?? {};
+    const finalImageId = resolveFinalImageIdFromRecord(hostRecord);
+    hints.set(hostRecord.key, {
+      ...existing,
+      ...(typeof hostRecord.instanceTypePolicyKey === 'string'
+        ? { instanceTypePolicyKey: hostRecord.instanceTypePolicyKey }
+        : {}),
+      ...(typeof hostRecord.instanceType === 'string'
+        ? { finalInstanceType: hostRecord.instanceType }
+        : {}),
+      ...(finalImageId ? { finalImageId } : {}),
+    });
+  }
+
+  const compiledResources = compiledSpec?.resources ?? [];
+  for (const resource of compiledResources) {
+    if (resource.type !== 'host') {
+      continue;
+    }
+
+    const instanceTypeStrategy = normalizeHostInstanceTypeStrategy(resource.config.instanceTypeStrategy);
+    const existing = hints.get(resource.id) ?? {};
+    const finalImageId = resolveFinalImageIdFromRecord(resource.config);
+    hints.set(resource.id, {
+      ...existing,
+      ...(typeof resource.config.cpu === 'number' ? { requestedCpu: resource.config.cpu } : {}),
+      ...(typeof resource.config.memory === 'number' ? { requestedMemoryGiB: resource.config.memory } : {}),
+      ...(typeof resource.config.instanceType === 'string'
+        ? { finalInstanceType: resource.config.instanceType }
+        : {}),
+      ...(finalImageId ? { finalImageId } : {}),
+      ...(instanceTypeStrategy ? { instanceTypeStrategy } : {}),
+    });
+  }
+
+  return hints;
+}
+
+function normalizeHostInstanceTypeStrategy(value: unknown) {
+  const record = readObjectRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const preferredInstanceTypes = readStringArrayValue(record.preferredInstanceTypes);
+
+  return {
+    ...(typeof record.mode === 'string' ? { mode: record.mode } : {}),
+    ...(typeof record.instanceType === 'string' ? { instanceType: record.instanceType } : {}),
+    preferredInstanceTypes,
+  };
+}
+
+function normalizeHostImageStrategy(value: unknown) {
+  const record = readObjectRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  return {
+    ...(typeof record.mode === 'string' ? { mode: record.mode } : {}),
+    ...(typeof record.imageId === 'string' ? { imageId: record.imageId } : {}),
+  };
+}
+
+function resolveFinalImageIdFromRecord(record: Record<string, unknown>) {
+  const fixedImageId = normalizeExplicitFinalImageId(
+    typeof record.imageId === 'string' ? record.imageId : undefined,
+  );
+  if (fixedImageId) {
+    return fixedImageId;
+  }
+
+  const imageStrategy = normalizeHostImageStrategy(record.imageStrategy);
+  if (imageStrategy?.mode === 'fixed' && imageStrategy.imageId) {
+    return normalizeExplicitFinalImageId(imageStrategy.imageId);
+  }
+
+  return undefined;
+}
+
+function normalizeExplicitFinalImageId(value: string | null | undefined) {
+  const normalizedValue = normalizeOptionalEnvValue(value);
+  if (!normalizedValue) {
+    return undefined;
+  }
+
+  if (/\.vhd$/i.test(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  if (/^m-[a-z0-9]+$/i.test(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  return undefined;
+}
+
+function resolveHostInstanceTypePolicy(input: {
+  runtimeSelections: Record<string, unknown>;
+  runtimeHint: HostInstanceResolutionHint | undefined;
+}) {
+  if (input.runtimeHint?.finalInstanceType) {
+    return {
+      fixedInstanceType: input.runtimeHint.finalInstanceType,
+      preferredInstanceTypes: [] as string[],
+      strictPreferredInstanceTypes: true,
+    };
+  }
+
+  const runtimeSelectionRecord =
+    input.runtimeHint?.instanceTypePolicyKey
+      ? readObjectRecord(input.runtimeSelections[input.runtimeHint.instanceTypePolicyKey])
+      : null;
+  const strategy = input.runtimeHint?.instanceTypeStrategy;
+  const mode =
+    (typeof runtimeSelectionRecord?.mode === 'string' ? runtimeSelectionRecord.mode : undefined) ??
+    strategy?.mode ??
+    'auto';
+  const explicitInstanceType = normalizeOptionalEnvValue(
+    (typeof runtimeSelectionRecord?.instanceType === 'string' ? runtimeSelectionRecord.instanceType : undefined) ??
+      strategy?.instanceType,
+  );
+  const preferredInstanceTypes = [
+    ...readStringArrayValue(runtimeSelectionRecord?.preferredInstanceTypes),
+    ...(strategy?.preferredInstanceTypes ?? []),
+  ].filter((value, index, items) => items.indexOf(value) === index);
+
+  if (mode === 'fixed' && explicitInstanceType) {
+    return {
+      fixedInstanceType: explicitInstanceType,
+      preferredInstanceTypes: [] as string[],
+      strictPreferredInstanceTypes: true,
+    };
+  }
+
+  if (preferredInstanceTypes.length > 0) {
+    return {
+      preferredInstanceTypes,
+      strictPreferredInstanceTypes: mode === 'fixed',
+    };
+  }
+
+  const derivedPreferences = deriveInstanceTypePreferencesForResources(
+    input.runtimeHint?.requestedCpu,
+    input.runtimeHint?.requestedMemoryGiB,
+  );
+
+  if (derivedPreferences.length > 0) {
+    return {
+      preferredInstanceTypes: derivedPreferences,
+      strictPreferredInstanceTypes: true,
+    };
+  }
+
+  return {
+    preferredInstanceTypes: [] as string[],
+    strictPreferredInstanceTypes: false,
+  };
+}
+
+function resolveFinalHostImageIds(input: {
+  hostProvisioningHints: Map<string, HostInstanceResolutionHint>;
+  hostKeys: string[];
+  preferredHostKey: string;
+}) {
+  const resolvedHostImageIds: Record<string, string> = {};
+
+  for (const hostKey of input.hostKeys) {
+    const imageId = input.hostProvisioningHints.get(hostKey)?.finalImageId;
+    if (imageId) {
+      resolvedHostImageIds[hostKey] = imageId;
+    }
+  }
+
+  if (Object.keys(resolvedHostImageIds).length === 0) {
+    return undefined;
+  }
+
+  const preferredImageId = resolvedHostImageIds[input.preferredHostKey];
+  if (!preferredImageId) {
+    return resolvedHostImageIds;
+  }
+
+  return {
+    [input.preferredHostKey]: preferredImageId,
+    ...resolvedHostImageIds,
+  };
+}
+
+function resolveGlobalHostImageId(hostImageIds: Record<string, string> | undefined) {
+  if (!hostImageIds) {
+    return undefined;
+  }
+
+  const uniqueImageIds = [...new Set(Object.values(hostImageIds))];
+
+  if (uniqueImageIds.length > 1) {
+    throw new Error(
+      `Conflicting final host image IDs are not supported by the current OpenTofu runtime: ${uniqueImageIds.join(', ')}`,
+    );
+  }
+
+  return uniqueImageIds[0];
+}
+
 function readImageIdPreferences(env: OpenTofuProvisionerEnv) {
   const configuredPreferences = normalizeOptionalEnvValue(
     env.OPENTOFU_IMAGE_ID_PREFERENCES ?? env.ALICLOUD_IMAGE_ID_PREFERENCES,
@@ -691,39 +1023,23 @@ function readImageIdPreferences(env: OpenTofuProvisionerEnv) {
 async function resolveAvailableAliyunInstanceType(
   input: AvailableInstanceTypeResolverInput,
 ): Promise<string> {
-  const args = [
-    'ecs',
-    'DescribeAvailableResource',
-    '--RegionId',
-    input.regionId,
-    '--ZoneId',
-    input.zoneId,
-    '--DestinationResource',
-    'InstanceType',
-    '--ResourceType',
-    'instance',
-    '--InstanceChargeType',
-    'PostPaid',
-    '--IoOptimized',
-    'optimized',
-    '--NetworkCategory',
-    'vpc',
-  ];
-
-  if (input.systemDiskCategory) {
-    args.push('--SystemDiskCategory', input.systemDiskCategory);
-  }
-
-  const { stdout } = await execFileAsync('aliyun', args, {
-    env: {
-      ...process.env,
-      ALICLOUD_ACCESS_KEY: input.accessKey,
-      ALICLOUD_SECRET_KEY: input.secretKey,
+  const payload = await performAliyunRpcRequest({
+    accessKeyId: input.accessKey,
+    accessKeySecret: input.secretKey,
+    regionId: input.regionId,
+    action: 'DescribeAvailableResource',
+    parameters: {
+      ZoneId: input.zoneId,
+      DestinationResource: 'InstanceType',
+      ResourceType: 'instance',
+      InstanceChargeType: 'PostPaid',
+      IoOptimized: 'optimized',
+      NetworkCategory: 'vpc',
+      ...(input.systemDiskCategory ? { SystemDiskCategory: input.systemDiskCategory } : {}),
     },
-    maxBuffer: 8 * 1024 * 1024,
   });
   const availableInstanceTypes = extractAvailableInstanceTypes(
-    JSON.parse(stdout.trim()),
+    payload,
   );
   const selectedInstanceType =
     input.preferredInstanceTypes.find((candidate) =>
@@ -736,38 +1052,36 @@ async function resolveAvailableAliyunInstanceType(
     );
   }
 
+  if (
+    input.strictPreferredInstanceTypes &&
+    input.preferredInstanceTypes.length > 0 &&
+    !input.preferredInstanceTypes.includes(selectedInstanceType)
+  ) {
+    throw new Error(
+      `No saleable ECS instance type matched requested preferences for zone ${input.zoneId} in region ${input.regionId}`,
+    );
+  }
+
   return selectedInstanceType;
 }
 
 async function resolveAvailableAliyunImageId(
   input: AvailableImageIdResolverInput,
 ): Promise<string> {
-  const args = [
-    'ecs',
-    'DescribeImages',
-    '--RegionId',
-    input.regionId,
-    '--ImageOwnerAlias',
-    'system',
-    '--Status',
-    'Available',
-    '--OSType',
-    'linux',
-    '--Architecture',
-    'x86_64',
-    '--PageSize',
-    '100',
-  ];
-
-  const { stdout } = await execFileAsync('aliyun', args, {
-    env: {
-      ...omitProxyEnv(process.env),
-      ALICLOUD_ACCESS_KEY: input.accessKey,
-      ALICLOUD_SECRET_KEY: input.secretKey,
+  const payload = await performAliyunRpcRequest({
+    accessKeyId: input.accessKey,
+    accessKeySecret: input.secretKey,
+    regionId: input.regionId,
+    action: 'DescribeImages',
+    parameters: {
+      ImageOwnerAlias: 'system',
+      Status: 'Available',
+      OSType: 'linux',
+      Architecture: 'x86_64',
+      PageSize: '100',
     },
-    maxBuffer: 8 * 1024 * 1024,
   });
-  const availableImageIds = extractAvailableImageIds(JSON.parse(stdout.trim()));
+  const availableImageIds = extractAvailableImageIds(payload);
 
   if (input.requestedImageId) {
     if (!availableImageIds.includes(input.requestedImageId)) {
@@ -788,6 +1102,82 @@ async function resolveAvailableAliyunImageId(
   }
 
   return selectedImageId;
+}
+
+async function performAliyunRpcRequest(input: {
+  accessKeyId: string;
+  accessKeySecret: string;
+  regionId: string;
+  action: string;
+  parameters?: Record<string, string>;
+}) {
+  const endpoint = `https://ecs.${input.regionId}.aliyuncs.com/`;
+  const query = signAliyunRpcQuery(
+    {
+      Action: input.action,
+      AccessKeyId: input.accessKeyId,
+      Format: ALICLOUD_RPC_FORMAT,
+      RegionId: input.regionId,
+      SignatureMethod: ALICLOUD_RPC_SIGNATURE_METHOD,
+      SignatureNonce: randomUUID(),
+      SignatureVersion: ALICLOUD_RPC_SIGNATURE_VERSION,
+      Timestamp: formatAliyunTimestamp(new Date()),
+      Version: ALICLOUD_RPC_API_VERSION,
+      ...(input.parameters ?? {}),
+    },
+    input.accessKeySecret,
+  );
+
+  const response = await fetch(`${endpoint}?${query}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  let payload: unknown = null;
+
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const errorCode =
+      payload && typeof payload === 'object' && 'Code' in payload && typeof (payload as { Code?: unknown }).Code === 'string'
+        ? (payload as { Code: string }).Code
+        : `HTTP_${response.status}`;
+    const errorMessage =
+      payload && typeof payload === 'object' && 'Message' in payload && typeof (payload as { Message?: unknown }).Message === 'string'
+        ? (payload as { Message: string }).Message
+        : `Aliyun RPC request failed with status ${response.status}`;
+
+    throw new Error(`${input.action} failed: ${errorCode} - ${errorMessage}`);
+  }
+
+  return payload;
+}
+
+function signAliyunRpcQuery(parameters: Record<string, string>, accessKeySecret: string) {
+  const canonicalizedQuery = Object.entries(parameters)
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .map(([key, value]) => `${percentEncodeAliyunRpc(key)}=${percentEncodeAliyunRpc(value)}`)
+    .join('&');
+  const stringToSign = `GET&${percentEncodeAliyunRpc('/')}&${percentEncodeAliyunRpc(canonicalizedQuery)}`;
+  const signature = createHmac('sha1', `${accessKeySecret}&`).update(stringToSign).digest('base64');
+
+  return `${canonicalizedQuery}&Signature=${percentEncodeAliyunRpc(signature)}`;
+}
+
+function percentEncodeAliyunRpc(value: string) {
+  return encodeURIComponent(value)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%7E/g, '~');
+}
+
+function formatAliyunTimestamp(value: Date) {
+  return value.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function extractAvailableInstanceTypes(payload: unknown) {
@@ -839,6 +1229,20 @@ function extractAvailableImageIds(payload: unknown) {
     .filter((image) => image.Status === 'Available' && typeof image.ImageId === 'string')
     .map((image) => image.ImageId!.trim())
     .filter(Boolean);
+}
+
+function readObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function readStringArrayValue(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
 }
 
 function omitProxyEnv<T extends NodeJS.ProcessEnv | OpenTofuProvisionerEnv>(env: T): T {

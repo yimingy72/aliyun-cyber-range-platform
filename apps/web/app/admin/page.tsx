@@ -1,5 +1,5 @@
-import { OverviewScreen } from '../../components/admin/overview-screen';
+import { redirect } from 'next/navigation';
 
-export default function AdminPage() {
-  return <OverviewScreen />;
+export default function AdminRootPage() {
+  redirect('/admin/scenarios');
 }

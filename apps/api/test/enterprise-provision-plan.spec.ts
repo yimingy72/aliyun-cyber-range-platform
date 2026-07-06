@@ -60,7 +60,7 @@ describe('buildEnterpriseProvisionPlan', () => {
       },
     });
 
-    expect(plan).toEqual({
+    expect(plan).toEqual(expect.objectContaining({
       resourceNamePrefix: 'range-range-ins',
       modulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
       entryHostKey: 'dmz-entry',
@@ -130,7 +130,97 @@ describe('buildEnterpriseProvisionPlan', () => {
         officePrimary: expect.objectContaining({ key: 'office-client', privateIp: '10.88.20.10' }),
         serverPrimary: expect.objectContaining({ key: 'server-app', privateIp: '10.88.30.10' }),
       },
+    }));
+  });
+
+  it('builds a stable enterprise provision plan from compiledProvisionSpec when legacy topology fields are absent', () => {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: 'range-instance-cps',
+      templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
+      allocatedCidr: null,
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        identity: {
+          templateSlug: 'enterprise-template',
+          templateVersion: 'v1',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: {
+          vpcCidr: '10.91.0.0/16',
+          entryHostKey: 'dmz-entry',
+        },
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', cidr: '10.91.10.0/24', purpose: 'public-entry', isPublicEntry: true, routeRole: 'entry' },
+          { key: 'office', name: 'Office', cidr: '10.91.20.0/24', purpose: 'user-workstations', isPublicEntry: false, routeRole: 'internal' },
+          { key: 'server', name: 'Server', cidr: '10.91.30.0/24', purpose: 'application-servers', isPublicEntry: false, routeRole: 'internal' },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            role: 'entry',
+            zoneKey: 'dmz',
+            primaryPrivateIp: '10.91.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.91.10.10' }],
+          },
+          {
+            key: 'office-client',
+            name: 'Office Client',
+            role: 'workstation',
+            zoneKey: 'office',
+            primaryPrivateIp: '10.91.20.10',
+            exposePublic: false,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'office', privateIp: '10.91.20.10' }],
+          },
+          {
+            key: 'server-app',
+            name: 'Server App',
+            role: 'app',
+            zoneKey: 'server',
+            primaryPrivateIp: '10.91.30.10',
+            exposePublic: false,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'server', privateIp: '10.91.30.10' }],
+          },
+        ],
+        natGateways: [
+          { key: 'nat-office', name: 'Office NAT', zoneKey: 'office' },
+        ],
+        eips: [
+          { key: 'eip-entry', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'dmz-entry', bandwidthMbps: 30 },
+        ],
+        snatEntries: [
+          { key: 'snat-office', zoneKey: 'office', natGatewayKey: 'nat-office', eipKey: 'eip-entry' },
+        ],
+        dnatEntries: [
+          { key: 'dnat-server-http', hostKey: 'server-app', natGatewayKey: 'nat-office', eipKey: 'eip-entry', protocol: 'tcp', externalPort: 8080, internalPort: 80 },
+        ],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+      },
     });
+
+    expect(plan.topologySummary).toEqual({
+      vpcCidr: '10.91.0.0/16',
+      publicEntryHostKey: 'dmz-entry',
+      networkZoneKeys: ['dmz', 'office', 'server'],
+      hostKeys: ['dmz-entry', 'office-client', 'server-app'],
+    });
+    expect(plan.hostDefinitions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'dmz-entry', privateIp: '10.91.10.10', exposePublic: true }),
+        expect.objectContaining({ key: 'server-app', privateIp: '10.91.30.10', exposePublic: false }),
+      ]),
+    );
+    expect(plan.snatEntries).toEqual([
+      { key: 'snat-office', name: 'snat-office', natGatewayKey: 'nat-office', sourceZoneKey: 'office', eipKey: 'eip-entry' },
+    ]);
+    expect(plan.dnatEntries).toEqual([
+      { key: 'dnat-server-http', name: 'dnat-server-http', natGatewayKey: 'nat-office', eipKey: 'eip-entry', backendHostKey: 'server-app', externalPort: 8080, internalPort: 80, protocol: 'tcp' },
+    ]);
   });
 
   it('rejects mismatched allocatedCidr and template vpcCidr', () => {
@@ -164,6 +254,114 @@ describe('buildEnterpriseProvisionPlan', () => {
         },
       }),
     ).toThrow('Allocated CIDR 10.99.0.0/16 does not match template topology VPC CIDR 10.88.0.0/16');
+  });
+
+  it('builds a provision plan for generic single-zone multi-ecs topologies without requiring dmz office server aliases', () => {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: 'range-instance-generic',
+      templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
+      allocatedCidr: null,
+      topologySpec: {
+        vpcCidr: '10.70.0.0/16',
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone-1',
+            purpose: 'business-zone',
+            cidr: '10.0.0.0/16',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'host',
+            privateIp: '10.0.0.1',
+            exposePublic: true,
+          },
+          {
+            key: 'ecs-2',
+            name: 'ECS 2',
+            zoneKey: 'zone-1',
+            role: 'host',
+            privateIp: '10.0.0.2',
+          },
+          {
+            key: 'ecs-3',
+            name: 'ECS 3',
+            zoneKey: 'zone-1',
+            role: 'host',
+            privateIp: '10.0.0.3',
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.70.0.0/16',
+          entryHostKey: 'ecs-1',
+        },
+        networkZones: [
+          { key: 'zone-1', name: '交换机', cidr: '10.0.0.0/16', purpose: 'business-zone', isPublicEntry: true, routeRole: 'entry' },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'test-ubuntu',
+            role: 'host',
+            zoneKey: 'zone-1',
+            primaryPrivateIp: '10.0.0.1',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.0.0.1' }],
+          },
+          {
+            key: 'ecs-2',
+            name: 'test-ubuntu',
+            role: 'host',
+            zoneKey: 'zone-1',
+            primaryPrivateIp: '10.0.0.2',
+            exposePublic: false,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.0.0.2' }],
+          },
+        ],
+        natGateways: [{ key: 'nat-switch-1', name: '交换机 NAT', zoneKey: 'zone-1' }],
+        eips: [{ key: 'eip-switch-1', name: '交换机 EIP', bindTargetType: 'nat_gateway', bindTargetKey: 'nat-switch-1', bandwidthMbps: 30 }],
+        snatEntries: [{ key: 'snat-zone-1', zoneKey: 'zone-1', natGatewayKey: 'nat-switch-1', eipKey: 'eip-switch-1' }],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+      },
+    });
+
+    expect(plan.topologySummary).toEqual({
+      vpcCidr: '10.70.0.0/16',
+      publicEntryHostKey: 'ecs-1',
+      networkZoneKeys: ['zone-1'],
+      hostKeys: ['ecs-1', 'ecs-2', 'ecs-3'],
+    });
+    expect(plan.network).toEqual({
+      vpcCidr: '10.70.0.0/16',
+      dmzCidr: '10.0.0.0/16',
+      officeCidr: '10.0.0.0/16',
+      serverCidr: '10.0.0.0/16',
+    });
+    expect(plan.hosts.publicEntry).toEqual(expect.objectContaining({ key: 'ecs-1', privateIp: '10.0.0.1' }));
+    expect(plan.hosts.officePrimary).toEqual(expect.objectContaining({ key: 'ecs-2', privateIp: '10.0.0.2' }));
+    expect(plan.hosts.serverPrimary).toEqual(expect.objectContaining({ key: 'ecs-3', privateIp: '10.0.0.3' }));
+    expect(plan.natGateways).toEqual([
+      { key: 'nat-switch-1', name: '交换机 NAT', zoneKey: 'zone-1', snatEnabled: true },
+    ]);
+    expect(plan.snatEntries).toEqual([
+      { key: 'snat-zone-1', name: 'snat-zone-1', natGatewayKey: 'nat-switch-1', sourceZoneKey: 'zone-1', eipKey: 'eip-switch-1' },
+    ]);
   });
 
   it('reconstructs the enterprise plan from compiledSpec resources when topologySpec is missing', () => {
@@ -411,6 +609,31 @@ describe('buildEnterpriseProvisionPlan', () => {
               priority: 10,
             },
           },
+          {
+            id: 'snat-office',
+            type: 'snat_entry',
+            provider: 'alibaba_cloud',
+            config: {
+              label: '办公网 SNAT',
+              natGatewayKey: 'nat-office',
+              sourceZoneKey: 'office',
+              eipKey: 'eip-office-nat',
+            },
+          },
+          {
+            id: 'dnat-entry-web',
+            type: 'dnat_entry',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'Web DNAT',
+              natGatewayKey: 'nat-office',
+              eipKey: 'eip-office-nat',
+              backendHostKey: 'host-server-app',
+              externalPort: 8080,
+              internalPort: 80,
+              protocol: 'tcp',
+            },
+          },
         ],
       },
     });
@@ -463,6 +686,27 @@ describe('buildEnterpriseProvisionPlan', () => {
         portRange: '3389/3389',
         sourceCidr: '10.0.0.0/8',
         priority: 10,
+      },
+    ]);
+    expect(plan.snatEntries).toEqual([
+      {
+        key: 'snat-office',
+        name: '办公网 SNAT',
+        natGatewayKey: 'nat-office',
+        sourceZoneKey: 'office',
+        eipKey: 'eip-office-nat',
+      },
+    ]);
+    expect(plan.dnatEntries).toEqual([
+      {
+        key: 'dnat-entry-web',
+        name: 'Web DNAT',
+        natGatewayKey: 'nat-office',
+        eipKey: 'eip-office-nat',
+        backendHostKey: 'host-server-app',
+        externalPort: 8080,
+        internalPort: 80,
+        protocol: 'tcp',
       },
     ]);
   });

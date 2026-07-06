@@ -1,10 +1,11 @@
 'use client';
 
+import React from 'react';
 import { useEffect, useRef, useState } from 'react';
 
 import {
   AdminApiError,
-  collectImageCatalogItem,
+  collectPlatformImage,
   deleteCustomImageSnapshot,
   disablePlatformImage,
   enablePlatformImage,
@@ -17,7 +18,6 @@ import {
   syncPublicImages,
 } from '../../lib/admin-api';
 import type {
-  ImageCatalogItem,
   ImageCatalogScopePayload,
   ImageSnapshot,
   PlatformImageAsset,
@@ -30,9 +30,24 @@ type ImageCenterScreenProps = {
 
 type ActiveTab = 'platform' | 'custom' | 'public';
 type TabPageMap = Record<ActiveTab, number>;
+type ImageCenterConfirmState =
+  | { type: 'remove-platform'; asset: PlatformImageAsset }
+  | { type: 'delete-custom'; snapshot: ImageSnapshot }
+  | null;
 
-const DEFAULT_PAGE_SIZE = 2;
-const PAGE_SIZE_OPTIONS = [2, 3, 5];
+const PAGE_SIZE_AUTO = 'auto';
+const MANUAL_PAGE_SIZE_OPTIONS = [50, 100, 200];
+const ROWS_BASED_PAGE_SIZE_FALLBACK = 8;
+const ROW_HEIGHT = 72;
+const PAGE_SIZE_RESERVED_HEIGHT = 470;
+
+function getAutoPageSize(viewportHeight?: number) {
+  if (!viewportHeight || Number.isNaN(viewportHeight)) {
+    return ROWS_BASED_PAGE_SIZE_FALLBACK;
+  }
+
+  return Math.max(1, Math.floor((viewportHeight - PAGE_SIZE_RESERVED_HEIGHT) / ROW_HEIGHT));
+}
 
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
@@ -71,27 +86,16 @@ function matchesPlatformAssetSearch(asset: PlatformImageAsset, keyword: string) 
   return asset.displayName.toLowerCase().includes(normalizedKeyword) || asset.imageId.toLowerCase().includes(normalizedKeyword);
 }
 
-function buildCollectedImageIdSet(scopePayload: ImageCatalogScopePayload | null) {
-  return new Set((scopePayload?.catalogItems ?? []).filter((item) => item.enabled).map((item) => item.imageId));
-}
-
-function upsertCatalogItem(scopePayload: ImageCatalogScopePayload | null, catalogItem: ImageCatalogItem) {
-  if (!scopePayload) {
-    return scopePayload;
-  }
-
-  const nextCatalogItems = scopePayload.catalogItems.some((item) => item.imageId === catalogItem.imageId)
-    ? scopePayload.catalogItems.map((item) => (item.imageId === catalogItem.imageId ? catalogItem : item))
-    : [...scopePayload.catalogItems, catalogItem];
-
-  return {
-    ...scopePayload,
-    catalogItems: nextCatalogItems,
-  } satisfies ImageCatalogScopePayload;
+function buildCollectedImageIdSet(items: PlatformImageAsset[]) {
+  return new Set(items.filter((item) => item.enabled).map((item) => item.imageId));
 }
 
 function replacePlatformAsset(items: PlatformImageAsset[], nextAsset: PlatformImageAsset) {
   return items.map((item) => (item.id === nextAsset.id ? nextAsset : item));
+}
+
+function upsertPlatformAsset(items: PlatformImageAsset[], nextAsset: PlatformImageAsset) {
+  return items.some((item) => item.id === nextAsset.id) ? replacePlatformAsset(items, nextAsset) : [nextAsset, ...items];
 }
 
 function removeSnapshot(scopePayload: ImageCatalogScopePayload | null, snapshotId: string) {
@@ -126,6 +130,27 @@ function buildVisiblePages(totalPages: number, currentPage: number) {
   return Array.from({ length: endPage - adjustedStartPage + 1 }, (_, index) => adjustedStartPage + index);
 }
 
+function ImageCenterDialog({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="template-workbench-dialog-backdrop" role="presentation">
+      <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="template-workbench-dialog-header">
+          <div>
+            <h2>{title}</h2>
+          </div>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
 export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: ImageCenterScreenProps) {
   const session = useAdminSession();
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
@@ -133,11 +158,15 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
   const [platformAssets, setPlatformAssets] = useState<PlatformImageAsset[]>([]);
   const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(null);
   const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [pageSizeMode, setPageSizeMode] = useState<string>(PAGE_SIZE_AUTO);
+  const [pageSize, setPageSize] = useState(() => getAutoPageSize(typeof window === 'undefined' ? undefined : window.innerHeight));
   const [tabPages, setTabPages] = useState<TabPageMap>({ platform: 1, custom: 1, public: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
+  const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
   const platformRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
@@ -156,6 +185,23 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
       [tab]: page,
     }));
   }
+
+  useEffect(() => {
+    if (pageSizeMode !== PAGE_SIZE_AUTO) {
+      return;
+    }
+
+    function syncAutoPageSize() {
+      setPageSize(getAutoPageSize(window.innerHeight));
+    }
+
+    syncAutoPageSize();
+    window.addEventListener('resize', syncAutoPageSize);
+
+    return () => {
+      window.removeEventListener('resize', syncAutoPageSize);
+    };
+  }, [pageSizeMode]);
 
   useEffect(() => {
     if (!session.isReady || !session.token) {
@@ -202,7 +248,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
           return;
         }
 
-        setStatusMessage(error instanceof Error ? error.message : '镜像中心加载失败');
+        setErrorMessage(error instanceof Error ? error.message : '镜像中心加载失败');
       });
 
     return () => {
@@ -220,21 +266,20 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     publicScopeRequestVersionRef.current = requestVersion;
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
       const nextScope = await syncPublicImages(apiBaseUrl, session.token);
 
       if (publicScopeRequestVersionRef.current === requestVersion) {
         setPublicScope(nextScope);
       }
-
-      setStatusMessage('公共镜像同步完成');
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '公共镜像同步失败');
+      setErrorMessage(error instanceof Error ? error.message : '公共镜像同步失败');
     } finally {
       endAction(actionKey);
     }
@@ -250,21 +295,20 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     customScopeRequestVersionRef.current = requestVersion;
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
       const nextScope = await syncCustomImages(apiBaseUrl, session.token);
 
       if (customScopeRequestVersionRef.current === requestVersion) {
         setCustomScope(nextScope);
       }
-
-      setStatusMessage('自定义镜像同步完成');
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '自定义镜像同步失败');
+      setErrorMessage(error instanceof Error ? error.message : '自定义镜像同步失败');
     } finally {
       endAction(actionKey);
     }
@@ -276,67 +320,68 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     }
 
     const actionKey = `collect:${snapshot.scope}:${snapshot.imageId}`;
-    const isPublicScope = snapshot.scope === 'public';
-    const requestVersion = (isPublicScope ? publicScopeRequestVersionRef.current : customScopeRequestVersionRef.current) + 1;
-
-    if (isPublicScope) {
-      publicScopeRequestVersionRef.current = requestVersion;
-    } else {
-      customScopeRequestVersionRef.current = requestVersion;
-    }
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
-      const nextCatalogItem = await collectImageCatalogItem(apiBaseUrl, session.token, {
+      const nextPlatformAsset = await collectPlatformImage(apiBaseUrl, session.token, {
         snapshotId: snapshot.id,
         displayName: snapshot.sourceImageName,
       });
 
-      setStatusMessage(`${snapshot.sourceImageName} 已收录到目录`);
-
-      if (isPublicScope) {
-        if (publicScopeRequestVersionRef.current === requestVersion) {
-          setPublicScope((previous) => upsertCatalogItem(previous, nextCatalogItem));
-        }
-      } else if (customScopeRequestVersionRef.current === requestVersion) {
-        setCustomScope((previous) => upsertCatalogItem(previous, nextCatalogItem));
-      }
+      setPlatformAssets((previous) => upsertPlatformAsset(previous, nextPlatformAsset));
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '镜像收录失败');
+      setErrorMessage(error instanceof Error ? error.message : '镜像收录失败');
     } finally {
       endAction(actionKey);
     }
   }
 
-  async function handleRenamePlatformAsset(asset: PlatformImageAsset) {
-    if (!session.token) {
+  function openRenameDialog(asset: PlatformImageAsset) {
+    setRenamingAsset(asset);
+    setRenameDraft(asset.displayName);
+  }
+
+  function closeRenameDialog() {
+    setRenamingAsset(null);
+    setRenameDraft('');
+  }
+
+  function closeConfirmDialog() {
+    setConfirmState(null);
+  }
+
+  async function handleRenamePlatformAsset() {
+    if (!renamingAsset || !session.token) {
       return;
     }
 
-    const nextDisplayName = window.prompt('请输入新的镜像名称', asset.displayName)?.trim();
-    if (!nextDisplayName || nextDisplayName === asset.displayName) {
+    const nextDisplayName = renameDraft.trim();
+    if (!nextDisplayName || nextDisplayName === renamingAsset.displayName) {
+      closeRenameDialog();
       return;
     }
 
-    const actionKey = `rename:platform:${asset.id}`;
+    const actionKey = `rename:platform:${renamingAsset.id}`;
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
-      const nextAsset = await renamePlatformImage(apiBaseUrl, session.token, asset.id, nextDisplayName);
+      const nextAsset = await renamePlatformImage(apiBaseUrl, session.token, renamingAsset.id, nextDisplayName);
       setPlatformAssets((previous) => replacePlatformAsset(previous, nextAsset));
-      setStatusMessage(`${asset.displayName} 已重命名为 ${nextAsset.displayName}`);
+      closeRenameDialog();
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '平台镜像重命名失败');
+      setErrorMessage(error instanceof Error ? error.message : '平台镜像重命名失败');
     } finally {
       endAction(actionKey);
     }
@@ -350,50 +395,51 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     const actionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
       const nextAsset = asset.enabled
         ? await disablePlatformImage(apiBaseUrl, session.token, asset.id)
         : await enablePlatformImage(apiBaseUrl, session.token, asset.id);
       setPlatformAssets((previous) => replacePlatformAsset(previous, nextAsset));
-      setStatusMessage(`${nextAsset.displayName} 已${nextAsset.enabled ? '启用' : '禁用'}`);
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '平台镜像状态更新失败');
+      setErrorMessage(error instanceof Error ? error.message : '平台镜像状态更新失败');
     } finally {
       endAction(actionKey);
     }
   }
 
   async function handleRemovePlatformAsset(asset: PlatformImageAsset) {
-    if (!session.token || !window.confirm(`确认将 ${asset.displayName} 移出平台目录吗？`)) {
+    if (!session.token) {
       return;
     }
 
     const actionKey = `remove:platform:${asset.id}`;
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
       await removePlatformImage(apiBaseUrl, session.token, asset.id);
       setPlatformAssets((previous) => previous.filter((item) => item.id !== asset.id));
-      setStatusMessage(`${asset.displayName} 已移出目录`);
+      closeConfirmDialog();
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '平台镜像移出目录失败');
+      setErrorMessage(error instanceof Error ? error.message : '平台镜像删除失败');
     } finally {
       endAction(actionKey);
     }
   }
 
   async function handleDeleteCustomSnapshot(snapshot: ImageSnapshot) {
-    if (!session.token || !window.confirm(`确认删除云上镜像 ${snapshot.sourceImageName} 吗？`)) {
+    if (!session.token) {
       return;
     }
 
@@ -402,21 +448,21 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     customScopeRequestVersionRef.current = requestVersion;
 
     try {
+      setErrorMessage('');
       beginAction(actionKey);
       await deleteCustomImageSnapshot(apiBaseUrl, session.token, snapshot.id);
 
       if (customScopeRequestVersionRef.current === requestVersion) {
         setCustomScope((previous) => removeSnapshot(previous, snapshot.id));
       }
-
-      setStatusMessage(`${snapshot.sourceImageName} 已从云端删除`);
+      closeConfirmDialog();
     } catch (error) {
       if (isUnauthorizedError(error)) {
         session.logout();
         return;
       }
 
-      setStatusMessage(error instanceof Error ? error.message : '云上镜像删除失败');
+      setErrorMessage(error instanceof Error ? error.message : '云上镜像删除失败');
     } finally {
       endAction(actionKey);
     }
@@ -454,7 +500,16 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     setPage(activeTab, activePagination.page + 1);
   }
 
-  function handlePageSizeChange(nextPageSize: number) {
+  function handlePageSizeChange(nextValue: string) {
+    if (nextValue === PAGE_SIZE_AUTO) {
+      setPageSizeMode(PAGE_SIZE_AUTO);
+      setPageSize(getAutoPageSize(typeof window === 'undefined' ? undefined : window.innerHeight));
+      setTabPages({ platform: 1, custom: 1, public: 1 });
+      return;
+    }
+
+    const nextPageSize = Number(nextValue);
+    setPageSizeMode(nextValue);
     setPageSize(nextPageSize);
     setTabPages({ platform: 1, custom: 1, public: 1 });
   }
@@ -473,8 +528,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
   const pagedCustomSnapshots = filteredCustomSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
   const pagedPublicSnapshots = filteredPublicSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
 
-  const customCollectedImageIds = buildCollectedImageIdSet(customScope);
-  const publicCollectedImageIds = buildCollectedImageIdSet(publicScope);
+  const collectedImageIds = buildCollectedImageIdSet(platformAssets);
 
   function renderPlatformRows(items: PlatformImageAsset[]) {
     if (items.length === 0) {
@@ -491,29 +545,29 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
         <article
           key={asset.id}
           aria-label={`${asset.displayName} ${asset.imageId}`}
-          className="template-workbench-row image-center-row"
+          className="range-workbench-row image-center-row"
         >
-          <div className="template-workbench-column-cell image-center-main-cell">
+          <div className="range-workbench-main image-center-main-cell">
             <strong>{asset.displayName}</strong>
             <span className="image-center-row-meta">来源：{asset.sourceScope === 'custom' ? '阿里云自定义镜像' : '阿里云公共镜像'}</span>
           </div>
-          <div className="template-workbench-column-cell">
+          <div className="range-workbench-created-at image-center-secondary-cell">
             <span>{asset.imageId}</span>
           </div>
-          <div className="template-workbench-column-cell">
+          <div className="range-workbench-status-cell image-center-status-cell">
             <span className={`template-workbench-status-pill ${asset.enabled ? 'is-published' : 'is-draft'}`}>
               {asset.enabled ? '已启用' : '已禁用'}
             </span>
           </div>
-          <div className="template-workbench-column-cell image-center-actions-cell">
-            <button type="button" disabled={isPending} aria-label={`重命名 ${asset.displayName}`} onClick={() => void handleRenamePlatformAsset(asset)}>
+          <div className="range-workbench-actions image-center-actions-cell">
+            <button type="button" disabled={isPending} aria-label={`重命名 ${asset.displayName}`} onClick={() => openRenameDialog(asset)}>
               重命名
             </button>
             <button type="button" disabled={isPending} aria-label={`${asset.enabled ? '禁用' : '启用'} ${asset.displayName}`} onClick={() => void handleTogglePlatformAsset(asset)}>
               {asset.enabled ? '禁用' : '启用'}
             </button>
-            <button type="button" disabled={isPending} aria-label={`移出目录 ${asset.displayName}`} onClick={() => void handleRemovePlatformAsset(asset)}>
-              移出目录
+            <button type="button" disabled={isPending} aria-label={`删除 ${asset.displayName}`} onClick={() => setConfirmState({ type: 'remove-platform', asset })}>
+              删除
             </button>
           </div>
         </article>
@@ -526,8 +580,6 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
       return <div className="template-workbench-empty image-center-empty-state">当前没有可展示的云镜像。</div>;
     }
 
-    const collectedImageIds = scope === 'custom' ? customCollectedImageIds : publicCollectedImageIds;
-
     return snapshots.map((snapshot) => {
       const isCollected = collectedImageIds.has(snapshot.imageId);
       const collectActionKey = `collect:${snapshot.scope}:${snapshot.imageId}`;
@@ -539,35 +591,35 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
         <article
           key={snapshot.id}
           aria-label={`${snapshot.sourceImageName} ${snapshot.imageId}`}
-          className="template-workbench-row image-center-row"
+          className="range-workbench-row image-center-row"
         >
-          <div className="template-workbench-column-cell image-center-main-cell">
+          <div className="range-workbench-main image-center-main-cell">
             <strong>{snapshot.sourceImageName}</strong>
             <span className="image-center-row-meta">平台：{snapshot.platform || '-'}</span>
           </div>
-          <div className="template-workbench-column-cell">
+          <div className="range-workbench-created-at image-center-secondary-cell">
             <span>{snapshot.imageId}</span>
           </div>
-          <div className="template-workbench-column-cell">
+          <div className="range-workbench-status-cell image-center-status-cell image-center-status-text">
             <span>{formatImageStatus(snapshot)}</span>
           </div>
-          <div className="template-workbench-column-cell image-center-actions-cell">
+          <div className="range-workbench-actions image-center-actions-cell">
             <button
               type="button"
               disabled={isCollected || isCollectPending}
-              aria-label={`${isCollected ? '已收录' : '收录到目录'} ${snapshot.sourceImageName}`}
+              aria-label={`${isCollected ? '已收录' : '收录到平台'} ${snapshot.sourceImageName}`}
               onClick={() => void handleCollectSnapshot(snapshot)}
             >
-              {isCollected ? '已收录' : '收录到目录'}
+              {isCollected ? '已收录' : '收录到平台'}
             </button>
             {scope === 'custom' ? (
               <button
                 type="button"
                 disabled={isDeletePending}
-                aria-label={`删除云上镜像 ${snapshot.sourceImageName}`}
-                onClick={() => void handleDeleteCustomSnapshot(snapshot)}
+                aria-label={`删除 ${snapshot.sourceImageName}`}
+                onClick={() => setConfirmState({ type: 'delete-custom', snapshot })}
               >
-                删除云上镜像
+                删除
               </button>
             ) : null}
           </div>
@@ -581,36 +633,43 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
 
   return (
     <div className="admin-screen admin-workbench-screen image-center-screen">
-      <section className="template-workbench-shell">
-        <div className="template-workbench-controls image-center-controls">
-          <div className="template-workbench-segmented image-center-tabs" role="tablist" aria-label="镜像中心视图切换">
-            <button type="button" aria-pressed={activeTab === 'platform'} onClick={() => setActiveTab('platform')}>
-              平台收录镜像
-            </button>
-            <button type="button" aria-pressed={activeTab === 'custom'} onClick={() => setActiveTab('custom')}>
-              阿里云自定义镜像
-            </button>
-            <button type="button" aria-pressed={activeTab === 'public'} onClick={() => setActiveTab('public')}>
-              阿里云公共镜像
-            </button>
+      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+
+      <section>
+        <article className="admin-workbench-panel range-workbench-shell">
+          <div className="template-workbench-list-header range-workbench-header">
+            <div className="template-workbench-list-header-copy">
+              <h2>镜像中心</h2>
+            </div>
           </div>
 
-          <div className="template-workbench-search-grid">
-            <label className="template-workbench-search-field">
-              <span className="sr-only">镜像名搜索</span>
-              <input
-                aria-label="筛选镜像名"
-                value={searchName}
-                onChange={(event) => setSearchName(event.target.value)}
-                placeholder="搜索镜像名或镜像 ID"
-              />
-            </label>
+          <div className="template-workbench-controls range-workbench-controls image-center-controls">
+            <div className="template-workbench-search-grid">
+              <label className="template-workbench-search-field">
+                <span className="sr-only">镜像名搜索</span>
+                <input
+                  aria-label="筛选镜像名"
+                  value={searchName}
+                  onChange={(event) => setSearchName(event.target.value)}
+                  placeholder="搜索镜像名或镜像 ID"
+                />
+              </label>
+            </div>
+
+            <div className="template-workbench-segmented range-workbench-segmented image-center-tabs" role="tablist" aria-label="镜像中心视图切换">
+              <button type="button" aria-pressed={activeTab === 'platform'} onClick={() => setActiveTab('platform')}>
+                平台收录镜像
+              </button>
+              <button type="button" aria-pressed={activeTab === 'custom'} onClick={() => setActiveTab('custom')}>
+                阿里云自定义镜像
+              </button>
+              <button type="button" aria-pressed={activeTab === 'public'} onClick={() => setActiveTab('public')}>
+                阿里云公共镜像
+              </button>
+            </div>
           </div>
-        </div>
 
-        {statusMessage ? <p className="admin-empty">{statusMessage}</p> : null}
-
-        <div className="template-workbench-list image-center-list">
+          <div className={`template-workbench-list image-center-list image-center-list--${activeTab}`}>
           <div className="template-workbench-list-header">
             <div className="template-workbench-list-header-copy">
               <h2>{activeTabTitle}</h2>
@@ -631,7 +690,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
             </div>
           </div>
 
-          <div className="image-center-column-head" aria-hidden="true">
+          <div className="range-workbench-column-head image-center-column-head" aria-hidden="true">
             <div className="template-workbench-column-cell">
               <strong>镜像名</strong>
             </div>
@@ -655,9 +714,10 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
           <div className="image-center-pagination" aria-label={`${activeTabTitle} 分页`}>
             <label className="image-center-pagination-size">
               <span>每页条数</span>
-              <select aria-label="每页条数" value={String(pageSize)} onChange={(event) => handlePageSizeChange(Number(event.target.value))}>
-                {PAGE_SIZE_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
+              <select aria-label="每页条数" value={pageSizeMode} onChange={(event) => handlePageSizeChange(event.target.value)}>
+                <option value={PAGE_SIZE_AUTO}>自动</option>
+                {MANUAL_PAGE_SIZE_OPTIONS.map((option) => (
+                  <option key={option} value={String(option)}>
                     {option} 条
                   </option>
                 ))}
@@ -705,7 +765,71 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
               第 {activePagination.page} / {activePagination.totalPages} 页
             </span>
           </div>
-        </div>
+          </div>
+
+          {renamingAsset ? (
+            <ImageCenterDialog title="编辑镜像名称">
+              <div className="template-workbench-dialog-grid">
+                <label>
+                  <span>镜像名</span>
+                  <input aria-label="镜像名" value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} />
+                </label>
+              </div>
+              <div className="template-workbench-dialog-actions">
+                <button type="button" disabled={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)} onClick={() => void handleRenamePlatformAsset()}>
+                  保存信息
+                </button>
+                <button type="button" disabled={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)} onClick={closeRenameDialog}>
+                  取消编辑
+                </button>
+              </div>
+            </ImageCenterDialog>
+          ) : null}
+
+          {confirmState?.type === 'remove-platform' ? (
+            <ImageCenterDialog title="确认删除镜像">
+              <p className="template-workbench-confirm-copy">
+                删除“{confirmState.asset.displayName}”后会将其移出平台收录目录，但不会删除阿里云上的原始镜像。
+              </p>
+              <div className="template-workbench-dialog-actions">
+                <button
+                  type="button"
+                  disabled={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)}
+                  onClick={() => void handleRemovePlatformAsset(confirmState.asset)}
+                >
+                  确认删除
+                </button>
+                <button type="button" disabled={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)} onClick={closeConfirmDialog}>
+                  取消
+                </button>
+              </div>
+            </ImageCenterDialog>
+          ) : null}
+
+          {confirmState?.type === 'delete-custom' ? (
+            <ImageCenterDialog title="确认删除阿里云自定义镜像">
+              <p className="template-workbench-confirm-copy">
+                即将删除阿里云上的自定义镜像“{confirmState.snapshot.sourceImageName}”，此操作会影响当前账号下该镜像的后续使用。
+              </p>
+              <div className="template-workbench-dialog-actions">
+                <button
+                  type="button"
+                  disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
+                  onClick={() => void handleDeleteCustomSnapshot(confirmState.snapshot)}
+                >
+                  确认删除
+                </button>
+                <button
+                  type="button"
+                  disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
+                  onClick={closeConfirmDialog}
+                >
+                  取消
+                </button>
+              </div>
+            </ImageCenterDialog>
+          ) : null}
+        </article>
       </section>
     </div>
   );

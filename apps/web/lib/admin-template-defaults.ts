@@ -4,54 +4,28 @@ export const DEFAULT_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-ent
 
 export function createDefaultEnterpriseTopologySpec(): RangeTemplateTopologySpec {
   return {
-    vpcCidr: '10.70.0.0/16',
+    vpcCidr: '10.0.0.0/16',
     networkZones: [
       {
-        key: 'dmz',
-        name: 'DMZ',
-        purpose: 'public-entry',
-        cidr: '10.70.10.0/24',
+        key: 'core',
+        name: 'Core Switch',
+        purpose: 'business-zone',
+        cidr: '10.0.0.0/24',
         isPublicEntry: true,
-      },
-      {
-        key: 'office',
-        name: 'Office',
-        purpose: 'user-workstations',
-        cidr: '10.70.20.0/24',
-      },
-      {
-        key: 'server',
-        name: 'Server',
-        purpose: 'application-servers',
-        cidr: '10.70.30.0/24',
       },
     ],
     hosts: [
       {
-        key: 'dmz-entry',
-        name: 'DMZ Entry',
-        zoneKey: 'dmz',
+        key: 'ecs-core-1',
+        name: '业务 ECS',
+        zoneKey: 'core',
         role: 'entry',
-        privateIp: '10.70.10.10',
+        privateIp: '10.0.0.10',
         exposePublic: true,
-      },
-      {
-        key: 'office-client',
-        name: 'Office Client',
-        zoneKey: 'office',
-        role: 'workstation',
-        privateIp: '10.70.20.10',
-      },
-      {
-        key: 'server-app',
-        name: 'Server App',
-        zoneKey: 'server',
-        role: 'app',
-        privateIp: '10.70.30.10',
       },
     ],
     publicEntry: {
-      hostKey: 'dmz-entry',
+      hostKey: 'ecs-core-1',
       protocols: [
         { protocol: 'ssh', port: 22 },
         { protocol: 'http', port: 80 },
@@ -60,7 +34,7 @@ export function createDefaultEnterpriseTopologySpec(): RangeTemplateTopologySpec
     executionPolicies: {
       allowSshIngress: true,
       allowHttpIngress: true,
-      enableSnatOnDemand: false,
+      enableRouterEgress: true,
     },
   };
 }

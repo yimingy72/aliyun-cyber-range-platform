@@ -4,96 +4,419 @@ import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
+import { PrismaService } from '../src/database/prisma.service';
+
+const MASKED_SECRET = '********';
+const SYSTEM_CONFIG_ROW_ID = 'default';
+
+type PersistedSystemCloudConfigRow = {
+  id: string;
+  provider: string;
+  defaultRegion: string;
+  defaultZoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function seedAdminEnv() {
+  process.env.ADMIN_USERNAME = 'admin';
+  process.env.ADMIN_PASSWORD = 'change-me';
+  process.env.ADMIN_TOKEN = 'dev-admin-token';
+}
+
+function seedAliyunEnv() {
+  process.env.ALICLOUD_REGION = 'cn-hangzhou';
+  process.env.ALICLOUD_ZONE_ID = 'cn-hangzhou-h';
+  process.env.ALICLOUD_ACCESS_KEY = 'test-ak';
+  process.env.ALICLOUD_SECRET_KEY = 'test-sk';
+}
+
+function clearAliyunEnv() {
+  delete process.env.ALICLOUD_REGION;
+  delete process.env.ALICLOUD_ZONE_ID;
+  delete process.env.ALICLOUD_ACCESS_KEY;
+  delete process.env.ALICLOUD_SECRET_KEY;
+}
+
+function createFakePrismaService() {
+  let row: PersistedSystemCloudConfigRow | null = null;
+
+  return {
+    systemCloudConfig: {
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
+        if (!row || row.id !== where.id) {
+          return null;
+        }
+
+        return { ...row };
+      }),
+      upsert: jest.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Omit<PersistedSystemCloudConfigRow, 'createdAt' | 'updatedAt'>;
+          update: Partial<PersistedSystemCloudConfigRow>;
+        }) => {
+          if (row && row.id === where.id) {
+            row = {
+              ...row,
+              ...update,
+              updatedAt: new Date(),
+            };
+          } else {
+            row = {
+              ...create,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+          }
+
+          return { ...row };
+        },
+      ),
+    },
+  };
+}
+
+function createJsonResponse(payload: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: jest.fn().mockResolvedValue(payload),
+  } as unknown as Response;
+}
+
+async function createApp(prismaOverride?: ReturnType<typeof createFakePrismaService>) {
+  const moduleBuilder = Test.createTestingModule({
+    imports: [AppModule],
+  });
+
+  if (prismaOverride) {
+    moduleBuilder.overrideProvider(PrismaService).useValue(prismaOverride);
+  }
+
+  const moduleRef = await moduleBuilder.compile();
+  const app = moduleRef.createNestApplication();
+  configureApp(app);
+  await app.init();
+
+  return app;
+}
 
 describe('Admin system config', () => {
-  let app: INestApplication;
   const originalEnv = { ...process.env };
+  const originalFetch = global.fetch;
 
-  beforeAll(async () => {
-    process.env.ADMIN_USERNAME = 'admin';
-    process.env.ADMIN_PASSWORD = 'change-me';
-    process.env.ADMIN_TOKEN = 'dev-admin-token';
-    process.env.ALICLOUD_REGION = 'cn-hangzhou';
-    process.env.ALICLOUD_ZONE_ID = 'cn-hangzhou-h';
-    process.env.RANGE_PROVISIONER_MODE = 'dry-run';
-    process.env.OPENTOFU_INSTANCE_TYPE = 'auto';
-    process.env.OPENTOFU_INSTANCE_TYPE_PREFERENCES = 'ecs.t6-c1m2.large,ecs.c7.large';
-    process.env.OPENTOFU_IMAGE_ID = 'auto';
-    process.env.OPENTOFU_IMAGE_ID_PREFERENCES =
-      'ubuntu_24_04_x64_20G_alibase_20260615.vhd,ubuntu_22_04_x64_20G_alibase_20260615.vhd';
-    process.env.OPENTOFU_INSTANCE_PASSWORD = 'TempRangePassw0rd!';
-    process.env.ALICLOUD_PROVIDER_ZIP_PATH = '/tmp/provider.zip';
-    process.env.ALICLOUD_ACCESS_KEY = 'test-ak';
-    process.env.ALICLOUD_SECRET_KEY = 'test-sk';
-
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleRef.createNestApplication();
-    configureApp(app);
-    await app.init();
-  });
-
-  afterAll(async () => {
+  afterEach(async () => {
     process.env = originalEnv;
-    await app.close();
+    global.fetch = originalFetch;
   });
 
-  it('returns the current cloud configuration snapshot', async () => {
+  it('returns only the cloud configuration fields used by the new admin UI', async () => {
+    seedAdminEnv();
+    seedAliyunEnv();
+    const app = await createApp(createFakePrismaService());
+
     const response = await request(app.getHttpServer())
       .get('/admin/system-config')
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
     expect(response.body).toEqual({
-      region: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      provisionerMode: 'dry-run',
-      instanceTypeStrategy: 'auto',
-      instanceTypePreferences: ['ecs.t6-c1m2.large', 'ecs.c7.large'],
-      imageStrategy: 'auto',
-      imageIdPreferences: [
-        'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
-      ],
-      imageId: 'auto',
-      instancePasswordConfigured: true,
-      providerZipPathConfigured: true,
-      readyForPlan: true,
-      checks: [
-        expect.objectContaining({ key: 'access_key', configured: true, required: true }),
-        expect.objectContaining({ key: 'secret_key', configured: true, required: true }),
-        expect.objectContaining({ key: 'region', configured: true, required: true }),
-        expect.objectContaining({ key: 'zone_id', configured: true, required: true }),
-        expect.objectContaining({ key: 'image_id', configured: true, required: true }),
-        expect.objectContaining({ key: 'instance_password', configured: true, required: true }),
-        expect.objectContaining({ key: 'provider_zip_path', configured: true, required: false }),
-      ],
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-hangzhou',
+      defaultZoneId: 'cn-hangzhou-h',
+      accessKeyId: 'test-ak',
+      accessKeySecret: MASKED_SECRET,
     });
+
+    await app.close();
   });
 
-  it('marks plan readiness as false when required OpenTofu inputs are missing', async () => {
-    delete process.env.OPENTOFU_IMAGE_ID;
-    delete process.env.OPENTOFU_IMAGE_ID_PREFERENCES;
-    delete process.env.OPENTOFU_INSTANCE_PASSWORD;
-    delete process.env.ALICLOUD_PROVIDER_ZIP_PATH;
+  it('persists only the cloud configuration fields used by the new admin UI', async () => {
+    seedAdminEnv();
+    seedAliyunEnv();
+    const app = await createApp(createFakePrismaService());
 
     const response = await request(app.getHttpServer())
+      .patch('/admin/system-config')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        provider: 'alibaba_cloud',
+        defaultRegion: 'cn-beijing',
+        defaultZoneId: 'cn-beijing-k',
+        accessKeyId: 'LTAI-updated',
+        accessKeySecret: 'updated-secret',
+      })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-beijing',
+      defaultZoneId: 'cn-beijing-k',
+      accessKeyId: 'LTAI-updated',
+      accessKeySecret: MASKED_SECRET,
+    });
+
+    const snapshot = await request(app.getHttpServer())
       .get('/admin/system-config')
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
-    expect(response.body.readyForPlan).toBe(false);
-    expect(response.body.imageId).toBe('unset');
-    expect(response.body.instancePasswordConfigured).toBe(false);
-    expect(response.body.providerZipPathConfigured).toBe(false);
-    expect(response.body.checks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: 'image_id', configured: false, required: true }),
-        expect.objectContaining({ key: 'instance_password', configured: false, required: true }),
-        expect.objectContaining({ key: 'provider_zip_path', configured: false, required: false }),
-      ]),
-    );
+    expect(snapshot.body).toEqual(response.body);
+
+    await app.close();
+  });
+
+  it('persists cloud config across app reload boundaries', async () => {
+    seedAdminEnv();
+    clearAliyunEnv();
+    const prismaOverride = createFakePrismaService();
+
+    const firstApp = await createApp(prismaOverride);
+
+    await request(firstApp.getHttpServer())
+      .patch('/admin/system-config')
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        provider: 'alibaba_cloud',
+        defaultRegion: 'cn-shanghai',
+        defaultZoneId: 'cn-shanghai-b',
+        accessKeyId: 'reload-ak',
+        accessKeySecret: 'reload-secret',
+      })
+      .expect(200);
+
+    await firstApp.close();
+
+    clearAliyunEnv();
+
+    const secondApp = await createApp(prismaOverride);
+
+    const response = await request(secondApp.getHttpServer())
+      .get('/admin/system-config')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(response.body).toEqual({
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-shanghai',
+      defaultZoneId: 'cn-shanghai-b',
+      accessKeyId: 'reload-ak',
+      accessKeySecret: MASKED_SECRET,
+    });
+
+    await secondApp.close();
+
+    expect(prismaOverride.systemCloudConfig.findUnique).toHaveBeenCalledWith({
+      where: { id: SYSTEM_CONFIG_ROW_ID },
+    });
+  });
+
+  it('returns exact available x86 postpaid instance types for the configured zone', async () => {
+    seedAdminEnv();
+    seedAliyunEnv();
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                RegionId: 'cn-hangzhou',
+                ZoneId: 'cn-hangzhou-h',
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [
+                          { Status: 'Available', Value: 'ecs.c7.large' },
+                          { Status: 'Available', Value: 'ecs.g7.large' },
+                          { Status: 'SoldOut', Value: 'ecs.c8y.small' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          TotalCount: 3,
+          PageNumber: 1,
+          PageSize: 100,
+          InstanceTypes: {
+            InstanceType: [
+              {
+                InstanceTypeId: 'ecs.c7.large',
+                CpuCoreCount: 2,
+                MemorySize: 4,
+                InstanceTypeFamily: 'ecs.c7',
+                Generation: 'ecs-7',
+                CpuArchitecture: 'X86',
+              },
+              {
+                InstanceTypeId: 'ecs.g7.large',
+                CpuCoreCount: 2,
+                MemorySize: 4,
+                InstanceTypeFamily: 'ecs.g7',
+                Generation: 'ecs-7',
+                CpuArchitecture: 'X86',
+              },
+              {
+                InstanceTypeId: 'ecs.c8y.small',
+                CpuCoreCount: 1,
+                MemorySize: 2,
+                InstanceTypeFamily: 'ecs.c8y',
+                Generation: 'ecs-8',
+                CpuArchitecture: 'ARM',
+              },
+            ],
+          },
+        }),
+      );
+    global.fetch = fetchMock as typeof global.fetch;
+    const app = await createApp(createFakePrismaService());
+
+    const response = await request(app.getHttpServer())
+      .get('/admin/system-config/instance-type-availability?cpu=2&memory=4')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(response.body).toEqual({
+      cpu: 2,
+      memory: 4,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [
+        {
+          instanceTypeId: 'ecs.c7.large',
+          cpu: 2,
+          memoryGiB: 4,
+          family: 'ecs.c7',
+          generation: 'ecs-7',
+          architecture: 'X86',
+        },
+        {
+          instanceTypeId: 'ecs.g7.large',
+          cpu: 2,
+          memoryGiB: 4,
+          family: 'ecs.g7',
+          generation: 'ecs-7',
+          architecture: 'X86',
+        },
+      ],
+      warning: null,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('Action=DescribeAvailableResource');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('Action=DescribeInstanceTypes');
+
+    await app.close();
+  });
+
+  it('excludes arm-only exact matches and returns a warning when no exact x86 postpaid spec is available', async () => {
+    seedAdminEnv();
+    seedAliyunEnv();
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                RegionId: 'cn-hangzhou',
+                ZoneId: 'cn-hangzhou-h',
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [
+                          { Status: 'Available', Value: 'ecs.c8y.small' },
+                          { Status: 'Available', Value: 'ecs.c7.large' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          TotalCount: 2,
+          PageNumber: 1,
+          PageSize: 100,
+          InstanceTypes: {
+            InstanceType: [
+              {
+                InstanceTypeId: 'ecs.c8y.small',
+                CpuCoreCount: 1,
+                MemorySize: 2,
+                InstanceTypeFamily: 'ecs.c8y',
+                Generation: 'ecs-8',
+                CpuArchitecture: 'ARM',
+              },
+              {
+                InstanceTypeId: 'ecs.c7.large',
+                CpuCoreCount: 2,
+                MemorySize: 4,
+                InstanceTypeFamily: 'ecs.c7',
+                Generation: 'ecs-7',
+                CpuArchitecture: 'X86',
+              },
+            ],
+          },
+        }),
+      );
+    global.fetch = fetchMock as typeof global.fetch;
+    const app = await createApp(createFakePrismaService());
+
+    const response = await request(app.getHttpServer())
+      .get('/admin/system-config/instance-type-availability?cpu=1&memory=2')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(response.body).toEqual({
+      cpu: 1,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: false,
+      matches: [],
+      warning: '当前默认可用区 cn-hangzhou-h 没有精确匹配 1C2G 的 X86 按量付费实例规格。',
+    });
+
+    await app.close();
+  });
+
+  it('rejects invalid instance type availability query params', async () => {
+    seedAdminEnv();
+    seedAliyunEnv();
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as typeof global.fetch;
+    const app = await createApp(createFakePrismaService());
+
+    const response = await request(app.getHttpServer())
+      .get('/admin/system-config/instance-type-availability?cpu=0&memory=abc')
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(400);
+
+    expect(response.body.message).toBe('cpu 和 memory 必须是大于 0 的整数');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await app.close();
   });
 });

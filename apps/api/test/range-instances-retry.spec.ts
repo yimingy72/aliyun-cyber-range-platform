@@ -22,8 +22,6 @@ describe('RangeInstancesService retry flow', () => {
       provisioningWorkerService as never,
     );
 
-    const competition = await repository.createCompetition({ name: 'Retry Competition' });
-    const team = await repository.createTeam({ competitionId: competition.id, name: 'Retry Team' });
     const template = await repository.createRangeTemplate({
       name: 'Retry Template',
       slug: 'retry-template-service-spec',
@@ -47,8 +45,7 @@ describe('RangeInstancesService retry flow', () => {
     await repository.publishRangeTemplate(template.id);
 
     const instance = await repository.createRangeInstance({
-      competitionId: competition.id,
-      teamId: team.id,
+      name: '重试实例',
       templateId: template.id,
       status: 'create_failed',
       allocatedCidr: '10.90.0.0/16',

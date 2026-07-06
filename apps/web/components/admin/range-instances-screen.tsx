@@ -1,11 +1,11 @@
 'use client';
 
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import {
   AdminApiError,
-  createRangeInstance,
+  deleteRangeInstance,
   fetchAdminBootstrap,
   fetchProvisionJobDetail,
   fetchRangeInstanceDetail,
@@ -16,7 +16,6 @@ import type {
   ProvisionJob,
   ProvisionJobStep,
   RangeInstance,
-  RangeInstanceCreateInput,
   RangeInstanceDetail,
 } from '../../lib/admin-types';
 import { useAdminSession } from './use-admin-session';
@@ -27,7 +26,6 @@ type RangeInstancesScreenProps = {
 };
 
 type ExtendedRangeInstance = RangeInstance & {
-  competitionId?: string | null;
   templateId?: string | null;
 };
 
@@ -50,40 +48,7 @@ type ExtendedProvisionJobStep = ProvisionJobStep & {
   finishedAt?: string | null;
 };
 
-type FilterState = {
-  competitionId: string;
-  teamId: string;
-  templateId: string;
-  status: string;
-  recoveryCategory: string;
-};
-
-type CreateInstanceFormState = {
-  competitionId: string;
-  teamId: string;
-  templateId: string;
-  expiresAt: string;
-};
-
-const TWO_COLUMN_LAYOUT = {
-  display: 'grid',
-  gap: '1.5rem',
-  gridTemplateColumns: 'minmax(0, 1.35fr) minmax(22rem, 1fr)',
-  alignItems: 'start',
-} as const;
-
-const FILTER_GRID = {
-  display: 'grid',
-  gap: '0.75rem',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))',
-} as const;
-
-const EMPTY_CREATE_FORM: CreateInstanceFormState = {
-  competitionId: '',
-  teamId: '',
-  templateId: '',
-  expiresAt: '',
-};
+type RangeListMode = 'active' | 'history';
 
 const ACTIVE_INSTANCE_STATUSES = new Set(['pending_create', 'creating', 'pending_destroy', 'destroying']);
 
@@ -169,10 +134,17 @@ function formatDateTime(value?: string | null) {
 
 function getTemplateLabel(template: AdminBootstrapData['rangeTemplates'][number] | undefined) {
   if (!template) {
-    return '未知模板';
+    return '未知靶场';
   }
 
   return template.name?.trim() || template.slug;
+}
+
+function getInstanceTemplateLabel(
+  instance: ExtendedRangeInstance | ExtendedRangeInstanceDetail,
+  template: AdminBootstrapData['rangeTemplates'][number] | undefined,
+) {
+  return template?.name?.trim() || instance.templateNameSnapshot?.trim() || '未知靶场';
 }
 
 function getActionLabels(instance: RangeInstance) {
@@ -209,108 +181,38 @@ function getCurrentStage(steps: ExtendedProvisionJobStep[]) {
   return '暂无';
 }
 
-function getLatestFailedStep(steps: ExtendedProvisionJobStep[]) {
-  return [...steps].reverse().find((step) => step.status === 'failed') ?? null;
+function formatObjectEntries(record?: Record<string, string> | null) {
+  if (!record || Object.keys(record).length === 0) {
+    return '暂无';
+  }
+
+  return Object.entries(record)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(' | ');
 }
 
-function getJobInsights(
-  job: ExtendedProvisionJob | null,
-  steps: ExtendedProvisionJobStep[],
-  accessEntry: RangeInstance['accessEntry'] | null | undefined,
-) {
-  const insights = new Set<string>();
-
-  if (job?.errorSummary) {
-    insights.add(`失败原因：${job.errorSummary}`);
+function getRecentJobLabel(job?: ExtendedProvisionJob | null) {
+  if (!job) {
+    return '暂无';
   }
 
-  if (accessEntry?.publicIp) {
-    insights.add(`公网入口：${accessEntry.publicIp}`);
-  }
-
-  for (const step of steps) {
-    if (step.message) {
-      insights.add(`步骤消息：${step.message}`);
-    }
-
-    const ipMatch = (step.stdoutExcerpt ?? step.stderrExcerpt ?? '').match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
-
-    if (ipMatch) {
-      insights.add(`日志 IP：${ipMatch[0]}`);
-    }
-  }
-
-  return Array.from(insights).slice(0, 4);
+  return `${job.jobType === 'destroy' ? '销毁' : '创建'} / ${getStatusLabel(job.status)}`;
 }
 
-function getRecoverySuggestions(job: ExtendedProvisionJob | null, steps: ExtendedProvisionJobStep[]) {
-  const suggestions = new Set<string>();
-  const combined = [job?.errorSummary, ...steps.flatMap((step) => [step.message, step.stderrExcerpt, step.stdoutExcerpt])]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-
-  if (!combined) {
-    return [] as string[];
+function getStatusTone(status: string) {
+  if (status === 'running' || status === 'succeeded') {
+    return 'success';
   }
 
-  if (
-    combined.includes('no saleable ecs instance type') ||
-    combined.includes('规格不可售') ||
-    combined.includes('instance type')
-  ) {
-    suggestions.add('建议动作：切换可用区或调整实例规格偏好后重试。');
+  if (status === 'create_failed' || status === 'destroy_failed' || status === 'failed') {
+    return 'danger';
   }
 
-  if (combined.includes('quota') || combined.includes('配额')) {
-    suggestions.add('建议动作：检查 EIP、ECS 或 VPC 配额是否足够。');
+  if (status === 'pending_create' || status === 'creating' || status === 'pending_destroy' || status === 'destroying' || status === 'pending') {
+    return 'warning';
   }
 
-  if (combined.includes('missing required opentofu setting') || combined.includes('access key')) {
-    suggestions.add('建议动作：检查阿里云凭证、区域和 Runner 环境变量配置。');
-  }
-
-  if (combined.includes('provider zip') || combined.includes('provider zip does not exist')) {
-    suggestions.add('建议动作：检查阿里云 Provider 包路径与 Runner 挂载。');
-  }
-
-  if (combined.includes('topology') || combined.includes('blueprint')) {
-    suggestions.add('建议动作：回到模板中心重新发布模板，确认蓝图编译产物完整。');
-  }
-
-  return Array.from(suggestions).slice(0, 3);
-}
-
-function getRecoveryCategoryLabel(category?: string | null) {
-  if (category === 'capacity') {
-    return '规格容量';
-  }
-
-  if (category === 'quota') {
-    return '资源配额';
-  }
-
-  if (category === 'credentials') {
-    return '云凭证配置';
-  }
-
-  if (category === 'provider_setup') {
-    return 'Provider / Runner 配置';
-  }
-
-  if (category === 'template_blueprint') {
-    return '模板蓝图';
-  }
-
-  return '未知';
-}
-
-function getActionButtonLabel(instance: RangeInstance, action: 'create' | 'destroy') {
-  if (action === 'create') {
-    return instance.status === 'create_failed' ? '重试创建' : '发起创建';
-  }
-
-  return instance.status === 'destroy_failed' ? '重试销毁' : '发起销毁';
+  return 'neutral';
 }
 
 function getActionTrigger(instance: RangeInstance, action: 'create' | 'destroy') {
@@ -325,18 +227,61 @@ function getActionTrigger(instance: RangeInstance, action: 'create' | 'destroy')
   return action;
 }
 
-function normalizeExpiresAtInput(value: string) {
-  if (!value) {
-    return undefined;
+function getInstanceDisplayName(instance: ExtendedRangeInstance) {
+  return instance.name?.trim() || instance.id;
+}
+
+function getInstanceCreatedAt(instance: ExtendedRangeInstance, recentJob?: ExtendedProvisionJob | null) {
+  return formatDateTime(instance.createdAt ?? recentJob?.startedAt ?? null);
+}
+
+function getInstanceActionLabel(instance: ExtendedRangeInstance) {
+  if (instance.status === 'running') {
+    return '关闭';
   }
 
-  const normalized = new Date(value);
-
-  if (Number.isNaN(normalized.getTime())) {
-    return undefined;
+  if (instance.status === 'destroy_failed') {
+    return '销毁';
   }
 
-  return normalized.toISOString();
+  if (instance.status === 'create_failed') {
+    return '删除';
+  }
+
+  return null;
+}
+
+function getEndedAtLabel(job?: ExtendedProvisionJob | null) {
+  return formatDateTime(job?.finishedAt ?? job?.startedAt ?? null);
+}
+
+function getDurationLabel(start?: string | null, end?: string | null) {
+  if (!start || !end) {
+    return '暂无';
+  }
+
+  const startedAt = new Date(start);
+  const endedAt = new Date(end);
+
+  if (Number.isNaN(startedAt.getTime()) || Number.isNaN(endedAt.getTime())) {
+    return '暂无';
+  }
+
+  const durationMs = endedAt.getTime() - startedAt.getTime();
+
+  if (durationMs <= 0) {
+    return '暂无';
+  }
+
+  const totalMinutes = Math.floor(durationMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0) {
+    return `${hours} 小时 ${minutes} 分钟`;
+  }
+
+  return `${minutes} 分钟`;
 }
 
 export function RangeInstancesScreen({
@@ -344,25 +289,21 @@ export function RangeInstancesScreen({
   pollIntervalMs = 2500,
 }: RangeInstancesScreenProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const session = useAdminSession();
   const [snapshot, setSnapshot] = useState<AdminBootstrapData | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<ExtendedRangeInstanceDetail | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
   const [selectedJobState, setSelectedJobState] = useState<SelectedJobState>({ job: null, steps: [] });
-  const [filters, setFilters] = useState<FilterState>({
-    competitionId: 'all',
-    teamId: 'all',
-    templateId: 'all',
-    status: 'all',
-    recoveryCategory: 'all',
-  });
-  const [createForm, setCreateForm] = useState<CreateInstanceFormState>(EMPTY_CREATE_FORM);
+  const [listMode, setListMode] = useState<RangeListMode>('active');
+  const [searchName, setSearchName] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
-  const [isCreatingInstance, setIsCreatingInstance] = useState(false);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
+  const [removedInstanceIds, setRemovedInstanceIds] = useState<string[]>([]);
   const detailRequestIdRef = useRef(0);
+  const autoOpenedInstanceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -420,57 +361,11 @@ export function RangeInstancesScreen({
     };
   }, [apiBaseUrl, router, session.isReady, session.token]);
 
-  const competitionsById = useMemo(() => {
-    return new Map((snapshot?.competitions ?? []).map((item) => [item.id, item]));
-  }, [snapshot]);
-
-  const competitions = snapshot?.competitions ?? [];
-  const teams = snapshot?.teams ?? [];
   const rangeTemplates = snapshot?.rangeTemplates ?? [];
-
-  const teamsById = useMemo(() => {
-    return new Map(teams.map((item) => [item.id, item]));
-  }, [teams]);
 
   const templatesById = useMemo(() => {
     return new Map(rangeTemplates.map((item) => [item.id, item]));
   }, [rangeTemplates]);
-
-  const resolvedCreateCompetitionId = useMemo(() => {
-    if (competitions.some((competition) => competition.id === createForm.competitionId)) {
-      return createForm.competitionId;
-    }
-
-    return competitions[0]?.id ?? '';
-  }, [competitions, createForm.competitionId]);
-
-  const createTeams = useMemo(() => {
-    if (!resolvedCreateCompetitionId) {
-      return teams;
-    }
-
-    return teams.filter((team) => team.competitionId === resolvedCreateCompetitionId);
-  }, [resolvedCreateCompetitionId, teams]);
-
-  const publishedTemplates = useMemo(() => {
-    return rangeTemplates.filter((template) => Boolean(template.currentPublishedVersionId));
-  }, [rangeTemplates]);
-
-  const resolvedCreateTeamId = useMemo(() => {
-    if (createTeams.some((team) => team.id === createForm.teamId)) {
-      return createForm.teamId;
-    }
-
-    return createTeams[0]?.id ?? '';
-  }, [createForm.teamId, createTeams]);
-
-  const resolvedCreateTemplateId = useMemo(() => {
-    if (publishedTemplates.some((template) => template.id === createForm.templateId)) {
-      return createForm.templateId;
-    }
-
-    return publishedTemplates[0]?.id ?? '';
-  }, [createForm.templateId, publishedTemplates]);
 
   const jobsByInstanceId = useMemo(() => {
     const map = new Map<string, ExtendedProvisionJob>();
@@ -484,60 +379,58 @@ export function RangeInstancesScreen({
     return map;
   }, [snapshot]);
 
-  const latestFailedStep = useMemo(() => {
-    return getLatestFailedStep(selectedJobState.steps);
-  }, [selectedJobState.steps]);
-
   const currentStage = useMemo(() => {
     return getCurrentStage(selectedJobState.steps);
   }, [selectedJobState.steps]);
 
-  const selectedJobInsights = useMemo(() => {
-    return getJobInsights(selectedJobState.job, selectedJobState.steps, selectedDetail?.accessEntry);
-  }, [selectedDetail?.accessEntry, selectedJobState.job, selectedJobState.steps]);
-
-  const recoverySuggestions = useMemo(() => {
-    return getRecoverySuggestions(selectedJobState.job, selectedJobState.steps);
-  }, [selectedJobState.job, selectedJobState.steps]);
-
   const visibleInstances = useMemo(() => {
-    return ((snapshot?.rangeInstances ?? []) as ExtendedRangeInstance[]).filter((instance) => {
-      if (filters.competitionId !== 'all' && (instance.competitionId ?? '') !== filters.competitionId) {
-        return false;
-      }
-
-      if (filters.teamId !== 'all' && instance.teamId !== filters.teamId) {
-        return false;
-      }
-
-      if (filters.templateId !== 'all' && (instance.templateId ?? '') !== filters.templateId) {
-        return false;
-      }
-
-      if (filters.status !== 'all' && instance.status !== filters.status) {
-        return false;
-      }
-
-      if (
-        filters.recoveryCategory !== 'all' &&
-        (instance.recoverySummary?.category ?? 'none') !== filters.recoveryCategory
-      ) {
-        return false;
-      }
-
-      return true;
-    });
-  }, [filters, snapshot]);
-
-  const recoveryCategories = useMemo(() => {
-    return Array.from(
-      new Set(
-        ((snapshot?.rangeInstances ?? []) as ExtendedRangeInstance[])
-          .map((instance) => instance.recoverySummary?.category)
-          .filter((value): value is string => Boolean(value)),
-      ),
+    return ((snapshot?.rangeInstances ?? []) as ExtendedRangeInstance[]).filter(
+      (instance) => !removedInstanceIds.includes(instance.id),
     );
-  }, [snapshot]);
+  }, [removedInstanceIds, snapshot]);
+  const activeInstances = useMemo(() => {
+    return visibleInstances.filter((instance) => instance.status !== 'destroyed');
+  }, [visibleInstances]);
+  const historyInstances = useMemo(() => {
+    return visibleInstances.filter((instance) => instance.status === 'destroyed');
+  }, [visibleInstances]);
+  const filteredActiveInstances = useMemo(() => {
+    const keyword = searchName.trim().toLowerCase();
+
+    if (!keyword) {
+      return activeInstances;
+    }
+
+    return activeInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
+  }, [activeInstances, searchName]);
+  const filteredHistoryInstances = useMemo(() => {
+    const keyword = searchName.trim().toLowerCase();
+
+    if (!keyword) {
+      return historyInstances;
+    }
+
+    return historyInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
+  }, [historyInstances, searchName]);
+  const visibleListInstances = listMode === 'history' ? filteredHistoryInstances : filteredActiveInstances;
+  const requestedInstanceId = searchParams.get('instanceId')?.trim() || null;
+
+  useEffect(() => {
+    if (listMode === 'active' && activeInstances.length === 0 && historyInstances.length > 0) {
+      setListMode('history');
+      return;
+    }
+
+    if (listMode === 'history' && historyInstances.length === 0 && activeInstances.length > 0) {
+      setListMode('active');
+    }
+  }, [activeInstances.length, historyInstances.length, listMode]);
+
+  function closeDetailDialog() {
+    setSelectedInstanceId(null);
+    setSelectedDetail(null);
+    setSelectedJobState({ job: null, steps: [] });
+  }
 
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstanceDetail | ExtendedRangeInstance) {
     setSnapshot((current) => {
@@ -565,6 +458,20 @@ export function RangeInstancesScreen({
       return {
         ...current,
         provisionJobs: [job, ...current.provisionJobs.filter((item) => item.id !== job.id)],
+      };
+    });
+  }
+
+  function removeInstanceFromSnapshot(instanceId: string) {
+    setSnapshot((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        rangeInstances: current.rangeInstances.filter((item) => item.id !== instanceId),
+        provisionJobs: current.provisionJobs.filter((item) => item.rangeInstanceId !== instanceId),
       };
     });
   }
@@ -651,76 +558,6 @@ export function RangeInstancesScreen({
     await refreshSelectedInstance(instanceId, { showLoading: true });
   }
 
-  async function handleCreateInstance(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!session.token) {
-      return;
-    }
-
-    const payload: RangeInstanceCreateInput = {
-      competitionId: resolvedCreateCompetitionId,
-      teamId: resolvedCreateTeamId,
-      templateId: resolvedCreateTemplateId,
-      expiresAt: normalizeExpiresAtInput(createForm.expiresAt),
-    };
-
-    if (!payload.competitionId || !payload.teamId || !payload.templateId) {
-      setErrorMessage('请先选择比赛、队伍和靶场模板。');
-      return;
-    }
-
-    setErrorMessage(null);
-    setIsCreatingInstance(true);
-
-    try {
-      const created = (await createRangeInstance(
-        apiBaseUrl,
-        session.token,
-        payload,
-      )) as ExtendedRangeInstanceDetail;
-      const job = (await triggerRangeAction(
-        apiBaseUrl,
-        session.token,
-        created.id,
-        'create',
-        'admin',
-      )) as ExtendedProvisionJob;
-      const pendingDetail: ExtendedRangeInstanceDetail = {
-        ...created,
-        status: 'pending_create',
-        lastJobId: job.id,
-      };
-
-      upsertInstanceInSnapshot(pendingDetail);
-      setSelectedInstanceId(created.id);
-      setSelectedDetail(pendingDetail);
-      setSelectedJobState({ job, steps: [] });
-      setFilters((current) => ({
-        ...current,
-        competitionId: current.competitionId === 'all' ? current.competitionId : created.competitionId,
-        teamId: current.teamId === 'all' ? current.teamId : created.teamId,
-        templateId: current.templateId === 'all' ? current.templateId : created.templateId,
-      }));
-      setCreateForm((current) => ({
-        ...current,
-        expiresAt: '',
-      }));
-
-      void refreshSelectedInstance(created.id, { background: true });
-    } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
-        session.logout();
-        router.replace('/admin/login');
-        return;
-      }
-
-      setErrorMessage('实例创建或启动失败，请检查比赛、队伍与模板发布状态后重试。');
-    } finally {
-      setIsCreatingInstance(false);
-    }
-  }
-
   async function handleTriggerAction(action: 'create' | 'destroy') {
     if (!session.token || !selectedDetail) {
       return;
@@ -773,6 +610,101 @@ export function RangeInstancesScreen({
     }
   }
 
+  async function handleListDestroyAction(instance: ExtendedRangeInstance) {
+    if (!session.token) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsSubmittingAction('destroy');
+
+    try {
+      const trigger = getActionTrigger(instance, 'destroy');
+      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger, 'admin')) as ExtendedProvisionJob;
+      const pendingStatus = 'pending_destroy';
+
+      upsertInstanceInSnapshot({
+        ...instance,
+        status: pendingStatus,
+        lastJobId: job.id,
+      });
+
+      if (selectedInstanceId === instance.id) {
+        setSelectedDetail((current) =>
+          current
+            ? {
+                ...current,
+                status: pendingStatus,
+                lastJobId: job.id,
+              }
+            : current,
+        );
+        setSelectedJobState({ job, steps: [] });
+      }
+
+      upsertJobInSnapshot(job);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('实例生命周期操作失败，请稍后重试。');
+    } finally {
+      setIsSubmittingAction(null);
+    }
+  }
+
+  async function handleDeleteFailedInstance(instance: ExtendedRangeInstance) {
+    if (!session.token) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsSubmittingAction('create');
+
+    try {
+      await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
+      setRemovedInstanceIds((current) => [...current, instance.id]);
+      removeInstanceFromSnapshot(instance.id);
+
+      if (selectedInstanceId === instance.id) {
+        closeDetailDialog();
+      }
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('删除失败实例失败，请稍后重试。');
+    } finally {
+      setIsSubmittingAction(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!requestedInstanceId) {
+      autoOpenedInstanceIdRef.current = null;
+      return;
+    }
+
+    if (autoOpenedInstanceIdRef.current === requestedInstanceId) {
+      return;
+    }
+
+    const targetInstance = visibleInstances.find((instance) => instance.id === requestedInstanceId);
+
+    if (!targetInstance) {
+      return;
+    }
+
+    autoOpenedInstanceIdRef.current = requestedInstanceId;
+    void handleViewDetail(requestedInstanceId);
+  }, [requestedInstanceId, visibleInstances]);
+
   useEffect(() => {
     if (!selectedDetail?.id || !selectedDetail.lastJobId || !ACTIVE_INSTANCE_STATUSES.has(selectedDetail.status)) {
       return;
@@ -786,14 +718,7 @@ export function RangeInstancesScreen({
   }, [apiBaseUrl, pollIntervalMs, refreshSelectedInstance, selectedDetail?.id, selectedDetail?.lastJobId, selectedDetail?.status]);
 
   if (!session.isReady) {
-    return (
-      <main className="admin-shell">
-        <section className="admin-panel admin-login-panel">
-          <h2>正在恢复管理员会话...</h2>
-          <p className="admin-empty">请稍候，正在同步后台登录状态。</p>
-        </section>
-      </main>
-    );
+    return null;
   }
 
   if (!session.token) {
@@ -807,406 +732,245 @@ export function RangeInstancesScreen({
     );
   }
 
-  if (isLoading && !snapshot) {
-    return (
-      <main className="admin-shell">
-        <section className="admin-panel admin-login-panel">
-          <h2>正在加载靶场实例...</h2>
-          <p className="admin-empty">请稍候，正在拉取实例列表与最近任务摘要。</p>
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <div className="admin-screen">
-      <section className="admin-hero">
-        <p className="auth-eyebrow">后台二级页</p>
-        <h1>靶场实例</h1>
-        <p className="admin-description">在双栏工作页中联动查看实例列表、入口信息、资源摘要和最近任务步骤。</p>
-      </section>
-
+    <div className="admin-screen admin-workbench-screen">
       {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
 
-      <section className="admin-panel">
-        <div className="admin-section-header">
-          <h2>创建实例</h2>
-          <span>按队伍分配独立靶场</span>
-        </div>
-
-        <form className="admin-form" onSubmit={(event) => void handleCreateInstance(event)}>
-          <label>
-            <span>所属比赛</span>
-            <select
-              aria-label="所属比赛"
-              value={resolvedCreateCompetitionId}
-              onChange={(event) =>
-                setCreateForm((current) => ({
-                  ...current,
-                  competitionId: event.target.value,
-                  teamId: '',
-                }))
-              }
-              disabled={isCreatingInstance || !competitions.length}
-            >
-              {competitions.length ? (
-                competitions.map((competition) => (
-                  <option key={competition.id} value={competition.id}>
-                    {competition.name}
-                  </option>
-                ))
-              ) : (
-                <option value="">暂无可选比赛</option>
-              )}
-            </select>
-          </label>
-
-          <label>
-            <span>所属队伍</span>
-            <select
-              aria-label="所属队伍"
-              value={resolvedCreateTeamId}
-              onChange={(event) => setCreateForm((current) => ({ ...current, teamId: event.target.value }))}
-              disabled={isCreatingInstance || !createTeams.length}
-            >
-              {createTeams.length ? (
-                createTeams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}
-                  </option>
-                ))
-              ) : (
-                <option value="">当前比赛下暂无队伍</option>
-              )}
-            </select>
-          </label>
-
-          <label>
-            <span>靶场模板</span>
-            <select
-              aria-label="靶场模板"
-              value={resolvedCreateTemplateId}
-              onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))}
-              disabled={isCreatingInstance || !publishedTemplates.length}
-            >
-              {publishedTemplates.length ? (
-                publishedTemplates.map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {getTemplateLabel(template)}
-                  </option>
-                ))
-              ) : (
-                <option value="">暂无已发布模板</option>
-              )}
-            </select>
-          </label>
-
-          <label>
-            <span>过期时间</span>
-            <input
-              aria-label="过期时间"
-              type="datetime-local"
-              value={createForm.expiresAt}
-              onChange={(event) => setCreateForm((current) => ({ ...current, expiresAt: event.target.value }))}
-              disabled={isCreatingInstance}
-            />
-          </label>
-
-          <div className="admin-inline-actions">
-            <button
-              type="submit"
-              disabled={
-                  isCreatingInstance ||
-                  !resolvedCreateCompetitionId ||
-                  !resolvedCreateTeamId ||
-                  !resolvedCreateTemplateId
-                }
-            >
-              {isCreatingInstance ? '创建并启动中...' : '创建并启动'}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="admin-panel">
-        <div className="admin-section-header">
-          <h2>筛选条件</h2>
-          <span>{visibleInstances.length} / {snapshot?.rangeInstances.length ?? 0}</span>
-        </div>
-
-        <div style={FILTER_GRID}>
-          <label>
-            <span>比赛筛选</span>
-            <select
-              aria-label="比赛筛选"
-              value={filters.competitionId}
-              onChange={(event) => setFilters((current) => ({ ...current, competitionId: event.target.value }))}
-            >
-              <option value="all">全部比赛</option>
-              {(snapshot?.competitions ?? []).map((competition) => (
-                <option key={competition.id} value={competition.id}>
-                  {competition.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            <span>队伍筛选</span>
-            <select
-              aria-label="队伍筛选"
-              value={filters.teamId}
-              onChange={(event) => setFilters((current) => ({ ...current, teamId: event.target.value }))}
-            >
-              <option value="all">全部队伍</option>
-              {(snapshot?.teams ?? []).map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            <span>模板筛选</span>
-            <select
-              aria-label="模板筛选"
-              value={filters.templateId}
-              onChange={(event) => setFilters((current) => ({ ...current, templateId: event.target.value }))}
-            >
-              <option value="all">全部模板</option>
-              {(snapshot?.rangeTemplates ?? []).map((template) => (
-                <option key={template.id} value={template.id}>
-                  {getTemplateLabel(template)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            <span>实例状态筛选</span>
-            <select
-              aria-label="实例状态筛选"
-              value={filters.status}
-              onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
-            >
-              <option value="all">全部状态</option>
-              {Array.from(new Set((snapshot?.rangeInstances ?? []).map((instance) => instance.status))).map((status) => (
-                <option key={status} value={status}>
-                  {getStatusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            <span>恢复分类筛选</span>
-            <select
-              aria-label="恢复分类筛选"
-              value={filters.recoveryCategory}
-              onChange={(event) => setFilters((current) => ({ ...current, recoveryCategory: event.target.value }))}
-            >
-              <option value="all">全部分类</option>
-              {recoveryCategories.map((category) => (
-                <option key={category} value={category}>
-                  {getRecoveryCategoryLabel(category)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </section>
-
-      <section style={TWO_COLUMN_LAYOUT}>
-        <article className="admin-panel">
-          <div className="admin-section-header">
-            <h2>实例列表</h2>
-            <span>列表 + 摘要</span>
+      <section>
+        <article className="admin-workbench-panel range-workbench-shell">
+          <div className="template-workbench-list-header range-workbench-header">
+            <div className="template-workbench-list-header-copy">
+              <h2>靶场实例</h2>
+            </div>
           </div>
 
-          {visibleInstances.length ? (
-            <ul className="admin-list">
-              {visibleInstances.map((instance) => {
-                const team = teamsById.get(instance.teamId);
-                const competitionId = instance.competitionId ?? team?.competitionId ?? '';
-                const competition = competitionsById.get(competitionId);
-                const template = templatesById.get(instance.templateId ?? '');
-                const recentJob = jobsByInstanceId.get(instance.id);
+          <div className="template-workbench-controls range-workbench-controls">
+            <div className="template-workbench-search-grid">
+              <label className="template-workbench-search-field">
+                <span className="sr-only">实例名搜索</span>
+                <input
+                  aria-label="筛选实例名"
+                  value={searchName}
+                  onChange={(event) => setSearchName(event.target.value)}
+                  placeholder="搜索实例名"
+                />
+              </label>
+            </div>
 
-                return (
-                  <li key={instance.id}>
-                    <div className="admin-list-copy">
-                      <strong>{instance.id}</strong>
-                      <span>队伍：{team?.name ?? instance.teamId}</span>
-                      <span>比赛：{competition?.name ?? competitionId ?? '暂无'}</span>
-                      <span>模板：{getTemplateLabel(template)}</span>
-                      <span>状态：{getStatusLabel(instance.status)}</span>
-                      <span>恢复分类：{getRecoveryCategoryLabel(instance.recoverySummary?.category)}</span>
-                      <span>
-                        公网入口：{instance.accessEntry?.publicIp ?? instance.accessEntry?.url ?? '暂无'}
-                      </span>
-                      <span>最近任务：{recentJob ? getStatusLabel(recentJob.status) : '暂无'}</span>
-                      <span>过期时间：{formatDateTime(instance.expiresAt)}</span>
-                      <span>错误摘要：{instance.errorSummary ?? '无'}</span>
-                    </div>
-                    <div className="admin-list-actions">
-                      <button type="button" onClick={() => void handleViewDetail(instance.id)}>
-                        查看实例 {instance.id}
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <div className="template-workbench-segmented range-workbench-segmented" role="tablist" aria-label="靶场实例视图切换">
+              <button type="button" aria-pressed={listMode === 'active'} onClick={() => setListMode('active')}>
+                实例列表
+              </button>
+              <button type="button" aria-pressed={listMode === 'history'} onClick={() => setListMode('history')}>
+                实例历史
+              </button>
+            </div>
+          </div>
+
+          {listMode === 'history' ? (
+            <div className="range-history-column-head">
+              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+              <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
+              <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
+              <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
+              <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
+            </div>
           ) : (
-            <p className="admin-empty">当前筛选条件下没有匹配的靶场实例。</p>
+            <div className="range-workbench-column-head">
+              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+              <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
+              <div className="template-workbench-column-cell"><strong>状态</strong></div>
+              <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
+              <div className="template-workbench-column-cell"><strong>操作</strong></div>
+            </div>
           )}
-        </article>
 
-        <article className="admin-panel">
-          <div className="admin-section-header">
-            <h2>实例详情</h2>
-            <span>{selectedInstanceId ?? '未选择'}</span>
-          </div>
+          {visibleListInstances.length ? (
+            listMode === 'history' ? (
+              <div className="range-history-rows">
+                {filteredHistoryInstances.map((instance) => {
+                  const template = templatesById.get(instance.templateId ?? '');
+                  const recentJob = jobsByInstanceId.get(instance.id);
+                  const endedAt = recentJob?.finishedAt ?? recentJob?.startedAt ?? null;
 
-          {isLoadingDetail ? (
-            <p className="admin-empty">正在加载实例详情...</p>
-          ) : selectedDetail ? (
-            <>
-              <div className="admin-list-copy">
-                <strong>实例基础信息</strong>
-                <span>实例 ID：{selectedDetail.id}</span>
-                <span>状态：{getStatusLabel(selectedDetail.status)}</span>
-                <span>比赛：{competitionsById.get(selectedDetail.competitionId)?.name ?? selectedDetail.competitionId}</span>
-                <span>队伍：{teamsById.get(selectedDetail.teamId)?.name ?? selectedDetail.teamId}</span>
-                <span>模板：{getTemplateLabel(templatesById.get(selectedDetail.templateId))}</span>
-                <span>过期时间：{formatDateTime(selectedDetail.expiresAt)}</span>
-                <span>分配网段：{selectedDetail.allocatedCidr ?? '暂无'}</span>
-                <span>错误摘要：{selectedDetail.errorSummary ?? '无'}</span>
+                  return (
+                    <article key={instance.id} className="range-history-row">
+                      <div className="range-workbench-main">
+                        <strong>{getInstanceDisplayName(instance)}</strong>
+                      </div>
+
+                      <div className="range-workbench-scenario">
+                        <strong>{getInstanceTemplateLabel(instance, template)}</strong>
+                      </div>
+
+                      <div className="range-history-time">
+                        <span>{formatDateTime(instance.createdAt)}</span>
+                      </div>
+
+                      <div className="range-history-time">
+                        <span>{getEndedAtLabel(recentJob)}</span>
+                      </div>
+
+                      <div className="range-history-time">
+                        <span>{getDurationLabel(instance.createdAt, endedAt)}</span>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
+            ) : (
+              <div className="range-workbench-rows">
+                {filteredActiveInstances.map((instance) => {
+                  const template = templatesById.get(instance.templateId ?? '');
+                  const recentJob = jobsByInstanceId.get(instance.id);
+                  const actionLabel = getInstanceActionLabel(instance);
 
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>公网入口详情</strong>
-                <span>角色：{selectedDetail.accessEntry?.hostRole ?? '暂无'}</span>
-                <span>公网 IP：{selectedDetail.accessEntry?.publicIp ?? '暂无'}</span>
-                <span>私网 IP：{selectedDetail.accessEntry?.privateIp ?? '暂无'}</span>
-                <span>SSH：{selectedDetail.accessEntry?.ssh ?? '暂无'}</span>
-                <span>URL：{selectedDetail.accessEntry?.url ?? '暂无'}</span>
-              </div>
+                  return (
+                    <article key={instance.id} className="range-workbench-row">
+                      <div className="range-workbench-main">
+                        <strong>{getInstanceDisplayName(instance)}</strong>
+                      </div>
 
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>资源摘要</strong>
-                <span>模式：{selectedDetail.resourceSummary?.mode ?? '暂无'}</span>
-                <span>VPC：{selectedDetail.resourceSummary?.vpcId ?? '暂无'}</span>
-                <span>网段：{selectedDetail.resourceSummary?.topologySpec?.vpcCidr ?? '暂无'}</span>
-              </div>
+                      <div className="range-workbench-scenario">
+                        <strong>{getInstanceTemplateLabel(instance, template)}</strong>
+                      </div>
 
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>最近一次任务</strong>
-                {selectedJobState.job ? (
-                  <>
-                    <span>任务 ID：{selectedJobState.job.id}</span>
-                    <span>类型：{selectedJobState.job.jobType}</span>
-                    <span>状态：{getStatusLabel(selectedJobState.job.status)}</span>
-                    <span>当前阶段：{currentStage}</span>
-                    <span>触发人：{selectedJobState.job.triggeredBy}</span>
-                    <span>开始时间：{formatDateTime(selectedJobState.job.startedAt)}</span>
-                    <span>结束时间：{formatDateTime(selectedJobState.job.finishedAt)}</span>
-                    <span>失败摘要：{selectedJobState.job.errorSummary ?? '无'}</span>
-                  </>
-                ) : (
-                  <span>暂无最近任务。</span>
-                )}
-              </div>
+                      <div className="range-workbench-status-cell">
+                        <span className={`admin-pill admin-pill-${getStatusTone(instance.status)}`}>{getStatusLabel(instance.status)}</span>
+                      </div>
 
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>运行洞察</strong>
-                {selectedJobInsights.length ? (
-                  selectedJobInsights.map((insight) => <span key={insight}>{insight}</span>)
-                ) : (
-                  <span>暂无可解析洞察。</span>
-                )}
-              </div>
+                      <div className="range-workbench-created-at">
+                        <span>{getInstanceCreatedAt(instance, recentJob)}</span>
+                      </div>
 
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>最近失败步骤</strong>
-                {latestFailedStep ? (
-                  <>
-                    <span>步骤：{latestFailedStep.stepName}</span>
-                    <span>状态：{getStatusLabel(latestFailedStep.status)}</span>
-                    <span>摘要：{getResolvedStepSummary(latestFailedStep)}</span>
-                    <span>错误输出：{latestFailedStep.stderrExcerpt ?? '暂无'}</span>
-                  </>
-                ) : (
-                  <span>暂无失败步骤。</span>
-                )}
+                      <div className="range-workbench-actions">
+                        <button type="button" onClick={() => void handleViewDetail(instance.id)}>
+                          查看详情
+                        </button>
+                        {actionLabel ? (
+                          <button
+                            type="button"
+                            disabled={isSubmittingAction !== null}
+                            onClick={() =>
+                              void (instance.status === 'create_failed'
+                                ? handleDeleteFailedInstance(instance)
+                                : handleListDestroyAction(instance))
+                            }
+                          >
+                            {isSubmittingAction !== null && selectedInstanceId === instance.id ? '处理中...' : actionLabel}
+                          </button>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
-
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>恢复建议</strong>
-                {selectedDetail.recoverySummary ? (
-                  <>
-                    <span>分类：{getRecoveryCategoryLabel(selectedDetail.recoverySummary.category)}</span>
-                    <span>级别：{selectedDetail.recoverySummary.severity === 'critical' ? '关键' : '提示'}</span>
-                    <span>摘要：{selectedDetail.recoverySummary.summary}</span>
-                    <span>可重试：{selectedDetail.recoverySummary.canRetry ? '是' : '否'}</span>
-                    {selectedDetail.recoverySummary.suggestions.map((suggestion) => <span key={suggestion}>{suggestion}</span>)}
-                  </>
-                ) : recoverySuggestions.length ? (
-                  recoverySuggestions.map((suggestion) => <span key={suggestion}>{suggestion}</span>)
-                ) : (
-                  <span>暂无恢复建议，建议进入任务详情查看完整时间线。</span>
-                )}
-              </div>
-
-              <div className="admin-list-copy" style={{ marginTop: '1rem' }}>
-                <strong>最近步骤日志</strong>
-                {selectedJobState.steps.length ? (
-                  selectedJobState.steps.slice(0, 5).map((step) => (
-                    <span key={step.id}>
-                      {step.stepName} / {getStatusLabel(step.status)} / {getResolvedStepSummary(step)}
-                    </span>
-                  ))
-                ) : (
-                  <span>暂无步骤日志。</span>
-                )}
-              </div>
-
-              <div className="admin-list-actions" style={{ marginTop: '1rem' }}>
-                {selectedJobState.job ? (
-                  <button
-                    type="button"
-                    disabled={isSubmittingAction !== null}
-                    onClick={() => router.push(`/admin/provision-jobs?jobId=${selectedJobState.job!.id}`)}
-                  >
-                    查看任务详情
-                  </button>
-                ) : null}
-                {getActionLabels(selectedDetail).includes('create') ? (
-                  <button
-                    type="button"
-                    disabled={isSubmittingAction !== null || selectedDetail.recoverySummary?.canRetry === false}
-                    onClick={() => void handleTriggerAction('create')}
-                  >
-                    {isSubmittingAction === 'create' ? '创建中...' : getActionButtonLabel(selectedDetail, 'create')}
-                  </button>
-                ) : null}
-                {getActionLabels(selectedDetail).includes('destroy') ? (
-                  <button
-                    type="button"
-                    disabled={isSubmittingAction !== null || selectedDetail.recoverySummary?.canRetry === false}
-                    onClick={() => void handleTriggerAction('destroy')}
-                  >
-                    {isSubmittingAction === 'destroy' ? '销毁中...' : getActionButtonLabel(selectedDetail, 'destroy')}
-                  </button>
-                ) : null}
-              </div>
-            </>
+            )
           ) : (
-            <p className="admin-empty">请选择一个实例查看基础信息、入口详情和最近任务。</p>
+            <div className="admin-workbench-empty">
+              <strong>{listMode === 'history' ? '当前还没有已回收实例' : '当前还没有可查看的靶场实例'}</strong>
+              <p>{listMode === 'history' ? '实例完成销毁后，会自动沉淀到这里。' : '实例会在靶场编排页生成后进入这里。'}</p>
+            </div>
           )}
         </article>
       </section>
+
+      {selectedInstanceId ? (
+        <div className="template-workbench-dialog-backdrop range-detail-dialog-backdrop" role="presentation" onClick={closeDetailDialog}>
+          <section
+            className="template-workbench-dialog range-detail-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="实例详情"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="template-workbench-dialog-header">
+              <h2>实例详情</h2>
+              <p>{selectedDetail?.name?.trim() || selectedInstanceId}</p>
+            </div>
+
+            {isLoadingDetail ? (
+              <div className="admin-workbench-empty">
+                <p>正在加载实例详情...</p>
+              </div>
+            ) : selectedDetail ? (
+              <div className="range-detail-body">
+                <div className="range-detail-section">
+                  <strong>实例基础信息</strong>
+                  <div className="admin-detail-grid">
+                    <span>实例名：{selectedDetail.name?.trim() || selectedDetail.id}</span>
+                    <span>实例 ID：{selectedDetail.id}</span>
+                    <span>状态：{getStatusLabel(selectedDetail.status)}</span>
+                    <span>靶场名：{getInstanceTemplateLabel(selectedDetail, templatesById.get(selectedDetail.templateId ?? ''))}</span>
+                    <span>创建时间：{formatDateTime(selectedDetail.createdAt ?? selectedJobState.job?.startedAt ?? null)}</span>
+                    <span>过期时间：{formatDateTime(selectedDetail.expiresAt)}</span>
+                    <span>错误摘要：{selectedDetail.errorSummary ?? '无'}</span>
+                  </div>
+                </div>
+
+                <div className="range-detail-section">
+                  <strong>公网入口详情</strong>
+                  <div className="admin-detail-grid">
+                    <span>角色：{selectedDetail.accessEntry?.hostRole ?? '暂无'}</span>
+                    <span>公网 IP：{selectedDetail.accessEntry?.publicIp ?? '暂无'}</span>
+                    <span>私网 IP：{selectedDetail.accessEntry?.privateIp ?? '暂无'}</span>
+                    <span>SSH：{selectedDetail.accessEntry?.ssh ?? '暂无'}</span>
+                    <span>URL：{selectedDetail.accessEntry?.url ?? '暂无'}</span>
+                  </div>
+                </div>
+
+                <div className="range-detail-section">
+                  <strong>资源摘要</strong>
+                  <div className="admin-detail-grid">
+                    <span>模式：{selectedDetail.resourceSummary?.mode ?? '暂无'}</span>
+                    <span>VPC：{selectedDetail.resourceSummary?.vpcId ?? '暂无'}</span>
+                    <span>网段：{selectedDetail.resourceSummary?.topologySpec?.vpcCidr ?? '暂无'}</span>
+                    <span>子网：{formatObjectEntries(selectedDetail.resourceSummary?.subnetIds)}</span>
+                    <span>主机：{formatObjectEntries(selectedDetail.resourceSummary?.hostIds)}</span>
+                    <span>二级网卡：{formatObjectEntries(selectedDetail.resourceSummary?.secondaryNetworkInterfaceIds)}</span>
+                  </div>
+                </div>
+
+                <div className="range-detail-section">
+                  <strong>最近一次任务</strong>
+                  {selectedJobState.job ? (
+                    <div className="admin-detail-grid">
+                      <span>任务 ID：{selectedJobState.job.id}</span>
+                      <span>类型：{selectedJobState.job.jobType}</span>
+                      <span>状态：{getStatusLabel(selectedJobState.job.status)}</span>
+                      <span>当前阶段：{currentStage}</span>
+                      <span>触发人：{selectedJobState.job.triggeredBy}</span>
+                      <span>开始时间：{formatDateTime(selectedJobState.job.startedAt)}</span>
+                      <span>结束时间：{formatDateTime(selectedJobState.job.finishedAt)}</span>
+                    </div>
+                  ) : (
+                    <span>暂无最近任务。</span>
+                  )}
+                </div>
+
+                <div className="range-detail-actions">
+                  {getActionLabels(selectedDetail).includes('destroy') ? (
+                    <button
+                      type="button"
+                      disabled={isSubmittingAction !== null || selectedDetail.recoverySummary?.canRetry === false}
+                      onClick={() => void handleTriggerAction('destroy')}
+                    >
+                      {isSubmittingAction === 'destroy' ? '销毁中...' : '销毁'}
+                    </button>
+                  ) : null}
+                  <button type="button" onClick={closeDetailDialog}>
+                    关闭
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="admin-workbench-empty">
+                <p>实例详情加载失败，请返回列表后重试。</p>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

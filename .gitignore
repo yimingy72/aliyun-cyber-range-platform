@@ -3,6 +3,15 @@ node_modules/
 .next/
 dist/
 *.tsbuildinfo
+.env
+.DS_Store
+.codegraph/
+.playwright-cli/
+.tmp/
+output/
+instance_type
+deploy/current-system/images/*.tar.gz
+deploy/current-system/images/*.tar.gz.sha256
 packages/database/generated/
 .local/
 infra/opentofu/examples/**/.terraform/

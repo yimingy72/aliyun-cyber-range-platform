@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -8,6 +8,8 @@ import {
   RangeTemplateTopologySpec,
   UpdateRangeTemplateInput,
 } from './admin.repository';
+
+type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
 
 @Injectable()
 export class RangeTemplatesService {
@@ -19,10 +21,65 @@ export class RangeTemplatesService {
 
   create(input: CreateRangeTemplateInput) {
     this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
+    this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
+    this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
     this.validateTopologySpec(input.topologySpec);
 
     return this.adminRepository.createRangeTemplate(input);
+  }
+
+  async clone(id: string) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    const topologySpec =
+      existingTemplate.currentDraftVersion?.topologySpec ??
+      existingTemplate.currentPublishedVersion?.topologySpec ??
+      existingTemplate.topologySpec;
+
+    if (!topologySpec) {
+      throw new BadRequestException('Template topology spec not found');
+    }
+
+    const rangeTemplates = await this.adminRepository.listRangeTemplates();
+
+    return this.adminRepository.createRangeTemplate({
+      name: `${existingTemplate.name} 副本`,
+      description: existingTemplate.description ?? undefined,
+      slug: this.buildClonedSlug(existingTemplate.slug, rangeTemplates.map((item) => item.slug)),
+      version: existingTemplate.version,
+      cloudProvider: existingTemplate.cloudProvider,
+      iacType: existingTemplate.iacType,
+      modulePathOrRef: existingTemplate.modulePathOrRef,
+      topologySpec,
+      topologyGraph:
+        existingTemplate.currentDraftVersion?.topologyGraph ??
+        existingTemplate.currentPublishedVersion?.topologyGraph ??
+        existingTemplate.topologyGraph ??
+        undefined,
+      scenarioTemplateSpec:
+        existingTemplate.currentDraftVersion?.scenarioTemplateSpec ??
+        existingTemplate.currentPublishedVersion?.scenarioTemplateSpec ??
+        existingTemplate.scenarioTemplateSpec ??
+        undefined,
+      compiledProvisionSpec:
+        existingTemplate.currentDraftVersion?.compiledProvisionSpec ??
+        existingTemplate.currentPublishedVersion?.compiledProvisionSpec ??
+        existingTemplate.compiledProvisionSpec ??
+        undefined,
+      compiledSpec:
+        existingTemplate.currentDraftVersion?.compiledSpec ??
+        existingTemplate.currentPublishedVersion?.compiledSpec ??
+        existingTemplate.compiledSpec ??
+        undefined,
+      variableSchema: existingTemplate.variableSchema,
+      outputSchema: existingTemplate.outputSchema,
+      defaultNetworkPolicy: existingTemplate.defaultNetworkPolicy ?? undefined,
+    });
   }
 
   async update(id: string, input: UpdateRangeTemplateInput) {
@@ -39,6 +96,8 @@ export class RangeTemplatesService {
     }
 
     this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
+    this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
+    this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
 
     return this.adminRepository.updateRangeTemplate(id, input);
@@ -51,25 +110,35 @@ export class RangeTemplatesService {
       throw new NotFoundException('Range template not found');
     }
 
-    const topologySpec = existingTemplate.currentDraftVersion?.topologySpec ?? existingTemplate.topologySpec;
-
-    if (!topologySpec) {
-      throw new BadRequestException('Template topology spec not found');
-    }
-
-    const compiledSpec = existingTemplate.currentDraftVersion?.compiledSpec as RangeTemplateCompiledSpec | null | undefined;
-
-    this.validateTopologySpec(topologySpec);
-
-    if (compiledSpec?.topology) {
-      this.validateCompiledTopologyConsistency(compiledSpec, topologySpec);
-    }
-
-    if (compiledSpec?.resources) {
-      this.validateCompiledResourceCoverage(compiledSpec, topologySpec);
-    }
+    this.assertTemplateReadyForPublish(existingTemplate);
 
     return this.adminRepository.publishRangeTemplate(id);
+  }
+
+  async validate(id: string) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    this.assertTemplateReadyForPublish(existingTemplate);
+
+    return { valid: true as const };
+  }
+
+  async unpublish(id: string) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (!existingTemplate.currentPublishedVersionId) {
+      throw new BadRequestException('Range template is not published');
+    }
+
+    return this.adminRepository.unpublishRangeTemplate(id);
   }
 
   async delete(id: string) {
@@ -79,7 +148,48 @@ export class RangeTemplatesService {
       throw new NotFoundException('Range template not found');
     }
 
-    await this.adminRepository.deleteRangeTemplate(id);
+    const linkedInstances = (await this.adminRepository.listRangeInstances()).filter((instance) => instance.templateId === id);
+    const blockingInstances = linkedInstances.filter((instance) => instance.status !== 'destroyed');
+
+    if (blockingInstances.length > 0) {
+      throw new ConflictException('Range template cannot be deleted while non-destroyed instances still reference it');
+    }
+
+    if (linkedInstances.length > 0) {
+      await this.adminRepository.archiveDestroyedRangeInstancesForDeletedTemplate(existingTemplate);
+    }
+
+    try {
+      await this.adminRepository.deleteRangeTemplate(id);
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'P2003'
+      ) {
+        throw new ConflictException('Range template cannot be deleted while instances still reference it');
+      }
+
+      throw error;
+    }
+  }
+
+  private buildClonedSlug(sourceSlug: string, existingSlugs: string[]) {
+    const normalizedSlug = `${sourceSlug}-copy`;
+    const slugSet = new Set(existingSlugs);
+
+    if (!slugSet.has(normalizedSlug)) {
+      return normalizedSlug;
+    }
+
+    let suffix = 2;
+
+    while (slugSet.has(`${normalizedSlug}-${suffix}`)) {
+      suffix += 1;
+    }
+
+    return `${normalizedSlug}-${suffix}`;
   }
 
   private validateTopologySpec(topologySpec: RangeTemplateTopologySpec) {
@@ -123,6 +233,217 @@ export class RangeTemplatesService {
     }
   }
 
+  private validateScenarioTemplateSpec(scenarioTemplateSpec: Record<string, unknown>) {
+    const topology = this.readJsonObject(scenarioTemplateSpec.topology, 'scenarioTemplateSpec.topology');
+    const networkZones = this.readJsonArray(scenarioTemplateSpec.networkZones, 'scenarioTemplateSpec.networkZones');
+    const hosts = this.readJsonArray(scenarioTemplateSpec.hosts, 'scenarioTemplateSpec.hosts');
+
+    const zoneKeys = new Set<string>();
+    const hostKeys = new Set<string>();
+
+    for (const zoneValue of networkZones) {
+      const zone = this.readJsonObject(zoneValue, 'scenarioTemplateSpec.networkZones[]');
+      const zoneKey = this.readRequiredString(zone.key, 'scenarioTemplateSpec.networkZones[].key');
+
+      if (zoneKeys.has(zoneKey)) {
+        throw new BadRequestException(`Duplicate scenario network zone key: ${zoneKey}`);
+      }
+
+      zoneKeys.add(zoneKey);
+    }
+
+    for (const hostValue of hosts) {
+      const host = this.readJsonObject(hostValue, 'scenarioTemplateSpec.hosts[]');
+      const hostKey = this.readRequiredString(host.key, 'scenarioTemplateSpec.hosts[].key');
+      const zoneKey = this.readRequiredString(host.zoneKey, `scenarioTemplateSpec.hosts[${hostKey}].zoneKey`);
+
+      if (hostKeys.has(hostKey)) {
+        throw new BadRequestException(`Duplicate scenario host key: ${hostKey}`);
+      }
+
+      if (!zoneKeys.has(zoneKey)) {
+        throw new BadRequestException(`Scenario host ${hostKey} references unknown network zone: ${zoneKey}`);
+      }
+
+      hostKeys.add(hostKey);
+    }
+
+    const entryHostKey = this.readRequiredString(topology.entryHostKey, 'scenarioTemplateSpec.topology.entryHostKey');
+
+    if (!hostKeys.has(entryHostKey)) {
+      throw new BadRequestException(`Scenario entry host does not exist in hosts: ${entryHostKey}`);
+    }
+  }
+
+  private assertTemplateReadyForPublish(existingTemplate: ExistingRangeTemplate) {
+    const scenarioTemplateSpec =
+      existingTemplate.currentDraftVersion?.scenarioTemplateSpec ?? existingTemplate.scenarioTemplateSpec;
+    const compiledProvisionSpec =
+      existingTemplate.currentDraftVersion?.compiledProvisionSpec ?? existingTemplate.compiledProvisionSpec;
+    const topologySpec = existingTemplate.currentDraftVersion?.topologySpec ?? existingTemplate.topologySpec;
+
+    if (!topologySpec && !scenarioTemplateSpec) {
+      throw new BadRequestException('Template topology spec not found');
+    }
+
+    const compiledSpec = existingTemplate.currentDraftVersion?.compiledSpec as RangeTemplateCompiledSpec | null | undefined;
+
+    if (scenarioTemplateSpec) {
+      this.validateScenarioTemplateSpec(scenarioTemplateSpec);
+    }
+
+    if (topologySpec) {
+      this.validateTopologySpec(topologySpec);
+    }
+
+    if (compiledProvisionSpec) {
+      this.validateCompiledProvisionSpec(compiledProvisionSpec, scenarioTemplateSpec);
+    }
+
+    if (compiledSpec?.topology && topologySpec) {
+      this.validateCompiledTopologyConsistency(compiledSpec, topologySpec);
+    }
+
+    if (compiledSpec?.resources && topologySpec) {
+      this.validateCompiledResourceCoverage(compiledSpec, topologySpec);
+    }
+  }
+
+  private validateCompiledProvisionSpec(
+    compiledProvisionSpec: Record<string, unknown>,
+    scenarioTemplateSpec?: Record<string, unknown> | null,
+  ) {
+    const topology = this.readJsonObject(compiledProvisionSpec.topology, 'compiledProvisionSpec.topology');
+    const networkZones = this.readJsonArray(compiledProvisionSpec.networkZones, 'compiledProvisionSpec.networkZones');
+    const hosts = this.readJsonArray(compiledProvisionSpec.hosts, 'compiledProvisionSpec.hosts');
+    const natGateways = this.readJsonArray(compiledProvisionSpec.natGateways, 'compiledProvisionSpec.natGateways');
+    const eips = this.readJsonArray(compiledProvisionSpec.eips, 'compiledProvisionSpec.eips');
+    const snatEntries = this.readJsonArray(compiledProvisionSpec.snatEntries, 'compiledProvisionSpec.snatEntries');
+    const dnatEntries = this.readJsonArray(compiledProvisionSpec.dnatEntries, 'compiledProvisionSpec.dnatEntries');
+
+    const zoneKeys = new Set<string>();
+    const hostKeys = new Set<string>();
+    const natGatewayKeys = new Set<string>();
+    const eipKeys = new Set<string>();
+
+    for (const zoneValue of networkZones) {
+      const zone = this.readJsonObject(zoneValue, 'compiledProvisionSpec.networkZones[]');
+      zoneKeys.add(this.readRequiredString(zone.key, 'compiledProvisionSpec.networkZones[].key'));
+    }
+
+    for (const hostValue of hosts) {
+      const host = this.readJsonObject(hostValue, 'compiledProvisionSpec.hosts[]');
+      const hostKey = this.readRequiredString(host.key, 'compiledProvisionSpec.hosts[].key');
+      const zoneKey = this.readRequiredString(host.zoneKey, `compiledProvisionSpec.hosts[${hostKey}].zoneKey`);
+
+      if (!zoneKeys.has(zoneKey)) {
+        throw new BadRequestException(`Compiled provision host ${hostKey} references unknown network zone: ${zoneKey}`);
+      }
+
+      hostKeys.add(hostKey);
+    }
+
+    for (const natGatewayValue of natGateways) {
+      const natGateway = this.readJsonObject(natGatewayValue, 'compiledProvisionSpec.natGateways[]');
+      natGatewayKeys.add(this.readRequiredString(natGateway.key, 'compiledProvisionSpec.natGateways[].key'));
+    }
+
+    for (const eipValue of eips) {
+      const eip = this.readJsonObject(eipValue, 'compiledProvisionSpec.eips[]');
+      eipKeys.add(this.readRequiredString(eip.key, 'compiledProvisionSpec.eips[].key'));
+    }
+
+    const entryHostKey = this.readRequiredString(topology.entryHostKey, 'compiledProvisionSpec.topology.entryHostKey');
+
+    if (!hostKeys.has(entryHostKey)) {
+      throw new BadRequestException(`Compiled provision entry host does not exist in hosts: ${entryHostKey}`);
+    }
+
+    for (const snatEntryValue of snatEntries) {
+      const snatEntry = this.readJsonObject(snatEntryValue, 'compiledProvisionSpec.snatEntries[]');
+      const zoneKey = this.readRequiredString(snatEntry.zoneKey, 'compiledProvisionSpec.snatEntries[].zoneKey');
+      const natGatewayKey = this.readRequiredString(
+        snatEntry.natGatewayKey,
+        'compiledProvisionSpec.snatEntries[].natGatewayKey',
+      );
+      const eipKey = this.readRequiredString(snatEntry.eipKey, 'compiledProvisionSpec.snatEntries[].eipKey');
+
+      if (!zoneKeys.has(zoneKey)) {
+        throw new BadRequestException(`Compiled provision SNAT entry references unknown network zone: ${zoneKey}`);
+      }
+
+      if (!natGatewayKeys.has(natGatewayKey)) {
+        throw new BadRequestException(`Compiled provision SNAT entry references unknown nat gateway: ${natGatewayKey}`);
+      }
+
+      if (!eipKeys.has(eipKey)) {
+        throw new BadRequestException(`Compiled provision SNAT entry references unknown EIP: ${eipKey}`);
+      }
+    }
+
+    for (const dnatEntryValue of dnatEntries) {
+      const dnatEntry = this.readJsonObject(dnatEntryValue, 'compiledProvisionSpec.dnatEntries[]');
+      const hostKey = this.readRequiredString(dnatEntry.hostKey, 'compiledProvisionSpec.dnatEntries[].hostKey');
+      const natGatewayKey = this.readRequiredString(
+        dnatEntry.natGatewayKey,
+        'compiledProvisionSpec.dnatEntries[].natGatewayKey',
+      );
+      const eipKey = this.readRequiredString(dnatEntry.eipKey, 'compiledProvisionSpec.dnatEntries[].eipKey');
+
+      if (!hostKeys.has(hostKey)) {
+        throw new BadRequestException(`Compiled provision DNAT entry references unknown host: ${hostKey}`);
+      }
+
+      if (!natGatewayKeys.has(natGatewayKey)) {
+        throw new BadRequestException(`Compiled provision DNAT entry references unknown nat gateway: ${natGatewayKey}`);
+      }
+
+      if (!eipKeys.has(eipKey)) {
+        throw new BadRequestException(`Compiled provision DNAT entry references unknown EIP: ${eipKey}`);
+      }
+    }
+
+    if (scenarioTemplateSpec) {
+      const scenarioTopology = this.readJsonObject(scenarioTemplateSpec.topology, 'scenarioTemplateSpec.topology');
+      const scenarioVpcCidr = this.readRequiredString(
+        scenarioTopology.vpcCidr,
+        'scenarioTemplateSpec.topology.vpcCidr',
+      );
+      const compiledVpcCidr = this.readRequiredString(
+        topology.vpcCidr,
+        'compiledProvisionSpec.topology.vpcCidr',
+      );
+
+      if (scenarioVpcCidr !== compiledVpcCidr) {
+        throw new BadRequestException('compiledProvisionSpec topology does not match scenarioTemplateSpec');
+      }
+    }
+  }
+
+  private readJsonObject(value: unknown, fieldName: string): Record<string, unknown> {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new BadRequestException(`${fieldName} must be an object`);
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private readJsonArray(value: unknown, fieldName: string): unknown[] {
+    if (!Array.isArray(value)) {
+      throw new BadRequestException(`${fieldName} must be an array`);
+    }
+
+    return value;
+  }
+
+  private readRequiredString(value: unknown, fieldName: string): string {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new BadRequestException(`${fieldName} must be a non-empty string`);
+    }
+
+    return value;
+  }
+
   private validateCompiledTopologyConsistency(
     compiledSpec: RangeTemplateCompiledSpec,
     topologySpec: RangeTemplateTopologySpec,
@@ -157,6 +478,7 @@ export class RangeTemplatesService {
     const switchResourcesByZoneKey = new Map<string, Record<string, unknown>>();
     const hostResourcesById = new Map<string, Record<string, unknown>>();
     const natGatewayResourcesById = new Map<string, Record<string, unknown>>();
+    const eipResourcesById = new Map<string, Record<string, unknown>>();
 
     for (const resource of compiledSpec.resources) {
       if (resource.type === 'switch') {
@@ -173,6 +495,10 @@ export class RangeTemplatesService {
 
       if (resource.type === 'nat_gateway') {
         natGatewayResourcesById.set(resource.id, resource.config);
+      }
+
+      if (resource.type === 'eip') {
+        eipResourcesById.set(resource.id, resource.config);
       }
     }
 
@@ -277,6 +603,54 @@ export class RangeTemplatesService {
           issues.push(`Compiled security group rule is missing targetHostKey: ${resource.id}`);
         } else if (!hostKeys.has(targetHostKey)) {
           issues.push(`Compiled security group rule references unknown host target: ${targetHostKey}`);
+        }
+      }
+
+      if (resource.type === 'snat_entry') {
+        const natGatewayKey = this.readString(resource.config?.natGatewayKey);
+        const sourceZoneKey = this.readString(resource.config?.sourceZoneKey);
+        const eipKey = this.readString(resource.config?.eipKey);
+
+        if (!natGatewayKey) {
+          issues.push(`Compiled SNAT entry is missing natGatewayKey: ${resource.id}`);
+        } else if (!natGatewayResourcesById.has(natGatewayKey)) {
+          issues.push(`Compiled SNAT entry references unknown nat gateway target: ${natGatewayKey}`);
+        }
+
+        if (!sourceZoneKey) {
+          issues.push(`Compiled SNAT entry is missing sourceZoneKey: ${resource.id}`);
+        } else if (!zoneKeys.has(sourceZoneKey)) {
+          issues.push(`Compiled SNAT entry references unknown source network zone: ${sourceZoneKey}`);
+        }
+
+        if (!eipKey) {
+          issues.push(`Compiled SNAT entry is missing eipKey: ${resource.id}`);
+        } else if (!eipResourcesById.has(eipKey)) {
+          issues.push(`Compiled SNAT entry references unknown EIP target: ${eipKey}`);
+        }
+      }
+
+      if (resource.type === 'dnat_entry') {
+        const natGatewayKey = this.readString(resource.config?.natGatewayKey);
+        const eipKey = this.readString(resource.config?.eipKey);
+        const backendHostKey = this.readString(resource.config?.backendHostKey);
+
+        if (!natGatewayKey) {
+          issues.push(`Compiled DNAT entry is missing natGatewayKey: ${resource.id}`);
+        } else if (!natGatewayResourcesById.has(natGatewayKey)) {
+          issues.push(`Compiled DNAT entry references unknown nat gateway target: ${natGatewayKey}`);
+        }
+
+        if (!eipKey) {
+          issues.push(`Compiled DNAT entry is missing eipKey: ${resource.id}`);
+        } else if (!eipResourcesById.has(eipKey)) {
+          issues.push(`Compiled DNAT entry references unknown EIP target: ${eipKey}`);
+        }
+
+        if (!backendHostKey) {
+          issues.push(`Compiled DNAT entry is missing backendHostKey: ${resource.id}`);
+        } else if (!hostKeys.has(backendHostKey)) {
+          issues.push(`Compiled DNAT entry references unknown backend host target: ${backendHostKey}`);
         }
       }
     }

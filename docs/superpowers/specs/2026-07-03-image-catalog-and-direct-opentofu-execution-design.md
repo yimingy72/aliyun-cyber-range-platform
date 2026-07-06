@@ -1,5 +1,9 @@
 # Image Catalog And Direct OpenTofu Execution Design
 
+- 日期：2026-07-03
+- 状态：持续迭代中，核心 Docker/OpenTofu 链路、镜像中心、编排器镜像选择与实例规格实时校验已落地
+- 最新同步：2026-07-03，已补充部署目录快照 `deploy/current-system/`
+
 ## Goal
 
 将当前实例创建链路从“运行时依赖 `aliyun CLI` 预解析镜像 / 规格”调整为“模板直接保存最终 `image_id` 与 `instance_type`，后端直接把最终值交给 OpenTofu 创建资源”。
@@ -10,6 +14,35 @@
 - 公共镜像收录到平台目录
 - 自定义镜像按阿里云账号隔离保存
 - 后续编排器按平台镜像目录选择镜像名，但真正执行时使用 `image_id`
+
+## Current Delivery Snapshot
+
+截至 2026-07-03，当前设计里已经真正落地并经过容器态验证的能力包括：
+
+- Docker 运行形态已经收口为：
+  - `web`
+  - `api`
+  - `provisioner-worker`
+  - `postgres`
+- 平台实例创建链路已经不再依赖 `aliyun CLI`，而是通过内置签名 `fetch` 调用阿里云 ECS OpenAPI
+- OpenTofu 执行已经改为固定 root wrapper + `range.auto.tfvars.json` 的模式
+- 镜像中心已经具备：
+  - 公共镜像查询
+  - 自定义镜像查询
+  - 平台镜像目录收录
+- 编排器 ECS 节点已经保存并传递：
+  - `imageCatalogItemId`
+  - `imageName`
+  - `imageId`
+  - `instanceType`
+- ECS 属性面板已经增加“默认可用区下 X86 / 按量付费实例规格是否精确匹配”的实时提醒
+- OpenTofu `runtime_selections` 已经兼容混合的 `fixed/auto` 策略对象，避免 `tofu plan` 因 map 元素结构不一致而失败
+
+当前仍然保留的后续工作重点包括：
+
+- 把历史模板里的旧规格策略数据进一步做归一化清理
+- 继续完善镜像中心的产品层能力，例如平台镜像命名、启停、后续账号切换体验
+- 继续收口一份更稳定的部署说明和运维清单
 
 ## Current State
 
@@ -93,6 +126,22 @@
 - 消除 `aliyun CLI` 运行时依赖
 - 模板执行结果更稳定，不受运行时镜像列表波动影响
 - 更贴合你后续“镜像名 -> image_id 映射”的产品模式
+
+## Deployment Artifact Directory
+
+为了让后续部署时不需要再到仓库里逐个找文件，当前仓库已经新增部署目录：
+
+- [deploy/current-system](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system)
+
+目录内放置的是“当前系统可部署快照”：
+
+- 部署专用 `docker-compose.yml`
+- `api` / `web` 的 Dockerfile 快照
+- provider mirror 初始化脚本快照
+- `.env.example`
+- 部署说明 README
+
+这里的目标不是替代源码目录，而是把“部署当前系统需要翻到的文件”集中到一个位置，方便你后面自己部署时直接查看和执行。
 
 ## Data Model Design
 

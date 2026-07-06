@@ -1,6 +1,6 @@
 'use client';
 
-import React, { type ReactNode, useEffect, useRef } from 'react';
+import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
 import type {
   EcsTemplateNode,
@@ -142,6 +142,139 @@ function PropertyGroup({
   );
 }
 
+type TemplateImageComboboxProps = {
+  selectedImageAsset: PlatformImageAsset | null;
+  imageOptions: PlatformImageAsset[];
+  onSelectImageAsset: (asset: PlatformImageAsset | null) => void;
+};
+
+function TemplateImageCombobox({
+  selectedImageAsset,
+  imageOptions,
+  onSelectImageAsset,
+}: TemplateImageComboboxProps) {
+  const [query, setQuery] = useState(selectedImageAsset?.displayName ?? '');
+  const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setQuery(selectedImageAsset?.displayName ?? '');
+  }, [selectedImageAsset?.displayName]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, []);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const matchedOptions =
+    normalizedQuery.length === 0
+      ? []
+      : imageOptions.filter(
+          (item) =>
+            item.displayName.toLowerCase().includes(normalizedQuery) ||
+            item.imageId.toLowerCase().includes(normalizedQuery),
+        );
+  const exactMatchedOption =
+    normalizedQuery.length === 0
+      ? null
+      : imageOptions.find(
+          (item) =>
+            item.displayName.toLowerCase() === normalizedQuery ||
+            item.imageId.toLowerCase() === normalizedQuery,
+        ) ?? null;
+
+  function applySelection(asset: PlatformImageAsset | null) {
+    onSelectImageAsset(asset);
+    setQuery(asset?.displayName ?? '');
+    setIsOpen(false);
+  }
+
+  return (
+    <div className="template-image-combobox" ref={rootRef}>
+      <input
+        aria-label="镜像名"
+        aria-autocomplete="list"
+        aria-expanded={isOpen}
+        autoComplete="off"
+        className="template-image-combobox-input"
+        placeholder="请选择平台镜像"
+        role="combobox"
+        value={query}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          setQuery(nextValue);
+          setIsOpen(nextValue.trim().length > 0);
+
+          const normalizedValue = nextValue.trim().toLowerCase();
+          const nextExactMatchedOption =
+            normalizedValue.length === 0
+              ? null
+              : imageOptions.find(
+                  (item) =>
+                    item.displayName.toLowerCase() === normalizedValue ||
+                    item.imageId.toLowerCase() === normalizedValue,
+                ) ?? null;
+
+          if (nextExactMatchedOption) {
+            onSelectImageAsset(nextExactMatchedOption);
+            return;
+          }
+
+          if (nextValue.trim().length === 0) {
+            onSelectImageAsset(null);
+          }
+        }}
+        onFocus={() => {
+          if (query.trim().length > 0) {
+            setIsOpen(true);
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setIsOpen(false);
+          }
+
+          if (event.key === 'Enter' && exactMatchedOption) {
+            event.preventDefault();
+            applySelection(exactMatchedOption);
+          }
+        }}
+      />
+
+      {isOpen && matchedOptions.length > 0 ? (
+        <div className="template-image-combobox-list" role="listbox" aria-label="平台镜像候选列表">
+          {matchedOptions.slice(0, 8).map((item) => {
+            const isSelected = selectedImageAsset?.id === item.id;
+
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={isSelected ? 'template-image-combobox-option is-selected' : 'template-image-combobox-option'}
+                role="option"
+                aria-selected={isSelected}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => applySelection(item)}
+              >
+                <span>{item.displayName}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function renderHostFields(
   selectedNode: EcsTemplateNode,
   allNodes: TemplateNode[],
@@ -193,6 +326,22 @@ function renderHostFields(
     selectedPlatformImageAsset && !enabledPlatformImageAssets.some((item) => item.id === selectedPlatformImageAsset.id)
       ? [selectedPlatformImageAsset, ...enabledPlatformImageAssets]
       : enabledPlatformImageAssets;
+
+  function handleSelectPlatformImageAsset(nextPlatformImageAsset: PlatformImageAsset | null) {
+    const nextNode: EcsTemplateNodeWithPlatformImageAssetId = {
+      ...selectedNode,
+      platformImageAssetId: nextPlatformImageAsset?.id,
+      image: nextPlatformImageAsset?.displayName ?? selectedNode.image,
+      imageName: nextPlatformImageAsset?.displayName ?? selectedNode.imageName,
+      imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
+      imageStrategy: {
+        mode: 'fixed',
+        imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
+      },
+    };
+
+    onUpdateNode(selectedNode.id, nextNode);
+  }
 
   function handleAddNic() {
     const nextIndex = nicItems.length + 1;
@@ -281,46 +430,11 @@ function renderHostFields(
             }
           />
         </PropertyField>
-        <PropertyField label="镜像名">
-          <select
-            aria-label="镜像名"
-            value={selectedPlatformImageAsset?.id ?? selectedNodeWithPlatformImageAsset.platformImageAssetId ?? ''}
-            onChange={(event) => {
-              const nextPlatformImageAsset = platformImageOptions.find((item) => item.id === event.target.value) ?? null;
-              const nextNode: EcsTemplateNodeWithPlatformImageAssetId = {
-                ...selectedNode,
-                platformImageAssetId: nextPlatformImageAsset?.id,
-                image: nextPlatformImageAsset?.displayName ?? selectedNode.image,
-                imageName: nextPlatformImageAsset?.displayName ?? selectedNode.imageName,
-                imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
-                imageStrategy: {
-                  mode: 'fixed',
-                  imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
-                },
-              };
-
-              onUpdateNode(selectedNode.id, nextNode);
-            }}
-          >
-            <option value="">请选择平台镜像</option>
-            {platformImageOptions.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.displayName}
-              </option>
-            ))}
-          </select>
-        </PropertyField>
-        <PropertyField label="启动优先级">
-          <input
-            aria-label="启动优先级"
-            type="number"
-            value={selectedNode.bootPriority ?? 1}
-            onChange={(event) =>
-              onUpdateNode(selectedNode.id, {
-                ...selectedNode,
-                bootPriority: Number(event.target.value) || 1,
-              })
-            }
+        <PropertyField label="镜像名" className="template-property-field-full">
+          <TemplateImageCombobox
+            selectedImageAsset={selectedPlatformImageAsset}
+            imageOptions={platformImageOptions}
+            onSelectImageAsset={handleSelectPlatformImageAsset}
           />
         </PropertyField>
         <PropertyField label="CPU">

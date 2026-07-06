@@ -1,95 +1,124 @@
+import type { ChangeEvent, FormEvent } from 'react';
+
 import type { CloudConfigSnapshot } from '../../../lib/admin-types';
 
 type CloudConfigPanelProps = {
-  config: CloudConfigSnapshot | null;
+  value: CloudConfigSnapshot;
+  isLoading?: boolean;
+  isSaving?: boolean;
+  saveErrorMessage?: string | null;
+  saveSuccessMessage?: string | null;
+  onChange: (field: keyof CloudConfigSnapshot, value: string) => void;
+  onSubmit: () => void | Promise<void>;
 };
 
-function renderValue(value: string | null | undefined) {
-  if (!value || value === 'unset') {
-    return '未配置';
-  }
-
-  return value;
+function handleInputChange(
+  field: keyof CloudConfigSnapshot,
+  onChange: CloudConfigPanelProps['onChange'],
+) {
+  return (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    onChange(field, event.target.value);
+  };
 }
 
-export function CloudConfigPanel({ config }: CloudConfigPanelProps) {
-  const preferences = config?.instanceTypePreferences.filter(Boolean) ?? [];
+export function CloudConfigPanel({
+  value,
+  isLoading = false,
+  isSaving = false,
+  saveErrorMessage = null,
+  saveSuccessMessage = null,
+  onChange,
+  onSubmit,
+}: CloudConfigPanelProps) {
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onSubmit();
+  };
 
   return (
-    <section className="admin-panel">
-      <div className="admin-section-header">
-        <h2>云配置</h2>
-        <span>只读快照</span>
+    <form className="admin-workbench-panel settings-workbench-panel" onSubmit={handleSubmit}>
+      <div className="admin-workbench-panel-header settings-workbench-header">
+        <div className="settings-workbench-header-copy">
+          <h2>云配置</h2>
+          <span>5 项配置</span>
+        </div>
+
+        <button type="submit" className="template-workbench-primary-action" disabled={isLoading || isSaving}>
+          {isSaving ? '正在保存...' : '保存云配置'}
+        </button>
       </div>
 
-      {config ? (
-        <ul className="admin-list">
-          <li>
-            <div className="admin-list-copy">
-              <strong>默认地域</strong>
-              <span>{renderValue(config.region)}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>默认可用区</strong>
-              <span>{renderValue(config.zoneId)}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>编排模式</strong>
-              <span>{renderValue(config.provisionerMode)}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>实例规格策略</strong>
-              <span>{renderValue(config.instanceTypeStrategy)}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>实例规格偏好</strong>
-              <span>{preferences.length ? preferences.join(' / ') : '未配置'}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>系统镜像</strong>
-              <span>{renderValue(config.imageId)}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>实例密码</strong>
-              <span>{config.instancePasswordConfigured ? '已配置' : '未配置'}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>Provider 离线包</strong>
-              <span>{config.providerZipPathConfigured ? '已配置' : '未配置'}</span>
-            </div>
-          </li>
-          <li>
-            <div className="admin-list-copy">
-              <strong>计划前校验</strong>
-              <span>{config.readyForPlan ? '已满足' : '缺少配置'}</span>
-            </div>
-          </li>
-          {config.checks.map((check) => (
-            <li key={check.key}>
-              <div className="admin-list-copy">
-                <strong>{check.label}</strong>
-                <span>{check.configured ? `${check.label}已配置` : `${check.label}未配置`}</span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="admin-empty">暂无云配置。</p>
-      )}
-    </section>
+      <div className="settings-workbench-rows">
+        <label className="settings-workbench-row">
+          <span className="settings-workbench-row-label">云平台</span>
+          <div className="settings-workbench-row-control">
+            <select
+              aria-label="云平台"
+              value={value.provider}
+              onChange={handleInputChange('provider', onChange)}
+              disabled={isLoading || isSaving}
+            >
+              <option value="alibaba_cloud">阿里云</option>
+            </select>
+          </div>
+        </label>
+
+        <label className="settings-workbench-row">
+          <span className="settings-workbench-row-label">默认地域</span>
+          <div className="settings-workbench-row-control">
+            <input
+              aria-label="默认地域"
+              value={value.defaultRegion}
+              onChange={handleInputChange('defaultRegion', onChange)}
+              disabled={isLoading || isSaving}
+              placeholder="cn-hangzhou"
+            />
+          </div>
+        </label>
+
+        <label className="settings-workbench-row">
+          <span className="settings-workbench-row-label">默认可用区</span>
+          <div className="settings-workbench-row-control">
+            <input
+              aria-label="默认可用区"
+              value={value.defaultZoneId}
+              onChange={handleInputChange('defaultZoneId', onChange)}
+              disabled={isLoading || isSaving}
+              placeholder="cn-hangzhou-h"
+            />
+          </div>
+        </label>
+
+        <label className="settings-workbench-row">
+          <span className="settings-workbench-row-label">AccessKey ID</span>
+          <div className="settings-workbench-row-control">
+            <input
+              aria-label="AccessKey ID"
+              value={value.accessKeyId}
+              onChange={handleInputChange('accessKeyId', onChange)}
+              disabled={isLoading || isSaving}
+              autoComplete="off"
+            />
+          </div>
+        </label>
+
+        <label className="settings-workbench-row">
+          <span className="settings-workbench-row-label">AccessKey Secret</span>
+          <div className="settings-workbench-row-control">
+            <input
+              aria-label="AccessKey Secret"
+              type="password"
+              value={value.accessKeySecret}
+              onChange={handleInputChange('accessKeySecret', onChange)}
+              disabled={isLoading || isSaving}
+              autoComplete="new-password"
+            />
+          </div>
+        </label>
+      </div>
+
+      {saveErrorMessage ? <p className="admin-error settings-workbench-feedback">{saveErrorMessage}</p> : null}
+      {saveSuccessMessage ? <p className="admin-success settings-workbench-feedback">{saveSuccessMessage}</p> : null}
+    </form>
   );
 }

@@ -134,7 +134,7 @@ describe('TemplatePropertyPanel', () => {
       node.textContent?.trim(),
     );
 
-    expect(labels).toEqual(['名称', '主机名', '镜像名', '启动优先级', 'CPU', '内存']);
+    expect(labels).toEqual(['名称', '主机名', '镜像名', 'CPU', '内存']);
     expect(screen.getByText('ECS')).toBeTruthy();
     expect(screen.queryByLabelText('启动等待时间')).toBeNull();
   });
@@ -243,8 +243,9 @@ describe('TemplatePropertyPanel', () => {
     );
 
     fireEvent.change(screen.getByLabelText('镜像名'), {
-      target: { value: 'platform-image-1' },
+      target: { value: 'Ubuntu 24.04 LTS' },
     });
+    fireEvent.keyDown(screen.getByLabelText('镜像名'), { key: 'Enter' });
 
     expect(onUpdateNode).toHaveBeenCalledWith(
       'ecs-1',

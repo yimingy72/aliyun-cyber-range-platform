@@ -6,9 +6,9 @@ apps/web/.next
 apps/api/dist
 packages/database/generated
 infra/opentofu/examples/**/.terraform
+!infra/opentofu/examples/alicloud-enterprise-range/.terraform/providers/registry.opentofu.org/aliyun/alicloud/1.282.0/linux_amd64/terraform-provider-alicloud_v1.282.0
 infra/opentofu/examples/**/.terraform.lock.hcl
 infra/opentofu/examples/**/.smoke
 infra/opentofu/examples/**/terraform.tfstate
 infra/opentofu/examples/**/terraform.tfstate.backup
 coverage
-

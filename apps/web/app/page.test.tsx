@@ -11,8 +11,8 @@ vi.mock('next/navigation', () => ({
 import HomePage from './page';
 
 describe('HomePage', () => {
-  it('redirects the root route to /login', () => {
+  it('redirects the root route to /admin/login', () => {
     HomePage();
-    expect(redirect).toHaveBeenCalledWith('/login');
+    expect(redirect).toHaveBeenCalledWith('/admin/login');
   });
 });

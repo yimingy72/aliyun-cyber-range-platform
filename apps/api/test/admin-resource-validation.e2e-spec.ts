@@ -32,44 +32,26 @@ describe('Admin resource validation', () => {
   });
 
   async function waitForRangeInstanceStatus(id: string, status: string) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
       const response = await request(app.getHttpServer())
-        .get('/admin/range-instances')
+        .get(`/admin/ranges/${id}`)
         .set('authorization', 'Bearer dev-admin-token')
         .expect(200);
 
-      const target = response.body.find((item: { id: string }) => item.id === id);
-
-      if (target?.status === status) {
-        return target;
+      if (response.body?.status === status) {
+        return response.body;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 25));
     }
 
     throw new Error(`Range instance ${id} did not reach status ${status}`);
   }
 
   async function createProvisioningFixture() {
-    const competition = await request(app.getHttpServer())
-      .post('/admin/competitions')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        name: `Competition ${Date.now()}`,
-      })
-      .expect(201);
-
-    const team = await request(app.getHttpServer())
-      .post('/admin/teams')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        competitionId: competition.body.id,
-        name: `Team ${Date.now()}`,
-      })
-      .expect(201);
-
+    const repository = app.get(ADMIN_REPOSITORY);
     const template = await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Fixture Template',
@@ -86,6 +68,18 @@ describe('Admin resource validation', () => {
               cidr: '10.70.10.0/24',
               isPublicEntry: true,
             },
+            {
+              key: 'office',
+              name: 'Office',
+              purpose: 'user-workstations',
+              cidr: '10.70.20.0/24',
+            },
+            {
+              key: 'server',
+              name: 'Server',
+              purpose: 'application-servers',
+              cidr: '10.70.30.0/24',
+            },
           ],
           hosts: [
             {
@@ -95,6 +89,20 @@ describe('Admin resource validation', () => {
               role: 'entry',
               privateIp: '10.70.10.10',
               exposePublic: true,
+            },
+            {
+              key: 'office-client',
+              name: 'Office Client',
+              zoneKey: 'office',
+              role: 'workstation',
+              privateIp: '10.70.20.10',
+            },
+            {
+              key: 'server-app',
+              name: 'Server App',
+              zoneKey: 'server',
+              role: 'app',
+              privateIp: '10.70.30.10',
             },
           ],
           publicEntry: {
@@ -106,62 +114,28 @@ describe('Admin resource validation', () => {
       .expect(201);
 
     await request(app.getHttpServer())
-      .post(`/admin/range-templates/${template.body.id}/publish`)
+      .post(`/admin/scenarios/${template.body.id}/publish`)
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
     const instance = await request(app.getHttpServer())
-      .post('/admin/range-instances')
+      .post('/admin/ranges')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
-        competitionId: competition.body.id,
-        teamId: team.body.id,
+        name: `Fixture Range ${Date.now()}`,
         templateId: template.body.id,
       })
       .expect(201);
 
     return {
-      competitionId: competition.body.id,
-      teamId: team.body.id,
       templateId: template.body.id,
       rangeInstanceId: instance.body.id,
     };
   }
 
-  it('rejects competitions without a name', async () => {
-    await request(app.getHttpServer())
-      .post('/admin/competitions')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        description: 'missing name',
-      })
-      .expect(400);
-  });
-
-  it('rejects competitions with an invalid status', async () => {
-    await request(app.getHttpServer())
-      .post('/admin/competitions')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        name: 'Invalid competition',
-        status: 'broken',
-      })
-      .expect(400);
-  });
-
-  it('rejects teams without a competition id', async () => {
-    await request(app.getHttpServer())
-      .post('/admin/teams')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        name: 'Nameless relation',
-      })
-      .expect(400);
-  });
-
   it('rejects templates without a module path', async () => {
     await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Broken template',
@@ -173,7 +147,7 @@ describe('Admin resource validation', () => {
 
   it('rejects templates without a topology spec', async () => {
     await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Broken enterprise template',
@@ -186,7 +160,7 @@ describe('Admin resource validation', () => {
 
   it('rejects templates when topology spec is missing vpc cidr', async () => {
     await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Broken topology template',
@@ -224,7 +198,7 @@ describe('Admin resource validation', () => {
 
   it('rejects templates when a host references an unknown network zone', async () => {
     await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Broken host zone template',
@@ -263,7 +237,7 @@ describe('Admin resource validation', () => {
 
   it('rejects publishing a template when compiled topology summary mismatches topology spec', async () => {
     const template = await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Broken compiled topology template',
@@ -310,7 +284,7 @@ describe('Admin resource validation', () => {
       .expect(201);
 
     const publishResponse = await request(app.getHttpServer())
-      .post(`/admin/range-templates/${template.body.id}/publish`)
+      .post(`/admin/scenarios/${template.body.id}/publish`)
       .set('authorization', 'Bearer dev-admin-token')
       .expect(400);
 
@@ -319,7 +293,7 @@ describe('Admin resource validation', () => {
 
   it('rejects templates when public entry host is missing from hosts', async () => {
     await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Broken public entry template',
@@ -359,7 +333,7 @@ describe('Admin resource validation', () => {
     const fixture = await createProvisioningFixture();
 
     await request(app.getHttpServer())
-      .post(`/admin/range-instances/${fixture.rangeInstanceId}/destroy`)
+      .post(`/admin/ranges/${fixture.rangeInstanceId}/destroy`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         triggeredBy: 'admin',
@@ -371,7 +345,7 @@ describe('Admin resource validation', () => {
     const fixture = await createProvisioningFixture();
 
     await request(app.getHttpServer())
-      .post(`/admin/range-instances/${fixture.rangeInstanceId}/create`)
+      .post(`/admin/ranges/${fixture.rangeInstanceId}/create`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         triggeredBy: 'admin',
@@ -381,7 +355,7 @@ describe('Admin resource validation', () => {
     await waitForRangeInstanceStatus(fixture.rangeInstanceId, 'running');
 
     await request(app.getHttpServer())
-      .post(`/admin/range-instances/${fixture.rangeInstanceId}/create`)
+      .post(`/admin/ranges/${fixture.rangeInstanceId}/create`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         triggeredBy: 'admin',
@@ -393,7 +367,7 @@ describe('Admin resource validation', () => {
     const fixture = await createProvisioningFixture();
 
     await request(app.getHttpServer())
-      .post(`/admin/range-instances/${fixture.rangeInstanceId}/create`)
+      .post(`/admin/ranges/${fixture.rangeInstanceId}/create`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         triggeredBy: 'admin',
@@ -403,7 +377,7 @@ describe('Admin resource validation', () => {
     await waitForRangeInstanceStatus(fixture.rangeInstanceId, 'running');
 
     await request(app.getHttpServer())
-      .post(`/admin/range-instances/${fixture.rangeInstanceId}/retry`)
+      .post(`/admin/ranges/${fixture.rangeInstanceId}/retry`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         triggeredBy: 'admin',

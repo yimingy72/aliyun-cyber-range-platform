@@ -12,10 +12,26 @@ type AdminWorkspaceShellProps = {
 };
 
 const navigationItems = [
-  { href: '/admin', label: '靶场总览' },
-  { href: '/admin/range-instances', label: '靶场实例' },
-  { href: '/admin/provision-jobs', label: '编排任务' },
-  { href: '/admin/settings', label: '基础配置' },
+  {
+    href: '/admin/scenarios',
+    label: '靶场编排',
+    shortLabel: '编排',
+  },
+  {
+    href: '/admin/ranges',
+    label: '靶场实例',
+    shortLabel: '实例',
+  },
+  {
+    href: '/admin/image-center',
+    label: '镜像中心',
+    shortLabel: '镜像',
+  },
+  {
+    href: '/admin/settings/cloud',
+    label: '基础配置',
+    shortLabel: '配置',
+  },
 ];
 
 function isNavigationItemActive(pathname: string, href: string) {
@@ -43,14 +59,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   }
 
   if (!session.isReady) {
-    return (
-      <main className="admin-shell">
-        <section className="admin-panel admin-login-panel">
-          <h2>正在恢复后台会话...</h2>
-          <p className="admin-empty">请稍候，正在校验管理员登录状态。</p>
-        </section>
-      </main>
-    );
+    return null;
   }
 
   if (!session.token) {
@@ -61,8 +70,9 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
     <div className="admin-workspace">
       <aside className="admin-sidebar">
         <div className="admin-brand">
-          <p>综合靶场平台</p>
-          <strong>管理后台</strong>
+          <div className="admin-brand-copy">
+            <strong>综合靶场平台</strong>
+          </div>
         </div>
 
         <nav className="admin-nav">
@@ -72,31 +82,31 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
               href={item.href}
               className={isNavigationItemActive(pathname, item.href) ? 'admin-nav-link active' : 'admin-nav-link'}
             >
-              {item.label}
+              <span className="admin-nav-link-kicker">{item.shortLabel}</span>
+              <strong className="admin-nav-link-label">{item.label}</strong>
             </Link>
           ))}
         </nav>
       </aside>
 
       <div className="admin-main-shell">
-        <header className="admin-topbar">
-          <div>
-            <p className="admin-topbar-eyebrow">靶场编排与运维控制台</p>
-            <strong>当前环境：本地开发</strong>
+        <header className="admin-topbar admin-topbar-compact">
+          <div className="admin-topbar-meta">
+            <button
+              type="button"
+              onClick={() => {
+                session.logout();
+                router.replace('/admin/login');
+              }}
+            >
+              退出登录
+            </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              session.logout();
-              router.replace('/admin/login');
-            }}
-          >
-            退出登录
-          </button>
         </header>
 
-        <section className="admin-main-content">{children}</section>
+        <div className="admin-main-content-shell">
+          <section className="admin-main-content">{children}</section>
+        </div>
       </div>
     </div>
   );

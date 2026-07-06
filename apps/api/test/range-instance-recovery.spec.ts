@@ -5,8 +5,7 @@ describe('buildRangeRecoverySummary', () => {
     const summary = buildRangeRecoverySummary({
       instance: {
         id: 'range-1',
-        competitionId: 'competition-1',
-        teamId: 'team-1',
+        name: '恢复实例 1',
         templateId: 'template-1',
         status: 'create_failed',
         allocatedCidr: null,
@@ -48,8 +47,7 @@ describe('buildRangeRecoverySummary', () => {
     const summary = buildRangeRecoverySummary({
       instance: {
         id: 'range-2',
-        competitionId: 'competition-1',
-        teamId: 'team-1',
+        name: '恢复实例 2',
         templateId: 'template-1',
         status: 'create_failed',
         allocatedCidr: null,

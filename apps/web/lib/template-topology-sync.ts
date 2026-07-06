@@ -1,5 +1,5 @@
 import type { RangeTemplateTopologySpec } from './admin-types';
-import type { TemplateNode } from '../components/admin/template-editor/template-property-panel';
+import type { TemplateNode } from './scenario-graph';
 
 type SyncTopologySpecInput = {
   nodes: TemplateNode[];
@@ -14,24 +14,25 @@ function formatZoneName(zoneKey: string) {
 }
 
 function buildExecutionPolicies(nodes: TemplateNode[]) {
-  const publicHost = nodes.find((node) => node.kind === 'host' && node.exposePublic);
-  const natGateway = nodes.find((node) => node.kind === 'nat_gateway' && node.snatEnabled);
+  const publicHost = nodes.find((node) => node.kind === 'ecs' && node.exposePublic);
 
   return {
     allowSshIngress: Boolean(publicHost),
     allowHttpIngress: Boolean(publicHost),
-    enableSnatOnDemand:
-      nodes.some((node) => node.kind === 'switch' && node.enableNat) || Boolean(natGateway),
+    enableSnatOnDemand: nodes.some(
+      (node) => node.kind === 'switch' && (node.nat?.snatEnabled || node.snatEnabled || node.enableNat),
+    ),
   };
 }
 
 export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTemplateTopologySpec {
   const switchNodes = input.nodes.filter((node): node is Extract<TemplateNode, { kind: 'switch' }> => node.kind === 'switch');
-  const hostNodes = input.nodes.filter((node): node is Extract<TemplateNode, { kind: 'host' }> => node.kind === 'host');
+  const hostNodes = input.nodes.filter((node): node is Extract<TemplateNode, { kind: 'ecs' }> => node.kind === 'ecs');
+  const switchById = new Map(switchNodes.map((node) => [node.id, node]));
   const entryHost = hostNodes.find((node) => node.exposePublic || node.role === 'entry');
 
   return {
-    vpcCidr: '10.70.0.0/16',
+    vpcCidr: '10.0.0.0/16',
     networkZones: switchNodes.map((node) => ({
       key: node.zoneKey,
       name: formatZoneName(node.zoneKey),
@@ -39,14 +40,20 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
       cidr: node.cidr,
       ...(node.zoneKey === 'dmz' ? { isPublicEntry: true } : {}),
     })),
-    hosts: hostNodes.map((node) => ({
-      key: node.id,
-      name: node.label,
-      zoneKey: node.zoneKey,
-      role: node.role,
-      privateIp: node.privateIp,
-      exposePublic: node.exposePublic,
-    })),
+    hosts: hostNodes.map((node) => {
+      const primaryNic = node.nics?.[0];
+      const resolvedSwitch =
+        primaryNic && typeof primaryNic.switchId === 'string' ? switchById.get(primaryNic.switchId) : null;
+
+      return {
+        key: node.id,
+        name: node.label,
+        zoneKey: resolvedSwitch?.zoneKey ?? primaryNic?.zoneKey ?? node.zoneKey,
+        role: node.role,
+        privateIp: primaryNic?.privateIp ?? node.privateIp,
+        exposePublic: node.exposePublic,
+      };
+    }),
     publicEntry: {
       hostKey: entryHost?.id ?? '',
       protocols: entryHost

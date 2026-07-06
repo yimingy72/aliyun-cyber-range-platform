@@ -9,3 +9,42 @@ server_private_ip    = "10.70.30.10"
 instance_type        = "ecs.c7.large"
 image_id             = "replace-me"
 instance_password    = "ReplaceWithStrongPassword123!"
+
+host_network_interfaces = [
+  {
+    host_key = "server-app"
+    interfaces = [
+      {
+        device_index = 1
+        zone_key     = "office"
+        private_ip   = "10.70.20.30"
+        description  = "pivot"
+      }
+    ]
+  }
+]
+
+bootstrap_scripts = [
+  {
+    key              = "server-bootstrap"
+    name             = "Server Bootstrap"
+    type             = "shell"
+    content          = "#!/bin/bash\necho ready"
+    target_host_keys = ["server-app"]
+  }
+]
+
+runtime_selections = {
+  image_policies = {
+    server = {
+      mode    = "fixed"
+      imageId = "replace-me"
+    }
+  }
+  instance_type_policies = {
+    server = {
+      mode                   = "prefer-list"
+      preferredInstanceTypes = ["ecs.c7.large", "ecs.u1-c1m2.large"]
+    }
+  }
+}

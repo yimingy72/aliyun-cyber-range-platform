@@ -10,8 +10,6 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 
 describe('CIDR allocation', () => {
   let app: INestApplication;
-  let competitionId: string;
-  let teamId: string;
   let templateId: string;
   let rangeInstanceId: string;
   const envBackup = {
@@ -56,33 +54,9 @@ describe('CIDR allocation', () => {
     configureApp(app);
     await app.init();
 
-    const competitionResponse = await request(app.getHttpServer())
-      .post('/admin/competitions')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        name: 'Alibaba Cloud Finals 2026',
-        description: 'Final round cyber range event',
-        status: 'scheduled',
-      })
-      .expect(201);
-
-    competitionId = competitionResponse.body.id as string;
-
-    const teamResponse = await request(app.getHttpServer())
-      .post('/admin/teams')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        competitionId,
-        name: 'Blue Team',
-        contactName: 'Alice',
-        contactEmailOrPhone: 'alice@example.com',
-      })
-      .expect(201);
-
-    teamId = teamResponse.body.id as string;
-
+    const repository = app.get(ADMIN_REPOSITORY);
     const templateResponse = await request(app.getHttpServer())
-      .post('/admin/range-templates')
+      .post('/admin/scenarios')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
         name: 'Enterprise Practice Range',
@@ -155,16 +129,15 @@ describe('CIDR allocation', () => {
     templateId = templateResponse.body.id as string;
 
     await request(app.getHttpServer())
-      .post(`/admin/range-templates/${templateId}/publish`)
+      .post(`/admin/scenarios/${templateId}/publish`)
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
     const rangeInstanceResponse = await request(app.getHttpServer())
-      .post('/admin/range-instances')
+      .post('/admin/ranges')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
-        competitionId,
-        teamId,
+        name: 'CIDR 分配实例 A',
         templateId,
       })
       .expect(201);
@@ -185,7 +158,7 @@ describe('CIDR allocation', () => {
     process.env.RANGE_CIDR_POOL = '10.80.0.0/16,10.81.0.0/16';
 
     const triggerResponse = await request(app.getHttpServer())
-      .post(`/admin/range-instances/${rangeInstanceId}/create`)
+      .post(`/admin/ranges/${rangeInstanceId}/create`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({ triggeredBy: 'admin' })
       .expect(201);
@@ -211,7 +184,7 @@ describe('CIDR allocation', () => {
     );
 
     const instancesResponse = await request(app.getHttpServer())
-      .get('/admin/range-instances')
+      .get('/admin/ranges')
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
@@ -226,17 +199,16 @@ describe('CIDR allocation', () => {
     process.env.RANGE_CIDR_POOL = '';
 
     const draftInstanceResponse = await request(app.getHttpServer())
-      .post('/admin/range-instances')
+      .post('/admin/ranges')
       .set('authorization', 'Bearer dev-admin-token')
       .send({
-        competitionId,
-        teamId,
+        name: 'CIDR 分配实例 B',
         templateId,
       })
       .expect(201);
 
     await request(app.getHttpServer())
-      .post(`/admin/range-instances/${draftInstanceResponse.body.id}/create`)
+      .post(`/admin/ranges/${draftInstanceResponse.body.id}/create`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({ triggeredBy: 'admin' })
       .expect(201);
@@ -261,7 +233,7 @@ describe('CIDR allocation', () => {
     );
 
     const instanceDetailResponse = await request(app.getHttpServer())
-      .get(`/admin/range-instances/${draftInstanceResponse.body.id}`)
+      .get(`/admin/ranges/${draftInstanceResponse.body.id}`)
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 

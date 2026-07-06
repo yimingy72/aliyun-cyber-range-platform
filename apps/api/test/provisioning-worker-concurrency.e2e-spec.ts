@@ -2,16 +2,21 @@ import { ProvisioningWorkerService } from '../src/provisioning/provisioning-work
 import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
+function createSystemConfigServiceStub() {
+  return {
+    getSnapshot: jest.fn().mockResolvedValue({
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-hangzhou',
+      defaultZoneId: 'cn-hangzhou-h',
+      accessKeyId: 'test-ak',
+      accessKeySecret: 'test-sk',
+    }),
+  };
+}
+
 describe('ProvisioningWorkerService concurrency', () => {
   it('claims a pending job only once when the same job is processed concurrently', async () => {
     const repository = createMemoryAdminRepository();
-    const competition = await repository.createCompetition({
-      name: 'Concurrency Drill',
-    });
-    const team = await repository.createTeam({
-      competitionId: competition.id,
-      name: 'Blue Team',
-    });
     const template = await repository.createRangeTemplate({
       name: 'Enterprise Template',
       slug: 'enterprise-template-concurrency',
@@ -73,8 +78,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     await repository.publishRangeTemplate(template.id);
 
     const instance = await repository.createRangeInstance({
-      competitionId: competition.id,
-      teamId: team.id,
+      name: '并发实例 A',
       templateId: template.id,
       status: 'pending_create',
       allocatedCidr: '10.77.0.0/16',
@@ -111,7 +115,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       destroy: jest.fn(),
     };
 
-    const worker = new ProvisioningWorkerService(repository, provisioner);
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
 
     await Promise.all([worker.process(job.id), worker.process(job.id)]);
 
@@ -132,13 +136,6 @@ describe('ProvisioningWorkerService concurrency', () => {
 
   it('prefers published compiled topologySpec over the legacy published topologySpec during provisioning', async () => {
     const repository = createMemoryAdminRepository();
-    const competition = await repository.createCompetition({
-      name: 'Compiled Topology Drill',
-    });
-    const team = await repository.createTeam({
-      competitionId: competition.id,
-      name: 'Red Team',
-    });
     const template = await repository.createRangeTemplate({
       name: 'Compiled Template',
       slug: 'compiled-template-concurrency',
@@ -204,8 +201,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     await repository.publishRangeTemplate(template.id);
 
     const instance = await repository.createRangeInstance({
-      competitionId: competition.id,
-      teamId: team.id,
+      name: '并发实例 B',
       templateId: template.id,
       status: 'pending_create',
       allocatedCidr: '10.99.0.0/16',
@@ -242,7 +238,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       destroy: jest.fn(),
     };
 
-    const worker = new ProvisioningWorkerService(repository, provisioner);
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
 
     await worker.process(job.id);
 
@@ -258,13 +254,6 @@ describe('ProvisioningWorkerService concurrency', () => {
 
   it('passes published compiled resources into provisioning alongside the published topologySpec', async () => {
     const repository = createMemoryAdminRepository();
-    const competition = await repository.createCompetition({
-      name: 'Compiled Resources Drill',
-    });
-    const team = await repository.createTeam({
-      competitionId: competition.id,
-      name: 'Blue Team',
-    });
     const template = await repository.createRangeTemplate({
       name: 'Compiled Resources Template',
       slug: 'compiled-resources-template',
@@ -404,8 +393,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     await repository.publishRangeTemplate(template.id);
 
     const instance = await repository.createRangeInstance({
-      competitionId: competition.id,
-      teamId: team.id,
+      name: '并发实例 C',
       templateId: template.id,
       status: 'pending_create',
       allocatedCidr: '10.66.0.0/16',
@@ -442,7 +430,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       destroy: jest.fn(),
     };
 
-    const worker = new ProvisioningWorkerService(repository, provisioner);
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
 
     await worker.process(job.id);
 
@@ -458,6 +446,80 @@ describe('ProvisioningWorkerService concurrency', () => {
             expect.objectContaining({ id: 'host-dmz-entry', type: 'host' }),
             expect.objectContaining({ id: 'switch-dmz', type: 'switch' }),
           ]),
+        }),
+      }),
+    );
+  });
+
+  it('passes published compiledProvisionSpec into provisioning and does not require legacy compiledSpec', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Compiled Provision Template',
+      slug: 'compiled-provision-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.55.0.0/16',
+        networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.55.10.0/24', isPublicEntry: true }],
+        hosts: [{ key: 'legacy-entry', name: 'Legacy Entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.55.10.10', exposePublic: true }],
+        publicEntry: { hostKey: 'legacy-entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        identity: {
+          templateSlug: 'compiled-provision-template',
+          templateVersion: 'v1',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: { vpcCidr: '10.56.0.0/16', entryHostKey: 'compiled-entry' },
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', cidr: '10.56.10.0/24', purpose: 'public-entry', isPublicEntry: true, routeRole: 'entry' },
+          { key: 'office', name: 'Office', cidr: '10.56.20.0/24', purpose: 'user-workstations', isPublicEntry: false, routeRole: 'internal' },
+          { key: 'server', name: 'Server', cidr: '10.56.30.0/24', purpose: 'application-servers', isPublicEntry: false, routeRole: 'internal' },
+        ],
+        hosts: [
+          { key: 'compiled-entry', name: 'Compiled Entry', role: 'entry', zoneKey: 'dmz', primaryPrivateIp: '10.56.10.10', exposePublic: true, networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.56.10.10' }] },
+          { key: 'office-client', name: 'Office Client', role: 'workstation', zoneKey: 'office', primaryPrivateIp: '10.56.20.10', exposePublic: false, networkInterfaces: [{ deviceIndex: 0, zoneKey: 'office', privateIp: '10.56.20.10' }] },
+          { key: 'server-app', name: 'Server App', role: 'app', zoneKey: 'server', primaryPrivateIp: '10.56.30.10', exposePublic: false, networkInterfaces: [{ deviceIndex: 0, zoneKey: 'server', privateIp: '10.56.30.10' }] },
+        ],
+        natGateways: [],
+        eips: [],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+      } as Record<string, unknown>,
+      compiledSpec: null as unknown as Record<string, unknown>,
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      name: '并发实例 D',
+      templateId: template.id,
+      status: 'pending_create',
+      allocatedCidr: '10.56.0.0/16',
+    });
+    const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin' });
+    await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn().mockResolvedValue({
+        accessEntry: { hostRole: 'dmz', publicIp: '47.56.0.10', privateIp: '10.56.10.10', ssh: 'ssh root@47.56.0.10' },
+        resourceSummary: { mode: 'opentofu', vpcId: 'vpc-cps', topologySpec: { vpcCidr: '10.56.0.0/16', publicEntryHostKey: 'compiled-entry', networkZoneKeys: ['dmz', 'office', 'server'], hostKeys: ['compiled-entry', 'office-client', 'server-app'] } },
+      }),
+      destroy: jest.fn(),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+    await worker.process(job.id);
+
+    expect(provisioner.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        compiledProvisionSpec: expect.objectContaining({
+          topology: expect.objectContaining({ vpcCidr: '10.56.0.0/16', entryHostKey: 'compiled-entry' }),
         }),
       }),
     );

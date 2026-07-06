@@ -3,11 +3,7 @@ import { IsISO8601, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 export class CreateRangeInstanceDto {
   @IsString()
   @IsNotEmpty()
-  competitionId!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  teamId!: string;
+  name!: string;
 
   @IsString()
   @IsNotEmpty()

@@ -246,8 +246,10 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
+    const imageCombobox = screen.getByRole('combobox', { name: '镜像名' });
+    expect(imageCombobox).toBeTruthy();
+    fireEvent.change(imageCombobox, { target: { value: 'Ubuntu 24.04 LTS' } });
     expect(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' })).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: '镜像名' })).toBeTruthy();
   });
 
   it('supports only router, switch and ecs nodes in the phase-one topology editor', () => {
@@ -1088,7 +1090,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     expect(screen.getByLabelText('名称')).toBeTruthy();
     expect(screen.getByText('ECS')).toBeTruthy();
-    expect(screen.getByLabelText('启动优先级')).toBeTruthy();
+    expect(screen.queryByLabelText('启动优先级')).toBeNull();
     expect(screen.queryByLabelText('启动等待时间')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '添加安全规则 1' }));
     expect(screen.getByLabelText('安全方向 1-1')).toBeTruthy();
@@ -1429,6 +1431,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'aliyun_linux_3_x64_20G_alibase' } });
+    fireEvent.keyDown(screen.getByLabelText('镜像名'), { key: 'Enter' });
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
@@ -1895,10 +1898,10 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' });
     fireEvent.change(await screen.findByLabelText('镜像名'), {
-      target: { value: 'platform-image-1' },
+      target: { value: 'Ubuntu 24.04 LTS' },
     });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.18' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
@@ -2008,9 +2011,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' });
+    fireEvent.change(await screen.findByLabelText('镜像名'), {
+      target: { value: 'Ubuntu 24.04 LTS' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
-    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'platform-image-1' } });
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));

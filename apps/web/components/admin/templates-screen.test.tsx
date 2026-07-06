@@ -1,0 +1,580 @@
+import React from 'react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AdminApiError } from '../../lib/admin-api';
+
+const {
+  cloneRangeTemplateMock,
+  fetchAdminBootstrapMock,
+  createRangeTemplateMock,
+  createRangeInstanceMock,
+  triggerRangeActionMock,
+  updateRangeTemplateMock,
+  publishRangeTemplateMock,
+  unpublishRangeTemplateMock,
+  deleteRangeTemplateMock,
+  pushMock,
+  replaceMock,
+} = vi.hoisted(() => ({
+  cloneRangeTemplateMock: vi.fn(),
+  fetchAdminBootstrapMock: vi.fn(),
+  createRangeTemplateMock: vi.fn(),
+  createRangeInstanceMock: vi.fn(),
+  triggerRangeActionMock: vi.fn(),
+  updateRangeTemplateMock: vi.fn(),
+  publishRangeTemplateMock: vi.fn(),
+  unpublishRangeTemplateMock: vi.fn(),
+  deleteRangeTemplateMock: vi.fn(),
+  pushMock: vi.fn(),
+  replaceMock: vi.fn(),
+}));
+
+vi.mock('../../lib/admin-api', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/admin-api')>('../../lib/admin-api');
+
+  return {
+    ...actual,
+    cloneRangeTemplate: cloneRangeTemplateMock,
+    fetchAdminBootstrap: fetchAdminBootstrapMock,
+    createRangeTemplate: createRangeTemplateMock,
+    createRangeInstance: createRangeInstanceMock,
+    triggerRangeAction: triggerRangeActionMock,
+    updateRangeTemplate: updateRangeTemplateMock,
+    publishRangeTemplate: publishRangeTemplateMock,
+    unpublishRangeTemplate: unpublishRangeTemplateMock,
+    deleteRangeTemplate: deleteRangeTemplateMock,
+  };
+});
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushMock,
+    replace: replaceMock,
+  }),
+}));
+
+vi.mock('./use-admin-session', () => ({
+  useAdminSession: () => ({
+    isReady: true,
+    token: 'dev-admin-token',
+    logout: vi.fn(),
+  }),
+}));
+
+import { TemplatesScreen } from './templates-screen';
+
+const bootstrapPayload = {
+  competitions: [],
+  teams: [],
+  rangeInstances: [],
+  provisionJobs: [],
+  rangeTemplates: [
+    {
+      id: 'template-1',
+      name: '企业攻防靶场',
+      slug: 'enterprise-range',
+      version: 'v1.0.0',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      currentDraftVersionId: 'draft-1',
+      currentPublishedVersionId: 'published-1',
+      currentDraftVersion: {
+        id: 'draft-1',
+        status: 'draft',
+        version: 'v1.1.0',
+        topologyGraph: {
+          schemaVersion: '1.0.0',
+          nodes: [{ id: 'host-1' }, { id: 'switch-1' }, { id: 'nat-1' }],
+          edges: [],
+        },
+        topologySpec: {
+          vpcCidr: '10.70.0.0/16',
+          networkZones: [
+            { key: 'dmz', name: 'DMZ', purpose: 'dmz', cidr: '10.70.10.0/24' },
+            { key: 'office', name: 'Office', purpose: 'office', cidr: '10.70.20.0/24' },
+          ],
+          hosts: [
+            { key: 'dmz-entry', name: 'DMZ', zoneKey: 'dmz', role: 'entry', privateIp: '10.70.10.10' },
+            { key: 'office-1', name: 'Office 1', zoneKey: 'office', role: 'workstation', privateIp: '10.70.20.10' },
+          ],
+          publicEntry: {
+            hostKey: 'dmz-entry',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+      },
+      currentPublishedVersion: {
+        id: 'published-1',
+        status: 'published',
+        version: 'v1.0.0',
+      },
+    },
+    {
+      id: 'template-2',
+      name: '办公网横向移动靶场',
+      slug: 'office-lateral-range',
+      version: 'v0.9.0',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      currentDraftVersionId: 'draft-2',
+      currentPublishedVersionId: null,
+      currentDraftVersion: {
+        id: 'draft-2',
+        status: 'draft',
+        version: 'v0.9.0',
+        topologyGraph: {
+          schemaVersion: '1.0.0',
+          nodes: [{ id: 'host-2' }, { id: 'switch-2' }],
+          edges: [],
+        },
+        topologySpec: {
+          vpcCidr: '10.90.0.0/16',
+          networkZones: [{ key: 'office', name: 'Office', purpose: 'office', cidr: '10.90.10.0/24' }],
+          hosts: [{ key: 'office-client', name: 'Office Client', zoneKey: 'office', role: 'workstation', privateIp: '10.90.10.10' }],
+          publicEntry: {
+            hostKey: 'office-client',
+            protocols: [{ protocol: 'rdp', port: 3389 }],
+          },
+        },
+      },
+      currentPublishedVersion: null,
+    },
+  ],
+};
+
+beforeEach(() => {
+  fetchAdminBootstrapMock.mockReset();
+  cloneRangeTemplateMock.mockReset();
+  createRangeTemplateMock.mockReset();
+  createRangeInstanceMock.mockReset();
+  triggerRangeActionMock.mockReset();
+  updateRangeTemplateMock.mockReset();
+  publishRangeTemplateMock.mockReset();
+  unpublishRangeTemplateMock.mockReset();
+  deleteRangeTemplateMock.mockReset();
+  pushMock.mockReset();
+  replaceMock.mockReset();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('TemplatesScreen', () => {
+  it('renders the scenario workbench as the default admin home surface', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('heading', { name: '靶场编排' })).toBeTruthy();
+    await screen.findByText('企业攻防靶场');
+
+    expect(screen.getByRole('button', { name: '新建靶场' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '全部编排' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '已发布' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '草稿中' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '筛选靶场名' })).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: '筛选靶场标识' })).toBeNull();
+    expect(screen.getByText('靶场列表')).toBeTruthy();
+    expect(screen.getByText('靶场')).toBeTruthy();
+    expect(screen.getByText('靶场描述')).toBeTruthy();
+    expect(screen.getByText('拓扑概览')).toBeTruthy();
+    expect(screen.getByText('状态')).toBeTruthy();
+    expect(screen.getByText('操作')).toBeTruthy();
+    expect(screen.queryByText('模板')).toBeNull();
+    expect(screen.queryByText('状态与版本 / 操作')).toBeNull();
+    expect(screen.queryByText('名称 / 标识 / 描述')).toBeNull();
+    expect(screen.queryByText('区域 / 主机 / 入口')).toBeNull();
+    expect(screen.queryByText('发布状态 / 草稿版本 / 模块')).toBeNull();
+    expect(screen.queryByText('进入编排 / 更多操作')).toBeNull();
+    expect(screen.queryByText('template-1')).toBeNull();
+    expect(screen.queryByText('browser-demo-template')).toBeNull();
+    expect(screen.queryByText('入口主机：')).toBeNull();
+    expect(screen.queryByText('infra/opentofu/modules/alicloud-enterprise-range')).toBeNull();
+    expect(screen.queryByText(/^共 \d+ 个$/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '编排 enterprise-range' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '更多操作 enterprise-range' })).toBeNull();
+    expect(screen.queryByText('当前结果')).toBeNull();
+    expect(screen.queryByText('用列表管理模板资产，进入编排页后再处理拓扑和节点细节。')).toBeNull();
+    expect(screen.queryByText('主操作始终是“进入编排”，其他动作收进行级操作里。')).toBeNull();
+    expect(screen.queryByText('模板总数')).toBeNull();
+    expect(screen.queryByText('靶场模板与拓扑编辑')).toBeNull();
+    expect(screen.getByText('已发布 1')).toBeTruthy();
+    expect(screen.getByText('草稿 1')).toBeTruthy();
+    expect(screen.getByText('总节点 5')).toBeTruthy();
+    expect(screen.queryByText('已发布 v1.0.0')).toBeNull();
+
+    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(publishedRow).toBeTruthy();
+    expect(within(publishedRow!).getByText('已发布')).toBeTruthy();
+
+    const listTitle = screen.getByText('靶场列表');
+    const searchField = screen.getByRole('textbox', { name: '筛选靶场名' });
+    const shell = listTitle.closest('.template-workbench-shell');
+    expect(shell).toBeTruthy();
+    expect(shell?.contains(searchField)).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: '草稿中' }));
+
+    expect(screen.queryByText('企业攻防靶场')).toBeNull();
+    expect(screen.getByText('办公网横向移动靶场')).toBeTruthy();
+  });
+
+  it('creates a template from minimal metadata and jumps directly into the topology editor', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      ...bootstrapPayload,
+      rangeTemplates: [],
+    });
+    createRangeTemplateMock.mockResolvedValue({
+      id: 'template-2',
+      slug: 'enterprise-range-v2',
+      version: 'v2',
+      name: '企业攻防靶场 V2',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+    });
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByRole('button', { name: '新建靶场' });
+
+    fireEvent.click(screen.getByRole('button', { name: '新建靶场' }));
+
+    const dialog = screen.getByRole('dialog', { name: '创建靶场' });
+
+    fireEvent.change(within(dialog).getByLabelText('靶场名'), {
+      target: { value: '企业攻防靶场 V2' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('靶场描述'), {
+      target: { value: '用于综合渗透训练的企业网络靶场' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '创建并进入编排' }));
+
+    await waitFor(() => {
+      expect(createRangeTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        expect.objectContaining({
+          name: '企业攻防靶场 V2',
+          description: '用于综合渗透训练的企业网络靶场',
+          slug: 'v2',
+          version: 'v1',
+          topologySpec: expect.objectContaining({
+            vpcCidr: '10.0.0.0/16',
+            publicEntry: expect.objectContaining({ hostKey: 'ecs-core-1' }),
+          }),
+        }),
+      );
+    });
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-2');
+  });
+
+  it('keeps edit and publish actions inside the row action menu', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    updateRangeTemplateMock.mockResolvedValue({
+      ...bootstrapPayload.rangeTemplates[0],
+      version: 'v1.1.0',
+    });
+    publishRangeTemplateMock.mockResolvedValue({
+      ...bootstrapPayload.rangeTemplates[0],
+      currentPublishedVersionId: 'published-2',
+      currentPublishedVersion: { id: 'published-2', status: 'published', version: 'v1.1.0' },
+      currentDraftVersion: { id: 'draft-2', status: 'draft', version: 'v1.1.0' },
+    });
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+
+    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(row).toBeTruthy();
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    expect(screen.getByText('企业攻防靶场').closest('.template-workbench-row')?.className.includes('is-menu-open')).toBe(true);
+    expect(screen.queryByRole('button', { name: '发布模板' })).toBeNull();
+    expect(screen.getByRole('button', { name: '取消发布' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+    const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
+    expect(within(editDialog).queryByLabelText('编排标识')).toBeNull();
+    expect(within(editDialog).queryByLabelText('编排版本')).toBeNull();
+    expect(within(editDialog).queryByText('enterprise-range 的基础信息会在这里轻量维护。')).toBeNull();
+    fireEvent.change(within(editDialog).getByLabelText('靶场描述'), {
+      target: { value: '更新后的靶场描述' },
+    });
+    fireEvent.click(within(editDialog).getByRole('button', { name: '保存信息' }));
+
+    await waitFor(() => {
+      expect(updateRangeTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'template-1',
+        expect.objectContaining({
+          slug: 'enterprise-range',
+          version: 'v1.0.0',
+          description: '更新后的靶场描述',
+        }),
+      );
+    });
+    expect(screen.getByText('靶场信息已保存。')).toBeTruthy();
+
+    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(draftRow).toBeTruthy();
+    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '发布模板' }));
+
+    await waitFor(() => {
+      expect(publishRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-2');
+    });
+    expect(screen.getByText('靶场模板已发布。')).toBeTruthy();
+  });
+
+  it('dismisses the success banner when the user clicks another button', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    updateRangeTemplateMock.mockResolvedValue({
+      ...bootstrapPayload.rangeTemplates[0],
+      description: '更新后的靶场描述',
+    });
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+
+    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(row).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+
+    const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
+    fireEvent.change(within(editDialog).getByLabelText('靶场描述'), {
+      target: { value: '更新后的靶场描述' },
+    });
+    fireEvent.click(within(editDialog).getByRole('button', { name: '保存信息' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('靶场信息已保存。')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '草稿中' }));
+
+    expect(screen.queryByText('靶场信息已保存。')).toBeNull();
+  });
+
+  it('keeps status actions out of 编辑信息 dialogs', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+
+    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(draftRow).toBeTruthy();
+
+    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+
+    const draftDialog = screen.getByRole('dialog', { name: '编辑靶场' });
+    expect(within(draftDialog).queryByLabelText('状态')).toBeNull();
+    fireEvent.click(within(draftDialog).getByRole('button', { name: '取消编辑' }));
+
+    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(publishedRow).toBeTruthy();
+
+    fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+
+    const publishedDialog = screen.getByRole('dialog', { name: '编辑靶场' });
+    expect(within(publishedDialog).queryByLabelText('状态')).toBeNull();
+  });
+
+  it('shows 取消发布 for published scenarios and calls the explicit unpublish action', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    unpublishRangeTemplateMock.mockResolvedValue({
+      ...bootstrapPayload.rangeTemplates[0],
+      currentPublishedVersionId: null,
+      currentPublishedVersion: null,
+    });
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+
+    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(publishedRow).toBeTruthy();
+
+    fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '取消发布' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '发布模板' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '取消发布' }));
+    expect(screen.getByRole('dialog', { name: '确认取消发布' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '确认取消发布' }));
+
+    await waitFor(() => {
+      expect(unpublishRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1');
+    });
+
+    await waitFor(() => {
+      expect(within(publishedRow!).getByText('草稿')).toBeTruthy();
+    });
+    expect(screen.getByText('已取消发布。')).toBeTruthy();
+  });
+
+  it('shows explicit dependency guidance in the delete template dialog', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+
+    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(row).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
+
+    const dialog = screen.getByRole('dialog', { name: '确认删除靶场' });
+    expect(
+      within(dialog).getByText('如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。'),
+    ).toBeTruthy();
+  });
+
+  it('shows a conflict-specific message when template deletion is blocked by active instances', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    deleteRangeTemplateMock.mockRejectedValue(new AdminApiError(409, 'template has active instances'));
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+
+    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(row).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('当前模板仍有关联的未销毁实例，请先销毁这些实例后再删除模板。已销毁实例历史会继续保留。'),
+      ).toBeTruthy();
+    });
+    expect(screen.getByText('企业攻防靶场')).toBeTruthy();
+  });
+
+  it('copies the selected template instead of creating a default skeleton', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    cloneRangeTemplateMock.mockResolvedValue({
+      id: 'template-3',
+      name: '企业攻防靶场 副本',
+      slug: 'enterprise-range-copy',
+      version: 'v1.0.0',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+    });
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+
+    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
+    expect(publishedRow).toBeTruthy();
+    fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '复制模板' }));
+
+    await waitFor(() => {
+      expect(cloneRangeTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'template-1',
+      );
+    });
+  });
+
+  it('creates and starts a range instance from the scenario row', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    createRangeInstanceMock.mockResolvedValue({
+      id: 'range-100',
+      name: '办公网横向移动靶场 实例',
+      templateId: 'template-2',
+      status: 'draft',
+    });
+    triggerRangeActionMock.mockResolvedValue({
+      id: 'job-100',
+      rangeInstanceId: 'range-100',
+      jobType: 'create',
+      status: 'pending',
+      triggeredBy: 'admin',
+    });
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+
+    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(draftRow).toBeTruthy();
+
+    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成实例' }));
+
+    await waitFor(() => {
+      expect(createRangeInstanceMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        expect.objectContaining({
+          templateId: 'template-2',
+          name: expect.stringContaining('办公网横向移动靶场'),
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(triggerRangeActionMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'range-100',
+        'create',
+        'admin',
+      );
+    });
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges?instanceId=range-100');
+  });
+
+  it('requires confirmation before deleting a template', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+
+    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(draftRow).toBeTruthy();
+
+    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
+
+    expect(screen.getByRole('dialog', { name: '确认删除靶场' })).toBeTruthy();
+    expect(
+      screen.getByText('如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。'),
+    ).toBeTruthy();
+  });
+
+  it('shows a dedicated conflict message when template deletion is blocked by linked instances', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
+    deleteRangeTemplateMock.mockRejectedValue(
+      new AdminApiError(409, 'Range template cannot be deleted while non-destroyed instances still reference it'),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+
+    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(draftRow).toBeTruthy();
+
+    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('当前模板仍有关联的未销毁实例，请先销毁这些实例后再删除模板。已销毁实例历史会继续保留。')).toBeTruthy();
+    });
+  });
+});

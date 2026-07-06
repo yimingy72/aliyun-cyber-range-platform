@@ -10,6 +10,184 @@ import { DryRunRangeProvisioner } from '../src/provisioning/dry-run-range-provis
 import type { RangeProvisionStepEvent } from '../src/provisioning/provisioning.types';
 
 describe('OpenTofuRangeProvisioner', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('uses explicit runtime config when environment cloud settings are absent', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-runtime-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'dmz',
+            public_ip: '1.1.1.1',
+            private_ip: '10.90.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-runtime',
+            subnet_ids: { dmz: 'vsw-dmz' },
+            host_ids: { 'dmz-entry': 'i-dmz' },
+            resolved_instance_type: 'ecs.c7.large',
+            resolved_image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      env: {
+        OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-runtime',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      runtimeConfig: {
+        accessKeyId: 'db-ak',
+        accessKeySecret: 'db-sk',
+        defaultRegion: 'cn-hangzhou',
+        defaultZoneId: 'cn-hangzhou-h',
+      },
+      topologySpec: {
+        vpcCidr: '10.90.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.90.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.90.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+
+    const workspaceDir = path.join(workspacesRootDir, 'range-instance-runtime');
+    const varsFilePath = path.join(workspaceDir, 'range.auto.tfvars.json');
+
+    expect(JSON.parse(await fs.readFile(varsFilePath, 'utf8'))).toEqual(
+      expect.objectContaining({
+        zone_id: 'cn-hangzhou-h',
+      }),
+    );
+    expect(runner.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          ALICLOUD_ACCESS_KEY: 'db-ak',
+          ALICLOUD_SECRET_KEY: 'db-sk',
+          ALICLOUD_REGION: 'cn-hangzhou',
+        }),
+        workspaceDir,
+      }),
+    );
+  });
+
+  it('does not call the aliyun image resolver when a fixed image id is configured', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-fixed-image-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.91.10.10', ssh: null } },
+        resource_summary: { value: { vpc_id: 'vpc-fixed-image' } },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+    const imageResolver = jest.fn().mockResolvedValue('should-not-be-used');
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableImageIdResolver: imageResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        OPENTOFU_INSTANCE_TYPE: 'ecs.u1-c1m2.large',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-fixed-image',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      topologySpec: {
+        vpcCidr: '10.91.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.91.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.91.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+
+    expect(imageResolver).not.toHaveBeenCalled();
+  });
+
   it('prepares a dedicated workspace, writes variables, and runs the OpenTofu lifecycle', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
@@ -56,6 +234,14 @@ describe('OpenTofuRangeProvisioner', () => {
               'eip-entry': 'eip-local',
               'eip-office-nat': 'eip-office',
             },
+            snat_entry_ids: {
+              'snat-office': 'snat-001',
+            },
+            dnat_entry_ids: {
+              'dnat-entry-web': 'dnat-001',
+            },
+            resolved_instance_type: 'ecs.u1-c1m2.large',
+            resolved_image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
           },
         },
       }),
@@ -270,8 +456,20 @@ describe('OpenTofuRangeProvisioner', () => {
     const workspaceDir = path.join(workspacesRootDir, 'range-instance-1');
     const varsFilePath = path.join(workspaceDir, 'range.auto.tfvars.json');
     const cliConfigFilePath = path.join(workspacesRootDir, 'provider-mirror', 'tofu.tfrc');
+    const workspaceFiles = await fs.readdir(workspaceDir);
+    const mainTf = await fs.readFile(path.join(workspaceDir, 'main.tf'), 'utf8');
 
-    expect(await fs.readFile(path.join(workspaceDir, 'main.tf'), 'utf8')).toContain('instance_id');
+    expect(workspaceFiles).toEqual(
+      expect.arrayContaining([
+        'main.tf',
+        'variables.tf',
+        'outputs.tf',
+        'versions.tf',
+        'range.auto.tfvars.json',
+      ]),
+    );
+    expect(mainTf).toContain('module "range"');
+    expect(mainTf).toContain(`source = "${moduleDir}"`);
     expect(JSON.parse(await fs.readFile(varsFilePath, 'utf8'))).toEqual(
       expect.objectContaining({
         resource_name_prefix: 'range-range-ins',
@@ -309,6 +507,7 @@ describe('OpenTofuRangeProvisioner', () => {
             private_ip: '10.88.10.10',
             role: 'entry',
             expose_public: true,
+            instance_type: 'ecs.c7.large',
           },
           {
             key: 'office-client',
@@ -317,6 +516,7 @@ describe('OpenTofuRangeProvisioner', () => {
             private_ip: '10.88.20.10',
             role: 'workstation',
             expose_public: false,
+            instance_type: 'ecs.c7.large',
           },
           {
             key: 'server-app',
@@ -325,6 +525,7 @@ describe('OpenTofuRangeProvisioner', () => {
             private_ip: '10.88.30.10',
             role: 'app',
             expose_public: false,
+            instance_type: 'ecs.c7.large',
           },
         ],
         nat_gateways: [
@@ -449,10 +650,14 @@ describe('OpenTofuRangeProvisioner', () => {
         ssh: 'ssh root@example.range',
       },
       resourceSummary: {
+        bootstrapHostKeys: null,
         eipAllocationId: 'eip-local',
         eipAllocationIds: {
           'eip-entry': 'eip-local',
           'eip-office-nat': 'eip-office',
+        },
+        dnatEntryIds: {
+          'dnat-entry-web': 'dnat-001',
         },
         hostIds: {
           'dmz-entry': 'i-dmz',
@@ -464,6 +669,13 @@ describe('OpenTofuRangeProvisioner', () => {
           'nat-office': 'ngw-office',
         },
         outputFilePath: path.join(workspaceDir, 'outputs.json'),
+        resolvedImageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        resolvedInstanceType: 'ecs.u1-c1m2.large',
+        runtimeSelections: null,
+        secondaryNetworkInterfaceIds: null,
+        snatEntryIds: {
+          'snat-office': 'snat-001',
+        },
         subnetIds: {
           dmz: 'vsw-dmz',
           office: 'vsw-office',
@@ -516,6 +728,12 @@ describe('OpenTofuRangeProvisioner', () => {
       },
     });
     const stepEvents: RangeProvisionStepEvent[] = [];
+    await fs.mkdir(path.join(workspacesRootDir, 'range-instance-2'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspacesRootDir, 'range-instance-2', 'terraform.tfstate'),
+      '{"version":4}\n',
+      'utf8',
+    );
 
     await provisioner.destroy({
       rangeInstanceId: 'range-instance-2',
@@ -756,6 +974,7 @@ describe('OpenTofuRangeProvisioner', () => {
             private_ip: '10.89.10.10',
             role: 'entry',
             expose_public: true,
+            instance_type: 'ecs.c7.large',
           },
           {
             key: 'office-client',
@@ -764,6 +983,7 @@ describe('OpenTofuRangeProvisioner', () => {
             private_ip: '10.89.20.10',
             role: 'workstation',
             expose_public: false,
+            instance_type: 'ecs.c7.large',
           },
           {
             key: 'server-app',
@@ -772,6 +992,7 @@ describe('OpenTofuRangeProvisioner', () => {
             private_ip: '10.89.30.10',
             role: 'app',
             expose_public: false,
+            instance_type: 'ecs.c7.large',
           },
         ],
         dmz_cidr: '10.89.10.0/24',
@@ -796,6 +1017,7 @@ describe('OpenTofuRangeProvisioner', () => {
         varsFilePath,
       }),
     );
+    await expect(fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8')).resolves.toContain('"version":4');
     expect(stepEvents).toEqual([
       expect.objectContaining({ stepName: 'render_template', status: 'running' }),
       expect.objectContaining({ stepName: 'render_template', status: 'succeeded' }),
@@ -1058,6 +1280,967 @@ describe('OpenTofuRangeProvisioner', () => {
       }),
     );
     expect(renderedVariables.instance_type).toBe('ecs.u1-c1m2.large');
+  });
+
+  it('resolves host instance types from compiled host cpu and memory requirements', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-host-instance-type-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const availableInstanceTypeResolver = jest.fn().mockResolvedValue('ecs.u1-c1m2.large');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.95.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-host-instance',
+            subnet_ids: { zone1: 'vsw-zone1' },
+            host_ids: { 'ecs-1': 'i-ecs1' },
+            eip_allocation_id: 'eip-host-instance',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableInstanceTypeResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+        OPENTOFU_INSTANCE_TYPE: 'auto',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-host-instance-type',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      reportStep: async () => undefined,
+      topologySpec: {
+        vpcCidr: '10.95.0.0/16',
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            purpose: 'public-entry',
+            cidr: '10.95.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'entry',
+            privateIp: '10.95.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.95.0.0/16',
+          entryHostKey: 'ecs-1',
+        },
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            cidr: '10.95.10.0/24',
+            purpose: 'public-entry',
+            isPublicEntry: true,
+            routeRole: 'entry',
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            role: 'entry',
+            zoneKey: 'zone-1',
+            primaryPrivateIp: '10.95.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.95.10.10' }],
+            instanceTypePolicyKey: 'ecs-1-instance-type-policy',
+          },
+        ],
+        natGateways: [],
+        eips: [{ key: 'entry-default', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'ecs-1', bandwidthMbps: 10 }],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: {
+          imagePolicies: {},
+          instanceTypePolicies: {
+            'ecs-1-instance-type-policy': {
+              key: 'ecs-1-instance-type-policy',
+              mode: 'auto',
+              preferredInstanceTypes: [],
+            },
+          },
+        },
+      },
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.95.0.0/16',
+          publicEntryHostKey: 'ecs-1',
+          networkZoneKeys: ['zone-1'],
+          hostKeys: ['ecs-1'],
+        },
+        resources: [
+          {
+            id: 'ecs-1',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.95.10.10',
+              exposePublic: true,
+              cpu: 1,
+              memory: 2,
+              instanceTypeStrategy: {
+                mode: 'auto',
+                preferredInstanceTypes: [],
+              },
+            },
+          },
+          {
+            id: 'switch-1',
+            type: 'switch',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'Zone 1',
+              zoneKey: 'zone-1',
+              cidr: '10.95.10.0/24',
+              purpose: 'public-entry',
+            },
+          },
+        ],
+      },
+    });
+
+    const varsFilePath = path.join(workspacesRootDir, 'range-instance-host-instance-type', 'range.auto.tfvars.json');
+    const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+    expect(availableInstanceTypeResolver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessKey: 'test-ak',
+        secretKey: 'test-sk',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        systemDiskCategory: 'cloud_essd',
+        strictPreferredInstanceTypes: true,
+        preferredInstanceTypes: expect.arrayContaining(['ecs.u1-c1m2.large']),
+      }),
+    );
+    expect(renderedVariables.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'ecs-1',
+          instance_type: 'ecs.u1-c1m2.large',
+        }),
+      ]),
+    );
+  });
+
+  it('uses final imageId and instanceType from compiled host data without calling aliyun runtime resolvers', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-host-final-values-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const availableInstanceTypeResolver = jest.fn().mockResolvedValue('should-not-be-used');
+    const availableImageIdResolver = jest.fn().mockResolvedValue('should-not-be-used');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.96.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-host-final-values',
+            subnet_ids: { 'zone-1': 'vsw-zone1' },
+            host_ids: { 'ecs-1': 'i-ecs1', 'ecs-2': 'i-ecs2' },
+            eip_allocation_id: 'eip-host-final-values',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableInstanceTypeResolver,
+      availableImageIdResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+        OPENTOFU_INSTANCE_TYPE: 'auto',
+        OPENTOFU_IMAGE_ID: 'auto',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-host-final-values',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      reportStep: async () => undefined,
+      topologySpec: {
+        vpcCidr: '10.96.0.0/16',
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            purpose: 'public-entry',
+            cidr: '10.96.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'entry',
+            privateIp: '10.96.10.10',
+            exposePublic: true,
+          },
+          {
+            key: 'ecs-2',
+            name: 'ECS 2',
+            zoneKey: 'zone-1',
+            role: 'app',
+            privateIp: '10.96.10.20',
+            exposePublic: false,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.96.0.0/16',
+          entryHostKey: 'ecs-1',
+        },
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            cidr: '10.96.10.0/24',
+            purpose: 'public-entry',
+            isPublicEntry: true,
+            routeRole: 'entry',
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            role: 'entry',
+            zoneKey: 'zone-1',
+            primaryPrivateIp: '10.96.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.96.10.10' }],
+          },
+          {
+            key: 'ecs-2',
+            name: 'ECS 2',
+            role: 'app',
+            zoneKey: 'zone-1',
+            primaryPrivateIp: '10.96.10.20',
+            exposePublic: false,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.96.10.20' }],
+          },
+        ],
+        natGateways: [],
+        eips: [{ key: 'entry-default', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'ecs-1', bandwidthMbps: 10 }],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: {
+          imagePolicies: {},
+          instanceTypePolicies: {},
+        },
+      },
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.96.0.0/16',
+          publicEntryHostKey: 'ecs-1',
+          networkZoneKeys: ['zone-1'],
+          hostKeys: ['ecs-1', 'ecs-2'],
+        },
+        resources: [
+          {
+            id: 'ecs-1',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.96.10.10',
+              exposePublic: true,
+              instanceType: 'ecs.g7.large',
+              imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+            },
+          },
+          {
+            id: 'ecs-2',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'ECS 2',
+              zoneKey: 'zone-1',
+              role: 'app',
+              privateIp: '10.96.10.20',
+              exposePublic: false,
+              instanceType: 'ecs.c7.large',
+              imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+            },
+          },
+          {
+            id: 'switch-1',
+            type: 'switch',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'Zone 1',
+              zoneKey: 'zone-1',
+              cidr: '10.96.10.0/24',
+              purpose: 'public-entry',
+            },
+          },
+        ],
+      },
+    });
+
+    const varsFilePath = path.join(
+      workspacesRootDir,
+      'range-instance-host-final-values',
+      'range.auto.tfvars.json',
+    );
+    const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+    expect(availableInstanceTypeResolver).not.toHaveBeenCalled();
+    expect(availableImageIdResolver).not.toHaveBeenCalled();
+    expect(renderedVariables.instance_type).toBe('ecs.g7.large');
+    expect(renderedVariables.image_id).toBe('ubuntu_24_04_x64_20G_alibase_20260615.vhd');
+    expect(renderedVariables.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'ecs-1',
+          instance_type: 'ecs.g7.large',
+          image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        }),
+        expect.objectContaining({
+          key: 'ecs-2',
+          instance_type: 'ecs.c7.large',
+          image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        }),
+      ]),
+    );
+  });
+
+  it('uses fetch-based Aliyun compatibility resolvers for legacy templates without final execution values', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-legacy-fetch-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [{ Value: 'ecs.u1-c1m2.large', Status: 'Available' }],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          Images: {
+            Image: [{ ImageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd', Status: 'Available' }],
+          },
+        }),
+      } as Response);
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.96.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-legacy-fetch',
+            subnet_ids: { 'zone-1': 'vsw-zone1' },
+            host_ids: { 'ecs-1': 'i-ecs1' },
+            eip_allocation_id: 'eip-legacy-fetch',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock as typeof global.fetch;
+
+    try {
+      const provisioner = new OpenTofuRangeProvisioner({
+        runner,
+        projectRootDir: tempRootDir,
+        workspacesRootDir,
+        env: {
+          ALICLOUD_REGION: 'cn-hangzhou',
+          ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+          ALICLOUD_ACCESS_KEY: 'test-ak',
+          ALICLOUD_SECRET_KEY: 'test-sk',
+          ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+          OPENTOFU_INSTANCE_TYPE: 'auto',
+          OPENTOFU_IMAGE_ID: 'auto',
+          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        },
+      });
+
+      await provisioner.create({
+        rangeInstanceId: 'range-instance-legacy-fetch',
+        templateModulePath: 'infra/module',
+        allocatedCidr: null,
+        reportStep: async () => undefined,
+        topologySpec: {
+          vpcCidr: '10.96.0.0/16',
+          networkZones: [
+            {
+              key: 'zone-1',
+              name: 'Zone 1',
+              purpose: 'public-entry',
+              cidr: '10.96.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'ecs-1',
+              name: 'Entry Host',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.96.10.10',
+              exposePublic: true,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'ecs-1',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          resources: [
+            {
+              id: 'ecs-1',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'Entry Host',
+                zoneKey: 'zone-1',
+                role: 'entry',
+                privateIp: '10.96.10.10',
+                exposePublic: true,
+                image: 'ubuntu_22_04_x64_20G_alibase',
+                cpu: 1,
+                memory: 2,
+                imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+                instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+              },
+            },
+          ],
+        },
+      });
+
+      const varsFilePath = path.join(workspacesRootDir, 'range-instance-legacy-fetch', 'range.auto.tfvars.json');
+      const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('Action=DescribeAvailableResource');
+      expect(String(fetchMock.mock.calls[1]?.[0])).toContain('Action=DescribeImages');
+      expect(renderedVariables.image_id).toBe('ubuntu_22_04_x64_20G_alibase_20260615.vhd');
+      expect(renderedVariables.hosts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: 'ecs-1',
+            instance_type: 'ecs.u1-c1m2.large',
+          }),
+        ]),
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('rejects conflicting final host imageIds before calling the aliyun runtime image resolver', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-host-image-conflict-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const availableInstanceTypeResolver = jest.fn().mockResolvedValue('should-not-be-used');
+    const availableImageIdResolver = jest.fn().mockResolvedValue('should-not-be-used');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({}),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableInstanceTypeResolver,
+      availableImageIdResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+        OPENTOFU_INSTANCE_TYPE: 'auto',
+        OPENTOFU_IMAGE_ID: 'auto',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    await expect(
+      provisioner.create({
+        rangeInstanceId: 'range-instance-host-image-conflict',
+        templateModulePath: 'infra/module',
+        allocatedCidr: null,
+        reportStep: async () => undefined,
+        topologySpec: {
+          vpcCidr: '10.97.0.0/16',
+          networkZones: [
+            {
+              key: 'zone-1',
+              name: 'Zone 1',
+              purpose: 'public-entry',
+              cidr: '10.97.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'ecs-1',
+              name: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.97.10.10',
+              exposePublic: true,
+            },
+            {
+              key: 'ecs-2',
+              name: 'ECS 2',
+              zoneKey: 'zone-1',
+              role: 'app',
+              privateIp: '10.97.10.20',
+              exposePublic: false,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'ecs-1',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        compiledProvisionSpec: {
+          schemaVersion: '1.0.0',
+          topology: {
+            vpcCidr: '10.97.0.0/16',
+            entryHostKey: 'ecs-1',
+          },
+          networkZones: [
+            {
+              key: 'zone-1',
+              name: 'Zone 1',
+              cidr: '10.97.10.0/24',
+              purpose: 'public-entry',
+              isPublicEntry: true,
+              routeRole: 'entry',
+            },
+          ],
+          hosts: [
+            {
+              key: 'ecs-1',
+              name: 'ECS 1',
+              role: 'entry',
+              zoneKey: 'zone-1',
+              primaryPrivateIp: '10.97.10.10',
+              exposePublic: true,
+              networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.97.10.10' }],
+            },
+            {
+              key: 'ecs-2',
+              name: 'ECS 2',
+              role: 'app',
+              zoneKey: 'zone-1',
+              primaryPrivateIp: '10.97.10.20',
+              exposePublic: false,
+              networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.97.10.20' }],
+            },
+          ],
+          natGateways: [],
+          eips: [{ key: 'entry-default', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'ecs-1', bandwidthMbps: 10 }],
+          snatEntries: [],
+          dnatEntries: [],
+          securityGroupRules: [],
+          aclRules: [],
+          bootstrapScripts: [],
+          runtimeSelections: {
+            imagePolicies: {},
+            instanceTypePolicies: {},
+          },
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          topology: {
+            vpcCidr: '10.97.0.0/16',
+            publicEntryHostKey: 'ecs-1',
+            networkZoneKeys: ['zone-1'],
+            hostKeys: ['ecs-1', 'ecs-2'],
+          },
+          resources: [
+            {
+              id: 'ecs-1',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 1',
+                zoneKey: 'zone-1',
+                role: 'entry',
+                privateIp: '10.97.10.10',
+                exposePublic: true,
+                instanceType: 'ecs.g7.large',
+                imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+              },
+            },
+            {
+              id: 'ecs-2',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 2',
+                zoneKey: 'zone-1',
+                role: 'app',
+                privateIp: '10.97.10.20',
+                exposePublic: false,
+                instanceType: 'ecs.c7.large',
+                imageId: 'debian_12_14_x64_20G_alibase_20260609.vhd',
+              },
+            },
+            {
+              id: 'switch-1',
+              type: 'switch',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'Zone 1',
+                zoneKey: 'zone-1',
+                cidr: '10.97.10.0/24',
+                purpose: 'public-entry',
+              },
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(
+      'Conflicting final host image IDs are not supported by the current OpenTofu runtime',
+    );
+
+    expect(availableImageIdResolver).not.toHaveBeenCalled();
+    expect(runner.init).not.toHaveBeenCalled();
+  });
+
+  it('does not treat generic host image strings as final executable image IDs', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-generic-host-image-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const availableImageIdResolver = jest
+      .fn()
+      .mockResolvedValue('ubuntu_24_04_x64_20G_alibase_20260615.vhd');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.98.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-generic-host-image',
+            subnet_ids: { 'zone-1': 'vsw-zone1' },
+            host_ids: { 'ecs-1': 'i-ecs1' },
+            eip_allocation_id: 'eip-generic-host-image',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableImageIdResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+        OPENTOFU_INSTANCE_TYPE: 'ecs.g7.large',
+        OPENTOFU_IMAGE_ID: 'auto',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-generic-host-image',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      reportStep: async () => undefined,
+      topologySpec: {
+        vpcCidr: '10.98.0.0/16',
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            purpose: 'public-entry',
+            cidr: '10.98.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'entry',
+            privateIp: '10.98.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.98.0.0/16',
+          entryHostKey: 'ecs-1',
+        },
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            cidr: '10.98.10.0/24',
+            purpose: 'public-entry',
+            isPublicEntry: true,
+            routeRole: 'entry',
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            role: 'entry',
+            zoneKey: 'zone-1',
+            primaryPrivateIp: '10.98.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.98.10.10' }],
+          },
+        ],
+        natGateways: [],
+        eips: [{ key: 'entry-default', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'ecs-1', bandwidthMbps: 10 }],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: {
+          imagePolicies: {},
+          instanceTypePolicies: {},
+        },
+      },
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.98.0.0/16',
+          publicEntryHostKey: 'ecs-1',
+          networkZoneKeys: ['zone-1'],
+          hostKeys: ['ecs-1'],
+        },
+        resources: [
+          {
+            id: 'ecs-1',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.98.10.10',
+              exposePublic: true,
+              imageId: 'ubuntu',
+            },
+          },
+          {
+            id: 'switch-1',
+            type: 'switch',
+            provider: 'alibaba_cloud',
+            config: {
+              label: 'Zone 1',
+              zoneKey: 'zone-1',
+              cidr: '10.98.10.0/24',
+              purpose: 'public-entry',
+            },
+          },
+        ],
+      },
+    });
+
+    const varsFilePath = path.join(
+      workspacesRootDir,
+      'range-instance-generic-host-image',
+      'range.auto.tfvars.json',
+    );
+    const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+    expect(availableImageIdResolver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessKey: 'test-ak',
+        secretKey: 'test-sk',
+        regionId: 'cn-hangzhou',
+        preferredImageIds: expect.any(Array),
+      }),
+    );
+    expect(renderedVariables.image_id).toBe('ubuntu_24_04_x64_20G_alibase_20260615.vhd');
+    expect(renderedVariables.hosts).toEqual(
+      expect.arrayContaining([
+        expect.not.objectContaining({
+          key: 'ecs-1',
+          image_id: 'ubuntu',
+        }),
+      ]),
+    );
   });
 
   it('resolves auto image ids before rendering variables when env requests automatic selection', async () => {

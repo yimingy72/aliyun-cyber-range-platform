@@ -1,0 +1,6 @@
+exportedAt=2026-07-03
+archive=current-system-images-2026-07-03.tar.gz
+images:
+  - repoTags=[cyber-range-api:2026-07-03 for-api:latest] | id=sha256:b4a2972d96ee9ad29343f143e367b1734f4c75a26be7596c012e83440874203a | size=505480489
+  - repoTags=[cyber-range-provisioner-worker:2026-07-03 for-provisioner-worker:latest] | id=sha256:4aa481470e580e0cb00d4f5095800e27da2b1620759f12d54e45c90bc41b8b36 | size=505480805
+  - repoTags=[cyber-range-web:2026-07-03 for-web:latest] | id=sha256:864df4f00a4492256194e5dc875f420af8216a09289dd5688a69dbd49375dcc0 | size=363167925

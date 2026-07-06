@@ -1,0 +1,121 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cyber_range}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cyber_range}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: cyber-range-api:2026-07-03
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      API_PORT: 3001
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
+      RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-dry-run}
+      RANGE_CIDR_POOL: ${RANGE_CIDR_POOL:-10.80.0.0/16,10.81.0.0/16}
+      OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
+      OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
+      OPENTOFU_PROVIDER_MIRROR_ROOT: /var/lib/cyber-range/provider-mirror
+      OPENTOFU_INSTANCE_TYPE: ${OPENTOFU_INSTANCE_TYPE:-auto}
+      OPENTOFU_INSTANCE_TYPE_PREFERENCES: ${OPENTOFU_INSTANCE_TYPE_PREFERENCES:-}
+      OPENTOFU_IMAGE_ID: ${OPENTOFU_IMAGE_ID:-}
+      OPENTOFU_INSTANCE_PASSWORD: ${OPENTOFU_INSTANCE_PASSWORD:-}
+      OPENTOFU_ALLOWED_INGRESS_CIDR: ${OPENTOFU_ALLOWED_INGRESS_CIDR:-0.0.0.0/0}
+      OPENTOFU_SYSTEM_DISK_CATEGORY: ${OPENTOFU_SYSTEM_DISK_CATEGORY:-cloud_essd}
+      OPENTOFU_SYSTEM_DISK_SIZE: ${OPENTOFU_SYSTEM_DISK_SIZE:-40}
+      OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT: ${OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT:-10}
+      ALICLOUD_ACCESS_KEY: ${ALICLOUD_ACCESS_KEY:-}
+      ALICLOUD_SECRET_KEY: ${ALICLOUD_SECRET_KEY:-}
+      ALICLOUD_REGION: ${ALICLOUD_REGION:-cn-hangzhou}
+      ALICLOUD_ZONE_ID: ${ALICLOUD_ZONE_ID:-cn-hangzhou-h}
+      ALICLOUD_IMAGE_ID: ${ALICLOUD_IMAGE_ID:-}
+      ALICLOUD_INSTANCE_TYPE: ${ALICLOUD_INSTANCE_TYPE:-auto}
+      ALICLOUD_INSTANCE_TYPE_PREFERENCES: ${ALICLOUD_INSTANCE_TYPE_PREFERENCES:-}
+      ALICLOUD_RANGE_VPC_CIDR: ${ALICLOUD_RANGE_VPC_CIDR:-10.70.0.0/16}
+      ALICLOUD_RANGE_DMZ_CIDR: ${ALICLOUD_RANGE_DMZ_CIDR:-10.70.10.0/24}
+      ALICLOUD_RANGE_OFFICE_CIDR: ${ALICLOUD_RANGE_OFFICE_CIDR:-10.70.20.0/24}
+      ALICLOUD_RANGE_SERVER_CIDR: ${ALICLOUD_RANGE_SERVER_CIDR:-10.70.30.0/24}
+      ALICLOUD_RANGE_DMZ_PRIVATE_IP: ${ALICLOUD_RANGE_DMZ_PRIVATE_IP:-10.70.10.10}
+      ALICLOUD_RANGE_OFFICE_PRIVATE_IP: ${ALICLOUD_RANGE_OFFICE_PRIVATE_IP:-10.70.20.10}
+      ALICLOUD_RANGE_SERVER_PRIVATE_IP: ${ALICLOUD_RANGE_SERVER_PRIVATE_IP:-10.70.30.10}
+      ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip
+    ports:
+      - "${API_PORT:-3001}:3001"
+    volumes:
+      - opentofu-workspaces:/var/lib/cyber-range/workspaces
+      - provider-mirror:/var/lib/cyber-range/provider-mirror
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  provisioner-worker:
+    image: cyber-range-provisioner-worker:2026-07-03
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["node", "apps/api/dist/worker-main.js"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
+      RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-dry-run}
+      OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
+      OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
+      OPENTOFU_PROVIDER_MIRROR_ROOT: /var/lib/cyber-range/provider-mirror
+      OPENTOFU_INSTANCE_TYPE: ${OPENTOFU_INSTANCE_TYPE:-auto}
+      OPENTOFU_INSTANCE_TYPE_PREFERENCES: ${OPENTOFU_INSTANCE_TYPE_PREFERENCES:-}
+      OPENTOFU_IMAGE_ID: ${OPENTOFU_IMAGE_ID:-}
+      OPENTOFU_INSTANCE_PASSWORD: ${OPENTOFU_INSTANCE_PASSWORD:-}
+      OPENTOFU_ALLOWED_INGRESS_CIDR: ${OPENTOFU_ALLOWED_INGRESS_CIDR:-0.0.0.0/0}
+      OPENTOFU_SYSTEM_DISK_CATEGORY: ${OPENTOFU_SYSTEM_DISK_CATEGORY:-cloud_essd}
+      OPENTOFU_SYSTEM_DISK_SIZE: ${OPENTOFU_SYSTEM_DISK_SIZE:-40}
+      OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT: ${OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT:-10}
+      ALICLOUD_ACCESS_KEY: ${ALICLOUD_ACCESS_KEY:-}
+      ALICLOUD_SECRET_KEY: ${ALICLOUD_SECRET_KEY:-}
+      ALICLOUD_REGION: ${ALICLOUD_REGION:-cn-hangzhou}
+      ALICLOUD_ZONE_ID: ${ALICLOUD_ZONE_ID:-cn-hangzhou-h}
+      ALICLOUD_IMAGE_ID: ${ALICLOUD_IMAGE_ID:-}
+      ALICLOUD_INSTANCE_TYPE: ${ALICLOUD_INSTANCE_TYPE:-auto}
+      ALICLOUD_INSTANCE_TYPE_PREFERENCES: ${ALICLOUD_INSTANCE_TYPE_PREFERENCES:-}
+      ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip
+    volumes:
+      - opentofu-workspaces:/var/lib/cyber-range/workspaces
+      - provider-mirror:/var/lib/cyber-range/provider-mirror
+
+  web:
+    image: cyber-range-web:2026-07-03
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      WEB_PORT: 3000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  postgres-data:
+  opentofu-workspaces:
+  provider-mirror:
