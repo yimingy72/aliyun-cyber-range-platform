@@ -205,6 +205,13 @@ export type RangeInstanceCreateInput = {
   expiresAt?: string;
 };
 
+export type RangeInstanceLaunchInput = {
+  templateId: string;
+  name: string;
+  expiresAt: string;
+  triggeredBy: string;
+};
+
 export type RangeInstanceDetail = RangeInstance & {
   templateId: string;
   recoverySummary?: RangeRecoverySummary | null;

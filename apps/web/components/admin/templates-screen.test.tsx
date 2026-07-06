@@ -7,8 +7,7 @@ const {
   cloneRangeTemplateMock,
   fetchAdminBootstrapMock,
   createRangeTemplateMock,
-  createRangeInstanceMock,
-  triggerRangeActionMock,
+  launchRangeInstanceMock,
   updateRangeTemplateMock,
   publishRangeTemplateMock,
   unpublishRangeTemplateMock,
@@ -19,8 +18,7 @@ const {
   cloneRangeTemplateMock: vi.fn(),
   fetchAdminBootstrapMock: vi.fn(),
   createRangeTemplateMock: vi.fn(),
-  createRangeInstanceMock: vi.fn(),
-  triggerRangeActionMock: vi.fn(),
+  launchRangeInstanceMock: vi.fn(),
   updateRangeTemplateMock: vi.fn(),
   publishRangeTemplateMock: vi.fn(),
   unpublishRangeTemplateMock: vi.fn(),
@@ -37,8 +35,7 @@ vi.mock('../../lib/admin-api', async () => {
     cloneRangeTemplate: cloneRangeTemplateMock,
     fetchAdminBootstrap: fetchAdminBootstrapMock,
     createRangeTemplate: createRangeTemplateMock,
-    createRangeInstance: createRangeInstanceMock,
-    triggerRangeAction: triggerRangeActionMock,
+    launchRangeInstance: launchRangeInstanceMock,
     updateRangeTemplate: updateRangeTemplateMock,
     publishRangeTemplate: publishRangeTemplateMock,
     unpublishRangeTemplate: unpublishRangeTemplateMock,
@@ -144,8 +141,7 @@ beforeEach(() => {
   fetchAdminBootstrapMock.mockReset();
   cloneRangeTemplateMock.mockReset();
   createRangeTemplateMock.mockReset();
-  createRangeInstanceMock.mockReset();
-  triggerRangeActionMock.mockReset();
+  launchRangeInstanceMock.mockReset();
   updateRangeTemplateMock.mockReset();
   publishRangeTemplateMock.mockReset();
   unpublishRangeTemplateMock.mockReset();
@@ -487,20 +483,13 @@ describe('TemplatesScreen', () => {
     });
   });
 
-  it('creates and starts a range instance from the scenario row', async () => {
+  it('asks for instance name and expiresAt before launching', async () => {
     fetchAdminBootstrapMock.mockResolvedValue(bootstrapPayload);
-    createRangeInstanceMock.mockResolvedValue({
+    launchRangeInstanceMock.mockResolvedValue({
       id: 'range-100',
       name: '办公网横向移动靶场 实例',
       templateId: 'template-2',
-      status: 'draft',
-    });
-    triggerRangeActionMock.mockResolvedValue({
-      id: 'job-100',
-      rangeInstanceId: 'range-100',
-      jobType: 'create',
-      status: 'pending',
-      triggeredBy: 'admin',
+      status: 'pending_create',
     });
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
@@ -513,28 +502,32 @@ describe('TemplatesScreen', () => {
     fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
     fireEvent.click(screen.getByRole('button', { name: '生成实例' }));
 
+    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    expect(within(dialog).getByLabelText('实例名')).toBeTruthy();
+    expect(within(dialog).getByLabelText('到期时间')).toBeTruthy();
+
+    fireEvent.change(within(dialog).getByLabelText('实例名'), {
+      target: { value: '办公网横向移动靶场-测试实例' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('到期时间'), {
+      target: { value: '2026-07-09T20:30' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+
     await waitFor(() => {
-      expect(createRangeInstanceMock).toHaveBeenCalledWith(
+      expect(launchRangeInstanceMock).toHaveBeenCalledWith(
         'http://localhost:3001',
         'dev-admin-token',
-        expect.objectContaining({
+        {
           templateId: 'template-2',
-          name: expect.stringContaining('办公网横向移动靶场'),
-        }),
+          name: '办公网横向移动靶场-测试实例',
+          expiresAt: '2026-07-09T12:30:00.000Z',
+          triggeredBy: 'admin',
+        },
       );
     });
 
-    await waitFor(() => {
-      expect(triggerRangeActionMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'range-100',
-        'create',
-        'admin',
-      );
-    });
-
-    expect(pushMock).toHaveBeenCalledWith('/admin/ranges?instanceId=range-100');
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-100');
   });
 
   it('requires confirmation before deleting a template', async () => {

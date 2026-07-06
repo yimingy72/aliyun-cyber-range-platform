@@ -1,17 +1,17 @@
 'use client';
 
+import React from 'react';
 import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
   AdminApiError,
   cloneRangeTemplate,
-  createRangeInstance,
   createRangeTemplate,
   deleteRangeTemplate,
   fetchAdminBootstrap,
+  launchRangeInstance,
   publishRangeTemplate,
-  triggerRangeAction,
   unpublishRangeTemplate,
   updateRangeTemplate,
 } from '../../lib/admin-api';
@@ -42,6 +42,13 @@ type CreateTemplateDraft = {
   description: string;
 };
 
+type LaunchInstanceDraft = {
+  templateId: string;
+  templateName: string;
+  name: string;
+  expiresAt: string;
+};
+
 type TemplateStatusFilter = 'all' | 'published' | 'draft';
 type TemplateConfirmState =
   | {
@@ -62,6 +69,13 @@ const EMPTY_TEMPLATE_DRAFT: TemplateDraft = {
 const EMPTY_CREATE_TEMPLATE_DRAFT: CreateTemplateDraft = {
   name: '',
   description: '',
+};
+
+const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
+  templateId: '',
+  templateName: '',
+  name: '',
+  expiresAt: '',
 };
 
 function isUnauthorizedError(error: unknown) {
@@ -208,6 +222,7 @@ export function TemplatesScreen({
   const [statusFilter, setStatusFilter] = useState<TemplateStatusFilter>('all');
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
+  const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -365,6 +380,20 @@ export function TemplatesScreen({
   function closeEditDialog() {
     setEditingTemplateId(null);
     setEditDraft(EMPTY_TEMPLATE_DRAFT);
+  }
+
+  function openLaunchDialog(template: Scenario) {
+    setMenuTemplateId(null);
+    setLaunchDraft({
+      templateId: template.id,
+      templateName: getScenarioDisplayName(template),
+      name: buildRangeInstanceName(template),
+      expiresAt: '',
+    });
+  }
+
+  function closeLaunchDialog() {
+    setLaunchDraft(EMPTY_LAUNCH_INSTANCE_DRAFT);
   }
 
   function closeConfirmDialog() {
@@ -547,30 +576,45 @@ export function TemplatesScreen({
       throw new Error('admin session missing');
     }
 
+    if (!template.id) {
+      setActionErrorMessage('当前靶场缺少有效标识，无法生成实例。');
+      return;
+    }
+
+    openLaunchDialog(template);
+  }
+
+  async function handleLaunchInstance() {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    const name = launchDraft.name.trim();
+    const expiresAt = launchDraft.expiresAt.trim();
+
+    if (!name) {
+      setActionErrorMessage('请填写实例名。');
+      return;
+    }
+
+    if (!expiresAt) {
+      setActionErrorMessage('请选择到期时间。');
+      return;
+    }
+
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
-    setMenuTemplateId(null);
     setIsSubmitting(true);
 
     try {
-      const instance = await createRangeInstance(apiBaseUrl, session.token, {
-        name: buildRangeInstanceName(template),
-        templateId: template.id,
+      const instance = await launchRangeInstance(apiBaseUrl, session.token, {
+        templateId: launchDraft.templateId,
+        name,
+        expiresAt: new Date(expiresAt).toISOString(),
+        triggeredBy: 'admin',
       });
-
-      try {
-        await triggerRangeAction(apiBaseUrl, session.token, instance.id, 'create', 'admin');
-      } catch (error: unknown) {
-        if (isUnauthorizedError(error)) {
-          session.logout();
-          router.replace('/admin/login');
-          return;
-        }
-
-        setActionErrorMessage('实例已创建，但启动任务发起失败，请前往靶场实例页重试。');
-      }
-
-      router.push(`/admin/ranges?instanceId=${instance.id}`);
+      closeLaunchDialog();
+      router.push(`/admin/ranges/${instance.id}`);
     } catch (error: unknown) {
       handleProtectedActionError(error, '实例生成失败，请稍后重试。');
     } finally {
@@ -816,6 +860,38 @@ export function TemplatesScreen({
             </button>
             <button type="button" disabled={isSubmitting} onClick={closeEditDialog}>
               取消编辑
+            </button>
+          </div>
+        </TemplateDialog>
+      ) : null}
+
+      {launchDraft.templateId ? (
+        <TemplateDialog title="生成实例">
+          <div className="template-workbench-dialog-grid">
+            <label>
+              <span>实例名</span>
+              <input
+                aria-label="实例名"
+                value={launchDraft.name}
+                onChange={(event) => setLaunchDraft((previous) => ({ ...previous, name: event.target.value }))}
+              />
+            </label>
+            <label>
+              <span>到期时间</span>
+              <input
+                aria-label="到期时间"
+                type="datetime-local"
+                value={launchDraft.expiresAt}
+                onChange={(event) => setLaunchDraft((previous) => ({ ...previous, expiresAt: event.target.value }))}
+              />
+            </label>
+          </div>
+          <div className="template-workbench-dialog-actions">
+            <button type="button" disabled={isSubmitting} onClick={() => void handleLaunchInstance()}>
+              确认生成
+            </button>
+            <button type="button" disabled={isSubmitting} onClick={closeLaunchDialog}>
+              取消
             </button>
           </div>
         </TemplateDialog>

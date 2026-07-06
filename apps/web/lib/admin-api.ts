@@ -10,6 +10,7 @@ import type {
   ProvisionJob,
   ProvisionJobStep,
   RangeInstanceCreateInput,
+  RangeInstanceLaunchInput,
   RangeInstance,
   RangeInstanceDetail,
   Scenario,
@@ -91,6 +92,20 @@ export async function createRangeInstance(
   payload: RangeInstanceCreateInput,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<RangeInstance>(response);
+}
+
+export async function launchRangeInstance(
+  apiBaseUrl: string,
+  token: string,
+  payload: RangeInstanceLaunchInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/launch`, {
     method: 'POST',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
