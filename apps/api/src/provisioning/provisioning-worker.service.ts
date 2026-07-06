@@ -32,6 +32,8 @@ export class ProvisioningWorkerService {
 
   async runLoop(): Promise<void> {
     while (true) {
+      await this.processExpiredInstances(new Date());
+
       const pendingJob = (await this.adminRepository.listProvisionJobs()).find((job) => job.status === 'pending');
 
       if (pendingJob) {
@@ -40,6 +42,27 @@ export class ProvisioningWorkerService {
       }
 
       await sleep(readWorkerPollIntervalMs());
+    }
+  }
+
+  async processExpiredInstances(now: Date) {
+    const instances = await this.adminRepository.listRangeInstances();
+
+    for (const instance of instances) {
+      if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
+        continue;
+      }
+
+      const job = await this.adminRepository.createProvisionJob({
+        rangeInstanceId: instance.id,
+        jobType: 'destroy',
+        triggeredBy: 'system:auto-expire',
+      });
+
+      await this.adminRepository.updateRangeInstance(instance.id, {
+        status: 'pending_destroy',
+        lastJobId: job.id,
+      });
     }
   }
 
