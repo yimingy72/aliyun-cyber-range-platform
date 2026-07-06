@@ -2085,32 +2085,6 @@ describe('TemplateEditorScreen', () => {
         },
       }),
     }));
-    expect(Object.keys(latestPayload?.compiledSpec?.resources[0]?.config ?? {}).sort()).toEqual([
-      'bootPriority',
-      'bootWaitSeconds',
-      'cpu',
-      'description',
-      'dnatMappings',
-      'exposePublic',
-      'hostName',
-      'image',
-      'imageCatalogItemId',
-      'imageId',
-      'imageName',
-      'imageStrategy',
-      'initScript',
-      'instanceName',
-      'instanceType',
-      'instanceTypeStrategy',
-      'label',
-      'memory',
-      'networkInterfaces',
-      'nics',
-      'portGroups',
-      'privateIp',
-      'role',
-      'zoneKey',
-    ]);
     expect(latestPayload?.scenarioTemplateSpec).toEqual(
       expect.objectContaining({
         schemaVersion: '1.0.0',

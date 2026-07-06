@@ -738,8 +738,6 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
         hostName: typeof candidateRecord.hostName === 'string' ? candidateRecord.hostName : `ecs-${kindOrdinal}`,
         role: typeof candidateRecord.role === 'string' ? candidateRecord.role : 'ecs',
         image: typeof candidateRecord.image === 'string' ? candidateRecord.image : 'ubuntu_22_04_x64_20G_alibase',
-        imageCatalogItemId:
-          typeof candidateRecord.imageCatalogItemId === 'string' ? candidateRecord.imageCatalogItemId : undefined,
         platformImageAssetId:
           typeof candidateRecord.platformImageAssetId === 'string' ? candidateRecord.platformImageAssetId : undefined,
         imageName: typeof candidateRecord.imageName === 'string' ? candidateRecord.imageName : (typeof candidateRecord.image === 'string' ? candidateRecord.image : 'ubuntu_22_04_x64_20G_alibase'),

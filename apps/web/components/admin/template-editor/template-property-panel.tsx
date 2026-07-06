@@ -165,7 +165,6 @@ function renderHostFields(
       ? {
           id:
             selectedNodeWithPlatformImageAsset.platformImageAssetId ??
-            selectedNode.imageCatalogItemId ??
             selectedNode.imageId ??
             selectedNode.image ??
             `${selectedNode.id}-current-image`,
@@ -290,7 +289,6 @@ function renderHostFields(
               const nextPlatformImageAsset = platformImageOptions.find((item) => item.id === event.target.value) ?? null;
               const nextNode: EcsTemplateNodeWithPlatformImageAssetId = {
                 ...selectedNode,
-                imageCatalogItemId: undefined,
                 platformImageAssetId: nextPlatformImageAsset?.id,
                 image: nextPlatformImageAsset?.displayName ?? selectedNode.image,
                 imageName: nextPlatformImageAsset?.displayName ?? selectedNode.imageName,
