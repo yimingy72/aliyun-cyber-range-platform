@@ -29,37 +29,19 @@ describe('Admin image catalog platform asset persistence baseline', () => {
       scope: 'public',
     });
 
-    const platformAssetRepository = repository as typeof repository & {
-      collectPlatformImageAsset: (input: {
-        snapshotId: string;
-        displayName: string;
-      }) => Promise<{ id: string }>;
-      listPlatformImageAssets: (filter: {
-        accountScopeKey: string;
-        regionId: string;
-      }) => Promise<
-        Array<{
-          imageId: string;
-          displayName: string;
-          enabled: boolean;
-          sourceScope: string;
-        }>
-      >;
-    };
-
-    const firstAsset = await platformAssetRepository.collectPlatformImageAsset({
+    const firstAsset = await repository.collectPlatformImageAsset({
       snapshotId: publicSnapshot.id,
       displayName: 'Ubuntu 24.04',
     });
 
-    const secondAsset = await platformAssetRepository.collectPlatformImageAsset({
+    const secondAsset = await repository.collectPlatformImageAsset({
       snapshotId: publicSnapshot.id,
       displayName: 'Ubuntu 24.04',
     });
 
     expect(secondAsset.id).toBe(firstAsset.id);
 
-    const assets = await platformAssetRepository.listPlatformImageAssets({
+    const assets = await repository.listPlatformImageAssets({
       accountScopeKey: toAccountScopeKey(accountUid),
       regionId: 'cn-hangzhou',
     });
@@ -67,11 +49,41 @@ describe('Admin image catalog platform asset persistence baseline', () => {
     expect(assets).toHaveLength(1);
     expect(assets[0]).toEqual(
       expect.objectContaining({
+        id: firstAsset.id,
         imageId: publicSnapshot.imageId,
         displayName: 'Ubuntu 24.04',
         enabled: true,
         sourceScope: 'public',
       }),
     );
+
+    await repository.updatePlatformImageAsset(firstAsset.id, {
+      displayName: 'Ubuntu 24.04 LTS',
+    });
+
+    await repository.setPlatformImageAssetEnabled(firstAsset.id, false);
+
+    const updatedAssets = await repository.listPlatformImageAssets({
+      accountScopeKey: toAccountScopeKey(accountUid),
+      regionId: 'cn-hangzhou',
+    });
+
+    expect(updatedAssets).toHaveLength(1);
+    expect(updatedAssets[0]).toEqual(
+      expect.objectContaining({
+        id: firstAsset.id,
+        displayName: 'Ubuntu 24.04 LTS',
+        enabled: false,
+      }),
+    );
+
+    await repository.deletePlatformImageAsset(firstAsset.id);
+
+    const assetsAfterDeletion = await repository.listPlatformImageAssets({
+      accountScopeKey: toAccountScopeKey(accountUid),
+      regionId: 'cn-hangzhou',
+    });
+
+    expect(assetsAfterDeletion).toHaveLength(0);
   });
 });

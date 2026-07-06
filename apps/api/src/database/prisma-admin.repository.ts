@@ -3,139 +3,45 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '../../../../packages/database/generated/client';
 import {
   AdminRepository,
-  CompetitionRecord,
-  CreateCompetitionInput,
+  CloudImageSnapshotRecord,
+  CollectImageCatalogItemInput,
+  CollectPlatformImageAssetInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
-  CreateTeamInput,
+  ImageCatalogItemRecord,
+  ListImageCatalogItemsFilter,
+  ListImageSnapshotsFilter,
+  ListPlatformImageAssetsFilter,
+  PlatformImageAssetRecord,
   ProvisionJobRecord,
   ProvisionJobStepLogRecord,
+  ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
   RangeTemplateRecord,
-  TeamRecord,
+  UpsertImageSnapshotsInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
   UpdateRangeInstanceInput,
-  UpdateCompetitionInput,
   UpdateRangeTemplateInput,
-  UpdateTeamInput,
 } from '../admin/admin.repository';
+import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
+
+function shouldAutoUnpublishTemplate(input: UpdateRangeTemplateInput) {
+  return (
+    input.topologySpec !== undefined ||
+    input.topologyGraph !== undefined ||
+    input.scenarioTemplateSpec !== undefined ||
+    input.compiledProvisionSpec !== undefined ||
+    input.compiledSpec !== undefined
+  );
+}
 
 @Injectable()
 export class PrismaAdminRepository implements AdminRepository {
   constructor(private readonly prisma: PrismaService) {}
-
-  async listCompetitions(): Promise<CompetitionRecord[]> {
-    return this.prisma.competition.findMany({
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-  }
-
-  async createCompetition(input: CreateCompetitionInput): Promise<CompetitionRecord> {
-    return this.prisma.competition.create({
-      data: {
-        name: input.name,
-        description: input.description ?? null,
-        status: input.status ?? 'draft',
-        startAt: input.startAt ? new Date(input.startAt) : null,
-        endAt: input.endAt ? new Date(input.endAt) : null,
-        defaultTemplateId: input.defaultTemplateId ?? null,
-      },
-    });
-  }
-
-  async getCompetitionById(id: string): Promise<CompetitionRecord | null> {
-    return this.prisma.competition.findUnique({
-      where: {
-        id,
-      },
-    });
-  }
-
-  async updateCompetition(id: string, input: UpdateCompetitionInput): Promise<CompetitionRecord> {
-    return this.prisma.competition.update({
-      where: {
-        id,
-      },
-      data: {
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.description !== undefined ? { description: input.description } : {}),
-        ...(input.status ? { status: input.status } : {}),
-        ...(input.startAt ? { startAt: new Date(input.startAt) } : {}),
-        ...(input.endAt ? { endAt: new Date(input.endAt) } : {}),
-        ...(input.defaultTemplateId !== undefined ? { defaultTemplateId: input.defaultTemplateId } : {}),
-      },
-    });
-  }
-
-  async deleteCompetition(id: string): Promise<void> {
-    await this.prisma.competition.delete({
-      where: {
-        id,
-      },
-    });
-  }
-
-  async listTeams(filter?: { competitionId?: string }): Promise<TeamRecord[]> {
-    return this.prisma.team.findMany({
-      where: filter?.competitionId
-        ? {
-            competitionId: filter.competitionId,
-          }
-        : undefined,
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-  }
-
-  async createTeam(input: CreateTeamInput): Promise<TeamRecord> {
-    return this.prisma.team.create({
-      data: {
-        competitionId: input.competitionId,
-        name: input.name,
-        contactName: input.contactName ?? null,
-        contactEmailOrPhone: input.contactEmailOrPhone ?? null,
-        notes: input.notes ?? null,
-      },
-    });
-  }
-
-  async getTeamById(id: string): Promise<TeamRecord | null> {
-    return this.prisma.team.findUnique({
-      where: {
-        id,
-      },
-    });
-  }
-
-  async updateTeam(id: string, input: UpdateTeamInput): Promise<TeamRecord> {
-    return this.prisma.team.update({
-      where: {
-        id,
-      },
-      data: {
-        ...(input.competitionId ? { competitionId: input.competitionId } : {}),
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
-        ...(input.contactEmailOrPhone !== undefined ? { contactEmailOrPhone: input.contactEmailOrPhone } : {}),
-        ...(input.notes !== undefined ? { notes: input.notes } : {}),
-      },
-    });
-  }
-
-  async deleteTeam(id: string): Promise<void> {
-    await this.prisma.team.delete({
-      where: {
-        id,
-      },
-    });
-  }
 
   async listRangeTemplates(): Promise<RangeTemplateRecord[]> {
     return this.prisma.rangeTemplate.findMany({
@@ -163,11 +69,18 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<RangeTemplateRecord | null>;
   }
 
+  async getRangeTemplateVersionById(id: string) {
+    return this.prisma.rangeTemplateVersion.findUnique({
+      where: { id },
+    }) as Promise<import('../admin/admin.repository').RangeTemplateVersionRecord | null>;
+  }
+
   async createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord> {
     return this.prisma.$transaction(async (tx) => {
       const template = await tx.rangeTemplate.create({
         data: {
           name: input.name,
+          description: input.description ?? null,
           slug: input.slug,
           version: input.version,
           cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
@@ -175,6 +88,12 @@ export class PrismaAdminRepository implements AdminRepository {
           modulePathOrRef: input.modulePathOrRef,
           topologySpec: input.topologySpec as Prisma.InputJsonValue,
           topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          scenarioTemplateSpec: (input.scenarioTemplateSpec ?? null) as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          compiledProvisionSpec: (input.compiledProvisionSpec ?? null) as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
           compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
           variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
           outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
@@ -194,6 +113,12 @@ export class PrismaAdminRepository implements AdminRepository {
           modulePathOrRef: input.modulePathOrRef,
           topologySpec: input.topologySpec as Prisma.InputJsonValue,
           topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+          scenarioTemplateSpec: (input.scenarioTemplateSpec ?? null) as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          compiledProvisionSpec: (input.compiledProvisionSpec ?? null) as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
           compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
           variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
           outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
@@ -227,8 +152,9 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.rangeTemplate.findUniqueOrThrow({
         where: { id },
-        include: { currentDraftVersion: true },
+        include: { currentDraftVersion: true, currentPublishedVersion: true },
       });
+      const autoUnpublish = Boolean(existing.currentPublishedVersionId) && shouldAutoUnpublishTemplate(input);
 
       if (existing.currentDraftVersionId) {
         await tx.rangeTemplateVersion.update({
@@ -240,6 +166,20 @@ export class PrismaAdminRepository implements AdminRepository {
             ...(input.topologyGraph !== undefined
               ? {
                   topologyGraph: input.topologyGraph as
+                    | Prisma.InputJsonValue
+                    | Prisma.NullableJsonNullValueInput,
+                }
+              : {}),
+            ...(input.scenarioTemplateSpec !== undefined
+              ? {
+                  scenarioTemplateSpec: input.scenarioTemplateSpec as
+                    | Prisma.InputJsonValue
+                    | Prisma.NullableJsonNullValueInput,
+                }
+              : {}),
+            ...(input.compiledProvisionSpec !== undefined
+              ? {
+                  compiledProvisionSpec: input.compiledProvisionSpec as
                     | Prisma.InputJsonValue
                     | Prisma.NullableJsonNullValueInput,
                 }
@@ -262,10 +202,18 @@ export class PrismaAdminRepository implements AdminRepository {
         });
       }
 
+      if (autoUnpublish && existing.currentPublishedVersionId) {
+        await tx.rangeTemplateVersion.update({
+          where: { id: existing.currentPublishedVersionId },
+          data: { status: 'archived' },
+        });
+      }
+
       await tx.rangeTemplate.update({
         where: { id },
         data: {
           ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.slug !== undefined ? { slug: input.slug } : {}),
           ...(input.version !== undefined ? { version: input.version } : {}),
           ...(input.cloudProvider !== undefined ? { cloudProvider: input.cloudProvider } : {}),
@@ -275,6 +223,20 @@ export class PrismaAdminRepository implements AdminRepository {
           ...(input.topologyGraph !== undefined
             ? {
                 topologyGraph: input.topologyGraph as
+                  | Prisma.InputJsonValue
+                  | Prisma.NullableJsonNullValueInput,
+              }
+            : {}),
+          ...(input.scenarioTemplateSpec !== undefined
+            ? {
+                scenarioTemplateSpec: input.scenarioTemplateSpec as
+                  | Prisma.InputJsonValue
+                  | Prisma.NullableJsonNullValueInput,
+              }
+            : {}),
+          ...(input.compiledProvisionSpec !== undefined
+            ? {
+                compiledProvisionSpec: input.compiledProvisionSpec as
                   | Prisma.InputJsonValue
                   | Prisma.NullableJsonNullValueInput,
               }
@@ -291,6 +253,7 @@ export class PrismaAdminRepository implements AdminRepository {
           ...(input.defaultNetworkPolicy !== undefined
             ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
             : {}),
+          ...(autoUnpublish ? { currentPublishedVersionId: null } : {}),
         },
       });
 
@@ -331,6 +294,12 @@ export class PrismaAdminRepository implements AdminRepository {
           topologyGraph: publishedVersion.topologyGraph as
             | Prisma.InputJsonValue
             | Prisma.NullableJsonNullValueInput,
+          scenarioTemplateSpec: publishedVersion.scenarioTemplateSpec as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          compiledProvisionSpec: publishedVersion.compiledProvisionSpec as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
           compiledSpec: publishedVersion.compiledSpec as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
           variableSchema: publishedVersion.variableSchema as Prisma.InputJsonValue,
           outputSchema: publishedVersion.outputSchema as Prisma.InputJsonValue,
@@ -349,6 +318,12 @@ export class PrismaAdminRepository implements AdminRepository {
           topologyGraph: publishedVersion.topologyGraph as
             | Prisma.InputJsonValue
             | Prisma.NullableJsonNullValueInput,
+          scenarioTemplateSpec: publishedVersion.scenarioTemplateSpec as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
+          compiledProvisionSpec: publishedVersion.compiledProvisionSpec as
+            | Prisma.InputJsonValue
+            | Prisma.NullableJsonNullValueInput,
           compiledSpec: publishedVersion.compiledSpec as
             | Prisma.InputJsonValue
             | Prisma.NullableJsonNullValueInput,
@@ -359,6 +334,40 @@ export class PrismaAdminRepository implements AdminRepository {
             | Prisma.NullableJsonNullValueInput,
           currentPublishedVersionId: publishedVersion.id,
           currentDraftVersionId: nextDraft.id,
+        },
+      });
+
+      return tx.rangeTemplate.findUnique({
+        where: { id: template.id },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+          versions: true,
+        },
+      }) as Promise<RangeTemplateRecord>;
+    });
+  }
+
+  async unpublishRangeTemplate(id: string): Promise<RangeTemplateRecord> {
+    return this.prisma.$transaction(async (tx) => {
+      const template = await tx.rangeTemplate.findUniqueOrThrow({
+        where: { id },
+        include: { currentPublishedVersion: true },
+      });
+
+      if (!template.currentPublishedVersion) {
+        throw new Error('Current published version not found');
+      }
+
+      await tx.rangeTemplateVersion.update({
+        where: { id: template.currentPublishedVersion.id },
+        data: { status: 'archived' },
+      });
+
+      await tx.rangeTemplate.update({
+        where: { id: template.id },
+        data: {
+          currentPublishedVersionId: null,
         },
       });
 
@@ -389,12 +398,37 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<RangeInstanceRecord[]>;
   }
 
+  async archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void> {
+    await this.prisma.rangeInstance.updateMany({
+      where: {
+        templateId: template.id,
+        status: 'destroyed',
+      },
+      data: {
+        templateId: null,
+        sourceTemplateVersionId: null,
+        templateNameSnapshot: template.name,
+        templateSlugSnapshot: template.slug,
+        templateVersionSnapshot: template.version,
+        templateModulePathSnapshot: template.modulePathOrRef,
+      },
+    });
+  }
+
+  async deleteRangeInstance(id: string): Promise<void> {
+    await this.prisma.rangeInstance.delete({
+      where: {
+        id,
+      },
+    });
+  }
+
   async createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord> {
     return this.prisma.rangeInstance.create({
       data: {
-        competitionId: input.competitionId,
-        teamId: input.teamId,
+        name: input.name,
         templateId: input.templateId,
+        sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
         status: input.status ?? 'draft',
         allocatedCidr: input.allocatedCidr ?? null,
         accessEntry: (input.accessEntry ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
@@ -422,6 +456,10 @@ export class PrismaAdminRepository implements AdminRepository {
         id,
       },
       data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.sourceTemplateVersionId !== undefined
+          ? { sourceTemplateVersionId: input.sourceTemplateVersionId }
+          : {}),
         ...(input.status ? { status: input.status } : {}),
         ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
         ...(input.accessEntry !== undefined
@@ -542,5 +580,223 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.finishedAt !== undefined ? { finishedAt: input.finishedAt } : {}),
       },
     }) as Promise<ProvisionJobStepLogRecord>;
+  }
+
+  async listImageSnapshots(filter: ListImageSnapshotsFilter): Promise<CloudImageSnapshotRecord[]> {
+    return this.prisma.cloudImageSnapshot.findMany({
+      where: {
+        ...(filter.provider !== undefined ? { provider: filter.provider } : {}),
+        ...(filter.accountUid !== undefined ? { accountUid: filter.accountUid } : {}),
+        ...(filter.regionId !== undefined ? { regionId: filter.regionId } : {}),
+        ...(filter.scope !== undefined ? { scope: filter.scope } : {}),
+        ...(filter.imageId !== undefined ? { imageId: filter.imageId } : {}),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    }) as Promise<CloudImageSnapshotRecord[]>;
+  }
+
+  async getImageSnapshotById(id: string): Promise<CloudImageSnapshotRecord | null> {
+    return this.prisma.cloudImageSnapshot.findUnique({
+      where: {
+        id,
+      },
+    }) as Promise<CloudImageSnapshotRecord | null>;
+  }
+
+  async upsertImageSnapshots(input: UpsertImageSnapshotsInput): Promise<void> {
+    for (const snapshot of input.snapshots) {
+      await this.prisma.cloudImageSnapshot.upsert({
+        where: {
+          provider_accountScopeKey_regionId_scope_imageId: {
+            provider: input.provider,
+            accountScopeKey: toAccountScopeKey(input.accountUid),
+            regionId: input.regionId,
+            scope: input.scope,
+            imageId: snapshot.imageId,
+          },
+        },
+        update: {
+          accountUid: input.accountUid,
+          sourceImageName: snapshot.sourceImageName,
+          osType: snapshot.osType ?? null,
+          platform: snapshot.platform ?? null,
+          architecture: snapshot.architecture ?? null,
+          status: snapshot.status ?? null,
+          isAvailable: snapshot.isAvailable ?? true,
+          lastSyncedAt: snapshot.lastSyncedAt,
+        },
+        create: {
+          provider: input.provider,
+          accountUid: input.accountUid,
+          accountScopeKey: toAccountScopeKey(input.accountUid),
+          regionId: input.regionId,
+          scope: input.scope,
+          imageId: snapshot.imageId,
+          sourceImageName: snapshot.sourceImageName,
+          osType: snapshot.osType ?? null,
+          platform: snapshot.platform ?? null,
+          architecture: snapshot.architecture ?? null,
+          status: snapshot.status ?? null,
+          isAvailable: snapshot.isAvailable ?? true,
+          lastSyncedAt: snapshot.lastSyncedAt,
+        },
+      });
+    }
+  }
+
+  async reconcileImageSnapshots(input: ReconcileImageSnapshotsInput): Promise<void> {
+    await this.upsertImageSnapshots(input);
+
+    const imageIds = input.snapshots.map((snapshot) => snapshot.imageId);
+
+    await this.prisma.cloudImageSnapshot.deleteMany({
+      where: {
+        provider: input.provider,
+        accountScopeKey: toAccountScopeKey(input.accountUid),
+        regionId: input.regionId,
+        scope: input.scope,
+        ...(imageIds.length > 0 ? { imageId: { notIn: imageIds } } : {}),
+      },
+    });
+  }
+
+  async listImageCatalogItems(filter: ListImageCatalogItemsFilter = {}): Promise<ImageCatalogItemRecord[]> {
+    return this.prisma.imageCatalogItem.findMany({
+      where: {
+        ...(filter.provider !== undefined ? { provider: filter.provider } : {}),
+        ...(filter.scope !== undefined ? { scope: filter.scope } : {}),
+        ...(filter.accountUid !== undefined ? { accountUid: filter.accountUid } : {}),
+        ...(filter.regionId !== undefined ? { regionId: filter.regionId } : {}),
+        ...(filter.enabled !== undefined ? { enabled: filter.enabled } : {}),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    }) as Promise<ImageCatalogItemRecord[]>;
+  }
+
+  async collectImageCatalogItem(input: CollectImageCatalogItemInput): Promise<ImageCatalogItemRecord> {
+    return this.prisma.imageCatalogItem.upsert({
+      where: {
+        provider_accountScopeKey_regionId_scope_imageId: {
+          provider: input.provider,
+          accountScopeKey: toAccountScopeKey(input.accountUid),
+          regionId: input.regionId,
+          scope: input.scope,
+          imageId: input.imageId,
+        },
+      },
+      update: {
+        displayName: input.displayName,
+        accountUid: input.accountUid,
+        enabled: input.enabled ?? true,
+        sourceSnapshotId: input.sourceSnapshotId ?? null,
+      },
+      create: {
+        displayName: input.displayName,
+        imageId: input.imageId,
+        provider: input.provider,
+        scope: input.scope,
+        accountUid: input.accountUid,
+        accountScopeKey: toAccountScopeKey(input.accountUid),
+        regionId: input.regionId,
+        enabled: input.enabled ?? true,
+        sourceSnapshotId: input.sourceSnapshotId ?? null,
+      },
+    }) as Promise<ImageCatalogItemRecord>;
+  }
+
+  async listPlatformImageAssets(filter: ListPlatformImageAssetsFilter = {}): Promise<PlatformImageAssetRecord[]> {
+    return this.prisma.platformImageAsset.findMany({
+      where: {
+        ...(filter.provider !== undefined ? { provider: filter.provider } : {}),
+        ...(filter.accountUid !== undefined ? { accountUid: filter.accountUid } : {}),
+        ...(filter.accountScopeKey !== undefined ? { accountScopeKey: filter.accountScopeKey } : {}),
+        ...(filter.regionId !== undefined ? { regionId: filter.regionId } : {}),
+        ...(filter.enabled !== undefined ? { enabled: filter.enabled } : {}),
+        ...(filter.imageId !== undefined ? { imageId: filter.imageId } : {}),
+        ...(filter.sourceSnapshotId !== undefined ? { sourceSnapshotId: filter.sourceSnapshotId } : {}),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    }) as Promise<PlatformImageAssetRecord[]>;
+  }
+
+  async collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord> {
+    const snapshot = await this.prisma.cloudImageSnapshot.findUniqueOrThrow({
+      where: {
+        id: input.snapshotId,
+      },
+    });
+
+    return this.prisma.platformImageAsset.upsert({
+      where: {
+        provider_accountScopeKey_regionId_imageId: {
+          provider: snapshot.provider,
+          accountScopeKey: snapshot.accountScopeKey,
+          regionId: snapshot.regionId,
+          imageId: snapshot.imageId,
+        },
+      },
+      update: {
+        displayName: input.displayName,
+        enabled: true,
+        sourceScope: snapshot.scope,
+        sourceSnapshotId: snapshot.id,
+        accountUid: snapshot.accountUid,
+      },
+      create: {
+        provider: snapshot.provider,
+        accountUid: snapshot.accountUid,
+        accountScopeKey: snapshot.accountScopeKey,
+        regionId: snapshot.regionId,
+        sourceScope: snapshot.scope,
+        sourceSnapshotId: snapshot.id,
+        imageId: snapshot.imageId,
+        displayName: input.displayName,
+        enabled: true,
+      },
+    }) as Promise<PlatformImageAssetRecord>;
+  }
+
+  async updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord> {
+    return this.prisma.platformImageAsset.update({
+      where: {
+        id,
+      },
+      data: {
+        displayName: input.displayName,
+      },
+    }) as Promise<PlatformImageAssetRecord>;
+  }
+
+  async setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord> {
+    return this.prisma.platformImageAsset.update({
+      where: {
+        id,
+      },
+      data: {
+        enabled,
+      },
+    }) as Promise<PlatformImageAssetRecord>;
+  }
+
+  async deletePlatformImageAsset(id: string): Promise<void> {
+    await this.prisma.platformImageAsset.delete({
+      where: {
+        id,
+      },
+    });
+  }
+
+  async deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void> {
+    await this.prisma.platformImageAsset.deleteMany({
+      where: {
+        sourceSnapshotId: snapshotId,
+      },
+    });
   }
 }
