@@ -182,6 +182,7 @@ export type RangeRecoverySummary = {
 export type RangeInstance = {
   id: string;
   name?: string | null;
+  createdBy?: string | null;
   status: string;
   templateId?: string | null;
   templateNameSnapshot?: string | null;
@@ -189,6 +190,14 @@ export type RangeInstance = {
   templateVersionSnapshot?: string | null;
   templateModulePathSnapshot?: string | null;
   sourceTemplateVersionId?: string | null;
+  runtimeTopologyGraph?: Record<string, unknown> | null;
+  runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
+  runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
+  draftTopologyGraph?: Record<string, unknown> | null;
+  draftScenarioTemplateSpec?: Record<string, unknown> | null;
+  draftCompiledProvisionSpec?: Record<string, unknown> | null;
+  draftUpdatedBy?: string | null;
+  draftUpdatedAt?: string | null;
   lastJobId?: string | null;
   createdAt?: string | null;
   errorSummary?: string | null;
