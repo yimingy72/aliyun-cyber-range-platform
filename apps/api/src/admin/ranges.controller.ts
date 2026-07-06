@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
-import { CreateRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
+import { CreateRangeInstanceDto, LaunchRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
 import { RangeInstancesService } from './range-instances.service';
 
 @Controller('admin/ranges')
@@ -27,6 +27,11 @@ export class RangesController {
   @Post()
   create(@Body() body: CreateRangeInstanceDto) {
     return this.rangeInstancesService.create(body);
+  }
+
+  @Post('launch')
+  launch(@Body() body: LaunchRangeInstanceDto) {
+    return this.rangeInstancesService.launch(body);
   }
 
   @Post(':id/create')

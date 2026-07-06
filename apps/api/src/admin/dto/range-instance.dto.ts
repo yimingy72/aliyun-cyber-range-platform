@@ -14,6 +14,23 @@ export class CreateRangeInstanceDto {
   expiresAt?: string;
 }
 
+export class LaunchRangeInstanceDto {
+  @IsString()
+  @IsNotEmpty()
+  templateId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @IsISO8601()
+  expiresAt!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  triggeredBy!: string;
+}
+
 export class TriggerProvisionJobDto {
   @IsString()
   @IsNotEmpty()

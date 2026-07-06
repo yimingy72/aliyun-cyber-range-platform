@@ -5,6 +5,7 @@ import {
   AdminRepository,
   CreateRangeInstanceInput,
 } from './admin.repository';
+import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
@@ -50,6 +51,47 @@ export class RangeInstancesService {
       ...input,
       sourceTemplateVersionId,
     });
+  }
+
+  async launch(input: LaunchRangeInstanceDto) {
+    const template = await this.adminRepository.getRangeTemplateById(input.templateId);
+
+    if (!template) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    const sourceTemplateVersion = template.currentDraftVersion ?? template.currentPublishedVersion;
+
+    if (!sourceTemplateVersion) {
+      throw new ConflictException('Range template does not have an active template version');
+    }
+
+    const instance = await this.adminRepository.createRangeInstance({
+      name: input.name,
+      createdBy: input.triggeredBy,
+      templateId: template.id,
+      sourceTemplateVersionId: sourceTemplateVersion.id,
+      runtimeTopologyGraph: sourceTemplateVersion.topologyGraph ?? template.topologyGraph ?? null,
+      runtimeScenarioTemplateSpec: sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null,
+      runtimeCompiledProvisionSpec:
+        sourceTemplateVersion.compiledProvisionSpec ?? template.compiledProvisionSpec ?? null,
+      status: 'pending_create',
+      expiresAt: input.expiresAt,
+    });
+
+    const job = await this.adminRepository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: input.triggeredBy,
+    });
+
+    const updated = await this.adminRepository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    this.provisioningWorkerService.dispatch(job.id);
+
+    return this.attachRecoverySummary(updated);
   }
 
   async triggerCreate(id: string, triggeredBy: string) {
