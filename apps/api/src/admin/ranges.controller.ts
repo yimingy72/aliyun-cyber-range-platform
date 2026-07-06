@@ -59,4 +59,9 @@ export class RangesController {
   triggerRetry(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
     return this.rangeInstancesService.triggerRetry(id, body.triggeredBy);
   }
+
+  @Post(':id/apply')
+  applyDraft(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.applyDraft(id, body.triggeredBy);
+  }
 }

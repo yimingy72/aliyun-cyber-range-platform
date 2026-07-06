@@ -83,17 +83,17 @@ export class ProvisioningWorkerService {
     }
 
     const templateModulePath = sourceVersion?.modulePathOrRef ?? template.modulePathOrRef;
-    const compiledProvisionSpec =
+    const baseCompiledProvisionSpec =
       this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
       this.getCompiledProvisionSpec(template.compiledProvisionSpec);
-    const compiledSpec = this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
-    const topologySpec =
-      this.getTopologySpecFromCompiledProvisionSpec(compiledProvisionSpec) ??
-      this.getCompiledTopologySpec(compiledSpec) ??
+    const baseCompiledSpec = this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
+    const baseTopologySpec =
+      this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
+      this.getCompiledTopologySpec(baseCompiledSpec) ??
       sourceVersion?.topologySpec ??
       template.topologySpec;
 
-    if (!topologySpec && !compiledSpec && !compiledProvisionSpec) {
+    if (!baseTopologySpec && !baseCompiledSpec && !baseCompiledProvisionSpec) {
       await this.failJob(job, instance, 'Template provisioning blueprint not found');
       return;
     }
@@ -106,6 +106,16 @@ export class ProvisioningWorkerService {
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
       const runtimeConfig = await this.systemConfigService.getSnapshot();
+      const compiledProvisionSpec =
+        effectiveJobType === 'update'
+          ? this.getCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ?? baseCompiledProvisionSpec
+          : baseCompiledProvisionSpec;
+      const compiledSpec = effectiveJobType === 'update' ? baseCompiledSpec : baseCompiledSpec;
+      const topologySpec =
+        effectiveJobType === 'update'
+          ? this.getTopologySpecFromCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ??
+            baseTopologySpec
+          : baseTopologySpec;
 
       if (effectiveJobType === 'create') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
@@ -128,6 +138,39 @@ export class ProvisioningWorkerService {
         await this.runWorkerStep(reportStep, 'persist_access_entry', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
             status: 'running',
+            accessEntry: result.accessEntry,
+            resourceSummary: result.resourceSummary,
+            errorSummary: null,
+          });
+        });
+      } else if (effectiveJobType === 'update') {
+        await this.runWorkerStep(reportStep, 'prepare', async () => {
+          await this.adminRepository.updateRangeInstance(instance.id, {
+            errorSummary: null,
+          });
+        });
+
+        const result = await this.rangeProvisioner.create({
+          rangeInstanceId: instance.id,
+          templateModulePath,
+          allocatedCidr: instance.allocatedCidr,
+          runtimeConfig,
+          topologySpec,
+          compiledProvisionSpec,
+          compiledSpec,
+          reportStep,
+        });
+
+        await this.runWorkerStep(reportStep, 'persist_update_result', async () => {
+          await this.adminRepository.updateRangeInstance(instance.id, {
+            runtimeTopologyGraph: instance.draftTopologyGraph,
+            runtimeScenarioTemplateSpec: instance.draftScenarioTemplateSpec,
+            runtimeCompiledProvisionSpec: instance.draftCompiledProvisionSpec,
+            draftTopologyGraph: null,
+            draftScenarioTemplateSpec: null,
+            draftCompiledProvisionSpec: null,
+            draftUpdatedBy: null,
+            draftUpdatedAt: null,
             accessEntry: result.accessEntry,
             resourceSummary: result.resourceSummary,
             errorSummary: null,
@@ -301,7 +344,12 @@ export class ProvisioningWorkerService {
     });
 
     await this.adminRepository.updateRangeInstance(instance.id, {
-      status: job.jobType === 'destroy' ? 'destroy_failed' : 'create_failed',
+      status:
+        job.jobType === 'destroy'
+          ? 'destroy_failed'
+          : job.jobType === 'update'
+            ? instance.status
+            : 'create_failed',
       errorSummary: message,
     });
   }

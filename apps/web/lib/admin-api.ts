@@ -115,6 +115,16 @@ export async function discardRangeInstanceDraft(apiBaseUrl: string, token: strin
   return readJson<RangeInstanceDetail>(response);
 }
 
+export async function applyRangeInstanceDraft(apiBaseUrl: string, token: string, id: string, triggeredBy: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/apply`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify({ triggeredBy }),
+  });
+
+  return readJson<ProvisionJob>(response);
+}
+
 export async function createRangeInstance(
   apiBaseUrl: string,
   token: string,

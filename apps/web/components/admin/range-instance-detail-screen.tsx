@@ -4,7 +4,7 @@ import React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { AdminApiError, fetchRangeInstanceDetail } from '../../lib/admin-api';
+import { AdminApiError, applyRangeInstanceDraft, fetchRangeInstanceDetail } from '../../lib/admin-api';
 import type { RangeInstanceDetail } from '../../lib/admin-types';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { RangeInstancePropertyPanel } from './range-instance-property-panel';
@@ -257,6 +257,29 @@ export function RangeInstanceDetailScreen({
     }
   }
 
+  async function handleApplyDraft() {
+    if (!session.token || !detail) {
+      return;
+    }
+
+    setIsSavingDraft(true);
+    setErrorMessage(null);
+
+    try {
+      await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, 'admin');
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('应用变更失败，请稍后重试。');
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }
+
   function handleEditedNodeLabelChange(value: string) {
     if (!selectedNodeId || !draftGraph || typeof draftGraph !== 'object') {
       return;
@@ -338,7 +361,7 @@ export function RangeInstanceDetailScreen({
                 <button type="button" disabled={isSavingDraft} onClick={() => void handleSaveDraft()}>
                   保存变更草稿
                 </button>
-                <button type="button" disabled>
+                <button type="button" disabled={isSavingDraft} onClick={() => void handleApplyDraft()}>
                   应用变更
                 </button>
                 <button type="button" disabled={isSavingDraft} onClick={() => void handleDiscardDraft()}>

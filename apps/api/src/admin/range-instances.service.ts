@@ -138,6 +138,37 @@ export class RangeInstancesService {
     return this.attachRecoverySummary(updated);
   }
 
+  async applyDraft(id: string, triggeredBy: string) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+
+    if (!instance) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    if (instance.status !== 'running') {
+      throw new ConflictException('Only running instances can apply draft changes');
+    }
+
+    if (!instance.draftTopologyGraph || !instance.draftScenarioTemplateSpec || !instance.draftCompiledProvisionSpec) {
+      throw new ConflictException('Range instance does not have a pending draft');
+    }
+
+    const job = await this.adminRepository.createProvisionJob({
+      rangeInstanceId: id,
+      jobType: 'update',
+      triggeredBy,
+    });
+
+    await this.adminRepository.updateRangeInstance(id, {
+      lastJobId: job.id,
+      errorSummary: null,
+    });
+
+    this.provisioningWorkerService.dispatch(job.id);
+
+    return job;
+  }
+
   async triggerCreate(id: string, triggeredBy: string) {
     const job = await this.cidrPoolService.serialize(async () => {
       const instance = await this.adminRepository.getRangeInstanceById(id);

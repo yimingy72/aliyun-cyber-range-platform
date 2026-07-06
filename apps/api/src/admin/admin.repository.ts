@@ -13,7 +13,7 @@ export type RangeInstanceStatus =
   | 'destroying'
   | 'destroy_failed'
   | 'destroyed';
-export type ProvisionJobType = 'create' | 'destroy' | 'retry' | 'refresh_status';
+export type ProvisionJobType = 'create' | 'update' | 'destroy' | 'retry' | 'refresh_status';
 export type ProvisionJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type ProvisionJobStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 export type CloudImageScope = 'public' | 'custom';
