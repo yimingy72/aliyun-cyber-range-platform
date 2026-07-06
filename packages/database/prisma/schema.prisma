@@ -8,13 +8,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum CompetitionStatus {
-  draft
-  scheduled
-  active
-  completed
-}
-
 enum CloudProvider {
   alibaba_cloud
 }
@@ -64,42 +57,87 @@ enum ProvisionJobStepStatus {
   failed
 }
 
-model Competition {
-  id                String             @id @default(cuid())
-  name              String
-  description       String?            @db.Text
-  status            CompetitionStatus  @default(draft)
-  startAt           DateTime?
-  endAt             DateTime?
-  defaultTemplateId String?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  defaultTemplate   RangeTemplate?     @relation("CompetitionDefaultTemplate", fields: [defaultTemplateId], references: [id], onDelete: SetNull)
-  teams             Team[]
-  rangeInstances    RangeInstance[]
-
-  @@index([status])
+model SystemCloudConfig {
+  id              String   @id
+  provider        String
+  defaultRegion   String
+  defaultZoneId   String
+  accessKeyId     String
+  accessKeySecret String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
-model Team {
-  id                  String          @id @default(cuid())
-  competitionId       String
-  name                String
-  contactName         String?
-  contactEmailOrPhone String?
-  notes               String?         @db.Text
-  createdAt           DateTime        @default(now())
-  updatedAt           DateTime        @updatedAt
-  competition         Competition     @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  rangeInstances      RangeInstance[]
+model CloudImageSnapshot {
+  id              String        @id @default(cuid())
+  provider        CloudProvider @default(alibaba_cloud)
+  accountUid      String?
+  accountScopeKey String
+  regionId        String
+  scope           String
+  imageId         String
+  sourceImageName String
+  osType          String?
+  platform        String?
+  architecture    String?
+  status          String?
+  isAvailable     Boolean       @default(true)
+  lastSyncedAt    DateTime
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  catalogItems    ImageCatalogItem[]
+  platformAssets  PlatformImageAsset[]
 
-  @@unique([competitionId, name])
-  @@index([competitionId])
+  @@unique([provider, accountScopeKey, regionId, scope, imageId])
+  @@index([provider, regionId, scope])
+  @@index([accountUid])
+}
+
+model ImageCatalogItem {
+  id               String        @id @default(cuid())
+  displayName      String
+  imageId          String
+  provider         CloudProvider @default(alibaba_cloud)
+  scope            String
+  accountUid       String?
+  accountScopeKey  String
+  regionId         String
+  enabled          Boolean       @default(true)
+  sourceSnapshotId String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  sourceSnapshot   CloudImageSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, accountScopeKey, regionId, scope, imageId])
+  @@index([provider, regionId, scope])
+  @@index([accountUid])
+  @@index([sourceSnapshotId])
+}
+
+model PlatformImageAsset {
+  id               String              @id @default(cuid())
+  provider         CloudProvider       @default(alibaba_cloud)
+  accountUid       String?
+  accountScopeKey  String
+  regionId         String
+  sourceScope      String
+  sourceSnapshotId String?
+  imageId          String
+  displayName      String
+  enabled          Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  sourceSnapshot   CloudImageSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, accountScopeKey, regionId, imageId])
+  @@index([provider, accountScopeKey, regionId])
+  @@index([sourceSnapshotId])
 }
 
 model RangeTemplate {
   id                       String          @id @default(cuid())
   name                     String
+  description              String?
   slug                     String
   version                  String
   cloudProvider            CloudProvider   @default(alibaba_cloud)
@@ -107,6 +145,8 @@ model RangeTemplate {
   modulePathOrRef          String
   topologySpec             Json?
   topologyGraph            Json?
+  scenarioTemplateSpec     Json?
+  compiledProvisionSpec    Json?
   compiledSpec             Json?
   variableSchema           Json
   outputSchema             Json
@@ -115,7 +155,6 @@ model RangeTemplate {
   currentPublishedVersionId String?        @unique
   createdAt                DateTime        @default(now())
   updatedAt                DateTime        @updatedAt
-  competitionsAsDefault    Competition[]   @relation("CompetitionDefaultTemplate")
   rangeInstances           RangeInstance[]
   versions                 RangeTemplateVersion[]
   currentDraftVersion      RangeTemplateVersion? @relation("RangeTemplateCurrentDraftVersion", fields: [currentDraftVersionId], references: [id], onDelete: SetNull)
@@ -132,6 +171,8 @@ model RangeTemplateVersion {
   modulePathOrRef      String
   topologySpec         Json?
   topologyGraph        Json?
+  scenarioTemplateSpec Json?
+  compiledProvisionSpec Json?
   compiledSpec         Json?
   variableSchema       Json
   outputSchema         Json
@@ -148,9 +189,13 @@ model RangeTemplateVersion {
 
 model RangeInstance {
   id              String              @id @default(cuid())
-  competitionId   String
-  teamId          String
-  templateId      String
+  name            String
+  templateId      String?
+  sourceTemplateVersionId String?
+  templateNameSnapshot String?
+  templateSlugSnapshot String?
+  templateVersionSnapshot String?
+  templateModulePathSnapshot String?
   status          RangeInstanceStatus @default(draft)
   allocatedCidr   String?
   cloudProvider   CloudProvider       @default(alibaba_cloud)
@@ -161,15 +206,12 @@ model RangeInstance {
   lastJobId       String?             @unique
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
-  competition     Competition         @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  team            Team                @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  template        RangeTemplate       @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  template        RangeTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
   jobs            ProvisionJob[]
   lastJob         ProvisionJob?       @relation("RangeInstanceLastJob", fields: [lastJobId], references: [id], onDelete: SetNull)
 
-  @@index([competitionId])
-  @@index([teamId])
   @@index([templateId])
+  @@index([sourceTemplateVersionId])
   @@index([status])
 }
 
