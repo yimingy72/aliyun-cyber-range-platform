@@ -157,7 +157,7 @@ describe('ImageCenterScreen', () => {
   it('renders public and custom image modules with sync actions and rows', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('button', { name: '平台镜像' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '平台收录镜像' })).toBeTruthy();
     expect(await screen.findByRole('heading', { name: '公共镜像' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: '自定义镜像' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '同步公共镜像' })).toBeTruthy();
