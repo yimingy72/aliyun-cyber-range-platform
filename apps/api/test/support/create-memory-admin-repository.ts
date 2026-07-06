@@ -339,12 +339,21 @@ export function createMemoryAdminRepository(): AdminRepository {
       const record: RangeInstanceRecord = {
         id: nextId(),
         name: input.name,
+        createdBy: input.createdBy ?? null,
         templateId: input.templateId,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
         templateNameSnapshot: null,
         templateSlugSnapshot: null,
         templateVersionSnapshot: null,
         templateModulePathSnapshot: null,
+        runtimeTopologyGraph: input.runtimeTopologyGraph ?? null,
+        runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec ?? null,
+        runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec ?? null,
+        draftTopologyGraph: input.draftTopologyGraph ?? null,
+        draftScenarioTemplateSpec: input.draftScenarioTemplateSpec ?? null,
+        draftCompiledProvisionSpec: input.draftCompiledProvisionSpec ?? null,
+        draftUpdatedBy: input.draftUpdatedBy ?? null,
+        draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
         allocatedCidr: input.allocatedCidr ?? null,
         cloudProvider: 'alibaba_cloud',
@@ -371,8 +380,31 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       Object.assign(record, {
         name: input.name ?? record.name,
+        createdBy: input.createdBy !== undefined ? input.createdBy : record.createdBy,
         sourceTemplateVersionId:
           input.sourceTemplateVersionId !== undefined ? input.sourceTemplateVersionId : record.sourceTemplateVersionId,
+        runtimeTopologyGraph:
+          input.runtimeTopologyGraph !== undefined ? input.runtimeTopologyGraph : record.runtimeTopologyGraph,
+        runtimeScenarioTemplateSpec:
+          input.runtimeScenarioTemplateSpec !== undefined
+            ? input.runtimeScenarioTemplateSpec
+            : record.runtimeScenarioTemplateSpec,
+        runtimeCompiledProvisionSpec:
+          input.runtimeCompiledProvisionSpec !== undefined
+            ? input.runtimeCompiledProvisionSpec
+            : record.runtimeCompiledProvisionSpec,
+        draftTopologyGraph:
+          input.draftTopologyGraph !== undefined ? input.draftTopologyGraph : record.draftTopologyGraph,
+        draftScenarioTemplateSpec:
+          input.draftScenarioTemplateSpec !== undefined
+            ? input.draftScenarioTemplateSpec
+            : record.draftScenarioTemplateSpec,
+        draftCompiledProvisionSpec:
+          input.draftCompiledProvisionSpec !== undefined
+            ? input.draftCompiledProvisionSpec
+            : record.draftCompiledProvisionSpec,
+        draftUpdatedBy: input.draftUpdatedBy !== undefined ? input.draftUpdatedBy : record.draftUpdatedBy,
+        draftUpdatedAt: input.draftUpdatedAt !== undefined ? input.draftUpdatedAt : record.draftUpdatedAt,
         status: input.status ?? record.status,
         allocatedCidr: input.allocatedCidr !== undefined ? input.allocatedCidr : record.allocatedCidr,
         accessEntry: input.accessEntry !== undefined ? input.accessEntry : record.accessEntry,

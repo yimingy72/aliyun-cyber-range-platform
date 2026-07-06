@@ -37,6 +37,7 @@ enum RangeInstanceStatus {
 
 enum ProvisionJobType {
   create
+  update
   destroy
   retry
   refresh_status
@@ -188,27 +189,36 @@ model RangeTemplateVersion {
 }
 
 model RangeInstance {
-  id              String              @id @default(cuid())
-  name            String
-  templateId      String?
-  sourceTemplateVersionId String?
-  templateNameSnapshot String?
-  templateSlugSnapshot String?
-  templateVersionSnapshot String?
-  templateModulePathSnapshot String?
-  status          RangeInstanceStatus @default(draft)
-  allocatedCidr   String?
-  cloudProvider   CloudProvider       @default(alibaba_cloud)
-  accessEntry     Json?
-  resourceSummary Json?
-  errorSummary    String?             @db.Text
-  expiresAt       DateTime?
-  lastJobId       String?             @unique
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  template        RangeTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  jobs            ProvisionJob[]
-  lastJob         ProvisionJob?       @relation("RangeInstanceLastJob", fields: [lastJobId], references: [id], onDelete: SetNull)
+  id                           String              @id @default(cuid())
+  name                         String
+  createdBy                    String?
+  templateId                   String?
+  sourceTemplateVersionId      String?
+  templateNameSnapshot         String?
+  templateSlugSnapshot         String?
+  templateVersionSnapshot      String?
+  templateModulePathSnapshot   String?
+  runtimeTopologyGraph         Json?
+  runtimeScenarioTemplateSpec  Json?
+  runtimeCompiledProvisionSpec Json?
+  draftTopologyGraph           Json?
+  draftScenarioTemplateSpec    Json?
+  draftCompiledProvisionSpec   Json?
+  draftUpdatedBy               String?
+  draftUpdatedAt               DateTime?
+  status                       RangeInstanceStatus @default(draft)
+  allocatedCidr                String?
+  cloudProvider                CloudProvider       @default(alibaba_cloud)
+  accessEntry                  Json?
+  resourceSummary              Json?
+  errorSummary                 String?             @db.Text
+  expiresAt                    DateTime?
+  lastJobId                    String?             @unique
+  createdAt                    DateTime            @default(now())
+  updatedAt                    DateTime            @updatedAt
+  template                     RangeTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  jobs                         ProvisionJob[]
+  lastJob                      ProvisionJob?       @relation("RangeInstanceLastJob", fields: [lastJobId], references: [id], onDelete: SetNull)
 
   @@index([templateId])
   @@index([sourceTemplateVersionId])

@@ -179,12 +179,21 @@ export type RangeTemplateRecord = {
 export type RangeInstanceRecord = {
   id: string;
   name: string;
+  createdBy: string | null;
   templateId: string | null;
   sourceTemplateVersionId: string | null;
   templateNameSnapshot: string | null;
   templateSlugSnapshot: string | null;
   templateVersionSnapshot: string | null;
   templateModulePathSnapshot: string | null;
+  runtimeTopologyGraph: Record<string, unknown> | null;
+  runtimeScenarioTemplateSpec: Record<string, unknown> | null;
+  runtimeCompiledProvisionSpec: Record<string, unknown> | null;
+  draftTopologyGraph: Record<string, unknown> | null;
+  draftScenarioTemplateSpec: Record<string, unknown> | null;
+  draftCompiledProvisionSpec: Record<string, unknown> | null;
+  draftUpdatedBy: string | null;
+  draftUpdatedAt: Date | null;
   status: RangeInstanceStatus;
   allocatedCidr: string | null;
   cloudProvider: CloudProvider;
@@ -357,8 +366,17 @@ export type UpdateRangeTemplateInput = Partial<CreateRangeTemplateInput>;
 
 export type CreateRangeInstanceInput = {
   name: string;
+  createdBy?: string;
   templateId: string;
   sourceTemplateVersionId?: string | null;
+  runtimeTopologyGraph?: Record<string, unknown> | null;
+  runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
+  runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
+  draftTopologyGraph?: Record<string, unknown> | null;
+  draftScenarioTemplateSpec?: Record<string, unknown> | null;
+  draftCompiledProvisionSpec?: Record<string, unknown> | null;
+  draftUpdatedBy?: string | null;
+  draftUpdatedAt?: Date | null;
   status?: RangeInstanceStatus;
   allocatedCidr?: string;
   accessEntry?: RangeAccessEntry | null;
@@ -370,7 +388,16 @@ export type CreateRangeInstanceInput = {
 
 export type UpdateRangeInstanceInput = Partial<{
   name: string;
+  createdBy: string | null;
   sourceTemplateVersionId: string | null;
+  runtimeTopologyGraph: Record<string, unknown> | null;
+  runtimeScenarioTemplateSpec: Record<string, unknown> | null;
+  runtimeCompiledProvisionSpec: Record<string, unknown> | null;
+  draftTopologyGraph: Record<string, unknown> | null;
+  draftScenarioTemplateSpec: Record<string, unknown> | null;
+  draftCompiledProvisionSpec: Record<string, unknown> | null;
+  draftUpdatedBy: string | null;
+  draftUpdatedAt: Date | null;
   status: RangeInstanceStatus;
   allocatedCidr: string | null;
   accessEntry: RangeAccessEntry | null;

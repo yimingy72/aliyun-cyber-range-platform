@@ -427,8 +427,29 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.rangeInstance.create({
       data: {
         name: input.name,
+        createdBy: input.createdBy ?? null,
         templateId: input.templateId,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
+        runtimeTopologyGraph: (input.runtimeTopologyGraph ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        runtimeScenarioTemplateSpec: (input.runtimeScenarioTemplateSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        runtimeCompiledProvisionSpec: (input.runtimeCompiledProvisionSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        draftTopologyGraph: (input.draftTopologyGraph ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        draftScenarioTemplateSpec: (input.draftScenarioTemplateSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        draftCompiledProvisionSpec: (input.draftCompiledProvisionSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        draftUpdatedBy: input.draftUpdatedBy ?? null,
+        draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
         allocatedCidr: input.allocatedCidr ?? null,
         accessEntry: (input.accessEntry ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
@@ -457,9 +478,54 @@ export class PrismaAdminRepository implements AdminRepository {
       },
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
         ...(input.sourceTemplateVersionId !== undefined
           ? { sourceTemplateVersionId: input.sourceTemplateVersionId }
           : {}),
+        ...(input.runtimeTopologyGraph !== undefined
+          ? {
+              runtimeTopologyGraph: input.runtimeTopologyGraph as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.runtimeScenarioTemplateSpec !== undefined
+          ? {
+              runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.runtimeCompiledProvisionSpec !== undefined
+          ? {
+              runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.draftTopologyGraph !== undefined
+          ? {
+              draftTopologyGraph: input.draftTopologyGraph as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.draftScenarioTemplateSpec !== undefined
+          ? {
+              draftScenarioTemplateSpec: input.draftScenarioTemplateSpec as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.draftCompiledProvisionSpec !== undefined
+          ? {
+              draftCompiledProvisionSpec: input.draftCompiledProvisionSpec as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.draftUpdatedBy !== undefined ? { draftUpdatedBy: input.draftUpdatedBy } : {}),
+        ...(input.draftUpdatedAt !== undefined ? { draftUpdatedAt: input.draftUpdatedAt } : {}),
         ...(input.status ? { status: input.status } : {}),
         ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
         ...(input.accessEntry !== undefined
