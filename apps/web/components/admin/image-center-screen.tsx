@@ -31,7 +31,8 @@ type ImageCenterScreenProps = {
 type ActiveTab = 'platform' | 'custom' | 'public';
 type TabPageMap = Record<ActiveTab, number>;
 
-const PAGE_SIZE = 2;
+const DEFAULT_PAGE_SIZE = 2;
+const PAGE_SIZE_OPTIONS = [2, 3, 5];
 
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
@@ -104,17 +105,25 @@ function removeSnapshot(scopePayload: ImageCatalogScopePayload | null, snapshotI
   } satisfies ImageCatalogScopePayload;
 }
 
-function getPagination(totalItems: number, currentPage: number) {
-  const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
+function getPagination(totalItems: number, currentPage: number, pageSize: number) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   const page = Math.min(Math.max(currentPage, 1), totalPages);
-  const startIndex = (page - 1) * PAGE_SIZE;
+  const startIndex = (page - 1) * pageSize;
 
   return {
     page,
     totalPages,
     startIndex,
-    endIndex: startIndex + PAGE_SIZE,
+    endIndex: startIndex + pageSize,
   };
+}
+
+function buildVisiblePages(totalPages: number, currentPage: number) {
+  const startPage = Math.max(1, currentPage - 1);
+  const endPage = Math.min(totalPages, startPage + 2);
+  const adjustedStartPage = Math.max(1, endPage - 2);
+
+  return Array.from({ length: endPage - adjustedStartPage + 1 }, (_, index) => adjustedStartPage + index);
 }
 
 export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: ImageCenterScreenProps) {
@@ -126,7 +135,9 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
   const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [tabPages, setTabPages] = useState<TabPageMap>({ platform: 1, custom: 1, public: 1 });
+  const [jumpPageValue, setJumpPageValue] = useState('1');
   const platformRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
@@ -422,7 +433,8 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
         ? filteredCustomSnapshots.length
         : filteredPublicSnapshots.length;
 
-  const activePagination = getPagination(activeItemsCount, tabPages[activeTab]);
+  const activePagination = getPagination(activeItemsCount, tabPages[activeTab], pageSize);
+  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
 
   useEffect(() => {
     if (tabPages[activeTab] !== activePagination.page) {
@@ -430,12 +442,31 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     }
   }, [activePagination.page, activeTab, tabPages]);
 
+  useEffect(() => {
+    setJumpPageValue(String(activePagination.page));
+  }, [activePagination.page, activeTab]);
+
   function goToPreviousPage() {
     setPage(activeTab, activePagination.page - 1);
   }
 
   function goToNextPage() {
     setPage(activeTab, activePagination.page + 1);
+  }
+
+  function handlePageSizeChange(nextPageSize: number) {
+    setPageSize(nextPageSize);
+    setTabPages({ platform: 1, custom: 1, public: 1 });
+  }
+
+  function handleJumpToPage() {
+    const parsedPage = Number.parseInt(jumpPageValue, 10);
+    if (Number.isNaN(parsedPage)) {
+      setJumpPageValue(String(activePagination.page));
+      return;
+    }
+
+    setPage(activeTab, parsedPage);
   }
 
   const pagedPlatformAssets = filteredPlatformAssets.slice(activePagination.startIndex, activePagination.endIndex);
@@ -622,12 +653,32 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
           </div>
 
           <div className="image-center-pagination" aria-label={`${activeTabTitle} 分页`}>
+            <label className="image-center-pagination-size">
+              <span>每页条数</span>
+              <select aria-label="每页条数" value={String(pageSize)} onChange={(event) => handlePageSizeChange(Number(event.target.value))}>
+                {PAGE_SIZE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option} 条
+                  </option>
+                ))}
+              </select>
+            </label>
             <button type="button" aria-label="上一页" disabled={activePagination.page <= 1} onClick={goToPreviousPage}>
               上一页
             </button>
-            <span>
-              第 {activePagination.page} / {activePagination.totalPages} 页
-            </span>
+            <div className="image-center-pagination-pages" aria-label="页码">
+              {visiblePages.map((pageNumber) => (
+                <button
+                  key={pageNumber}
+                  type="button"
+                  aria-label={`第 ${pageNumber} 页`}
+                  aria-pressed={pageNumber === activePagination.page}
+                  onClick={() => setPage(activeTab, pageNumber)}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+            </div>
             <button
               type="button"
               aria-label="下一页"
@@ -636,6 +687,23 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
             >
               下一页
             </button>
+            <label className="image-center-pagination-jump">
+              <span>跳转到</span>
+              <input
+                aria-label="跳转到页码"
+                type="number"
+                min={1}
+                max={activePagination.totalPages}
+                value={jumpPageValue}
+                onChange={(event) => setJumpPageValue(event.target.value)}
+              />
+            </label>
+            <button type="button" aria-label="跳转" onClick={handleJumpToPage}>
+              跳转
+            </button>
+            <span className="image-center-pagination-summary">
+              第 {activePagination.page} / {activePagination.totalPages} 页
+            </span>
           </div>
         </div>
       </section>

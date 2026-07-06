@@ -1471,6 +1471,8 @@ body {
 
 .image-center-actions-cell button,
 .image-center-list-meta button,
+.image-center-pagination select,
+.image-center-pagination input,
 .image-center-pagination button {
   min-height: 32px;
   padding: 0 12px;
@@ -1487,6 +1489,8 @@ body {
 
 .image-center-actions-cell button:hover,
 .image-center-list-meta button:hover,
+.image-center-pagination select:hover,
+.image-center-pagination input:hover,
 .image-center-pagination button:hover {
   border-color: #bdd0e7;
   background: #edf4ff;
@@ -1497,6 +1501,12 @@ body {
 .image-center-pagination button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.image-center-pagination select,
+.image-center-pagination input {
+  min-width: 82px;
+  cursor: text;
 }
 
 .image-center-empty-state {
@@ -1525,11 +1535,35 @@ body {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 16px 18px 18px;
   border-top: 1px solid #edf1f5;
   color: #65758c;
   font-size: var(--ui-font-button);
+}
+
+.image-center-pagination-size,
+.image-center-pagination-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.image-center-pagination-pages {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.image-center-pagination-pages button[aria-pressed='true'] {
+  color: #184b97;
+  border-color: #bdd0e7;
+  background: #edf4ff;
+}
+
+.image-center-pagination-summary {
+  color: #7a889d;
 }
 
 .template-canvas-node {

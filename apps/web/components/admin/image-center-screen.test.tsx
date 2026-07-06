@@ -418,7 +418,7 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByText('Blue Team Ubuntu 22.04')).toBeNull();
   });
 
-  it('uses real pagination controls on every tab instead of decorative paging', async () => {
+  it('changes rendered rows when the page-size selector changes', async () => {
     fetchPlatformImagesMock.mockResolvedValue({
       items: [
         createPlatformImageAsset({ id: 'platform-1', imageId: 'img-1', displayName: 'Platform Asset 1' }),
@@ -448,23 +448,65 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
     expect(screen.queryByText('Platform Asset 3')).toBeNull();
 
-    const nextButtons = screen.getAllByRole('button', { name: '下一页' });
-    fireEvent.click(nextButtons[0]);
+    const pageSizeSelector = screen.getByRole('combobox', { name: '每页条数' });
+    fireEvent.change(pageSizeSelector, { target: { value: '3' } });
+
+    expect(await screen.findByText('Platform Asset 3')).toBeTruthy();
+  });
+
+  it('uses page number controls to switch pages on the active tab', async () => {
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [
+        createPlatformImageAsset({ id: 'platform-1', imageId: 'img-1', displayName: 'Platform Asset 1' }),
+        createPlatformImageAsset({ id: 'platform-2', imageId: 'img-2', displayName: 'Platform Asset 2' }),
+        createPlatformImageAsset({ id: 'platform-3', imageId: 'img-3', displayName: 'Platform Asset 3' }),
+      ],
+    } satisfies PlatformImageAssetListPayload);
+    fetchCustomImageCatalogScopeMock.mockResolvedValue({
+      snapshots: [
+        createSnapshot({ id: 'custom-1', scope: 'custom', imageId: 'custom-1', sourceImageName: 'Custom 1' }),
+        createSnapshot({ id: 'custom-2', scope: 'custom', imageId: 'custom-2', sourceImageName: 'Custom 2' }),
+        createSnapshot({ id: 'custom-3', scope: 'custom', imageId: 'custom-3', sourceImageName: 'Custom 3' }),
+      ],
+      catalogItems: [],
+    } satisfies ImageCatalogScopePayload);
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
 
     expect(await screen.findByText('Platform Asset 3')).toBeTruthy();
     expect(screen.queryByText('Platform Asset 1')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
     expect(await screen.findByText('Custom 1')).toBeTruthy();
-    expect(screen.queryByText('Custom 3')).toBeNull();
-    fireEvent.click(screen.getAllByRole('button', { name: '下一页' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
     expect(await screen.findByText('Custom 3')).toBeTruthy();
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+  it('jumps to a page number from the jump-to-page input', async () => {
+    fetchPublicImageCatalogScopeMock.mockResolvedValue({
+      snapshots: [
+        createSnapshot({ id: 'public-1', scope: 'public', imageId: 'public-1', sourceImageName: 'Public 1' }),
+        createSnapshot({ id: 'public-2', scope: 'public', imageId: 'public-2', sourceImageName: 'Public 2' }),
+        createSnapshot({ id: 'public-3', scope: 'public', imageId: 'public-3', sourceImageName: 'Public 3' }),
+        createSnapshot({ id: 'public-4', scope: 'public', imageId: 'public-4', sourceImageName: 'Public 4' }),
+        createSnapshot({ id: 'public-5', scope: 'public', imageId: 'public-5', sourceImageName: 'Public 5' }),
+      ],
+      catalogItems: [],
+    } satisfies ImageCatalogScopePayload);
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '阿里云公共镜像' }));
     expect(await screen.findByText('Public 1')).toBeTruthy();
-    expect(screen.queryByText('Public 3')).toBeNull();
-    fireEvent.click(screen.getAllByRole('button', { name: '下一页' })[0]);
-    expect(await screen.findByText('Public 3')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: '跳转' }));
+
+    expect(await screen.findByText('Public 5')).toBeTruthy();
+    expect(screen.queryByText('Public 1')).toBeNull();
   });
 
   it('logs out when sync or collect receives a 401 response after initial load', async () => {
