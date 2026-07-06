@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildScenarioTemplateSpecFromTopologyGraph } from './topology-graph-to-scenario-template';
+import { buildScenarioTemplateSpecFromTopologyGraph } from '@aliyun-cyber-range/scenario-runtime';
 
 describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
   it('builds switch ACL, switch NAT, host multi-NIC, and NIC security rules into scenario template spec', () => {

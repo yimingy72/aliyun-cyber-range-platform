@@ -71,6 +71,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@aliyun-cyber-range/scenario-runtime':
+        specifier: workspace:*
+        version: link:../../packages/scenario-runtime
       next:
         specifier: ^15.5.2
         version: 15.5.19(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -127,6 +130,8 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.6(@types/node@24.13.2)(jiti@2.7.0)(jsdom@26.1.0)(tsx@4.22.4)
+
+  packages/scenario-runtime: {}
 
 packages:
 
