@@ -5,7 +5,9 @@ import {
   AdminRepository,
   CreateRangeInstanceInput,
 } from './admin.repository';
+import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
+import { validateRangeInstanceDraftPayload } from './range-instance-draft.validation';
 import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
@@ -90,6 +92,48 @@ export class RangeInstancesService {
     });
 
     this.provisioningWorkerService.dispatch(job.id);
+
+    return this.attachRecoverySummary(updated);
+  }
+
+  async saveDraft(id: string, input: SaveRangeInstanceDraftDto) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+
+    if (!instance) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    if (instance.status !== 'running') {
+      throw new ConflictException('Only running instances can save draft changes');
+    }
+
+    validateRangeInstanceDraftPayload(input);
+
+    const updated = await this.adminRepository.updateRangeInstance(id, {
+      draftTopologyGraph: input.draftTopologyGraph,
+      draftScenarioTemplateSpec: input.draftScenarioTemplateSpec,
+      draftCompiledProvisionSpec: input.draftCompiledProvisionSpec,
+      draftUpdatedBy: input.draftUpdatedBy,
+      draftUpdatedAt: new Date(),
+    });
+
+    return this.attachRecoverySummary(updated);
+  }
+
+  async discardDraft(id: string) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+
+    if (!instance) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    const updated = await this.adminRepository.updateRangeInstance(id, {
+      draftTopologyGraph: null,
+      draftScenarioTemplateSpec: null,
+      draftCompiledProvisionSpec: null,
+      draftUpdatedBy: null,
+      draftUpdatedAt: null,
+    });
 
     return this.attachRecoverySummary(updated);
   }

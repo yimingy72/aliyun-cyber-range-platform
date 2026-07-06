@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
+import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { CreateRangeInstanceDto, LaunchRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
 import { RangeInstancesService } from './range-instances.service';
 
@@ -19,9 +20,19 @@ export class RangesController {
     return this.rangeInstancesService.getById(id);
   }
 
+  @Patch(':id/draft')
+  saveDraft(@Param('id') id: string, @Body() body: SaveRangeInstanceDraftDto) {
+    return this.rangeInstancesService.saveDraft(id, body);
+  }
+
   @Delete(':id')
   async delete(@Param('id') id: string) {
     await this.rangeInstancesService.delete(id);
+  }
+
+  @Delete(':id/draft')
+  discardDraft(@Param('id') id: string) {
+    return this.rangeInstancesService.discardDraft(id);
   }
 
   @Post()

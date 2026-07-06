@@ -7,8 +7,10 @@ import { useRouter } from 'next/navigation';
 import { AdminApiError, fetchRangeInstanceDetail } from '../../lib/admin-api';
 import type { RangeInstanceDetail } from '../../lib/admin-types';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
+import { RangeInstancePropertyPanel } from './range-instance-property-panel';
 import { RangeInstanceTopologyWorkbench } from './range-instance-topology-workbench';
 import { useAdminSession } from './use-admin-session';
+import { discardRangeInstanceDraft, saveRangeInstanceDraft } from '../../lib/admin-api';
 
 type RangeInstanceDetailScreenProps = {
   rangeId: string;
@@ -116,6 +118,9 @@ export function RangeInstanceDetailScreen({
   const [detail, setDetail] = useState<RangeInstanceDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('directory');
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(null);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
 
   useEffect(() => {
     if (!session.isReady || !session.token) {
@@ -131,6 +136,7 @@ export function RangeInstanceDetailScreen({
         }
 
         setDetail(payload);
+        setDraftGraph((payload.draftTopologyGraph as Record<string, unknown> | null) ?? (payload.runtimeTopologyGraph as Record<string, unknown> | null) ?? null);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -151,7 +157,141 @@ export function RangeInstanceDetailScreen({
     };
   }, [apiBaseUrl, rangeId, router, session]);
 
-  const nodes = useMemo(() => readRuntimeNodes(detail), [detail]);
+  const nodes = useMemo(() => {
+    if (!draftGraph || typeof draftGraph !== 'object') {
+      return readRuntimeNodes(detail);
+    }
+
+    const draftNodes = (draftGraph as Record<string, unknown>).nodes;
+
+    if (!Array.isArray(draftNodes)) {
+      return readRuntimeNodes(detail);
+    }
+
+    return draftNodes.flatMap((value) => {
+      if (!value || typeof value !== 'object') {
+        return [];
+      }
+
+      const node = value as Record<string, unknown>;
+      const id = typeof node.id === 'string' ? node.id : '';
+
+      if (!id) {
+        return [];
+      }
+
+      return [
+        {
+          id,
+          label: readNodeLabel(node),
+          kind: readNodeKind(node),
+        },
+      ];
+    });
+  }, [detail, draftGraph]);
+
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [nodes, selectedNodeId],
+  );
+
+  async function handleSaveDraft() {
+    if (!session.token || !detail || !draftGraph) {
+      return;
+    }
+
+    setIsSavingDraft(true);
+    setErrorMessage(null);
+
+    try {
+      const updated = await saveRangeInstanceDraft(apiBaseUrl, session.token, detail.id, {
+        draftTopologyGraph: draftGraph,
+        draftScenarioTemplateSpec:
+          (detail.draftScenarioTemplateSpec as Record<string, unknown> | null) ??
+          (detail.runtimeScenarioTemplateSpec as Record<string, unknown> | null) ??
+          {},
+        draftCompiledProvisionSpec:
+          (detail.draftCompiledProvisionSpec as Record<string, unknown> | null) ??
+          (detail.runtimeCompiledProvisionSpec as Record<string, unknown> | null) ??
+          {},
+        draftUpdatedBy: 'admin',
+      });
+
+      setDetail(updated);
+      setDraftGraph((updated.draftTopologyGraph as Record<string, unknown> | null) ?? draftGraph);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('保存变更草稿失败，请稍后重试。');
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }
+
+  async function handleDiscardDraft() {
+    if (!session.token || !detail) {
+      return;
+    }
+
+    setIsSavingDraft(true);
+    setErrorMessage(null);
+
+    try {
+      const updated = await discardRangeInstanceDraft(apiBaseUrl, session.token, detail.id);
+      setDetail(updated);
+      setDraftGraph((updated.runtimeTopologyGraph as Record<string, unknown> | null) ?? null);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('放弃未应用修改失败，请稍后重试。');
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }
+
+  function handleEditedNodeLabelChange(value: string) {
+    if (!selectedNodeId || !draftGraph || typeof draftGraph !== 'object') {
+      return;
+    }
+
+    const existingNodes = Array.isArray((draftGraph as Record<string, unknown>).nodes)
+      ? ((draftGraph as Record<string, unknown>).nodes as unknown[])
+      : [];
+
+    setDraftGraph({
+      ...draftGraph,
+      nodes: existingNodes.map((valueItem) => {
+        if (!valueItem || typeof valueItem !== 'object') {
+          return valueItem;
+        }
+
+        const node = valueItem as Record<string, unknown>;
+
+        if (node.id !== selectedNodeId) {
+          return node;
+        }
+
+        const nextData =
+          node.data && typeof node.data === 'object'
+            ? { ...(node.data as Record<string, unknown>), label: value }
+            : { label: value };
+
+        return {
+          ...node,
+          label: value,
+          data: nextData,
+        };
+      }),
+    });
+  }
 
   return (
     <main className="admin-screen range-instance-detail-screen">
@@ -194,11 +334,35 @@ export function RangeInstanceDetailScreen({
                 </button>
               </div>
 
-              {activeTab === 'directory' ? (
-                <RangeInstanceNodeDirectory nodes={nodes} />
-              ) : (
-                <RangeInstanceTopologyWorkbench nodes={nodes} />
-              )}
+              <div className="range-instance-workbench-actions">
+                <button type="button" disabled={isSavingDraft} onClick={() => void handleSaveDraft()}>
+                  保存变更草稿
+                </button>
+                <button type="button" disabled>
+                  应用变更
+                </button>
+                <button type="button" disabled={isSavingDraft} onClick={() => void handleDiscardDraft()}>
+                  放弃未应用修改
+                </button>
+              </div>
+
+              <div className="range-instance-detail-content">
+                <div className="range-instance-detail-main">
+                  {activeTab === 'directory' ? (
+                    <RangeInstanceNodeDirectory nodes={nodes} onSelectNode={setSelectedNodeId} />
+                  ) : (
+                    <RangeInstanceTopologyWorkbench nodes={nodes} onSelectNode={setSelectedNodeId} />
+                  )}
+                </div>
+
+                {selectedNode ? (
+                  <RangeInstancePropertyPanel
+                    selectedNodeLabel={selectedNode.label}
+                    editedNodeLabel={selectedNode.label}
+                    onEditedNodeLabelChange={handleEditedNodeLabelChange}
+                  />
+                ) : null}
+              </div>
             </>
           ) : (
             <div className="admin-workbench-empty">

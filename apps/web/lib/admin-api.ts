@@ -86,6 +86,35 @@ export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string
   return readJson<RangeInstanceDetail>(response);
 }
 
+export async function saveRangeInstanceDraft(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: {
+    draftTopologyGraph: Record<string, unknown>;
+    draftScenarioTemplateSpec: Record<string, unknown>;
+    draftCompiledProvisionSpec: Record<string, unknown>;
+    draftUpdatedBy: string;
+  },
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/draft`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<RangeInstanceDetail>(response);
+}
+
+export async function discardRangeInstanceDraft(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/draft`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<RangeInstanceDetail>(response);
+}
+
 export async function createRangeInstance(
   apiBaseUrl: string,
   token: string,
