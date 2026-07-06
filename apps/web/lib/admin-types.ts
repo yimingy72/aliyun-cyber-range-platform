@@ -1,26 +1,18 @@
-export type CompetitionStatus = 'draft' | 'scheduled' | 'active' | 'completed';
-
-export type Competition = {
-  id: string;
-  name: string;
-  description?: string | null;
-  status?: CompetitionStatus | string;
-};
-
-export type Team = {
-  id: string;
-  competitionId: string;
-  name: string;
-  contactName?: string | null;
-  contactEmailOrPhone?: string | null;
-};
+import type { CompiledProvisionSpec } from './compiled-provision-spec';
+import type { ScenarioTemplateSpec } from './scenario-template-spec';
 
 export type RangeTemplate = {
   id: string;
   name?: string | null;
+  description?: string | null;
   slug: string;
   version: string;
+  cloudProvider?: 'alibaba_cloud';
+  iacType?: 'opentofu' | 'terraform';
   modulePathOrRef?: string | null;
+  variableSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  defaultNetworkPolicy?: Record<string, unknown> | null;
   currentDraftVersionId?: string | null;
   currentPublishedVersionId?: string | null;
   currentDraftVersion?: {
@@ -29,6 +21,8 @@ export type RangeTemplate = {
     version: string;
     topologySpec?: RangeTemplateTopologySpec | null;
     topologyGraph?: Record<string, unknown> | null;
+    scenarioTemplateSpec?: ScenarioTemplateSpec | null;
+    compiledProvisionSpec?: CompiledProvisionSpec | null;
     compiledSpec?: RangeTemplateCompiledSpec | null;
   } | null;
   currentPublishedVersion?: {
@@ -37,6 +31,8 @@ export type RangeTemplate = {
     version: string;
     topologySpec?: RangeTemplateTopologySpec | null;
     topologyGraph?: Record<string, unknown> | null;
+    scenarioTemplateSpec?: ScenarioTemplateSpec | null;
+    compiledProvisionSpec?: CompiledProvisionSpec | null;
     compiledSpec?: RangeTemplateCompiledSpec | null;
   } | null;
 };
@@ -59,19 +55,6 @@ export type RangeTemplateCompiledSpec = {
   schemaVersion: string;
   resources: RangeTemplateCompiledResource[];
   topology?: RangeTemplateCompiledTopology;
-};
-
-export type CompetitionInput = {
-  name: string;
-  description?: string;
-  status?: CompetitionStatus;
-};
-
-export type TeamInput = {
-  competitionId: string;
-  name: string;
-  contactName?: string;
-  contactEmailOrPhone?: string;
 };
 
 export type RangeTemplateNetworkZone = {
@@ -111,6 +94,7 @@ export type RangeTemplateTopologySpec = {
 
 export type RangeTemplateCreateInput = {
   name: string;
+  description?: string;
   slug: string;
   version: string;
   modulePathOrRef: string;
@@ -118,6 +102,8 @@ export type RangeTemplateCreateInput = {
   iacType: 'opentofu' | 'terraform';
   topologySpec: RangeTemplateTopologySpec;
   topologyGraph?: Record<string, unknown>;
+  scenarioTemplateSpec?: ScenarioTemplateSpec;
+  compiledProvisionSpec?: CompiledProvisionSpec;
   compiledSpec?: RangeTemplateCompiledSpec;
   variableSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -127,8 +113,14 @@ export type RangeTemplateCreateInput = {
 export type RangeTemplateUpdateInput = Partial<RangeTemplateCreateInput> & {
   topologySpec?: RangeTemplateTopologySpec | null;
   topologyGraph?: Record<string, unknown> | null;
+  scenarioTemplateSpec?: ScenarioTemplateSpec | null;
+  compiledProvisionSpec?: CompiledProvisionSpec | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
 };
+
+export type Scenario = RangeTemplate;
+export type ScenarioCreateInput = RangeTemplateCreateInput;
+export type ScenarioUpdateInput = RangeTemplateUpdateInput;
 
 export type RangeAccessEntry = {
   hostRole?: string | null;
@@ -138,13 +130,44 @@ export type RangeAccessEntry = {
   url?: string | null;
 };
 
+export type RangeRuntimeSelectionPolicy = {
+  mode?: string | null;
+  imageId?: string | null;
+  preferredInstanceTypes?: string[] | null;
+  fallbackInstanceTypes?: string[] | null;
+  zoneId?: string | null;
+};
+
+export type RangeRuntimeSelections = {
+  image_policies?: Record<string, RangeRuntimeSelectionPolicy> | null;
+  imagePolicies?: Record<string, RangeRuntimeSelectionPolicy> | null;
+  instance_type_policies?: Record<string, RangeRuntimeSelectionPolicy> | null;
+  instanceTypePolicies?: Record<string, RangeRuntimeSelectionPolicy> | null;
+};
+
 export type RangeResourceSummary = {
   mode?: string | null;
+  modulePath?: string | null;
+  workspaceDir?: string | null;
+  outputFilePath?: string | null;
   vpcId?: string | null;
+  subnetIds?: Record<string, string> | null;
+  hostIds?: Record<string, string> | null;
+  secondaryNetworkInterfaceIds?: Record<string, string> | null;
   natGatewayIds?: Record<string, string> | null;
+  snatEntryIds?: Record<string, string> | null;
+  dnatEntryIds?: Record<string, string> | null;
+  eipAllocationId?: string | null;
   eipAllocationIds?: Record<string, string> | null;
+  bootstrapHostKeys?: string[] | null;
+  runtimeSelections?: RangeRuntimeSelections | Record<string, unknown> | null;
+  resolvedInstanceType?: string | null;
+  resolvedImageId?: string | null;
   topologySpec?: {
     vpcCidr?: string | null;
+    publicEntryHostKey?: string | null;
+    networkZoneKeys?: string[] | null;
+    hostKeys?: string[] | null;
   } | null;
 };
 
@@ -158,11 +181,16 @@ export type RangeRecoverySummary = {
 
 export type RangeInstance = {
   id: string;
+  name?: string | null;
   status: string;
-  teamId: string;
-  competitionId?: string | null;
   templateId?: string | null;
+  templateNameSnapshot?: string | null;
+  templateSlugSnapshot?: string | null;
+  templateVersionSnapshot?: string | null;
+  templateModulePathSnapshot?: string | null;
+  sourceTemplateVersionId?: string | null;
   lastJobId?: string | null;
+  createdAt?: string | null;
   errorSummary?: string | null;
   expiresAt?: string | null;
   accessEntry?: RangeAccessEntry | null;
@@ -171,17 +199,15 @@ export type RangeInstance = {
   recoverySummary?: RangeRecoverySummary | null;
 };
 
-export type RangeInstanceDetail = RangeInstance & {
-  competitionId: string;
-  templateId: string;
-  recoverySummary?: RangeRecoverySummary | null;
-};
-
 export type RangeInstanceCreateInput = {
-  competitionId: string;
-  teamId: string;
+  name: string;
   templateId: string;
   expiresAt?: string;
+};
+
+export type RangeInstanceDetail = RangeInstance & {
+  templateId: string;
+  recoverySummary?: RangeRecoverySummary | null;
 };
 
 export type ProvisionJob = {
@@ -208,26 +234,95 @@ export type ProvisionJobStep = {
 };
 
 export type CloudConfigSnapshot = {
-  region: string;
+  provider: 'alibaba_cloud';
+  defaultRegion: string;
+  defaultZoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+};
+
+export type InstanceTypeAvailabilityMatch = {
+  instanceTypeId: string;
+  cpu: number;
+  memoryGiB: number;
+  family: string;
+  generation: string;
+  architecture: string;
+};
+
+export type InstanceTypeAvailabilitySnapshot = {
+  cpu: number;
+  memory: number;
+  regionId: string;
   zoneId: string;
-  provisionerMode: string;
-  instanceTypeStrategy: string;
-  instanceTypePreferences: string[];
+  exactAvailable: boolean;
+  matches: InstanceTypeAvailabilityMatch[];
+  warning: string | null;
+};
+
+export type ImageSnapshot = {
+  id: string;
+  provider: 'alibaba_cloud';
+  accountUid?: string | null;
+  regionId: string;
+  scope: 'public' | 'custom' | string;
   imageId: string;
-  instancePasswordConfigured: boolean;
-  providerZipPathConfigured: boolean;
-  readyForPlan: boolean;
-  checks: Array<{
-    key: string;
-    label: string;
-    configured: boolean;
-    required: boolean;
-  }>;
+  sourceImageName: string;
+  osType?: string | null;
+  platform?: string | null;
+  architecture?: string | null;
+  status?: string | null;
+  isAvailable: boolean;
+  lastSyncedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type ImageCatalogItem = {
+  id: string;
+  displayName: string;
+  imageId: string;
+  provider: 'alibaba_cloud';
+  scope: 'public' | 'custom' | string;
+  accountUid?: string | null;
+  regionId: string;
+  enabled: boolean;
+  sourceSnapshotId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type PlatformImageAsset = {
+  id: string;
+  provider: 'alibaba_cloud';
+  accountUid?: string | null;
+  accountScopeKey: string;
+  regionId: string;
+  sourceScope: 'public' | 'custom' | string;
+  sourceSnapshotId?: string | null;
+  imageId: string;
+  displayName: string;
+  enabled: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type ImageCatalogScopePayload = {
+  snapshots: ImageSnapshot[];
+  catalogItems: ImageCatalogItem[];
+};
+
+export type PlatformImageAssetListPayload = {
+  items: PlatformImageAsset[];
+};
+
+export type CollectImageCatalogItemInput = {
+  snapshotId: string;
+  displayName: string;
 };
 
 export type AdminBootstrapData = {
-  competitions: Competition[];
-  teams: Team[];
+  scenarios: Scenario[];
   rangeTemplates: RangeTemplate[];
   rangeInstances: RangeInstance[];
   provisionJobs: ProvisionJob[];

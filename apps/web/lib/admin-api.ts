@@ -1,18 +1,20 @@
 import type {
   AdminBootstrapData,
+  CollectImageCatalogItemInput,
   CloudConfigSnapshot,
-  Competition,
-  CompetitionInput,
+  ImageCatalogItem,
+  ImageCatalogScopePayload,
+  InstanceTypeAvailabilitySnapshot,
+  PlatformImageAsset,
+  PlatformImageAssetListPayload,
   ProvisionJob,
   ProvisionJobStep,
   RangeInstanceCreateInput,
   RangeInstance,
   RangeInstanceDetail,
-  RangeTemplate,
-  RangeTemplateCreateInput,
-  RangeTemplateUpdateInput,
-  Team,
-  TeamInput,
+  Scenario,
+  ScenarioCreateInput,
+  ScenarioUpdateInput,
 } from './admin-types';
 
 export class AdminApiError extends Error {
@@ -59,25 +61,24 @@ async function readJson<T>(response: Response): Promise<T> {
 
 export async function fetchAdminBootstrap(apiBaseUrl: string, token: string): Promise<AdminBootstrapData> {
   const headers = createAdminHeaders(token);
-  const [competitionsResponse, teamsResponse, templatesResponse, instancesResponse, jobsResponse] = await Promise.all([
-    fetch(`${apiBaseUrl}/admin/competitions`, { headers }),
-    fetch(`${apiBaseUrl}/admin/teams`, { headers }),
-    fetch(`${apiBaseUrl}/admin/range-templates`, { headers }),
-    fetch(`${apiBaseUrl}/admin/range-instances`, { headers }),
+  const [templatesResponse, instancesResponse, jobsResponse] = await Promise.all([
+    fetch(`${apiBaseUrl}/admin/scenarios`, { headers }),
+    fetch(`${apiBaseUrl}/admin/ranges`, { headers }),
     fetch(`${apiBaseUrl}/admin/provision-jobs`, { headers }),
   ]);
 
+  const scenarios = await readJson<Scenario[]>(templatesResponse);
+
   return {
-    competitions: await readJson<Competition[]>(competitionsResponse),
-    teams: await readJson<Team[]>(teamsResponse),
-    rangeTemplates: await readJson<RangeTemplate[]>(templatesResponse),
+    scenarios,
+    rangeTemplates: scenarios,
     rangeInstances: await readJson<RangeInstance[]>(instancesResponse),
     provisionJobs: await readJson<ProvisionJob[]>(jobsResponse),
   };
 }
 
 export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-instances/${id}`, {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}`, {
     headers: createAdminHeaders(token),
   });
 
@@ -89,13 +90,40 @@ export async function createRangeInstance(
   token: string,
   payload: RangeInstanceCreateInput,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-instances`, {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges`, {
     method: 'POST',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
   });
 
-  return readJson<RangeInstanceDetail>(response);
+  return readJson<RangeInstance>(response);
+}
+
+export async function deleteRangeInstance(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  if (!response.ok) {
+    let details: unknown;
+
+    try {
+      details = await response.json();
+    } catch {
+      details = null;
+    }
+
+    const message =
+      details &&
+      typeof details === 'object' &&
+      'message' in details &&
+      typeof (details as { message?: unknown }).message === 'string'
+        ? (details as { message: string }).message
+        : `Admin API request failed with status ${response.status}`;
+
+    throw new AdminApiError(response.status, message, details);
+  }
 }
 
 export async function fetchProvisionJobDetail(apiBaseUrl: string, token: string, id: string) {
@@ -118,7 +146,7 @@ export async function triggerRangeAction(
   action: 'create' | 'destroy' | 'retry',
   triggeredBy: string,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-instances/${id}/${action}`, {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/${action}`, {
     method: 'POST',
     headers: createAdminHeaders(token),
     body: JSON.stringify({ triggeredBy }),
@@ -138,113 +166,277 @@ export async function fetchCloudConfig(
   return readJson<CloudConfigSnapshot>(response);
 }
 
-export async function createCompetition(apiBaseUrl: string, token: string, payload: CompetitionInput) {
-  const response = await fetch(`${apiBaseUrl}/admin/competitions`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-    body: JSON.stringify(payload),
-  });
-
-  return readJson<Competition>(response);
-}
-
-export async function updateCompetition(apiBaseUrl: string, token: string, id: string, payload: CompetitionInput) {
-  const response = await fetch(`${apiBaseUrl}/admin/competitions/${id}`, {
+export async function saveCloudConfig(
+  apiBaseUrl: string,
+  token: string,
+  payload: CloudConfigSnapshot,
+): Promise<CloudConfigSnapshot> {
+  const response = await fetch(`${apiBaseUrl}/admin/system-config`, {
     method: 'PATCH',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
   });
 
-  return readJson<Competition>(response);
+  return readJson<CloudConfigSnapshot>(response);
 }
 
-export async function deleteCompetition(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/competitions/${id}`, {
-    method: 'DELETE',
+export async function fetchInstanceTypeAvailability(
+  apiBaseUrl: string,
+  token: string,
+  cpu: number,
+  memory: number,
+): Promise<InstanceTypeAvailabilitySnapshot> {
+  const searchParams = new URLSearchParams({
+    cpu: String(cpu),
+    memory: String(memory),
+  });
+  const response = await fetch(`${apiBaseUrl}/admin/system-config/instance-type-availability?${searchParams}`, {
     headers: createAdminHeaders(token),
   });
 
-  if (!response.ok) {
-    throw new AdminApiError(response.status);
-  }
-}
-
-export async function createTeam(apiBaseUrl: string, token: string, payload: TeamInput) {
-  const response = await fetch(`${apiBaseUrl}/admin/teams`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-    body: JSON.stringify(payload),
-  });
-
-  return readJson<Team>(response);
-}
-
-export async function updateTeam(apiBaseUrl: string, token: string, id: string, payload: TeamInput) {
-  const response = await fetch(`${apiBaseUrl}/admin/teams/${id}`, {
-    method: 'PATCH',
-    headers: createAdminHeaders(token),
-    body: JSON.stringify(payload),
-  });
-
-  return readJson<Team>(response);
-}
-
-export async function deleteTeam(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/teams/${id}`, {
-    method: 'DELETE',
-    headers: createAdminHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new AdminApiError(response.status);
-  }
+  return readJson<InstanceTypeAvailabilitySnapshot>(response);
 }
 
 export async function createRangeTemplate(
   apiBaseUrl: string,
   token: string,
-  payload: RangeTemplateCreateInput,
+  payload: ScenarioCreateInput,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-templates`, {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios`, {
     method: 'POST',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
   });
 
-  return readJson<RangeTemplate>(response);
+  return readJson<Scenario>(response);
+}
+
+export async function cloneRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/clone`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<Scenario>(response);
 }
 
 export async function updateRangeTemplate(
   apiBaseUrl: string,
   token: string,
   id: string,
-  payload: RangeTemplateUpdateInput,
+  payload: ScenarioUpdateInput,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-templates/${id}`, {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}`, {
     method: 'PATCH',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
   });
 
-  return readJson<RangeTemplate>(response);
+  return readJson<Scenario>(response);
 }
 
 export async function publishRangeTemplate(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-templates/${id}/publish`, {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/publish`, {
     method: 'POST',
     headers: createAdminHeaders(token),
   });
 
-  return readJson<RangeTemplate>(response);
+  return readJson<Scenario>(response);
+}
+
+export async function validateRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/validate`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<{ valid: true }>(response);
+}
+
+export async function unpublishRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/unpublish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<Scenario>(response);
 }
 
 export async function deleteRangeTemplate(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/range-templates/${id}`, {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}`, {
     method: 'DELETE',
     headers: createAdminHeaders(token),
   });
 
   if (!response.ok) {
-    throw new AdminApiError(response.status);
+    let details: unknown;
+
+    try {
+      details = await response.json();
+    } catch {
+      details = null;
+    }
+
+    const message =
+      details &&
+      typeof details === 'object' &&
+      'message' in details &&
+      typeof (details as { message?: unknown }).message === 'string'
+        ? (details as { message: string }).message
+        : `Admin API request failed with status ${response.status}`;
+
+      throw new AdminApiError(response.status, message, details);
+  }
+}
+
+export async function fetchPublicImageCatalogScope(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/public`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ImageCatalogScopePayload>(response);
+}
+
+export async function fetchCustomImageCatalogScope(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/custom`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ImageCatalogScopePayload>(response);
+}
+
+export async function syncPublicImages(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/public/sync`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ImageCatalogScopePayload>(response);
+}
+
+export async function syncCustomImages(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/custom/sync`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ImageCatalogScopePayload>(response);
+}
+
+export async function collectImageCatalogItem(
+  apiBaseUrl: string,
+  token: string,
+  payload: CollectImageCatalogItemInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/collect`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<ImageCatalogItem>(response);
+}
+
+export async function fetchPlatformImages(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<PlatformImageAssetListPayload>(response);
+}
+
+export async function collectPlatformImage(
+  apiBaseUrl: string,
+  token: string,
+  payload: CollectImageCatalogItemInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function renamePlatformImage(apiBaseUrl: string, token: string, id: string, displayName: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify({ displayName }),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function enablePlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/enable`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function disablePlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/disable`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function removePlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  if (!response.ok) {
+    let details: unknown;
+
+    try {
+      details = await response.json();
+    } catch {
+      details = null;
+    }
+
+    const message =
+      details &&
+      typeof details === 'object' &&
+      'message' in details &&
+      typeof (details as { message?: unknown }).message === 'string'
+        ? (details as { message: string }).message
+        : `Admin API request failed with status ${response.status}`;
+
+    throw new AdminApiError(response.status, message, details);
+  }
+}
+
+export async function deleteCustomImageSnapshot(apiBaseUrl: string, token: string, snapshotId: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/custom/${snapshotId}`, {
+    method: 'DELETE',
+    headers: createAdminHeaders(token),
+  });
+
+  if (!response.ok) {
+    let details: unknown;
+
+    try {
+      details = await response.json();
+    } catch {
+      details = null;
+    }
+
+    const message =
+      details &&
+      typeof details === 'object' &&
+      'message' in details &&
+      typeof (details as { message?: unknown }).message === 'string'
+        ? (details as { message: string }).message
+        : `Admin API request failed with status ${response.status}`;
+
+    throw new AdminApiError(response.status, message, details);
   }
 }
