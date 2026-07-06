@@ -19,6 +19,10 @@ type ImageCatalogScopePayload = {
   catalogItems: ImageCatalogItemRecord[];
 };
 
+type PlatformImageAssetsPayload = {
+  items: PlatformImageAssetRecord[];
+};
+
 type AliyunDescribeImagesResponse = {
   Images?: {
     Image?: AliyunImage[] | AliyunImage;
@@ -65,14 +69,16 @@ export class ImageCatalogService {
     return this.syncScope('custom', 'self');
   }
 
-  async listPlatformAssets(): Promise<PlatformImageAssetRecord[]> {
+  async listPlatformAssets(): Promise<PlatformImageAssetsPayload> {
     const accountContext = await this.systemConfigService.getAccountContext();
 
-    return this.adminRepository.listPlatformImageAssets({
+    const items = await this.adminRepository.listPlatformImageAssets({
       provider: accountContext.provider,
       accountUid: accountContext.accountUid,
       regionId: accountContext.defaultRegion,
     });
+
+    return { items };
   }
 
   async collectPlatformAsset(snapshotId: string, displayName: string) {
@@ -96,10 +102,8 @@ export class ImageCatalogService {
     return this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
   }
 
-  async removePlatformAsset(id: string) {
+  async removePlatformAsset(id: string): Promise<void> {
     await this.adminRepository.deletePlatformImageAsset(id);
-
-    return { success: true };
   }
 
   async collectFromSnapshot(snapshotId: string, displayName: string) {
@@ -121,7 +125,7 @@ export class ImageCatalogService {
     });
   }
 
-  async deleteCustomSnapshot(snapshotId: string) {
+  async deleteCustomSnapshot(snapshotId: string): Promise<void> {
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
 
     if (!snapshot) {
@@ -170,8 +174,6 @@ export class ImageCatalogService {
         .filter((item) => item.id !== snapshot.id)
         .map((item) => this.toUpsertSnapshotInput(item)),
     });
-
-    return { success: true };
   }
 
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {

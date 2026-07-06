@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import { CollectImageCatalogDto } from './dto/image-catalog.dto';
@@ -35,6 +35,7 @@ export class ImageCatalogController {
   }
 
   @Delete('custom/:snapshotId')
+  @HttpCode(204)
   deleteCustomSnapshot(@Param('snapshotId') snapshotId: string) {
     return this.imageCatalogService.deleteCustomSnapshot(snapshotId);
   }

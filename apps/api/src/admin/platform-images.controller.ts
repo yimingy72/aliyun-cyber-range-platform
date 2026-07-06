@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import { CollectPlatformImageDto, RenamePlatformImageDto } from './dto/platform-image.dto';
@@ -35,6 +35,7 @@ export class PlatformImagesController {
   }
 
   @Delete(':id')
+  @HttpCode(204)
   remove(@Param('id') id: string) {
     return this.imageCatalogService.removePlatformAsset(id);
   }

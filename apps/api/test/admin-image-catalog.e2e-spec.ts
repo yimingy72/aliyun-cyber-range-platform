@@ -262,19 +262,21 @@ describe('Admin image catalog APIs', () => {
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
-    expect(response.body).toEqual([
-      expect.objectContaining({
-        provider: 'alibaba_cloud',
-        accountUid: '1234567890',
-        accountScopeKey: toAccountScopeKey('1234567890'),
-        regionId: 'cn-hangzhou',
-        sourceScope: 'public',
-        sourceSnapshotId: snapshot.id,
-        imageId: 'ubuntu_24_04_x64_20G_alibase_20250618.vhd',
-        displayName: 'Ubuntu 24.04 LTS',
-        enabled: true,
-      }),
-    ]);
+    expect(response.body).toEqual({
+      items: [
+        expect.objectContaining({
+          provider: 'alibaba_cloud',
+          accountUid: '1234567890',
+          accountScopeKey: toAccountScopeKey('1234567890'),
+          regionId: 'cn-hangzhou',
+          sourceScope: 'public',
+          sourceSnapshotId: snapshot.id,
+          imageId: 'ubuntu_24_04_x64_20G_alibase_20250618.vhd',
+          displayName: 'Ubuntu 24.04 LTS',
+          enabled: true,
+        }),
+      ],
+    });
   });
 
   it('supports collect rename enable disable and delete for platform image assets', async () => {
@@ -367,14 +369,15 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .delete(`/admin/platform-images/${assetId}`)
       .set('authorization', 'Bearer dev-admin-token')
-      .expect(200);
+      .expect(204)
+      .expect('');
 
     const listResponse = await request(app.getHttpServer())
       .get('/admin/platform-images')
       .set('authorization', 'Bearer dev-admin-token')
       .expect(200);
 
-    expect(listResponse.body).toEqual([]);
+    expect(listResponse.body).toEqual({ items: [] });
   });
 
   it('DELETE /admin/image-catalog/custom/:snapshotId removes linked platform assets after cloud delete succeeds', async () => {
@@ -414,7 +417,8 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .delete(`/admin/image-catalog/custom/${snapshot.id}`)
       .set('authorization', 'Bearer dev-admin-token')
-      .expect(200);
+      .expect(204)
+      .expect('');
 
     const [remainingSnapshot] = await repository.listImageSnapshots({
       provider: 'alibaba_cloud',
