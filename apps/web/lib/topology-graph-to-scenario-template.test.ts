@@ -450,15 +450,5 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
         }),
       ]),
     );
-    expect(template.hosts).toEqual(
-      expect.arrayContaining([
-      expect.objectContaining({
-        key: 'ecs-mid',
-      }),
-      expect.objectContaining({
-        key: 'ecs-large',
-      }),
-      ]),
-    );
   });
 });

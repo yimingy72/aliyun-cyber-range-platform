@@ -31,8 +31,9 @@ export function resolvePreferredInstanceTypes(cpu?: number, memory?: number) {
     return [];
   }
 
-  return (
-    INSTANCE_TYPE_CANDIDATE_CATALOG.find((entry) => entry.cpu === cpu && entry.memory === memory)?.preferredInstanceTypes ??
-    []
-  );
+  const preferredInstanceTypes = INSTANCE_TYPE_CANDIDATE_CATALOG.find(
+    (entry) => entry.cpu === cpu && entry.memory === memory,
+  )?.preferredInstanceTypes;
+
+  return preferredInstanceTypes ? [...preferredInstanceTypes] : [];
 }

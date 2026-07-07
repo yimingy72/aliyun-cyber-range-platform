@@ -7,6 +7,7 @@ import {
   createRangeProvisionerFromEnv,
 } from '../src/provisioning/open-tofu-range-provisioner';
 import { DryRunRangeProvisioner } from '../src/provisioning/dry-run-range-provisioner';
+import { resolvePreferredInstanceTypes } from '../src/provisioning/instance-type-catalog';
 import type { RangeProvisionStepEvent } from '../src/provisioning/provisioning.types';
 
 describe('OpenTofuRangeProvisioner', () => {
@@ -1492,6 +1493,14 @@ describe('OpenTofuRangeProvisioner', () => {
         }),
       ]),
     );
+  });
+
+  it('returns economy-first preferred instance type candidates for catalog-backed host sizes', () => {
+    expect(resolvePreferredInstanceTypes(2, 2)).toEqual([
+      'ecs.e-c1m1.large',
+      'ecs.u1-c1m1.large',
+      'ecs.t6-c1m1.large',
+    ]);
   });
 
   it('prefers cpu-memory derived fixed instance types over stale persisted host instanceType values', async () => {
