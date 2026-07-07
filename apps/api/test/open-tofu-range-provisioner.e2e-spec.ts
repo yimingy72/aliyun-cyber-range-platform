@@ -3780,6 +3780,107 @@ describe('OpenTofuRangeProvisioner', () => {
     );
   });
 
+  it('does not pass unrelated parent environment variables to the OpenTofu runner', async () => {
+    const originalUnrelatedEnv = process.env.UNRELATED_PARENT_ENV;
+    process.env.UNRELATED_PARENT_ENV = 'do-not-pass-through';
+
+    try {
+      const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-parent-env-'));
+      const moduleDir = path.join(tempRootDir, 'infra', 'module');
+      const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+      const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+
+      await fs.mkdir(moduleDir, { recursive: true });
+      await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+      await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+      const runner = {
+        init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+        validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+        plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+        apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+        output: jest.fn().mockResolvedValue({
+          public_entry: {
+            value: {
+              host_role: 'dmz',
+              public_ip: '1.1.1.1',
+              private_ip: '10.93.10.10',
+              ssh: 'ssh root@example.range',
+            },
+          },
+        }),
+        destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+      };
+
+      const provisioner = new OpenTofuRangeProvisioner({
+        runner,
+        projectRootDir: tempRootDir,
+        workspacesRootDir,
+        env: {
+          ALICLOUD_REGION: 'cn-hangzhou',
+          ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+          ALICLOUD_ACCESS_KEY: 'test-ak',
+          ALICLOUD_SECRET_KEY: 'test-sk',
+          ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+          OPENTOFU_INSTANCE_TYPE: 'ecs.u1-c1m2.large',
+          OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        },
+      });
+
+      await provisioner.create({
+        rangeInstanceId: 'range-instance-parent-env',
+        templateModulePath: 'infra/module',
+        allocatedCidr: null,
+        reportStep: async () => undefined,
+        topologySpec: {
+          vpcCidr: '10.93.0.0/16',
+          networkZones: [
+            {
+              key: 'dmz',
+              name: 'DMZ',
+              purpose: 'public-entry',
+              cidr: '10.93.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'dmz-entry',
+              name: 'DMZ Entry',
+              zoneKey: 'dmz',
+              role: 'entry',
+              privateIp: '10.93.10.10',
+              exposePublic: true,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'dmz-entry',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+      });
+
+      const initEnv = runner.init.mock.calls[0]?.[0]?.env;
+
+      expect(initEnv).toEqual(
+        expect.objectContaining({
+          ALICLOUD_ACCESS_KEY: 'test-ak',
+          ALICLOUD_SECRET_KEY: 'test-sk',
+          ALICLOUD_REGION: 'cn-hangzhou',
+          TF_CLI_CONFIG_FILE: expect.stringContaining(path.join(workspacesRootDir, 'provider-mirror')),
+        }),
+      );
+      expect(initEnv).not.toHaveProperty('UNRELATED_PARENT_ENV');
+    } finally {
+      if (originalUnrelatedEnv === undefined) {
+        delete process.env.UNRELATED_PARENT_ENV;
+      } else {
+        process.env.UNRELATED_PARENT_ENV = originalUnrelatedEnv;
+      }
+    }
+  });
+
   it('switches between dry-run and OpenTofu provisioners from env mode', () => {
     const dryRunProvisioner = createRangeProvisionerFromEnv({
       projectRootDir: '/tmp/project',

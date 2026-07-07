@@ -43,6 +43,8 @@ type OpenTofuProvisionerEnv = Partial<
     | 'RANGE_PROVISIONER_MODE'
     | 'OPENTOFU_BINARY'
     | 'OPENTOFU_WORKSPACES_ROOT'
+    | 'PATH'
+    | 'TF_CLI_CONFIG_FILE'
     | 'OPENTOFU_INSTANCE_TYPE'
     | 'OPENTOFU_INSTANCE_TYPE_PREFERENCES'
     | 'OPENTOFU_IMAGE_ID'
@@ -195,6 +197,7 @@ const PROXY_ENV_KEYS = [
   'NO_PROXY',
   'no_proxy',
 ] as const;
+const RUNNER_ENV_KEYS = ['PATH', 'TF_CLI_CONFIG_FILE'] as const;
 const ALICLOUD_RPC_FORMAT = 'JSON';
 const ALICLOUD_RPC_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_RPC_SIGNATURE_VERSION = '1.0';
@@ -737,21 +740,16 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const providerZipPath = this.env.ALICLOUD_PROVIDER_ZIP_PATH?.trim();
 
     const runnerEnv: NodeJS.ProcessEnv = {
-      ...omitProxyEnv(process.env),
-      ...omitProxyEnv(this.env),
+      // ponytail: keep the runner env tiny; add keys here only for a concrete child-process need.
+      ...pickEnv(process.env, RUNNER_ENV_KEYS),
+      ...pickEnv(this.env, RUNNER_ENV_KEYS),
       ALICLOUD_ACCESS_KEY: runtimeConfig.accessKeyId,
       ALICLOUD_SECRET_KEY: runtimeConfig.accessKeySecret,
       ALICLOUD_REGION: runtimeConfig.defaultRegion,
     };
 
     if (normalizeOptionalEnvValue(this.env.OPENTOFU_PASSTHROUGH_PROXY) === '1') {
-      for (const key of PROXY_ENV_KEYS) {
-        const value = this.env[key] ?? process.env[key];
-
-        if (value) {
-          runnerEnv[key] = value;
-        }
-      }
+      Object.assign(runnerEnv, pickEnv(process.env, PROXY_ENV_KEYS), pickEnv(this.env, PROXY_ENV_KEYS));
     }
 
     if (!providerZipPath) {
@@ -1401,14 +1399,21 @@ function readStringArrayValue(value: unknown) {
     : [];
 }
 
-function omitProxyEnv<T extends NodeJS.ProcessEnv | OpenTofuProvisionerEnv>(env: T): T {
-  const sanitized = { ...env };
+function pickEnv<K extends keyof NodeJS.ProcessEnv>(
+  env: Partial<Pick<NodeJS.ProcessEnv, K>>,
+  keys: readonly K[],
+): NodeJS.ProcessEnv {
+  const picked: NodeJS.ProcessEnv = {};
 
-  for (const key of PROXY_ENV_KEYS) {
-    delete sanitized[key];
+  for (const key of keys) {
+    const value = env[key];
+
+    if (value) {
+      picked[key] = value;
+    }
   }
 
-  return sanitized;
+  return picked;
 }
 
 function resolveWorkspaceRootDir(options: {
