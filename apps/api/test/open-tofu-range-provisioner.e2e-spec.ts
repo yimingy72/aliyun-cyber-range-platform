@@ -1481,7 +1481,7 @@ describe('OpenTofuRangeProvisioner', () => {
     );
   });
 
-  it('falls back from the default zone to a feasible zone that can satisfy every host', async () => {
+  it('falls back only after trying the default zone and then uses a feasible zone that can satisfy every host', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-zone-fallback-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
@@ -1656,13 +1656,13 @@ describe('OpenTofuRangeProvisioner', () => {
           instanceTypePolicies: {
             'dmz-entry-instance-type-policy': {
               key: 'dmz-entry-instance-type-policy',
-              mode: 'fixed',
-              instanceType: 'ecs.e-c1m1.large',
+              mode: 'auto',
+              preferredInstanceTypes: ['ecs.e-c1m1.large'],
             },
             'server-app-instance-type-policy': {
               key: 'server-app-instance-type-policy',
-              mode: 'fixed',
-              instanceType: 'ecs.e-c1m2.xlarge',
+              mode: 'auto',
+              preferredInstanceTypes: ['ecs.e-c1m2.xlarge'],
             },
           },
         },
@@ -1672,6 +1672,18 @@ describe('OpenTofuRangeProvisioner', () => {
     const varsFilePath = path.join(workspacesRootDir, 'range-instance-zone-fallback', 'range.auto.tfvars.json');
     const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
 
+    expect(availableInstanceTypeResolver.mock.calls.map(([input]) => input.zoneId)).toEqual([
+      'cn-hangzhou-h',
+      'cn-hangzhou-h',
+      'cn-hangzhou-i',
+      'cn-hangzhou-i',
+    ]);
+    expect(availableInstanceTypeResolver.mock.calls.map(([input]) => input.preferredInstanceTypes[0])).toEqual([
+      'ecs.e-c1m1.large',
+      'ecs.e-c1m2.xlarge',
+      'ecs.e-c1m1.large',
+      'ecs.e-c1m2.xlarge',
+    ]);
     expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
     expect(renderedVariables.hosts).toEqual(
       expect.arrayContaining([
@@ -1707,10 +1719,10 @@ describe('OpenTofuRangeProvisioner', () => {
 
       if (input.zoneId === 'cn-hangzhou-j') {
         if (input.preferredInstanceTypes.includes('ecs.e-c1m2.xlarge')) {
-          return 'ecs.e-c1m2.xlarge';
+          return 'ecs.u1-c1m2.large';
         }
 
-        return 'ecs.e-c1m1.large';
+        return 'ecs.u1-c1m2.large';
       }
 
       throw new Error(`unexpected zone ${input.zoneId}`);
@@ -1872,17 +1884,31 @@ describe('OpenTofuRangeProvisioner', () => {
             },
             'server-app-instance-type-policy': {
               key: 'server-app-instance-type-policy',
-              mode: 'fixed',
-              instanceType: 'ecs.e-c1m2.xlarge',
+              mode: 'auto',
+              preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.large'],
             },
           },
         },
       },
     });
 
+    expect(availableInstanceTypeResolver.mock.calls.map(([input]) => input.zoneId)).toEqual([
+      'cn-hangzhou-h',
+      'cn-hangzhou-i',
+      'cn-hangzhou-i',
+      'cn-hangzhou-j',
+      'cn-hangzhou-j',
+    ]);
+    expect(availableInstanceTypeResolver.mock.calls.map(([input]) => input.preferredInstanceTypes[0])).toEqual([
+      'ecs.e-c1m1.large',
+      'ecs.e-c1m1.large',
+      'ecs.e-c1m2.xlarge',
+      'ecs.e-c1m1.large',
+      'ecs.e-c1m2.xlarge',
+    ]);
     expect(result.resourceSummary.runtimeSelections).toEqual(
       expect.objectContaining({
-        selectedZoneId: 'cn-hangzhou-j',
+        selectedZoneId: 'cn-hangzhou-i',
         attemptedZones: ['cn-hangzhou-h', 'cn-hangzhou-i', 'cn-hangzhou-j'],
       }),
     );

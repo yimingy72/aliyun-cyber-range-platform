@@ -1959,7 +1959,7 @@ describe('TemplateEditorScreen', () => {
     );
   });
 
-  it('keeps the stale fixed instance type regression economy-first when detecting topology', async () => {
+  it('keeps the stale fixed instance type persistence regression economy-first when detecting topology', async () => {
     updateRangeTemplateMock.mockClear();
     validateRangeTemplateMock.mockResolvedValue({ valid: true });
     updateRangeTemplateMock.mockResolvedValue({
