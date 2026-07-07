@@ -116,6 +116,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   server_private_ip: string;
   instance_type: string;
   image_id: string;
+  host_passwords: Record<string, string>;
   instance_password: string;
   allowed_ingress_cidr: string;
   internet_max_bandwidth_out?: number;
@@ -135,6 +136,7 @@ export type AlibabaCloudOpenTofuRendererInput = {
   hostInstanceTypes: Record<string, string>;
   imageId: string;
   hostImageIds?: Record<string, string>;
+  hostPasswords: Record<string, string>;
   instancePassword: string;
   allowedIngressCidr: string;
   internetMaxBandwidthOut?: number;
@@ -262,6 +264,7 @@ export class AlibabaCloudOpenTofuRenderer {
       server_private_ip: plan.hosts.serverPrimary.privateIp,
       instance_type: input.instanceType,
       image_id: input.imageId,
+      host_passwords: input.hostPasswords,
       instance_password: input.instancePassword,
       allowed_ingress_cidr: input.allowedIngressCidr,
       ...(input.internetMaxBandwidthOut !== undefined

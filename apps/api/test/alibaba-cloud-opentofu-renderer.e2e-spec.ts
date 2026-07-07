@@ -91,6 +91,11 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         'server-app': 'ecs.c7.large',
       },
       imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+      hostPasswords: {
+        'dmz-entry': 'ChangeMe123!',
+        'office-client': 'ChangeMe123!',
+        'server-app': 'ChangeMe123!',
+      },
       instancePassword: 'ChangeMe123!',
       allowedIngressCidr: '0.0.0.0/0',
       internetMaxBandwidthOut: 50,

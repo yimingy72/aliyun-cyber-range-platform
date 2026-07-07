@@ -1,6 +1,7 @@
 import type {
   ProvisionJobStepStatus,
   RangeAccessEntry,
+  RangeRuntimeCredentials,
   RangeTemplateCompiledSpec,
   RangeResourceSummary,
   RangeTemplateTopologySpec,
@@ -44,6 +45,7 @@ export type RangeProvisionCreateInput = {
   templateModulePath: string;
   allocatedCidr: string | null;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
+  runtimeCredentials?: RangeRuntimeCredentials;
   topologySpec?: RangeTemplateTopologySpec | null;
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
@@ -60,6 +62,7 @@ export type RangeProvisionDestroyInput = {
   templateModulePath: string;
   allocatedCidr: string | null;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
+  runtimeCredentials?: RangeRuntimeCredentials;
   topologySpec?: RangeTemplateTopologySpec | null;
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
