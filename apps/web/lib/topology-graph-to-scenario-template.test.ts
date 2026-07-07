@@ -325,7 +325,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
     ]);
   });
 
-  it('maps ecs customPassword into host accountPreset.password', () => {
+  it('maps 4C8G and 8C16G hosts to economy-first fixed instance policies', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {
         name: '综合靶场',
@@ -353,21 +353,20 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             },
           },
           {
-            id: 'ecs-password',
+            id: 'ecs-mid',
             kind: 'ecs',
-            label: 'Password ECS',
-            instanceName: 'password-01',
-            hostName: 'password-01',
+            label: 'Mid ECS',
+            instanceName: 'mid-01',
+            hostName: 'mid-01',
             zoneKey: 'core',
             role: 'host',
             privateIp: '10.10.0.11',
-            customPassword: 'Valid123!',
             exposePublic: false,
             image: 'ubuntu_22_04_x64_20G_alibase',
             imageName: 'ubuntu_22_04_x64_20G_alibase',
             imageId: 'ubuntu_22_04_x64_20G_alibase',
-            cpu: 1,
-            memory: 2,
+            cpu: 4,
+            memory: 8,
             description: '',
             bootPriority: 1,
             bootWaitSeconds: 0,
@@ -376,7 +375,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             portGroups: [],
             nics: [
               {
-                id: 'ecs-password-nic-1',
+                id: 'ecs-mid-nic-1',
                 switchId: 'switch-core',
                 privateIp: '10.10.0.11',
                 secondaryIps: [],
@@ -393,63 +392,21 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
               preferredInstanceTypes: [],
             },
           },
-        ] as any,
-      },
-    });
-
-    expect(template.hosts).toEqual([
-      expect.objectContaining({
-        key: 'ecs-password',
-        accountPreset: expect.objectContaining({
-          password: 'Valid123!',
-        }),
-      }),
-    ]);
-  });
-
-  it('omits host accountPreset when ecs customPassword is empty', () => {
-    const template = buildScenarioTemplateSpecFromTopologyGraph({
-      metadata: {
-        name: '综合靶场',
-        slug: 'enterprise-range',
-        version: 'v1',
-        cloudProvider: 'alibaba_cloud',
-        iacType: 'opentofu',
-      },
-      topologyGraph: {
-        schemaVersion: '2.0.0',
-        edges: [],
-        nodes: [
           {
-            id: 'switch-core',
-            kind: 'switch',
-            label: '核心交换机',
-            zoneKey: 'core',
-            cidr: '10.10.0.0/24',
-            purpose: 'core',
-            description: '',
-            aclRules: [],
-            nat: {
-              snatEnabled: false,
-              dnatMappings: [],
-            },
-          },
-          {
-            id: 'ecs-password-empty',
+            id: 'ecs-large',
             kind: 'ecs',
-            label: 'Password ECS Empty',
-            instanceName: 'password-empty-01',
-            hostName: 'password-empty-01',
+            label: 'Large ECS',
+            instanceName: 'large-01',
+            hostName: 'large-01',
             zoneKey: 'core',
             role: 'host',
             privateIp: '10.10.0.12',
-            customPassword: '',
             exposePublic: false,
             image: 'ubuntu_22_04_x64_20G_alibase',
             imageName: 'ubuntu_22_04_x64_20G_alibase',
             imageId: 'ubuntu_22_04_x64_20G_alibase',
-            cpu: 1,
-            memory: 2,
+            cpu: 8,
+            memory: 16,
             description: '',
             bootPriority: 1,
             bootWaitSeconds: 0,
@@ -458,7 +415,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             portGroups: [],
             nics: [
               {
-                id: 'ecs-password-empty-nic-1',
+                id: 'ecs-large-nic-1',
                 switchId: 'switch-core',
                 privateIp: '10.10.0.12',
                 secondaryIps: [],
@@ -479,11 +436,29 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
       },
     });
 
-    expect(template.hosts).toEqual([
+    expect(template.runtimePreferences.instanceTypePolicies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'ecs-mid-instance-type-policy',
+          mode: 'fixed',
+          instanceType: 'ecs.e-c1m2.xlarge',
+        }),
+        expect.objectContaining({
+          key: 'ecs-large-instance-type-policy',
+          mode: 'fixed',
+          instanceType: 'ecs.e-c1m2.2xlarge',
+        }),
+      ]),
+    );
+    expect(template.hosts).toEqual(
+      expect.arrayContaining([
       expect.objectContaining({
-        key: 'ecs-password-empty',
-        accountPreset: undefined,
+        key: 'ecs-mid',
       }),
-    ]);
+      expect.objectContaining({
+        key: 'ecs-large',
+      }),
+      ]),
+    );
   });
 });
