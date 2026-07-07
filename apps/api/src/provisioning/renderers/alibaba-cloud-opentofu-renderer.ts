@@ -1,8 +1,16 @@
 import type { EnterpriseProvisionPlan } from '../enterprise-provision-plan';
+import type { ProvisioningAttemptedZoneSummary } from '../provisioning.types';
 
 export type AlibabaCloudOpenTofuRenderedVariables = {
   resource_name_prefix: string;
   zone_id: string;
+  selected_zone_id: string;
+  attempted_zones: Array<{
+    zone_id: string;
+    can_create_all_hosts: boolean;
+    estimated_total_price: number | null;
+    reason?: string;
+  }>;
   vpc_cidr: string;
   entry_host_key: string;
   network_zones: Array<{
@@ -93,6 +101,12 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   runtime_selections: {
     image_policies: Record<string, unknown>;
     instance_type_policies: Record<string, unknown>;
+    attempted_zones?: Array<{
+      zone_id: string;
+      can_create_all_hosts: boolean;
+      estimated_total_price: number | null;
+      reason?: string;
+    }>;
   };
   dmz_cidr: string;
   office_cidr: string;
@@ -116,6 +130,7 @@ export type AlibabaCloudOpenTofuRendererInput = {
   plan: EnterpriseProvisionPlan;
   rangeInstanceId: string;
   zoneId: string;
+  attemptedZones?: ProvisioningAttemptedZoneSummary[];
   instanceType: string;
   hostInstanceTypes: Record<string, string>;
   imageId: string;
@@ -130,10 +145,18 @@ export type AlibabaCloudOpenTofuRendererInput = {
 export class AlibabaCloudOpenTofuRenderer {
   render(input: AlibabaCloudOpenTofuRendererInput): AlibabaCloudOpenTofuRenderedVariables {
     const { plan } = input;
+    const attemptedZones = (input.attemptedZones ?? []).map((zone) => ({
+      zone_id: zone.zoneId,
+      can_create_all_hosts: zone.canCreateAllHosts,
+      estimated_total_price: zone.estimatedTotalPrice,
+      ...(zone.reason ? { reason: zone.reason } : {}),
+    }));
 
     return {
       resource_name_prefix: plan.resourceNamePrefix,
       zone_id: input.zoneId,
+      selected_zone_id: input.zoneId,
+      attempted_zones: attemptedZones,
       vpc_cidr: plan.network.vpcCidr,
       entry_host_key: plan.entryHostKey,
       network_zones: plan.networkZones.map((zone) => ({
@@ -229,6 +252,7 @@ export class AlibabaCloudOpenTofuRenderer {
       runtime_selections: {
         image_policies: plan.runtimeSelections.imagePolicies,
         instance_type_policies: plan.runtimeSelections.instanceTypePolicies,
+        ...(attemptedZones.length > 0 ? { attempted_zones: attemptedZones } : {}),
       },
       dmz_cidr: plan.network.dmzCidr,
       office_cidr: plan.network.officeCidr,

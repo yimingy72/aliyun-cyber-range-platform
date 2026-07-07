@@ -71,6 +71,19 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       },
       rangeInstanceId: 'range-instance-1',
       zoneId: 'cn-hangzhou-h',
+      attemptedZones: [
+        {
+          zoneId: 'cn-hangzhou-h',
+          canCreateAllHosts: false,
+          estimatedTotalPrice: null,
+          reason: 'default zone lacks one required host shape',
+        },
+        {
+          zoneId: 'cn-hangzhou-i',
+          canCreateAllHosts: true,
+          estimatedTotalPrice: 7.25,
+        },
+      ],
       instanceType: 'ecs.u1-c1m2.large',
       hostInstanceTypes: {
         'dmz-entry': 'ecs.u1-c1m2.large',
@@ -89,6 +102,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       expect.objectContaining({
         resource_name_prefix: 'range-demo',
         zone_id: 'cn-hangzhou-h',
+        selected_zone_id: 'cn-hangzhou-h',
         vpc_cidr: '10.90.0.0/16',
         entry_host_key: 'dmz-entry',
         instance_type: 'ecs.u1-c1m2.large',
@@ -96,6 +110,19 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         system_disk_category: 'cloud_essd',
         system_disk_size: 40,
         internet_max_bandwidth_out: 50,
+        attempted_zones: [
+          {
+            zone_id: 'cn-hangzhou-h',
+            can_create_all_hosts: false,
+            estimated_total_price: null,
+            reason: 'default zone lacks one required host shape',
+          },
+          {
+            zone_id: 'cn-hangzhou-i',
+            can_create_all_hosts: true,
+            estimated_total_price: 7.25,
+          },
+        ],
         host_network_interfaces: [
           expect.objectContaining({
             host_key: 'server-app',

@@ -27,6 +27,18 @@ export type ResolvedProvisioningRuntimeConfig = {
   defaultZoneId: string;
 };
 
+export type ProvisioningAttemptedZoneSummary = {
+  zoneId: string;
+  canCreateAllHosts: boolean;
+  estimatedTotalPrice: number | null;
+  reason?: string;
+};
+
+export type ProvisioningResourceSummary = RangeResourceSummary & {
+  selectedZoneId?: string | null;
+  attemptedZones?: ProvisioningAttemptedZoneSummary[] | null;
+};
+
 export type RangeProvisionCreateInput = {
   rangeInstanceId: string;
   templateModulePath: string;
@@ -40,7 +52,7 @@ export type RangeProvisionCreateInput = {
 
 export type RangeProvisionCreateResult = {
   accessEntry: RangeAccessEntry;
-  resourceSummary: RangeResourceSummary;
+  resourceSummary: ProvisioningResourceSummary;
 };
 
 export type RangeProvisionDestroyInput = {
