@@ -1959,7 +1959,7 @@ describe('TemplateEditorScreen', () => {
     );
   });
 
-  it('persists the stale fixed instance type economy-first when detecting topology', async () => {
+  it('keeps the stale previously fixed economy instance type when topology detection recompiles the draft', async () => {
     updateRangeTemplateMock.mockClear();
     validateRangeTemplateMock.mockResolvedValue({ valid: true });
     updateRangeTemplateMock.mockResolvedValue({
