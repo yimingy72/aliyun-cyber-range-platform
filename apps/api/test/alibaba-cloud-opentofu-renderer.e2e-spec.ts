@@ -103,11 +103,12 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       systemDiskSize: 40,
     });
 
+    expect(variables).not.toHaveProperty('selected_zone_id');
+    expect(variables).not.toHaveProperty('attempted_zones');
     expect(variables).toEqual(
       expect.objectContaining({
         resource_name_prefix: 'range-demo',
         zone_id: 'cn-hangzhou-h',
-        selected_zone_id: 'cn-hangzhou-h',
         vpc_cidr: '10.90.0.0/16',
         entry_host_key: 'dmz-entry',
         instance_type: 'ecs.u1-c1m2.large',
@@ -115,19 +116,6 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         system_disk_category: 'cloud_essd',
         system_disk_size: 40,
         internet_max_bandwidth_out: 50,
-        attempted_zones: [
-          {
-            zone_id: 'cn-hangzhou-h',
-            can_create_all_hosts: false,
-            estimated_total_price: null,
-            reason: 'default zone lacks one required host shape',
-          },
-          {
-            zone_id: 'cn-hangzhou-i',
-            can_create_all_hosts: true,
-            estimated_total_price: 7.25,
-          },
-        ],
         host_network_interfaces: [
           expect.objectContaining({
             host_key: 'server-app',

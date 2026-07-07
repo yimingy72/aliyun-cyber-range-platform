@@ -2859,20 +2859,8 @@ describe('OpenTofuRangeProvisioner', () => {
       const moduleVariablesTf = await fs.readFile(moduleVariablesTfPath, 'utf8');
 
       expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
-      expect(renderedVariables.selected_zone_id).toBe('cn-hangzhou-i');
-      expect(renderedVariables.attempted_zones).toEqual([
-        {
-          zone_id: 'cn-hangzhou-g',
-          can_create_all_hosts: false,
-          estimated_total_price: null,
-          reason: 'Host ecs-2 has no saleable X86 on-demand candidate',
-        },
-        {
-          zone_id: 'cn-hangzhou-i',
-          can_create_all_hosts: true,
-          estimated_total_price: 0.8,
-        },
-      ]);
+      expect(renderedVariables).not.toHaveProperty('selected_zone_id');
+      expect(renderedVariables).not.toHaveProperty('attempted_zones');
       expect(renderedVariables.runtime_selections.attempted_zones).toEqual([
         {
           zone_id: 'cn-hangzhou-g',

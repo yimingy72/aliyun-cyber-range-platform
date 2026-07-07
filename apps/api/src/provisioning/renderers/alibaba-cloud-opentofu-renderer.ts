@@ -4,13 +4,6 @@ import type { ProvisioningAttemptedZoneSummary } from '../provisioning.types';
 export type AlibabaCloudOpenTofuRenderedVariables = {
   resource_name_prefix: string;
   zone_id: string;
-  selected_zone_id: string;
-  attempted_zones: Array<{
-    zone_id: string;
-    can_create_all_hosts: boolean;
-    estimated_total_price: number | null;
-    reason?: string;
-  }>;
   vpc_cidr: string;
   entry_host_key: string;
   network_zones: Array<{
@@ -157,8 +150,6 @@ export class AlibabaCloudOpenTofuRenderer {
     return {
       resource_name_prefix: plan.resourceNamePrefix,
       zone_id: input.zoneId,
-      selected_zone_id: input.zoneId,
-      attempted_zones: attemptedZones,
       vpc_cidr: plan.network.vpcCidr,
       entry_host_key: plan.entryHostKey,
       network_zones: plan.networkZones.map((zone) => ({
