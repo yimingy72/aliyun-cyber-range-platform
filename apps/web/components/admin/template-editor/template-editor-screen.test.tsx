@@ -36,6 +36,7 @@ vi.mock('../../../lib/admin-api', async () => {
   };
 });
 import { AdminApiError } from '../../../lib/admin-api';
+import { buildScenarioTemplateSpecFromTopologyGraph } from '../../../lib/topology-graph-to-scenario-template';
 import { TemplateEditorScreen } from './template-editor-screen';
 
 vi.mock('../use-admin-session', () => ({
@@ -586,6 +587,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-2' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'ubuntu_22_04_x64_20G_alibase' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
+    fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
     fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
     await waitFor(() => {
       expect(validateRangeTemplateMock).toHaveBeenCalled();
@@ -615,6 +617,248 @@ describe('TemplateEditorScreen', () => {
         compiledSpec: expect.any(Object),
       }),
     );
+    expect(updateRangeTemplateMock.mock.lastCall?.[3]).toEqual(
+      expect.objectContaining({
+        scenarioTemplateSpec: expect.objectContaining({
+          hosts: expect.arrayContaining([
+            expect.objectContaining({
+              key: 'ecs-1',
+              accountPreset: expect.objectContaining({
+                password: 'Valid123!',
+              }),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it('maps a valid ecs custom password into scenarioTemplateSpec accountPreset.password', () => {
+    const scenarioTemplateSpec = buildScenarioTemplateSpecFromTopologyGraph({
+      metadata: {
+        name: '企业攻防靶场',
+        slug: 'enterprise-range',
+        version: 'v1.1.0',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        edges: [],
+        nodes: [
+          {
+            id: 'switch-1',
+            kind: 'switch',
+            label: '交换机 1',
+            zoneKey: 'core',
+            cidr: '10.0.0.0/24',
+            purpose: 'business-zone',
+            description: '',
+            aclRules: [],
+            nat: {
+              snatEnabled: false,
+              dnatMappings: [],
+            },
+          },
+          {
+            id: 'ecs-1',
+            kind: 'ecs',
+            label: 'ECS 1',
+            instanceName: 'ECS 1',
+            hostName: 'ecs-1',
+            zoneKey: 'core',
+            role: 'host',
+            privateIp: '10.0.0.21',
+            customPassword: 'Valid123!',
+            exposePublic: false,
+            image: 'ubuntu_22_04_x64_20G_alibase',
+            imageName: 'ubuntu_22_04_x64_20G_alibase',
+            imageId: 'ubuntu_22_04_x64_20G_alibase',
+            cpu: 1,
+            memory: 2,
+            description: '',
+            bootPriority: 1,
+            bootWaitSeconds: 0,
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.21' }],
+            portGroups: [],
+            nics: [
+              {
+                id: 'ecs-1-nic-1',
+                switchId: 'switch-1',
+                privateIp: '10.0.0.21',
+                secondaryIps: [],
+                securityGroupRules: [],
+              },
+            ],
+            initScript: '',
+            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+            instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+          },
+        ] as const,
+      },
+      defaults: {
+        vpcCidr: '10.0.0.0/16',
+      },
+    });
+
+    expect(scenarioTemplateSpec.hosts).toEqual([
+      expect.objectContaining({
+        key: 'ecs-1',
+        accountPreset: expect.objectContaining({
+          password: 'Valid123!',
+        }),
+      }),
+    ]);
+  });
+
+  it('blocks saving when ecs custom password is invalid and surfaces the shared validation message', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+
+    fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'password-host-2' } });
+    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.22' } });
+    fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'ECS 1 自定义密码不合法：Password must include at least three of uppercase, lowercase, number, and special character.',
+        ),
+      ).toBeTruthy();
+    });
+
+    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateRangeTemplateMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks topology detection when ecs custom password is invalid', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'detect-blocked-host' } });
+    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.23' } });
+    fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'ECS 1 自定义密码不合法：Password must include at least three of uppercase, lowercase, number, and special character.',
+        ),
+      ).toBeTruthy();
+    });
+
+    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateRangeTemplateMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks publishing when ecs custom password is invalid', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'publish-blocked-host' } });
+    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.24' } });
+    fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '发布编排' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'ECS 1 自定义密码不合法：Password must include at least three of uppercase, lowercase, number, and special character.',
+        ),
+      ).toBeTruthy();
+    });
+
+    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(publishRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('creates canonical edges even when linking starts from ecs or switch', () => {
@@ -1451,10 +1695,10 @@ describe('TemplateEditorScreen', () => {
             id: 'ecs-1',
             cpu: 2,
             memory: 4,
-            instanceType: 'ecs.c7.large',
+            instanceType: undefined,
             instanceTypeStrategy: {
-              mode: 'fixed',
-              instanceType: 'ecs.c7.large',
+              mode: 'auto',
+              preferredInstanceTypes: [],
             },
           }),
         ]),
@@ -1463,15 +1707,156 @@ describe('TemplateEditorScreen', () => {
     expect(latestPayload?.scenarioTemplateSpec?.runtimePreferences?.instanceTypePolicies).toEqual([
       expect.objectContaining({
         key: 'ecs-1-instance-type-policy',
-        mode: 'fixed',
-        instanceType: 'ecs.c7.large',
+        mode: 'auto',
+        preferredInstanceTypes: [],
       }),
     ]);
     expect(latestPayload?.compiledProvisionSpec?.runtimeSelections?.instanceTypePolicies).toEqual(
       expect.objectContaining({
         'ecs-1-instance-type-policy': expect.objectContaining({
+          mode: 'auto',
+          preferredInstanceTypes: [],
+        }),
+      }),
+    );
+  });
+
+  it('keeps the stale previously fixed economy instance type when topology detection recompiles the draft', async () => {
+    updateRangeTemplateMock.mockClear();
+    validateRangeTemplateMock.mockResolvedValue({ valid: true });
+
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: {
+              schemaVersion: '2.0.0',
+              nodes: [
+                {
+                  id: 'switch-1',
+                  kind: 'switch',
+                  label: '交换机 1',
+                  position: { x: 360, y: 180 },
+                  zoneKey: 'zone-1',
+                  cidr: '10.0.0.0/24',
+                  purpose: 'business-zone',
+                  description: '',
+                  aclRules: [],
+                  nat: {
+                    snatEnabled: false,
+                    dnatMappings: [],
+                  },
+                },
+                {
+                  id: 'ecs-1',
+                  kind: 'ecs',
+                  label: 'ECS 1',
+                  position: { x: 620, y: 180 },
+                  instanceName: 'ECS 1',
+                  hostName: 'ecs-1',
+                  zoneKey: 'core',
+                  role: 'entry',
+                  privateIp: '',
+                  exposePublic: true,
+                  image: 'ubuntu_22_04_x64_20G_alibase',
+                  imageName: 'ubuntu_22_04_x64_20G_alibase',
+                  imageId: 'ubuntu_22_04_x64_20G_alibase',
+                  cpu: 2,
+                  memory: 2,
+                  instanceType: 'ecs.u1-c1m2.large',
+                  description: '',
+                  bootPriority: 1,
+                  bootWaitSeconds: 0,
+                  dnatMappings: [],
+                  networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+                  portGroups: [],
+                  nics: [
+                    {
+                      id: 'ecs-1-nic-1',
+                      switchId: 'switch-1',
+                      privateIp: '10.0.0.13',
+                      secondaryIps: [],
+                      securityGroupRules: [],
+                    },
+                  ],
+                  initScript: '',
+                  imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+                  instanceTypeStrategy: {
+                    mode: 'fixed',
+                    instanceType: 'ecs.u1-c1m2.large',
+                  },
+                },
+              ],
+              edges: [
+                {
+                  id: 'edge-switch-1-ecs-1',
+                  fromNodeId: 'switch-1',
+                  toNodeId: 'ecs-1',
+                  relationType: 'manual',
+                  label: '交换机 1 -> ECS 1',
+                },
+              ],
+            },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+
+    await waitFor(() => {
+      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+    });
+
+    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    expect(latestPayload?.topologyGraph).toEqual(
+      expect.objectContaining({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'ecs-1',
+            cpu: 2,
+            memory: 2,
+            instanceType: 'ecs.e-c1m1.large',
+            instanceTypeStrategy: {
+              mode: 'fixed',
+              instanceType: 'ecs.e-c1m1.large',
+            },
+          }),
+        ]),
+      }),
+    );
+    expect(latestPayload?.compiledSpec?.resources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'ecs-1',
+          config: expect.objectContaining({
+            cpu: 2,
+            memory: 2,
+            instanceType: 'ecs.e-c1m1.large',
+          }),
+        }),
+      ]),
+    );
+    expect(latestPayload?.compiledProvisionSpec?.runtimeSelections?.instanceTypePolicies).toEqual(
+      expect.objectContaining({
+        'ecs-1-instance-type-policy': expect.objectContaining({
           mode: 'fixed',
-          instanceType: 'ecs.c7.large',
+          instanceType: 'ecs.e-c1m1.large',
         }),
       }),
     );
@@ -1836,10 +2221,10 @@ describe('TemplateEditorScreen', () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: 'ecs-1',
-          instanceType: 'ecs.custom.saved',
+          instanceType: 'ecs.e-c1m2.2xlarge',
           instanceTypeStrategy: {
             mode: 'fixed',
-            instanceType: 'ecs.custom.saved',
+            instanceType: 'ecs.e-c1m2.2xlarge',
           },
         }),
       ]),
@@ -1848,7 +2233,7 @@ describe('TemplateEditorScreen', () => {
       expect.objectContaining({
         key: 'ecs-1-instance-type-policy',
         mode: 'fixed',
-        instanceType: 'ecs.custom.saved',
+        instanceType: 'ecs.e-c1m2.2xlarge',
       }),
     ]);
     expect(latestPayload?.compiledSpec?.resources).toEqual(
@@ -1857,10 +2242,10 @@ describe('TemplateEditorScreen', () => {
           id: 'ecs-1',
           type: 'host',
           config: expect.objectContaining({
-            instanceType: 'ecs.custom.saved',
+            instanceType: 'ecs.e-c1m2.2xlarge',
             instanceTypeStrategy: {
               mode: 'fixed',
-              instanceType: 'ecs.custom.saved',
+              instanceType: 'ecs.e-c1m2.2xlarge',
             },
           }),
         }),
@@ -1923,7 +2308,7 @@ describe('TemplateEditorScreen', () => {
           image: 'Ubuntu 24.04 LTS',
           imageName: 'Ubuntu 24.04 LTS',
           imageId: 'ubuntu_24_04_x64_20G_alibase',
-          instanceType: 'ecs.c7.xlarge',
+          instanceType: 'ecs.e-c1m2.xlarge',
         }),
       ]),
     );
@@ -1941,7 +2326,7 @@ describe('TemplateEditorScreen', () => {
         expect.objectContaining({
           key: 'ecs-1-instance-type-policy',
           mode: 'fixed',
-          instanceType: 'ecs.c7.xlarge',
+          instanceType: 'ecs.e-c1m2.xlarge',
         }),
       ]),
     );
@@ -1952,7 +2337,7 @@ describe('TemplateEditorScreen', () => {
           type: 'host',
           config: expect.objectContaining({
             imageId: 'ubuntu_24_04_x64_20G_alibase',
-            instanceType: 'ecs.c7.xlarge',
+            instanceType: 'ecs.e-c1m2.xlarge',
           }),
         }),
       ]),
@@ -2065,7 +2450,7 @@ describe('TemplateEditorScreen', () => {
         hostName: 'edge-host-1',
         cpu: 1,
         memory: 2,
-        instanceType: 'ecs.u1-c1m2.large',
+        instanceType: undefined,
         networkInterfaces: [
           expect.objectContaining({
             zoneKey: 'core',
@@ -2085,8 +2470,8 @@ describe('TemplateEditorScreen', () => {
           imageId: 'ubuntu_24_04_x64_20G_alibase',
         },
         instanceTypeStrategy: {
-          mode: 'fixed',
-          instanceType: 'ecs.u1-c1m2.large',
+          mode: 'auto',
+          preferredInstanceTypes: [],
         },
       }),
     }));
@@ -2109,8 +2494,8 @@ describe('TemplateEditorScreen', () => {
           instanceTypePolicies: [
             expect.objectContaining({
               key: 'ecs-1-instance-type-policy',
-              mode: 'fixed',
-              instanceType: 'ecs.u1-c1m2.large',
+              mode: 'auto',
+              preferredInstanceTypes: [],
             }),
           ],
         }),
@@ -2134,8 +2519,8 @@ describe('TemplateEditorScreen', () => {
         runtimeSelections: expect.objectContaining({
           instanceTypePolicies: expect.objectContaining({
             'ecs-1-instance-type-policy': expect.objectContaining({
-              mode: 'fixed',
-              instanceType: 'ecs.u1-c1m2.large',
+              mode: 'auto',
+              preferredInstanceTypes: [],
             }),
           }),
         }),
