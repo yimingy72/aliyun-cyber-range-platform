@@ -1496,11 +1496,14 @@ describe('OpenTofuRangeProvisioner', () => {
   });
 
   it('returns economy-first preferred instance type candidates for catalog-backed host sizes', () => {
-    expect(resolvePreferredInstanceTypes(2, 2)).toEqual([
+    const smallCandidates = resolvePreferredInstanceTypes(2, 2);
+
+    expect(smallCandidates).toEqual([
       'ecs.e-c1m1.large',
       'ecs.u1-c1m1.large',
       'ecs.t6-c1m1.large',
     ]);
+    expect(Object.isFrozen(smallCandidates)).toBe(true);
     expect(resolvePreferredInstanceTypes(4, 8)).toEqual([
       'ecs.e-c1m2.xlarge',
       'ecs.u1-c1m2.xlarge',
