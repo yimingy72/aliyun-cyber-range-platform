@@ -107,6 +107,7 @@ async function evaluateZone(input: {
 
   const hostInstanceTypes: Record<string, string> = {};
   let estimatedTotalPrice = 0;
+  let hasMissingPrice = false;
 
   for (const host of input.hostRequests) {
     const preferredInstanceTypes = [...new Set(host.preferredInstanceTypes.map((item) => item.trim()).filter(Boolean))];
@@ -149,24 +150,25 @@ async function evaluateZone(input: {
       }
     }
 
-    if (!selectedInstanceType || selectedPrice === null) {
-      return {
-        zoneId: input.zoneId,
-        canCreateAllHosts: false,
-        estimatedTotalPrice: null,
-        reason: `Host ${host.hostKey} has no priced on-demand candidate`,
-        hostInstanceTypes: {},
-      };
+    if (!selectedInstanceType) {
+      selectedInstanceType = candidateInstanceTypes[0]!;
+      hasMissingPrice = true;
     }
 
     hostInstanceTypes[host.hostKey] = selectedInstanceType;
+    if (selectedPrice === null) {
+      hasMissingPrice = true;
+      continue;
+    }
+
     estimatedTotalPrice += selectedPrice;
   }
 
   return {
     zoneId: input.zoneId,
     canCreateAllHosts: true,
-    estimatedTotalPrice: input.includePrice ? estimatedTotalPrice : null,
+    estimatedTotalPrice: input.includePrice ? (hasMissingPrice ? null : estimatedTotalPrice) : null,
+    ...(hasMissingPrice ? { reason: 'Missing price data for one or more host candidates' } : {}),
     hostInstanceTypes,
   };
 }
@@ -192,31 +194,86 @@ async function describeAvailableInstanceTypeIds(input: {
     },
   });
 
-  const availableZones =
+  const availableZones = normalizeArray(
     (payload as {
       AvailableZones?: {
-        AvailableZone?: Array<{
-          AvailableResources?: {
-            AvailableResource?: Array<{
-              Type?: string;
-              SupportedResources?: {
-                SupportedResource?: Array<{
-                  Status?: string;
-                  Value?: string;
-                }>;
+        AvailableZone?:
+          | {
+              AvailableResources?: {
+                AvailableResource?:
+                  | {
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }
+                  | Array<{
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }>;
+              };
+            }
+          | Array<{
+              AvailableResources?: {
+                AvailableResource?:
+                  | {
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }
+                  | Array<{
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }>;
               };
             }>;
-          };
-        }>;
       };
-    })?.AvailableZones?.AvailableZone ?? [];
+    })?.AvailableZones?.AvailableZone,
+  );
 
   return [
     ...new Set(
       availableZones.flatMap((zone) =>
-        (zone.AvailableResources?.AvailableResource ?? [])
+        normalizeArray(zone.AvailableResources?.AvailableResource)
           .filter((resource) => resource.Type === 'InstanceType')
-          .flatMap((resource) => resource.SupportedResources?.SupportedResource ?? [])
+          .flatMap((resource) => normalizeArray(resource.SupportedResources?.SupportedResource))
           .filter((resource) => resource.Status === 'Available' && typeof resource.Value === 'string')
           .map((resource) => resource.Value!.trim())
           .filter(Boolean),
@@ -239,16 +296,23 @@ async function describeZones(input: {
     },
   });
 
-  const zones =
+  const zones = normalizeArray(
     (payload as {
       Zones?: {
-        Zone?: Array<{
-          ZoneId?: string;
-          Status?: string;
-          AvailableResourceCreation?: string;
-        }>;
+        Zone?:
+          | {
+              ZoneId?: string;
+              Status?: string;
+              AvailableResourceCreation?: string;
+            }
+          | Array<{
+              ZoneId?: string;
+              Status?: string;
+              AvailableResourceCreation?: string;
+            }>;
       };
-    })?.Zones?.Zone ?? [];
+    })?.Zones?.Zone,
+  );
 
   return zones
     .filter(
@@ -284,16 +348,22 @@ async function describeInstanceTypes(input: {
       },
     });
 
-    const instanceTypes =
+    const instanceTypes = normalizeArray(
       (payload as {
         TotalCount?: number | string;
         InstanceTypes?: {
-          InstanceType?: Array<{
-            InstanceTypeId?: string;
-            CpuArchitecture?: string;
-          }>;
+          InstanceType?:
+            | {
+                InstanceTypeId?: string;
+                CpuArchitecture?: string;
+              }
+            | Array<{
+                InstanceTypeId?: string;
+                CpuArchitecture?: string;
+              }>;
         };
-      })?.InstanceTypes?.InstanceType ?? [];
+      })?.InstanceTypes?.InstanceType,
+    );
 
     items.push(
       ...instanceTypes
@@ -473,4 +543,12 @@ function toNumber(value: number | string | undefined) {
   }
 
   return 0;
+}
+
+function normalizeArray<T>(value: T | T[] | null | undefined) {
+  if (!value) {
+    return [] as T[];
+  }
+
+  return Array.isArray(value) ? value : [value];
 }
