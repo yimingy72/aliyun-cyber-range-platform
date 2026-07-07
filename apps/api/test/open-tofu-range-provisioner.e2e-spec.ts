@@ -1714,7 +1714,7 @@ describe('OpenTofuRangeProvisioner', () => {
           return 'ecs.e-c1m2.xlarge';
         }
 
-        return 'ecs.u1-c1m2.large';
+        return 'ecs.g7.xlarge';
       }
 
       if (input.zoneId === 'cn-hangzhou-j') {
@@ -1908,7 +1908,7 @@ describe('OpenTofuRangeProvisioner', () => {
     ]);
     expect(result.resourceSummary.runtimeSelections).toEqual(
       expect.objectContaining({
-        selectedZoneId: 'cn-hangzhou-i',
+        selectedZoneId: 'cn-hangzhou-j',
         attemptedZones: ['cn-hangzhou-h', 'cn-hangzhou-i', 'cn-hangzhou-j'],
       }),
     );
