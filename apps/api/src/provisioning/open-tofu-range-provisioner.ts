@@ -13,6 +13,7 @@ import {
 } from '@aliyun-cyber-range/iac-runner';
 
 import type { RangeTemplateCompiledSpec } from '../admin/admin.repository';
+import { selectZoneAndHostInstanceTypes } from './aliyun-zone-instance-scheduler';
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
 import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
 import { resolveFixedInstanceType } from './instance-type-catalog';
@@ -495,16 +496,42 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       allocatedCidr: input.allocatedCidr,
     });
     const runtimeConfig = this.resolveRuntimeConfig(input.runtimeConfig);
-    const zoneId = runtimeConfig.defaultZoneId;
     const hostProvisioningHints = buildHostInstanceResolutionHints(
       input.compiledProvisionSpec,
       input.compiledSpec,
     );
-    const hostInstanceTypes = await this.resolveHostInstanceTypes({
-      plan,
-      hostProvisioningHints,
-      runtimeConfig,
-    });
+    let zoneId = runtimeConfig.defaultZoneId;
+    let hostInstanceTypes: Record<string, string>;
+    const requestedInstanceType = normalizeOptionalEnvValue(
+      this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
+    );
+
+    if (
+      this.availableInstanceTypeResolver === resolveAvailableAliyunInstanceType &&
+      (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto')
+    ) {
+      const zoneSelection = await selectZoneAndHostInstanceTypes({
+        regionId: runtimeConfig.defaultRegion,
+        defaultZoneId: runtimeConfig.defaultZoneId,
+        hostRequests: this.buildHostInstanceTypeRequests({
+          plan,
+          hostProvisioningHints,
+        }),
+        account: {
+          accessKeyId: runtimeConfig.accessKeyId,
+          accessKeySecret: runtimeConfig.accessKeySecret,
+        },
+      });
+      zoneId = zoneSelection.selectedZoneId;
+      hostInstanceTypes = zoneSelection.hostInstanceTypes;
+    } else {
+      hostInstanceTypes = await this.resolveHostInstanceTypes({
+        plan,
+        hostProvisioningHints,
+        runtimeConfig,
+      });
+    }
+
     const preferredHostInstanceType =
       hostInstanceTypes[plan.entryHostKey] ?? hostInstanceTypes[plan.hostDefinitions[0]?.key ?? ''];
     const instanceType = preferredHostInstanceType
@@ -523,6 +550,12 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       this.env.OPENTOFU_INSTANCE_PASSWORD,
       'OPENTOFU_INSTANCE_PASSWORD',
     );
+    const hostPasswords = Object.fromEntries(
+      plan.hostDefinitions.map((host) => [
+        host.key,
+        input.runtimeCredentials?.[host.key]?.password ?? instancePassword,
+      ]),
+    );
     return this.renderer.render({
       plan,
       rangeInstanceId: input.rangeInstanceId,
@@ -531,6 +564,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostInstanceTypes,
       imageId,
       hostImageIds,
+      hostPasswords,
       instancePassword,
       allowedIngressCidr: this.env.OPENTOFU_ALLOWED_INGRESS_CIDR ?? '0.0.0.0/0',
       ...(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT
@@ -627,6 +661,49 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     }
 
     return resolvedHostInstanceTypes;
+  }
+
+  private buildHostInstanceTypeRequests(input: {
+    plan: ReturnType<typeof buildEnterpriseProvisionPlan>;
+    hostProvisioningHints: Map<string, HostInstanceResolutionHint>;
+  }) {
+    const requestedInstanceType = normalizeOptionalEnvValue(
+      this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
+    );
+    const defaultPreferences = readInstanceTypePreferences(this.env);
+
+    return input.plan.hostDefinitions.map((host) => {
+      const runtimeHint = input.hostProvisioningHints.get(host.key);
+
+      if (requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto') {
+        return {
+          hostKey: host.key,
+          ...(typeof runtimeHint?.requestedCpu === 'number' ? { cpu: runtimeHint.requestedCpu } : {}),
+          ...(typeof runtimeHint?.requestedMemoryGiB === 'number'
+            ? { memoryGiB: runtimeHint.requestedMemoryGiB }
+            : {}),
+          preferredInstanceTypes: [requestedInstanceType],
+        };
+      }
+
+      const resolutionPolicy = resolveHostInstanceTypePolicy({
+        runtimeSelections: input.plan.runtimeSelections.instanceTypePolicies,
+        runtimeHint,
+      });
+
+      return {
+        hostKey: host.key,
+        ...(typeof runtimeHint?.requestedCpu === 'number' ? { cpu: runtimeHint.requestedCpu } : {}),
+        ...(typeof runtimeHint?.requestedMemoryGiB === 'number'
+          ? { memoryGiB: runtimeHint.requestedMemoryGiB }
+          : {}),
+        preferredInstanceTypes: resolutionPolicy.fixedInstanceType
+          ? [resolutionPolicy.fixedInstanceType]
+          : resolutionPolicy.preferredInstanceTypes.length > 0
+            ? resolutionPolicy.preferredInstanceTypes
+            : [...defaultPreferences],
+      };
+    });
   }
 
   private async resolveImageId(runtimeConfig: ResolvedProvisioningRuntimeConfig) {
@@ -899,9 +976,14 @@ function resolveHostInstanceTypePolicy(input: {
   runtimeSelections: Record<string, unknown>;
   runtimeHint: HostInstanceResolutionHint | undefined;
 }) {
-  if (input.runtimeHint?.finalInstanceType) {
+  const derivedPreferences = deriveInstanceTypePreferencesForResources(
+    input.runtimeHint?.requestedCpu,
+    input.runtimeHint?.requestedMemoryGiB,
+  );
+
+  if (derivedPreferences.length > 0) {
     return {
-      fixedInstanceType: input.runtimeHint.finalInstanceType,
+      fixedInstanceType: derivedPreferences[0],
       preferredInstanceTypes: [] as string[],
       strictPreferredInstanceTypes: true,
     };
@@ -940,14 +1022,10 @@ function resolveHostInstanceTypePolicy(input: {
     };
   }
 
-  const derivedPreferences = deriveInstanceTypePreferencesForResources(
-    input.runtimeHint?.requestedCpu,
-    input.runtimeHint?.requestedMemoryGiB,
-  );
-
-  if (derivedPreferences.length > 0) {
+  if (input.runtimeHint?.finalInstanceType) {
     return {
-      preferredInstanceTypes: derivedPreferences,
+      fixedInstanceType: input.runtimeHint.finalInstanceType,
+      preferredInstanceTypes: [] as string[],
       strictPreferredInstanceTypes: true,
     };
   }

@@ -1936,6 +1936,15 @@ describe('OpenTofuRangeProvisioner', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
+          TotalCount: 1,
+          InstanceTypes: {
+            InstanceType: [{ InstanceTypeId: 'ecs.u1-c1m2.large', CpuArchitecture: 'x86_64' }],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
           AvailableZones: {
             AvailableZone: [
               {
@@ -2072,9 +2081,10 @@ describe('OpenTofuRangeProvisioner', () => {
       const varsFilePath = path.join(workspacesRootDir, 'range-instance-legacy-fetch', 'range.auto.tfvars.json');
       const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('Action=DescribeAvailableResource');
-      expect(String(fetchMock.mock.calls[1]?.[0])).toContain('Action=DescribeImages');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('Action=DescribeInstanceTypes');
+      expect(String(fetchMock.mock.calls[1]?.[0])).toContain('Action=DescribeAvailableResource');
+      expect(String(fetchMock.mock.calls[2]?.[0])).toContain('Action=DescribeImages');
       expect(renderedVariables.image_id).toBe('ubuntu_22_04_x64_20G_alibase_20260615.vhd');
       expect(renderedVariables.hosts).toEqual(
         expect.arrayContaining([
@@ -2084,6 +2094,726 @@ describe('OpenTofuRangeProvisioner', () => {
           }),
         ]),
       );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('resolves host instance types via default zone fast path without DescribeZones or DescribePrice', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-zone-fast-path-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          TotalCount: 2,
+          InstanceTypes: {
+            InstanceType: [
+              { InstanceTypeId: 'ecs.e-c1m1.large', CpuArchitecture: 'x86_64' },
+              { InstanceTypeId: 'ecs.c7.large', CpuArchitecture: 'x86_64' },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [
+                          { Value: 'ecs.e-c1m1.large', Status: 'Available' },
+                          { Value: 'ecs.c7.large', Status: 'Available' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response);
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.99.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-zone-fast-path',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock as typeof global.fetch;
+
+    try {
+      const provisioner = new OpenTofuRangeProvisioner({
+        runner,
+        projectRootDir: tempRootDir,
+        workspacesRootDir,
+        env: {
+          ALICLOUD_REGION: 'cn-hangzhou',
+          ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+          ALICLOUD_ACCESS_KEY: 'test-ak',
+          ALICLOUD_SECRET_KEY: 'test-sk',
+          ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+          OPENTOFU_INSTANCE_TYPE: 'auto',
+          OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        },
+      });
+
+      await provisioner.create({
+        rangeInstanceId: 'range-instance-zone-fast-path',
+        templateModulePath: 'infra/module',
+        allocatedCidr: null,
+        reportStep: async () => undefined,
+        topologySpec: {
+          vpcCidr: '10.99.0.0/16',
+          networkZones: [
+            {
+              key: 'zone-1',
+              name: 'Zone 1',
+              purpose: 'public-entry',
+              cidr: '10.99.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'ecs-1',
+              name: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.99.10.10',
+              exposePublic: true,
+            },
+            {
+              key: 'ecs-2',
+              name: 'ECS 2',
+              zoneKey: 'zone-1',
+              role: 'app',
+              privateIp: '10.99.10.20',
+              exposePublic: false,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'ecs-1',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          topology: {
+            vpcCidr: '10.99.0.0/16',
+            publicEntryHostKey: 'ecs-1',
+            networkZoneKeys: ['zone-1'],
+            hostKeys: ['ecs-1', 'ecs-2'],
+          },
+          resources: [
+            {
+              id: 'ecs-1',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 1',
+                zoneKey: 'zone-1',
+                role: 'entry',
+                privateIp: '10.99.10.10',
+                exposePublic: true,
+                cpu: 2,
+                memory: 2,
+              },
+            },
+            {
+              id: 'ecs-2',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 2',
+                zoneKey: 'zone-1',
+                role: 'app',
+                privateIp: '10.99.10.20',
+                exposePublic: false,
+                instanceTypeStrategy: {
+                  mode: 'fixed',
+                  instanceType: 'ecs.c7.large',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+      const varsFilePath = path.join(
+        workspacesRootDir,
+        'range-instance-zone-fast-path',
+        'range.auto.tfvars.json',
+      );
+      const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+      expect(renderedVariables.zone_id).toBe('cn-hangzhou-h');
+      expect(renderedVariables.hosts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'ecs-1', instance_type: 'ecs.e-c1m1.large' }),
+          expect.objectContaining({ key: 'ecs-2', instance_type: 'ecs.c7.large' }),
+        ]),
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('Action=DescribeZones'))).toBe(false);
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('Action=DescribePrice'))).toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to discovered zones and instance types after the default zone fails feasibility', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-zone-fallback-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          TotalCount: 2,
+          InstanceTypes: {
+            InstanceType: [
+              { InstanceTypeId: 'ecs.e-c1m1.large', CpuArchitecture: 'x86_64' },
+              { InstanceTypeId: 'ecs.c7.large', CpuArchitecture: 'x86_64' },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [{ Value: 'ecs.e-c1m1.large', Status: 'Available' }],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          Zones: {
+            Zone: [{ ZoneId: 'cn-hangzhou-i', Status: 'Available' }],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [
+                          { Value: 'ecs.e-c1m1.large', Status: 'Available' },
+                          { Value: 'ecs.c7.large', Status: 'Available' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.3 } },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.5 } },
+        }),
+      } as Response);
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.100.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-zone-fallback',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock as typeof global.fetch;
+
+    try {
+      const provisioner = new OpenTofuRangeProvisioner({
+        runner,
+        projectRootDir: tempRootDir,
+        workspacesRootDir,
+        env: {
+          ALICLOUD_REGION: 'cn-hangzhou',
+          ALICLOUD_ZONE_ID: 'cn-hangzhou-g',
+          ALICLOUD_ACCESS_KEY: 'test-ak',
+          ALICLOUD_SECRET_KEY: 'test-sk',
+          ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+          OPENTOFU_INSTANCE_TYPE: 'auto',
+          OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        },
+      });
+
+      await provisioner.create({
+        rangeInstanceId: 'range-instance-zone-fallback',
+        templateModulePath: 'infra/module',
+        allocatedCidr: null,
+        reportStep: async () => undefined,
+        topologySpec: {
+          vpcCidr: '10.100.0.0/16',
+          networkZones: [
+            {
+              key: 'zone-1',
+              name: 'Zone 1',
+              purpose: 'public-entry',
+              cidr: '10.100.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'ecs-1',
+              name: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.100.10.10',
+              exposePublic: true,
+            },
+            {
+              key: 'ecs-2',
+              name: 'ECS 2',
+              zoneKey: 'zone-1',
+              role: 'app',
+              privateIp: '10.100.10.20',
+              exposePublic: false,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'ecs-1',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          topology: {
+            vpcCidr: '10.100.0.0/16',
+            publicEntryHostKey: 'ecs-1',
+            networkZoneKeys: ['zone-1'],
+            hostKeys: ['ecs-1', 'ecs-2'],
+          },
+          resources: [
+            {
+              id: 'ecs-1',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 1',
+                zoneKey: 'zone-1',
+                role: 'entry',
+                privateIp: '10.100.10.10',
+                exposePublic: true,
+                cpu: 2,
+                memory: 2,
+              },
+            },
+            {
+              id: 'ecs-2',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 2',
+                zoneKey: 'zone-1',
+                role: 'app',
+                privateIp: '10.100.10.20',
+                exposePublic: false,
+                instanceTypeStrategy: {
+                  mode: 'fixed',
+                  instanceType: 'ecs.c7.large',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+      const varsFilePath = path.join(
+        workspacesRootDir,
+        'range-instance-zone-fallback',
+        'range.auto.tfvars.json',
+      );
+      const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+      expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
+      expect(renderedVariables.hosts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'ecs-1', instance_type: 'ecs.e-c1m1.large' }),
+          expect.objectContaining({ key: 'ecs-2', instance_type: 'ecs.c7.large' }),
+        ]),
+      );
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('Action=DescribeZones'))).toBe(true);
+      expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes('Action=DescribePrice'))).toHaveLength(2);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('ranks feasible zones by estimated total price', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-zone-ranking-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          TotalCount: 2,
+          InstanceTypes: {
+            InstanceType: [
+              { InstanceTypeId: 'ecs.g7.large', CpuArchitecture: 'x86_64' },
+              { InstanceTypeId: 'ecs.c7.large', CpuArchitecture: 'x86_64' },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [{ Value: 'ecs.g7.large', Status: 'Available' }],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          Zones: {
+            Zone: [
+              { ZoneId: 'cn-hangzhou-h', Status: 'Available' },
+              { ZoneId: 'cn-hangzhou-i', Status: 'Available' },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [
+                          { Value: 'ecs.g7.large', Status: 'Available' },
+                          { Value: 'ecs.c7.large', Status: 'Available' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.9 } },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.4 } },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.4 } },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          AvailableZones: {
+            AvailableZone: [
+              {
+                AvailableResources: {
+                  AvailableResource: [
+                    {
+                      Type: 'InstanceType',
+                      SupportedResources: {
+                        SupportedResource: [
+                          { Value: 'ecs.g7.large', Status: 'Available' },
+                          { Value: 'ecs.c7.large', Status: 'Available' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.7 } },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.2 } },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          PriceInfo: { Price: { TradePrice: 0.2 } },
+        }),
+      } as Response);
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.101.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-zone-ranking',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock as typeof global.fetch;
+
+    try {
+      const provisioner = new OpenTofuRangeProvisioner({
+        runner,
+        projectRootDir: tempRootDir,
+        workspacesRootDir,
+        env: {
+          ALICLOUD_REGION: 'cn-hangzhou',
+          ALICLOUD_ZONE_ID: 'cn-hangzhou-g',
+          ALICLOUD_ACCESS_KEY: 'test-ak',
+          ALICLOUD_SECRET_KEY: 'test-sk',
+          ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+          OPENTOFU_INSTANCE_TYPE: 'auto',
+          OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        },
+      });
+
+      await provisioner.create({
+        rangeInstanceId: 'range-instance-zone-ranking',
+        templateModulePath: 'infra/module',
+        allocatedCidr: null,
+        reportStep: async () => undefined,
+        topologySpec: {
+          vpcCidr: '10.101.0.0/16',
+          networkZones: [
+            {
+              key: 'zone-1',
+              name: 'Zone 1',
+              purpose: 'public-entry',
+              cidr: '10.101.10.0/24',
+              isPublicEntry: true,
+            },
+          ],
+          hosts: [
+            {
+              key: 'ecs-1',
+              name: 'ECS 1',
+              zoneKey: 'zone-1',
+              role: 'entry',
+              privateIp: '10.101.10.10',
+              exposePublic: true,
+            },
+            {
+              key: 'ecs-2',
+              name: 'ECS 2',
+              zoneKey: 'zone-1',
+              role: 'app',
+              privateIp: '10.101.10.20',
+              exposePublic: false,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'ecs-1',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        compiledSpec: {
+          schemaVersion: '1.0.0',
+          topology: {
+            vpcCidr: '10.101.0.0/16',
+            publicEntryHostKey: 'ecs-1',
+            networkZoneKeys: ['zone-1'],
+            hostKeys: ['ecs-1', 'ecs-2'],
+          },
+          resources: [
+            {
+              id: 'ecs-1',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 1',
+                zoneKey: 'zone-1',
+                role: 'entry',
+                privateIp: '10.101.10.10',
+                exposePublic: true,
+                instanceTypeStrategy: {
+                  mode: 'auto',
+                  preferredInstanceTypes: ['ecs.g7.large', 'ecs.c7.large'],
+                },
+              },
+            },
+            {
+              id: 'ecs-2',
+              type: 'host',
+              provider: 'alibaba_cloud',
+              config: {
+                label: 'ECS 2',
+                zoneKey: 'zone-1',
+                role: 'app',
+                privateIp: '10.101.10.20',
+                exposePublic: false,
+                instanceTypeStrategy: {
+                  mode: 'fixed',
+                  instanceType: 'ecs.c7.large',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+      const varsFilePath = path.join(
+        workspacesRootDir,
+        'range-instance-zone-ranking',
+        'range.auto.tfvars.json',
+      );
+      const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+      expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
+      expect(renderedVariables.hosts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'ecs-1', instance_type: 'ecs.c7.large' }),
+          expect.objectContaining({ key: 'ecs-2', instance_type: 'ecs.c7.large' }),
+        ]),
+      );
+      expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes('Action=DescribePrice'))).toHaveLength(6);
     } finally {
       global.fetch = originalFetch;
     }
