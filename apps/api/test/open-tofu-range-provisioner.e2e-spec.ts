@@ -1501,6 +1501,14 @@ describe('OpenTofuRangeProvisioner', () => {
       'ecs.u1-c1m1.large',
       'ecs.t6-c1m1.large',
     ]);
+    expect(resolvePreferredInstanceTypes(4, 8)).toEqual([
+      'ecs.e-c1m2.xlarge',
+      'ecs.u1-c1m2.xlarge',
+    ]);
+    expect(resolvePreferredInstanceTypes(8, 16)).toEqual([
+      'ecs.e-c1m2.2xlarge',
+      'ecs.u1-c1m2.2xlarge',
+    ]);
   });
 
   it('prefers cpu-memory derived fixed instance types over stale persisted host instanceType values', async () => {

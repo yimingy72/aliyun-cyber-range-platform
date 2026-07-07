@@ -13,12 +13,12 @@ export const INSTANCE_TYPE_CANDIDATE_CATALOG: InstanceTypeCandidateCatalogEntry[
   {
     cpu: 4,
     memory: 8,
-    preferredInstanceTypes: ['ecs.e-c1m2.xlarge'],
+    preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.xlarge'],
   },
   {
     cpu: 8,
     memory: 16,
-    preferredInstanceTypes: ['ecs.e-c1m2.2xlarge'],
+    preferredInstanceTypes: ['ecs.e-c1m2.2xlarge', 'ecs.u1-c1m2.2xlarge'],
   },
 ];
 
