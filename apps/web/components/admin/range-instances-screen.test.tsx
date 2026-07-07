@@ -152,7 +152,8 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getByText('回收时间')).toBeTruthy();
     expect(screen.getByText('运行时长')).toBeTruthy();
     expect(screen.queryByText('状态')).toBeNull();
-    expect(screen.queryByText('操作')).toBeNull();
+    expect(screen.getByText('操作')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '查看详情' })).toBeTruthy();
   });
 
   it('navigates to the standalone detail workbench when clicking 查看详情', async () => {
@@ -183,6 +184,45 @@ describe('RangeInstancesScreen', () => {
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }));
 
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
+  });
+
+  it('navigates to the standalone detail workbench from instance history', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [],
+      teams: [],
+      rangeTemplates: [
+        { id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' },
+      ],
+      rangeInstances: [
+        {
+          id: 'range-2',
+          name: '红队靶场 02',
+          teamId: 'team-2',
+          templateId: 'template-1',
+          status: 'destroyed',
+          createdAt: '2026-06-28T08:00:00.000Z',
+          lastJobId: 'job-2',
+        },
+      ],
+      provisionJobs: [
+        {
+          id: 'job-2',
+          rangeInstanceId: 'range-2',
+          jobType: 'destroy',
+          status: 'succeeded',
+          triggeredBy: 'admin',
+          startedAt: '2026-06-28T10:00:00.000Z',
+          finishedAt: '2026-06-28T12:30:00.000Z',
+        },
+      ],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '实例历史' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }));
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-2');
   });
 
   it('triggers a destroy lifecycle action from the list row', async () => {

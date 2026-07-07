@@ -504,6 +504,7 @@ export function RangeInstancesScreen({
               <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
               <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
               <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
+              <div className="template-workbench-column-cell"><strong>操作</strong></div>
             </div>
           ) : (
             <div className="range-workbench-column-head">
@@ -543,6 +544,12 @@ export function RangeInstancesScreen({
 
                       <div className="range-history-time">
                         <span>{getDurationLabel(instance.createdAt, endedAt)}</span>
+                      </div>
+
+                      <div className="range-workbench-actions">
+                        <button type="button" onClick={() => void handleViewDetail(instance.id)}>
+                          查看详情
+                        </button>
                       </div>
                     </article>
                   );

@@ -74,10 +74,10 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByText('实例名')).toBeTruthy();
+    expect((await screen.findAllByText('实例名')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '节点目录' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '拓扑结构' })).toBeTruthy();
-    expect(screen.getByText('ECS 1')).toBeTruthy();
+    expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '关机' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '重启' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
@@ -129,7 +129,8 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByText('checker'));
+    await screen.findByRole('button', { name: '拓扑结构' });
+    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
     await waitFor(() => expect(screen.getByLabelText('名称')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'checker-updated' } });
     fireEvent.click(screen.getByRole('button', { name: '保存变更草稿' }));
@@ -138,5 +139,33 @@ describe('RangeInstanceDetailScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '放弃未应用修改' }));
     await waitFor(() => expect(discardRangeInstanceDraftMock).toHaveBeenCalled());
+  });
+
+  it('keeps history instances in read-only mode', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-history',
+      name: '历史实例',
+      status: 'destroyed',
+      createdBy: 'admin',
+      templateNameSnapshot: '历史模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      accessEntry: { publicIp: '47.1.1.1' },
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-history" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('只读历史')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '保存变更草稿' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '关机' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    await waitFor(() => expect(screen.getByLabelText('名称')).toBeTruthy());
+    expect(screen.getByLabelText('名称').getAttribute('readonly')).not.toBeNull();
   });
 });

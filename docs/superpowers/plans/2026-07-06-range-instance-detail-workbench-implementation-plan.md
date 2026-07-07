@@ -2,15 +2,44 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the current range-instance detail modal with a standalone instance workbench, add launch-time instance naming and expiration input, support instance draft editing plus manual apply, and close the loop with auto-expire destroy and node-level runtime actions.
+**Goal:** Replace the current range-instance detail modal with a standalone instance workbench, add launch-time instance naming and expiration input, support instance draft editing plus manual apply, close the loop with auto-expire destroy and node-level runtime actions, and continue polishing the front-end toward the reference layout.
 
-**Architecture:** Keep the existing template editor as the source of truth for topology-editing UI primitives, but move instance detail into a separate route backed by instance-owned runtime and draft snapshots. Backend responsibilities are split into four layers: atomic launch, instance-detail read/write APIs, update/destroy job orchestration in the worker, and direct Aliyun RPC operations for host runtime actions that do not fit the OpenTofu lifecycle.
+**Architecture:** Keep the existing template editor as the source of truth for topology-editing UI primitives, but move instance detail into a separate route backed by instance-owned runtime and draft snapshots. Backend responsibilities are split into four layers: atomic launch, instance-detail read/write APIs, update/destroy job orchestration in the worker, and direct Aliyun RPC operations for host runtime actions that do not fit the OpenTofu lifecycle. The remaining work is now mostly UX completion: denser overview, table-style node directory, history-detail read-only mode, and a topology canvas closer to the editor surface.
 
 **Tech Stack:** Next.js App Router, React 19, Vitest, NestJS 11, Prisma/PostgreSQL, OpenTofu worker, Docker Compose, Alibaba Cloud RPC signing.
 
 ---
 
 ## File Structure
+
+## Current Progress Snapshot
+
+### Completed
+
+1. Shared `scenario-runtime` workspace package extraction
+2. `RangeInstance` runtime/draft persistence
+3. Atomic `launch` API
+4. Standalone `/admin/ranges/[rangeId]` route shell
+5. Template-side launch dialog
+6. Initial detail workbench structure
+7. Draft save / discard
+8. `apply` + worker `update`
+9. Auto-expire destroy
+10. Node runtime actions + pack-image
+
+### In Progress
+
+1. `实例历史 -> 查看详情` 入口与历史实例只读模式
+2. 顶部概览信息密度压缩
+3. 节点目录表格式改造
+4. 拓扑结构页继续向参考编排页收口
+
+### Remaining Frontend-Focused Work
+
+1. 给 `实例历史` 增加 `操作` 列和 `查看详情`
+2. 历史实例详情隐藏运维和变更操作，仅保留只读展示
+3. `节点目录` 完全切成主机表格视图
+4. `拓扑结构` 视图扩大画布占比并补齐 ECS 属性面板字段
 
 ### Database and repository
 
@@ -1803,4 +1832,3 @@ Expected: the full create -> detail -> update -> destroy chain works once agains
 git add docker-compose.yml deploy/current-system/README.md
 git commit -m "docs: sync container verification steps for range instance workbench"
 ```
-

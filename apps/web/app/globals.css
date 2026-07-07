@@ -3145,71 +3145,181 @@ body {
 
 .range-instance-detail-screen .template-workbench-list {
   display: grid;
-  gap: 18px;
+  gap: 12px;
+}
+
+.range-instance-detail-screen .template-workbench-list-header {
+  padding: 12px 16px 8px;
+}
+
+.range-instance-detail-screen .template-workbench-list-header-copy h2 {
+  font-size: 15px;
+}
+
+.range-instance-detail-screen .template-workbench-list-header-copy p {
+  margin: 0;
+  color: #4f617e;
+  font-size: 12px;
 }
 
 .range-instance-overview-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px 18px;
-  padding: 18px 20px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(69, 96, 92, 0.1);
+  gap: 6px 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid #e7ecf2;
+}
+
+.range-instance-overview-item {
+  display: grid;
+  gap: 4px;
 }
 
 .range-instance-overview-grid span {
-  font-size: 12px;
-  color: #6a7c78;
+  font-size: 11px;
+  color: #6d7c94;
 }
 
 .range-instance-overview-grid strong {
-  color: #183230;
-  font-size: 14px;
+  color: #22314d;
+  font-size: 13px;
   font-weight: 600;
 }
 
-.range-instance-node-directory {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
+.range-instance-overview-item.is-readonly strong {
+  color: #8b5c00;
 }
 
-.range-instance-node-card,
-.range-instance-topology-node {
-  display: grid;
-  gap: 8px;
-  padding: 16px 18px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(69, 96, 92, 0.1);
+.range-instance-directory-table {
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid #e7ecf2;
+  overflow: hidden;
 }
 
-.range-instance-node-card span,
-.range-instance-topology-node span {
-  color: #6a7c78;
+.range-instance-directory-head,
+.range-instance-directory-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.15fr) 92px minmax(180px, 1fr) 120px minmax(180px, 1fr) 150px 160px 240px;
+}
+
+.range-instance-directory-head {
+  min-height: 40px;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e7ecf2;
+}
+
+.range-instance-directory-head > div {
+  padding: 10px 12px;
+  color: #6f8099;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.range-instance-directory-row {
+  min-height: 72px;
+  border-bottom: 1px solid #edf1f5;
+}
+
+.range-instance-directory-row:last-child {
+  border-bottom: 0;
+}
+
+.range-instance-directory-cell {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  padding: 10px 12px;
+}
+
+.range-instance-directory-cell span {
+  color: #65758d;
+  font-size: 11px;
+}
+
+.range-instance-directory-cell strong {
+  color: #22314d;
   font-size: 12px;
 }
 
+.range-instance-directory-primary strong {
+  font-size: 14px;
+}
+
+.range-instance-directory-actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  align-content: center;
+}
+
+.range-instance-directory-actions button,
+.range-instance-directory-more button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid #d8e0ea;
+  background: #fff;
+  color: #24415f;
+}
+
+.range-instance-directory-more {
+  position: absolute;
+  left: 14px;
+  top: calc(100% - 10px);
+  z-index: 5;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #dbe3ed;
+  box-shadow: 0 18px 40px rgba(27, 46, 79, 0.12);
+}
+
 .range-instance-topology-workbench {
-  min-height: 360px;
-  padding: 18px;
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(244, 248, 250, 0.9));
-  border: 1px solid rgba(69, 96, 92, 0.1);
+  min-height: 600px;
+  padding: 10px;
+  border-radius: 18px;
+  background: #fff;
+  border: 1px solid #e7ecf2;
+  box-shadow: 0 10px 26px rgba(19, 35, 60, 0.04);
+}
+
+.range-instance-topology-legend {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f6f9fc;
+  border: 1px solid #e8edf3;
+  color: #5f6f87;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .range-instance-topology-canvas {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 220px));
-  gap: 16px;
-  align-content: start;
+  position: relative;
+  min-height: 560px;
+  overflow: hidden;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(31, 95, 191, 0.07), transparent 26%),
+    linear-gradient(180deg, #f8fbff 0%, #f2f6fb 100%);
+  border: 1px solid #edf1f5;
 }
 
 .range-instance-workbench-actions {
   display: flex;
   gap: 12px;
   align-items: center;
+  padding: 2px 0 0;
 }
 
 .range-instance-workbench-actions button {
@@ -3227,8 +3337,8 @@ body {
 
 .range-instance-detail-content {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.24fr) 300px;
+  gap: 14px;
   align-items: start;
 }
 
@@ -3239,15 +3349,134 @@ body {
 .range-instance-property-panel {
   display: grid;
   gap: 14px;
-  padding: 18px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(69, 96, 92, 0.1);
+  padding: 16px;
+  border-radius: 18px;
+  background: #fff;
+  border: 1px solid #e7ecf2;
+  box-shadow: 0 10px 26px rgba(19, 35, 60, 0.04);
+}
+
+.range-instance-property-section {
+  display: grid;
+  gap: 12px;
+}
+
+.range-instance-property-section strong {
+  color: #22314d;
+  font-size: 14px;
+}
+
+.range-instance-property-inline {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.range-instance-property-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f7f9fc;
+  border: 1px solid #edf1f5;
+}
+
+.range-instance-property-kv span {
+  color: #6d7c94;
+  font-size: 12px;
+}
+
+.range-instance-property-kv strong {
+  color: #22314d;
+  font-size: 13px;
+}
+
+.range-instance-topology-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.range-instance-topology-lines line {
+  stroke: #8aa9df;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.range-instance-topology-node {
+  position: absolute;
+  width: 188px;
+  min-height: 60px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #d9e4f4;
+  box-shadow: 0 12px 28px rgba(27, 46, 79, 0.08);
+  text-align: left;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  justify-items: stretch;
+  gap: 10px;
+}
+
+.range-instance-topology-node strong {
+  font-size: 14px;
+  color: #22314d;
+}
+
+.range-instance-topology-node-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.range-instance-topology-node span {
+  color: #667890;
+  font-size: 12px;
+}
+
+.range-instance-topology-node-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #dbe8ff, #eef5ff);
+  border: 1px solid #bfd2f4;
+  box-shadow: 0 8px 18px rgba(41, 87, 163, 0.12);
+}
+
+.range-instance-topology-node.kind-ecs .range-instance-topology-node-icon {
+  background: linear-gradient(180deg, #d9ebff, #edf5ff);
+}
+
+.range-instance-topology-node.kind-switch .range-instance-topology-node-icon {
+  background: linear-gradient(180deg, #e4ecff, #f5f8ff);
+}
+
+.range-instance-topology-node.kind-router .range-instance-topology-node-icon {
+  background: linear-gradient(180deg, #eef3ff, #fafcff);
+}
+
+.range-instance-topology-node.is-selected {
+  transform: scale(1.03);
+}
+
+.range-instance-topology-node.is-selected .range-instance-topology-node-icon {
+  border-color: #7da3e7;
+  box-shadow: 0 12px 24px rgba(31, 95, 191, 0.22);
 }
 
 @media (max-width: 980px) {
   .range-instance-overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .range-instance-directory-head,
+  .range-instance-directory-row {
+    grid-template-columns: minmax(160px, 1.15fr) 92px minmax(180px, 1fr) 120px minmax(180px, 1fr) 150px 160px 220px;
   }
 
   .range-instance-detail-content {
