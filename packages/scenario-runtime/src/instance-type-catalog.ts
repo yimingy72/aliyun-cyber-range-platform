@@ -1,33 +1,38 @@
-export type FixedInstanceTypeCatalogEntry = {
+export type InstanceTypeCandidateCatalogEntry = {
   cpu: number;
   memory: number;
-  instanceType: string;
+  preferredInstanceTypes: string[];
 };
 
-export const FIXED_INSTANCE_TYPE_CATALOG: FixedInstanceTypeCatalogEntry[] = [
-  {
-    cpu: 1,
-    memory: 2,
-    instanceType: 'ecs.u1-c1m2.large',
-  },
+export const INSTANCE_TYPE_CANDIDATE_CATALOG: InstanceTypeCandidateCatalogEntry[] = [
   {
     cpu: 2,
-    memory: 4,
-    instanceType: 'ecs.c7.large',
+    memory: 2,
+    preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
   },
   {
     cpu: 4,
     memory: 8,
-    instanceType: 'ecs.c7.xlarge',
+    preferredInstanceTypes: ['ecs.e-c1m2.xlarge'],
+  },
+  {
+    cpu: 8,
+    memory: 16,
+    preferredInstanceTypes: ['ecs.e-c1m2.2xlarge'],
   },
 ];
 
 export function resolveFixedInstanceType(cpu?: number, memory?: number) {
+  return resolvePreferredInstanceTypes(cpu, memory)[0] ?? null;
+}
+
+export function resolvePreferredInstanceTypes(cpu?: number, memory?: number) {
   if (!Number.isFinite(cpu) || !Number.isFinite(memory)) {
-    return null;
+    return [];
   }
 
   return (
-    FIXED_INSTANCE_TYPE_CATALOG.find((entry) => entry.cpu === cpu && entry.memory === memory)?.instanceType ?? null
+    INSTANCE_TYPE_CANDIDATE_CATALOG.find((entry) => entry.cpu === cpu && entry.memory === memory)?.preferredInstanceTypes ??
+    []
   );
 }

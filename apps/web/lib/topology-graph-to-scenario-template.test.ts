@@ -81,7 +81,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             imageName: 'ubuntu-22.04',
             imageId: 'img-web',
             cpu: 2,
-            memory: 4,
+            memory: 2,
             description: 'Web 服务',
             bootPriority: 1,
             bootWaitSeconds: 10,
@@ -197,7 +197,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
       expect.objectContaining({
         key: 'ecs-web-instance-type-policy',
         mode: 'fixed',
-        instanceType: 'ecs.c7.large',
+        instanceType: 'ecs.e-c1m1.large',
       }),
     ]);
 
@@ -285,7 +285,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             imageName: 'ubuntu_22_04_x64_20G_alibase',
             imageId: 'ubuntu_22_04_x64_20G_alibase',
             cpu: 2,
-            memory: 4,
+            memory: 2,
             instanceType: ' ecs.persisted.custom ',
             description: '',
             bootPriority: 1,
@@ -321,6 +321,168 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
         key: 'ecs-persisted-instance-type-policy',
         mode: 'fixed',
         instanceType: 'ecs.persisted.custom',
+      }),
+    ]);
+  });
+
+  it('maps ecs customPassword into host accountPreset.password', () => {
+    const template = buildScenarioTemplateSpecFromTopologyGraph({
+      metadata: {
+        name: '综合靶场',
+        slug: 'enterprise-range',
+        version: 'v1',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        edges: [],
+        nodes: [
+          {
+            id: 'switch-core',
+            kind: 'switch',
+            label: '核心交换机',
+            zoneKey: 'core',
+            cidr: '10.10.0.0/24',
+            purpose: 'core',
+            description: '',
+            aclRules: [],
+            nat: {
+              snatEnabled: false,
+              dnatMappings: [],
+            },
+          },
+          {
+            id: 'ecs-password',
+            kind: 'ecs',
+            label: 'Password ECS',
+            instanceName: 'password-01',
+            hostName: 'password-01',
+            zoneKey: 'core',
+            role: 'host',
+            privateIp: '10.10.0.11',
+            customPassword: 'Valid123!',
+            exposePublic: false,
+            image: 'ubuntu_22_04_x64_20G_alibase',
+            imageName: 'ubuntu_22_04_x64_20G_alibase',
+            imageId: 'ubuntu_22_04_x64_20G_alibase',
+            cpu: 1,
+            memory: 2,
+            description: '',
+            bootPriority: 1,
+            bootWaitSeconds: 0,
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.10.0.11' }],
+            portGroups: [],
+            nics: [
+              {
+                id: 'ecs-password-nic-1',
+                switchId: 'switch-core',
+                privateIp: '10.10.0.11',
+                secondaryIps: [],
+                securityGroupRules: [],
+              },
+            ],
+            initScript: '',
+            imageStrategy: {
+              mode: 'fixed',
+              imageId: 'ubuntu_22_04_x64_20G_alibase',
+            },
+            instanceTypeStrategy: {
+              mode: 'auto',
+              preferredInstanceTypes: [],
+            },
+          },
+        ] as any,
+      },
+    });
+
+    expect(template.hosts).toEqual([
+      expect.objectContaining({
+        key: 'ecs-password',
+        accountPreset: expect.objectContaining({
+          password: 'Valid123!',
+        }),
+      }),
+    ]);
+  });
+
+  it('omits host accountPreset when ecs customPassword is empty', () => {
+    const template = buildScenarioTemplateSpecFromTopologyGraph({
+      metadata: {
+        name: '综合靶场',
+        slug: 'enterprise-range',
+        version: 'v1',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        edges: [],
+        nodes: [
+          {
+            id: 'switch-core',
+            kind: 'switch',
+            label: '核心交换机',
+            zoneKey: 'core',
+            cidr: '10.10.0.0/24',
+            purpose: 'core',
+            description: '',
+            aclRules: [],
+            nat: {
+              snatEnabled: false,
+              dnatMappings: [],
+            },
+          },
+          {
+            id: 'ecs-password-empty',
+            kind: 'ecs',
+            label: 'Password ECS Empty',
+            instanceName: 'password-empty-01',
+            hostName: 'password-empty-01',
+            zoneKey: 'core',
+            role: 'host',
+            privateIp: '10.10.0.12',
+            customPassword: '',
+            exposePublic: false,
+            image: 'ubuntu_22_04_x64_20G_alibase',
+            imageName: 'ubuntu_22_04_x64_20G_alibase',
+            imageId: 'ubuntu_22_04_x64_20G_alibase',
+            cpu: 1,
+            memory: 2,
+            description: '',
+            bootPriority: 1,
+            bootWaitSeconds: 0,
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.10.0.12' }],
+            portGroups: [],
+            nics: [
+              {
+                id: 'ecs-password-empty-nic-1',
+                switchId: 'switch-core',
+                privateIp: '10.10.0.12',
+                secondaryIps: [],
+                securityGroupRules: [],
+              },
+            ],
+            initScript: '',
+            imageStrategy: {
+              mode: 'fixed',
+              imageId: 'ubuntu_22_04_x64_20G_alibase',
+            },
+            instanceTypeStrategy: {
+              mode: 'auto',
+              preferredInstanceTypes: [],
+            },
+          },
+        ] as any,
+      },
+    });
+
+    expect(template.hosts).toEqual([
+      expect.objectContaining({
+        key: 'ecs-password-empty',
+        accountPreset: undefined,
       }),
     ]);
   });
