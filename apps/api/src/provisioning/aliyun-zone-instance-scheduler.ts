@@ -27,6 +27,7 @@ const ALICLOUD_PAGE_SIZE = 100;
 export async function selectZoneAndHostInstanceTypes(input: {
   regionId: string;
   defaultZoneId: string;
+  systemDiskCategory?: string;
   hostRequests: HostRequest[];
   account: { accessKeyId: string; accessKeySecret: string };
 }): Promise<{
@@ -89,6 +90,7 @@ export async function selectZoneAndHostInstanceTypes(input: {
 async function evaluateZone(input: {
   regionId: string;
   zoneId: string;
+  systemDiskCategory?: string;
   hostRequests: HostRequest[];
   account: { accessKeyId: string; accessKeySecret: string };
   x86InstanceTypeIds: Set<string>;
@@ -176,6 +178,7 @@ async function evaluateZone(input: {
 async function describeAvailableInstanceTypeIds(input: {
   regionId: string;
   zoneId: string;
+  systemDiskCategory?: string;
   account: { accessKeyId: string; accessKeySecret: string };
 }) {
   const payload = await performAliyunRpcRequest({
@@ -190,7 +193,7 @@ async function describeAvailableInstanceTypeIds(input: {
       InstanceChargeType: 'PostPaid',
       IoOptimized: 'optimized',
       NetworkCategory: 'vpc',
-      ...(readSystemDiskCategory() ? { SystemDiskCategory: readSystemDiskCategory()! } : {}),
+      ...(input.systemDiskCategory ? { SystemDiskCategory: input.systemDiskCategory } : {}),
     },
   });
 
@@ -392,6 +395,7 @@ async function describeInstanceTypePrice(input: {
   regionId: string;
   zoneId: string;
   instanceTypeId: string;
+  systemDiskCategory?: string;
   account: { accessKeyId: string; accessKeySecret: string };
 }) {
   const payload = await performAliyunRpcRequest({
@@ -405,7 +409,7 @@ async function describeInstanceTypePrice(input: {
       InstanceType: input.instanceTypeId,
       InstanceChargeType: 'PostPaid',
       PriceUnit: 'Hour',
-      ...(readSystemDiskCategory() ? { SystemDiskCategory: readSystemDiskCategory()! } : {}),
+      ...(input.systemDiskCategory ? { SystemDiskCategory: input.systemDiskCategory } : {}),
     },
   });
 
@@ -525,11 +529,6 @@ function formatAliyunTimestamp(value: Date) {
 
 function isX86Architecture(value: string) {
   return value.toUpperCase().includes('X86');
-}
-
-function readSystemDiskCategory() {
-  const configuredValue = process.env.OPENTOFU_SYSTEM_DISK_CATEGORY?.trim();
-  return configuredValue ? configuredValue : null;
 }
 
 function toNumber(value: number | string | undefined) {

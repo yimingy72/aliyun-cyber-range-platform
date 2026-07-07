@@ -107,6 +107,7 @@ type OpenTofuRangeProvisionerOptions = {
   projectRootDir?: string;
   workspacesRootDir?: string;
   env?: OpenTofuProvisionerEnv;
+  enableZoneScheduling?: boolean;
   availableInstanceTypeResolver?: AvailableInstanceTypeResolver;
   availableImageIdResolver?: AvailableImageIdResolver;
 };
@@ -221,6 +222,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private readonly projectRootDir: string;
   private readonly workspacesRootDir: string;
   private readonly env: OpenTofuProvisionerEnv;
+  private readonly enableZoneScheduling: boolean;
   private readonly availableInstanceTypeResolver: AvailableInstanceTypeResolver;
   private readonly availableImageIdResolver: AvailableImageIdResolver;
   private readonly renderer: AlibabaCloudOpenTofuRenderer;
@@ -236,6 +238,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       workspacesRootDir: options.workspacesRootDir,
       env: this.env,
     });
+    this.enableZoneScheduling = options.enableZoneScheduling ?? true;
     this.runner =
       options.runner ??
       new OpenTofuRunner({
@@ -505,14 +508,16 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
+    const systemDiskCategory = this.readSystemDiskCategory();
 
     if (
-      this.availableInstanceTypeResolver === resolveAvailableAliyunInstanceType &&
+      this.enableZoneScheduling &&
       (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto')
     ) {
       const zoneSelection = await selectZoneAndHostInstanceTypes({
         regionId: runtimeConfig.defaultRegion,
         defaultZoneId: runtimeConfig.defaultZoneId,
+        ...(systemDiskCategory ? { systemDiskCategory } : {}),
         hostRequests: this.buildHostInstanceTypeRequests({
           plan,
           hostProvisioningHints,
@@ -572,9 +577,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
             internetMaxBandwidthOut: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT),
           }
         : {}),
-      ...(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY
+      ...(systemDiskCategory
         ? {
-            systemDiskCategory: this.env.OPENTOFU_SYSTEM_DISK_CATEGORY,
+            systemDiskCategory,
           }
         : {}),
       ...(this.env.OPENTOFU_SYSTEM_DISK_SIZE
@@ -593,7 +598,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     if (requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto') {
       return requestedInstanceType;
     }
-    const systemDiskCategory = normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
+    const systemDiskCategory = this.readSystemDiskCategory();
 
     return this.availableInstanceTypeResolver({
       accessKey: runtimeConfig.accessKeyId,
@@ -620,7 +625,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       );
     }
 
-    const systemDiskCategory = normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
+    const systemDiskCategory = this.readSystemDiskCategory();
     const defaultPreferences = readInstanceTypePreferences(this.env);
     const resolutionCache = new Map<string, Promise<string>>();
     const resolvedHostInstanceTypes: Record<string, string> = {};
@@ -801,6 +806,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         normalizeOptionalEnvValue(runtimeConfig?.defaultZoneId) ??
         requireEnvValue(this.env.ALICLOUD_ZONE_ID, 'ALICLOUD_ZONE_ID'),
     };
+  }
+
+  private readSystemDiskCategory() {
+    return normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
   }
 }
 
@@ -1259,31 +1268,86 @@ function formatAliyunTimestamp(value: Date) {
 }
 
 function extractAvailableInstanceTypes(payload: unknown) {
-  const availableZones =
+  const availableZones = normalizeAliyunRpcArray(
     (payload as {
       AvailableZones?: {
-        AvailableZone?: Array<{
-          AvailableResources?: {
-            AvailableResource?: Array<{
-              Type?: string;
-              SupportedResources?: {
-                SupportedResource?: Array<{
-                  Status?: string;
-                  Value?: string;
-                }>;
+        AvailableZone?:
+          | {
+              AvailableResources?: {
+                AvailableResource?:
+                  | {
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }
+                  | Array<{
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }>;
+              };
+            }
+          | Array<{
+              AvailableResources?: {
+                AvailableResource?:
+                  | {
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }
+                  | Array<{
+                      Type?: string;
+                      SupportedResources?: {
+                        SupportedResource?:
+                          | {
+                              Status?: string;
+                              Value?: string;
+                            }
+                          | Array<{
+                              Status?: string;
+                              Value?: string;
+                            }>;
+                      };
+                    }>;
               };
             }>;
-          };
-        }>;
       };
-    })?.AvailableZones?.AvailableZone ?? [];
+    })?.AvailableZones?.AvailableZone,
+  );
 
   return [
     ...new Set(
       availableZones.flatMap((zone) =>
-        (zone.AvailableResources?.AvailableResource ?? [])
+        normalizeAliyunRpcArray(zone.AvailableResources?.AvailableResource)
           .filter((resource) => resource.Type === 'InstanceType')
-          .flatMap((resource) => resource.SupportedResources?.SupportedResource ?? [])
+          .flatMap((resource) => normalizeAliyunRpcArray(resource.SupportedResources?.SupportedResource))
           .filter((resource) => resource.Status === 'Available' && typeof resource.Value === 'string')
           .map((resource) => resource.Value!.trim())
           .filter(Boolean),
@@ -1293,20 +1357,34 @@ function extractAvailableInstanceTypes(payload: unknown) {
 }
 
 function extractAvailableImageIds(payload: unknown) {
-  const images =
+  const images = normalizeAliyunRpcArray(
     (payload as {
       Images?: {
-        Image?: Array<{
-          ImageId?: string;
-          Status?: string;
-        }>;
+        Image?:
+          | {
+              ImageId?: string;
+              Status?: string;
+            }
+          | Array<{
+              ImageId?: string;
+              Status?: string;
+            }>;
       };
-    })?.Images?.Image ?? [];
+    })?.Images?.Image,
+  );
 
   return images
     .filter((image) => image.Status === 'Available' && typeof image.ImageId === 'string')
     .map((image) => image.ImageId!.trim())
     .filter(Boolean);
+}
+
+function normalizeAliyunRpcArray<T>(value: T | T[] | null | undefined) {
+  if (!value) {
+    return [] as T[];
+  }
+
+  return Array.isArray(value) ? value : [value];
 }
 
 function readObjectRecord(value: unknown): Record<string, unknown> | null {
