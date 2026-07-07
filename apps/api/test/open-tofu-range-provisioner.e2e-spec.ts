@@ -1468,7 +1468,20 @@ describe('OpenTofuRangeProvisioner', () => {
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
         systemDiskCategory: 'cloud_essd',
-        preferredInstanceTypes: expect.arrayContaining(['ecs.u1-c1m2.large', 'ecs.e-c1m2.large']),
+        preferredInstanceTypes: [
+          'ecs.u1-c1m2.large',
+          'ecs.e-c1m2.large',
+          'ecs.t6-c1m2.large',
+          'ecs.c6t.large',
+          'ecs.hfc6.large',
+          'ecs.sn1ne.large',
+          'ecs.sn1.medium',
+          'ecs.n1.medium',
+          'ecs.c7.large',
+          'ecs.g7.large',
+          'ecs.c6.large',
+          'ecs.g6.large',
+        ],
       }),
     );
     expect(renderedVariables.hosts).toEqual(
