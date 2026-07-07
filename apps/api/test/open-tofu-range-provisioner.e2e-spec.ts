@@ -1481,6 +1481,413 @@ describe('OpenTofuRangeProvisioner', () => {
     );
   });
 
+  it('falls back from the default zone to a feasible zone that can satisfy every host', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-zone-fallback-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const availableInstanceTypeResolver = jest.fn().mockImplementation(async (input: { zoneId: string; preferredInstanceTypes: string[] }) => {
+      if (input.zoneId === 'cn-hangzhou-h') {
+        if (input.preferredInstanceTypes.includes('ecs.e-c1m1.large')) {
+          return 'ecs.e-c1m1.large';
+        }
+
+        throw new Error('cn-hangzhou-h cannot place the app host');
+      }
+
+      if (input.zoneId === 'cn-hangzhou-i') {
+        if (input.preferredInstanceTypes.includes('ecs.e-c1m2.xlarge')) {
+          return 'ecs.e-c1m2.xlarge';
+        }
+
+        return 'ecs.e-c1m1.large';
+      }
+
+      throw new Error(`unexpected zone ${input.zoneId}`);
+    });
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.96.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-zone-fallback',
+            subnet_ids: { dmz: 'vsw-dmz', server: 'vsw-server' },
+            host_ids: { 'dmz-entry': 'i-dmz', 'server-app': 'i-server' },
+            eip_allocation_id: 'eip-zone-fallback',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableInstanceTypeResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+        OPENTOFU_INSTANCE_TYPE: 'auto',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-zone-fallback',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      reportStep: async () => undefined,
+      topologySpec: {
+        vpcCidr: '10.96.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.96.10.0/24',
+            isPublicEntry: true,
+          },
+          {
+            key: 'server',
+            name: 'Server',
+            purpose: 'application-servers',
+            cidr: '10.96.20.0/24',
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.96.10.10',
+            exposePublic: true,
+          },
+          {
+            key: 'server-app',
+            name: 'Server App',
+            zoneKey: 'server',
+            role: 'app',
+            privateIp: '10.96.20.10',
+          },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.96.0.0/16',
+          entryHostKey: 'dmz-entry',
+        },
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            cidr: '10.96.10.0/24',
+            purpose: 'public-entry',
+            isPublicEntry: true,
+            routeRole: 'entry',
+          },
+          {
+            key: 'server',
+            name: 'Server',
+            cidr: '10.96.20.0/24',
+            purpose: 'application-servers',
+            routeRole: 'internal',
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            role: 'entry',
+            zoneKey: 'dmz',
+            primaryPrivateIp: '10.96.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.96.10.10' }],
+            instanceTypePolicyKey: 'dmz-entry-instance-type-policy',
+          },
+          {
+            key: 'server-app',
+            name: 'Server App',
+            role: 'app',
+            zoneKey: 'server',
+            primaryPrivateIp: '10.96.20.10',
+            exposePublic: false,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'server', privateIp: '10.96.20.10' }],
+            instanceTypePolicyKey: 'server-app-instance-type-policy',
+          },
+        ],
+        natGateways: [],
+        eips: [{ key: 'entry-default', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'dmz-entry', bandwidthMbps: 10 }],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: {
+          imagePolicies: {},
+          instanceTypePolicies: {
+            'dmz-entry-instance-type-policy': {
+              key: 'dmz-entry-instance-type-policy',
+              mode: 'fixed',
+              instanceType: 'ecs.e-c1m1.large',
+            },
+            'server-app-instance-type-policy': {
+              key: 'server-app-instance-type-policy',
+              mode: 'fixed',
+              instanceType: 'ecs.e-c1m2.xlarge',
+            },
+          },
+        },
+      },
+    });
+
+    const varsFilePath = path.join(workspacesRootDir, 'range-instance-zone-fallback', 'range.auto.tfvars.json');
+    const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+    expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
+    expect(renderedVariables.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'dmz-entry',
+          instance_type: 'ecs.e-c1m1.large',
+        }),
+        expect.objectContaining({
+          key: 'server-app',
+          instance_type: 'ecs.e-c1m2.xlarge',
+        }),
+      ]),
+    );
+  });
+
+  it('ranks feasible fallback zones by total estimated ECS price', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-zone-ranking-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const providerZipPath = path.join(tempRootDir, 'terraform-provider-alicloud_1.282.0_linux_amd64.zip');
+    const availableInstanceTypeResolver = jest.fn().mockImplementation(async (input: { zoneId: string; preferredInstanceTypes: string[] }) => {
+      if (input.zoneId === 'cn-hangzhou-h') {
+        throw new Error('cn-hangzhou-h cannot place the full topology');
+      }
+
+      if (input.zoneId === 'cn-hangzhou-i') {
+        if (input.preferredInstanceTypes.includes('ecs.e-c1m2.xlarge')) {
+          return 'ecs.e-c1m2.xlarge';
+        }
+
+        return 'ecs.u1-c1m2.large';
+      }
+
+      if (input.zoneId === 'cn-hangzhou-j') {
+        if (input.preferredInstanceTypes.includes('ecs.e-c1m2.xlarge')) {
+          return 'ecs.e-c1m2.xlarge';
+        }
+
+        return 'ecs.e-c1m1.large';
+      }
+
+      throw new Error(`unexpected zone ${input.zoneId}`);
+    });
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'main.tf'), 'output "instance_id" { value = "i-local" }\n', 'utf8');
+    await fs.writeFile(path.join(moduleDir, 'outputs.tf'), 'output "public_ip" { value = "1.1.1.1" }\n', 'utf8');
+    await fs.writeFile(providerZipPath, 'fake provider zip', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.97.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-zone-ranking',
+            subnet_ids: { dmz: 'vsw-dmz', server: 'vsw-server' },
+            host_ids: { 'dmz-entry': 'i-dmz', 'server-app': 'i-server' },
+            runtime_selections: {},
+            eip_allocation_id: 'eip-zone-ranking',
+          },
+        },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      availableInstanceTypeResolver,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
+        OPENTOFU_INSTANCE_TYPE: 'auto',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
+      },
+    });
+
+    const result = await provisioner.create({
+      rangeInstanceId: 'range-instance-zone-ranking',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      reportStep: async () => undefined,
+      topologySpec: {
+        vpcCidr: '10.97.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.97.10.0/24',
+            isPublicEntry: true,
+          },
+          {
+            key: 'server',
+            name: 'Server',
+            purpose: 'application-servers',
+            cidr: '10.97.20.0/24',
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.97.10.10',
+            exposePublic: true,
+          },
+          {
+            key: 'server-app',
+            name: 'Server App',
+            zoneKey: 'server',
+            role: 'app',
+            privateIp: '10.97.20.10',
+          },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: {
+          vpcCidr: '10.97.0.0/16',
+          entryHostKey: 'dmz-entry',
+        },
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            cidr: '10.97.10.0/24',
+            purpose: 'public-entry',
+            isPublicEntry: true,
+            routeRole: 'entry',
+          },
+          {
+            key: 'server',
+            name: 'Server',
+            cidr: '10.97.20.0/24',
+            purpose: 'application-servers',
+            routeRole: 'internal',
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            role: 'entry',
+            zoneKey: 'dmz',
+            primaryPrivateIp: '10.97.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.97.10.10' }],
+            instanceTypePolicyKey: 'dmz-entry-instance-type-policy',
+          },
+          {
+            key: 'server-app',
+            name: 'Server App',
+            role: 'app',
+            zoneKey: 'server',
+            primaryPrivateIp: '10.97.20.10',
+            exposePublic: false,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'server', privateIp: '10.97.20.10' }],
+            instanceTypePolicyKey: 'server-app-instance-type-policy',
+          },
+        ],
+        natGateways: [],
+        eips: [{ key: 'entry-default', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'dmz-entry', bandwidthMbps: 10 }],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: {
+          imagePolicies: {},
+          instanceTypePolicies: {
+            'dmz-entry-instance-type-policy': {
+              key: 'dmz-entry-instance-type-policy',
+              mode: 'auto',
+              preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m2.large'],
+            },
+            'server-app-instance-type-policy': {
+              key: 'server-app-instance-type-policy',
+              mode: 'fixed',
+              instanceType: 'ecs.e-c1m2.xlarge',
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.resourceSummary.runtimeSelections).toEqual(
+      expect.objectContaining({
+        selectedZoneId: 'cn-hangzhou-j',
+        attemptedZones: ['cn-hangzhou-h', 'cn-hangzhou-i', 'cn-hangzhou-j'],
+      }),
+    );
+  });
+
   it('uses final imageId and instanceType from compiled host data without calling aliyun runtime resolvers', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-host-final-values-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');

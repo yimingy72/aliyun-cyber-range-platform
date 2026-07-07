@@ -71,9 +71,9 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       },
       rangeInstanceId: 'range-instance-1',
       zoneId: 'cn-hangzhou-h',
-      instanceType: 'ecs.u1-c1m2.large',
+      instanceType: 'ecs.e-c1m1.large',
       hostInstanceTypes: {
-        'dmz-entry': 'ecs.u1-c1m2.large',
+        'dmz-entry': 'ecs.e-c1m1.large',
         'office-client': 'ecs.c7.large',
         'server-app': 'ecs.c7.large',
       },
@@ -91,7 +91,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         zone_id: 'cn-hangzhou-h',
         vpc_cidr: '10.90.0.0/16',
         entry_host_key: 'dmz-entry',
-        instance_type: 'ecs.u1-c1m2.large',
+        instance_type: 'ecs.e-c1m1.large',
         image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
         system_disk_category: 'cloud_essd',
         system_disk_size: 40,
@@ -105,7 +105,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
           }),
         ],
         hosts: expect.arrayContaining([
-          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.u1-c1m2.large' }),
+          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.e-c1m1.large' }),
           expect.objectContaining({ key: 'server-app', instance_type: 'ecs.c7.large' }),
         ]),
         bootstrap_scripts: [

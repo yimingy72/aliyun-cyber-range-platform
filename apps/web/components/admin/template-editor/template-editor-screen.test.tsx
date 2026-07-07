@@ -1959,7 +1959,7 @@ describe('TemplateEditorScreen', () => {
     );
   });
 
-  it('compiles topology graph into compiledSpec when detecting topology', async () => {
+  it('keeps the stale fixed instance type regression economy-first when detecting topology', async () => {
     updateRangeTemplateMock.mockClear();
     validateRangeTemplateMock.mockResolvedValue({ valid: true });
     updateRangeTemplateMock.mockResolvedValue({
@@ -2065,7 +2065,7 @@ describe('TemplateEditorScreen', () => {
         hostName: 'edge-host-1',
         cpu: 1,
         memory: 2,
-        instanceType: 'ecs.u1-c1m2.large',
+        instanceType: 'ecs.e-c1m1.large',
         networkInterfaces: [
           expect.objectContaining({
             zoneKey: 'core',
@@ -2086,7 +2086,7 @@ describe('TemplateEditorScreen', () => {
         },
         instanceTypeStrategy: {
           mode: 'fixed',
-          instanceType: 'ecs.u1-c1m2.large',
+          instanceType: 'ecs.e-c1m1.large',
         },
       }),
     }));
@@ -2110,7 +2110,7 @@ describe('TemplateEditorScreen', () => {
             expect.objectContaining({
               key: 'ecs-1-instance-type-policy',
               mode: 'fixed',
-              instanceType: 'ecs.u1-c1m2.large',
+              instanceType: 'ecs.e-c1m1.large',
             }),
           ],
         }),
@@ -2135,7 +2135,7 @@ describe('TemplateEditorScreen', () => {
           instanceTypePolicies: expect.objectContaining({
             'ecs-1-instance-type-policy': expect.objectContaining({
               mode: 'fixed',
-              instanceType: 'ecs.u1-c1m2.large',
+              instanceType: 'ecs.e-c1m1.large',
             }),
           }),
         }),
