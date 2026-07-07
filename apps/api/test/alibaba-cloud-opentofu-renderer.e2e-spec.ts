@@ -144,6 +144,19 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
           expect.objectContaining({ key: 'server-bootstrap', target_host_keys: ['server-app'] }),
         ],
         runtime_selections: expect.objectContaining({
+          attempted_zones: [
+            {
+              zone_id: 'cn-hangzhou-h',
+              can_create_all_hosts: false,
+              estimated_total_price: null,
+              reason: 'default zone lacks one required host shape',
+            },
+            {
+              zone_id: 'cn-hangzhou-i',
+              can_create_all_hosts: true,
+              estimated_total_price: 7.25,
+            },
+          ],
           image_policies: expect.objectContaining({
             'server-image': expect.objectContaining({ imageId: 'custom-image' }),
           }),

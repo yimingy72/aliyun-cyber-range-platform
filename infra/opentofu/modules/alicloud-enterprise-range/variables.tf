@@ -163,6 +163,12 @@ variable "runtime_selections" {
   type = object({
     image_policies         = any
     instance_type_policies = any
+    attempted_zones = optional(list(object({
+      zone_id               = string
+      can_create_all_hosts  = bool
+      estimated_total_price = number
+      reason                = optional(string)
+    })))
   })
   description = "Resolved runtime policy metadata forwarded for diagnostics and traceability."
   default = {
