@@ -325,7 +325,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
     ]);
   });
 
-  it('maps 4C8G and 8C16G hosts to economy-first fixed instance policies', () => {
+  it('maps 2C2G, 4C8G, and 8C16G hosts to economy-first fixed instance policies', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {
         name: '综合靶场',
@@ -350,6 +350,46 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             nat: {
               snatEnabled: false,
               dnatMappings: [],
+            },
+          },
+          {
+            id: 'ecs-small',
+            kind: 'ecs',
+            label: 'Small ECS',
+            instanceName: 'small-01',
+            hostName: 'small-01',
+            zoneKey: 'core',
+            role: 'host',
+            privateIp: '10.10.0.10',
+            exposePublic: false,
+            image: 'ubuntu_22_04_x64_20G_alibase',
+            imageName: 'ubuntu_22_04_x64_20G_alibase',
+            imageId: 'ubuntu_22_04_x64_20G_alibase',
+            cpu: 2,
+            memory: 2,
+            description: '',
+            bootPriority: 1,
+            bootWaitSeconds: 0,
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.10.0.10' }],
+            portGroups: [],
+            nics: [
+              {
+                id: 'ecs-small-nic-1',
+                switchId: 'switch-core',
+                privateIp: '10.10.0.10',
+                secondaryIps: [],
+                securityGroupRules: [],
+              },
+            ],
+            initScript: '',
+            imageStrategy: {
+              mode: 'fixed',
+              imageId: 'ubuntu_22_04_x64_20G_alibase',
+            },
+            instanceTypeStrategy: {
+              mode: 'auto',
+              preferredInstanceTypes: [],
             },
           },
           {
@@ -438,6 +478,11 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
 
     expect(template.runtimePreferences.instanceTypePolicies).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          key: 'ecs-small-instance-type-policy',
+          mode: 'fixed',
+          instanceType: 'ecs.e-c1m1.large',
+        }),
         expect.objectContaining({
           key: 'ecs-mid-instance-type-policy',
           mode: 'fixed',
