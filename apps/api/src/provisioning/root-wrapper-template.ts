@@ -29,7 +29,8 @@ export function buildRootWrapperFiles(moduleSource: string) {
       '  server_private_ip       = var.server_private_ip',
       '  instance_type           = var.instance_type',
       '  image_id                = var.image_id',
-      '  instance_password       = var.instance_password',
+      '  host_passwords          = var.host_passwords',
+      '  instance_password       = lookup(var.host_passwords, var.entry_host_key, var.instance_password)',
       '  allowed_ingress_cidr    = var.allowed_ingress_cidr',
       '  system_disk_category    = var.system_disk_category',
       '  system_disk_size        = var.system_disk_size',
@@ -96,6 +97,13 @@ variable "instance_password" {
   type        = string
   description = "Administrator password used by the example root module."
   sensitive   = true
+}
+
+variable "host_passwords" {
+  type        = map(string)
+  description = "Per-host administrator passwords rendered by the API for compatibility shims and future module inputs."
+  sensitive   = true
+  default     = {}
 }
 
 variable "allowed_ingress_cidr" {
@@ -272,6 +280,12 @@ variable "runtime_selections" {
   type = object({
     image_policies         = any
     instance_type_policies = any
+    attempted_zones = optional(list(object({
+      zone_id               = string
+      can_create_all_hosts  = bool
+      estimated_total_price = number
+      reason                = optional(string)
+    })))
   })
   description = "Resolved runtime policy metadata forwarded to the enterprise range module for diagnostics."
   default = {

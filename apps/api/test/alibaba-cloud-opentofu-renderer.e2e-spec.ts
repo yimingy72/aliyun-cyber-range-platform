@@ -71,13 +71,31 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       },
       rangeInstanceId: 'range-instance-1',
       zoneId: 'cn-hangzhou-h',
-      instanceType: 'ecs.u1-c1m2.large',
+      attemptedZones: [
+        {
+          zoneId: 'cn-hangzhou-h',
+          canCreateAllHosts: false,
+          estimatedTotalPrice: null,
+          reason: 'default zone lacks one required host shape',
+        },
+        {
+          zoneId: 'cn-hangzhou-i',
+          canCreateAllHosts: true,
+          estimatedTotalPrice: 7.25,
+        },
+      ],
+      instanceType: 'ecs.e-c1m1.large',
       hostInstanceTypes: {
-        'dmz-entry': 'ecs.u1-c1m2.large',
+        'dmz-entry': 'ecs.e-c1m1.large',
         'office-client': 'ecs.c7.large',
         'server-app': 'ecs.c7.large',
       },
       imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+      hostPasswords: {
+        'dmz-entry': 'ChangeMe123!',
+        'office-client': 'ChangeMe123!',
+        'server-app': 'ChangeMe123!',
+      },
       instancePassword: 'ChangeMe123!',
       allowedIngressCidr: '0.0.0.0/0',
       internetMaxBandwidthOut: 50,
@@ -91,7 +109,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         zone_id: 'cn-hangzhou-h',
         vpc_cidr: '10.90.0.0/16',
         entry_host_key: 'dmz-entry',
-        instance_type: 'ecs.u1-c1m2.large',
+        instance_type: 'ecs.e-c1m1.large',
         image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
         system_disk_category: 'cloud_essd',
         system_disk_size: 40,
@@ -105,13 +123,26 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
           }),
         ],
         hosts: expect.arrayContaining([
-          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.u1-c1m2.large' }),
+          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.e-c1m1.large' }),
           expect.objectContaining({ key: 'server-app', instance_type: 'ecs.c7.large' }),
         ]),
         bootstrap_scripts: [
           expect.objectContaining({ key: 'server-bootstrap', target_host_keys: ['server-app'] }),
         ],
         runtime_selections: expect.objectContaining({
+          attempted_zones: [
+            {
+              zone_id: 'cn-hangzhou-h',
+              can_create_all_hosts: false,
+              estimated_total_price: null,
+              reason: 'default zone lacks one required host shape',
+            },
+            {
+              zone_id: 'cn-hangzhou-i',
+              can_create_all_hosts: true,
+              estimated_total_price: 7.25,
+            },
+          ],
           image_policies: expect.objectContaining({
             'server-image': expect.objectContaining({ imageId: 'custom-image' }),
           }),

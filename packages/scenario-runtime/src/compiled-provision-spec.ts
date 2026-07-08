@@ -47,6 +47,10 @@ export type CompiledHost = {
   zoneKey: string;
   primaryPrivateIp: string;
   exposePublic: boolean;
+  accountPreset?: {
+    username?: string;
+    password?: string;
+  };
   networkInterfaces: Array<{
     deviceIndex: number;
     zoneKey: string;

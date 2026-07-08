@@ -381,6 +381,12 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
         bootstrapRef: node.initScript.trim().length > 0 ? `${node.id}-bootstrap` : undefined,
         imagePolicyRef: `${node.id}-image-policy`,
         instanceTypePolicyRef: `${node.id}-instance-type-policy`,
+        accountPreset:
+          typeof node.customPassword === 'string' && node.customPassword.length > 0
+            ? {
+                password: node.customPassword,
+              }
+            : undefined,
       };
     }),
     nat,

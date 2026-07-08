@@ -150,6 +150,13 @@ export type RangeResourceSummary = {
   topologySpec?: RangeResourceTopologySummary;
 };
 
+export type RangeRuntimeCredential = {
+  username: string;
+  password: string;
+};
+
+export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
+
 export type RangeTemplateRecord = {
   id: string;
   name: string;
@@ -189,6 +196,7 @@ export type RangeInstanceRecord = {
   runtimeTopologyGraph: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec: Record<string, unknown> | null;
   runtimeCompiledProvisionSpec: Record<string, unknown> | null;
+  runtimeCredentials: RangeRuntimeCredentials | null;
   draftTopologyGraph: Record<string, unknown> | null;
   draftScenarioTemplateSpec: Record<string, unknown> | null;
   draftCompiledProvisionSpec: Record<string, unknown> | null;
@@ -372,6 +380,7 @@ export type CreateRangeInstanceInput = {
   runtimeTopologyGraph?: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
   runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
+  runtimeCredentials?: RangeRuntimeCredentials | null;
   draftTopologyGraph?: Record<string, unknown> | null;
   draftScenarioTemplateSpec?: Record<string, unknown> | null;
   draftCompiledProvisionSpec?: Record<string, unknown> | null;
@@ -393,6 +402,7 @@ export type UpdateRangeInstanceInput = Partial<{
   runtimeTopologyGraph: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec: Record<string, unknown> | null;
   runtimeCompiledProvisionSpec: Record<string, unknown> | null;
+  runtimeCredentials: RangeRuntimeCredentials | null;
   draftTopologyGraph: Record<string, unknown> | null;
   draftScenarioTemplateSpec: Record<string, unknown> | null;
   draftCompiledProvisionSpec: Record<string, unknown> | null;

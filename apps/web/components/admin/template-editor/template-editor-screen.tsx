@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 
 import {
   AdminApiError,
@@ -284,6 +285,7 @@ function createDefaultEcsNode(
     zoneKey,
     role: 'host',
     privateIp,
+    customPassword: '',
     exposePublic,
     image: 'ubuntu_22_04_x64_20G_alibase',
     imageName: 'ubuntu_22_04_x64_20G_alibase',
@@ -628,6 +630,22 @@ function readSaveDraftErrorMessage(error: unknown) {
   return '草稿保存失败，请稍后重试';
 }
 
+function readInvalidCustomPasswordMessage(nodes: TemplateNode[]) {
+  for (const node of nodes) {
+    if (node.kind !== 'ecs' || typeof node.customPassword !== 'string' || node.customPassword.length === 0) {
+      continue;
+    }
+
+    const validationResult = validateAliyunEcsPassword(node.customPassword);
+
+    if (!validationResult.valid && validationResult.message) {
+      return `${node.label} 自定义密码不合法：${validationResult.message}`;
+    }
+  }
+
+  return null;
+}
+
 function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateId?: string): TemplateNode[] {
   const topologyGraph = readResolvedTopologyGraph(template, fallbackTemplateId);
   const rawNodes = topologyGraph && typeof topologyGraph === 'object' ? (topologyGraph as { nodes?: unknown }).nodes : [];
@@ -737,6 +755,7 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
             : readDefaultNodeLabel('ecs', kindOrdinal),
         hostName: typeof candidateRecord.hostName === 'string' ? candidateRecord.hostName : `ecs-${kindOrdinal}`,
         role: typeof candidateRecord.role === 'string' ? candidateRecord.role : 'ecs',
+        customPassword: typeof candidateRecord.customPassword === 'string' ? candidateRecord.customPassword : '',
         image: typeof candidateRecord.image === 'string' ? candidateRecord.image : 'ubuntu_22_04_x64_20G_alibase',
         platformImageAssetId:
           typeof candidateRecord.platformImageAssetId === 'string' ? candidateRecord.platformImageAssetId : undefined,
@@ -861,10 +880,10 @@ export function TemplateEditorScreen({
     lastPersistedGraphRef.current = readGraphSignature(nextNodes, nextEdges);
   }
 
-  function buildDraftUpdatePayload(
-    currentNodes: TemplateNode[],
-    currentEdges: TemplateEdge[],
-  ) {
+function buildDraftUpdatePayload(
+  currentNodes: TemplateNode[],
+  currentEdges: TemplateEdge[],
+) {
     return {
       topologyGraph: {
         schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
@@ -874,15 +893,29 @@ export function TemplateEditorScreen({
     };
   }
 
+  function normalizeNodesForValidatedPayload(currentNodes: TemplateNode[]) {
+    return currentNodes.map((node) =>
+      node.kind === 'ecs'
+        ? {
+            ...node,
+            ...applyFixedInstanceType(node, {
+              preserveExisting: true,
+            }),
+          }
+        : node,
+    );
+  }
+
   function buildValidatedDraftPayload(
     currentTemplate: RangeTemplate,
     currentNodes: TemplateNode[],
     currentEdges: TemplateEdge[],
   ) {
-    const graphPayload = buildDraftUpdatePayload(currentNodes, currentEdges);
+    const normalizedNodes = normalizeNodesForValidatedPayload(currentNodes);
+    const graphPayload = buildDraftUpdatePayload(normalizedNodes, currentEdges);
     const topologyGraph = graphPayload.topologyGraph;
-    const switchNodes = currentNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
-    const hostNodes = currentNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs');
+    const switchNodes = normalizedNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
+    const hostNodes = normalizedNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs');
     const switchById = new Map(switchNodes.map((node) => [node.id, node]));
     const nicIpUsage = new Map<string, string>();
     const validationErrors: string[] = [];
@@ -922,6 +955,14 @@ export function TemplateEditorScreen({
     for (const hostNode of hostNodes) {
       if (!hostNode.hostName?.trim()) {
         validationErrors.push(`${hostNode.label} 未填写主机名`);
+      }
+
+      if (typeof hostNode.customPassword === 'string' && hostNode.customPassword.length > 0) {
+        const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword);
+
+        if (!passwordValidationResult.valid && passwordValidationResult.message) {
+          validationErrors.push(`${hostNode.label} 自定义密码不合法：${passwordValidationResult.message}`);
+        }
       }
 
       if (!hostNode.image?.trim()) {
@@ -966,7 +1007,7 @@ export function TemplateEditorScreen({
     }
 
     const topologySpec = syncTopologySpecFromNodes({
-      nodes: currentNodes,
+      nodes: normalizedNodes,
     });
 
     if (!isDraftBlueprintComplete(topologySpec)) {
@@ -985,10 +1026,10 @@ export function TemplateEditorScreen({
       },
     });
     const compiledSpec = compileTopologyGraph({
-      nodes: currentNodes,
+      nodes: normalizedNodes,
     });
     const finalInstanceTypeByHostId = new Map(
-      currentNodes
+      normalizedNodes
         .filter((node): node is EcsTemplateNode => node.kind === 'ecs')
         .map((node) => [node.id, readFinalInstanceType(node)]),
     );
@@ -1456,6 +1497,13 @@ export function TemplateEditorScreen({
   }
 
   async function handleSaveDraft() {
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
+
+    if (invalidCustomPasswordMessage) {
+      setStatusMessage(invalidCustomPasswordMessage);
+      return;
+    }
+
     const currentDraftVersionId = readDraftVersionId(template);
     const hasValidatedCurrentGraph =
       lastValidatedDraftRef.current?.draftVersionId === currentDraftVersionId &&
@@ -1479,6 +1527,12 @@ export function TemplateEditorScreen({
 
   async function handleDetectTopology() {
     lastValidatedDraftRef.current = null;
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
+
+    if (invalidCustomPasswordMessage) {
+      setStatusMessage(invalidCustomPasswordMessage);
+      return;
+    }
 
     try {
       const validatedTemplate = await persistDraft({
@@ -1505,6 +1559,13 @@ export function TemplateEditorScreen({
 
   async function handlePublishTemplate() {
     if (!template || !session.token) {
+      return;
+    }
+
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
+
+    if (invalidCustomPasswordMessage) {
+      setStatusMessage(invalidCustomPasswordMessage);
       return;
     }
 

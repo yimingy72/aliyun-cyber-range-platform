@@ -102,6 +102,7 @@ export type EcsTemplateNode = TemplateNodeBase & {
   zoneKey: string;
   role: string;
   privateIp: string;
+  customPassword?: string;
   exposePublic: boolean;
   image: string;
   instanceName?: string;

@@ -163,6 +163,12 @@ variable "runtime_selections" {
   type = object({
     image_policies         = any
     instance_type_policies = any
+    attempted_zones = optional(list(object({
+      zone_id               = string
+      can_create_all_hosts  = bool
+      estimated_total_price = number
+      reason                = optional(string)
+    })))
   })
   description = "Resolved runtime policy metadata forwarded for diagnostics and traceability."
   default = {
@@ -215,6 +221,13 @@ variable "instance_password" {
   type        = string
   description = "Administrator password used by all stage-one hosts."
   sensitive   = true
+}
+
+variable "host_passwords" {
+  type        = map(string)
+  description = "Per-host administrator passwords keyed by compiled host key."
+  sensitive   = true
+  default     = {}
 }
 
 variable "allowed_ingress_cidr" {

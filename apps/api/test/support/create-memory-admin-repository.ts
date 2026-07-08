@@ -349,6 +349,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         runtimeTopologyGraph: input.runtimeTopologyGraph ?? null,
         runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec ?? null,
         runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec ?? null,
+        runtimeCredentials: input.runtimeCredentials ?? null,
         draftTopologyGraph: input.draftTopologyGraph ?? null,
         draftScenarioTemplateSpec: input.draftScenarioTemplateSpec ?? null,
         draftCompiledProvisionSpec: input.draftCompiledProvisionSpec ?? null,
@@ -393,6 +394,8 @@ export function createMemoryAdminRepository(): AdminRepository {
           input.runtimeCompiledProvisionSpec !== undefined
             ? input.runtimeCompiledProvisionSpec
             : record.runtimeCompiledProvisionSpec,
+        runtimeCredentials:
+          input.runtimeCredentials !== undefined ? input.runtimeCredentials : record.runtimeCredentials,
         draftTopologyGraph:
           input.draftTopologyGraph !== undefined ? input.draftTopologyGraph : record.draftTopologyGraph,
         draftScenarioTemplateSpec:

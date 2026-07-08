@@ -46,6 +46,12 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
       zoneKey: host.zoneKey,
       primaryPrivateIp: host.primaryPrivateIp,
       exposePublic: Boolean(host.exposePublic),
+      accountPreset: host.accountPreset
+        ? {
+            username: host.accountPreset.username,
+            password: host.accountPreset.password,
+          }
+        : undefined,
       networkInterfaces:
         host.networkInterfaces?.map((networkInterface) => ({
           deviceIndex: networkInterface.deviceIndex,

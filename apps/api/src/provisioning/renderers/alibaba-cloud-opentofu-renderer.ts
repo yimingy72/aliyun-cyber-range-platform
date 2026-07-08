@@ -1,4 +1,5 @@
 import type { EnterpriseProvisionPlan } from '../enterprise-provision-plan';
+import type { ProvisioningAttemptedZoneSummary } from '../provisioning.types';
 
 export type AlibabaCloudOpenTofuRenderedVariables = {
   resource_name_prefix: string;
@@ -93,6 +94,12 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   runtime_selections: {
     image_policies: Record<string, unknown>;
     instance_type_policies: Record<string, unknown>;
+    attempted_zones?: Array<{
+      zone_id: string;
+      can_create_all_hosts: boolean;
+      estimated_total_price: number | null;
+      reason?: string;
+    }>;
   };
   dmz_cidr: string;
   office_cidr: string;
@@ -102,6 +109,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   server_private_ip: string;
   instance_type: string;
   image_id: string;
+  host_passwords: Record<string, string>;
   instance_password: string;
   allowed_ingress_cidr: string;
   internet_max_bandwidth_out?: number;
@@ -116,10 +124,12 @@ export type AlibabaCloudOpenTofuRendererInput = {
   plan: EnterpriseProvisionPlan;
   rangeInstanceId: string;
   zoneId: string;
+  attemptedZones?: ProvisioningAttemptedZoneSummary[];
   instanceType: string;
   hostInstanceTypes: Record<string, string>;
   imageId: string;
   hostImageIds?: Record<string, string>;
+  hostPasswords: Record<string, string>;
   instancePassword: string;
   allowedIngressCidr: string;
   internetMaxBandwidthOut?: number;
@@ -130,6 +140,12 @@ export type AlibabaCloudOpenTofuRendererInput = {
 export class AlibabaCloudOpenTofuRenderer {
   render(input: AlibabaCloudOpenTofuRendererInput): AlibabaCloudOpenTofuRenderedVariables {
     const { plan } = input;
+    const attemptedZones = (input.attemptedZones ?? []).map((zone) => ({
+      zone_id: zone.zoneId,
+      can_create_all_hosts: zone.canCreateAllHosts,
+      estimated_total_price: zone.estimatedTotalPrice,
+      ...(zone.reason ? { reason: zone.reason } : {}),
+    }));
 
     return {
       resource_name_prefix: plan.resourceNamePrefix,
@@ -229,6 +245,7 @@ export class AlibabaCloudOpenTofuRenderer {
       runtime_selections: {
         image_policies: plan.runtimeSelections.imagePolicies,
         instance_type_policies: plan.runtimeSelections.instanceTypePolicies,
+        ...(attemptedZones.length > 0 ? { attempted_zones: attemptedZones } : {}),
       },
       dmz_cidr: plan.network.dmzCidr,
       office_cidr: plan.network.officeCidr,
@@ -238,6 +255,7 @@ export class AlibabaCloudOpenTofuRenderer {
       server_private_ip: plan.hosts.serverPrimary.privateIp,
       instance_type: input.instanceType,
       image_id: input.imageId,
+      host_passwords: input.hostPasswords,
       instance_password: input.instancePassword,
       allowed_ingress_cidr: input.allowedIngressCidr,
       ...(input.internetMaxBandwidthOut !== undefined

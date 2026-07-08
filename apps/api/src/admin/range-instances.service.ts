@@ -4,9 +4,11 @@ import {
   ADMIN_REPOSITORY,
   AdminRepository,
   CreateRangeInstanceInput,
+  RangeRuntimeCredentials,
 } from './admin.repository';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
+import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { validateRangeInstanceDraftPayload } from './range-instance-draft.validation';
 import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
@@ -33,7 +35,13 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.attachRecoverySummary(instance);
+    const hydrated = await this.attachRecoverySummary(instance);
+
+    if (!hydrated) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    return this.withDefaultInstancePassword(hydrated);
   }
 
   async create(input: CreateRangeInstanceInput) {
@@ -68,15 +76,20 @@ export class RangeInstancesService {
       throw new ConflictException('Range template does not have an active template version');
     }
 
+    const runtimeScenarioTemplateSpec =
+      sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null;
+    const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
+
     const instance = await this.adminRepository.createRangeInstance({
       name: input.name,
       createdBy: input.triggeredBy,
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
       runtimeTopologyGraph: sourceTemplateVersion.topologyGraph ?? template.topologyGraph ?? null,
-      runtimeScenarioTemplateSpec: sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null,
+      runtimeScenarioTemplateSpec,
       runtimeCompiledProvisionSpec:
         sourceTemplateVersion.compiledProvisionSpec ?? template.compiledProvisionSpec ?? null,
+      runtimeCredentials,
       status: 'pending_create',
       expiresAt: input.expiresAt,
     });
@@ -93,7 +106,13 @@ export class RangeInstancesService {
 
     this.provisioningWorkerService.dispatch(job.id);
 
-    return this.attachRecoverySummary(updated);
+    const hydrated = await this.attachRecoverySummary(updated);
+
+    if (!hydrated) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    return this.withDefaultInstancePassword(hydrated);
   }
 
   async saveDraft(id: string, input: SaveRangeInstanceDraftDto) {
@@ -117,7 +136,13 @@ export class RangeInstancesService {
       draftUpdatedAt: new Date(),
     });
 
-    return this.attachRecoverySummary(updated);
+      const hydrated = await this.attachRecoverySummary(updated);
+
+      if (!hydrated) {
+        throw new NotFoundException('Range instance not found');
+      }
+
+      return this.withDefaultInstancePassword(hydrated);
   }
 
   async discardDraft(id: string) {
@@ -135,7 +160,13 @@ export class RangeInstancesService {
       draftUpdatedAt: null,
     });
 
-    return this.attachRecoverySummary(updated);
+    const hydrated = await this.attachRecoverySummary(updated);
+
+    if (!hydrated) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    return this.withDefaultInstancePassword(hydrated);
   }
 
   async applyDraft(id: string, triggeredBy: string) {
@@ -343,5 +374,71 @@ export class RangeInstancesService {
         steps,
       }),
     };
+  }
+
+  private withDefaultInstancePassword<T extends Record<string, unknown>>(payload: T) {
+    const password = process.env.OPENTOFU_INSTANCE_PASSWORD?.trim() || null;
+
+    return {
+      ...payload,
+      defaultInstancePassword: password,
+    };
+  }
+
+  private resolveRuntimeCredentials(runtimeScenarioTemplateSpec: Record<string, unknown> | null) {
+    const hosts = Array.isArray(runtimeScenarioTemplateSpec?.hosts) ? runtimeScenarioTemplateSpec.hosts : [];
+
+    if (hosts.length === 0) {
+      return null;
+    }
+
+    const runtimeCredentials: RangeRuntimeCredentials = {};
+
+    for (const host of hosts) {
+      if (!this.isRuntimeScenarioHost(host)) {
+        continue;
+      }
+
+      const password = this.resolveHostPassword(host.accountPreset);
+      runtimeCredentials[host.key] = {
+        username: 'root',
+        password,
+      };
+    }
+
+    return Object.keys(runtimeCredentials).length > 0 ? runtimeCredentials : null;
+  }
+
+  private resolveHostPassword(accountPreset: { password?: unknown } | undefined) {
+    if (typeof accountPreset?.password === 'string') {
+      const normalizedPassword = accountPreset.password.trim();
+
+      if (normalizedPassword.length > 0) {
+        return normalizedPassword;
+      }
+    }
+
+    return generateAliyunEcsPassword();
+  }
+
+  private isRuntimeScenarioHost(
+    value: unknown,
+  ): value is {
+    key: string;
+    accountPreset?: {
+      password?: unknown;
+    };
+  } {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    if (typeof (value as { key?: unknown }).key !== 'string') {
+      return false;
+    }
+
+    const accountPreset = (value as { accountPreset?: unknown }).accountPreset;
+
+    return accountPreset === undefined || (accountPreset !== null && typeof accountPreset === 'object');
   }
 }

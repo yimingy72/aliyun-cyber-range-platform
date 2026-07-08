@@ -201,6 +201,7 @@ model RangeInstance {
   runtimeTopologyGraph         Json?
   runtimeScenarioTemplateSpec  Json?
   runtimeCompiledProvisionSpec Json?
+  runtimeCredentials           Json?
   draftTopologyGraph           Json?
   draftScenarioTemplateSpec    Json?
   draftCompiledProvisionSpec   Json?

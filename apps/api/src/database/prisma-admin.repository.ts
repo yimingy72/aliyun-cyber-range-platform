@@ -439,6 +439,9 @@ export class PrismaAdminRepository implements AdminRepository {
         runtimeCompiledProvisionSpec: (input.runtimeCompiledProvisionSpec ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
+        runtimeCredentials: (input.runtimeCredentials ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
         draftTopologyGraph: (input.draftTopologyGraph ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
@@ -499,6 +502,13 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.runtimeCompiledProvisionSpec !== undefined
           ? {
               runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
+        ...(input.runtimeCredentials !== undefined
+          ? {
+              runtimeCredentials: input.runtimeCredentials as
                 | Prisma.InputJsonValue
                 | Prisma.NullableJsonNullValueInput,
             }

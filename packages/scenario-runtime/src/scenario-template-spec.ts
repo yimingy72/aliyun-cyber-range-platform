@@ -56,6 +56,7 @@ export type ScenarioTemplateDnatConfig = {
 
 export type ScenarioTemplateAccountPreset = {
   username?: string;
+  password?: string;
   passwordSecretRef?: string;
 };
 
