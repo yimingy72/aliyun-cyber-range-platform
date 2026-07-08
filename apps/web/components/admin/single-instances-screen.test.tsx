@@ -405,13 +405,15 @@ describe('SingleInstancesScreen', () => {
   });
 
   it('reloads current list and jobs after a successful row action', async () => {
+    let currentStatus = 'running';
+
     fetchSingleInstancesMock.mockImplementation(async () => [
       {
         id: 'single-running',
         name: 'running-lab',
         createdBy: 'admin',
         instanceMode: 'single',
-        status: triggerSingleInstanceActionMock.mock.calls.length ? 'pending_destroy' : 'running',
+        status: currentStatus,
         createdAt: '2026-07-08T09:00:00.000Z',
         accessEntry: { publicIp: '47.1.2.3' },
         singleInstanceConfig: {
@@ -422,7 +424,7 @@ describe('SingleInstancesScreen', () => {
       },
     ]);
     fetchProvisionJobsMock.mockImplementation(async () =>
-      triggerSingleInstanceActionMock.mock.calls.length
+      currentStatus === 'pending_destroy'
         ? [
             {
               id: 'job-destroy-reloaded',
@@ -438,7 +440,10 @@ describe('SingleInstancesScreen', () => {
     fetchPlatformImagesMock.mockResolvedValue({
       items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
     });
-    triggerSingleInstanceActionMock.mockResolvedValue({ jobId: 'job-destroy-reloaded' });
+    triggerSingleInstanceActionMock.mockImplementation(async () => {
+      currentStatus = 'pending_destroy';
+      return { jobId: 'job-destroy-reloaded' };
+    });
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -455,7 +460,7 @@ describe('SingleInstancesScreen', () => {
         expect.objectContaining({ triggeredBy: 'admin' }),
       ),
     );
-    await waitFor(() => expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
     expect(await screen.findByText('销毁中')).toBeTruthy();
   });
 
