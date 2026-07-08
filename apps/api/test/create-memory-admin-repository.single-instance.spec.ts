@@ -17,6 +17,9 @@ describe('createMemoryAdminRepository single-instance extensions', () => {
       remark: 'single instance',
       assignedVswitchId: 'vsw-1',
     };
+    const runtimeTopologyGraph = {
+      nodes: [{ id: 'host-1', kind: 'host' }],
+    };
     const vswitchIds = ['vsw-a', 'vsw-b', 'vsw-c'];
     const vswitchCidrs = ['10.200.1.0/24', '10.200.2.0/24', '10.200.3.0/24'];
 
@@ -27,6 +30,7 @@ describe('createMemoryAdminRepository single-instance extensions', () => {
       instanceMode: 'single',
       expiresAt: '2026-07-10T12:00:00.000Z',
       singleInstanceConfig,
+      runtimeTopologyGraph,
     });
 
     await repository.upsertSingleInstanceNetworkProfile({
@@ -62,6 +66,7 @@ describe('createMemoryAdminRepository single-instance extensions', () => {
     });
 
     singleInstanceConfig.hostKey = 'mutated-input-host';
+    runtimeTopologyGraph.nodes[0].id = 'mutated-node';
     vswitchIds.push('vsw-input-mutated');
     vswitchCidrs.push('10.200.99.0/24');
 
@@ -74,6 +79,9 @@ describe('createMemoryAdminRepository single-instance extensions', () => {
 
     expect(reloadedFromOriginalInputMutation?.singleInstanceConfig).toMatchObject({
       hostKey: 'single-ecs-1',
+    });
+    expect(reloadedFromOriginalInputMutation?.runtimeTopologyGraph).toMatchObject({
+      nodes: [{ id: 'host-1', kind: 'host' }],
     });
     expect(networkFromOriginalInputMutation?.vswitchIds).toEqual(['vsw-a', 'vsw-b', 'vsw-c']);
     expect(networkFromOriginalInputMutation?.vswitchCidrs).toEqual([

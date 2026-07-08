@@ -65,6 +65,15 @@ export function createMemoryAdminRepository(): AdminRepository {
       target[key] = value;
     }
   };
+  const assignClonedIfDefined = <T extends Record<string, unknown>, K extends keyof T>(
+    target: T,
+    key: K,
+    value: T[K] | undefined,
+  ) => {
+    if (value !== undefined) {
+      target[key] = cloneIfDefined(value);
+    }
+  };
 
   const matchesImageSnapshotFilter = (
     record: CloudImageSnapshotRecord,
@@ -122,14 +131,14 @@ export function createMemoryAdminRepository(): AdminRepository {
         version: input.version,
         status: 'draft',
         modulePathOrRef: input.modulePathOrRef,
-        topologySpec: input.topologySpec,
-        topologyGraph: input.topologyGraph,
-        scenarioTemplateSpec: input.scenarioTemplateSpec,
-        compiledProvisionSpec: input.compiledProvisionSpec,
-        compiledSpec: input.compiledSpec,
-        variableSchema: input.variableSchema ?? {},
-        outputSchema: input.outputSchema ?? {},
-        defaultNetworkPolicy: input.defaultNetworkPolicy ?? null,
+        topologySpec: clone(input.topologySpec),
+        topologyGraph: cloneIfDefined(input.topologyGraph),
+        scenarioTemplateSpec: cloneIfDefined(input.scenarioTemplateSpec),
+        compiledProvisionSpec: cloneIfDefined(input.compiledProvisionSpec),
+        compiledSpec: cloneIfDefined(input.compiledSpec),
+        variableSchema: clone(input.variableSchema ?? {}),
+        outputSchema: clone(input.outputSchema ?? {}),
+        defaultNetworkPolicy: cloneIfDefined(input.defaultNetworkPolicy ?? null),
         createdAt: now(),
         updatedAt: now(),
       };
@@ -144,14 +153,14 @@ export function createMemoryAdminRepository(): AdminRepository {
         cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
         iacType: input.iacType ?? 'opentofu',
         modulePathOrRef: input.modulePathOrRef,
-        topologySpec: input.topologySpec,
-        topologyGraph: input.topologyGraph,
-        scenarioTemplateSpec: input.scenarioTemplateSpec,
-        compiledProvisionSpec: input.compiledProvisionSpec,
-        compiledSpec: input.compiledSpec,
-        variableSchema: input.variableSchema ?? {},
-        outputSchema: input.outputSchema ?? {},
-        defaultNetworkPolicy: input.defaultNetworkPolicy ?? null,
+        topologySpec: clone(input.topologySpec),
+        topologyGraph: cloneIfDefined(input.topologyGraph),
+        scenarioTemplateSpec: cloneIfDefined(input.scenarioTemplateSpec),
+        compiledProvisionSpec: cloneIfDefined(input.compiledProvisionSpec),
+        compiledSpec: cloneIfDefined(input.compiledSpec),
+        variableSchema: clone(input.variableSchema ?? {}),
+        outputSchema: clone(input.outputSchema ?? {}),
+        defaultNetworkPolicy: cloneIfDefined(input.defaultNetworkPolicy ?? null),
         currentDraftVersionId: draftVersion.id,
         currentPublishedVersionId: null,
         currentDraftVersion: null,
@@ -192,26 +201,26 @@ export function createMemoryAdminRepository(): AdminRepository {
       assignIfDefined(record, 'cloudProvider', input.cloudProvider);
       assignIfDefined(record, 'iacType', input.iacType);
       assignIfDefined(record, 'modulePathOrRef', input.modulePathOrRef);
-      assignIfDefined(record, 'topologySpec', input.topologySpec);
-      assignIfDefined(record, 'topologyGraph', input.topologyGraph);
-      assignIfDefined(record, 'scenarioTemplateSpec', input.scenarioTemplateSpec);
-      assignIfDefined(record, 'compiledProvisionSpec', input.compiledProvisionSpec);
-      assignIfDefined(record, 'compiledSpec', input.compiledSpec);
-      assignIfDefined(record, 'variableSchema', input.variableSchema);
-      assignIfDefined(record, 'outputSchema', input.outputSchema);
-      assignIfDefined(record, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
+      assignClonedIfDefined(record, 'topologySpec', input.topologySpec);
+      assignClonedIfDefined(record, 'topologyGraph', input.topologyGraph);
+      assignClonedIfDefined(record, 'scenarioTemplateSpec', input.scenarioTemplateSpec);
+      assignClonedIfDefined(record, 'compiledProvisionSpec', input.compiledProvisionSpec);
+      assignClonedIfDefined(record, 'compiledSpec', input.compiledSpec);
+      assignClonedIfDefined(record, 'variableSchema', input.variableSchema);
+      assignClonedIfDefined(record, 'outputSchema', input.outputSchema);
+      assignClonedIfDefined(record, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
       record.updatedAt = now();
 
       assignIfDefined(draftVersion, 'version', input.version);
       assignIfDefined(draftVersion, 'modulePathOrRef', input.modulePathOrRef);
-      assignIfDefined(draftVersion, 'topologySpec', input.topologySpec);
-      assignIfDefined(draftVersion, 'topologyGraph', input.topologyGraph);
-      assignIfDefined(draftVersion, 'scenarioTemplateSpec', input.scenarioTemplateSpec);
-      assignIfDefined(draftVersion, 'compiledProvisionSpec', input.compiledProvisionSpec);
-      assignIfDefined(draftVersion, 'compiledSpec', input.compiledSpec);
-      assignIfDefined(draftVersion, 'variableSchema', input.variableSchema);
-      assignIfDefined(draftVersion, 'outputSchema', input.outputSchema);
-      assignIfDefined(draftVersion, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
+      assignClonedIfDefined(draftVersion, 'topologySpec', input.topologySpec);
+      assignClonedIfDefined(draftVersion, 'topologyGraph', input.topologyGraph);
+      assignClonedIfDefined(draftVersion, 'scenarioTemplateSpec', input.scenarioTemplateSpec);
+      assignClonedIfDefined(draftVersion, 'compiledProvisionSpec', input.compiledProvisionSpec);
+      assignClonedIfDefined(draftVersion, 'compiledSpec', input.compiledSpec);
+      assignClonedIfDefined(draftVersion, 'variableSchema', input.variableSchema);
+      assignClonedIfDefined(draftVersion, 'outputSchema', input.outputSchema);
+      assignClonedIfDefined(draftVersion, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
       draftVersion.updatedAt = now();
 
       if (autoUnpublish && record.currentPublishedVersionId) {
@@ -356,20 +365,20 @@ export function createMemoryAdminRepository(): AdminRepository {
         templateSlugSnapshot: null,
         templateVersionSnapshot: null,
         templateModulePathSnapshot: null,
-        runtimeTopologyGraph: input.runtimeTopologyGraph ?? null,
-        runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec ?? null,
-        runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec ?? null,
-        runtimeCredentials: input.runtimeCredentials ?? null,
-        draftTopologyGraph: input.draftTopologyGraph ?? null,
-        draftScenarioTemplateSpec: input.draftScenarioTemplateSpec ?? null,
-        draftCompiledProvisionSpec: input.draftCompiledProvisionSpec ?? null,
+        runtimeTopologyGraph: cloneIfDefined(input.runtimeTopologyGraph ?? null),
+        runtimeScenarioTemplateSpec: cloneIfDefined(input.runtimeScenarioTemplateSpec ?? null),
+        runtimeCompiledProvisionSpec: cloneIfDefined(input.runtimeCompiledProvisionSpec ?? null),
+        runtimeCredentials: cloneIfDefined(input.runtimeCredentials ?? null),
+        draftTopologyGraph: cloneIfDefined(input.draftTopologyGraph ?? null),
+        draftScenarioTemplateSpec: cloneIfDefined(input.draftScenarioTemplateSpec ?? null),
+        draftCompiledProvisionSpec: cloneIfDefined(input.draftCompiledProvisionSpec ?? null),
         draftUpdatedBy: input.draftUpdatedBy ?? null,
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
         allocatedCidr: input.allocatedCidr ?? null,
         cloudProvider: 'alibaba_cloud',
-        accessEntry: input.accessEntry ?? null,
-        resourceSummary: input.resourceSummary ?? null,
+        accessEntry: cloneIfDefined(input.accessEntry ?? null),
+        resourceSummary: cloneIfDefined(input.resourceSummary ?? null),
         errorSummary: input.errorSummary ?? null,
         expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
         lastJobId: input.lastJobId ?? null,
@@ -400,33 +409,33 @@ export function createMemoryAdminRepository(): AdminRepository {
         sourceTemplateVersionId:
           input.sourceTemplateVersionId !== undefined ? input.sourceTemplateVersionId : record.sourceTemplateVersionId,
         runtimeTopologyGraph:
-          input.runtimeTopologyGraph !== undefined ? input.runtimeTopologyGraph : record.runtimeTopologyGraph,
+          input.runtimeTopologyGraph !== undefined ? cloneIfDefined(input.runtimeTopologyGraph) : record.runtimeTopologyGraph,
         runtimeScenarioTemplateSpec:
           input.runtimeScenarioTemplateSpec !== undefined
-            ? input.runtimeScenarioTemplateSpec
+            ? cloneIfDefined(input.runtimeScenarioTemplateSpec)
             : record.runtimeScenarioTemplateSpec,
         runtimeCompiledProvisionSpec:
           input.runtimeCompiledProvisionSpec !== undefined
-            ? input.runtimeCompiledProvisionSpec
+            ? cloneIfDefined(input.runtimeCompiledProvisionSpec)
             : record.runtimeCompiledProvisionSpec,
         runtimeCredentials:
-          input.runtimeCredentials !== undefined ? input.runtimeCredentials : record.runtimeCredentials,
+          input.runtimeCredentials !== undefined ? cloneIfDefined(input.runtimeCredentials) : record.runtimeCredentials,
         draftTopologyGraph:
-          input.draftTopologyGraph !== undefined ? input.draftTopologyGraph : record.draftTopologyGraph,
+          input.draftTopologyGraph !== undefined ? cloneIfDefined(input.draftTopologyGraph) : record.draftTopologyGraph,
         draftScenarioTemplateSpec:
           input.draftScenarioTemplateSpec !== undefined
-            ? input.draftScenarioTemplateSpec
+            ? cloneIfDefined(input.draftScenarioTemplateSpec)
             : record.draftScenarioTemplateSpec,
         draftCompiledProvisionSpec:
           input.draftCompiledProvisionSpec !== undefined
-            ? input.draftCompiledProvisionSpec
+            ? cloneIfDefined(input.draftCompiledProvisionSpec)
             : record.draftCompiledProvisionSpec,
         draftUpdatedBy: input.draftUpdatedBy !== undefined ? input.draftUpdatedBy : record.draftUpdatedBy,
         draftUpdatedAt: input.draftUpdatedAt !== undefined ? input.draftUpdatedAt : record.draftUpdatedAt,
         status: input.status ?? record.status,
         allocatedCidr: input.allocatedCidr !== undefined ? input.allocatedCidr : record.allocatedCidr,
-        accessEntry: input.accessEntry !== undefined ? input.accessEntry : record.accessEntry,
-        resourceSummary: input.resourceSummary !== undefined ? input.resourceSummary : record.resourceSummary,
+        accessEntry: input.accessEntry !== undefined ? cloneIfDefined(input.accessEntry) : record.accessEntry,
+        resourceSummary: input.resourceSummary !== undefined ? cloneIfDefined(input.resourceSummary) : record.resourceSummary,
         errorSummary: input.errorSummary !== undefined ? input.errorSummary : record.errorSummary,
         expiresAt: input.expiresAt !== undefined ? input.expiresAt : record.expiresAt,
         lastJobId: input.lastJobId !== undefined ? input.lastJobId : record.lastJobId,
