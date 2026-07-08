@@ -558,13 +558,14 @@ export function SingleInstancesScreen({
         : null;
 
     try {
-      if (action === 'open-vnc' && !openedWindow) {
-        setErrorMessage('浏览器阻止了新窗口，请允许弹窗后重试。');
-        return;
-      }
-
+      const vncWindow = action === 'open-vnc' ? openedWindow : null;
       if (action === 'open-vnc') {
-        openedWindow.opener = null;
+        if (!vncWindow) {
+          setErrorMessage('浏览器阻止了新窗口，请允许弹窗后重试。');
+          return;
+        }
+
+        vncWindow.opener = null;
       }
 
       if (action === 'delete-record') {
@@ -579,6 +580,11 @@ export function SingleInstancesScreen({
       });
 
       if (action === 'open-vnc') {
+        if (!vncWindow) {
+          setErrorMessage('浏览器阻止了新窗口，请允许弹窗后重试。');
+          return;
+        }
+
         const vncUrl =
           result &&
           typeof result === 'object' &&
@@ -588,12 +594,12 @@ export function SingleInstancesScreen({
             : '';
 
         if (!vncUrl) {
-          openedWindow?.close();
+          vncWindow.close();
           setErrorMessage('VNC 地址未返回，请稍后重试。');
           return;
         }
 
-        openedWindow.location.href = vncUrl;
+        vncWindow.location.href = vncUrl;
         return;
       }
 
