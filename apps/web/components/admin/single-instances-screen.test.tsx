@@ -124,10 +124,12 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
+    expect((screen.getByLabelText('密码') as HTMLInputElement).type).toBe('password');
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'web-lab' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('磁盘大小'), { target: { value: '' } });
     fireEvent.change(screen.getByLabelText('启动实例数量'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-07-10T12:00' } });
     await waitFor(() =>
@@ -154,6 +156,8 @@ describe('SingleInstancesScreen', () => {
         }),
       ),
     );
+    expect(launchSingleInstancesMock.mock.calls[0]?.[2]).not.toHaveProperty('systemDiskSize', 0);
+    expect(launchSingleInstancesMock.mock.calls[0]?.[2]).not.toHaveProperty('systemDiskSize');
   });
 
   it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
@@ -462,6 +466,53 @@ describe('SingleInstancesScreen', () => {
     );
     await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
     expect(await screen.findByText('销毁中')).toBeTruthy();
+  });
+
+  it('blocks duplicate row action clicks while a request is in flight', async () => {
+    let resolveAction: ((value: { jobId: string }) => void) | null = null;
+
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    triggerSingleInstanceActionMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAction = resolve;
+        }),
+    );
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('running-lab')).toBeTruthy();
+    const actionTrigger = screen.getByRole('button', { name: '更多操作' }) as HTMLButtonElement;
+    fireEvent.click(actionTrigger);
+
+    const closeButton = screen.getByRole('button', { name: '关闭实例' }) as HTMLButtonElement;
+    fireEvent.click(closeButton);
+    fireEvent.click(closeButton);
+
+    expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect((screen.getByRole('button', { name: '更多操作' }) as HTMLButtonElement).disabled).toBe(true));
+
+    resolveAction?.({ jobId: 'job-destroy-reloaded' });
+    await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
   });
 
   it('guards create flow when there are no enabled platform images', async () => {

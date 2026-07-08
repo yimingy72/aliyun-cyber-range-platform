@@ -280,6 +280,7 @@ export function SingleInstancesScreen({
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
+  const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
@@ -510,7 +511,7 @@ export function SingleInstancesScreen({
       platformImageAssetId: selectedPlatformImage.id,
       cpu,
       memory,
-      systemDiskSize: Number(createForm.systemDiskSize),
+      ...(createForm.systemDiskSize.trim() ? { systemDiskSize: Number(createForm.systemDiskSize) } : {}),
       expiresAt: new Date(createForm.expiresAt).toISOString(),
       password: createForm.password.trim() || undefined,
       quantity: Number(createForm.quantity),
@@ -544,8 +545,13 @@ export function SingleInstancesScreen({
       return;
     }
 
+    if (pendingActionInstanceId) {
+      return;
+    }
+
     setMenuInstanceId(null);
     setErrorMessage(null);
+    setPendingActionInstanceId(instance.id);
 
     try {
       if (action === 'delete-record') {
@@ -567,6 +573,8 @@ export function SingleInstancesScreen({
       }
 
       setErrorMessage('实例操作失败，请稍后重试。');
+    } finally {
+      setPendingActionInstanceId(null);
     }
   }
 
@@ -660,6 +668,7 @@ export function SingleInstancesScreen({
                   readJobTimestamp(lifecycle?.destroyJob, 'end') ??
                   null;
                 const actions = getAvailableActions(instance.status);
+                const isActionPending = pendingActionInstanceId === instance.id;
                 return (
                   <article
                     key={instance.id}
@@ -716,6 +725,7 @@ export function SingleInstancesScreen({
                         <>
                           <button
                             type="button"
+                            disabled={isActionPending}
                             onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
                           >
                             更多操作
@@ -723,7 +733,7 @@ export function SingleInstancesScreen({
                           {menuInstanceId === instance.id ? (
                             <div className="template-workbench-action-menu">
                               {actions.map((action) => (
-                                <button key={action} type="button" onClick={() => void handleAction(instance, action)}>
+                                <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
                                   {getActionLabel(action, instance.status)}
                                 </button>
                               ))}
@@ -802,7 +812,7 @@ export function SingleInstancesScreen({
               </label>
               <label>
                 <span>密码</span>
-                <input aria-label="密码" type="text" value={createForm.password} onChange={(event) => updateCreateForm('password', event.target.value)} />
+                <input aria-label="密码" type="password" value={createForm.password} onChange={(event) => updateCreateForm('password', event.target.value)} />
               </label>
               <label>
                 <span>启动实例数量</span>
