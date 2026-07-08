@@ -3,4 +3,4 @@ export {
   resolveFixedInstanceType,
   resolvePreferredInstanceTypes,
   type InstanceTypeCandidateCatalogEntry,
-} from '../../../../packages/scenario-runtime';
+} from '../../../../packages/scenario-runtime/src/instance-type-catalog';

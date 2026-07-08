@@ -17,7 +17,7 @@ services:
       retries: 5
 
   api:
-    image: cyber-range-api:2026-07-03
+    image: cyber-range-api:2026-07-08
     restart: unless-stopped
     depends_on:
       postgres:
@@ -69,14 +69,14 @@ services:
       retries: 10
 
   provisioner-worker:
-    image: cyber-range-provisioner-worker:2026-07-03
+    image: cyber-range-provisioner-worker:2026-07-08
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       api:
         condition: service_healthy
-    command: ["node", "apps/api/dist/worker-main.js"]
+    command: ["node", "apps/api/dist/apps/api/src/worker-main.js"]
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
@@ -105,7 +105,7 @@ services:
       - provider-mirror:/var/lib/cyber-range/provider-mirror
 
   web:
-    image: cyber-range-web:2026-07-03
+    image: cyber-range-web:2026-07-08
     restart: unless-stopped
     depends_on:
       api:

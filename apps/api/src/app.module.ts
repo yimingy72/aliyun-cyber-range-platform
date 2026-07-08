@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { ADMIN_REPOSITORY } from './admin/admin.repository';
@@ -25,6 +26,24 @@ import { DryRunRangeProvisioner } from './provisioning/dry-run-range-provisioner
 import { createRangeProvisionerFromEnv } from './provisioning/open-tofu-range-provisioner';
 import { ProvisioningWorkerService } from './provisioning/provisioning-worker.service';
 import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
+
+function resolveProjectRootDir() {
+  let currentDir = process.cwd();
+
+  while (true) {
+    if (existsSync(path.join(currentDir, 'pnpm-workspace.yaml'))) {
+      return currentDir;
+    }
+
+    const parentDir = path.dirname(currentDir);
+
+    if (parentDir === currentDir) {
+      return process.cwd();
+    }
+
+    currentDir = parentDir;
+  }
+}
 
 @Module({
   controllers: [
@@ -59,7 +78,7 @@ import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
       provide: RANGE_PROVISIONER,
       useFactory: () =>
         createRangeProvisionerFromEnv({
-          projectRootDir: path.resolve(__dirname, '..', '..', '..'),
+          projectRootDir: resolveProjectRootDir(),
         }),
     },
   ],

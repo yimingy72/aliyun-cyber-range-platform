@@ -10,6 +10,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@aliyun-cyber-range/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aliyun-cyber-range/iac-runner':
         specifier: workspace:*
         version: link:../../packages/iac-runner

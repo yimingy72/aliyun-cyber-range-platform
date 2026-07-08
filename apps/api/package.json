@@ -2,12 +2,13 @@
   "name": "@aliyun-cyber-range/api",
   "private": true,
   "scripts": {
-    "dev": "pnpm --filter @aliyun-cyber-range/database prisma:generate && pnpm --filter @aliyun-cyber-range/iac-runner build && tsc-watch -p tsconfig.build.json --onSuccess \"node dist/main.js\"",
+    "dev": "pnpm --filter @aliyun-cyber-range/database prisma:generate && pnpm --filter @aliyun-cyber-range/iac-runner build && tsc-watch -p tsconfig.build.json --onSuccess \"node dist/apps/api/src/main.js\"",
     "build": "pnpm --filter @aliyun-cyber-range/database prisma:generate && pnpm --filter @aliyun-cyber-range/iac-runner build && tsc -p tsconfig.build.json",
-    "start": "node dist/main.js",
+    "start": "node dist/apps/api/src/main.js",
     "test": "pnpm --filter @aliyun-cyber-range/database prisma:generate && pnpm --filter @aliyun-cyber-range/iac-runner build && jest --runInBand"
   },
   "dependencies": {
+    "@aliyun-cyber-range/database": "workspace:*",
     "@aliyun-cyber-range/iac-runner": "workspace:*",
     "@nestjs/common": "^11.1.8",
     "@nestjs/core": "^11.1.8",
