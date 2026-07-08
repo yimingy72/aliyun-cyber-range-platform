@@ -278,6 +278,7 @@ export function SingleInstancesScreen({
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
+  const [createFormError, setCreateFormError] = useState<string | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
 
   useEffect(() => {
@@ -369,6 +370,7 @@ export function SingleInstancesScreen({
   );
 
   function updateCreateForm<K extends keyof CreateDialogState>(field: K, value: CreateDialogState[K]) {
+    setCreateFormError(null);
     setCreateForm((current) => ({
       ...current,
       [field]: value,
@@ -377,6 +379,7 @@ export function SingleInstancesScreen({
 
   function openCreateDialog() {
     setCreateForm(buildDefaultDialogState(enabledPlatformImages));
+    setCreateFormError(null);
     setIsCreateOpen(true);
   }
 
@@ -445,9 +448,21 @@ export function SingleInstancesScreen({
     }
 
     const selectedPlatformImage = findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages);
+    const cpu = Number(createForm.cpu);
+    const memory = Number(createForm.memory);
 
     if (!selectedPlatformImage) {
-      setErrorMessage('请先选择一个可用的平台镜像。');
+      setCreateFormError('请先选择一个可用的平台镜像。');
+      return;
+    }
+
+    if (
+      !instanceTypeAvailability ||
+      instanceTypeAvailability.cpu !== cpu ||
+      instanceTypeAvailability.memory !== memory ||
+      !instanceTypeAvailability.exactAvailable
+    ) {
+      setCreateFormError('当前规格未通过可售校验，请调整 CPU / 内存或稍后重试。');
       return;
     }
 
@@ -455,8 +470,8 @@ export function SingleInstancesScreen({
       name: createForm.name.trim(),
       hostName: createForm.hostName.trim() || undefined,
       platformImageAssetId: selectedPlatformImage.id,
-      cpu: Number(createForm.cpu),
-      memory: Number(createForm.memory),
+      cpu,
+      memory,
       systemDiskSize: Number(createForm.systemDiskSize),
       expiresAt: new Date(createForm.expiresAt).toISOString(),
       password: createForm.password.trim() || undefined,
@@ -466,6 +481,7 @@ export function SingleInstancesScreen({
     };
 
     setIsSubmitting(true);
+    setCreateFormError(null);
     setErrorMessage(null);
 
     try {
@@ -766,6 +782,7 @@ export function SingleInstancesScreen({
                 <span>备注</span>
                 <textarea aria-label="备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={3} />
               </label>
+              {createFormError ? <p className="admin-error full-span">{createFormError}</p> : null}
               {!enabledPlatformImages.length ? (
                 <p className="admin-empty full-span">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p>
               ) : null}

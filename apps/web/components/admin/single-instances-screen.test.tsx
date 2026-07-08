@@ -81,7 +81,7 @@ describe('SingleInstancesScreen', () => {
     cleanup();
   });
 
-  it('renders list/history, opens create dialog, and submits the launch payload', async () => {
+  it('renders list/history, opens create dialog, and submits the launch payload when the spec is saleable', async () => {
     fetchSingleInstancesMock.mockResolvedValue([
       {
         id: 'single-1',
@@ -109,9 +109,9 @@ describe('SingleInstancesScreen', () => {
       memory: 2,
       regionId: 'cn-hangzhou',
       zoneId: 'cn-hangzhou-h',
-      exactAvailable: false,
-      matches: [],
-      warning: '默认可用区暂无 2 核 / 2 G 的精确可售规格',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, family: 'c6', generation: '6', architecture: 'x86' }],
+      warning: null,
     });
     launchSingleInstancesMock.mockResolvedValue({
       instances: [{ id: 'single-1', name: 'web-lab-01', createdBy: 'admin', instanceMode: 'single', status: 'pending_create' }],
@@ -124,13 +124,20 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
-    expect(await screen.findByText('默认可用区暂无 2 核 / 2 G 的精确可售规格')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'web-lab' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('启动实例数量'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-07-10T12:00' } });
+    await waitFor(() =>
+      expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        2,
+        2,
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
 
     await waitFor(() =>
@@ -147,6 +154,35 @@ describe('SingleInstancesScreen', () => {
         }),
       ),
     );
+  });
+
+  it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: false,
+      matches: [],
+      warning: '默认可用区暂无 2 核 / 2 G 的精确可售规格',
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    expect(await screen.findByText('默认可用区暂无 2 核 / 2 G 的精确可售规格')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'blocked-lab' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-07-10T12:00' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+
+    expect(await screen.findByText('当前规格未通过可售校验，请调整 CPU / 内存或稍后重试。')).toBeTruthy();
+    expect(launchSingleInstancesMock).not.toHaveBeenCalled();
   });
 
   it('only offers backend-valid row actions and derives history times from lifecycle jobs', async () => {
