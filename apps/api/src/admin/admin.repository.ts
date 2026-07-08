@@ -425,7 +425,7 @@ export type CreateRangeTemplateInput = {
   defaultNetworkPolicy?: Record<string, unknown>;
 };
 
-export type UpdateRangeTemplateInput = Partial<CreateRangeTemplateInput>;
+export type UpdateRangeTemplateInput = Partial<Omit<CreateRangeTemplateInput, 'createdBy'>>;
 
 export type CreateRangeInstanceInput = {
   name: string;

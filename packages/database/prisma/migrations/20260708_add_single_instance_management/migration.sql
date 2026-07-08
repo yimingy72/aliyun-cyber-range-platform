@@ -8,6 +8,9 @@ ALTER COLUMN "createdBy" SET DEFAULT 'admin',
 ADD COLUMN "instanceMode" "RangeInstanceMode" NOT NULL DEFAULT 'range',
 ADD COLUMN "singleInstanceConfig" JSONB;
 
+CREATE INDEX "RangeInstance_instanceMode_status_idx"
+ON "RangeInstance"("instanceMode", "status");
+
 CREATE TABLE "SingleInstanceNetworkProfile" (
     "id" TEXT NOT NULL,
     "provider" "CloudProvider" NOT NULL DEFAULT 'alibaba_cloud',

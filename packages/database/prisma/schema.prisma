@@ -235,6 +235,7 @@ model RangeInstance {
   @@index([templateId])
   @@index([sourceTemplateVersionId])
   @@index([status])
+  @@index([instanceMode, status])
 }
 
 model SingleInstanceNetworkProfile {
