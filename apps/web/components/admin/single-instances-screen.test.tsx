@@ -45,6 +45,20 @@ vi.mock('../../lib/admin-api', () => ({
 
 import { SingleInstancesScreen } from './single-instances-screen';
 
+function formatExpectedDateTime(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+    .format(new Date(value))
+    .replace(/\//g, '-');
+}
+
 describe('SingleInstancesScreen', () => {
   beforeEach(() => {
     fetchSingleInstancesMock.mockReset();
@@ -113,5 +127,108 @@ describe('SingleInstancesScreen', () => {
         }),
       ),
     );
+  });
+
+  it('only offers backend-valid row actions and derives history times from lifecycle jobs', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+      {
+        id: 'single-create-failed',
+        name: 'failed-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'create_failed',
+        createdAt: '2026-07-08T10:00:00.000Z',
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+      {
+        id: 'single-destroyed',
+        name: 'history-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'destroyed',
+        createdAt: '2026-07-08T08:00:00.000Z',
+        accessEntry: { publicIp: '47.9.9.9' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 4,
+          memory: 8,
+        },
+      },
+    ]);
+
+    fetchProvisionJobsMock.mockResolvedValue([
+      {
+        id: 'job-create-running',
+        rangeInstanceId: 'single-running',
+        jobType: 'create',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T09:05:00.000Z',
+        finishedAt: '2026-07-08T09:08:00.000Z',
+      },
+      {
+        id: 'job-create-history',
+        rangeInstanceId: 'single-destroyed',
+        jobType: 'create',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T08:15:00.000Z',
+        finishedAt: '2026-07-08T08:20:00.000Z',
+      },
+      {
+        id: 'job-destroy-history',
+        rangeInstanceId: 'single-destroyed',
+        jobType: 'destroy',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T10:40:00.000Z',
+        finishedAt: '2026-07-08T10:50:00.000Z',
+      },
+    ]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('running-lab')).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(screen.getByRole('button', { name: '销毁实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '重试任务' })).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[1]);
+    expect(screen.getByRole('button', { name: '重试任务' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
+
+    expect(await screen.findByText('history-lab')).toBeTruthy();
+    expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeTruthy();
+    expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
+    expect(screen.getByText('2 小时 35 分钟')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    expect(screen.queryByRole('button', { name: '重试任务' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
   });
 });

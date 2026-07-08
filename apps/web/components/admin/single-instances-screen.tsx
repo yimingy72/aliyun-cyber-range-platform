@@ -151,9 +151,16 @@ function getPublicIp(instance: RangeInstance) {
   return instance.accessEntry?.publicIp?.trim() || '暂无';
 }
 
-function getHistoryEndedAt(instance: RangeInstance, jobsByInstanceId: Map<string, ProvisionJob>) {
-  const job = jobsByInstanceId.get(instance.id);
-  return job?.finishedAt ?? job?.startedAt ?? null;
+function readJobTimestamp(job: ProvisionJob | undefined, edge: 'start' | 'end') {
+  if (!job) {
+    return null;
+  }
+
+  if (edge === 'start') {
+    return job.startedAt ?? job.finishedAt ?? null;
+  }
+
+  return job.finishedAt ?? job.startedAt ?? null;
 }
 
 function getAvailableActions(status: string): SingleInstanceAction[] {
@@ -161,15 +168,15 @@ function getAvailableActions(status: string): SingleInstanceAction[] {
     return ['reboot', 'open-vnc', 'pack-image', 'destroy'];
   }
 
-  if (status === 'create_failed' || status === 'destroy_failed') {
+  if (status === 'destroy_failed') {
     return ['retry', 'destroy'];
   }
 
-  if (status === 'destroyed') {
+  if (status === 'create_failed') {
     return ['retry'];
   }
 
-  return ['destroy'];
+  return [];
 }
 
 function getActionLabel(action: SingleInstanceAction) {
@@ -286,8 +293,35 @@ export function SingleInstancesScreen({
   }, [apiBaseUrl, router, session.isReady, session.token]);
 
   const jobsByInstanceId = useMemo(() => {
-    return new Map(jobs.map((job) => [job.rangeInstanceId, job]));
+    return jobs.reduce<Map<string, ProvisionJob[]>>((map, job) => {
+      const existing = map.get(job.rangeInstanceId) ?? [];
+      existing.push(job);
+      map.set(job.rangeInstanceId, existing);
+      return map;
+    }, new Map<string, ProvisionJob[]>());
   }, [jobs]);
+
+  const lifecycleByInstanceId = useMemo(() => {
+    return Array.from(jobsByInstanceId.entries()).reduce<
+      Map<string, { createJob?: ProvisionJob; destroyJob?: ProvisionJob }>
+    >((map, [instanceId, instanceJobs]) => {
+      const createJobs = instanceJobs.filter((job) => job.jobType === 'create');
+      const destroyJobs = instanceJobs.filter((job) => job.jobType === 'destroy');
+      map.set(instanceId, {
+        createJob: createJobs
+          .slice()
+          .sort((left, right) =>
+            String(right.finishedAt ?? right.startedAt ?? '').localeCompare(String(left.finishedAt ?? left.startedAt ?? '')),
+          )[0],
+        destroyJob: destroyJobs
+          .slice()
+          .sort((left, right) =>
+            String(right.finishedAt ?? right.startedAt ?? '').localeCompare(String(left.finishedAt ?? left.startedAt ?? '')),
+          )[0],
+      });
+      return map;
+    }, new Map<string, { createJob?: ProvisionJob; destroyJob?: ProvisionJob }>());
+  }, [jobsByInstanceId]);
 
   const activeInstances = useMemo(
     () => instances.filter((instance) => instance.status !== 'destroyed'),
@@ -448,7 +482,15 @@ export function SingleInstancesScreen({
             <div className="range-workbench-rows">
               {visibleInstances.map((instance) => {
                 const isHistory = listMode === 'history';
-                const endedAt = getHistoryEndedAt(instance, jobsByInstanceId);
+                const lifecycle = lifecycleByInstanceId.get(instance.id);
+                const startedAt =
+                  readJobTimestamp(lifecycle?.createJob, 'start') ??
+                  instance.createdAt ??
+                  null;
+                const endedAt =
+                  readJobTimestamp(lifecycle?.destroyJob, 'end') ??
+                  null;
+                const actions = getAvailableActions(instance.status);
                 return (
                   <article
                     key={instance.id}
@@ -476,13 +518,13 @@ export function SingleInstancesScreen({
                     {isHistory ? (
                       <>
                         <div className="range-workbench-created-at">
-                          <span>{formatDateTime(instance.createdAt)}</span>
+                          <span>{formatDateTime(startedAt)}</span>
                         </div>
                         <div className="range-workbench-created-at">
                           <span>{formatDateTime(endedAt)}</span>
                         </div>
                         <div className="range-workbench-created-at">
-                          <span>{formatDuration(instance.createdAt, endedAt)}</span>
+                          <span>{formatDuration(startedAt, endedAt)}</span>
                         </div>
                       </>
                     ) : (
@@ -509,7 +551,7 @@ export function SingleInstancesScreen({
                       </button>
                       {menuInstanceId === instance.id ? (
                         <div className="template-workbench-action-menu">
-                          {getAvailableActions(instance.status).map((action) => (
+                          {actions.map((action) => (
                             <button key={action} type="button" onClick={() => void handleAction(instance, action)}>
                               {getActionLabel(action)}
                             </button>
