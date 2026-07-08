@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminApiError } from '../../lib/admin-api';
@@ -203,9 +205,19 @@ describe('TemplatesScreen', () => {
     const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
     expect(publishedRow).toBeTruthy();
     expect(within(publishedRow!).getByText('已发布')).toBeTruthy();
+    expect(Array.from(document.querySelector('.template-workbench-column-head')?.children ?? [])).toHaveLength(6);
+    expect(Array.from(publishedRow?.children ?? [])).toHaveLength(6);
     expect(screen.getByText('操作').closest('.template-workbench-column-cell')?.className).toContain('workbench-action-cell');
     expect(within(publishedRow!).getByRole('button', { name: '进入编排' }).closest('.template-workbench-actions')?.className).toContain(
       'workbench-action-cell',
+    );
+
+    const globalsCss = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+    expect(globalsCss).toMatch(
+      /\.template-workbench-column-head\s*\{[\s\S]*grid-template-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
+    );
+    expect(globalsCss).toMatch(
+      /\.template-workbench-row\s*\{[\s\S]*grid-template-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
     );
 
     const listTitle = screen.getByText('靶场列表');

@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -142,6 +144,8 @@ describe('RangeInstancesScreen', () => {
 
     const activeActionHeader = screen.getByText('操作').closest('.template-workbench-column-cell');
     const activeActionCell = screen.getByRole('button', { name: '查看详情' }).closest('.range-workbench-actions');
+    expect(Array.from(document.querySelector('.range-workbench-column-head')?.children ?? [])).toHaveLength(6);
+    expect(Array.from(screen.getByText('蓝队靶场 01').closest('.range-workbench-row')?.children ?? [])).toHaveLength(6);
     expect(activeActionHeader?.className).toContain('workbench-action-cell');
     expect(activeActionCell?.className).toContain('workbench-action-cell');
 
@@ -164,8 +168,18 @@ describe('RangeInstancesScreen', () => {
 
     const historyActionHeader = screen.getByText('操作').closest('.template-workbench-column-cell');
     const historyActionCell = screen.getByRole('button', { name: '查看详情' }).closest('.range-workbench-actions');
+    expect(Array.from(document.querySelector('.range-history-column-head')?.children ?? [])).toHaveLength(7);
+    expect(Array.from(screen.getByText('红队靶场 02').closest('.range-history-row')?.children ?? [])).toHaveLength(7);
     expect(historyActionHeader?.className).toContain('workbench-action-cell');
     expect(historyActionCell?.className).toContain('workbench-action-cell');
+
+    const globalsCss = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+    expect(globalsCss).toMatch(
+      /--range-grid-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
+    );
+    expect(globalsCss).toMatch(
+      /--range-history-grid-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
+    );
   });
 
   it('navigates to the standalone detail workbench when clicking 查看详情', async () => {

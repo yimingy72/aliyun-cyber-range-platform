@@ -25,8 +25,21 @@
   --ui-line-heading: 1.2;
   --ui-line-row-title: 1.35;
   --ui-line-row-body: 1.45;
-  --range-grid-columns: minmax(220px, 1.08fr) minmax(220px, 1.08fr) minmax(176px, 0.76fr) minmax(176px, 0.76fr) minmax(220px, 0.92fr);
-  --range-history-grid-columns: minmax(220px, 1.08fr) minmax(220px, 1.08fr) minmax(176px, 0.76fr) minmax(176px, 0.76fr) minmax(148px, 0.62fr) minmax(140px, 0.56fr);
+  --range-grid-columns:
+    minmax(200px, 1.08fr)
+    minmax(112px, 0.56fr)
+    minmax(200px, 1fr)
+    minmax(156px, 0.74fr)
+    minmax(176px, 0.82fr)
+    minmax(220px, 0.92fr);
+  --range-history-grid-columns:
+    minmax(200px, 1.08fr)
+    minmax(112px, 0.56fr)
+    minmax(200px, 1fr)
+    minmax(176px, 0.76fr)
+    minmax(176px, 0.76fr)
+    minmax(148px, 0.62fr)
+    minmax(140px, 0.56fr);
 }
 
 html,
@@ -2397,7 +2410,13 @@ body {
 
 .template-workbench-column-head {
   display: grid;
-  grid-template-columns: minmax(190px, 1.18fr) minmax(220px, 1.42fr) minmax(156px, 0.96fr) minmax(124px, 0.72fr) minmax(220px, 0.92fr);
+  grid-template-columns:
+    minmax(190px, 1.12fr)
+    minmax(112px, 0.56fr)
+    minmax(220px, 1.34fr)
+    minmax(156px, 0.96fr)
+    minmax(124px, 0.72fr)
+    minmax(220px, 0.92fr);
   gap: 16px;
   align-items: stretch;
   min-height: 44px;
@@ -2438,7 +2457,13 @@ body {
 
 .template-workbench-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.18fr) minmax(220px, 1.42fr) minmax(156px, 0.96fr) minmax(124px, 0.72fr) minmax(220px, 0.92fr);
+  grid-template-columns:
+    minmax(190px, 1.12fr)
+    minmax(112px, 0.56fr)
+    minmax(220px, 1.34fr)
+    minmax(156px, 0.96fr)
+    minmax(124px, 0.72fr)
+    minmax(220px, 0.92fr);
   gap: 16px;
   align-items: center;
   min-height: 72px;
