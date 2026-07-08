@@ -28,6 +28,13 @@ const { openWindowMock } = vi.hoisted(() => ({
   openWindowMock: vi.fn(),
 }));
 
+const { openedWindowState } = vi.hoisted(() => ({
+  openedWindowState: {
+    location: { href: '' },
+    close: vi.fn(),
+  },
+}));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     replace: replaceMock,
@@ -80,6 +87,8 @@ describe('SingleInstancesScreen', () => {
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
     openWindowMock.mockReset();
+    openedWindowState.location.href = '';
+    openedWindowState.close.mockReset();
     vi.stubGlobal('open', openWindowMock);
   });
 
@@ -496,6 +505,7 @@ describe('SingleInstancesScreen', () => {
     fetchPlatformImagesMock.mockResolvedValue({
       items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
     });
+    openWindowMock.mockReturnValue(openedWindowState as unknown as Window);
     triggerSingleInstanceActionMock.mockResolvedValue({
       vncUrl: 'https://console.example.test/vnc/session-1',
     });
@@ -508,10 +518,13 @@ describe('SingleInstancesScreen', () => {
 
     await waitFor(() =>
       expect(openWindowMock).toHaveBeenCalledWith(
-        'https://console.example.test/vnc/session-1',
+        '',
         '_blank',
         'noopener,noreferrer',
       ),
+    );
+    await waitFor(() =>
+      expect(openedWindowState.location.href).toBe('https://console.example.test/vnc/session-1'),
     );
   });
 

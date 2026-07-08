@@ -552,8 +552,17 @@ export function SingleInstancesScreen({
     setMenuInstanceId(null);
     setErrorMessage(null);
     setPendingActionInstanceId(instance.id);
+    const openedWindow =
+      action === 'open-vnc'
+        ? window.open('', '_blank', 'noopener,noreferrer')
+        : null;
 
     try {
+      if (action === 'open-vnc' && !openedWindow) {
+        setErrorMessage('浏览器阻止了新窗口，请允许弹窗后重试。');
+        return;
+      }
+
       if (action === 'delete-record') {
         await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
         await reloadSingleInstanceRows(session.token);
@@ -575,16 +584,18 @@ export function SingleInstancesScreen({
             : '';
 
         if (!vncUrl) {
+          openedWindow?.close();
           setErrorMessage('VNC 地址未返回，请稍后重试。');
           return;
         }
 
-        window.open(vncUrl, '_blank', 'noopener,noreferrer');
+        openedWindow.location.href = vncUrl;
         return;
       }
 
       await reloadSingleInstanceRows(session.token);
     } catch (error: unknown) {
+      openedWindow?.close();
       if (isUnauthorizedError(error)) {
         session.logout();
         router.replace('/admin/login');
