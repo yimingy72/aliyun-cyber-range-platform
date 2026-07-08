@@ -188,8 +188,42 @@ function detectDefaultAccount(node: Record<string, unknown>) {
   return imageName.includes('windows') ? 'Administrator' : 'root';
 }
 
-function readNodeCredential(node: Record<string, unknown>) {
-  return typeof node.password === 'string' && node.password.trim() ? node.password.trim() : '待回填';
+function readNodeAccount(node: Record<string, unknown>, detail: RangeInstanceDetail | null, nodeId: string) {
+  if (typeof node.account === 'string' && node.account.trim()) {
+    return node.account.trim();
+  }
+
+  if (nodeId) {
+    const runtimeAccount = detail?.runtimeCredentials?.[nodeId]?.username;
+    if (typeof runtimeAccount === 'string' && runtimeAccount.trim()) {
+      return runtimeAccount.trim();
+    }
+  }
+
+  return detectDefaultAccount(node);
+}
+
+function readNodeCredential(
+  node: Record<string, unknown>,
+  detail: RangeInstanceDetail | null,
+  nodeId: string,
+) {
+  if (typeof node.password === 'string' && node.password.trim()) {
+    return node.password.trim();
+  }
+
+  if (nodeId) {
+    const runtimePassword = detail?.runtimeCredentials?.[nodeId]?.password;
+    if (typeof runtimePassword === 'string' && runtimePassword.trim()) {
+      return runtimePassword.trim();
+    }
+  }
+
+  if (typeof detail?.defaultInstancePassword === 'string' && detail.defaultInstancePassword.trim()) {
+    return detail.defaultInstancePassword.trim();
+  }
+
+  return '待回填';
 }
 
 function readWorkbenchNodesFromGraph(
@@ -247,8 +281,8 @@ function readWorkbenchNodesFromGraph(
               ? (typeof node.cidr === 'string' ? node.cidr : '网络节点')
               : 'VPC 路由',
         typeLabel: getTypeLabel(kind),
-        account: kind === 'ecs' ? detectDefaultAccount(node) : '-',
-        password: kind === 'ecs' ? readNodeCredential(node) : '-',
+        account: kind === 'ecs' ? readNodeAccount(node, detail, id) : '-',
+        password: kind === 'ecs' ? readNodeCredential(node, detail, id) : '-',
         hostName: typeof node.hostName === 'string' ? node.hostName : undefined,
         imageName: typeof node.imageName === 'string' ? node.imageName : typeof node.imageId === 'string' ? node.imageId : undefined,
         cpu: typeof node.cpu === 'number' ? node.cpu : undefined,
@@ -667,7 +701,6 @@ export function RangeInstanceDetailScreen({
           <div className="template-workbench-list-header">
             <div className="template-workbench-list-header-copy">
               <h2>实例详情</h2>
-              <p>{detail?.name?.trim() || rangeId}</p>
             </div>
           </div>
 
@@ -697,12 +730,12 @@ export function RangeInstanceDetailScreen({
                   <strong>{formatDateTime(detail.createdAt)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
-                  <span>公网IP</span>
-                  <strong>{detail.accessEntry?.publicIp ?? '暂无'}</strong>
-                </div>
-                <div className="range-instance-overview-item">
                   <span>到期时间</span>
                   <strong>{formatDateTime(detail.expiresAt)}</strong>
+                </div>
+                <div className="range-instance-overview-item">
+                  <span>公网IP</span>
+                  <strong>{detail.accessEntry?.publicIp ?? '暂无'}</strong>
                 </div>
                 {!canOperateInstance ? (
                   <div className="range-instance-overview-item is-readonly">
@@ -735,7 +768,13 @@ export function RangeInstanceDetailScreen({
                 </div>
               ) : null}
 
-              <div className="range-instance-detail-content">
+              <div
+                className={
+                  activeTab === 'directory'
+                    ? 'range-instance-detail-content is-directory'
+                    : 'range-instance-detail-content is-topology'
+                }
+              >
                 <div className="range-instance-detail-main">
                   {activeTab === 'directory' ? (
                     <RangeInstanceNodeDirectory

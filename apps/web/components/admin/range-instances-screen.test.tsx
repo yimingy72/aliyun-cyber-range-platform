@@ -138,6 +138,11 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('创建实例')).toBeNull();
     expect(screen.queryByText('筛选条件')).toBeNull();
 
+    const activeActionHeader = screen.getByText('操作').closest('.template-workbench-column-cell');
+    const activeActionCell = screen.getByRole('button', { name: '查看详情' }).closest('.range-workbench-actions');
+    expect(activeActionHeader?.className).toContain('workbench-action-cell');
+    expect(activeActionCell?.className).toContain('workbench-action-cell');
+
     fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: '蓝队' } });
     expect(screen.getByText('蓝队靶场 01')).toBeTruthy();
     expect(screen.queryByText('红队靶场 02')).toBeNull();
@@ -154,6 +159,11 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('状态')).toBeNull();
     expect(screen.getByText('操作')).toBeTruthy();
     expect(screen.getByRole('button', { name: '查看详情' })).toBeTruthy();
+
+    const historyActionHeader = screen.getByText('操作').closest('.template-workbench-column-cell');
+    const historyActionCell = screen.getByRole('button', { name: '查看详情' }).closest('.range-workbench-actions');
+    expect(historyActionHeader?.className).toContain('workbench-action-cell');
+    expect(historyActionCell?.className).toContain('workbench-action-cell');
   });
 
   it('navigates to the standalone detail workbench when clicking 查看详情', async () => {
@@ -223,6 +233,49 @@ describe('RangeInstancesScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看详情' }));
 
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-2');
+  });
+
+  it('allows switching to an empty tab even when the other instance list has data', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [],
+      teams: [],
+      rangeTemplates: [
+        { id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' },
+      ],
+      rangeInstances: [
+        {
+          id: 'range-2',
+          name: '红队靶场 02',
+          teamId: 'team-2',
+          templateId: 'template-1',
+          status: 'destroyed',
+          createdAt: '2026-06-28T08:00:00.000Z',
+          lastJobId: 'job-2',
+        },
+      ],
+      provisionJobs: [
+        {
+          id: 'job-2',
+          rangeInstanceId: 'range-2',
+          jobType: 'destroy',
+          status: 'succeeded',
+          triggeredBy: 'admin',
+          startedAt: '2026-06-28T10:00:00.000Z',
+          finishedAt: '2026-06-28T12:30:00.000Z',
+        },
+      ],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('当前还没有可查看的靶场实例')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
+    expect(screen.getByText('红队靶场 02')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '实例列表' }));
+
+    expect(screen.getByText('当前还没有可查看的靶场实例')).toBeTruthy();
+    expect(screen.getByText('实例会在靶场编排页生成后进入这里。')).toBeTruthy();
   });
 
   it('triggers a destroy lifecycle action from the list row', async () => {
@@ -371,5 +424,45 @@ describe('RangeInstancesScreen', () => {
     await waitFor(() => {
       expect(screen.queryByText('失败实例 01')).toBeNull();
     });
+  });
+
+  it('keeps destroy_failed instances visible in the active list with a 销毁 action', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({
+      competitions: [],
+      teams: [],
+      rangeTemplates: [
+        { id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' },
+      ],
+      rangeInstances: [
+        {
+          id: 'range-destroy-failed',
+          name: '销毁失败实例',
+          templateId: 'template-1',
+          status: 'destroy_failed',
+          createdAt: '2026-07-07T07:00:00.000Z',
+          lastJobId: 'job-destroy-failed',
+          errorSummary: 'Residual cloud resources still exist after destroy.',
+        },
+      ],
+      provisionJobs: [
+        {
+          id: 'job-destroy-failed',
+          rangeInstanceId: 'range-destroy-failed',
+          jobType: 'destroy',
+          status: 'failed',
+          triggeredBy: 'admin',
+          startedAt: '2026-07-07T07:00:00.000Z',
+          finishedAt: '2026-07-07T07:10:00.000Z',
+          errorSummary: 'Residual cloud resources still exist after destroy.',
+        },
+      ],
+    });
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('销毁失败实例')).toBeTruthy();
+    expect(screen.getByText('销毁失败')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '销毁' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
   });
 });

@@ -201,6 +201,10 @@ describe('TemplatesScreen', () => {
     const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
     expect(publishedRow).toBeTruthy();
     expect(within(publishedRow!).getByText('已发布')).toBeTruthy();
+    expect(screen.getByText('操作').closest('.template-workbench-column-cell')?.className).toContain('workbench-action-cell');
+    expect(within(publishedRow!).getByRole('button', { name: '进入编排' }).closest('.template-workbench-actions')?.className).toContain(
+      'workbench-action-cell',
+    );
 
     const listTitle = screen.getByText('靶场列表');
     const searchField = screen.getByRole('textbox', { name: '筛选靶场名' });

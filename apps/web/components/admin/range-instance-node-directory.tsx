@@ -44,64 +44,94 @@ export function RangeInstanceNodeDirectory({
       </div>
 
       <div className="range-instance-directory-body">
-        {hostNodes.map((node) => (
-          <div key={node.id} className="range-instance-directory-row">
-            <div className="range-instance-directory-cell range-instance-directory-primary">
-              <strong>{node.label}</strong>
-              <span>{node.specLabel ?? '暂无规格'}</span>
-            </div>
-            <div className="range-instance-directory-cell">
-              <span>{node.statusLabel ?? '未知状态'}</span>
-            </div>
-            <div className="range-instance-directory-cell">
-              <span>{node.imageName ?? '暂无'}</span>
-            </div>
-            <div className="range-instance-directory-cell">
-              <span>{node.ipAddress ?? '暂无'}</span>
-            </div>
-            <div className="range-instance-directory-cell">
-              <strong>{node.account ?? '暂无'}</strong>
-              <span>{node.password ?? '暂无'}</span>
-            </div>
-            <div className="range-instance-directory-cell">
-              <span>{node.expiresAt ?? '暂无'}</span>
-            </div>
-            <div className="range-instance-directory-cell">
-              <span>{node.createdAt ?? '暂无'}</span>
-            </div>
-            <div className="range-instance-directory-cell range-instance-directory-actions">
-              {allowActions ? (
-                <>
-                  <button type="button" onClick={() => onNodeAction?.(node.id, 'stop')}>
-                    关机
-                  </button>
-                  <button type="button" onClick={() => onNodeAction?.(node.id, 'reboot')}>
-                    重启
-                  </button>
-                  <button type="button" onClick={() => onNodeAction?.(node.id, 'open-vnc')}>
-                    打开VNC
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedNodeId((current) => (current === node.id ? null : node.id))}
-                  >
-                    更多
-                  </button>
-                  {expandedNodeId === node.id ? (
-                    <div className="range-instance-directory-more">
-                      <button type="button">重置</button>
-                      <button type="button" onClick={() => onNodeAction?.(node.id, 'pack-image')}>
-                        二次打包镜像
+        {hostNodes.map((node) => {
+          const menuOpen = expandedNodeId === node.id;
+
+          return (
+            <div key={node.id} className={`range-instance-directory-row${menuOpen ? ' is-menu-open' : ''}`}>
+              <div className="range-instance-directory-cell range-instance-directory-primary">
+                <strong>{node.label}</strong>
+              </div>
+              <div className="range-instance-directory-cell">
+                <span>{node.statusLabel ?? '未知状态'}</span>
+              </div>
+              <div className="range-instance-directory-cell">
+                <span>{node.imageName ?? '暂无'}</span>
+              </div>
+              <div className="range-instance-directory-cell">
+                <span>{node.ipAddress ?? '暂无'}</span>
+              </div>
+              <div className="range-instance-directory-cell">
+                <strong>
+                  {node.account ?? '暂无'}/{node.password ?? '暂无'}
+                </strong>
+              </div>
+              <div className="range-instance-directory-cell">
+                <span>{node.expiresAt ?? '暂无'}</span>
+              </div>
+              <div className="range-instance-directory-cell">
+                <span>{node.createdAt ?? '暂无'}</span>
+              </div>
+              <div className="range-instance-directory-cell range-instance-directory-actions">
+                {allowActions ? (
+                  <>
+                    <button
+                      type="button"
+                      className="template-workbench-secondary-action"
+                      onClick={() => onNodeAction?.(node.id, 'stop')}
+                    >
+                      关机
+                    </button>
+                    <button
+                      type="button"
+                      className="template-workbench-secondary-action"
+                      onClick={() => onNodeAction?.(node.id, 'reboot')}
+                    >
+                      重启
+                    </button>
+                    <button
+                      type="button"
+                      className="template-workbench-secondary-action"
+                      onClick={() => onNodeAction?.(node.id, 'open-vnc')}
+                    >
+                      打开VNC
+                    </button>
+
+                    <div className="template-workbench-row-menu range-instance-directory-row-menu">
+                      <button
+                        type="button"
+                        className="template-workbench-secondary-action"
+                        aria-expanded={menuOpen}
+                        onClick={() => setExpandedNodeId((current) => (current === node.id ? null : node.id))}
+                      >
+                        更多
                       </button>
+
+                      {menuOpen ? (
+                        <div className="template-workbench-action-menu range-instance-directory-action-menu">
+                          <button type="button" onClick={() => setExpandedNodeId(null)}>
+                            重置
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedNodeId(null);
+                              onNodeAction?.(node.id, 'pack-image');
+                            }}
+                          >
+                            二次打包镜像
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
-                </>
-              ) : (
-                <span>仅查看</span>
-              )}
+                  </>
+                ) : (
+                  <span>仅查看</span>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

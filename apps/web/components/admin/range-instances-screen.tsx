@@ -332,17 +332,6 @@ export function RangeInstancesScreen({
 
   const visibleListInstances = listMode === 'history' ? filteredHistoryInstances : filteredActiveInstances;
 
-  useEffect(() => {
-    if (listMode === 'active' && activeInstances.length === 0 && historyInstances.length > 0) {
-      setListMode('history');
-      return;
-    }
-
-    if (listMode === 'history' && historyInstances.length === 0 && activeInstances.length > 0) {
-      setListMode('active');
-    }
-  }, [activeInstances.length, historyInstances.length, listMode]);
-
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstance) {
     setSnapshot((current) => {
       if (!current) {
@@ -504,7 +493,7 @@ export function RangeInstancesScreen({
               <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
               <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
               <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
-              <div className="template-workbench-column-cell"><strong>操作</strong></div>
+              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
             </div>
           ) : (
             <div className="range-workbench-column-head">
@@ -512,7 +501,7 @@ export function RangeInstancesScreen({
               <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
               <div className="template-workbench-column-cell"><strong>状态</strong></div>
               <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>操作</strong></div>
+              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
             </div>
           )}
 
@@ -546,7 +535,7 @@ export function RangeInstancesScreen({
                         <span>{getDurationLabel(instance.createdAt, endedAt)}</span>
                       </div>
 
-                      <div className="range-workbench-actions">
+                      <div className="range-workbench-actions workbench-action-cell">
                         <button type="button" onClick={() => void handleViewDetail(instance.id)}>
                           查看详情
                         </button>
@@ -580,7 +569,7 @@ export function RangeInstancesScreen({
                         <span>{getInstanceCreatedAt(instance, recentJob)}</span>
                       </div>
 
-                      <div className="range-workbench-actions">
+                      <div className="range-workbench-actions workbench-action-cell">
                         <button type="button" onClick={() => void handleViewDetail(instance.id)}>
                           查看详情
                         </button>

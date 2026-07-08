@@ -82,6 +82,165 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getByRole('button', { name: '重启' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '更多' })).toBeTruthy();
+    expect(screen.getByText('root/待回填')).toBeTruthy();
+  });
+
+  it('opens the node more-actions menu inline like the template workbench', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      accessEntry: { publicIp: '47.1.1.1' },
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    const moreButton = await screen.findByRole('button', { name: '更多' });
+    fireEvent.click(moreButton);
+
+    expect(screen.getByText('二次打包镜像').closest('.template-workbench-action-menu')).not.toBeNull();
+    expect(screen.getByText('ECS 1').closest('.range-instance-directory-row')?.className.includes('is-menu-open')).toBe(true);
+  });
+
+  it('uses the detail default instance password when the runtime node has no password field', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      accessEntry: { publicIp: '47.1.1.1' },
+      defaultInstancePassword: 'ChangeMe123!',
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('root/ChangeMe123!')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    await waitFor(() => expect(screen.getByLabelText('密码')).toBeTruthy());
+    expect((screen.getByLabelText('密码') as HTMLInputElement).value).toBe('ChangeMe123!');
+  });
+
+  it('falls back to placeholder password in the property panel when no runtime credentials or default password exist', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      accessEntry: { publicIp: '47.1.1.1' },
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('root/待回填')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    await waitFor(() => expect(screen.getByLabelText('密码')).toBeTruthy());
+    expect((screen.getByLabelText('密码') as HTMLInputElement).value).toBe('待回填');
+  });
+
+  it('prefers runtime credentials for the node directory and property panel password', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      accessEntry: { publicIp: '47.1.1.1' },
+      defaultInstancePassword: 'FallbackPassword123!',
+      runtimeCredentials: {
+        'host-1': {
+          username: 'root',
+          password: 'ChangeMe123!',
+        },
+      },
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('root/ChangeMe123!')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    await waitFor(() => expect(screen.getByLabelText('密码')).toBeTruthy());
+    expect((screen.getByLabelText('密码') as HTMLInputElement).value).toBe('ChangeMe123!');
+  });
+
+  it('prefers explicit node draft credentials over runtime credentials in the directory and property panel', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      accessEntry: { publicIp: '47.1.1.1' },
+      runtimeCredentials: {
+        'host-1': {
+          username: 'root',
+          password: 'ChangeMe123!',
+        },
+      },
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
+        edges: [],
+      },
+      draftTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [
+          {
+            id: 'host-1',
+            kind: 'ecs',
+            account: 'draft-admin',
+            password: 'DraftPass999!',
+            data: { label: 'ECS 1' },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('draft-admin/DraftPass999!')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    await waitFor(() => expect(screen.getByLabelText('账号')).toBeTruthy());
+    expect((screen.getByLabelText('账号') as HTMLInputElement).value).toBe('draft-admin');
+    expect((screen.getByLabelText('密码') as HTMLInputElement).value).toBe('DraftPass999!');
   });
 
   it('saves and discards instance draft changes from the property panel', async () => {

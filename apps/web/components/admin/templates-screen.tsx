@@ -705,7 +705,7 @@ export function TemplatesScreen({
             <div className="template-workbench-column-cell">
               <strong>状态</strong>
             </div>
-            <div className="template-workbench-column-cell">
+            <div className="template-workbench-column-cell workbench-action-cell">
               <strong>操作</strong>
             </div>
           </div>
@@ -742,7 +742,7 @@ export function TemplatesScreen({
                       </span>
                     </div>
 
-                    <div className="template-workbench-actions">
+                    <div className="template-workbench-actions workbench-action-cell">
                       <button
                         type="button"
                         className="template-workbench-primary-action"

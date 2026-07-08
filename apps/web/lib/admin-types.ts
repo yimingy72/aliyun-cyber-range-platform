@@ -145,6 +145,13 @@ export type RangeRuntimeSelections = {
   instanceTypePolicies?: Record<string, RangeRuntimeSelectionPolicy> | null;
 };
 
+export type RangeRuntimeCredential = {
+  username: string;
+  password: string;
+};
+
+export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
+
 export type RangeResourceSummary = {
   mode?: string | null;
   modulePath?: string | null;
@@ -183,6 +190,7 @@ export type RangeInstance = {
   id: string;
   name?: string | null;
   createdBy?: string | null;
+  defaultInstancePassword?: string | null;
   status: string;
   templateId?: string | null;
   templateNameSnapshot?: string | null;
@@ -193,6 +201,7 @@ export type RangeInstance = {
   runtimeTopologyGraph?: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
   runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
+  runtimeCredentials?: RangeRuntimeCredentials | null;
   draftTopologyGraph?: Record<string, unknown> | null;
   draftScenarioTemplateSpec?: Record<string, unknown> | null;
   draftCompiledProvisionSpec?: Record<string, unknown> | null;
