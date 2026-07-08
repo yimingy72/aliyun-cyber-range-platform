@@ -1041,6 +1041,12 @@ describe('ProvisioningWorkerService concurrency', () => {
       name: 'single-web-lab',
       instanceMode: 'single',
       status: 'pending_create',
+      runtimeScenarioTemplateSpec: {
+        topology: {
+          defaultRegion: 'cn-hangzhou',
+          defaultZoneId: 'cn-hangzhou-h',
+        },
+      },
       runtimeCredentials: {
         'single-ecs-1': {
           username: 'root',
@@ -1115,6 +1121,98 @@ describe('ProvisioningWorkerService concurrency', () => {
         resourceSummary: expect.objectContaining({
           vpcId: 'vpc-single-default',
         }),
+      }),
+    );
+  });
+
+  it('uses the single instance launch-time region and zone when destroying after system defaults change', async () => {
+    const repository = createMemoryAdminRepository();
+    const launchProfile = await repository.upsertSingleInstanceNetworkProfile({
+      provider: 'alibaba_cloud',
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      vpcId: 'vpc-launch',
+      vpcCidr: '10.210.0.0/16',
+      vswitchIds: ['vsw-launch-1', 'vsw-launch-2', 'vsw-launch-3'],
+      vswitchCidrs: ['10.210.1.0/24', '10.210.2.0/24', '10.210.3.0/24'],
+      securityGroupId: 'sg-launch',
+      securityGroupName: 'default-open-all',
+    });
+    const instance = await repository.createRangeInstance({
+      name: 'single-destroy-launch-identity',
+      instanceMode: 'single',
+      status: 'running',
+      runtimeScenarioTemplateSpec: {
+        topology: {
+          defaultRegion: 'cn-hangzhou',
+          defaultZoneId: 'cn-hangzhou-h',
+        },
+      },
+      singleInstanceConfig: {
+        baseName: 'single-destroy-launch-identity',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'single-destroy-launch-identity',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-launch-1',
+      },
+      resourceSummary: {
+        mode: 'opentofu',
+        vpcId: 'vpc-launch',
+        hostIds: {
+          'single-ecs-1': 'i-single-001',
+        },
+      },
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'destroy',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      status: 'pending_destroy',
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn(),
+      destroy: jest.fn().mockResolvedValue(undefined),
+    };
+    const changedDefaultsSystemConfig = {
+      getSnapshot: jest.fn().mockResolvedValue({
+        provider: 'alibaba_cloud',
+        defaultRegion: 'cn-shanghai',
+        defaultZoneId: 'cn-shanghai-b',
+        accessKeyId: 'test-ak',
+        accessKeySecret: 'test-sk',
+      }),
+    };
+    const worker = new ProvisioningWorkerService(
+      repository,
+      provisioner,
+      changedDefaultsSystemConfig as any,
+    );
+
+    await worker.process(job.id);
+
+    expect(provisioner.destroy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instanceMode: 'single',
+        allocatedCidr: '10.210.0.0/16',
+        singleNetworkProfile: launchProfile,
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        status: 'destroyed',
+        errorSummary: null,
       }),
     );
   });

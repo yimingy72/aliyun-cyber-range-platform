@@ -308,10 +308,11 @@ export class ProvisioningWorkerService {
       throw new Error('Single instance update jobs are not supported');
     }
 
+    const launchNetworkIdentity = this.resolveSingleInstanceNetworkIdentity(input.instance);
     const singleNetworkProfile = await this.adminRepository.getSingleInstanceNetworkProfile({
       provider: input.instance.cloudProvider,
-      regionId: input.runtimeConfig.defaultRegion,
-      zoneId: input.runtimeConfig.defaultZoneId,
+      regionId: launchNetworkIdentity.regionId,
+      zoneId: launchNetworkIdentity.zoneId,
     });
 
     if (!singleNetworkProfile) {
@@ -412,6 +413,24 @@ export class ProvisioningWorkerService {
     }
 
     return compiledProvisionSpec;
+  }
+
+  private resolveSingleInstanceNetworkIdentity(instance: RangeInstanceRecord) {
+    const runtimeScenarioTemplateSpec = this.readJsonObject(instance.runtimeScenarioTemplateSpec);
+    const topology = this.readJsonObject(runtimeScenarioTemplateSpec?.topology);
+    const regionId =
+      typeof topology?.defaultRegion === 'string' ? topology.defaultRegion.trim() : '';
+    const zoneId =
+      typeof topology?.defaultZoneId === 'string' ? topology.defaultZoneId.trim() : '';
+
+    if (!regionId || !zoneId) {
+      throw new Error('Single instance launch-time network identity missing');
+    }
+
+    return {
+      regionId,
+      zoneId,
+    };
   }
 
   private getTopologySpecFromCompiledProvisionSpec(

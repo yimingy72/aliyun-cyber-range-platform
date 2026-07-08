@@ -6,6 +6,7 @@ import {
   type SingleInstanceNetworkProfileRecord,
 } from './admin.repository';
 import { SystemConfigService } from './system-config.service';
+import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { SingleInstanceNetworkBootstrapService } from '../provisioning/single-instance-network-bootstrap';
 
 type AllocatedSingleInstanceNetwork = {
@@ -21,38 +22,41 @@ export class SingleInstanceNetworkService {
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
     private readonly singleInstanceNetworkBootstrapService: SingleInstanceNetworkBootstrapService,
+    private readonly cidrPoolService: CidrPoolService,
   ) {}
 
   async ensureDefaultProfile() {
-    const snapshot = await this.systemConfigService.getSnapshot();
-    const existing = await this.adminRepository.getSingleInstanceNetworkProfile({
-      provider: snapshot.provider,
-      regionId: snapshot.defaultRegion,
-      zoneId: snapshot.defaultZoneId,
-    });
-
-    if (existing && !isPlaceholderProfile(existing)) {
-      return existing;
-    }
-
-    const occupiedCidrs = (await this.adminRepository.listRangeInstances())
-      .map((instance) => instance.allocatedCidr)
-      .filter((value): value is string => Boolean(value));
-    const bootstrappedProfile =
-      await this.singleInstanceNetworkBootstrapService.bootstrapDefaultProfile({
+    return this.cidrPoolService.serialize(async () => {
+      const snapshot = await this.systemConfigService.getSnapshot();
+      const existing = await this.adminRepository.getSingleInstanceNetworkProfile({
         provider: snapshot.provider,
         regionId: snapshot.defaultRegion,
         zoneId: snapshot.defaultZoneId,
-        occupiedCidrs,
-        runtimeConfig: {
-          accessKeyId: snapshot.accessKeyId,
-          accessKeySecret: snapshot.accessKeySecret,
-          defaultRegion: snapshot.defaultRegion,
-          defaultZoneId: snapshot.defaultZoneId,
-        },
       });
 
-    return this.adminRepository.upsertSingleInstanceNetworkProfile(bootstrappedProfile);
+      if (existing && !isPlaceholderProfile(existing)) {
+        return existing;
+      }
+
+      const occupiedCidrs = (await this.adminRepository.listRangeInstances())
+        .map((instance) => instance.allocatedCidr)
+        .filter((value): value is string => Boolean(value));
+      const bootstrappedProfile =
+        await this.singleInstanceNetworkBootstrapService.bootstrapDefaultProfile({
+          provider: snapshot.provider,
+          regionId: snapshot.defaultRegion,
+          zoneId: snapshot.defaultZoneId,
+          occupiedCidrs,
+          runtimeConfig: {
+            accessKeyId: snapshot.accessKeyId,
+            accessKeySecret: snapshot.accessKeySecret,
+            defaultRegion: snapshot.defaultRegion,
+            defaultZoneId: snapshot.defaultZoneId,
+          },
+        });
+
+      return this.adminRepository.upsertSingleInstanceNetworkProfile(bootstrappedProfile);
+    });
   }
 
   allocateVswitch(profile: SingleInstanceNetworkProfileRecord, offset: number): AllocatedSingleInstanceNetwork {

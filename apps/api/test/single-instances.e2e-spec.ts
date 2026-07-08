@@ -3,9 +3,11 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
+import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import { CidrPoolService } from '../src/provisioning/cidr-pool.service';
 import { SingleInstanceNetworkBootstrapService } from '../src/provisioning/single-instance-network-bootstrap';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
@@ -198,5 +200,70 @@ describe('single instances', () => {
 
     expect(response.status).toBe(404);
     expect(response.body.message).toBe('Unsupported single instance action');
+  });
+
+  it('serializes first-time default network bootstrap so concurrent callers reuse one profile', async () => {
+    const repository = createMemoryAdminRepository();
+    const cidrPoolService = new CidrPoolService();
+    const snapshot = {
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-hangzhou',
+      defaultZoneId: 'cn-hangzhou-h',
+      accessKeyId: 'test-ak',
+      accessKeySecret: 'test-sk',
+    };
+    let resolveBootstrap!: (value: {
+      provider: 'alibaba_cloud';
+      regionId: string;
+      zoneId: string;
+      vpcId: string;
+      vpcCidr: string;
+      vswitchIds: string[];
+      vswitchCidrs: string[];
+      securityGroupId: string;
+      securityGroupName: string;
+    }) => void;
+    const bootstrapServiceStub = {
+      bootstrapDefaultProfile: jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveBootstrap = resolve;
+          }),
+      ),
+    };
+    const service = new SingleInstanceNetworkService(
+      repository,
+      {
+        getSnapshot: jest.fn().mockResolvedValue(snapshot),
+      } as any,
+      bootstrapServiceStub as any,
+      cidrPoolService,
+    );
+
+    const first = service.ensureDefaultProfile();
+    const second = service.ensureDefaultProfile();
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(bootstrapServiceStub.bootstrapDefaultProfile).toHaveBeenCalledTimes(1);
+
+    resolveBootstrap({
+      provider: 'alibaba_cloud',
+      regionId: snapshot.defaultRegion,
+      zoneId: snapshot.defaultZoneId,
+      vpcId: 'vpc-serialized',
+      vpcCidr: '10.220.0.0/16',
+      vswitchIds: ['vsw-serialized-1', 'vsw-serialized-2', 'vsw-serialized-3'],
+      vswitchCidrs: ['10.220.1.0/24', '10.220.2.0/24', '10.220.3.0/24'],
+      securityGroupId: 'sg-serialized',
+      securityGroupName: 'default-open-all',
+    });
+
+    await expect(first).resolves.toMatchObject({
+      vpcId: 'vpc-serialized',
+    });
+    await expect(second).resolves.toMatchObject({
+      vpcId: 'vpc-serialized',
+    });
+    expect(bootstrapServiceStub.bootstrapDefaultProfile).toHaveBeenCalledTimes(1);
   });
 });

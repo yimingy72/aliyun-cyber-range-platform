@@ -85,24 +85,24 @@ export class SingleInstanceNetworkBootstrapService {
     occupiedCidrs?: string[];
     runtimeConfig: ResolvedProvisioningRuntimeConfig;
   }): Promise<UpsertSingleInstanceNetworkProfileInput> {
-    const vpcCidr = this.cidrPoolService.allocate(
-      this.cidrPoolService.getPool(),
-      input.occupiedCidrs ?? [],
-    );
-    const vswitchCidrs = deriveVswitchCidrs(vpcCidr);
     const workspaceDir = path.join(
       this.workspacesRootDir,
       `single-instance-network-${input.regionId}-${input.zoneId}`,
     );
     const planFilePath = path.join(workspaceDir, 'single-instance-network.tfplan');
     const outputsFilePath = path.join(workspaceDir, 'outputs.json');
+    const varsFilePath = path.join(workspaceDir, 'terraform.tfvars.json');
     const moduleDir = path.resolve(
       this.projectRootDir,
       'infra/opentofu/modules/alicloud-single-instance-network',
     );
+    const existingWorkspaceConfig = await readExistingWorkspaceConfig(workspaceDir);
+    const vpcCidr =
+      existingWorkspaceConfig?.vpcCidr ??
+      this.cidrPoolService.allocate(this.cidrPoolService.getPool(), input.occupiedCidrs ?? []);
+    const vswitchCidrs = existingWorkspaceConfig?.vswitchCidrs ?? deriveVswitchCidrs(vpcCidr);
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
-    await fs.rm(workspaceDir, { recursive: true, force: true });
     await fs.mkdir(workspaceDir, { recursive: true });
 
     const files = buildBootstrapWorkspaceFiles(moduleDir, {
@@ -124,13 +124,13 @@ export class SingleInstanceNetworkBootstrapService {
     await this.runner.validate({
       workspaceDir,
       env: runnerEnv,
-      varsFilePath: path.join(workspaceDir, 'terraform.tfvars.json'),
+      varsFilePath,
     });
     await this.runner.plan({
       workspaceDir,
       env: runnerEnv,
       planFilePath,
-      varsFilePath: path.join(workspaceDir, 'terraform.tfvars.json'),
+      varsFilePath,
     });
     await this.runner.apply({
       workspaceDir,
@@ -298,6 +298,37 @@ function deriveVswitchCidrs(vpcCidr: string) {
   }
 
   return [1, 2, 3].map((suffix) => `${octets[0]}.${octets[1]}.${suffix}.0/24`);
+}
+
+async function readExistingWorkspaceConfig(workspaceDir: string) {
+  const varsFilePath = path.join(workspaceDir, 'terraform.tfvars.json');
+  const contents = await fs.readFile(varsFilePath, 'utf8').catch(() => null);
+
+  if (!contents) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(contents) as {
+      vpc_cidr?: unknown;
+      vswitch_cidrs?: unknown;
+    };
+    const vpcCidr = typeof parsed.vpc_cidr === 'string' ? parsed.vpc_cidr.trim() : '';
+    const vswitchCidrs = Array.isArray(parsed.vswitch_cidrs)
+      ? parsed.vswitch_cidrs.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+
+    if (!vpcCidr || vswitchCidrs.length !== 3) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      vswitchCidrs,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function requireOutputValue<T>(value: T | undefined, key: string) {
