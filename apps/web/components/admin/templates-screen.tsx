@@ -692,6 +692,9 @@ export function TemplatesScreen({
               <strong>靶场</strong>
             </div>
             <div className="template-workbench-column-cell">
+              <strong>创建人</strong>
+            </div>
+            <div className="template-workbench-column-cell">
               <strong>靶场描述</strong>
             </div>
             <div className="template-workbench-column-cell">
@@ -719,6 +722,10 @@ export function TemplatesScreen({
                       <div className="template-workbench-main-top">
                         <strong>{getScenarioDisplayName(template)}</strong>
                       </div>
+                    </div>
+
+                    <div className="template-workbench-column-cell">
+                      <strong>{template.createdBy?.trim() || 'admin'}</strong>
                     </div>
 
                     <div className="template-workbench-description-cell">

@@ -45,7 +45,7 @@ describe('AdminWorkspaceShell', () => {
     vi.clearAllMocks();
   });
 
-  it('renders the four core navigation items and removes the legacy ones', () => {
+  it('renders the ordered admin navigation and removes the legacy ones', () => {
     render(
       <AdminWorkspaceShell>
         <div>workspace content</div>
@@ -55,14 +55,16 @@ describe('AdminWorkspaceShell', () => {
     expect(screen.getByText('综合靶场平台')).toBeTruthy();
     expect(screen.queryByText('运营后台')).toBeNull();
     expect(screen.getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe('/admin/scenarios');
-    expect(screen.getByRole('link', { name: /靶场实例/i }).getAttribute('href')).toBe('/admin/ranges');
+    expect(screen.getByRole('link', { name: /编排实例/i }).getAttribute('href')).toBe('/admin/ranges');
+    expect(screen.getByRole('link', { name: /实例管理/i }).getAttribute('href')).toBe('/admin/instances');
     expect(screen.getByText('镜像中心')).toBeTruthy();
     expect(screen.getByRole('link', { name: /镜像中心/i }).getAttribute('href')).toBe('/admin/image-center');
     expect(screen.getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe('/admin/settings/cloud');
     expect(screen.getAllByRole('link').map((item) => item.textContent?.trim())).toEqual([
-      '编排靶场编排',
-      '实例靶场实例',
       '镜像镜像中心',
+      '实例实例管理',
+      '编排靶场编排',
+      '实例编排实例',
       '配置基础配置',
     ]);
     expect(screen.queryByText('靶场总览')).toBeNull();

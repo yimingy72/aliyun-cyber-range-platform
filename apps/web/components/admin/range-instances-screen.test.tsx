@@ -112,7 +112,7 @@ describe('RangeInstancesScreen', () => {
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('heading', { name: '靶场实例' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '编排实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '实例列表' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '实例历史' })).toBeTruthy();
     expect(screen.getByLabelText('筛选实例名')).toBeTruthy();
@@ -120,11 +120,13 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('运行期管理')).toBeNull();
     expect(screen.queryByText('管理由靶场编排生成的运行实例，重点关注状态、创建时间和实例生命周期动作。')).toBeNull();
     expect(screen.getAllByText('实例名').length).toBeGreaterThan(0);
+    expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getAllByText('靶场名').length).toBeGreaterThan(0);
     expect(screen.getByText('状态')).toBeTruthy();
     expect(screen.getByText('创建时间')).toBeTruthy();
     expect(screen.getByText('操作')).toBeTruthy();
     expect(screen.getByText('蓝队靶场 01')).toBeTruthy();
+    expect(screen.getByText('admin')).toBeTruthy();
     expect(screen.queryByText('range-1')).toBeNull();
     expect(screen.getAllByText('企业攻防靶场').length).toBeGreaterThan(0);
     expect(screen.queryByText('红队靶场 02')).toBeNull();
@@ -372,7 +374,7 @@ describe('RangeInstancesScreen', () => {
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(screen.getByRole('heading', { name: '靶场实例' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '编排实例' })).toBeTruthy();
     expect(screen.queryByText('正在加载靶场实例...')).toBeNull();
   });
 

@@ -13,19 +13,24 @@ type AdminWorkspaceShellProps = {
 
 const navigationItems = [
   {
+    href: '/admin/image-center',
+    label: '镜像中心',
+    shortLabel: '镜像',
+  },
+  {
+    href: '/admin/instances',
+    label: '实例管理',
+    shortLabel: '实例',
+  },
+  {
     href: '/admin/scenarios',
     label: '靶场编排',
     shortLabel: '编排',
   },
   {
     href: '/admin/ranges',
-    label: '靶场实例',
+    label: '编排实例',
     shortLabel: '实例',
-  },
-  {
-    href: '/admin/image-center',
-    label: '镜像中心',
-    shortLabel: '镜像',
   },
   {
     href: '/admin/settings/cloud',

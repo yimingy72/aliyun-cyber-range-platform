@@ -171,6 +171,7 @@ describe('TemplatesScreen', () => {
     expect(screen.queryByRole('textbox', { name: '筛选靶场标识' })).toBeNull();
     expect(screen.getByText('靶场列表')).toBeTruthy();
     expect(screen.getByText('靶场')).toBeTruthy();
+    expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getByText('靶场描述')).toBeTruthy();
     expect(screen.getByText('拓扑概览')).toBeTruthy();
     expect(screen.getByText('状态')).toBeTruthy();
@@ -196,6 +197,7 @@ describe('TemplatesScreen', () => {
     expect(screen.getByText('已发布 1')).toBeTruthy();
     expect(screen.getByText('草稿 1')).toBeTruthy();
     expect(screen.getByText('总节点 5')).toBeTruthy();
+    expect(screen.getAllByText('admin').length).toBeGreaterThan(0);
     expect(screen.queryByText('已发布 v1.0.0')).toBeNull();
 
     const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');

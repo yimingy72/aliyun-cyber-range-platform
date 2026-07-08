@@ -431,7 +431,7 @@ export function RangeInstancesScreen({
         <article className="admin-workbench-panel range-workbench-shell">
           <div className="template-workbench-list-header range-workbench-header">
             <div className="template-workbench-list-header-copy">
-              <h2>靶场实例</h2>
+              <h2>编排实例</h2>
             </div>
           </div>
 
@@ -461,6 +461,7 @@ export function RangeInstancesScreen({
           {listMode === 'history' ? (
             <div className="range-history-column-head">
               <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
               <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
               <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
               <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
@@ -470,6 +471,7 @@ export function RangeInstancesScreen({
           ) : (
             <div className="range-workbench-column-head">
               <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
               <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
               <div className="template-workbench-column-cell"><strong>状态</strong></div>
               <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
@@ -491,6 +493,10 @@ export function RangeInstancesScreen({
                     <article key={instance.id} className="range-history-row">
                       <div className="range-workbench-main">
                         <strong>{getInstanceDisplayName(instance)}</strong>
+                      </div>
+
+                      <div className="template-workbench-column-cell">
+                        <strong>{instance.createdBy?.trim() || 'admin'}</strong>
                       </div>
 
                       <div className="range-workbench-scenario">
@@ -529,6 +535,10 @@ export function RangeInstancesScreen({
                     <article key={instance.id} className="range-workbench-row">
                       <div className="range-workbench-main">
                         <strong>{getInstanceDisplayName(instance)}</strong>
+                      </div>
+
+                      <div className="template-workbench-column-cell">
+                        <strong>{instance.createdBy?.trim() || 'admin'}</strong>
                       </div>
 
                       <div className="range-workbench-scenario">
