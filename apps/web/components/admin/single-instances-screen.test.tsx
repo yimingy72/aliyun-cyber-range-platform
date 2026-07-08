@@ -6,6 +6,7 @@ const {
   fetchSingleInstancesMock,
   fetchProvisionJobsMock,
   fetchPlatformImagesMock,
+  fetchInstanceTypeAvailabilityMock,
   launchSingleInstancesMock,
   deleteRangeInstanceMock,
   triggerSingleInstanceActionMock,
@@ -13,6 +14,7 @@ const {
   fetchSingleInstancesMock: vi.fn(),
   fetchProvisionJobsMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
+  fetchInstanceTypeAvailabilityMock: vi.fn(),
   launchSingleInstancesMock: vi.fn(),
   deleteRangeInstanceMock: vi.fn(),
   triggerSingleInstanceActionMock: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock('../../lib/admin-api', () => ({
   fetchSingleInstances: fetchSingleInstancesMock,
   fetchProvisionJobs: fetchProvisionJobsMock,
   fetchPlatformImages: fetchPlatformImagesMock,
+  fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   launchSingleInstances: launchSingleInstancesMock,
   deleteRangeInstance: deleteRangeInstanceMock,
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
@@ -67,6 +70,7 @@ describe('SingleInstancesScreen', () => {
     fetchSingleInstancesMock.mockReset();
     fetchProvisionJobsMock.mockReset();
     fetchPlatformImagesMock.mockReset();
+    fetchInstanceTypeAvailabilityMock.mockReset();
     launchSingleInstancesMock.mockReset();
     deleteRangeInstanceMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
@@ -100,6 +104,15 @@ describe('SingleInstancesScreen', () => {
     fetchPlatformImagesMock.mockResolvedValue({
       items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
     });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: false,
+      matches: [],
+      warning: '默认可用区暂无 2 核 / 2 G 的精确可售规格',
+    });
     launchSingleInstancesMock.mockResolvedValue({
       instances: [{ id: 'single-1', name: 'web-lab-01', createdBy: 'admin', instanceMode: 'single', status: 'pending_create' }],
     });
@@ -111,7 +124,9 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
+    expect(await screen.findByText('默认可用区暂无 2 核 / 2 G 的精确可售规格')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'web-lab' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('启动实例数量'), { target: { value: '2' } });
@@ -124,6 +139,7 @@ describe('SingleInstancesScreen', () => {
         'dev-admin-token',
         expect.objectContaining({
           name: 'web-lab',
+          platformImageAssetId: 'platform-image-1',
           cpu: 2,
           memory: 2,
           quantity: 2,
@@ -190,6 +206,15 @@ describe('SingleInstancesScreen', () => {
         },
       },
     ]);
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 4, family: 'c6', generation: '6', architecture: 'x86' }],
+      warning: null,
+    });
 
     fetchProvisionJobsMock.mockResolvedValue([
       {
@@ -270,5 +295,20 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
     expect(screen.getByText('2 小时 35 分钟')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
+  });
+
+  it('guards create flow when there are no enabled platform images', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-disabled', imageId: 'm-disabled', displayName: 'Disabled image', enabled: false }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
+    expect(screen.getByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '创建实例' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(fetchInstanceTypeAvailabilityMock).not.toHaveBeenCalled();
   });
 });

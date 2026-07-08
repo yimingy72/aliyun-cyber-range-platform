@@ -1,12 +1,13 @@
 'use client';
 
 import React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
   AdminApiError,
   deleteRangeInstance,
+  fetchInstanceTypeAvailability,
   fetchPlatformImages,
   fetchProvisionJobs,
   fetchSingleInstances,
@@ -14,6 +15,7 @@ import {
   triggerSingleInstanceAction,
 } from '../../lib/admin-api';
 import type {
+  InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
   ProvisionJob,
   RangeInstance,
@@ -31,7 +33,7 @@ type ListMode = 'active' | 'history';
 type CreateDialogState = {
   name: string;
   hostName: string;
-  platformImageAssetId: string;
+  platformImageQuery: string;
   cpu: string;
   memory: string;
   systemDiskSize: string;
@@ -206,11 +208,32 @@ function getActionLabel(action: MenuAction, status: string) {
   return '打包为镜像';
 }
 
+function buildPlatformImageOptionLabel(image: PlatformImageAsset) {
+  return `${image.displayName} (${image.imageId})`;
+}
+
+function findPlatformImageAsset(query: string, images: PlatformImageAsset[]) {
+  const normalized = query.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return (
+    images.find((item) => buildPlatformImageOptionLabel(item) === normalized) ??
+    images.find((item) => item.displayName === normalized) ??
+    images.find((item) => item.imageId === normalized) ??
+    null
+  );
+}
+
 function buildDefaultDialogState(platformImages: PlatformImageAsset[]): CreateDialogState {
+  const defaultImage = platformImages.find((item) => item.enabled) ?? platformImages[0] ?? null;
+
   return {
     name: '',
     hostName: '',
-    platformImageAssetId: platformImages.find((item) => item.enabled)?.id ?? platformImages[0]?.id ?? '',
+    platformImageQuery: defaultImage ? buildPlatformImageOptionLabel(defaultImage) : '',
     cpu: '2',
     memory: '2',
     systemDiskSize: '40',
@@ -254,6 +277,8 @@ export function SingleInstancesScreen({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
+  const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
+  const instanceTypeAvailabilityRequestRef = useRef(0);
 
   useEffect(() => {
     if (!session.isReady || !session.token) {
@@ -277,7 +302,7 @@ export function SingleInstancesScreen({
         setJobs(nextJobs.filter((job) => singleInstances.some((instance) => instance.id === job.rangeInstanceId)));
         setPlatformImages(nextImages.items);
         setCreateForm((current) =>
-          current.platformImageAssetId ? current : buildDefaultDialogState(nextImages.items),
+          current.platformImageQuery ? current : buildDefaultDialogState(nextImages.items.filter((item) => item.enabled)),
         );
       })
       .catch((error: unknown) => {
@@ -338,6 +363,10 @@ export function SingleInstancesScreen({
     () => instances.filter((instance) => instance.status === 'destroyed'),
     [instances],
   );
+  const enabledPlatformImages = useMemo(
+    () => platformImages.filter((item) => item.enabled),
+    [platformImages],
+  );
 
   function updateCreateForm<K extends keyof CreateDialogState>(field: K, value: CreateDialogState[K]) {
     setCreateForm((current) => ({
@@ -347,9 +376,66 @@ export function SingleInstancesScreen({
   }
 
   function openCreateDialog() {
-    setCreateForm(buildDefaultDialogState(platformImages));
+    setCreateForm(buildDefaultDialogState(enabledPlatformImages));
     setIsCreateOpen(true);
   }
+
+  useEffect(() => {
+    if (!isCreateOpen) {
+      setInstanceTypeAvailability(null);
+      return;
+    }
+
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    const cpu = Number(createForm.cpu);
+    const memory = Number(createForm.memory);
+
+    if (!Number.isInteger(cpu) || cpu <= 0 || !Number.isInteger(memory) || memory <= 0) {
+      setInstanceTypeAvailability(null);
+      return;
+    }
+
+    let isActive = true;
+    const requestId = instanceTypeAvailabilityRequestRef.current + 1;
+    instanceTypeAvailabilityRequestRef.current = requestId;
+
+    fetchInstanceTypeAvailability(apiBaseUrl, session.token, cpu, memory)
+      .then((payload) => {
+        if (!isActive || requestId !== instanceTypeAvailabilityRequestRef.current) {
+          return;
+        }
+
+        setInstanceTypeAvailability(payload);
+      })
+      .catch((error) => {
+        if (!isActive || requestId !== instanceTypeAvailabilityRequestRef.current) {
+          return;
+        }
+
+        if (error instanceof AdminApiError && error.status === 401) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+
+        setInstanceTypeAvailability({
+          cpu,
+          memory,
+          regionId: '',
+          zoneId: '',
+          exactAvailable: false,
+          matches: [],
+          warning: error instanceof Error ? `规格校验失败：${error.message}` : '规格校验失败，请稍后重试',
+        });
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [apiBaseUrl, createForm.cpu, createForm.memory, isCreateOpen, router, session, session.isReady, session.token]);
 
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -358,10 +444,17 @@ export function SingleInstancesScreen({
       return;
     }
 
+    const selectedPlatformImage = findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages);
+
+    if (!selectedPlatformImage) {
+      setErrorMessage('请先选择一个可用的平台镜像。');
+      return;
+    }
+
     const payload: SingleInstanceLaunchInput = {
       name: createForm.name.trim(),
       hostName: createForm.hostName.trim() || undefined,
-      platformImageAssetId: createForm.platformImageAssetId,
+      platformImageAssetId: selectedPlatformImage.id,
       cpu: Number(createForm.cpu),
       memory: Number(createForm.memory),
       systemDiskSize: Number(createForm.systemDiskSize),
@@ -461,10 +554,18 @@ export function SingleInstancesScreen({
               </button>
             </div>
 
-            <button type="button" className="template-workbench-primary-action" onClick={openCreateDialog}>
+            <button
+              type="button"
+              className="template-workbench-primary-action"
+              onClick={openCreateDialog}
+              disabled={!enabledPlatformImages.length}
+            >
               创建实例
             </button>
           </div>
+          {!enabledPlatformImages.length ? (
+            <p className="admin-empty">请先前往镜像中心收录或启用至少一个平台镜像。</p>
+          ) : null}
 
           {listMode === 'history' ? (
             <div className="single-instance-history-column-head">
@@ -603,17 +704,19 @@ export function SingleInstancesScreen({
               </label>
               <label>
                 <span>镜像</span>
-                <select
+                <input
                   aria-label="镜像"
-                  value={createForm.platformImageAssetId}
-                  onChange={(event) => updateCreateForm('platformImageAssetId', event.target.value)}
-                >
-                  {platformImages.filter((item) => item.enabled).map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.displayName}
-                    </option>
+                  list="single-instance-platform-images"
+                  value={createForm.platformImageQuery}
+                  onChange={(event) => updateCreateForm('platformImageQuery', event.target.value)}
+                  placeholder="搜索或选择平台镜像"
+                  disabled={!enabledPlatformImages.length}
+                />
+                <datalist id="single-instance-platform-images">
+                  {enabledPlatformImages.map((item) => (
+                    <option key={item.id} value={buildPlatformImageOptionLabel(item)} />
                   ))}
-                </select>
+                </datalist>
               </label>
               <label>
                 <span>CPU</span>
@@ -663,9 +766,17 @@ export function SingleInstancesScreen({
                 <span>备注</span>
                 <textarea aria-label="备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={3} />
               </label>
+              {!enabledPlatformImages.length ? (
+                <p className="admin-empty full-span">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p>
+              ) : null}
+              {instanceTypeAvailability && !instanceTypeAvailability.exactAvailable ? (
+                <p className="admin-empty full-span">
+                  {instanceTypeAvailability.warning ?? `默认可用区暂无 ${createForm.cpu} 核 / ${createForm.memory} G 的精确可售规格。`}
+                </p>
+              ) : null}
             </div>
             <div className="template-workbench-dialog-actions">
-              <button type="submit" disabled={isSubmitting}>
+              <button type="submit" disabled={isSubmitting || !enabledPlatformImages.length}>
                 确认创建
               </button>
               <button type="button" onClick={() => setIsCreateOpen(false)}>
