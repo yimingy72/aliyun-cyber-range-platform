@@ -56,22 +56,28 @@ docker compose up -d --build
 
 如果目标机器不打算重新构建，可以使用本目录 `images/` 下另行准备的导出镜像包。
 
+注意：
+
+- 当前部署标签已经对齐到 `2026-07-08`
+- 本仓库里现存的 `2026-07-03` 离线包没有随这轮代码一起重导出
+- 如果你要部署“当前代码”，请先在当前机器重新导出一份新的离线包，再拷贝到目标机器
+
 1. 进入目录：
 
 ```bash
 cd deploy/current-system
 ```
 
-2. 如果当前目录已有导出镜像包，导入镜像：
+2. 如果你已经重新导出当前版本镜像包，导入镜像：
 
 ```bash
-docker load -i images/current-system-images-2026-07-03.tar.gz
+docker load -i images/current-system-images-2026-07-08.tar.gz
 ```
 
 如需校验包完整性：
 
 ```bash
-shasum -a 256 -c images/current-system-images-2026-07-03.tar.gz.sha256
+shasum -a 256 -c images/current-system-images-2026-07-08.tar.gz.sha256
 ```
 
 3. 复制环境变量模板：
@@ -88,9 +94,9 @@ docker compose -f docker-compose.images.yml up -d
 
 镜像版 compose 默认使用以下标签：
 
-- `cyber-range-api:2026-07-03`
-- `cyber-range-provisioner-worker:2026-07-03`
-- `cyber-range-web:2026-07-03`
+- `cyber-range-api:2026-07-08`
+- `cyber-range-provisioner-worker:2026-07-08`
+- `cyber-range-web:2026-07-08`
 
 ## 部署说明
 

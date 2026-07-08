@@ -1,6 +1,12 @@
 .git
+.DS_Store
+.codegraph
+.next
+.playwright-cli
 .superpowers
 .local
+.tmp
+.worktrees
 node_modules
 apps/web/.next
 apps/api/dist
