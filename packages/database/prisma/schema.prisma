@@ -35,6 +35,11 @@ enum RangeInstanceStatus {
   destroyed
 }
 
+enum RangeInstanceMode {
+  range
+  single
+}
+
 enum ProvisionJobType {
   create
   update
@@ -141,6 +146,7 @@ model PlatformImageAsset {
 model RangeTemplate {
   id                       String          @id @default(cuid())
   name                     String
+  createdBy                String          @default("admin")
   description              String?
   slug                     String
   version                  String
@@ -194,7 +200,7 @@ model RangeTemplateVersion {
 model RangeInstance {
   id                           String              @id @default(cuid())
   name                         String
-  createdBy                    String?
+  createdBy                    String?             @default("admin")
   templateId                   String?
   sourceTemplateVersionId      String?
   templateNameSnapshot         String?
@@ -211,6 +217,8 @@ model RangeInstance {
   draftUpdatedBy               String?
   draftUpdatedAt               DateTime?
   status                       RangeInstanceStatus @default(draft)
+  instanceMode                 RangeInstanceMode   @default(range)
+  singleInstanceConfig         Json?
   allocatedCidr                String?
   cloudProvider                CloudProvider       @default(alibaba_cloud)
   accessEntry                  Json?
@@ -227,6 +235,23 @@ model RangeInstance {
   @@index([templateId])
   @@index([sourceTemplateVersionId])
   @@index([status])
+}
+
+model SingleInstanceNetworkProfile {
+  id                String        @id @default(cuid())
+  provider          CloudProvider @default(alibaba_cloud)
+  regionId          String
+  zoneId            String
+  vpcId             String
+  vpcCidr           String
+  vswitchIds        Json
+  vswitchCidrs      Json
+  securityGroupId   String
+  securityGroupName String
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@unique([provider, regionId, zoneId])
 }
 
 model ProvisionJob {

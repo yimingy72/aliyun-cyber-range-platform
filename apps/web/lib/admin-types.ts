@@ -4,6 +4,7 @@ import type { ScenarioTemplateSpec } from './scenario-template-spec';
 export type RangeTemplate = {
   id: string;
   name?: string | null;
+  createdBy?: string | null;
   description?: string | null;
   slug: string;
   version: string;
@@ -152,6 +153,21 @@ export type RangeRuntimeCredential = {
 
 export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
 
+export type SingleInstanceConfig = {
+  baseName: string;
+  quantityIndex: number;
+  hostKey: string;
+  hostName: string;
+  platformImageAssetId: string;
+  imageId: string;
+  imageDisplayName: string;
+  cpu: number;
+  memory: number;
+  systemDiskSize: number;
+  remark?: string | null;
+  assignedVswitchId?: string | null;
+};
+
 export type RangeResourceSummary = {
   mode?: string | null;
   modulePath?: string | null;
@@ -190,6 +206,8 @@ export type RangeInstance = {
   id: string;
   name?: string | null;
   createdBy?: string | null;
+  instanceMode?: 'range' | 'single';
+  singleInstanceConfig?: SingleInstanceConfig | null;
   defaultInstancePassword?: string | null;
   nodeStatuses?: Record<string, string> | null;
   status: string;

@@ -3,6 +3,7 @@ export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 export type CloudProvider = 'alibaba_cloud';
 export type IacType = 'opentofu' | 'terraform';
 export type RangeTemplateVersionStatus = 'draft' | 'published' | 'archived';
+export type RangeInstanceMode = 'range' | 'single';
 export type RangeInstanceStatus =
   | 'draft'
   | 'pending_create'
@@ -157,9 +158,25 @@ export type RangeRuntimeCredential = {
 
 export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
 
+export type SingleInstanceConfig = {
+  baseName: string;
+  quantityIndex: number;
+  hostKey: string;
+  hostName: string;
+  platformImageAssetId: string;
+  imageId: string;
+  imageDisplayName: string;
+  cpu: number;
+  memory: number;
+  systemDiskSize: number;
+  remark?: string | null;
+  assignedVswitchId?: string | null;
+};
+
 export type RangeTemplateRecord = {
   id: string;
   name: string;
+  createdBy: string;
   description: string | null;
   slug: string;
   version: string;
@@ -187,6 +204,8 @@ export type RangeInstanceRecord = {
   id: string;
   name: string;
   createdBy: string | null;
+  instanceMode: RangeInstanceMode;
+  singleInstanceConfig: SingleInstanceConfig | null;
   templateId: string | null;
   sourceTemplateVersionId: string | null;
   templateNameSnapshot: string | null;
@@ -293,6 +312,33 @@ export type PlatformImageAssetRecord = {
   updatedAt: Date;
 };
 
+export type SingleInstanceNetworkProfileRecord = {
+  id: string;
+  provider: CloudProvider;
+  regionId: string;
+  zoneId: string;
+  vpcId: string;
+  vpcCidr: string;
+  vswitchIds: string[];
+  vswitchCidrs: string[];
+  securityGroupId: string;
+  securityGroupName: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type UpsertSingleInstanceNetworkProfileInput = {
+  provider: CloudProvider;
+  regionId: string;
+  zoneId: string;
+  vpcId: string;
+  vpcCidr: string;
+  vswitchIds: string[];
+  vswitchCidrs: string[];
+  securityGroupId: string;
+  securityGroupName: string;
+};
+
 export type ListImageSnapshotsFilter = Partial<{
   provider: CloudProvider;
   accountUid: string | null;
@@ -362,6 +408,7 @@ export type CollectPlatformImageAssetInput = {
 
 export type CreateRangeTemplateInput = {
   name: string;
+  createdBy?: string;
   description?: string;
   slug: string;
   version: string;
@@ -383,7 +430,7 @@ export type UpdateRangeTemplateInput = Partial<CreateRangeTemplateInput>;
 export type CreateRangeInstanceInput = {
   name: string;
   createdBy?: string;
-  templateId: string;
+  templateId?: string | null;
   sourceTemplateVersionId?: string | null;
   runtimeTopologyGraph?: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
@@ -395,6 +442,8 @@ export type CreateRangeInstanceInput = {
   draftUpdatedBy?: string | null;
   draftUpdatedAt?: Date | null;
   status?: RangeInstanceStatus;
+  instanceMode?: RangeInstanceMode;
+  singleInstanceConfig?: SingleInstanceConfig | null;
   allocatedCidr?: string;
   accessEntry?: RangeAccessEntry | null;
   resourceSummary?: RangeResourceSummary | null;
@@ -406,6 +455,8 @@ export type CreateRangeInstanceInput = {
 export type UpdateRangeInstanceInput = Partial<{
   name: string;
   createdBy: string | null;
+  instanceMode: RangeInstanceMode;
+  singleInstanceConfig: SingleInstanceConfig | null;
   sourceTemplateVersionId: string | null;
   runtimeTopologyGraph: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec: Record<string, unknown> | null;
@@ -490,10 +541,19 @@ export interface AdminRepository {
   reconcileImageSnapshots(input: ReconcileImageSnapshotsInput): Promise<void>;
   listImageCatalogItems(filter?: ListImageCatalogItemsFilter): Promise<ImageCatalogItemRecord[]>;
   collectImageCatalogItem(input: CollectImageCatalogItemInput): Promise<ImageCatalogItemRecord>;
+  getPlatformImageAssetById(id: string): Promise<PlatformImageAssetRecord | null>;
   listPlatformImageAssets(filter?: ListPlatformImageAssetsFilter): Promise<PlatformImageAssetRecord[]>;
   collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord>;
   updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord>;
   setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord>;
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
+  getSingleInstanceNetworkProfile(input: {
+    provider: CloudProvider;
+    regionId: string;
+    zoneId: string;
+  }): Promise<SingleInstanceNetworkProfileRecord | null>;
+  upsertSingleInstanceNetworkProfile(
+    input: UpsertSingleInstanceNetworkProfileInput,
+  ): Promise<SingleInstanceNetworkProfileRecord>;
 }

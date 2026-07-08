@@ -18,7 +18,9 @@ import {
   RangeInstanceRecord,
   RangeTemplateRecord,
   RangeTemplateVersionRecord,
+  SingleInstanceNetworkProfileRecord,
   UpsertImageSnapshotsInput,
+  UpsertSingleInstanceNetworkProfileInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
   UpdateRangeInstanceInput,
@@ -45,6 +47,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const imageSnapshots: CloudImageSnapshotRecord[] = [];
   const imageCatalogItems: ImageCatalogItemRecord[] = [];
   const platformImageAssets: PlatformImageAssetRecord[] = [];
+  const singleInstanceNetworkProfiles: SingleInstanceNetworkProfileRecord[] = [];
 
   let idCounter = 1;
 
@@ -133,6 +136,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const record: RangeTemplateRecord = {
         id: nextId(),
         name: input.name,
+        createdBy: input.createdBy ?? 'admin',
         description: input.description ?? null,
         slug: input.slug,
         version: input.version,
@@ -342,8 +346,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       const record: RangeInstanceRecord = {
         id: nextId(),
         name: input.name,
-        createdBy: input.createdBy ?? null,
-        templateId: input.templateId,
+        createdBy: input.createdBy ?? 'admin',
+        instanceMode: input.instanceMode ?? 'range',
+        singleInstanceConfig: input.singleInstanceConfig ?? null,
+        templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
         templateNameSnapshot: null,
         templateSlugSnapshot: null,
@@ -385,6 +391,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       Object.assign(record, {
         name: input.name ?? record.name,
         createdBy: input.createdBy !== undefined ? input.createdBy : record.createdBy,
+        instanceMode: input.instanceMode ?? record.instanceMode,
+        singleInstanceConfig:
+          input.singleInstanceConfig !== undefined ? input.singleInstanceConfig : record.singleInstanceConfig,
         sourceTemplateVersionId:
           input.sourceTemplateVersionId !== undefined ? input.sourceTemplateVersionId : record.sourceTemplateVersionId,
         runtimeTopologyGraph:
@@ -654,6 +663,11 @@ export function createMemoryAdminRepository(): AdminRepository {
           .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()),
       );
     },
+    async getPlatformImageAssetById(id: string) {
+      const record = platformImageAssets.find((asset) => asset.id === id);
+
+      return record ? clone(record) : null;
+    },
     async collectPlatformImageAsset(input: CollectPlatformImageAssetInput) {
       const snapshot = imageSnapshots.find((record) => record.id === input.snapshotId);
 
@@ -741,6 +755,57 @@ export function createMemoryAdminRepository(): AdminRepository {
           platformImageAssets.splice(index, 1);
         }
       }
+    },
+    async getSingleInstanceNetworkProfile(input) {
+      const record = singleInstanceNetworkProfiles.find(
+        (profile) =>
+          profile.provider === input.provider &&
+          profile.regionId === input.regionId &&
+          profile.zoneId === input.zoneId,
+      );
+
+      return record ? clone(record) : null;
+    },
+    async upsertSingleInstanceNetworkProfile(input: UpsertSingleInstanceNetworkProfileInput) {
+      const existing = singleInstanceNetworkProfiles.find(
+        (profile) =>
+          profile.provider === input.provider &&
+          profile.regionId === input.regionId &&
+          profile.zoneId === input.zoneId,
+      );
+
+      if (existing) {
+        Object.assign(existing, {
+          vpcId: input.vpcId,
+          vpcCidr: input.vpcCidr,
+          vswitchIds: input.vswitchIds,
+          vswitchCidrs: input.vswitchCidrs,
+          securityGroupId: input.securityGroupId,
+          securityGroupName: input.securityGroupName,
+          updatedAt: now(),
+        });
+
+        return clone(existing);
+      }
+
+      const record: SingleInstanceNetworkProfileRecord = {
+        id: nextId(),
+        provider: input.provider,
+        regionId: input.regionId,
+        zoneId: input.zoneId,
+        vpcId: input.vpcId,
+        vpcCidr: input.vpcCidr,
+        vswitchIds: input.vswitchIds,
+        vswitchCidrs: input.vswitchCidrs,
+        securityGroupId: input.securityGroupId,
+        securityGroupName: input.securityGroupName,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+
+      singleInstanceNetworkProfiles.unshift(record);
+
+      return clone(record);
     },
   };
 }

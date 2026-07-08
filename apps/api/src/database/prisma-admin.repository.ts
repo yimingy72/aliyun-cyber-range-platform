@@ -80,6 +80,7 @@ export class PrismaAdminRepository implements AdminRepository {
       const template = await tx.rangeTemplate.create({
         data: {
           name: input.name,
+          createdBy: input.createdBy ?? 'admin',
           description: input.description ?? null,
           slug: input.slug,
           version: input.version,
@@ -427,8 +428,8 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.rangeInstance.create({
       data: {
         name: input.name,
-        createdBy: input.createdBy ?? null,
-        templateId: input.templateId,
+        createdBy: input.createdBy ?? 'admin',
+        templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
         runtimeTopologyGraph: (input.runtimeTopologyGraph ?? null) as
           | Prisma.InputJsonValue
@@ -454,6 +455,10 @@ export class PrismaAdminRepository implements AdminRepository {
         draftUpdatedBy: input.draftUpdatedBy ?? null,
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
+        instanceMode: input.instanceMode ?? 'range',
+        singleInstanceConfig: (input.singleInstanceConfig ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
         allocatedCidr: input.allocatedCidr ?? null,
         accessEntry: (input.accessEntry ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
         resourceSummary: (input.resourceSummary ?? null) as
@@ -482,6 +487,14 @@ export class PrismaAdminRepository implements AdminRepository {
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
+        ...(input.instanceMode !== undefined ? { instanceMode: input.instanceMode } : {}),
+        ...(input.singleInstanceConfig !== undefined
+          ? {
+              singleInstanceConfig: input.singleInstanceConfig as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
         ...(input.sourceTemplateVersionId !== undefined
           ? { sourceTemplateVersionId: input.sourceTemplateVersionId }
           : {}),
@@ -809,6 +822,14 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<PlatformImageAssetRecord[]>;
   }
 
+  async getPlatformImageAssetById(id: string): Promise<PlatformImageAssetRecord | null> {
+    return this.prisma.platformImageAsset.findUnique({
+      where: {
+        id,
+      },
+    }) as Promise<PlatformImageAssetRecord | null>;
+  }
+
   async collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord> {
     const snapshot = await this.prisma.cloudImageSnapshot.findUniqueOrThrow({
       where: {
@@ -888,5 +909,48 @@ export class PrismaAdminRepository implements AdminRepository {
         sourceSnapshotId: snapshotId,
       },
     });
+  }
+
+  async getSingleInstanceNetworkProfile(input: {
+    provider: 'alibaba_cloud';
+    regionId: string;
+    zoneId: string;
+  }) {
+    return this.prisma.singleInstanceNetworkProfile.findUnique({
+      where: {
+        provider_regionId_zoneId: input,
+      },
+    }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord | null>;
+  }
+
+  async upsertSingleInstanceNetworkProfile(input: import('../admin/admin.repository').UpsertSingleInstanceNetworkProfileInput) {
+    return this.prisma.singleInstanceNetworkProfile.upsert({
+      where: {
+        provider_regionId_zoneId: {
+          provider: input.provider,
+          regionId: input.regionId,
+          zoneId: input.zoneId,
+        },
+      },
+      update: {
+        vpcId: input.vpcId,
+        vpcCidr: input.vpcCidr,
+        vswitchIds: input.vswitchIds as Prisma.InputJsonValue,
+        vswitchCidrs: input.vswitchCidrs as Prisma.InputJsonValue,
+        securityGroupId: input.securityGroupId,
+        securityGroupName: input.securityGroupName,
+      },
+      create: {
+        provider: input.provider,
+        regionId: input.regionId,
+        zoneId: input.zoneId,
+        vpcId: input.vpcId,
+        vpcCidr: input.vpcCidr,
+        vswitchIds: input.vswitchIds as Prisma.InputJsonValue,
+        vswitchCidrs: input.vswitchCidrs as Prisma.InputJsonValue,
+        securityGroupId: input.securityGroupId,
+        securityGroupName: input.securityGroupName,
+      },
+    }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord>;
   }
 }
