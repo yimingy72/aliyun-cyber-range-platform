@@ -20,6 +20,7 @@ import { resolveFixedInstanceType } from './instance-type-catalog';
 import { AlibabaCloudOpenTofuRenderer } from './renderers/alibaba-cloud-opentofu-renderer';
 import { buildRootWrapperFiles } from './root-wrapper-template';
 import {
+  type ProvisioningAttemptedZoneSummary,
   type RangeProvisionCreateInput,
   type RangeProvisionCreateResult,
   type RangeProvisionDestroyInput,
@@ -90,6 +91,13 @@ type OpenTofuOutputs = {
     eip_allocation_ids?: Record<string, string>;
     bootstrap_host_keys?: string[];
     runtime_selections?: Record<string, unknown>;
+    selected_zone_id?: string;
+    attempted_zones?: Array<{
+      zone_id?: string;
+      can_create_all_hosts?: boolean;
+      estimated_total_price?: number | null;
+      reason?: string;
+    }>;
     resolved_instance_type?: string;
     resolved_image_id?: string;
   }>;
@@ -390,6 +398,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         eipAllocationIds: resourceSummary?.eip_allocation_ids ?? null,
         bootstrapHostKeys: resourceSummary?.bootstrap_host_keys ?? null,
         runtimeSelections: resourceSummary?.runtime_selections ?? null,
+        selectedZoneId: resourceSummary?.selected_zone_id ?? null,
+        attemptedZones: resourceSummary?.attempted_zones?.map((zone) => ({
+          zoneId: zone.zone_id ?? '',
+          canCreateAllHosts: zone.can_create_all_hosts ?? false,
+          estimatedTotalPrice: zone.estimated_total_price ?? null,
+          ...(zone.reason ? { reason: zone.reason } : {}),
+        })) ?? null,
         resolvedInstanceType: resourceSummary?.resolved_instance_type ?? null,
         resolvedImageId: resourceSummary?.resolved_image_id ?? null,
         topologySpec: plan.topologySummary,
@@ -507,6 +522,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       input.compiledSpec,
     );
     let zoneId = runtimeConfig.defaultZoneId;
+    let attemptedZones: ProvisioningAttemptedZoneSummary[] = [];
     let hostInstanceTypes: Record<string, string>;
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
@@ -531,6 +547,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         },
       });
       zoneId = zoneSelection.selectedZoneId;
+      attemptedZones = zoneSelection.attemptedZones;
       hostInstanceTypes = zoneSelection.hostInstanceTypes;
     } else {
       hostInstanceTypes = await this.resolveHostInstanceTypes({
@@ -568,6 +585,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       plan,
       rangeInstanceId: input.rangeInstanceId,
       zoneId,
+      attemptedZones,
       instanceType,
       hostInstanceTypes,
       imageId,

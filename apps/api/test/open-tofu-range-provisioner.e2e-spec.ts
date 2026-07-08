@@ -673,6 +673,8 @@ describe('OpenTofuRangeProvisioner', () => {
         resolvedImageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
         resolvedInstanceType: 'ecs.u1-c1m2.large',
         runtimeSelections: null,
+        selectedZoneId: null,
+        attemptedZones: null,
         secondaryNetworkInterfaceIds: null,
         snatEntryIds: {
           'snat-office': 'snat-001',
@@ -2027,7 +2029,7 @@ describe('OpenTofuRangeProvisioner', () => {
         },
       });
 
-      await provisioner.create({
+      const result = await provisioner.create({
         rangeInstanceId: 'range-instance-legacy-fetch',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
@@ -2191,7 +2193,7 @@ describe('OpenTofuRangeProvisioner', () => {
         },
       });
 
-      await provisioner.create({
+      const result = await provisioner.create({
         rangeInstanceId: 'range-instance-legacy-singleton',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
@@ -2716,6 +2718,20 @@ describe('OpenTofuRangeProvisioner', () => {
         resource_summary: {
           value: {
             vpc_id: 'vpc-zone-fallback',
+            selected_zone_id: 'cn-hangzhou-i',
+            attempted_zones: [
+              {
+                zone_id: 'cn-hangzhou-g',
+                can_create_all_hosts: false,
+                estimated_total_price: null,
+                reason: 'Host ecs-2 has no saleable X86 on-demand candidate',
+              },
+              {
+                zone_id: 'cn-hangzhou-i',
+                can_create_all_hosts: true,
+                estimated_total_price: 0.8,
+              },
+            ],
           },
         },
       }),
@@ -2742,7 +2758,7 @@ describe('OpenTofuRangeProvisioner', () => {
         },
       });
 
-      await provisioner.create({
+      const result = await provisioner.create({
         rangeInstanceId: 'range-instance-zone-fallback',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
@@ -2829,15 +2845,55 @@ describe('OpenTofuRangeProvisioner', () => {
         'range-instance-zone-fallback',
         'range.auto.tfvars.json',
       );
+      const generatedVariablesTfPath = path.join(
+        workspacesRootDir,
+        'range-instance-zone-fallback',
+        'variables.tf',
+      );
+      const moduleVariablesTfPath = path.resolve(
+        __dirname,
+        '../../../infra/opentofu/modules/alicloud-enterprise-range/variables.tf',
+      );
       const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+      const generatedVariablesTf = await fs.readFile(generatedVariablesTfPath, 'utf8');
+      const moduleVariablesTf = await fs.readFile(moduleVariablesTfPath, 'utf8');
 
       expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
+      expect(renderedVariables.runtime_selections.attempted_zones).toEqual([
+        {
+          zone_id: 'cn-hangzhou-g',
+          can_create_all_hosts: false,
+          estimated_total_price: null,
+          reason: 'Host ecs-2 has no saleable X86 on-demand candidate',
+        },
+        {
+          zone_id: 'cn-hangzhou-i',
+          can_create_all_hosts: true,
+          estimated_total_price: 0.8,
+        },
+      ]);
+      expect(generatedVariablesTf).toContain('attempted_zones = optional(list(object({');
+      expect(moduleVariablesTf).toContain('attempted_zones = optional(list(object({');
       expect(renderedVariables.hosts).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ key: 'ecs-1', instance_type: 'ecs.e-c1m1.large' }),
           expect.objectContaining({ key: 'ecs-2', instance_type: 'ecs.c7.large' }),
         ]),
       );
+      expect(result.resourceSummary.selectedZoneId).toBe('cn-hangzhou-i');
+      expect(result.resourceSummary.attemptedZones).toEqual([
+        {
+          zoneId: 'cn-hangzhou-g',
+          canCreateAllHosts: false,
+          estimatedTotalPrice: null,
+          reason: 'Host ecs-2 has no saleable X86 on-demand candidate',
+        },
+        {
+          zoneId: 'cn-hangzhou-i',
+          canCreateAllHosts: true,
+          estimatedTotalPrice: 0.8,
+        },
+      ]);
       expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('Action=DescribeZones'))).toBe(true);
       expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes('Action=DescribePrice'))).toHaveLength(2);
     } finally {

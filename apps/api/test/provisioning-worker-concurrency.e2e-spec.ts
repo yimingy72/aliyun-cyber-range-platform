@@ -15,6 +15,363 @@ function createSystemConfigServiceStub() {
 }
 
 describe('ProvisioningWorkerService concurrency', () => {
+  it('marks a failed destroy retry back to destroy_failed instead of create_failed', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Destroy Retry Failure Template',
+      slug: 'destroy-retry-failure-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.80.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.80.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.80.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      name: '并发实例 Destroy Retry',
+      templateId: template.id,
+      status: 'pending_destroy',
+      allocatedCidr: '10.80.0.0/16',
+      resourceSummary: {
+        mode: 'opentofu',
+        workspaceDir: '/tmp/destroy-retry-workspace',
+      },
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'retry',
+      triggeredBy: 'admin',
+      retryCount: 1,
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn(),
+      destroy: jest.fn().mockRejectedValue(new Error('simulated destroy failure')),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+
+    await worker.process(job.id);
+
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        status: 'destroy_failed',
+        errorSummary: 'simulated destroy failure',
+      }),
+    );
+  });
+
+  it('marks a destroy job as destroy_failed when post-destroy cloud verification still finds resources', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Destroy Verification Template',
+      slug: 'destroy-verification-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.81.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.81.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.81.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      name: '并发实例 Destroy Verify',
+      templateId: template.id,
+      status: 'running',
+      allocatedCidr: '10.81.0.0/16',
+      resourceSummary: {
+        mode: 'opentofu',
+        vpcId: 'vpc-residual',
+        hostIds: {
+          'ecs-1': 'i-residual',
+        },
+        subnetIds: {
+          dmz: 'vsw-residual',
+        },
+      },
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'destroy',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      status: 'pending_destroy',
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn(),
+      destroy: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+    const verifySpy = jest
+      .spyOn(worker as any, 'verifyDestroyCompletion')
+      .mockRejectedValue(new Error('Residual cloud resources still exist after destroy.'));
+
+    await worker.process(job.id);
+
+    expect(provisioner.destroy).toHaveBeenCalledTimes(1);
+    expect(verifySpy).toHaveBeenCalledTimes(1);
+    await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: job.id,
+        status: 'failed',
+        errorSummary: 'Residual cloud resources still exist after destroy.',
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        status: 'destroy_failed',
+        errorSummary: 'Residual cloud resources still exist after destroy.',
+      }),
+    );
+  });
+
+  it('treats a missing VPC as sufficient evidence that linked vswitches are already gone during destroy verification', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Destroy Verification Missing VPC Template',
+      slug: 'destroy-verification-missing-vpc-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.82.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.82.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.82.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      name: '并发实例 Destroy Missing VPC',
+      templateId: template.id,
+      status: 'running',
+      allocatedCidr: '10.82.0.0/16',
+      resourceSummary: {
+        mode: 'opentofu',
+        vpcId: 'vpc-gone',
+        hostIds: {
+          'ecs-1': 'i-gone',
+        },
+        subnetIds: {
+          dmz: 'vsw-gone',
+        },
+      },
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'destroy',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      status: 'pending_destroy',
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn(),
+      destroy: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+    const checkVpcExistsSpy = jest.spyOn(worker as any, 'checkVpcExists').mockResolvedValue(false);
+    const checkVSwitchExistsSpy = jest.spyOn(worker as any, 'checkVSwitchExists').mockResolvedValue(true);
+    jest.spyOn(worker as any, 'findExistingInstanceIds').mockResolvedValue([]);
+    jest.spyOn(worker as any, 'checkNetworkInterfaceExists').mockResolvedValue(false);
+    jest.spyOn(worker as any, 'checkNatGatewayExists').mockResolvedValue(false);
+    jest.spyOn(worker as any, 'checkEipExists').mockResolvedValue(false);
+
+    await worker.process(job.id);
+
+    expect(provisioner.destroy).toHaveBeenCalledTimes(1);
+    expect(checkVpcExistsSpy).toHaveBeenCalledTimes(1);
+    expect(checkVSwitchExistsSpy).not.toHaveBeenCalled();
+    await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: job.id,
+        status: 'succeeded',
+        errorSummary: null,
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        status: 'destroyed',
+        errorSummary: null,
+        accessEntry: null,
+        resourceSummary: null,
+      }),
+    );
+  });
+
+  it('passes runtimeCredentials into create provisioning input', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Runtime Credentials Create Template',
+      slug: 'runtime-credentials-create-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.78.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.78.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.78.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      name: '并发实例 Runtime Create',
+      templateId: template.id,
+      status: 'pending_create',
+      allocatedCidr: '10.78.0.0/16',
+      runtimeCredentials: {
+        'ecs-1': {
+          username: 'root',
+          password: 'PasswordOne123!',
+        },
+      },
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn().mockResolvedValue({
+        accessEntry: {
+          hostRole: 'dmz',
+          publicIp: '47.78.0.10',
+          privateIp: '10.78.10.10',
+          ssh: 'ssh root@47.78.0.10',
+        },
+        resourceSummary: {
+          mode: 'opentofu',
+          vpcId: 'vpc-runtime-credentials-create',
+        },
+      }),
+      destroy: jest.fn(),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+
+    await worker.process(job.id);
+
+    expect(provisioner.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeCredentials: {
+          'ecs-1': {
+            username: 'root',
+            password: 'PasswordOne123!',
+          },
+        },
+      }),
+    );
+  });
+
   it('claims a pending job only once when the same job is processed concurrently', async () => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({
@@ -521,6 +878,148 @@ describe('ProvisioningWorkerService concurrency', () => {
         compiledProvisionSpec: expect.objectContaining({
           topology: expect.objectContaining({ vpcCidr: '10.56.0.0/16', entryHostKey: 'compiled-entry' }),
         }),
+      }),
+    );
+  });
+
+  it('passes runtimeCredentials into update provisioning input', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Runtime Credentials Update Template',
+      slug: 'runtime-credentials-update-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.79.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.79.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.79.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: { vpcCidr: '10.79.0.0/16', entryHostKey: 'ecs-1' },
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', cidr: '10.79.10.0/24', purpose: 'public-entry', isPublicEntry: true },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            role: 'entry',
+            zoneKey: 'dmz',
+            primaryPrivateIp: '10.79.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.79.10.10' }],
+          },
+        ],
+        natGateways: [],
+        eips: [],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+      } as Record<string, unknown>,
+    });
+    await repository.publishRangeTemplate(template.id);
+
+    const instance = await repository.createRangeInstance({
+      name: '并发实例 Runtime Update',
+      templateId: template.id,
+      status: 'running',
+      allocatedCidr: '10.79.0.0/16',
+      runtimeCredentials: {
+        'ecs-1': {
+          username: 'root',
+          password: 'PasswordUpdate123!',
+        },
+      },
+      draftCompiledProvisionSpec: {
+        schemaVersion: '1.0.0',
+        topology: { vpcCidr: '10.79.0.0/16', entryHostKey: 'ecs-1' },
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', cidr: '10.79.10.0/24', purpose: 'public-entry', isPublicEntry: true },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            role: 'entry',
+            zoneKey: 'dmz',
+            primaryPrivateIp: '10.79.10.10',
+            exposePublic: true,
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.79.10.10' }],
+          },
+        ],
+        natGateways: [],
+        eips: [],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
+        runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+      } as Record<string, unknown>,
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'update',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn().mockResolvedValue({
+        accessEntry: {
+          hostRole: 'dmz',
+          publicIp: '47.79.0.10',
+          privateIp: '10.79.10.10',
+          ssh: 'ssh root@47.79.0.10',
+        },
+        resourceSummary: {
+          mode: 'opentofu',
+          vpcId: 'vpc-runtime-credentials-update',
+        },
+      }),
+      destroy: jest.fn(),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+
+    await worker.process(job.id);
+
+    expect(provisioner.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeCredentials: {
+          'ecs-1': {
+            username: 'root',
+            password: 'PasswordUpdate123!',
+          },
+        },
       }),
     );
   });

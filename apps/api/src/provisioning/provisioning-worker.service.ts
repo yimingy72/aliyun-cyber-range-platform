@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
@@ -5,9 +7,11 @@ import {
   AdminRepository,
   ProvisionJobRecord,
   RangeInstanceRecord,
+  RangeResourceSummary,
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
+import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SystemConfigService } from '../admin/system-config.service';
 import {
   RANGE_PROVISIONER,
@@ -17,6 +21,12 @@ import {
 } from './provisioning.types';
 
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
+const ALICLOUD_ECS_API_VERSION = '2014-05-26';
+const ALICLOUD_VPC_API_VERSION = '2016-04-28';
+const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
+const ALICLOUD_SIGNATURE_VERSION = '1.0';
+const DESTROY_VERIFICATION_ATTEMPTS = 12;
+const DESTROY_VERIFICATION_INTERVAL_MS = 5_000;
 
 @Injectable()
 export class ProvisioningWorkerService {
@@ -152,6 +162,7 @@ export class ProvisioningWorkerService {
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
+          runtimeCredentials: instance.runtimeCredentials ?? undefined,
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
@@ -178,6 +189,7 @@ export class ProvisioningWorkerService {
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
+          runtimeCredentials: instance.runtimeCredentials ?? undefined,
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
@@ -215,6 +227,10 @@ export class ProvisioningWorkerService {
           compiledProvisionSpec,
           compiledSpec,
           reportStep,
+        });
+
+        await this.runWorkerStep(reportStep, 'verify_destroy', async () => {
+          await this.verifyDestroyCompletion(instance, runtimeConfig);
         });
 
         await this.adminRepository.updateRangeInstance(instance.id, {
@@ -359,6 +375,336 @@ export class ProvisioningWorkerService {
     return Array.isArray(value) ? value : [];
   }
 
+  private async verifyDestroyCompletion(
+    instance: RangeInstanceRecord,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+      defaultRegion: string;
+    },
+  ) {
+    for (let attempt = 0; attempt < DESTROY_VERIFICATION_ATTEMPTS; attempt += 1) {
+      const residualResources = await this.findResidualCloudResources(
+        instance.resourceSummary,
+        runtimeConfig,
+      );
+
+      if (residualResources.length === 0) {
+        return;
+      }
+
+      if (attempt < DESTROY_VERIFICATION_ATTEMPTS - 1) {
+        await sleep(DESTROY_VERIFICATION_INTERVAL_MS);
+        continue;
+      }
+
+      throw new Error(
+        `Residual cloud resources still exist after destroy: ${residualResources.join(', ')}`,
+      );
+    }
+  }
+
+  private async findResidualCloudResources(
+    resourceSummary: RangeResourceSummary | null,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+      defaultRegion: string;
+    },
+  ) {
+    if (!resourceSummary) {
+      return [];
+    }
+
+    const regionId = runtimeConfig.defaultRegion;
+    const residualResources: string[] = [];
+
+    const vpcId = resourceSummary.vpcId?.trim();
+    const vpcExists = vpcId
+      ? await this.checkVpcExists(vpcId, runtimeConfig, regionId)
+      : false;
+
+    if (vpcExists && vpcId) {
+      residualResources.push(`vpc:${vpcId}`);
+    }
+
+    for (const subnetId of Object.values(resourceSummary.subnetIds ?? {})) {
+      if (subnetId && vpcExists && (await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, vpcId ?? undefined))) {
+        residualResources.push(`vswitch:${subnetId}`);
+      }
+    }
+
+    const existingInstanceIds = await this.findExistingInstanceIds(
+      Object.values(resourceSummary.hostIds ?? {}).filter(Boolean),
+      runtimeConfig,
+      regionId,
+    );
+    residualResources.push(
+      ...existingInstanceIds.map((instanceId) => `instance:${instanceId}`),
+    );
+
+    for (const networkInterfaceId of Object.values(
+      resourceSummary.secondaryNetworkInterfaceIds ?? {},
+    )) {
+      if (
+        networkInterfaceId &&
+        (await this.checkNetworkInterfaceExists(
+          networkInterfaceId,
+          runtimeConfig,
+          regionId,
+        ))
+      ) {
+        residualResources.push(`eni:${networkInterfaceId}`);
+      }
+    }
+
+    for (const natGatewayId of Object.values(resourceSummary.natGatewayIds ?? {})) {
+      if (natGatewayId && (await this.checkNatGatewayExists(natGatewayId, runtimeConfig, regionId))) {
+        residualResources.push(`nat:${natGatewayId}`);
+      }
+    }
+
+    const eipIds = [
+      ...(resourceSummary.eipAllocationId ? [resourceSummary.eipAllocationId] : []),
+      ...Object.values(resourceSummary.eipAllocationIds ?? {}).filter(Boolean),
+    ];
+    for (const allocationId of eipIds) {
+      if (await this.checkEipExists(allocationId, runtimeConfig, regionId)) {
+        residualResources.push(`eip:${allocationId}`);
+      }
+    }
+
+    return residualResources;
+  }
+
+  private async findExistingInstanceIds(
+    instanceIds: string[],
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+    },
+    regionId: string,
+  ) {
+    if (instanceIds.length === 0) {
+      return [];
+    }
+
+    const payload = await this.performAliyunRpcRequest<{
+      Instances?: {
+        Instance?: Array<{ InstanceId?: string }> | { InstanceId?: string };
+      };
+    }>({
+      endpoint: `ecs.${regionId}.aliyuncs.com`,
+      version: ALICLOUD_ECS_API_VERSION,
+      action: 'DescribeInstances',
+      accessKeyId: runtimeConfig.accessKeyId,
+      accessKeySecret: runtimeConfig.accessKeySecret,
+      parameters: {
+        RegionId: regionId,
+        InstanceIds: JSON.stringify(instanceIds),
+      },
+    });
+
+    const items = payload.Instances?.Instance;
+    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+
+    return normalized
+      .map((item) => item?.InstanceId)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+  }
+
+  private async checkVpcExists(
+    vpcId: string,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+    },
+    regionId: string,
+  ) {
+    const payload = await this.performAliyunRpcRequest<{
+      Vpcs?: {
+        Vpc?: Array<{ VpcId?: string }> | { VpcId?: string };
+      };
+    }>({
+      endpoint: `vpc.${regionId}.aliyuncs.com`,
+      version: ALICLOUD_VPC_API_VERSION,
+      action: 'DescribeVpcs',
+      accessKeyId: runtimeConfig.accessKeyId,
+      accessKeySecret: runtimeConfig.accessKeySecret,
+      parameters: {
+        RegionId: regionId,
+        VpcId: vpcId,
+      },
+    });
+
+    const items = payload.Vpcs?.Vpc;
+    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+
+    return normalized.some((item) => item?.VpcId === vpcId);
+  }
+
+  private async checkVSwitchExists(
+    vSwitchId: string,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+    },
+    regionId: string,
+    vpcId?: string,
+  ) {
+    const payload = await this.performAliyunRpcRequest<{
+      VSwitches?: {
+        VSwitch?: Array<{ VSwitchId?: string }> | { VSwitchId?: string };
+      };
+    }>({
+      endpoint: `vpc.${regionId}.aliyuncs.com`,
+      version: ALICLOUD_VPC_API_VERSION,
+      action: 'DescribeVSwitches',
+      accessKeyId: runtimeConfig.accessKeyId,
+      accessKeySecret: runtimeConfig.accessKeySecret,
+      parameters: {
+        RegionId: regionId,
+        ...(vpcId ? { VpcId: vpcId } : {}),
+      },
+    });
+
+    const items = payload.VSwitches?.VSwitch;
+    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+
+    return normalized.some((item) => item?.VSwitchId === vSwitchId);
+  }
+
+  private async checkNetworkInterfaceExists(
+    networkInterfaceId: string,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+    },
+    regionId: string,
+  ) {
+    const payload = await this.performAliyunRpcRequest<{
+      NetworkInterfaceSets?: {
+        NetworkInterfaceSet?:
+          | Array<{ NetworkInterfaceId?: string }>
+          | { NetworkInterfaceId?: string };
+      };
+    }>({
+      endpoint: `ecs.${regionId}.aliyuncs.com`,
+      version: ALICLOUD_ECS_API_VERSION,
+      action: 'DescribeNetworkInterfaces',
+      accessKeyId: runtimeConfig.accessKeyId,
+      accessKeySecret: runtimeConfig.accessKeySecret,
+      parameters: {
+        RegionId: regionId,
+        NetworkInterfaceId: networkInterfaceId,
+      },
+    });
+
+    const items = payload.NetworkInterfaceSets?.NetworkInterfaceSet;
+    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+
+    return normalized.some(
+      (item) => item?.NetworkInterfaceId === networkInterfaceId,
+    );
+  }
+
+  private async checkNatGatewayExists(
+    natGatewayId: string,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+    },
+    regionId: string,
+  ) {
+    const payload = await this.performAliyunRpcRequest<{
+      NatGateways?: {
+        NatGateway?: Array<{ NatGatewayId?: string }> | { NatGatewayId?: string };
+      };
+    }>({
+      endpoint: `vpc.${regionId}.aliyuncs.com`,
+      version: ALICLOUD_VPC_API_VERSION,
+      action: 'DescribeNatGateways',
+      accessKeyId: runtimeConfig.accessKeyId,
+      accessKeySecret: runtimeConfig.accessKeySecret,
+      parameters: {
+        RegionId: regionId,
+        NatGatewayId: natGatewayId,
+      },
+    });
+
+    const items = payload.NatGateways?.NatGateway;
+    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+
+    return normalized.some((item) => item?.NatGatewayId === natGatewayId);
+  }
+
+  private async checkEipExists(
+    allocationId: string,
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+    },
+    regionId: string,
+  ) {
+    const payload = await this.performAliyunRpcRequest<{
+      EipAddresses?: {
+        EipAddress?: Array<{ AllocationId?: string }> | { AllocationId?: string };
+      };
+    }>({
+      endpoint: `vpc.${regionId}.aliyuncs.com`,
+      version: ALICLOUD_VPC_API_VERSION,
+      action: 'DescribeEipAddresses',
+      accessKeyId: runtimeConfig.accessKeyId,
+      accessKeySecret: runtimeConfig.accessKeySecret,
+      parameters: {
+        RegionId: regionId,
+        AllocationId: allocationId,
+      },
+    });
+
+    const items = payload.EipAddresses?.EipAddress;
+    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+
+    return normalized.some((item) => item?.AllocationId === allocationId);
+  }
+
+  private async performAliyunRpcRequest<ResponsePayload>(input: {
+    endpoint: string;
+    version: string;
+    action: string;
+    accessKeyId: string;
+    accessKeySecret: string;
+    parameters?: Record<string, string>;
+  }): Promise<ResponsePayload> {
+    const query = signAliyunRpcQuery(
+      {
+        Action: input.action,
+        AccessKeyId: input.accessKeyId,
+        Format: 'JSON',
+        SignatureMethod: ALICLOUD_SIGNATURE_METHOD,
+        SignatureNonce: randomUUID(),
+        SignatureVersion: ALICLOUD_SIGNATURE_VERSION,
+        Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        Version: input.version,
+        ...(input.parameters ?? {}),
+      },
+      input.accessKeySecret,
+    );
+
+    const response = await fetch(`https://${input.endpoint}/?${query}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}`);
+    }
+
+    return (await response.json()) as ResponsePayload;
+  }
+
   private async failJob(job: ProvisionJobRecord, instance: RangeInstanceRecord, message: string) {
     await this.adminRepository.updateProvisionJob(job.id, {
       status: 'failed',
@@ -366,15 +712,33 @@ export class ProvisioningWorkerService {
       errorSummary: message,
     });
 
+    const failedInstanceStatus = this.resolveFailedInstanceStatus(job, instance);
+
     await this.adminRepository.updateRangeInstance(instance.id, {
-      status:
-        job.jobType === 'destroy'
-          ? 'destroy_failed'
-          : job.jobType === 'update'
-            ? instance.status
-            : 'create_failed',
+      status: failedInstanceStatus,
       errorSummary: message,
     });
+  }
+
+  private resolveFailedInstanceStatus(job: ProvisionJobRecord, instance: RangeInstanceRecord) {
+    const effectiveJobType =
+      job.jobType === 'retry'
+        ? instance.status === 'pending_destroy' || instance.status === 'destroy_failed'
+          ? 'destroy'
+          : instance.status === 'pending_create' || instance.status === 'create_failed'
+            ? 'create'
+            : 'create'
+        : job.jobType;
+
+    if (effectiveJobType === 'destroy') {
+      return 'destroy_failed' as const;
+    }
+
+    if (effectiveJobType === 'update') {
+      return instance.status;
+    }
+
+    return 'create_failed' as const;
   }
 
   private createStepReporter(jobId: string): RangeProvisionStepReporter {
