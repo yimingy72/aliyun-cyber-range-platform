@@ -554,13 +554,17 @@ export function SingleInstancesScreen({
     setPendingActionInstanceId(instance.id);
     const openedWindow =
       action === 'open-vnc'
-        ? window.open('', '_blank', 'noopener,noreferrer')
+        ? window.open('', '_blank')
         : null;
 
     try {
       if (action === 'open-vnc' && !openedWindow) {
         setErrorMessage('浏览器阻止了新窗口，请允许弹窗后重试。');
         return;
+      }
+
+      if (action === 'open-vnc') {
+        openedWindow.opener = null;
       }
 
       if (action === 'delete-record') {

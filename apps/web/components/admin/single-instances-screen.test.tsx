@@ -31,6 +31,7 @@ const { openWindowMock } = vi.hoisted(() => ({
 const { openedWindowState } = vi.hoisted(() => ({
   openedWindowState: {
     location: { href: '' },
+    opener: 'not-null' as unknown,
     close: vi.fn(),
   },
 }));
@@ -88,6 +89,7 @@ describe('SingleInstancesScreen', () => {
     replaceMock.mockReset();
     openWindowMock.mockReset();
     openedWindowState.location.href = '';
+    openedWindowState.opener = 'not-null' as unknown;
     openedWindowState.close.mockReset();
     vi.stubGlobal('open', openWindowMock);
   });
@@ -520,9 +522,9 @@ describe('SingleInstancesScreen', () => {
       expect(openWindowMock).toHaveBeenCalledWith(
         '',
         '_blank',
-        'noopener,noreferrer',
       ),
     );
+    expect(openedWindowState.opener).toBeNull();
     await waitFor(() =>
       expect(openedWindowState.location.href).toBe('https://console.example.test/vnc/session-1'),
     );
