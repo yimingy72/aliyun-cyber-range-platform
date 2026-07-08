@@ -1205,6 +1205,10 @@ describe('ProvisioningWorkerService concurrency', () => {
       expect.objectContaining({
         instanceMode: 'single',
         allocatedCidr: '10.210.0.0/16',
+        runtimeConfig: expect.objectContaining({
+          defaultRegion: 'cn-hangzhou',
+          defaultZoneId: 'cn-hangzhou-h',
+        }),
         singleNetworkProfile: launchProfile,
       }),
     );

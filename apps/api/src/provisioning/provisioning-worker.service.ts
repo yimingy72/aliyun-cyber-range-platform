@@ -319,11 +319,17 @@ export class ProvisioningWorkerService {
       throw new Error('Single instance network profile missing');
     }
 
+    const effectiveRuntimeConfig = {
+      ...input.runtimeConfig,
+      defaultRegion: launchNetworkIdentity.regionId,
+      defaultZoneId: launchNetworkIdentity.zoneId,
+    };
+
     const provisionInput = {
       rangeInstanceId: input.instance.id,
       templateModulePath: SINGLE_INSTANCE_TEMPLATE_MODULE_PATH,
       allocatedCidr: singleNetworkProfile.vpcCidr,
-      runtimeConfig: input.runtimeConfig,
+      runtimeConfig: effectiveRuntimeConfig,
       runtimeCredentials: input.instance.runtimeCredentials ?? undefined,
       reportStep: input.reportStep,
       instanceMode: 'single' as const,
