@@ -32,11 +32,15 @@ function createSystemConfigServiceStub() {
 describe('single instances', () => {
   let app: INestApplication;
   let repository: AdminRepository;
+  let fetchMock: jest.SpiedFunction<typeof fetch>;
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
+    fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -95,6 +99,7 @@ describe('single instances', () => {
   });
 
   afterAll(async () => {
+    fetchMock.mockRestore();
     await app.close();
   });
 
@@ -126,5 +131,40 @@ describe('single instances', () => {
     expect(response.body.instances[1]).toMatchObject({
       name: 'web-lab-02',
     });
+  });
+
+  it('rejects stop for single-instance row actions', async () => {
+    const instance = await repository.createRangeInstance({
+      name: 'stop-guard',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'stop-guard',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'stop-guard',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: {
+          'single-ecs-1': 'i-single-123',
+        },
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/instances/${instance.id}/actions/stop`)
+      .set('Authorization', 'Bearer dev-admin-token')
+      .send({ triggeredBy: 'admin' });
+
+    expect(response.status).toBe(404);
+    expect(response.body.message).toBe('Unsupported single instance action');
   });
 });

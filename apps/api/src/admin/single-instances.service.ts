@@ -17,6 +17,8 @@ import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 
+const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
+
 @Injectable()
 export class SingleInstancesService {
   constructor(
@@ -157,6 +159,10 @@ export class SingleInstancesService {
   }
 
   runAction(id: string, action: 'reboot' | 'open-vnc' | 'pack-image', payload: Record<string, string>) {
+    if (!SINGLE_INSTANCE_ACTION_ALLOWLIST.has(action)) {
+      throw new NotFoundException('Unsupported single instance action');
+    }
+
     return this.rangeInstanceNodeActionsService.runSingleInstanceAction(id, action, payload);
   }
 
