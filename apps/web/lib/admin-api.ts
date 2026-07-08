@@ -17,6 +17,9 @@ import type {
   Scenario,
   ScenarioCreateInput,
   ScenarioUpdateInput,
+  SingleInstanceAction,
+  SingleInstanceLaunchInput,
+  SingleInstanceLaunchResult,
 } from './admin-types';
 
 export class AdminApiError extends Error {
@@ -85,6 +88,56 @@ export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string
   });
 
   return readJson<RangeInstanceDetail>(response);
+}
+
+export async function fetchSingleInstances(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/instances`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<RangeInstance[]>(response);
+}
+
+export async function fetchProvisionJobs(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/provision-jobs`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ProvisionJob[]>(response);
+}
+
+export async function launchSingleInstances(
+  apiBaseUrl: string,
+  token: string,
+  payload: SingleInstanceLaunchInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/instances/launch`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<SingleInstanceLaunchResult>(response);
+}
+
+export async function triggerSingleInstanceAction(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  action: SingleInstanceAction,
+  payload: Record<string, unknown>,
+) {
+  const endpoint =
+    action === 'destroy' || action === 'retry'
+      ? `${apiBaseUrl}/admin/instances/${id}/${action}`
+      : `${apiBaseUrl}/admin/instances/${id}/actions/${action}`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<Record<string, unknown>>(response);
 }
 
 export async function saveRangeInstanceDraft(

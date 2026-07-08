@@ -1,0 +1,620 @@
+'use client';
+
+import React from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+import {
+  AdminApiError,
+  fetchPlatformImages,
+  fetchProvisionJobs,
+  fetchSingleInstances,
+  launchSingleInstances,
+  triggerSingleInstanceAction,
+} from '../../lib/admin-api';
+import type {
+  PlatformImageAsset,
+  ProvisionJob,
+  RangeInstance,
+  SingleInstanceAction,
+  SingleInstanceLaunchInput,
+} from '../../lib/admin-types';
+import { useAdminSession } from './use-admin-session';
+
+type SingleInstancesScreenProps = {
+  apiBaseUrl?: string;
+};
+
+type ListMode = 'active' | 'history';
+
+type CreateDialogState = {
+  name: string;
+  hostName: string;
+  platformImageAssetId: string;
+  cpu: string;
+  memory: string;
+  systemDiskSize: string;
+  expiresAt: string;
+  password: string;
+  quantity: string;
+  remark: string;
+};
+
+function isUnauthorizedError(error: unknown) {
+  return error instanceof AdminApiError && error.status === 401;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) {
+    return '暂无';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+    .format(date)
+    .replace(/\//g, '-');
+}
+
+function formatDuration(start?: string | null, end?: string | null) {
+  if (!start || !end) {
+    return '暂无';
+  }
+
+  const startedAt = new Date(start);
+  const endedAt = new Date(end);
+
+  if (Number.isNaN(startedAt.getTime()) || Number.isNaN(endedAt.getTime())) {
+    return '暂无';
+  }
+
+  const totalMinutes = Math.floor((endedAt.getTime() - startedAt.getTime()) / 60000);
+
+  if (totalMinutes <= 0) {
+    return '暂无';
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  return hours > 0 ? `${hours} 小时 ${minutes} 分钟` : `${minutes} 分钟`;
+}
+
+function getStatusLabel(status: string) {
+  if (status === 'running') {
+    return '运行中';
+  }
+
+  if (status === 'pending_create' || status === 'creating') {
+    return '创建中';
+  }
+
+  if (status === 'create_failed') {
+    return '创建失败';
+  }
+
+  if (status === 'pending_destroy' || status === 'destroying') {
+    return '销毁中';
+  }
+
+  if (status === 'destroy_failed') {
+    return '销毁失败';
+  }
+
+  if (status === 'destroyed') {
+    return '已销毁';
+  }
+
+  return status;
+}
+
+function getStatusTone(status: string) {
+  if (status === 'running') {
+    return 'is-published';
+  }
+
+  if (status === 'create_failed' || status === 'destroy_failed') {
+    return 'is-danger';
+  }
+
+  return 'is-draft';
+}
+
+function getImageLabel(instance: RangeInstance) {
+  return instance.singleInstanceConfig?.imageDisplayName?.trim() || '暂无';
+}
+
+function getSpecLabel(instance: RangeInstance) {
+  const cpu = instance.singleInstanceConfig?.cpu;
+  const memory = instance.singleInstanceConfig?.memory;
+
+  if (!cpu || !memory) {
+    return '暂无';
+  }
+
+  return `${cpu} 核 / ${memory} G`;
+}
+
+function getPublicIp(instance: RangeInstance) {
+  return instance.accessEntry?.publicIp?.trim() || '暂无';
+}
+
+function getHistoryEndedAt(instance: RangeInstance, jobsByInstanceId: Map<string, ProvisionJob>) {
+  const job = jobsByInstanceId.get(instance.id);
+  return job?.finishedAt ?? job?.startedAt ?? null;
+}
+
+function getAvailableActions(status: string): SingleInstanceAction[] {
+  if (status === 'running') {
+    return ['reboot', 'open-vnc', 'pack-image', 'destroy'];
+  }
+
+  if (status === 'create_failed' || status === 'destroy_failed') {
+    return ['retry', 'destroy'];
+  }
+
+  if (status === 'destroyed') {
+    return ['retry'];
+  }
+
+  return ['destroy'];
+}
+
+function getActionLabel(action: SingleInstanceAction) {
+  if (action === 'destroy') {
+    return '销毁实例';
+  }
+
+  if (action === 'retry') {
+    return '重试任务';
+  }
+
+  if (action === 'reboot') {
+    return '重启实例';
+  }
+
+  if (action === 'open-vnc') {
+    return '打开 VNC';
+  }
+
+  return '打包镜像';
+}
+
+function buildDefaultDialogState(platformImages: PlatformImageAsset[]): CreateDialogState {
+  return {
+    name: '',
+    hostName: '',
+    platformImageAssetId: platformImages.find((item) => item.enabled)?.id ?? platformImages[0]?.id ?? '',
+    cpu: '2',
+    memory: '2',
+    systemDiskSize: '40',
+    expiresAt: '',
+    password: '',
+    quantity: '1',
+    remark: '',
+  };
+}
+
+function SingleInstanceDialog({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="template-workbench-dialog-backdrop" role="presentation">
+      <section className="template-workbench-dialog single-instance-dialog" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="template-workbench-dialog-header">
+          <h2>{title}</h2>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+export function SingleInstancesScreen({
+  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+}: SingleInstancesScreenProps) {
+  const router = useRouter();
+  const session = useAdminSession();
+  const [listMode, setListMode] = useState<ListMode>('active');
+  const [instances, setInstances] = useState<RangeInstance[]>([]);
+  const [jobs, setJobs] = useState<ProvisionJob[]>([]);
+  const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
+  const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
+
+  useEffect(() => {
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    let isActive = true;
+
+    void Promise.all([
+      fetchSingleInstances(apiBaseUrl, session.token),
+      fetchProvisionJobs(apiBaseUrl, session.token),
+      fetchPlatformImages(apiBaseUrl, session.token),
+    ])
+      .then(([nextInstances, nextJobs, nextImages]) => {
+        if (!isActive) {
+          return;
+        }
+
+        const singleInstances = nextInstances.filter((instance) => instance.instanceMode === 'single');
+        setInstances(singleInstances);
+        setJobs(nextJobs.filter((job) => singleInstances.some((instance) => instance.id === job.rangeInstanceId)));
+        setPlatformImages(nextImages.items);
+        setCreateForm((current) =>
+          current.platformImageAssetId ? current : buildDefaultDialogState(nextImages.items),
+        );
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+
+        setErrorMessage('实例管理数据加载失败，请稍后重试。');
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [apiBaseUrl, router, session.isReady, session.token]);
+
+  const jobsByInstanceId = useMemo(() => {
+    return new Map(jobs.map((job) => [job.rangeInstanceId, job]));
+  }, [jobs]);
+
+  const activeInstances = useMemo(
+    () => instances.filter((instance) => instance.status !== 'destroyed'),
+    [instances],
+  );
+  const historyInstances = useMemo(
+    () => instances.filter((instance) => instance.status === 'destroyed'),
+    [instances],
+  );
+
+  function updateCreateForm<K extends keyof CreateDialogState>(field: K, value: CreateDialogState[K]) {
+    setCreateForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  }
+
+  function openCreateDialog() {
+    setCreateForm(buildDefaultDialogState(platformImages));
+    setIsCreateOpen(true);
+  }
+
+  async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!session.token) {
+      return;
+    }
+
+    const payload: SingleInstanceLaunchInput = {
+      name: createForm.name.trim(),
+      hostName: createForm.hostName.trim() || undefined,
+      platformImageAssetId: createForm.platformImageAssetId,
+      cpu: Number(createForm.cpu),
+      memory: Number(createForm.memory),
+      systemDiskSize: Number(createForm.systemDiskSize),
+      expiresAt: new Date(createForm.expiresAt).toISOString(),
+      password: createForm.password.trim() || undefined,
+      quantity: Number(createForm.quantity),
+      remark: createForm.remark.trim() || undefined,
+      triggeredBy: 'admin',
+    };
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+
+    try {
+      const result = await launchSingleInstances(apiBaseUrl, session.token, payload);
+      setInstances((current) => [...result.instances, ...current.filter((item) => !result.instances.some((next) => next.id === item.id))]);
+      setIsCreateOpen(false);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('创建实例失败，请稍后重试。');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleAction(instance: RangeInstance, action: SingleInstanceAction) {
+    if (!session.token) {
+      return;
+    }
+
+    setMenuInstanceId(null);
+    setErrorMessage(null);
+
+    try {
+      await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
+        triggeredBy: 'admin',
+        ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
+      });
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('实例操作失败，请稍后重试。');
+    }
+  }
+
+  if (!session.isReady) {
+    return null;
+  }
+
+  if (!session.token) {
+    return (
+      <main className="admin-shell">
+        <section className="admin-panel admin-login-panel">
+          <h2>正在跳转到管理员登录页...</h2>
+        </section>
+      </main>
+    );
+  }
+
+  const visibleInstances = listMode === 'history' ? historyInstances : activeInstances;
+
+  return (
+    <div className="admin-screen admin-workbench-screen single-instance-screen">
+      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+
+      <section>
+        <article className="admin-workbench-panel range-workbench-shell">
+          <div className="template-workbench-list-header range-workbench-header">
+            <div className="template-workbench-list-header-copy">
+              <h2>实例管理</h2>
+            </div>
+          </div>
+
+          <div className="template-workbench-controls range-workbench-controls">
+            <div className="template-workbench-segmented range-workbench-segmented" role="tablist" aria-label="实例视图切换">
+              <button type="button" aria-pressed={listMode === 'active'} onClick={() => setListMode('active')}>
+                实例列表
+              </button>
+              <button type="button" aria-pressed={listMode === 'history'} onClick={() => setListMode('history')}>
+                实例历史
+              </button>
+            </div>
+
+            <button type="button" className="template-workbench-primary-action" onClick={openCreateDialog}>
+              创建实例
+            </button>
+          </div>
+
+          {listMode === 'history' ? (
+            <div className="single-instance-history-column-head">
+              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
+              <div className="template-workbench-column-cell"><strong>镜像</strong></div>
+              <div className="template-workbench-column-cell"><strong>规格</strong></div>
+              <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
+              <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
+              <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
+              <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
+              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
+            </div>
+          ) : (
+            <div className="single-instance-workbench-column-head">
+              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
+              <div className="template-workbench-column-cell"><strong>镜像</strong></div>
+              <div className="template-workbench-column-cell"><strong>规格</strong></div>
+              <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
+              <div className="template-workbench-column-cell"><strong>状态</strong></div>
+              <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
+              <div className="template-workbench-column-cell"><strong>到期时间</strong></div>
+              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
+            </div>
+          )}
+
+          {visibleInstances.length ? (
+            <div className="range-workbench-rows">
+              {visibleInstances.map((instance) => {
+                const isHistory = listMode === 'history';
+                const endedAt = getHistoryEndedAt(instance, jobsByInstanceId);
+                return (
+                  <article
+                    key={instance.id}
+                    className={
+                      isHistory
+                        ? `single-instance-history-row${menuInstanceId === instance.id ? ' is-menu-open' : ''}`
+                        : `single-instance-workbench-row${menuInstanceId === instance.id ? ' is-menu-open' : ''}`
+                    }
+                  >
+                    <div className="range-workbench-main">
+                      <strong>{instance.name?.trim() || instance.id}</strong>
+                    </div>
+                    <div className="range-workbench-main">
+                      <span>{instance.createdBy?.trim() || '暂无'}</span>
+                    </div>
+                    <div className="range-workbench-main">
+                      <span>{getImageLabel(instance)}</span>
+                    </div>
+                    <div className="range-workbench-main">
+                      <span>{getSpecLabel(instance)}</span>
+                    </div>
+                    <div className="range-workbench-main">
+                      <span>{getPublicIp(instance)}</span>
+                    </div>
+                    {isHistory ? (
+                      <>
+                        <div className="range-workbench-created-at">
+                          <span>{formatDateTime(instance.createdAt)}</span>
+                        </div>
+                        <div className="range-workbench-created-at">
+                          <span>{formatDateTime(endedAt)}</span>
+                        </div>
+                        <div className="range-workbench-created-at">
+                          <span>{formatDuration(instance.createdAt, endedAt)}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="template-workbench-status">
+                          <span className={`template-workbench-status-pill ${getStatusTone(instance.status)}`}>
+                            {getStatusLabel(instance.status)}
+                          </span>
+                        </div>
+                        <div className="range-workbench-created-at">
+                          <span>{formatDateTime(instance.createdAt)}</span>
+                        </div>
+                        <div className="range-workbench-created-at">
+                          <span>{formatDateTime(instance.expiresAt)}</span>
+                        </div>
+                      </>
+                    )}
+                    <div className="template-workbench-row-menu range-workbench-actions workbench-action-cell">
+                      <button
+                        type="button"
+                        onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
+                      >
+                        更多操作
+                      </button>
+                      {menuInstanceId === instance.id ? (
+                        <div className="template-workbench-action-menu">
+                          {getAvailableActions(instance.status).map((action) => (
+                            <button key={action} type="button" onClick={() => void handleAction(instance, action)}>
+                              {getActionLabel(action)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="template-workbench-empty">
+              <strong>{listMode === 'history' ? '暂无实例历史' : '暂无实例'}</strong>
+            </div>
+          )}
+        </article>
+      </section>
+
+      {isCreateOpen ? (
+        <SingleInstanceDialog title="创建实例">
+          <form onSubmit={handleCreateSubmit}>
+            <div className="template-workbench-dialog-grid single-instance-dialog-grid">
+              <label>
+                <span>实例名</span>
+                <input aria-label="实例名" value={createForm.name} onChange={(event) => updateCreateForm('name', event.target.value)} required />
+              </label>
+              <label>
+                <span>主机名</span>
+                <input aria-label="主机名" value={createForm.hostName} onChange={(event) => updateCreateForm('hostName', event.target.value)} />
+              </label>
+              <label>
+                <span>镜像</span>
+                <select
+                  aria-label="镜像"
+                  value={createForm.platformImageAssetId}
+                  onChange={(event) => updateCreateForm('platformImageAssetId', event.target.value)}
+                >
+                  {platformImages.filter((item) => item.enabled).map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>CPU</span>
+                <input aria-label="CPU" type="number" min="1" value={createForm.cpu} onChange={(event) => updateCreateForm('cpu', event.target.value)} required />
+              </label>
+              <label>
+                <span>内存</span>
+                <input aria-label="内存" type="number" min="1" value={createForm.memory} onChange={(event) => updateCreateForm('memory', event.target.value)} required />
+              </label>
+              <label>
+                <span>磁盘大小</span>
+                <input
+                  aria-label="磁盘大小"
+                  type="number"
+                  min="20"
+                  value={createForm.systemDiskSize}
+                  onChange={(event) => updateCreateForm('systemDiskSize', event.target.value)}
+                />
+              </label>
+              <label>
+                <span>到期时间</span>
+                <input
+                  aria-label="到期时间"
+                  type="datetime-local"
+                  value={createForm.expiresAt}
+                  onChange={(event) => updateCreateForm('expiresAt', event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                <span>密码</span>
+                <input aria-label="密码" type="text" value={createForm.password} onChange={(event) => updateCreateForm('password', event.target.value)} />
+              </label>
+              <label>
+                <span>启动实例数量</span>
+                <input
+                  aria-label="启动实例数量"
+                  type="number"
+                  min="1"
+                  max="99"
+                  value={createForm.quantity}
+                  onChange={(event) => updateCreateForm('quantity', event.target.value)}
+                  required
+                />
+              </label>
+              <label className="full-span">
+                <span>备注</span>
+                <textarea aria-label="备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={3} />
+              </label>
+            </div>
+            <div className="template-workbench-dialog-actions">
+              <button type="submit" disabled={isSubmitting}>
+                确认创建
+              </button>
+              <button type="button" onClick={() => setIsCreateOpen(false)}>
+                取消
+              </button>
+            </div>
+          </form>
+        </SingleInstanceDialog>
+      ) : null}
+    </div>
+  );
+}

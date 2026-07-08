@@ -2562,6 +2562,11 @@ body {
   background: #fff3db;
 }
 
+.template-workbench-status-pill.is-danger {
+  color: #a63a40;
+  background: #fdebec;
+}
+
 .template-workbench-actions {
   display: flex;
   align-items: center;
@@ -2703,6 +2708,70 @@ body {
   background: #ffffff;
   border-bottom: 1px solid #edf1f6;
   align-items: center;
+}
+
+.single-instance-workbench-column-head,
+.single-instance-workbench-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr 1.2fr 1fr 1fr 0.9fr 1.1fr 1.1fr 1.2fr;
+  gap: 16px;
+}
+
+.single-instance-workbench-column-head,
+.single-instance-history-column-head {
+  align-items: stretch;
+  min-height: 46px;
+  padding: 0 18px;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e8edf3;
+}
+
+.single-instance-history-column-head,
+.single-instance-history-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr 1.2fr 1fr 1fr 1.1fr 1.1fr 0.9fr 1.2fr;
+  gap: 16px;
+}
+
+.single-instance-workbench-row,
+.single-instance-history-row {
+  align-items: center;
+  min-height: 72px;
+  padding: 0 18px;
+  background: #ffffff;
+  border-bottom: 1px solid #edf1f6;
+  position: relative;
+}
+
+.single-instance-workbench-row.is-menu-open,
+.single-instance-history-row.is-menu-open {
+  z-index: 40;
+}
+
+.single-instance-dialog {
+  width: min(760px, 100%);
+}
+
+.single-instance-dialog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.single-instance-dialog-grid .full-span {
+  grid-column: 1 / -1;
+}
+
+.template-workbench-dialog-grid textarea {
+  width: 100%;
+  min-height: 88px;
+  border-radius: 8px;
+  border: 1px solid #d7dee8;
+  padding: 10px 14px;
+  background: #ffffff;
+  color: #1f2f49;
+  font: inherit;
+  resize: vertical;
 }
 
 .range-history-time {
@@ -3037,7 +3106,9 @@ body {
   }
 
   .range-workbench-row,
-  .range-history-row {
+  .range-history-row,
+  .single-instance-workbench-row,
+  .single-instance-history-row {
     grid-template-columns: 1fr;
     gap: 10px;
     align-items: start;
@@ -3076,7 +3147,8 @@ body {
   }
 
   .template-workbench-search-grid,
-  .template-workbench-dialog-grid {
+  .template-workbench-dialog-grid,
+  .single-instance-dialog-grid {
     grid-template-columns: 1fr;
   }
 

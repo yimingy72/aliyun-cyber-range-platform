@@ -249,6 +249,31 @@ export type RangeInstanceLaunchInput = {
   triggeredBy: string;
 };
 
+export type SingleInstanceLaunchInput = {
+  name: string;
+  hostName?: string;
+  platformImageAssetId: string;
+  cpu: number;
+  memory: number;
+  systemDiskSize?: number;
+  expiresAt: string;
+  password?: string;
+  quantity: number;
+  remark?: string;
+  triggeredBy: string;
+};
+
+export type SingleInstanceLaunchResult = {
+  instances: RangeInstance[];
+};
+
+export type SingleInstanceAction =
+  | 'destroy'
+  | 'retry'
+  | 'reboot'
+  | 'open-vnc'
+  | 'pack-image';
+
 export type RangeInstanceDetail = RangeInstance & {
   templateId: string;
   recoverySummary?: RangeRecoverySummary | null;
