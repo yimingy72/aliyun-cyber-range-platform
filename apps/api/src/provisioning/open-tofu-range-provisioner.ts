@@ -12,13 +12,19 @@ import {
   type OpenTofuWorkspaceCommandOptions,
 } from '@aliyun-cyber-range/iac-runner';
 
-import type { RangeTemplateCompiledSpec } from '../admin/admin.repository';
+import type {
+  RangeRuntimeCredentials,
+  RangeTemplateCompiledSpec,
+  SingleInstanceConfig,
+  SingleInstanceNetworkProfileRecord,
+} from '../admin/admin.repository';
 import { selectZoneAndHostInstanceTypes } from './aliyun-zone-instance-scheduler';
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
 import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
 import { resolveFixedInstanceType } from './instance-type-catalog';
 import { AlibabaCloudOpenTofuRenderer } from './renderers/alibaba-cloud-opentofu-renderer';
 import { buildRootWrapperFiles } from './root-wrapper-template';
+import { buildSingleInstanceRootWrapperFiles } from './single-instance-root-wrapper-template';
 import {
   type ProvisioningAttemptedZoneSummary,
   type RangeProvisionCreateInput,
@@ -262,15 +268,32 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     this.renderer = new AlibabaCloudOpenTofuRenderer();
   }
 
+  async renderSingleInstanceWorkspace(input: {
+    rangeInstanceId: string;
+    runtimeCredentials?: RangeRuntimeCredentials;
+    singleInstanceConfig: SingleInstanceConfig;
+    singleNetworkProfile: SingleInstanceNetworkProfileRecord;
+  }) {
+    return {
+      files: await this.buildSingleInstanceWorkspaceFiles({
+        moduleSource: 'infra/opentofu/modules/alicloud-vpc-single-ecs',
+        ...input,
+      }),
+    };
+  }
+
   async create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult> {
-    const plan = buildEnterpriseProvisionPlan({
-      rangeInstanceId: input.rangeInstanceId,
-      templateModulePath: input.templateModulePath,
-      topologySpec: input.topologySpec,
-      compiledProvisionSpec: input.compiledProvisionSpec,
-      compiledSpec: input.compiledSpec,
-      allocatedCidr: input.allocatedCidr,
-    });
+    const plan =
+      input.instanceMode === 'single'
+        ? null
+        : buildEnterpriseProvisionPlan({
+            rangeInstanceId: input.rangeInstanceId,
+            templateModulePath: input.templateModulePath,
+            topologySpec: input.topologySpec,
+            compiledProvisionSpec: input.compiledProvisionSpec,
+            compiledSpec: input.compiledSpec,
+            allocatedCidr: input.allocatedCidr,
+          });
 
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
       const preparedWorkspace = await this.prepareWorkspace(input, {
@@ -407,7 +430,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         })) ?? null,
         resolvedInstanceType: resourceSummary?.resolved_instance_type ?? null,
         resolvedImageId: resourceSummary?.resolved_image_id ?? null,
-        topologySpec: plan.topologySummary,
+        ...(plan ? { topologySpec: plan.topologySummary } : {}),
       },
     };
   }
@@ -473,6 +496,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       preserveWorkspaceState: boolean;
     },
   ): Promise<PreparedWorkspace> {
+    if (input.instanceMode === 'single') {
+      return this.prepareSingleInstanceWorkspace(input, options);
+    }
+
     const moduleDir = path.resolve(this.projectRootDir, input.templateModulePath);
     const workspaceDir = path.join(this.workspacesRootDir, input.rangeInstanceId);
     const planFilePath = path.join(workspaceDir, 'range.tfplan');
@@ -504,6 +531,59 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       outputsFilePath,
       varsFilePath,
       runnerEnv,
+    };
+  }
+
+  private async prepareSingleInstanceWorkspace(
+    input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
+    options: {
+      preserveWorkspaceState: boolean;
+    },
+  ): Promise<PreparedWorkspace> {
+    const singleInstanceConfig = input.singleInstanceConfig;
+    const singleNetworkProfile = input.singleNetworkProfile;
+
+    if (!singleInstanceConfig) {
+      throw new Error('Single instance config missing');
+    }
+
+    if (!singleNetworkProfile) {
+      throw new Error('Single instance network profile missing');
+    }
+
+    const moduleDir = path.resolve(this.projectRootDir, input.templateModulePath);
+    const workspaceDir = path.join(this.workspacesRootDir, input.rangeInstanceId);
+    const planFilePath = path.join(workspaceDir, 'single-instance.tfplan');
+    const outputsFilePath = path.join(workspaceDir, 'outputs.json');
+    const varsFilePath = path.join(workspaceDir, 'terraform.tfvars.json');
+
+    await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
+    if (!options.preserveWorkspaceState) {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    const files = await this.buildSingleInstanceWorkspaceFiles({
+      moduleSource: moduleDir,
+      rangeInstanceId: input.rangeInstanceId,
+      runtimeConfig: input.runtimeConfig,
+      runtimeCredentials: input.runtimeCredentials,
+      singleInstanceConfig,
+      singleNetworkProfile,
+    });
+
+    await Promise.all(
+      Object.entries(files).map(async ([fileName, contents]) => {
+        await fs.writeFile(path.join(workspaceDir, fileName), contents, 'utf8');
+      }),
+    );
+
+    return {
+      workspaceDir,
+      planFilePath,
+      outputsFilePath,
+      varsFilePath,
+      runnerEnv: await this.buildRunnerEnv(input.runtimeConfig),
     };
   }
 
@@ -609,6 +689,87 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
           }
         : {}),
     });
+  }
+
+  private async buildSingleInstanceWorkspaceFiles(input: {
+    moduleSource: string;
+    rangeInstanceId: string;
+    runtimeConfig?: ResolvedProvisioningRuntimeConfig;
+    runtimeCredentials?: RangeRuntimeCredentials;
+    singleInstanceConfig: SingleInstanceConfig;
+    singleNetworkProfile: SingleInstanceNetworkProfileRecord;
+  }) {
+    const assignedVswitchId =
+      input.singleInstanceConfig.assignedVswitchId?.trim() || input.singleNetworkProfile.vswitchIds[0];
+    const assignedVswitchIndex = input.singleNetworkProfile.vswitchIds.indexOf(assignedVswitchId);
+
+    if (assignedVswitchIndex < 0) {
+      throw new Error(`Assigned single-instance vSwitch not found in persisted profile: ${assignedVswitchId}`);
+    }
+
+    const instancePassword =
+      input.runtimeCredentials?.[input.singleInstanceConfig.hostKey]?.password ??
+      requireEnvValue(this.env.OPENTOFU_INSTANCE_PASSWORD, 'OPENTOFU_INSTANCE_PASSWORD');
+    const requestedInstanceType = normalizeOptionalEnvValue(
+      this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
+    );
+    const fixedInstanceType = resolveFixedInstanceType(
+      input.singleInstanceConfig.cpu,
+      input.singleInstanceConfig.memory,
+    );
+    const singleRuntimeConfig = input.runtimeConfig
+      ? this.resolveRuntimeConfig(input.runtimeConfig)
+      : this.resolveRuntimeConfig({
+          accessKeyId: this.env.ALICLOUD_ACCESS_KEY ?? '',
+          accessKeySecret: this.env.ALICLOUD_SECRET_KEY ?? '',
+          defaultRegion: input.singleNetworkProfile.regionId,
+          defaultZoneId: input.singleNetworkProfile.zoneId,
+        });
+    const instanceType =
+      requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto'
+        ? requestedInstanceType
+        : fixedInstanceType ?? (await this.resolveInstanceType(singleRuntimeConfig));
+    const systemDiskCategory = this.readSystemDiskCategory();
+
+    return {
+      ...buildSingleInstanceRootWrapperFiles(input.moduleSource),
+      'terraform.tfvars.json': JSON.stringify({
+        resource_name_prefix: input.rangeInstanceId,
+        instance_name: buildSingleInstanceName(input.singleInstanceConfig),
+        host_name: input.singleInstanceConfig.hostName,
+        host_key: input.singleInstanceConfig.hostKey,
+        zone_id: input.singleNetworkProfile.zoneId,
+        vpc_cidr: input.singleNetworkProfile.vpcCidr,
+        vswitch_cidr: input.singleNetworkProfile.vswitchCidrs[assignedVswitchIndex],
+        existing_vpc_id: input.singleNetworkProfile.vpcId,
+        existing_vswitch_id: assignedVswitchId,
+        existing_security_group_id: input.singleNetworkProfile.securityGroupId,
+        image_id: input.singleInstanceConfig.imageId,
+        instance_type: instanceType,
+        instance_password: instancePassword,
+        ...(this.env.OPENTOFU_ALLOWED_INGRESS_CIDR
+          ? {
+              allowed_ingress_cidr: this.env.OPENTOFU_ALLOWED_INGRESS_CIDR,
+            }
+          : {}),
+        ...(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT
+          ? {
+              internet_max_bandwidth_out: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT),
+            }
+          : {}),
+        ...(systemDiskCategory
+          ? {
+              system_disk_category: systemDiskCategory,
+            }
+          : {}),
+        system_disk_size: input.singleInstanceConfig.systemDiskSize,
+        tags: {
+          instance_mode: 'single',
+          host_key: input.singleInstanceConfig.hostKey,
+          base_name: input.singleInstanceConfig.baseName,
+        },
+      }),
+    };
   }
 
   private async resolveInstanceType(runtimeConfig: ResolvedProvisioningRuntimeConfig) {
@@ -859,6 +1020,12 @@ function normalizeOptionalEnvValue(value: string | null | undefined) {
   const trimmed = value?.trim();
 
   return trimmed ? trimmed : null;
+}
+
+function buildSingleInstanceName(config: SingleInstanceConfig) {
+  return config.quantityIndex <= 1
+    ? config.baseName
+    : `${config.baseName}-${String(config.quantityIndex).padStart(2, '0')}`;
 }
 
 function readInstanceTypePreferences(env: OpenTofuProvisionerEnv) {

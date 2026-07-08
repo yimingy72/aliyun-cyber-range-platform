@@ -3,6 +3,18 @@ variable "resource_name_prefix" {
   description = "Short prefix used across VPC, vSwitch, security group, and ECS resource names."
 }
 
+variable "instance_name" {
+  type        = string
+  description = "Alibaba Cloud instance name for the single ECS host."
+  default     = ""
+}
+
+variable "host_name" {
+  type        = string
+  description = "Alibaba Cloud host name for the single ECS host."
+  default     = ""
+}
+
 variable "zone_id" {
   type        = string
   description = "Alibaba Cloud zone used by the vSwitch and ECS instance, for example cn-hangzhou-h."
@@ -16,6 +28,24 @@ variable "vpc_cidr" {
 variable "vswitch_cidr" {
   type        = string
   description = "CIDR block allocated to the single vSwitch inside the team VPC."
+}
+
+variable "existing_vpc_id" {
+  type        = string
+  description = "Existing VPC ID reused by single-instance mode."
+  default     = ""
+}
+
+variable "existing_vswitch_id" {
+  type        = string
+  description = "Existing vSwitch ID reused by single-instance mode."
+  default     = ""
+}
+
+variable "existing_security_group_id" {
+  type        = string
+  description = "Existing security group ID reused by single-instance mode."
+  default     = ""
 }
 
 variable "allowed_ingress_cidr" {

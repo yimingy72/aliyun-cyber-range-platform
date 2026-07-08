@@ -263,6 +263,66 @@ describe('OpenTofuRangeProvisioner', () => {
     await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('sentinel-state');
   });
 
+  it('renders the single ECS module with existing network ids when instanceMode is single', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-single-'));
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    const result = await provisioner.renderSingleInstanceWorkspace({
+      rangeInstanceId: 'single-1',
+      runtimeCredentials: {
+        'single-ecs-1': { username: 'root', password: 'Aa123456!' },
+      },
+      singleInstanceConfig: {
+        baseName: 'web-lab',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'web-lab-01',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04 LTS',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        remark: 'single instance',
+        assignedVswitchId: 'vsw-1',
+      },
+      singleNetworkProfile: {
+        id: 'single-network-1',
+        provider: 'alibaba_cloud',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        vpcId: 'vpc-1',
+        vpcCidr: '10.200.0.0/16',
+        vswitchIds: ['vsw-1', 'vsw-2', 'vsw-3'],
+        vswitchCidrs: ['10.200.1.0/24', '10.200.2.0/24', '10.200.3.0/24'],
+        securityGroupId: 'sg-1',
+        securityGroupName: 'default-open-all',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    expect(result.files['main.tf']).toContain(
+      'source = "infra/opentofu/modules/alicloud-vpc-single-ecs"',
+    );
+    expect(result.files['terraform.tfvars.json']).toContain('"existing_vpc_id":"vpc-1"');
+    expect(result.files['terraform.tfvars.json']).toContain('"existing_vswitch_id":"vsw-1"');
+    expect(result.files['terraform.tfvars.json']).toContain('"existing_security_group_id":"sg-1"');
+  });
+
   it('prefers an explicit fixed instance type policy over stale cpu-memory derived candidates', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-fixed-policy-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');

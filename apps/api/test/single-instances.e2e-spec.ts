@@ -6,6 +6,7 @@ import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repos
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import { SingleInstanceNetworkBootstrapService } from '../src/provisioning/single-instance-network-bootstrap';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 function createSystemConfigServiceStub() {
@@ -33,6 +34,9 @@ describe('single instances', () => {
   let app: INestApplication;
   let repository: AdminRepository;
   let fetchMock: jest.SpiedFunction<typeof fetch>;
+  let bootstrapServiceStub: {
+    bootstrapDefaultProfile: jest.Mock;
+  };
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -41,6 +45,19 @@ describe('single instances', () => {
     fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
+    bootstrapServiceStub = {
+      bootstrapDefaultProfile: jest.fn().mockResolvedValue({
+        provider: 'alibaba_cloud',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        vpcId: 'vpc-bootstrap-real',
+        vpcCidr: '10.200.0.0/16',
+        vswitchIds: ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'],
+        vswitchCidrs: ['10.200.1.0/24', '10.200.2.0/24', '10.200.3.0/24'],
+        securityGroupId: 'sg-bootstrap-real',
+        securityGroupName: 'default-open-all',
+      }),
+    };
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -49,6 +66,8 @@ describe('single instances', () => {
       .useValue(createMemoryAdminRepository())
       .overrideProvider(SystemConfigService)
       .useValue(createSystemConfigServiceStub())
+      .overrideProvider(SingleInstanceNetworkBootstrapService)
+      .useValue(bootstrapServiceStub)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -130,6 +149,19 @@ describe('single instances', () => {
     });
     expect(response.body.instances[1]).toMatchObject({
       name: 'web-lab-02',
+    });
+    expect(bootstrapServiceStub.bootstrapDefaultProfile).toHaveBeenCalledTimes(1);
+
+    const profile = await repository.getSingleInstanceNetworkProfile({
+      provider: 'alibaba_cloud',
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+    });
+
+    expect(profile).toMatchObject({
+      vpcId: 'vpc-bootstrap-real',
+      securityGroupId: 'sg-bootstrap-real',
+      vswitchIds: ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'],
     });
   });
 

@@ -29,6 +29,7 @@ import { DryRunRangeProvisioner } from './provisioning/dry-run-range-provisioner
 import { createRangeProvisionerFromEnv } from './provisioning/open-tofu-range-provisioner';
 import { ProvisioningWorkerService } from './provisioning/provisioning-worker.service';
 import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
+import { SingleInstanceNetworkBootstrapService } from './provisioning/single-instance-network-bootstrap';
 
 function resolveProjectRootDir() {
   let currentDir = process.cwd();
@@ -72,6 +73,7 @@ function resolveProjectRootDir() {
     ProvisionJobsService,
     SystemConfigService,
     CidrPoolService,
+    SingleInstanceNetworkBootstrapService,
     ProvisioningWorkerService,
     PrismaService,
     PrismaAdminRepository,

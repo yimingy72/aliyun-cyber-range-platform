@@ -1023,4 +1023,99 @@ describe('ProvisioningWorkerService concurrency', () => {
       }),
     );
   });
+
+  it('provisions single-instance create jobs without requiring a template id', async () => {
+    const repository = createMemoryAdminRepository();
+    const profile = await repository.upsertSingleInstanceNetworkProfile({
+      provider: 'alibaba_cloud',
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      vpcId: 'vpc-single-default',
+      vpcCidr: '10.200.0.0/16',
+      vswitchIds: ['vsw-single-1', 'vsw-single-2', 'vsw-single-3'],
+      vswitchCidrs: ['10.200.1.0/24', '10.200.2.0/24', '10.200.3.0/24'],
+      securityGroupId: 'sg-single-default',
+      securityGroupName: 'default-open-all',
+    });
+    const instance = await repository.createRangeInstance({
+      name: 'single-web-lab',
+      instanceMode: 'single',
+      status: 'pending_create',
+      runtimeCredentials: {
+        'single-ecs-1': {
+          username: 'root',
+          password: 'Aa123456!',
+        },
+      },
+      singleInstanceConfig: {
+        baseName: 'single-web-lab',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'single-web-lab-01',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-single-1',
+      },
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+    });
+
+    const provisioner: RangeProvisioner = {
+      create: jest.fn().mockResolvedValue({
+        accessEntry: {
+          hostRole: 'single-ecs-1',
+          publicIp: '47.100.10.10',
+          privateIp: '10.200.1.10',
+          ssh: 'ssh root@47.100.10.10',
+        },
+        resourceSummary: {
+          mode: 'opentofu',
+          vpcId: 'vpc-single-default',
+          hostIds: {
+            'single-ecs-1': 'i-single-001',
+          },
+        },
+      }),
+      destroy: jest.fn(),
+    };
+
+    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+
+    await worker.process(job.id);
+
+    expect(provisioner.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instanceMode: 'single',
+        singleInstanceConfig: expect.objectContaining({
+          hostKey: 'single-ecs-1',
+          assignedVswitchId: 'vsw-single-1',
+        }),
+        singleNetworkProfile: profile,
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        status: 'running',
+        errorSummary: null,
+        accessEntry: expect.objectContaining({
+          publicIp: '47.100.10.10',
+        }),
+        resourceSummary: expect.objectContaining({
+          vpcId: 'vpc-single-default',
+        }),
+      }),
+    );
+  });
 });

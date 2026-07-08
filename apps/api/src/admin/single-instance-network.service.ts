@@ -6,6 +6,7 @@ import {
   type SingleInstanceNetworkProfileRecord,
 } from './admin.repository';
 import { SystemConfigService } from './system-config.service';
+import { SingleInstanceNetworkBootstrapService } from '../provisioning/single-instance-network-bootstrap';
 
 type AllocatedSingleInstanceNetwork = {
   vswitchId: string;
@@ -19,6 +20,7 @@ export class SingleInstanceNetworkService {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
+    private readonly singleInstanceNetworkBootstrapService: SingleInstanceNetworkBootstrapService,
   ) {}
 
   async ensureDefaultProfile() {
@@ -29,25 +31,28 @@ export class SingleInstanceNetworkService {
       zoneId: snapshot.defaultZoneId,
     });
 
-    if (existing) {
+    if (existing && !isPlaceholderProfile(existing)) {
       return existing;
     }
 
-    return this.adminRepository.upsertSingleInstanceNetworkProfile({
-      provider: snapshot.provider,
-      regionId: snapshot.defaultRegion,
-      zoneId: snapshot.defaultZoneId,
-      vpcId: `vpc-default-${snapshot.defaultRegion}`,
-      vpcCidr: '10.240.0.0/16',
-      vswitchIds: [
-        `vsw-default-${snapshot.defaultZoneId}-a`,
-        `vsw-default-${snapshot.defaultZoneId}-b`,
-        `vsw-default-${snapshot.defaultZoneId}-c`,
-      ],
-      vswitchCidrs: ['10.240.1.0/24', '10.240.2.0/24', '10.240.3.0/24'],
-      securityGroupId: `sg-default-${snapshot.defaultZoneId}`,
-      securityGroupName: 'single-instance-default',
-    });
+    const occupiedCidrs = (await this.adminRepository.listRangeInstances())
+      .map((instance) => instance.allocatedCidr)
+      .filter((value): value is string => Boolean(value));
+    const bootstrappedProfile =
+      await this.singleInstanceNetworkBootstrapService.bootstrapDefaultProfile({
+        provider: snapshot.provider,
+        regionId: snapshot.defaultRegion,
+        zoneId: snapshot.defaultZoneId,
+        occupiedCidrs,
+        runtimeConfig: {
+          accessKeyId: snapshot.accessKeyId,
+          accessKeySecret: snapshot.accessKeySecret,
+          defaultRegion: snapshot.defaultRegion,
+          defaultZoneId: snapshot.defaultZoneId,
+        },
+      });
+
+    return this.adminRepository.upsertSingleInstanceNetworkProfile(bootstrappedProfile);
   }
 
   allocateVswitch(profile: SingleInstanceNetworkProfileRecord, offset: number): AllocatedSingleInstanceNetwork {
@@ -72,4 +77,12 @@ export class SingleInstanceNetworkService {
 
     return `${parts[0]}.${parts[1]}.${parts[2]}.${hostOctet}`;
   }
+}
+
+function isPlaceholderProfile(profile: SingleInstanceNetworkProfileRecord) {
+  return (
+    profile.vpcId.startsWith('vpc-default-') ||
+    profile.securityGroupId.startsWith('sg-default-') ||
+    profile.vswitchIds.some((vswitchId) => vswitchId.startsWith('vsw-default-'))
+  );
 }

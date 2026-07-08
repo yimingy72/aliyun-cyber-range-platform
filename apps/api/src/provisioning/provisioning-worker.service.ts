@@ -27,6 +27,7 @@ const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const DESTROY_VERIFICATION_ATTEMPTS = 12;
 const DESTROY_VERIFICATION_INTERVAL_MS = 5_000;
+const SINGLE_INSTANCE_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-vpc-single-ecs';
 
 @Injectable()
 export class ProvisioningWorkerService {
@@ -94,43 +95,6 @@ export class ProvisioningWorkerService {
       return;
     }
 
-    if (!instance.templateId) {
-      await this.failJob(job, instance, 'Template not found');
-      return;
-    }
-
-    const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
-
-    if (!template) {
-      await this.failJob(job, instance, 'Template not found');
-      return;
-    }
-
-    const sourceVersion = instance.sourceTemplateVersionId
-      ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
-      : template.currentDraftVersion ?? template.currentPublishedVersion;
-
-    if (instance.sourceTemplateVersionId && !sourceVersion) {
-      await this.failJob(job, instance, 'Template source version not found');
-      return;
-    }
-
-    const templateModulePath = sourceVersion?.modulePathOrRef ?? template.modulePathOrRef;
-    const baseCompiledProvisionSpec =
-      this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
-      this.getCompiledProvisionSpec(template.compiledProvisionSpec);
-    const baseCompiledSpec = this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
-    const baseTopologySpec =
-      this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
-      this.getCompiledTopologySpec(baseCompiledSpec) ??
-      sourceVersion?.topologySpec ??
-      template.topologySpec;
-
-    if (!baseTopologySpec && !baseCompiledSpec && !baseCompiledProvisionSpec) {
-      await this.failJob(job, instance, 'Template provisioning blueprint not found');
-      return;
-    }
-
     await this.adminRepository.updateRangeInstance(instance.id, {
       errorSummary: null,
     });
@@ -139,6 +103,62 @@ export class ProvisioningWorkerService {
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
       const runtimeConfig = await this.systemConfigService.getSnapshot();
+
+      if (instance.instanceMode === 'single') {
+        await this.processSingleInstanceJob({
+          job,
+          instance,
+          effectiveJobType,
+          runtimeConfig,
+          reportStep,
+        });
+
+        await this.adminRepository.updateProvisionJob(job.id, {
+          status: 'succeeded',
+          finishedAt: new Date(),
+          errorSummary: null,
+        });
+        return;
+      }
+
+      if (!instance.templateId) {
+        await this.failJob(job, instance, 'Template not found');
+        return;
+      }
+
+      const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
+
+      if (!template) {
+        await this.failJob(job, instance, 'Template not found');
+        return;
+      }
+
+      const sourceVersion = instance.sourceTemplateVersionId
+        ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
+        : template.currentDraftVersion ?? template.currentPublishedVersion;
+
+      if (instance.sourceTemplateVersionId && !sourceVersion) {
+        await this.failJob(job, instance, 'Template source version not found');
+        return;
+      }
+
+      const templateModulePath = sourceVersion?.modulePathOrRef ?? template.modulePathOrRef;
+      const baseCompiledProvisionSpec =
+        this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
+        this.getCompiledProvisionSpec(template.compiledProvisionSpec);
+      const baseCompiledSpec =
+        this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
+      const baseTopologySpec =
+        this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
+        this.getCompiledTopologySpec(baseCompiledSpec) ??
+        sourceVersion?.topologySpec ??
+        template.topologySpec;
+
+      if (!baseTopologySpec && !baseCompiledSpec && !baseCompiledProvisionSpec) {
+        await this.failJob(job, instance, 'Template provisioning blueprint not found');
+        return;
+      }
+
       const compiledProvisionSpec =
         effectiveJobType === 'update'
           ? this.getCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ?? baseCompiledProvisionSpec
@@ -266,6 +286,84 @@ export class ProvisioningWorkerService {
 
       await this.failJob(job, instance, message);
     }
+  }
+
+  private async processSingleInstanceJob(input: {
+    job: ProvisionJobRecord;
+    instance: RangeInstanceRecord;
+    effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
+    runtimeConfig: {
+      accessKeyId: string;
+      accessKeySecret: string;
+      defaultRegion: string;
+      defaultZoneId: string;
+    };
+    reportStep: RangeProvisionStepReporter;
+  }) {
+    if (!input.instance.singleInstanceConfig) {
+      throw new Error('Single instance config missing');
+    }
+
+    if (input.effectiveJobType === 'update' || input.effectiveJobType === 'refresh_status') {
+      throw new Error('Single instance update jobs are not supported');
+    }
+
+    const singleNetworkProfile = await this.adminRepository.getSingleInstanceNetworkProfile({
+      provider: input.instance.cloudProvider,
+      regionId: input.runtimeConfig.defaultRegion,
+      zoneId: input.runtimeConfig.defaultZoneId,
+    });
+
+    if (!singleNetworkProfile) {
+      throw new Error('Single instance network profile missing');
+    }
+
+    const provisionInput = {
+      rangeInstanceId: input.instance.id,
+      templateModulePath: SINGLE_INSTANCE_TEMPLATE_MODULE_PATH,
+      allocatedCidr: singleNetworkProfile.vpcCidr,
+      runtimeConfig: input.runtimeConfig,
+      runtimeCredentials: input.instance.runtimeCredentials ?? undefined,
+      reportStep: input.reportStep,
+      instanceMode: 'single' as const,
+      singleInstanceConfig: input.instance.singleInstanceConfig,
+      singleNetworkProfile,
+    };
+
+    if (input.effectiveJobType === 'create') {
+      await this.runWorkerStep(input.reportStep, 'prepare', async () => {
+        await this.adminRepository.updateRangeInstance(input.instance.id, {
+          status: 'creating',
+        });
+      });
+
+      const result = await this.rangeProvisioner.create(provisionInput);
+
+      await this.runWorkerStep(input.reportStep, 'persist_access_entry', async () => {
+        await this.adminRepository.updateRangeInstance(input.instance.id, {
+          status: 'running',
+          accessEntry: result.accessEntry,
+          resourceSummary: result.resourceSummary,
+          errorSummary: null,
+        });
+      });
+      return;
+    }
+
+    await this.runWorkerStep(input.reportStep, 'prepare', async () => {
+      await this.adminRepository.updateRangeInstance(input.instance.id, {
+        status: 'destroying',
+      });
+    });
+
+    await this.rangeProvisioner.destroy(provisionInput);
+
+    await this.adminRepository.updateRangeInstance(input.instance.id, {
+      status: 'destroyed',
+      accessEntry: null,
+      resourceSummary: null,
+      errorSummary: null,
+    });
   }
 
   private resolveEffectiveJobType(job: ProvisionJobRecord, instance: RangeInstanceRecord) {

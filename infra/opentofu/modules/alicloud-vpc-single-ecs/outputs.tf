@@ -1,16 +1,16 @@
 output "vpc_id" {
   description = "Created Alibaba Cloud VPC ID for the team range."
-  value       = alicloud_vpc.range.id
+  value       = local.effective_vpc_id
 }
 
 output "vswitch_id" {
   description = "Created Alibaba Cloud vSwitch ID for the team range."
-  value       = alicloud_vswitch.range.id
+  value       = local.effective_vswitch_id
 }
 
 output "security_group_id" {
   description = "Created security group ID used by the first practice host."
-  value       = alicloud_security_group.range.id
+  value       = local.effective_security_group_id
 }
 
 output "instance_id" {

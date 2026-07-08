@@ -2,6 +2,8 @@ import type {
   ProvisionJobStepStatus,
   RangeAccessEntry,
   RangeRuntimeCredentials,
+  SingleInstanceConfig,
+  SingleInstanceNetworkProfileRecord,
   RangeTemplateCompiledSpec,
   RangeResourceSummary,
   RangeTemplateTopologySpec,
@@ -51,6 +53,9 @@ export type RangeProvisionCreateInput = {
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
   reportStep?: RangeProvisionStepReporter;
+  instanceMode?: 'range' | 'single';
+  singleInstanceConfig?: SingleInstanceConfig | null;
+  singleNetworkProfile?: SingleInstanceNetworkProfileRecord | null;
 };
 
 export type RangeProvisionCreateResult = {
@@ -68,6 +73,9 @@ export type RangeProvisionDestroyInput = {
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
   reportStep?: RangeProvisionStepReporter;
+  instanceMode?: 'range' | 'single';
+  singleInstanceConfig?: SingleInstanceConfig | null;
+  singleNetworkProfile?: SingleInstanceNetworkProfileRecord | null;
 };
 
 export interface RangeProvisioner {
