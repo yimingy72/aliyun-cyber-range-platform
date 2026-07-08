@@ -230,6 +230,14 @@ describe('SingleInstancesScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
+    expect(
+      screen
+        .getAllByRole('button')
+        .filter((button) =>
+          ['关闭实例', '重启实例', '打开 VNC', '打包为镜像'].includes(button.textContent ?? ''),
+        )
+        .map((button) => button.textContent),
+    ).toEqual(['关闭实例', '重启实例', '打开 VNC', '打包为镜像']);
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();

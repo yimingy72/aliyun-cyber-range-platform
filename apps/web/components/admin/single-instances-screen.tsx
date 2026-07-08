@@ -168,7 +168,7 @@ function readJobTimestamp(job: ProvisionJob | undefined, edge: 'start' | 'end') 
 
 function getAvailableActions(status: string): MenuAction[] {
   if (status === 'running') {
-    return ['reboot', 'open-vnc', 'pack-image', 'destroy'];
+    return ['destroy', 'reboot', 'open-vnc', 'pack-image'];
   }
 
   if (status === 'destroy_failed') {
