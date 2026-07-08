@@ -54,6 +54,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const nextId = () => `memory-${idCounter++}`;
   const now = () => new Date();
   const clone = <T>(record: T): T => structuredClone(record);
+  const cloneIfDefined = <T>(value: T): T => (value == null ? value : structuredClone(value));
   const cloneList = <T extends Record<string, unknown>>(records: T[]): T[] => records.map((record) => clone(record));
   const assignIfDefined = <T extends Record<string, unknown>, K extends keyof T>(
     target: T,
@@ -348,7 +349,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
         instanceMode: input.instanceMode ?? 'range',
-        singleInstanceConfig: input.singleInstanceConfig ?? null,
+        singleInstanceConfig: cloneIfDefined(input.singleInstanceConfig ?? null),
         templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
         templateNameSnapshot: null,
@@ -393,7 +394,9 @@ export function createMemoryAdminRepository(): AdminRepository {
         createdBy: input.createdBy !== undefined ? input.createdBy : record.createdBy,
         instanceMode: input.instanceMode ?? record.instanceMode,
         singleInstanceConfig:
-          input.singleInstanceConfig !== undefined ? input.singleInstanceConfig : record.singleInstanceConfig,
+          input.singleInstanceConfig !== undefined
+            ? cloneIfDefined(input.singleInstanceConfig)
+            : record.singleInstanceConfig,
         sourceTemplateVersionId:
           input.sourceTemplateVersionId !== undefined ? input.sourceTemplateVersionId : record.sourceTemplateVersionId,
         runtimeTopologyGraph:
@@ -778,8 +781,8 @@ export function createMemoryAdminRepository(): AdminRepository {
         Object.assign(existing, {
           vpcId: input.vpcId,
           vpcCidr: input.vpcCidr,
-          vswitchIds: input.vswitchIds,
-          vswitchCidrs: input.vswitchCidrs,
+          vswitchIds: clone(input.vswitchIds),
+          vswitchCidrs: clone(input.vswitchCidrs),
           securityGroupId: input.securityGroupId,
           securityGroupName: input.securityGroupName,
           updatedAt: now(),
@@ -795,8 +798,8 @@ export function createMemoryAdminRepository(): AdminRepository {
         zoneId: input.zoneId,
         vpcId: input.vpcId,
         vpcCidr: input.vpcCidr,
-        vswitchIds: input.vswitchIds,
-        vswitchCidrs: input.vswitchCidrs,
+        vswitchIds: clone(input.vswitchIds),
+        vswitchCidrs: clone(input.vswitchCidrs),
         securityGroupId: input.securityGroupId,
         securityGroupName: input.securityGroupName,
         createdAt: now(),
