@@ -426,6 +426,146 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByText(formatExpectedDateTime('2026-07-08T10:45:00.000Z'))).toBeNull();
   });
 
+  it('filters active and history rows by instance name', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'alpha-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+      {
+        id: 'single-destroying',
+        name: 'beta-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'pending_destroy',
+        createdAt: '2026-07-08T09:05:00.000Z',
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 4,
+        },
+      },
+      {
+        id: 'single-destroyed',
+        name: 'archive-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'destroyed',
+        createdAt: '2026-07-08T08:00:00.000Z',
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 4,
+          memory: 8,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('alpha-lab')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: '筛选实例名' }), { target: { value: 'beta' } });
+    expect(screen.queryByText('alpha-lab')).toBeNull();
+    expect(screen.getByText('beta-lab')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
+    expect(screen.queryByText('archive-lab')).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: '筛选实例名' }), { target: { value: 'archive' } });
+    expect(screen.getByText('archive-lab')).toBeTruthy();
+    expect(screen.queryByText('beta-lab')).toBeNull();
+  });
+
+  it('reloads current rows and jobs after create succeeds', async () => {
+    let fetchPhase: 'initial' | 'reloaded' = 'initial';
+
+    fetchSingleInstancesMock.mockImplementation(async () =>
+      fetchPhase === 'initial'
+        ? []
+        : [
+            {
+              id: 'single-reloaded',
+              name: 'web-lab',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'creating',
+              createdAt: '2026-07-08T09:00:00.000Z',
+              singleInstanceConfig: {
+                imageDisplayName: 'Ubuntu 24.04 LTS',
+                cpu: 2,
+                memory: 2,
+              },
+            },
+          ],
+    );
+    fetchProvisionJobsMock.mockImplementation(async () =>
+      fetchPhase === 'initial'
+        ? []
+        : [
+            {
+              id: 'job-create-reloaded',
+              rangeInstanceId: 'single-reloaded',
+              jobType: 'create',
+              status: 'running',
+              triggeredBy: 'admin',
+              startedAt: '2026-07-08T09:01:00.000Z',
+            },
+          ],
+    );
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, family: 'c6', generation: '6', architecture: 'x86' }],
+      warning: null,
+    });
+    launchSingleInstancesMock.mockImplementation(async () => {
+      fetchPhase = 'reloaded';
+      return {
+        instances: [{ id: 'single-pending', name: 'web-lab', createdBy: 'admin', instanceMode: 'single', status: 'pending_create' }],
+      };
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'web-lab' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-07-10T12:00' } });
+    await waitFor(() =>
+      expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        2,
+        2,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(fetchProvisionJobsMock.mock.calls.length).toBeGreaterThan(1));
+    expect(await screen.findByText('创建中')).toBeTruthy();
+    expect(screen.getByText('web-lab')).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
+  });
+
   it('reloads current list and jobs after a successful row action', async () => {
     let currentStatus = 'running';
 

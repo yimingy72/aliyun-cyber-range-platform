@@ -26,6 +26,7 @@ import { useAdminSession } from './use-admin-session';
 
 type SingleInstancesScreenProps = {
   apiBaseUrl?: string;
+  pollIntervalMs?: number;
 };
 
 type ListMode = 'active' | 'history';
@@ -269,10 +270,12 @@ function SingleInstanceDialog({
 
 export function SingleInstancesScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  pollIntervalMs = 5000,
 }: SingleInstancesScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
   const [listMode, setListMode] = useState<ListMode>('active');
+  const [searchName, setSearchName] = useState('');
   const [instances, setInstances] = useState<RangeInstance[]>([]);
   const [jobs, setJobs] = useState<ProvisionJob[]>([]);
   const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
@@ -337,6 +340,26 @@ export function SingleInstancesScreen({
       isActive = false;
     };
   }, [apiBaseUrl, session.isReady, session.token]);
+
+  useEffect(() => {
+    if (!session.isReady || !session.token || pollIntervalMs <= 0) {
+      return;
+    }
+
+    const token = session.token;
+    const timer = window.setInterval(() => {
+      void reloadSingleInstanceRows(token).catch((error: unknown) => {
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+        }
+      });
+    }, pollIntervalMs);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [pollIntervalMs, router, session, session.isReady, session.token]);
 
   const jobsByInstanceId = useMemo(() => {
     return jobs.reduce<Map<string, ProvisionJob[]>>((map, job) => {
@@ -407,6 +430,7 @@ export function SingleInstancesScreen({
     () => platformImages.filter((item) => item.enabled),
     [platformImages],
   );
+  const normalizedSearchName = searchName.trim().toLowerCase();
 
   function updateCreateForm<K extends keyof CreateDialogState>(field: K, value: CreateDialogState[K]) {
     setCreateFormError(null);
@@ -524,8 +548,8 @@ export function SingleInstancesScreen({
     setErrorMessage(null);
 
     try {
-      const result = await launchSingleInstances(apiBaseUrl, session.token, payload);
-      setInstances((current) => [...result.instances, ...current.filter((item) => !result.instances.some((next) => next.id === item.id))]);
+      await launchSingleInstances(apiBaseUrl, session.token, payload);
+      await reloadSingleInstanceRows(session.token);
       setIsCreateOpen(false);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
@@ -632,7 +656,11 @@ export function SingleInstancesScreen({
     );
   }
 
-  const visibleInstances = listMode === 'history' ? historyInstances : activeInstances;
+  const visibleInstances = (listMode === 'history' ? historyInstances : activeInstances).filter((instance) =>
+    normalizedSearchName
+      ? (instance.name?.trim().toLowerCase() || '').includes(normalizedSearchName)
+      : true,
+  );
 
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen">
@@ -647,6 +675,18 @@ export function SingleInstancesScreen({
           </div>
 
           <div className="template-workbench-controls range-workbench-controls">
+            <div className="template-workbench-search-grid">
+              <label className="template-workbench-search-field">
+                <span className="sr-only">实例名搜索</span>
+                <input
+                  aria-label="筛选实例名"
+                  value={searchName}
+                  onChange={(event) => setSearchName(event.target.value)}
+                  placeholder="搜索实例名"
+                />
+              </label>
+            </div>
+
             <div className="template-workbench-segmented range-workbench-segmented" role="tablist" aria-label="实例视图切换">
               <button type="button" aria-pressed={listMode === 'active'} onClick={() => setListMode('active')}>
                 实例列表

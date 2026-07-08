@@ -167,6 +167,72 @@ describe('single instances', () => {
     });
   });
 
+  it('offsets vSwitch round-robin by current active single-instance count', async () => {
+    await repository.createRangeInstance({
+      name: 'existing-running',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'existing-running',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-existing-1',
+        hostName: 'existing-running',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-bootstrap-1',
+      },
+    });
+    await repository.createRangeInstance({
+      name: 'existing-destroyed',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'destroyed',
+      singleInstanceConfig: {
+        baseName: 'existing-destroyed',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-existing-2',
+        hostName: 'existing-destroyed',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-bootstrap-2',
+      },
+    });
+    const activeCount = (await repository.listRangeInstances()).filter(
+      (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
+    ).length;
+    const expectedVswitchIds = ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'];
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'offset-lab',
+        hostName: 'offset-host',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 2,
+        password: '',
+        remark: 'round robin offset',
+        triggeredBy: 'admin',
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.instances[0].singleInstanceConfig.assignedVswitchId).toBe(expectedVswitchIds[activeCount % 3]);
+    expect(response.body.instances[1].singleInstanceConfig.assignedVswitchId).toBe(expectedVswitchIds[(activeCount + 1) % 3]);
+  });
+
   it('rejects stop for single-instance row actions', async () => {
     const instance = await repository.createRangeInstance({
       name: 'stop-guard',

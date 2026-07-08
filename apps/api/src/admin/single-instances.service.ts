@@ -39,11 +39,14 @@ export class SingleInstancesService {
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId);
     const password = input.password?.trim() || generateAliyunEcsPassword();
     const quantity = input.quantity;
+    const activeCount = (await this.adminRepository.listRangeInstances()).filter(
+      (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
+    ).length;
     const created = [];
 
     for (let index = 0; index < quantity; index += 1) {
       const quantityIndex = index + 1;
-      const network = this.singleInstanceNetworkService.allocateVswitch(profile, index);
+      const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
       const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
       const hostName = this.resolveIndexedValue(input.hostName?.trim() || input.name, quantityIndex, quantity);
       const hostKey = `single-ecs-${quantityIndex}`;
