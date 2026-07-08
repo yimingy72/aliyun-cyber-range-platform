@@ -63,6 +63,10 @@ export class RangeInstancesService {
   }
 
   async create(input: CreateRangeInstanceInput) {
+    if (!input.templateId) {
+      throw new ConflictException('Range instance requires a template id');
+    }
+
     const template = await this.adminRepository.getRangeTemplateById(input.templateId);
 
     if (!template) {

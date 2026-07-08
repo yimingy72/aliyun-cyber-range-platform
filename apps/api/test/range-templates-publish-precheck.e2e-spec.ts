@@ -124,6 +124,7 @@ function createTemplateRecord(overrides: Partial<RangeTemplateRecord> = {}): Ran
   return {
     id: 'template-1',
     name: 'Enterprise Template',
+    createdBy: 'admin',
     description: null,
     slug: 'enterprise-template',
     version: 'v1',
