@@ -18,6 +18,9 @@ import { SystemConfigController } from './admin/system-config.controller';
 import { SystemConfigService } from './admin/system-config.service';
 import { ProvisionJobsController } from './admin/provision-jobs.controller';
 import { ProvisionJobsService } from './admin/provision-jobs.service';
+import { SingleInstanceNetworkService } from './admin/single-instance-network.service';
+import { SingleInstancesController } from './admin/single-instances.controller';
+import { SingleInstancesService } from './admin/single-instances.service';
 import { AppController } from './app.controller';
 import { PrismaAdminRepository } from './database/prisma-admin.repository';
 import { PrismaService } from './database/prisma.service';
@@ -55,6 +58,7 @@ function resolveProjectRootDir() {
     SystemConfigController,
     ImageCatalogController,
     PlatformImagesController,
+    SingleInstancesController,
   ],
   providers: [
     AdminAuthGuard,
@@ -63,6 +67,8 @@ function resolveProjectRootDir() {
     RangeTemplatesService,
     RangeInstancesService,
     RangeInstanceNodeActionsService,
+    SingleInstancesService,
+    SingleInstanceNetworkService,
     ProvisionJobsService,
     SystemConfigService,
     CidrPoolService,

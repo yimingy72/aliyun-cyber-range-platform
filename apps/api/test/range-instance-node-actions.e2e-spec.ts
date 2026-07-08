@@ -33,6 +33,7 @@ describe('Range instance node actions API', () => {
   let app: INestApplication;
   let repository: AdminRepository;
   let instanceId: string;
+  let singleInstanceId: string;
   let fetchMock: jest.SpiedFunction<typeof fetch>;
 
   beforeAll(async () => {
@@ -103,6 +104,33 @@ describe('Range instance node actions API', () => {
     });
 
     instanceId = instance.id;
+
+    const singleInstance = await repository.createRangeInstance({
+      name: 'node-action-single',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'node-action-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'single-ecs-1',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-image-123',
+        imageDisplayName: 'Ubuntu',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: {
+          'single-ecs-1': 'i-instance-single-123',
+        },
+      },
+    });
+
+    singleInstanceId = singleInstance.id;
   });
 
   afterAll(async () => {
@@ -159,5 +187,15 @@ describe('Range instance node actions API', () => {
         description: 'snapshot note',
       }),
     );
+  });
+
+  it('opens a VNC URL for a single instance row action', async () => {
+    const response = await request(app.getHttpServer())
+      .post(`/admin/instances/${singleInstanceId}/actions/open-vnc`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ triggeredBy: 'admin' })
+      .expect(201);
+
+    expect(response.body.vncUrl).toBe('wss://vnc.example.test');
   });
 });

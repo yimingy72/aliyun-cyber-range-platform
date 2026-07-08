@@ -38,7 +38,11 @@ export class RangeInstancesService {
   async list() {
     const instances = await this.adminRepository.listRangeInstances();
 
-    return Promise.all(instances.map((instance) => this.attachRecoverySummary(instance)));
+    return Promise.all(
+      instances
+        .filter((instance) => instance.instanceMode === 'range')
+        .map((instance) => this.attachRecoverySummary(instance)),
+    );
   }
 
   async getById(id: string) {
@@ -105,6 +109,7 @@ export class RangeInstancesService {
     const instance = await this.adminRepository.createRangeInstance({
       name: input.name,
       createdBy: input.triggeredBy,
+      instanceMode: 'range',
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
       runtimeTopologyGraph: sourceTemplateVersion.topologyGraph ?? template.topologyGraph ?? null,

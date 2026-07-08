@@ -187,6 +187,32 @@ export class RangeInstanceNodeActionsService {
     };
   }
 
+  async runSingleInstanceAction(
+    rangeInstanceId: string,
+    action: 'reboot' | 'open-vnc' | 'pack-image',
+    payload: Record<string, string>,
+  ) {
+    const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
+
+    if (!instance) {
+      throw new NotFoundException('Single instance not found');
+    }
+
+    if (instance.instanceMode !== 'single') {
+      throw new NotFoundException('Single instance not found');
+    }
+
+    const hostKey =
+      instance.singleInstanceConfig?.hostKey ??
+      Object.keys(instance.resourceSummary?.hostIds ?? {})[0];
+
+    if (!hostKey) {
+      throw new NotFoundException('Range instance host node not found');
+    }
+
+    return this.run(rangeInstanceId, hostKey, action, payload);
+  }
+
   private resolveHostInstanceId(instance: RangeInstanceRecord, nodeId: string) {
     const hostIds = instance.resourceSummary?.hostIds;
     const hostInstanceId = hostIds?.[nodeId];
