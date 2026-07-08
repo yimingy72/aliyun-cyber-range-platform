@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -7,12 +7,14 @@ const {
   fetchProvisionJobsMock,
   fetchPlatformImagesMock,
   launchSingleInstancesMock,
+  deleteRangeInstanceMock,
   triggerSingleInstanceActionMock,
 } = vi.hoisted(() => ({
   fetchSingleInstancesMock: vi.fn(),
   fetchProvisionJobsMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
   launchSingleInstancesMock: vi.fn(),
+  deleteRangeInstanceMock: vi.fn(),
   triggerSingleInstanceActionMock: vi.fn(),
 }));
 
@@ -40,6 +42,7 @@ vi.mock('../../lib/admin-api', () => ({
   fetchProvisionJobs: fetchProvisionJobsMock,
   fetchPlatformImages: fetchPlatformImagesMock,
   launchSingleInstances: launchSingleInstancesMock,
+  deleteRangeInstance: deleteRangeInstanceMock,
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
 }));
 
@@ -65,6 +68,7 @@ describe('SingleInstancesScreen', () => {
     fetchProvisionJobsMock.mockReset();
     fetchPlatformImagesMock.mockReset();
     launchSingleInstancesMock.mockReset();
+    deleteRangeInstanceMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
   });
@@ -172,6 +176,19 @@ describe('SingleInstancesScreen', () => {
           memory: 8,
         },
       },
+      {
+        id: 'single-destroy-failed',
+        name: 'destroy-failed-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'destroy_failed',
+        createdAt: '2026-07-08T11:00:00.000Z',
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 4,
+        },
+      },
     ]);
 
     fetchProvisionJobsMock.mockResolvedValue([
@@ -214,11 +231,29 @@ describe('SingleInstancesScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(screen.getByRole('button', { name: '销毁实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '重试任务' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重试销毁' })).toBeNull();
 
-    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[1]);
-    expect(screen.getByRole('button', { name: '重试任务' })).toBeTruthy();
+    const createFailedRow = screen.getByText('failed-lab').closest('article');
+    fireEvent.click(within(createFailedRow!).getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除记录' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '删除记录' }));
+    await waitFor(() =>
+      expect(deleteRangeInstanceMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'single-create-failed',
+      ),
+    );
+
+    const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('article');
+    fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '重试销毁' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '删除记录' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
 
@@ -226,9 +261,6 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeTruthy();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
     expect(screen.getByText('2 小时 35 分钟')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
-    expect(screen.queryByRole('button', { name: '重试任务' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
   });
 });

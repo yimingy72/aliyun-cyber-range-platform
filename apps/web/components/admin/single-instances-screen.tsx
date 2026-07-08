@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 
 import {
   AdminApiError,
+  deleteRangeInstance,
   fetchPlatformImages,
   fetchProvisionJobs,
   fetchSingleInstances,
@@ -39,6 +40,8 @@ type CreateDialogState = {
   quantity: string;
   remark: string;
 };
+
+type MenuAction = SingleInstanceAction | 'delete-record';
 
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
@@ -163,29 +166,33 @@ function readJobTimestamp(job: ProvisionJob | undefined, edge: 'start' | 'end') 
   return job.finishedAt ?? job.startedAt ?? null;
 }
 
-function getAvailableActions(status: string): SingleInstanceAction[] {
+function getAvailableActions(status: string): MenuAction[] {
   if (status === 'running') {
     return ['reboot', 'open-vnc', 'pack-image', 'destroy'];
   }
 
   if (status === 'destroy_failed') {
-    return ['retry', 'destroy'];
+    return ['retry'];
   }
 
   if (status === 'create_failed') {
-    return ['retry'];
+    return ['retry', 'delete-record'];
   }
 
   return [];
 }
 
-function getActionLabel(action: SingleInstanceAction) {
+function getActionLabel(action: MenuAction, status: string) {
+  if (action === 'delete-record') {
+    return '删除记录';
+  }
+
   if (action === 'destroy') {
     return '销毁实例';
   }
 
   if (action === 'retry') {
-    return '重试任务';
+    return status === 'destroy_failed' ? '重试销毁' : '重试创建';
   }
 
   if (action === 'reboot') {
@@ -385,7 +392,7 @@ export function SingleInstancesScreen({
     }
   }
 
-  async function handleAction(instance: RangeInstance, action: SingleInstanceAction) {
+  async function handleAction(instance: RangeInstance, action: MenuAction) {
     if (!session.token) {
       return;
     }
@@ -394,6 +401,13 @@ export function SingleInstancesScreen({
     setErrorMessage(null);
 
     try {
+      if (action === 'delete-record') {
+        await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
+        setInstances((current) => current.filter((item) => item.id !== instance.id));
+        setJobs((current) => current.filter((item) => item.rangeInstanceId !== instance.id));
+        return;
+      }
+
       await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
         triggeredBy: 'admin',
         ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
@@ -543,20 +557,24 @@ export function SingleInstancesScreen({
                       </>
                     )}
                     <div className="template-workbench-row-menu range-workbench-actions workbench-action-cell">
-                      <button
-                        type="button"
-                        onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
-                      >
-                        更多操作
-                      </button>
-                      {menuInstanceId === instance.id ? (
-                        <div className="template-workbench-action-menu">
-                          {actions.map((action) => (
-                            <button key={action} type="button" onClick={() => void handleAction(instance, action)}>
-                              {getActionLabel(action)}
-                            </button>
-                          ))}
-                        </div>
+                      {actions.length ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
+                          >
+                            更多操作
+                          </button>
+                          {menuInstanceId === instance.id ? (
+                            <div className="template-workbench-action-menu">
+                              {actions.map((action) => (
+                                <button key={action} type="button" onClick={() => void handleAction(instance, action)}>
+                                  {getActionLabel(action, instance.status)}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </>
                       ) : null}
                     </div>
                   </article>
