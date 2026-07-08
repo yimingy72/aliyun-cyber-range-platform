@@ -57,5 +57,20 @@ describe('createMemoryAdminRepository single-instance extensions', () => {
       vswitchIds: ['vsw-a', 'vsw-b', 'vsw-c'],
       securityGroupId: 'sg-1',
     });
+
+    reloaded?.singleInstanceConfig && (reloaded.singleInstanceConfig.hostKey = 'mutated-host');
+    network?.vswitchIds.push('vsw-mutated');
+
+    const reloadedAgain = await repository.getRangeInstanceById(single.id);
+    const networkAgain = await repository.getSingleInstanceNetworkProfile({
+      provider: 'alibaba_cloud',
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+    });
+
+    expect(reloadedAgain?.singleInstanceConfig).toMatchObject({
+      hostKey: 'single-ecs-1',
+    });
+    expect(networkAgain?.vswitchIds).toEqual(['vsw-a', 'vsw-b', 'vsw-c']);
   });
 });

@@ -53,7 +53,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
   const nextId = () => `memory-${idCounter++}`;
   const now = () => new Date();
-  const clone = <T extends Record<string, unknown>>(record: T): T => ({ ...record });
+  const clone = <T>(record: T): T => structuredClone(record);
   const cloneList = <T extends Record<string, unknown>>(records: T[]): T[] => records.map((record) => clone(record));
   const assignIfDefined = <T extends Record<string, unknown>, K extends keyof T>(
     target: T,
