@@ -168,6 +168,10 @@ function readJobTimestamp(job: ProvisionJob | undefined, edge: 'start' | 'end') 
   return job.finishedAt ?? job.startedAt ?? null;
 }
 
+function compareJobTimeAscending(left: ProvisionJob, right: ProvisionJob) {
+  return String(left.startedAt ?? left.finishedAt ?? '').localeCompare(String(right.startedAt ?? right.finishedAt ?? ''));
+}
+
 function getAvailableActions(status: string): MenuAction[] {
   if (status === 'running') {
     return ['destroy', 'reboot', 'open-vnc', 'pack-image'];
@@ -281,6 +285,19 @@ export function SingleInstancesScreen({
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
 
+  async function reloadSingleInstanceRows(token: string) {
+    const [nextInstances, nextJobs] = await Promise.all([
+      fetchSingleInstances(apiBaseUrl, token),
+      fetchProvisionJobs(apiBaseUrl, token),
+    ]);
+    const singleInstances = nextInstances.filter((instance) => instance.instanceMode === 'single');
+
+    setInstances(singleInstances);
+    setJobs(nextJobs.filter((job) => singleInstances.some((instance) => instance.id === job.rangeInstanceId)));
+
+    return singleInstances;
+  }
+
   useEffect(() => {
     if (!session.isReady || !session.token) {
       return;
@@ -289,18 +306,13 @@ export function SingleInstancesScreen({
     let isActive = true;
 
     void Promise.all([
-      fetchSingleInstances(apiBaseUrl, session.token),
-      fetchProvisionJobs(apiBaseUrl, session.token),
+      reloadSingleInstanceRows(session.token),
       fetchPlatformImages(apiBaseUrl, session.token),
     ])
-      .then(([nextInstances, nextJobs, nextImages]) => {
+      .then(([, nextImages]) => {
         if (!isActive) {
           return;
         }
-
-        const singleInstances = nextInstances.filter((instance) => instance.instanceMode === 'single');
-        setInstances(singleInstances);
-        setJobs(nextJobs.filter((job) => singleInstances.some((instance) => instance.id === job.rangeInstanceId)));
         setPlatformImages(nextImages.items);
         setCreateForm((current) =>
           current.platformImageQuery ? current : buildDefaultDialogState(nextImages.items.filter((item) => item.enabled)),
@@ -323,7 +335,7 @@ export function SingleInstancesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, router, session.isReady, session.token]);
+  }, [apiBaseUrl, session.isReady, session.token]);
 
   const jobsByInstanceId = useMemo(() => {
     return jobs.reduce<Map<string, ProvisionJob[]>>((map, job) => {
@@ -338,19 +350,45 @@ export function SingleInstancesScreen({
     return Array.from(jobsByInstanceId.entries()).reduce<
       Map<string, { createJob?: ProvisionJob; destroyJob?: ProvisionJob }>
     >((map, [instanceId, instanceJobs]) => {
-      const createJobs = instanceJobs.filter((job) => job.jobType === 'create');
-      const destroyJobs = instanceJobs.filter((job) => job.jobType === 'destroy');
+      let createJob: ProvisionJob | undefined;
+      let destroyJob: ProvisionJob | undefined;
+      let retryPhase: 'create' | 'destroy' | null = null;
+
+      for (const job of instanceJobs.slice().sort(compareJobTimeAscending)) {
+        if (job.jobType === 'create') {
+          retryPhase = 'create';
+
+          if (job.status === 'succeeded') {
+            createJob = job;
+          }
+
+          continue;
+        }
+
+        if (job.jobType === 'destroy') {
+          retryPhase = 'destroy';
+
+          if (job.status === 'succeeded') {
+            destroyJob = job;
+          }
+
+          continue;
+        }
+
+        if (job.jobType === 'retry' && job.status === 'succeeded') {
+          if (retryPhase === 'create') {
+            createJob = job;
+          }
+
+          if (retryPhase === 'destroy') {
+            destroyJob = job;
+          }
+        }
+      }
+
       map.set(instanceId, {
-        createJob: createJobs
-          .slice()
-          .sort((left, right) =>
-            String(right.finishedAt ?? right.startedAt ?? '').localeCompare(String(left.finishedAt ?? left.startedAt ?? '')),
-          )[0],
-        destroyJob: destroyJobs
-          .slice()
-          .sort((left, right) =>
-            String(right.finishedAt ?? right.startedAt ?? '').localeCompare(String(left.finishedAt ?? left.startedAt ?? '')),
-          )[0],
+        createJob,
+        destroyJob,
       });
       return map;
     }, new Map<string, { createJob?: ProvisionJob; destroyJob?: ProvisionJob }>());
@@ -438,7 +476,7 @@ export function SingleInstancesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, createForm.cpu, createForm.memory, isCreateOpen, router, session, session.isReady, session.token]);
+  }, [apiBaseUrl, createForm.cpu, createForm.memory, isCreateOpen, session.isReady, session.token]);
 
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -512,8 +550,7 @@ export function SingleInstancesScreen({
     try {
       if (action === 'delete-record') {
         await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
-        setInstances((current) => current.filter((item) => item.id !== instance.id));
-        setJobs((current) => current.filter((item) => item.rangeInstanceId !== instance.id));
+        await reloadSingleInstanceRows(session.token);
         return;
       }
 
@@ -521,6 +558,7 @@ export function SingleInstancesScreen({
         triggeredBy: 'admin',
         ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
       });
+      await reloadSingleInstanceRows(session.token);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();

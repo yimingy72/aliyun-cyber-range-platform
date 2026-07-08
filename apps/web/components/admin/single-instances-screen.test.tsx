@@ -333,6 +333,132 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
   });
 
+  it('uses successful retry jobs as effective history lifecycle timestamps', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-destroyed',
+        name: 'history-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'destroyed',
+        createdAt: '2026-07-08T08:00:00.000Z',
+        accessEntry: { publicIp: '47.9.9.9' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 4,
+          memory: 8,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([
+      {
+        id: 'job-create-history',
+        rangeInstanceId: 'single-destroyed',
+        jobType: 'create',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T08:15:00.000Z',
+        finishedAt: '2026-07-08T08:20:00.000Z',
+      },
+      {
+        id: 'job-create-retry-history',
+        rangeInstanceId: 'single-destroyed',
+        jobType: 'retry',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T08:25:00.000Z',
+        finishedAt: '2026-07-08T08:30:00.000Z',
+      },
+      {
+        id: 'job-destroy-history',
+        rangeInstanceId: 'single-destroyed',
+        jobType: 'destroy',
+        status: 'failed',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T10:40:00.000Z',
+        finishedAt: '2026-07-08T10:45:00.000Z',
+      },
+      {
+        id: 'job-destroy-retry-history',
+        rangeInstanceId: 'single-destroyed',
+        jobType: 'retry',
+        status: 'succeeded',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T10:46:00.000Z',
+        finishedAt: '2026-07-08T10:50:00.000Z',
+      },
+    ]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '实例历史' }));
+
+    expect(await screen.findByText('history-lab')).toBeTruthy();
+    expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:25:00.000Z'))).toBeTruthy();
+    expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
+    expect(screen.getByText('2 小时 25 分钟')).toBeTruthy();
+    expect(screen.queryByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeNull();
+    expect(screen.queryByText(formatExpectedDateTime('2026-07-08T10:45:00.000Z'))).toBeNull();
+  });
+
+  it('reloads current list and jobs after a successful row action', async () => {
+    fetchSingleInstancesMock.mockImplementation(async () => [
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: triggerSingleInstanceActionMock.mock.calls.length ? 'pending_destroy' : 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockImplementation(async () =>
+      triggerSingleInstanceActionMock.mock.calls.length
+        ? [
+            {
+              id: 'job-destroy-reloaded',
+              rangeInstanceId: 'single-running',
+              jobType: 'destroy',
+              status: 'running',
+              triggeredBy: 'admin',
+              startedAt: '2026-07-08T09:10:00.000Z',
+            },
+          ]
+        : [],
+    );
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    triggerSingleInstanceActionMock.mockResolvedValue({ jobId: 'job-destroy-reloaded' });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('running-lab')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭实例' }));
+
+    await waitFor(() =>
+      expect(triggerSingleInstanceActionMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'single-running',
+        'destroy',
+        expect.objectContaining({ triggeredBy: 'admin' }),
+      ),
+    );
+    await waitFor(() => expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('销毁中')).toBeTruthy();
+  });
+
   it('guards create flow when there are no enabled platform images', async () => {
     fetchSingleInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);
