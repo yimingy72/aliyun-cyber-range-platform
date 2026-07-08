@@ -341,7 +341,7 @@ resource "alicloud_vpc" "range" {
 resource "alicloud_vpc_ipv4_cidr_block" "secondary" {
   for_each = toset(local.normalized_secondary_vpc_cidrs)
 
-  vpc_id          = alicloud_vpc.range.id
+  vpc_id               = alicloud_vpc.range.id
   secondary_cidr_block = each.value
 }
 
