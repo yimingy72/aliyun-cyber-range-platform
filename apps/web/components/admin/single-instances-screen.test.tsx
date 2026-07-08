@@ -24,6 +24,10 @@ const { replaceMock } = vi.hoisted(() => ({
   replaceMock: vi.fn(),
 }));
 
+const { openWindowMock } = vi.hoisted(() => ({
+  openWindowMock: vi.fn(),
+}));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     replace: replaceMock,
@@ -75,10 +79,13 @@ describe('SingleInstancesScreen', () => {
     deleteRangeInstanceMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
+    openWindowMock.mockReset();
+    vi.stubGlobal('open', openWindowMock);
   });
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it('renders list/history, opens create dialog, and submits the launch payload when the spec is saleable', async () => {
@@ -466,6 +473,46 @@ describe('SingleInstancesScreen', () => {
     );
     await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
     expect(await screen.findByText('销毁中')).toBeTruthy();
+  });
+
+  it('opens returned vnc url for open-vnc actions', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    triggerSingleInstanceActionMock.mockResolvedValue({
+      vncUrl: 'https://console.example.test/vnc/session-1',
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('running-lab')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '打开 VNC' }));
+
+    await waitFor(() =>
+      expect(openWindowMock).toHaveBeenCalledWith(
+        'https://console.example.test/vnc/session-1',
+        '_blank',
+        'noopener,noreferrer',
+      ),
+    );
   });
 
   it('blocks duplicate row action clicks while a request is in flight', async () => {

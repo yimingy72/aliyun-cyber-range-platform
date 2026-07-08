@@ -560,10 +560,29 @@ export function SingleInstancesScreen({
         return;
       }
 
-      await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
+      const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
         triggeredBy: 'admin',
         ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
       });
+
+      if (action === 'open-vnc') {
+        const vncUrl =
+          result &&
+          typeof result === 'object' &&
+          'vncUrl' in result &&
+          typeof (result as { vncUrl?: unknown }).vncUrl === 'string'
+            ? (result as { vncUrl: string }).vncUrl.trim()
+            : '';
+
+        if (!vncUrl) {
+          setErrorMessage('VNC 地址未返回，请稍后重试。');
+          return;
+        }
+
+        window.open(vncUrl, '_blank', 'noopener,noreferrer');
+        return;
+      }
+
       await reloadSingleInstanceRows(session.token);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
