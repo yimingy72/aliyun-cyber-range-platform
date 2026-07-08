@@ -229,16 +229,16 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('running-lab')).toBeTruthy();
 
     fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
-    expect(screen.getByRole('button', { name: '销毁实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '重试销毁' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();
 
     const createFailedRow = screen.getByText('failed-lab').closest('article');
     fireEvent.click(within(createFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除记录' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '关闭实例' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '删除记录' }));
     await waitFor(() =>
@@ -251,8 +251,8 @@ describe('SingleInstancesScreen', () => {
 
     const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('article');
     fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '重试销毁' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
+    expect(screen.getByRole('button', { name: '重试关闭' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '关闭实例' })).toBeNull();
     expect(screen.queryByRole('button', { name: '删除记录' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '实例历史' }));

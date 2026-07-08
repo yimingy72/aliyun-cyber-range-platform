@@ -188,11 +188,11 @@ function getActionLabel(action: MenuAction, status: string) {
   }
 
   if (action === 'destroy') {
-    return '销毁实例';
+    return '关闭实例';
   }
 
   if (action === 'retry') {
-    return status === 'destroy_failed' ? '重试销毁' : '重试创建';
+    return status === 'destroy_failed' ? '重试关闭' : '重试创建';
   }
 
   if (action === 'reboot') {
@@ -203,7 +203,7 @@ function getActionLabel(action: MenuAction, status: string) {
     return '打开 VNC';
   }
 
-  return '打包镜像';
+  return '打包为镜像';
 }
 
 function buildDefaultDialogState(platformImages: PlatformImageAsset[]): CreateDialogState {
