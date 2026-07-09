@@ -256,6 +256,7 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByText('实例名')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
+    expect(screen.getByText('实例名')).toBeTruthy();
     expect(screen.getByRole('button', { name: '一键关闭' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();

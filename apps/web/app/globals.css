@@ -2837,6 +2837,10 @@ body {
   font-weight: 700;
 }
 
+.single-instance-batch-child-action-head {
+  padding-left: 14px;
+}
+
 .single-instance-batch-child-head.is-history,
 .single-instance-batch-child-row.is-history {
   grid-template-columns: 1.2fr 0.7fr 0.9fr 1fr 0.8fr;

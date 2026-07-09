@@ -975,12 +975,12 @@ export function SingleInstancesScreen({
                         {isExpanded ? (
                           <div className="single-instance-batch-children">
                             <div className={`single-instance-batch-child-head${isHistoryGroup ? ' is-history' : ''}`}>
-                              <div>子实例</div>
+                              <div>实例名</div>
                               <div>规格</div>
                               <div>公网 IP</div>
                               <div>账号/密码</div>
                               <div>状态</div>
-                              {isHistoryGroup ? null : <div>操作</div>}
+                              {isHistoryGroup ? null : <div className="single-instance-batch-child-action-head">操作</div>}
                             </div>
                             {group.instances.map((instance) => {
                               const actions = getAvailableActions(instance.status).filter((action) => action !== 'pack-image');
