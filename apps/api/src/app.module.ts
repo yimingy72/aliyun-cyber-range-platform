@@ -19,6 +19,7 @@ import { SystemConfigService } from './admin/system-config.service';
 import { ProvisionJobsController } from './admin/provision-jobs.controller';
 import { ProvisionJobsService } from './admin/provision-jobs.service';
 import { SingleInstanceNetworkService } from './admin/single-instance-network.service';
+import { SingleInstanceBatchExecutionService } from './admin/single-instance-batch-execution.service';
 import { SingleInstancesController } from './admin/single-instances.controller';
 import { SingleInstancesService } from './admin/single-instances.service';
 import { AppController } from './app.controller';
@@ -68,6 +69,7 @@ function resolveProjectRootDir() {
     RangeTemplatesService,
     RangeInstancesService,
     RangeInstanceNodeActionsService,
+    SingleInstanceBatchExecutionService,
     SingleInstancesService,
     SingleInstanceNetworkService,
     ProvisionJobsService,

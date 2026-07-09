@@ -1,5 +1,6 @@
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
+import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 function createSystemConfigServiceStub() {
@@ -15,6 +16,29 @@ function createSystemConfigServiceStub() {
 }
 
 describe('ProvisioningWorkerService concurrency', () => {
+  it('limits single-instance batch execution concurrency to three', async () => {
+    const repository = createMemoryAdminRepository();
+    const executor = new SingleInstanceBatchExecutionService(
+      repository,
+      createSystemConfigServiceStub() as any,
+    );
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    await Promise.all(
+      Array.from({ length: 4 }, (_, index) =>
+        executor.runWithSlot(async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 25 + index));
+          inFlight -= 1;
+        }),
+      ),
+    );
+
+    expect(maxInFlight).toBe(3);
+  });
+
   it('marks a failed destroy retry back to destroy_failed instead of create_failed', async () => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({
