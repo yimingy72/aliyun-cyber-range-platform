@@ -252,6 +252,8 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('web-lab-batch')).toBeTruthy();
+    expect(screen.getAllByText('批次名')).toHaveLength(1);
+    expect(screen.queryByText('实例名')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
     expect(screen.getByRole('button', { name: '一键关闭' })).toBeTruthy();

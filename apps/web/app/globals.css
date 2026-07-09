@@ -2772,6 +2772,11 @@ body {
   font-weight: 700;
 }
 
+.single-instance-batch-header.is-history,
+.single-instance-batch-row.is-history {
+  grid-template-columns: 48px 1.35fr 1.15fr 0.65fr 1.15fr 1fr 1fr 0.8fr;
+}
+
 .single-instance-batch-card {
   background: #ffffff;
   border-bottom: 1px solid #edf1f6;
@@ -2830,6 +2835,11 @@ body {
   color: #617089;
   font-size: 12px;
   font-weight: 700;
+}
+
+.single-instance-batch-child-head.is-history,
+.single-instance-batch-child-row.is-history {
+  grid-template-columns: 1.2fr 0.7fr 0.9fr 1fr 0.8fr;
 }
 
 .single-instance-batch-child-row {

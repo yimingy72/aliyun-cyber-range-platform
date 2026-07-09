@@ -907,53 +907,28 @@ export function SingleInstancesScreen({
             <p className="admin-empty">请先前往镜像中心收录或启用至少一个平台镜像。</p>
           ) : null}
 
-          {listMode === 'history' ? (
-            <div className="single-instance-history-column-head">
-              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
-              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
-              <div className="template-workbench-column-cell"><strong>镜像</strong></div>
-              <div className="template-workbench-column-cell"><strong>规格</strong></div>
-              <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
-              <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
-            </div>
-          ) : (
-            <div className="single-instance-workbench-column-head">
-              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
-              <div className="template-workbench-column-cell"><strong>镜像</strong></div>
-              <div className="template-workbench-column-cell"><strong>规格</strong></div>
-              <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
-              <div className="template-workbench-column-cell"><strong>状态</strong></div>
-              <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>到期时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
-              <div className="template-workbench-column-cell"><strong>账号/密码</strong></div>
-              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
-            </div>
-          )}
-
           {hasVisibleContent ? (
             <>
               {visibleBatchGroups.length ? (
                 <div className="single-instance-batch-section">
-                  <div className="single-instance-batch-header">
+                  <div className={`single-instance-batch-header${listMode === 'history' ? ' is-history' : ''}`}>
                     <div></div>
                     <div>批次名</div>
                     <div>镜像</div>
                     <div>数量</div>
-                    <div>状态汇总</div>
+                    <div>{listMode === 'history' ? '结果汇总' : '状态汇总'}</div>
                     <div>创建时间</div>
-                    <div>到期时间</div>
+                    <div>{listMode === 'history' ? '结束时间' : '到期时间'}</div>
                     <div>创建人</div>
-                    <div>操作</div>
+                    {listMode === 'history' ? null : <div>批量操作</div>}
                   </div>
                   {visibleBatchGroups.map((group) => {
                     const isExpanded = expandedBatchIds.includes(group.batch.id);
+                    const isHistoryGroup = isHistoryBatch(group);
 
                     return (
                       <div key={group.batch.id} className="single-instance-batch-card">
-                        <div className="single-instance-batch-row">
+                        <div className={`single-instance-batch-row${isHistoryGroup ? ' is-history' : ''}`}>
                           <button
                             type="button"
                             className="single-instance-batch-toggle"
@@ -989,32 +964,30 @@ export function SingleInstancesScreen({
                           <div className="range-workbench-main">
                             <span>{group.batch.createdBy?.trim() || 'admin'}</span>
                           </div>
-                          <div className="single-instance-batch-actions">
-                            {!isHistoryBatch(group) ? (
+                          {!isHistoryGroup ? (
+                            <div className="single-instance-batch-actions">
                               <button type="button" onClick={() => void handleBatchDestroy(group.batch.id)}>
                                 一键关闭
                               </button>
-                            ) : (
-                              <span>已关闭</span>
-                            )}
-                          </div>
+                            </div>
+                          ) : null}
                         </div>
                         {isExpanded ? (
                           <div className="single-instance-batch-children">
-                            <div className="single-instance-batch-child-head">
+                            <div className={`single-instance-batch-child-head${isHistoryGroup ? ' is-history' : ''}`}>
                               <div>子实例</div>
                               <div>规格</div>
                               <div>公网 IP</div>
                               <div>账号/密码</div>
                               <div>状态</div>
-                              <div>操作</div>
+                              {isHistoryGroup ? null : <div>操作</div>}
                             </div>
                             {group.instances.map((instance) => {
                               const actions = getAvailableActions(instance.status).filter((action) => action !== 'pack-image');
                               const isActionPending = pendingActionInstanceId === instance.id;
 
                               return (
-                                <div key={instance.id} className="single-instance-batch-child-row">
+                                <div key={instance.id} className={`single-instance-batch-child-row${isHistoryGroup ? ' is-history' : ''}`}>
                                   <div className="range-workbench-main">
                                     <strong>{instance.name?.trim() || instance.id}</strong>
                                   </div>
@@ -1036,13 +1009,15 @@ export function SingleInstancesScreen({
                                       {getStatusLabel(instance.status)}
                                     </span>
                                   </div>
-                                  <div className="single-instance-batch-child-actions">
-                                    {actions.map((action) => (
-                                      <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                        {getActionLabel(action, instance.status)}
-                                      </button>
-                                    ))}
-                                  </div>
+                                  {!isHistoryGroup ? (
+                                    <div className="single-instance-batch-child-actions">
+                                      {actions.map((action) => (
+                                        <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                          {getActionLabel(action, instance.status)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -1055,6 +1030,32 @@ export function SingleInstancesScreen({
               ) : null}
 
               {visibleInstances.length ? (
+                <>
+                {listMode === 'history' ? (
+                  <div className="single-instance-history-column-head">
+                    <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+                    <div className="template-workbench-column-cell"><strong>创建人</strong></div>
+                    <div className="template-workbench-column-cell"><strong>镜像</strong></div>
+                    <div className="template-workbench-column-cell"><strong>规格</strong></div>
+                    <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
+                    <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
+                    <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
+                    <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
+                  </div>
+                ) : (
+                  <div className="single-instance-workbench-column-head">
+                    <div className="template-workbench-column-cell"><strong>实例名</strong></div>
+                    <div className="template-workbench-column-cell"><strong>镜像</strong></div>
+                    <div className="template-workbench-column-cell"><strong>规格</strong></div>
+                    <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
+                    <div className="template-workbench-column-cell"><strong>状态</strong></div>
+                    <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
+                    <div className="template-workbench-column-cell"><strong>到期时间</strong></div>
+                    <div className="template-workbench-column-cell"><strong>创建人</strong></div>
+                    <div className="template-workbench-column-cell"><strong>账号/密码</strong></div>
+                    <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
+                  </div>
+                )}
                 <div className="range-workbench-rows">
               {visibleInstances.map((instance) => {
                 const isHistory = listMode === 'history';
@@ -1159,6 +1160,7 @@ export function SingleInstancesScreen({
                 );
               })}
                 </div>
+                </>
               ) : null}
             </>
           ) : (
