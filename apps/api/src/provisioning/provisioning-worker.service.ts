@@ -397,11 +397,33 @@ export class ProvisioningWorkerService {
       throw new Error('Single instance config missing');
     }
 
-    if (input.effectiveJobType === 'update' || input.effectiveJobType === 'refresh_status') {
+    if (input.effectiveJobType === 'update') {
       throw new Error('Single instance update jobs are not supported');
     }
 
     const items = await this.collectSingleInstanceExecutionItems(input);
+
+    if (input.effectiveJobType === 'refresh_status') {
+      const item = items[0];
+
+      if (!item) {
+        throw new Error('Single instance refresh job is missing its target item');
+      }
+
+      await this.runWorkerStep(input.reportStep, 'refresh_access_entry', async () => {
+        if (item.job.status === 'pending') {
+          await this.adminRepository.updateProvisionJob(item.job.id, {
+            status: 'running',
+            startedAt: new Date(),
+            finishedAt: null,
+            errorSummary: null,
+          });
+        }
+      });
+
+      await this.singleInstanceBatchExecutionService.refreshSingleInstanceAccessEntry(item);
+      return;
+    }
 
     if (input.effectiveJobType === 'create') {
       await this.runWorkerStep(input.reportStep, 'prepare', async () => {
@@ -421,6 +443,22 @@ export class ProvisioningWorkerService {
       });
 
       await this.singleInstanceBatchExecutionService.executeCreateBatch(items);
+
+      for (const item of items) {
+        const refreshedInstance = await this.adminRepository.getRangeInstanceById(item.instance.id);
+
+        if (!needsSingleInstancePublicIpRefresh(refreshedInstance)) {
+          continue;
+        }
+
+        const refreshJob = await this.adminRepository.createProvisionJob({
+          rangeInstanceId: item.instance.id,
+          jobType: 'refresh_status',
+          triggeredBy: item.job.triggeredBy,
+        });
+        this.dispatch(refreshJob.id);
+      }
+
       return;
     }
 
@@ -454,7 +492,12 @@ export class ProvisioningWorkerService {
       job: input.job,
     };
 
-    if (!batchId || input.job.jobType === 'retry') {
+    if (
+      !batchId ||
+      input.job.jobType === 'retry' ||
+      input.job.jobType === 'refresh_status' ||
+      input.effectiveJobType === 'refresh_status'
+    ) {
       return [currentItem];
     }
 
@@ -1092,6 +1135,17 @@ function readWorkerPollIntervalMs() {
   return Number.isFinite(configuredValue) && configuredValue > 0
     ? configuredValue
     : DEFAULT_WORKER_POLL_INTERVAL_MS;
+}
+
+function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null) {
+  return Boolean(
+    instance &&
+      instance.instanceMode === 'single' &&
+      instance.status === 'running' &&
+      instance.resourceSummary?.mode === 'ecs-native' &&
+      instance.resourceSummary?.hostIds &&
+      !instance.accessEntry?.publicIp,
+  );
 }
 
 function sleep(ms: number) {

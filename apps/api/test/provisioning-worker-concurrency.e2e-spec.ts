@@ -152,6 +152,216 @@ describe('ProvisioningWorkerService concurrency', () => {
     );
   });
 
+  it('schedules a refresh_status job when single-instance create succeeds without a public ip', async () => {
+    const repository = createMemoryAdminRepository();
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'refresh-batch',
+      platformImageAssetId: 'platform-image-1',
+      imageId: 'm-123',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 1,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const instance = await repository.createRangeInstance({
+      name: 'refresh-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'pending_create',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'refresh',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'refresh-01',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-refresh-01',
+        },
+      },
+    });
+    const createJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: createJob.id,
+    });
+
+    const worker = new ProvisioningWorkerService(
+      repository,
+      {
+        create: jest.fn(),
+        destroy: jest.fn(),
+      } as any,
+      createSystemConfigServiceStub() as any,
+      {
+        executeCreateBatch: jest.fn().mockImplementation(async (items: Array<{ instance: RangeInstanceRecord; job: ProvisionJobRecord }>) => {
+          const [item] = items;
+
+          await repository.updateRangeInstance(item.instance.id, {
+            status: 'running',
+            accessEntry: {
+              hostRole: 'single-ecs-1',
+              publicIp: null,
+              privateIp: '10.66.10.10',
+              ssh: null,
+            },
+            resourceSummary: {
+              mode: 'ecs-native',
+              hostIds: {
+                'single-ecs-1': 'i-refresh-01',
+              },
+            },
+          });
+          await repository.updateProvisionJob(item.job.id, {
+            status: 'succeeded',
+            finishedAt: new Date(),
+            errorSummary: null,
+          });
+        }),
+        executeDestroyBatch: jest.fn(),
+        refreshSingleInstanceAccessEntry: jest.fn(),
+      } as any,
+    );
+    const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation(() => {});
+
+    try {
+      await worker.process(createJob.id);
+      const refreshJobs = (await repository.listProvisionJobs()).filter((job) => job.jobType === 'refresh_status');
+
+      expect(refreshJobs).toHaveLength(1);
+      expect(refreshJobs[0]).toEqual(
+        expect.objectContaining({
+          rangeInstanceId: instance.id,
+          status: 'pending',
+        }),
+      );
+      expect(dispatchSpy).toHaveBeenCalledWith(refreshJobs[0].id);
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  it('processes a refresh_status job and backfills the single-instance public ip', async () => {
+    const repository = createMemoryAdminRepository();
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'refresh-process-batch',
+      platformImageAssetId: 'platform-image-1',
+      imageId: 'm-123',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 1,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const instance = await repository.createRangeInstance({
+      name: 'refresh-process-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'refresh-process',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'refresh-process-01',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      accessEntry: {
+        hostRole: 'single-ecs-1',
+        publicIp: null,
+        privateIp: '10.77.10.10',
+        ssh: null,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-refresh-process-01',
+        },
+      },
+    });
+    const refreshJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'refresh_status',
+      triggeredBy: 'admin',
+    });
+
+    const refreshSingleInstanceAccessEntry = jest.fn().mockImplementation(async (item: {
+      instance: RangeInstanceRecord;
+      job: ProvisionJobRecord;
+    }) => {
+      await repository.updateRangeInstance(item.instance.id, {
+        accessEntry: {
+          hostRole: 'single-ecs-1',
+          publicIp: '47.99.0.10',
+          privateIp: '10.77.10.10',
+          ssh: 'ssh root@47.99.0.10',
+        },
+      });
+      await repository.updateProvisionJob(item.job.id, {
+        status: 'succeeded',
+        finishedAt: new Date(),
+        errorSummary: null,
+      });
+    });
+    const worker = new ProvisioningWorkerService(
+      repository,
+      {
+        create: jest.fn(),
+        destroy: jest.fn(),
+      } as any,
+      createSystemConfigServiceStub() as any,
+      {
+        executeCreateBatch: jest.fn(),
+        executeDestroyBatch: jest.fn(),
+        refreshSingleInstanceAccessEntry,
+      } as any,
+    );
+
+    await worker.process(refreshJob.id);
+
+    expect(refreshSingleInstanceAccessEntry).toHaveBeenCalledTimes(1);
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        accessEntry: expect.objectContaining({
+          publicIp: '47.99.0.10',
+          ssh: 'ssh root@47.99.0.10',
+        }),
+      }),
+    );
+    await expect(repository.getProvisionJobById(refreshJob.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: refreshJob.id,
+        status: 'succeeded',
+        errorSummary: null,
+      }),
+    );
+  });
+
   it('marks a failed destroy retry back to destroy_failed instead of create_failed', async () => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({

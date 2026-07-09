@@ -243,6 +243,70 @@ export class SingleInstanceBatchExecutionService {
     });
   }
 
+  async refreshSingleInstanceAccessEntry(item: SingleInstanceExecutionItem) {
+    return this.runWithSlot(async () => {
+      const snapshot = await this.systemConfigService.getSnapshot();
+      const instanceId = resolveHostInstanceId(item.instance);
+
+      if (!instanceId) {
+        await this.adminRepository.updateProvisionJob(item.job.id, {
+          status: 'failed',
+          finishedAt: new Date(),
+          errorSummary: 'Single-instance ECS instance id is missing from resourceSummary.hostIds.',
+        });
+        return;
+      }
+
+      try {
+        const [detail] = await this.waitForInstancesVisible({
+          regionId: snapshot.defaultRegion,
+          instanceIds: [instanceId],
+          requirePublicIp: true,
+        });
+
+        if (!detail?.instanceId || !detail.publicIp) {
+          throw new Error('Timed out waiting for the single-instance public IP to become available.');
+        }
+
+        const hostKey = item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
+        const currentAccessEntry = item.instance.accessEntry;
+
+        await this.adminRepository.updateRangeInstance(item.instance.id, {
+          accessEntry: {
+            hostRole: currentAccessEntry?.hostRole ?? hostKey,
+            publicIp: detail.publicIp,
+            privateIp: detail.privateIp,
+            ssh: `ssh root@${detail.publicIp}`,
+          },
+          runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
+          runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(
+            item.instance.runtimeScenarioTemplateSpec,
+            hostKey,
+            detail,
+          ),
+          runtimeCompiledProvisionSpec: patchRuntimeCompiledProvisionSpec(
+            item.instance.runtimeCompiledProvisionSpec,
+            hostKey,
+            detail,
+          ),
+          errorSummary: null,
+        });
+        await this.adminRepository.updateProvisionJob(item.job.id, {
+          status: 'succeeded',
+          finishedAt: new Date(),
+          errorSummary: null,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown single-instance access-entry refresh error';
+        await this.adminRepository.updateProvisionJob(item.job.id, {
+          status: 'failed',
+          finishedAt: new Date(),
+          errorSummary: message,
+        });
+      }
+    });
+  }
+
   private async deleteInstancesWithRetry(input: {
     accessKeyId: string;
     accessKeySecret: string;
