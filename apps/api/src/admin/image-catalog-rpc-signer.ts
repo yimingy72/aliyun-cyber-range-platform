@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 
 export function signAliyunRpcQuery(parameters: Record<string, string>, accessKeySecret: string) {
   const canonicalizedQuery = Object.entries(parameters)
-    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .sort(([leftKey], [rightKey]) => compareAliyunRpcKeys(leftKey, rightKey))
     .map(([key, value]) => `${percentEncode(key)}=${percentEncode(value)}`)
     .join('&');
   const stringToSign = `GET&${percentEncode('/')}&${percentEncode(canonicalizedQuery)}`;
@@ -15,4 +15,8 @@ function percentEncode(value: string) {
   return encodeURIComponent(value)
     .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/%7E/g, '~');
+}
+
+function compareAliyunRpcKeys(leftKey: string, rightKey: string) {
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }

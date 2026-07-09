@@ -508,7 +508,7 @@ function toAttemptedZone(zone: ZoneEvaluation): AttemptedZone {
 
 function signAliyunRpcQuery(parameters: Record<string, string>, accessKeySecret: string) {
   const canonicalizedQuery = Object.entries(parameters)
-    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .sort(([leftKey], [rightKey]) => compareAliyunRpcKeys(leftKey, rightKey))
     .map(([key, value]) => `${percentEncodeAliyunRpc(key)}=${percentEncodeAliyunRpc(value)}`)
     .join('&');
   const stringToSign = `GET&${percentEncodeAliyunRpc('/')}&${percentEncodeAliyunRpc(canonicalizedQuery)}`;
@@ -521,6 +521,10 @@ function percentEncodeAliyunRpc(value: string) {
   return encodeURIComponent(value)
     .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/%7E/g, '~');
+}
+
+function compareAliyunRpcKeys(leftKey: string, rightKey: string) {
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 
 function formatAliyunTimestamp(value: Date) {

@@ -219,8 +219,8 @@ export class SingleInstanceBatchExecutionService {
           action: 'DeleteInstances',
           method: 'POST',
           parameters: {
-            InstanceIds: JSON.stringify(instanceIds),
             Force: 'true',
+            ...buildAliyunArrayParameters('InstanceId', instanceIds),
           },
         });
 
@@ -402,7 +402,7 @@ function signAliyunRpcRequest(
   method: 'GET' | 'POST',
 ) {
   const canonicalizedQuery = Object.entries(parameters)
-    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .sort(([leftKey], [rightKey]) => compareAliyunRpcKeys(leftKey, rightKey))
     .map(([key, value]) => `${percentEncode(key)}=${percentEncode(value)}`)
     .join('&');
   const stringToSign = `${method}&${percentEncode('/')}&${percentEncode(canonicalizedQuery)}`;
@@ -415,6 +415,10 @@ function percentEncode(value: string) {
   return encodeURIComponent(value)
     .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/%7E/g, '~');
+}
+
+function compareAliyunRpcKeys(leftKey: string, rightKey: string) {
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 
 type NormalizedInstanceDetail = {
@@ -622,4 +626,10 @@ function readInternetMaxBandwidthOut() {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildAliyunArrayParameters(prefix: string, values: string[]) {
+  return Object.fromEntries(
+    values.map((value, index) => [`${prefix}.${index + 1}`, value]),
+  );
 }
