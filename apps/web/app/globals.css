@@ -2827,7 +2827,7 @@ body {
   grid-template-columns: 1.2fr 0.7fr 0.9fr 1fr 0.8fr 1.2fr;
   gap: 16px;
   align-items: center;
-  padding: 0 66px;
+  padding: 0 66px 0 82px;
 }
 
 .single-instance-batch-child-head {
@@ -2838,7 +2838,7 @@ body {
 }
 
 .single-instance-batch-child-action-head {
-  padding-left: 14px;
+  padding-left: 88px;
 }
 
 .single-instance-batch-child-head.is-history,
