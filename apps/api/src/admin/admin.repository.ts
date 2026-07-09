@@ -2,6 +2,9 @@ export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 
 export type CloudProvider = 'alibaba_cloud';
 export type IacType = 'opentofu' | 'terraform';
+export type UserRole = 'admin' | 'user';
+export type UserStatus = 'active' | 'disabled';
+export type ResourceVisibility = 'private' | 'platform';
 export type RangeTemplateVersionStatus = 'draft' | 'published' | 'archived';
 export type RangeInstanceMode = 'range' | 'single';
 export type RangeInstanceStatus =
@@ -185,6 +188,7 @@ export type SingleInstanceBatchRecord = {
   quantity: number;
   remark: string | null;
   createdBy: string | null;
+  ownerUserId: string | null;
   expiresAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -199,6 +203,7 @@ export type RangeTemplateRecord = {
   id: string;
   name: string;
   createdBy: string;
+  ownerUserId: string | null;
   description: string | null;
   slug: string;
   version: string;
@@ -213,6 +218,7 @@ export type RangeTemplateRecord = {
   variableSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   defaultNetworkPolicy: Record<string, unknown> | null;
+  visibility: ResourceVisibility;
   currentDraftVersionId: string | null;
   currentPublishedVersionId: string | null;
   currentDraftVersion?: RangeTemplateVersionRecord | null;
@@ -226,6 +232,7 @@ export type RangeInstanceRecord = {
   id: string;
   name: string;
   createdBy: string | null;
+  ownerUserId: string | null;
   instanceMode: RangeInstanceMode;
   singleInstanceBatchId?: string | null;
   singleInstanceConfig: SingleInstanceConfig | null;
@@ -285,6 +292,16 @@ export type ProvisionJobStepLogRecord = {
   updatedAt: Date;
 };
 
+export type PlatformUserRecord = {
+  id: string;
+  username: string;
+  passwordHash: string;
+  role: UserRole;
+  status: UserStatus;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type CloudImageSnapshotRecord = {
   id: string;
   provider: CloudProvider;
@@ -330,6 +347,8 @@ export type PlatformImageAssetRecord = {
   defaultHostName: string | null;
   defaultPassword: string | null;
   description: string | null;
+  ownerUserId: string | null;
+  visibility: ResourceVisibility;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -419,6 +438,8 @@ export type ListPlatformImageAssetsFilter = Partial<{
   imageId: string;
   sourceSnapshotId: string | null;
   onlyAvailableSourceSnapshots: boolean;
+  ownerUserId: string | null;
+  visibility: ResourceVisibility;
 }>;
 
 export type CollectPlatformImageAssetInput = {
@@ -427,11 +448,29 @@ export type CollectPlatformImageAssetInput = {
   defaultHostName?: string | null;
   defaultPassword?: string | null;
   description?: string | null;
+  ownerUserId?: string | null;
+  visibility?: ResourceVisibility;
 };
+
+export type CreatePlatformUserInput = {
+  id: string;
+  username: string;
+  passwordHash: string;
+  role: UserRole;
+  status?: UserStatus;
+};
+
+export type UpdatePlatformUserInput = Partial<{
+  username: string;
+  passwordHash: string;
+  role: UserRole;
+  status: UserStatus;
+}>;
 
 export type CreateRangeTemplateInput = {
   name: string;
   createdBy?: string;
+  ownerUserId?: string | null;
   description?: string;
   slug: string;
   version: string;
@@ -446,6 +485,7 @@ export type CreateRangeTemplateInput = {
   variableSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   defaultNetworkPolicy?: Record<string, unknown>;
+  visibility?: ResourceVisibility;
 };
 
 export type UpdateRangeTemplateInput = Partial<Omit<CreateRangeTemplateInput, 'createdBy'>>;
@@ -461,12 +501,14 @@ export type CreateSingleInstanceBatchInput = {
   quantity: number;
   remark?: string | null;
   createdBy?: string | null;
+  ownerUserId?: string | null;
   expiresAt?: Date | null;
 };
 
 export type CreateRangeInstanceInput = {
   name: string;
   createdBy?: string;
+  ownerUserId?: string | null;
   templateId?: string | null;
   sourceTemplateVersionId?: string | null;
   runtimeTopologyGraph?: Record<string, unknown> | null;
@@ -493,6 +535,7 @@ export type CreateRangeInstanceInput = {
 export type UpdateRangeInstanceInput = Partial<{
   name: string;
   createdBy: string | null;
+  ownerUserId: string | null;
   instanceMode: RangeInstanceMode;
   singleInstanceBatchId: string | null;
   singleInstanceConfig: SingleInstanceConfig | null;
@@ -552,6 +595,12 @@ export type UpdateProvisionJobStepLogInput = Partial<{
 }>;
 
 export interface AdminRepository {
+  createPlatformUser(input: CreatePlatformUserInput): Promise<PlatformUserRecord>;
+  listPlatformUsers(): Promise<PlatformUserRecord[]>;
+  getPlatformUserById(id: string): Promise<PlatformUserRecord | null>;
+  getPlatformUserByUsername(username: string): Promise<PlatformUserRecord | null>;
+  updatePlatformUser(id: string, input: UpdatePlatformUserInput): Promise<PlatformUserRecord>;
+  countActiveAdmins(): Promise<number>;
   listRangeTemplates(): Promise<RangeTemplateRecord[]>;
   createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord>;
   getRangeTemplateById(id: string): Promise<RangeTemplateRecord | null>;

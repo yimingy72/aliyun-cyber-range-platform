@@ -3,6 +3,7 @@ import {
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreatePlatformUserInput,
   CreateSingleInstanceBatchInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
@@ -12,6 +13,7 @@ import {
   ListImageCatalogItemsFilter,
   ListImageSnapshotsFilter,
   ListPlatformImageAssetsFilter,
+  PlatformUserRecord,
   PlatformImageAssetRecord,
   ProvisionJobRecord,
   ProvisionJobStepLogRecord,
@@ -23,6 +25,7 @@ import {
   SingleInstanceBatchRecord,
   UpsertImageSnapshotsInput,
   UpsertSingleInstanceNetworkProfileInput,
+  UpdatePlatformUserInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
   UpdateRangeInstanceInput,
@@ -41,6 +44,7 @@ function shouldAutoUnpublishTemplate(input: UpdateRangeTemplateInput) {
 }
 
 export function createMemoryAdminRepository(): AdminRepository {
+  const platformUsers: PlatformUserRecord[] = [];
   const rangeTemplates: RangeTemplateRecord[] = [];
   const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
   const singleInstanceBatches: SingleInstanceBatchRecord[] = [];
@@ -109,9 +113,21 @@ export function createMemoryAdminRepository(): AdminRepository {
     (filter.enabled === undefined || record.enabled === filter.enabled) &&
     (filter.imageId === undefined || record.imageId === filter.imageId) &&
     (filter.sourceSnapshotId === undefined || record.sourceSnapshotId === filter.sourceSnapshotId) &&
+    (filter.ownerUserId === undefined || record.ownerUserId === filter.ownerUserId) &&
+    (filter.visibility === undefined || record.visibility === filter.visibility) &&
     (!filter.onlyAvailableSourceSnapshots ||
       record.sourceSnapshotId === null ||
       imageSnapshots.some((snapshot) => snapshot.id === record.sourceSnapshotId && snapshot.isAvailable));
+
+  const findPlatformUserOrThrow = (id: string) => {
+    const record = platformUsers.find((user) => user.id === id);
+
+    if (!record) {
+      throw new Error(`Platform user not found: ${id}`);
+    }
+
+    return record;
+  };
 
   const findPlatformImageAssetOrThrow = (id: string) => {
     const record = platformImageAssets.find((asset) => asset.id === id);
@@ -124,6 +140,50 @@ export function createMemoryAdminRepository(): AdminRepository {
   };
 
   return {
+    async createPlatformUser(input: CreatePlatformUserInput) {
+      const record: PlatformUserRecord = {
+        id: input.id,
+        username: input.username,
+        passwordHash: input.passwordHash,
+        role: input.role,
+        status: input.status ?? 'active',
+        createdAt: now(),
+        updatedAt: now(),
+      };
+
+      platformUsers.unshift(record);
+
+      return clone(record);
+    },
+    async listPlatformUsers() {
+      return cloneList(platformUsers);
+    },
+    async getPlatformUserById(id: string) {
+      const record = platformUsers.find((user) => user.id === id);
+
+      return record ? clone(record) : null;
+    },
+    async getPlatformUserByUsername(username: string) {
+      const record = platformUsers.find((user) => user.username === username);
+
+      return record ? clone(record) : null;
+    },
+    async updatePlatformUser(id: string, input: UpdatePlatformUserInput) {
+      const record = findPlatformUserOrThrow(id);
+
+      Object.assign(record, {
+        username: input.username ?? record.username,
+        passwordHash: input.passwordHash ?? record.passwordHash,
+        role: input.role ?? record.role,
+        status: input.status ?? record.status,
+        updatedAt: now(),
+      });
+
+      return clone(record);
+    },
+    async countActiveAdmins() {
+      return platformUsers.filter((user) => user.role === 'admin' && user.status === 'active').length;
+    },
     async listRangeTemplates() {
       return cloneList(rangeTemplates);
     },
@@ -150,6 +210,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         id: nextId(),
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
+        ownerUserId: input.ownerUserId ?? null,
         description: input.description ?? null,
         slug: input.slug,
         version: input.version,
@@ -164,6 +225,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         variableSchema: clone(input.variableSchema ?? {}),
         outputSchema: clone(input.outputSchema ?? {}),
         defaultNetworkPolicy: cloneIfDefined(input.defaultNetworkPolicy ?? null),
+        visibility: input.visibility ?? 'private',
         currentDraftVersionId: draftVersion.id,
         currentPublishedVersionId: null,
         currentDraftVersion: null,
@@ -201,6 +263,8 @@ export function createMemoryAdminRepository(): AdminRepository {
       assignIfDefined(record, 'description', input.description);
       assignIfDefined(record, 'slug', input.slug);
       assignIfDefined(record, 'version', input.version);
+      assignIfDefined(record, 'ownerUserId', input.ownerUserId);
+      assignIfDefined(record, 'visibility', input.visibility);
       assignIfDefined(record, 'cloudProvider', input.cloudProvider);
       assignIfDefined(record, 'iacType', input.iacType);
       assignIfDefined(record, 'modulePathOrRef', input.modulePathOrRef);
@@ -328,6 +392,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         quantity: input.quantity,
         remark: input.remark ?? null,
         createdBy: input.createdBy ?? null,
+        ownerUserId: input.ownerUserId ?? null,
         expiresAt: input.expiresAt ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -396,6 +461,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         id: nextId(),
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
+        ownerUserId: input.ownerUserId ?? null,
         instanceMode: input.instanceMode ?? 'range',
         singleInstanceBatchId: input.singleInstanceBatchId ?? null,
         singleInstanceConfig: cloneIfDefined(input.singleInstanceConfig ?? null),
@@ -441,6 +507,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       Object.assign(record, {
         name: input.name ?? record.name,
         createdBy: input.createdBy !== undefined ? input.createdBy : record.createdBy,
+        ownerUserId: input.ownerUserId !== undefined ? input.ownerUserId : record.ownerUserId,
         instanceMode: input.instanceMode ?? record.instanceMode,
         singleInstanceBatchId:
           input.singleInstanceBatchId !== undefined ? input.singleInstanceBatchId : record.singleInstanceBatchId,
@@ -749,6 +816,8 @@ export function createMemoryAdminRepository(): AdminRepository {
           sourceSnapshotId: snapshot.id,
           accountUid: snapshot.accountUid,
           accountScopeKey,
+          ownerUserId: input.ownerUserId !== undefined ? input.ownerUserId : existing.ownerUserId,
+          visibility: input.visibility ?? existing.visibility,
           updatedAt: now(),
         });
 
@@ -768,6 +837,8 @@ export function createMemoryAdminRepository(): AdminRepository {
         defaultHostName: input.defaultHostName ?? null,
         defaultPassword: input.defaultPassword ?? null,
         description: input.description ?? null,
+        ownerUserId: input.ownerUserId ?? null,
+        visibility: input.visibility ?? 'private',
         enabled: true,
         createdAt: now(),
         updatedAt: now(),

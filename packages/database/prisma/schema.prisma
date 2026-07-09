@@ -17,6 +17,21 @@ enum IacType {
   terraform
 }
 
+enum UserRole {
+  admin
+  user
+}
+
+enum UserStatus {
+  active
+  disabled
+}
+
+enum ResourceVisibility {
+  private
+  platform
+}
+
 enum RangeTemplateVersionStatus {
   draft
   published
@@ -72,6 +87,20 @@ model SystemCloudConfig {
   accessKeySecret String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+model PlatformUser {
+  id                        String                @id
+  username                  String                @unique
+  passwordHash              String
+  role                      UserRole              @default(user)
+  status                    UserStatus            @default(active)
+  createdAt                 DateTime              @default(now())
+  updatedAt                 DateTime              @updatedAt
+  platformImageAssets       PlatformImageAsset[]
+  rangeTemplates            RangeTemplate[]
+  rangeInstances            RangeInstance[]
+  singleInstanceBatches     SingleInstanceBatch[]
 }
 
 model CloudImageSnapshot {
@@ -133,20 +162,26 @@ model PlatformImageAsset {
   defaultHostName  String?
   defaultPassword  String?
   description      String?
+  ownerUserId      String?
+  visibility       ResourceVisibility  @default(private)
   enabled          Boolean             @default(true)
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
   sourceSnapshot   CloudImageSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+  ownerUser        PlatformUser?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@unique([provider, accountScopeKey, regionId, imageId])
   @@index([provider, accountScopeKey, regionId])
   @@index([sourceSnapshotId])
+  @@index([ownerUserId])
+  @@index([visibility, enabled])
 }
 
 model RangeTemplate {
   id                       String          @id @default(cuid())
   name                     String
   createdBy                String          @default("admin")
+  ownerUserId              String?
   description              String?
   slug                     String
   version                  String
@@ -161,6 +196,7 @@ model RangeTemplate {
   variableSchema           Json
   outputSchema             Json
   defaultNetworkPolicy     Json?
+  visibility               ResourceVisibility @default(private)
   currentDraftVersionId    String?         @unique
   currentPublishedVersionId String?        @unique
   createdAt                DateTime        @default(now())
@@ -169,8 +205,11 @@ model RangeTemplate {
   versions                 RangeTemplateVersion[]
   currentDraftVersion      RangeTemplateVersion? @relation("RangeTemplateCurrentDraftVersion", fields: [currentDraftVersionId], references: [id], onDelete: SetNull)
   currentPublishedVersion  RangeTemplateVersion? @relation("RangeTemplateCurrentPublishedVersion", fields: [currentPublishedVersionId], references: [id], onDelete: SetNull)
+  ownerUser                PlatformUser?   @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@unique([slug, version])
+  @@index([ownerUserId])
+  @@index([visibility, updatedAt])
 }
 
 model RangeTemplateVersion {
@@ -209,18 +248,22 @@ model SingleInstanceBatch {
   quantity             Int
   remark               String?
   createdBy            String?
+  ownerUserId          String?
   expiresAt            DateTime?
   createdAt            DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
   instances            RangeInstance[]
+  ownerUser            PlatformUser?   @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@index([createdAt])
+  @@index([ownerUserId, createdAt])
 }
 
 model RangeInstance {
   id                           String              @id @default(cuid())
   name                         String
   createdBy                    String?             @default("admin")
+  ownerUserId                  String?
   singleInstanceBatchId        String?
   templateId                   String?
   sourceTemplateVersionId      String?
@@ -253,12 +296,14 @@ model RangeInstance {
   template                     RangeTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
   jobs                         ProvisionJob[]
   lastJob                      ProvisionJob?       @relation("RangeInstanceLastJob", fields: [lastJobId], references: [id], onDelete: SetNull)
+  ownerUser                    PlatformUser?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@index([singleInstanceBatchId])
   @@index([templateId])
   @@index([sourceTemplateVersionId])
   @@index([status])
   @@index([instanceMode, status])
+  @@index([ownerUserId, createdAt])
 }
 
 model SingleInstanceNetworkProfile {
