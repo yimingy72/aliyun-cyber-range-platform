@@ -34,6 +34,7 @@ describe('Range instance node actions API', () => {
   let repository: AdminRepository;
   let instanceId: string;
   let singleInstanceId: string;
+  let singlePlatformImageAssetId: string;
   let fetchMock: jest.SpiedFunction<typeof fetch>;
 
   beforeAll(async () => {
@@ -105,6 +106,40 @@ describe('Range instance node actions API', () => {
 
     instanceId = instance.id;
 
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-image-123',
+          sourceImageName: 'Ubuntu image',
+          osType: 'linux',
+          platform: 'Ubuntu',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T08:00:00.000Z'),
+        },
+      ],
+    });
+
+    const singlePlatformImageAsset = await repository.collectPlatformImageAsset({
+      snapshotId:
+        (
+          await repository.listImageSnapshots({
+            provider: 'alibaba_cloud',
+            accountUid: null,
+            regionId: 'cn-hangzhou',
+            scope: 'custom',
+            imageId: 'm-image-123',
+          })
+        )[0].id,
+      displayName: 'Ubuntu',
+    });
+
+    singlePlatformImageAssetId = singlePlatformImageAsset.id;
+
     const singleInstance = await repository.createRangeInstance({
       name: 'node-action-single',
       createdBy: 'admin',
@@ -115,7 +150,7 @@ describe('Range instance node actions API', () => {
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
         hostName: 'single-ecs-1',
-        platformImageAssetId: 'platform-image-1',
+        platformImageAssetId: singlePlatformImageAssetId,
         imageId: 'm-image-123',
         imageDisplayName: 'Ubuntu',
         cpu: 2,
@@ -197,5 +232,7 @@ describe('Range instance node actions API', () => {
       .expect(201);
 
     expect(response.body.vncUrl).toBe('wss://vnc.example.test');
+    expect(response.body.webTerminalUrl).toContain('instanceId=i-instance-single-123');
+    expect(response.body.webTerminalUrl).toContain('isWindows=false');
   });
 });

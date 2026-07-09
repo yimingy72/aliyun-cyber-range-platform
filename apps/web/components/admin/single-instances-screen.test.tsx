@@ -20,12 +20,17 @@ const {
   triggerSingleInstanceActionMock: vi.fn(),
 }));
 
-const { replaceMock } = vi.hoisted(() => ({
+const { replaceMock, searchParamsState } = vi.hoisted(() => ({
   replaceMock: vi.fn(),
+  searchParamsState: { value: '' },
 }));
 
 const { openWindowMock } = vi.hoisted(() => ({
   openWindowMock: vi.fn(),
+}));
+
+const { writeTextMock } = vi.hoisted(() => ({
+  writeTextMock: vi.fn(),
 }));
 
 const { openedWindowState } = vi.hoisted(() => ({
@@ -40,6 +45,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({
     replace: replaceMock,
   }),
+  useSearchParams: () => new URLSearchParams(searchParamsState.value),
 }));
 
 vi.mock('./use-admin-session', () => ({
@@ -87,11 +93,18 @@ describe('SingleInstancesScreen', () => {
     deleteRangeInstanceMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
+    searchParamsState.value = '';
     openWindowMock.mockReset();
+    writeTextMock.mockReset();
     openedWindowState.location.href = '';
     openedWindowState.opener = 'not-null' as unknown;
     openedWindowState.close.mockReset();
     vi.stubGlobal('open', openWindowMock);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
   });
 
   afterEach(() => {
@@ -110,7 +123,14 @@ describe('SingleInstancesScreen', () => {
         createdAt: '2026-07-08T09:00:00.000Z',
         expiresAt: '2026-07-10T12:00:00.000Z',
         accessEntry: { publicIp: '47.1.2.3' },
+        runtimeCredentials: {
+          'single-ecs-1': {
+            username: 'root',
+            password: 'super-secret-password',
+          },
+        },
         singleInstanceConfig: {
+          hostKey: 'single-ecs-1',
           imageDisplayName: 'Ubuntu 24.04 LTS',
           cpu: 2,
           memory: 2,
@@ -139,7 +159,9 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
     expect(screen.getByText('公网 IP')).toBeTruthy();
+    expect(screen.getByText('账号/密码')).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
+    expect(screen.getByText('root / ******')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
     expect((screen.getByLabelText('密码') as HTMLInputElement).type).toBe('password');
@@ -349,6 +371,9 @@ describe('SingleInstancesScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
 
     expect(await screen.findByText('history-lab')).toBeTruthy();
+    expect(screen.getByText('创建人')).toBeTruthy();
+    expect(screen.getAllByText('admin').length).toBeGreaterThan(0);
+    expect(screen.queryByText('操作')).toBeNull();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeTruthy();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
     expect(screen.getByText('2 小时 35 分钟')).toBeTruthy();
@@ -424,6 +449,36 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByText('2 小时 25 分钟')).toBeTruthy();
     expect(screen.queryByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeNull();
     expect(screen.queryByText(formatExpectedDateTime('2026-07-08T10:45:00.000Z'))).toBeNull();
+  });
+
+  it('keeps the history view selected when the url query requests it', async () => {
+    searchParamsState.value = 'view=history';
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-destroyed',
+        name: 'history-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'destroyed',
+        createdAt: '2026-07-08T08:00:00.000Z',
+        accessEntry: { publicIp: '47.9.9.9' },
+        singleInstanceConfig: {
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 4,
+          memory: 8,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('history-lab')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '实例历史' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: '实例列表' }).getAttribute('aria-pressed')).toBe('false');
   });
 
   it('filters active and history rows by instance name', async () => {
@@ -649,7 +704,7 @@ describe('SingleInstancesScreen', () => {
     });
     openWindowMock.mockReturnValue(openedWindowState as unknown as Window);
     triggerSingleInstanceActionMock.mockResolvedValue({
-      vncUrl: 'https://console.example.test/vnc/session-1',
+      vncUrl: 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html?vncUrl=wss%3A%2F%2Fvnc.example.test&instanceId=i-instance-1&isWindows=false',
     });
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
@@ -666,8 +721,54 @@ describe('SingleInstancesScreen', () => {
     );
     expect(openedWindowState.opener).toBeNull();
     await waitFor(() =>
-      expect(openedWindowState.location.href).toBe('https://console.example.test/vnc/session-1'),
+      expect(openedWindowState.location.href).toBe(
+        'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html?vncUrl=wss%3A%2F%2Fvnc.example.test&instanceId=i-instance-1&isWindows=false',
+      ),
     );
+  });
+
+  it('shows masked credentials and copies only the password', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        runtimeCredentials: {
+          'single-ecs-1': {
+            username: 'root',
+            password: 'super-secret-password',
+          },
+        },
+        singleInstanceConfig: {
+          hostKey: 'single-ecs-1',
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    writeTextMock.mockResolvedValue(undefined);
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('running-lab')).closest('article');
+    expect(row).toBeTruthy();
+    expect(within(row!).getByText('root / ******')).toBeTruthy();
+    expect(within(row!).getByText('root / super-secret-password')).toBeTruthy();
+    expect(within(row!).getByRole('button', { name: '复制密码' }).textContent).toBe('复制');
+
+    fireEvent.click(within(row!).getByRole('button', { name: '复制密码' }));
+
+    await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('super-secret-password'));
+    await waitFor(() => expect(within(row!).getByRole('button', { name: '复制密码' }).textContent).toBe('已复制'));
   });
 
   it('blocks duplicate row action clicks while a request is in flight', async () => {

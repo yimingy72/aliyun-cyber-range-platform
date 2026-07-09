@@ -15,6 +15,7 @@ import { SystemConfigService } from './system-config.service';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
+const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
 
@@ -97,20 +98,16 @@ export class RangeInstanceNodeActionsService {
         },
       });
 
-      const vncUrl = response.VncUrl ?? null;
+      const vncUrl = response.VncUrl?.trim() || null;
+      const webTerminalUrl = vncUrl
+        ? await this.buildAliyunVncConsoleUrl(instance, nodeId, hostInstanceId, vncUrl)
+        : null;
 
       return {
         status: 'accepted',
         action,
         vncUrl,
-        webTerminalUrl: vncUrl
-          ? buildAliyunWebTerminalUrl({
-              regionId: accountContext.defaultRegion,
-              instanceId: hostInstanceId,
-              vncUrl,
-              isWindows: isWindowsHost(hostNode),
-            })
-          : null,
+        webTerminalUrl,
       };
     }
 
@@ -245,6 +242,42 @@ export class RangeInstanceNodeActionsService {
     return null;
   }
 
+  private async buildAliyunVncConsoleUrl(
+    instance: RangeInstanceRecord,
+    nodeId: string,
+    hostInstanceId: string,
+    rawVncUrl: string,
+  ) {
+    const encodedVncUrl = normalizeAliyunVncUrl(rawVncUrl);
+    const isWindows = await this.resolveInstanceWindowsFlag(instance, nodeId);
+
+    return `${ALICLOUD_VNC_CONSOLE_URL}?vncUrl=${encodedVncUrl}&instanceId=${encodeURIComponent(hostInstanceId)}&isWindows=${isWindows ? 'true' : 'false'}`;
+  }
+
+  private async resolveInstanceWindowsFlag(instance: RangeInstanceRecord, nodeId: string) {
+    const platformImageAssetId = instance.singleInstanceConfig?.platformImageAssetId;
+
+    if (platformImageAssetId) {
+      const asset = await this.adminRepository.getPlatformImageAssetById(platformImageAssetId);
+      const snapshot = asset?.sourceSnapshotId
+        ? await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId)
+        : null;
+      const snapshotOsHint = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? ''}`.trim();
+
+      if (snapshotOsHint) {
+        return isWindowsOsHint(snapshotOsHint);
+      }
+    }
+
+    const username = instance.runtimeCredentials?.[nodeId]?.username?.trim();
+
+    if (username) {
+      return isWindowsUsername(username);
+    }
+
+    return isWindowsHost(this.resolveHostTopologyNode(instance, nodeId));
+  }
+
   private async performAliyunRpcRequest<ResponsePayload>(input: {
     accessKeyId: string;
     accessKeySecret: string;
@@ -346,4 +379,32 @@ function isWindowsHost(hostNode: Record<string, unknown> | null) {
   ).toLowerCase();
 
   return imageName.includes('windows');
+}
+
+function normalizeAliyunVncUrl(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return '';
+  }
+
+  const decoded = trimmed.includes('%') ? safeDecodeURIComponent(trimmed) : trimmed;
+  return encodeURIComponent(decoded);
+}
+
+function safeDecodeURIComponent(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function isWindowsOsHint(value: string) {
+  return value.trim().toLowerCase().includes('windows');
+}
+
+function isWindowsUsername(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'administrator' || normalized.endsWith('\\administrator');
 }
