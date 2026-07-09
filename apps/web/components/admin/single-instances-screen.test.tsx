@@ -255,6 +255,10 @@ describe('SingleInstancesScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
     expect(screen.getByRole('button', { name: '一键关闭' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
   });
 
   it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
