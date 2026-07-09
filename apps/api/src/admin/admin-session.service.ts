@@ -1,4 +1,14 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+
+import { ADMIN_REPOSITORY, AdminRepository } from './admin.repository';
+import {
+  resolveAdminSessionSecret,
+  resolveSeededAdminCredentials,
+  SessionUserProfile,
+  signSessionToken,
+  verifyPassword,
+  hashPassword,
+} from './admin-user-auth';
 
 type LoginPayload = {
   username: string;
@@ -7,20 +17,76 @@ type LoginPayload = {
 
 @Injectable()
 export class AdminSessionService {
-  createSession({ username, password }: LoginPayload) {
-    const configuredUsername = process.env.ADMIN_USERNAME ?? 'admin';
-    const configuredPassword = process.env.ADMIN_PASSWORD ?? 'change-me';
-    const configuredToken = process.env.ADMIN_TOKEN ?? 'dev-admin-token';
+  constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository) {}
 
-    if (username !== configuredUsername || password !== configuredPassword) {
+  getSessionSecret() {
+    return resolveAdminSessionSecret();
+  }
+
+  async ensureSeededAdminUser() {
+    const seededAdmin = resolveSeededAdminCredentials();
+    const existingAdmin = await this.repository.getPlatformUserById(seededAdmin.id);
+
+    if (!existingAdmin) {
+      await this.repository.createPlatformUser({
+        id: seededAdmin.id,
+        username: seededAdmin.username,
+        passwordHash: hashPassword(seededAdmin.password),
+        role: 'admin',
+        status: 'active',
+      });
+
+      return;
+    }
+
+    const update: {
+      username?: string;
+      passwordHash?: string;
+      role?: 'admin';
+      status?: 'active';
+    } = {};
+
+    if (existingAdmin.username !== seededAdmin.username) {
+      update.username = seededAdmin.username;
+    }
+
+    if (!verifyPassword(seededAdmin.password, existingAdmin.passwordHash)) {
+      update.passwordHash = hashPassword(seededAdmin.password);
+    }
+
+    if (existingAdmin.role !== 'admin') {
+      update.role = 'admin';
+    }
+
+    if (existingAdmin.status !== 'active') {
+      update.status = 'active';
+    }
+
+    if (Object.keys(update).length > 0) {
+      await this.repository.updatePlatformUser(existingAdmin.id, update);
+    }
+  }
+
+  async createSession({ username, password }: LoginPayload) {
+    await this.ensureSeededAdminUser();
+
+    const user = await this.repository.getPlatformUserByUsername(username.trim());
+
+    if (!user || user.status !== 'active' || !verifyPassword(password, user.passwordHash)) {
       throw new UnauthorizedException('Invalid admin credentials');
     }
 
     return {
-      token: configuredToken,
-      profile: {
-        username: configuredUsername,
-      },
+      token: signSessionToken(user.id, this.getSessionSecret()),
+      profile: this.toSessionProfile(user),
+    };
+  }
+
+  private toSessionProfile(user: { id: string; username: string; role: 'admin' | 'user' }): SessionUserProfile {
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
     };
   }
 }

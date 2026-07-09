@@ -1,11 +1,7 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
 
+import { LoginAdminSessionDto } from './dto/admin-user.dto';
 import { AdminSessionService } from './admin-session.service';
-
-type LoginBody = {
-  username: string;
-  password: string;
-};
 
 @Controller('admin/session')
 export class AdminSessionController {
@@ -13,7 +9,7 @@ export class AdminSessionController {
 
   @Post()
   @HttpCode(200)
-  createSession(@Body() body: LoginBody) {
+  createSession(@Body() body: LoginAdminSessionDto) {
     return this.adminSessionService.createSession(body);
   }
 }

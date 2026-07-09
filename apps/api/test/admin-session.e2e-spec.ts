@@ -9,6 +9,7 @@ describe('Admin session', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
+    process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
@@ -27,19 +28,22 @@ describe('Admin session', () => {
   });
 
   it('creates an admin session for valid credentials', async () => {
-    await request(app.getHttpServer())
+    const response = await request(app.getHttpServer())
       .post('/admin/session')
       .send({
         username: 'admin',
         password: 'change-me',
       })
-      .expect(200)
-      .expect({
-        token: 'dev-admin-token',
-        profile: {
-          username: 'admin',
-        },
-      });
+      .expect(200);
+
+    expect(response.body).toEqual({
+      token: expect.any(String),
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+    });
   });
 
   it('rejects invalid credentials', async () => {

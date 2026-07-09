@@ -9,6 +9,8 @@ import { ImageCatalogService } from './admin/image-catalog.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { AdminSessionController } from './admin/admin-session.controller';
 import { AdminSessionService } from './admin/admin-session.service';
+import { AdminUsersController } from './admin/admin-users.controller';
+import { AdminUsersService } from './admin/admin-users.service';
 import { RangeInstancesService } from './admin/range-instances.service';
 import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
 import { RangesController } from './admin/ranges.controller';
@@ -54,6 +56,7 @@ function resolveProjectRootDir() {
   controllers: [
     AppController,
     AdminSessionController,
+    AdminUsersController,
     ScenariosController,
     RangesController,
     ProvisionJobsController,
@@ -66,6 +69,7 @@ function resolveProjectRootDir() {
     AdminAuthGuard,
     ImageCatalogService,
     AdminSessionService,
+    AdminUsersService,
     RangeTemplatesService,
     RangeInstancesService,
     RangeInstanceNodeActionsService,
