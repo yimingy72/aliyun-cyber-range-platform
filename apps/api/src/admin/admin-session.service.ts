@@ -42,8 +42,6 @@ export class AdminSessionService {
     const update: {
       username?: string;
       passwordHash?: string;
-      role?: 'admin';
-      status?: 'active';
     } = {};
 
     if (existingAdmin.username !== seededAdmin.username) {
@@ -52,14 +50,6 @@ export class AdminSessionService {
 
     if (!verifyPassword(seededAdmin.password, existingAdmin.passwordHash)) {
       update.passwordHash = hashPassword(seededAdmin.password);
-    }
-
-    if (existingAdmin.role !== 'admin') {
-      update.role = 'admin';
-    }
-
-    if (existingAdmin.status !== 'active') {
-      update.status = 'active';
     }
 
     if (Object.keys(update).length > 0) {

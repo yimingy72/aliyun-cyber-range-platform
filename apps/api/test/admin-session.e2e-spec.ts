@@ -4,9 +4,11 @@ import request from 'supertest';
 
 import { configureApp } from '../src/bootstrap/configure-app';
 import { AppModule } from '../src/app.module';
+import { PrismaService } from '../src/database/prisma.service';
 
 describe('Admin session', () => {
   let app: INestApplication;
+  let prisma: PrismaService;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
@@ -21,6 +23,22 @@ describe('Admin session', () => {
     app = moduleRef.createNestApplication();
     configureApp(app);
     await app.init();
+
+    prisma = app.get(PrismaService);
+    await prisma.$connect();
+  });
+
+  beforeEach(async () => {
+    await prisma.platformUser.updateMany({
+      where: {
+        id: 'admin',
+      },
+      data: {
+        username: 'admin',
+        role: 'admin',
+        status: 'active',
+      },
+    });
   });
 
   afterAll(async () => {
@@ -53,6 +71,13 @@ describe('Admin session', () => {
         username: 'admin',
         password: 'wrong-password',
       })
+      .expect(401);
+  });
+
+  it('rejects a raw bearer token equal to ADMIN_TOKEN', async () => {
+    await request(app.getHttpServer())
+      .get('/admin/scenarios')
+      .set('authorization', 'Bearer dev-admin-token')
       .expect(401);
   });
 });

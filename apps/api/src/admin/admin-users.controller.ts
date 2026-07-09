@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import { CurrentAdminUser } from './current-admin-user.decorator';
@@ -17,27 +17,55 @@ export class AdminUsersController {
   constructor(private readonly adminUsersService: AdminUsersService) {}
 
   @Get()
-  listUsers(@CurrentAdminUser() _currentUser: SessionUserProfile) {
+  listUsers(@CurrentAdminUser() currentUser: SessionUserProfile) {
+    this.assertAdmin(currentUser);
+
     return this.adminUsersService.listUsers();
   }
 
   @Post()
-  createUser(@Body() body: CreateAdminUserDto) {
+  createUser(@CurrentAdminUser() currentUser: SessionUserProfile, @Body() body: CreateAdminUserDto) {
+    this.assertAdmin(currentUser);
+
     return this.adminUsersService.createUser(body);
   }
 
   @Patch(':userId/role')
-  updateUserRole(@Param('userId') userId: string, @Body() body: UpdateAdminUserRoleDto) {
+  updateUserRole(
+    @CurrentAdminUser() currentUser: SessionUserProfile,
+    @Param('userId') userId: string,
+    @Body() body: UpdateAdminUserRoleDto,
+  ) {
+    this.assertAdmin(currentUser);
+
     return this.adminUsersService.updateUserRole(userId, body.role);
   }
 
   @Patch(':userId/status')
-  updateUserStatus(@Param('userId') userId: string, @Body() body: UpdateAdminUserStatusDto) {
+  updateUserStatus(
+    @CurrentAdminUser() currentUser: SessionUserProfile,
+    @Param('userId') userId: string,
+    @Body() body: UpdateAdminUserStatusDto,
+  ) {
+    this.assertAdmin(currentUser);
+
     return this.adminUsersService.updateUserStatus(userId, body.status);
   }
 
   @Post(':userId/reset-password')
-  resetUserPassword(@Param('userId') userId: string, @Body() body: ResetAdminUserPasswordDto) {
+  resetUserPassword(
+    @CurrentAdminUser() currentUser: SessionUserProfile,
+    @Param('userId') userId: string,
+    @Body() body: ResetAdminUserPasswordDto,
+  ) {
+    this.assertAdmin(currentUser);
+
     return this.adminUsersService.resetUserPassword(userId, body.password);
+  }
+
+  private assertAdmin(currentUser: SessionUserProfile) {
+    if (currentUser.role !== 'admin') {
+      throw new ForbiddenException('Admin access required');
+    }
   }
 }

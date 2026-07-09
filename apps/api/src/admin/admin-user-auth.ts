@@ -59,11 +59,6 @@ export function signSessionToken(userId: string, secret: string) {
 }
 
 export function verifySessionToken(token: string, secret: string): SessionTokenPayload | null {
-  if (token === secret) {
-    // ponytail: compatibility shim for callers still sending the old fixed token; remove once every caller logs in first.
-    return { sub: 'admin' };
-  }
-
   const [version, payload, signature] = token.split('.');
 
   if (version !== SESSION_TOKEN_VERSION || !payload || !signature) {

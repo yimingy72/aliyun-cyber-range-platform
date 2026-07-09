@@ -23,8 +23,6 @@ export class AdminAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing or invalid admin token');
     }
 
-    await this.adminSessionService.ensureSeededAdminUser();
-
     const payload = verifySessionToken(token, this.adminSessionService.getSessionSecret());
 
     if (!payload) {
@@ -33,7 +31,7 @@ export class AdminAuthGuard implements CanActivate {
 
     const user = await this.repository.getPlatformUserById(payload.sub);
 
-    if (!user || user.status !== 'active' || user.role !== 'admin') {
+    if (!user || user.status !== 'active') {
       throw new UnauthorizedException('Missing or invalid admin token');
     }
 

@@ -62,6 +62,17 @@ describe('Admin users', () => {
       },
     });
 
+    await prisma.platformUser.updateMany({
+      where: {
+        id: 'admin',
+      },
+      data: {
+        username: 'admin',
+        role: 'admin',
+        status: 'active',
+      },
+    });
+
     await app.close();
   });
 
@@ -124,6 +135,20 @@ describe('Admin users', () => {
       },
     });
 
+    const userToken = userLoginResponse.body.token as string;
+
+    const scenariosResponse = await request(app.getHttpServer())
+      .get('/admin/scenarios')
+      .set('authorization', `Bearer ${userToken}`)
+      .expect(200);
+
+    expect(Array.isArray(scenariosResponse.body)).toBe(true);
+
+    await request(app.getHttpServer())
+      .get('/admin/users')
+      .set('authorization', `Bearer ${userToken}`)
+      .expect(403);
+
     const disableResponse = await request(app.getHttpServer())
       .patch(`/admin/users/${createdUserId}/status`)
       .set('authorization', `Bearer ${adminToken}`)
@@ -184,6 +209,107 @@ describe('Admin users', () => {
       });
   });
 
+  it('keeps the seeded admin user disabled once another admin disables it', async () => {
+    const adminToken = await login('admin', 'change-me');
+    const secondAdmin = await createUser(adminToken, {
+      username: `admin-${randomUUID()}`,
+      password: 'SecondAdmin123!',
+      role: 'admin',
+    });
+    const secondAdminToken = await login(secondAdmin.username, 'SecondAdmin123!');
+
+    await request(app.getHttpServer())
+      .patch('/admin/users/admin/status')
+      .set('authorization', `Bearer ${secondAdminToken}`)
+      .send({
+        status: 'disabled',
+      })
+      .expect(200);
+
+    const persistedAdmin = await prisma.platformUser.findUnique({
+      where: {
+        id: 'admin',
+      },
+    });
+
+    expect(persistedAdmin).toEqual(
+      expect.objectContaining({
+        id: 'admin',
+        status: 'disabled',
+        role: 'admin',
+      }),
+    );
+
+    await request(app.getHttpServer())
+      .post('/admin/session')
+      .send({
+        username: 'admin',
+        password: 'change-me',
+      })
+      .expect(401);
+  });
+
+  it('keeps the seeded admin user demoted once another admin changes its role', async () => {
+    const adminToken = await login('admin', 'change-me');
+    const secondAdmin = await createUser(adminToken, {
+      username: `admin-${randomUUID()}`,
+      password: 'SecondAdmin123!',
+      role: 'admin',
+    });
+    const secondAdminToken = await login(secondAdmin.username, 'SecondAdmin123!');
+
+    await request(app.getHttpServer())
+      .patch('/admin/users/admin/role')
+      .set('authorization', `Bearer ${secondAdminToken}`)
+      .send({
+        role: 'user',
+      })
+      .expect(200);
+
+    const persistedAdmin = await prisma.platformUser.findUnique({
+      where: {
+        id: 'admin',
+      },
+    });
+
+    expect(persistedAdmin).toEqual(
+      expect.objectContaining({
+        id: 'admin',
+        role: 'user',
+        status: 'active',
+      }),
+    );
+
+    const demotedAdminLogin = await request(app.getHttpServer())
+      .post('/admin/session')
+      .send({
+        username: 'admin',
+        password: 'change-me',
+      })
+      .expect(200);
+
+    expect(demotedAdminLogin.body).toEqual({
+      token: expect.any(String),
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'user',
+      },
+    });
+
+    const demotedAdminToken = demotedAdminLogin.body.token as string;
+
+    await request(app.getHttpServer())
+      .get('/admin/scenarios')
+      .set('authorization', `Bearer ${demotedAdminToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/admin/users')
+      .set('authorization', `Bearer ${demotedAdminToken}`)
+      .expect(403);
+  });
+
   async function login(username: string, password: string) {
     const response = await request(app.getHttpServer())
       .post('/admin/session')
@@ -194,5 +320,29 @@ describe('Admin users', () => {
       .expect(200);
 
     return response.body.token as string;
+  }
+
+  async function createUser(
+    token: string,
+    input: {
+      username: string;
+      password: string;
+      role: 'admin' | 'user';
+    },
+  ) {
+    const response = await request(app.getHttpServer())
+      .post('/admin/users')
+      .set('authorization', `Bearer ${token}`)
+      .send(input)
+      .expect(201);
+
+    return response.body as {
+      id: string;
+      username: string;
+      role: 'admin' | 'user';
+      status: 'active' | 'disabled';
+      createdAt: string;
+      updatedAt: string;
+    };
   }
 });
