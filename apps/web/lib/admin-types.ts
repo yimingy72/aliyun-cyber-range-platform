@@ -207,6 +207,7 @@ export type RangeInstance = {
   name?: string | null;
   createdBy?: string | null;
   instanceMode?: 'range' | 'single';
+  singleInstanceBatchId?: string | null;
   singleInstanceConfig?: SingleInstanceConfig | null;
   defaultInstancePassword?: string | null;
   nodeStatuses?: Record<string, string> | null;
@@ -264,7 +265,45 @@ export type SingleInstanceLaunchInput = {
 };
 
 export type SingleInstanceLaunchResult = {
+  batch?: SingleInstanceBatch | null;
   instances: RangeInstance[];
+};
+
+export type SingleInstanceBatchSummary = {
+  running: number;
+  creating: number;
+  createFailed: number;
+  destroying: number;
+  destroyFailed: number;
+  destroyed: number;
+};
+
+export type SingleInstanceBatch = {
+  id: string;
+  name: string;
+  platformImageAssetId: string;
+  imageId: string;
+  imageDisplayName: string;
+  cpu: number;
+  memory: number;
+  systemDiskSize: number;
+  quantity: number;
+  remark?: string | null;
+  createdBy?: string | null;
+  expiresAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  summary?: SingleInstanceBatchSummary;
+};
+
+export type SingleInstanceBatchGroup = {
+  batch: SingleInstanceBatch;
+  instances: RangeInstance[];
+};
+
+export type SingleInstanceListPayload = {
+  batches: SingleInstanceBatchGroup[];
+  standaloneInstances: RangeInstance[];
 };
 
 export type SingleInstanceAction =

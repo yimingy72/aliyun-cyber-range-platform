@@ -18,6 +18,7 @@ import type {
   ScenarioCreateInput,
   ScenarioUpdateInput,
   SingleInstanceAction,
+  SingleInstanceListPayload,
   SingleInstanceLaunchInput,
   SingleInstanceLaunchResult,
 } from './admin-types';
@@ -95,7 +96,7 @@ export async function fetchSingleInstances(apiBaseUrl: string, token: string) {
     headers: createAdminHeaders(token),
   });
 
-  return readJson<RangeInstance[]>(response);
+  return readJson<RangeInstance[] | SingleInstanceListPayload>(response);
 }
 
 export async function fetchProvisionJobs(apiBaseUrl: string, token: string) {
@@ -138,6 +139,21 @@ export async function triggerSingleInstanceAction(
   });
 
   return readJson<Record<string, unknown>>(response);
+}
+
+export async function destroySingleInstanceBatch(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  triggeredBy: string,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/instances/batches/${id}/destroy-all`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify({ triggeredBy }),
+  });
+
+  return readJson<{ batchId: string; jobCount: number }>(response);
 }
 
 export async function saveRangeInstanceDraft(

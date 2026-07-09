@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AdminApiError,
   deleteRangeInstance,
+  destroySingleInstanceBatch,
   fetchInstanceTypeAvailability,
   fetchPlatformImages,
   fetchProvisionJobs,
@@ -19,6 +20,8 @@ import type {
   PlatformImageAsset,
   ProvisionJob,
   RangeInstance,
+  SingleInstanceBatchGroup,
+  SingleInstanceListPayload,
   SingleInstanceAction,
   SingleInstanceLaunchInput,
 } from '../../lib/admin-types';
@@ -202,6 +205,53 @@ function formatFullCredential(instance: RangeInstance) {
   return `${credential.username} / ${credential.password}`;
 }
 
+function normalizeSingleInstanceListPayload(payload: RangeInstance[] | SingleInstanceListPayload) {
+  if (Array.isArray(payload)) {
+    return {
+      batches: [] as SingleInstanceBatchGroup[],
+      standaloneInstances: payload,
+    };
+  }
+
+  return {
+    batches: payload.batches ?? [],
+    standaloneInstances: payload.standaloneInstances ?? [],
+  };
+}
+
+function summarizeBatch(instances: RangeInstance[]) {
+  return instances.reduce(
+    (summary, instance) => {
+      if (instance.status === 'running') summary.running += 1;
+      else if (instance.status === 'pending_create' || instance.status === 'creating') summary.creating += 1;
+      else if (instance.status === 'create_failed') summary.createFailed += 1;
+      else if (instance.status === 'pending_destroy' || instance.status === 'destroying') summary.destroying += 1;
+      else if (instance.status === 'destroy_failed') summary.destroyFailed += 1;
+      else if (instance.status === 'destroyed') summary.destroyed += 1;
+      return summary;
+    },
+    { running: 0, creating: 0, createFailed: 0, destroying: 0, destroyFailed: 0, destroyed: 0 },
+  );
+}
+
+function formatBatchSummary(instances: RangeInstance[]) {
+  const summary = summarizeBatch(instances);
+  const parts = [
+    summary.running ? `${summary.running} 运行中` : null,
+    summary.creating ? `${summary.creating} 创建中` : null,
+    summary.createFailed ? `${summary.createFailed} 创建失败` : null,
+    summary.destroying ? `${summary.destroying} 销毁中` : null,
+    summary.destroyFailed ? `${summary.destroyFailed} 销毁失败` : null,
+    summary.destroyed ? `${summary.destroyed} 已关闭` : null,
+  ].filter(Boolean);
+
+  return parts.join(' / ') || '暂无';
+}
+
+function isHistoryBatch(group: SingleInstanceBatchGroup) {
+  return group.instances.length > 0 && group.instances.every((instance) => instance.status === 'destroyed');
+}
+
 function readJobTimestamp(job: ProvisionJob | undefined, edge: 'start' | 'end') {
   if (!job) {
     return null;
@@ -328,6 +378,7 @@ export function SingleInstancesScreen({
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
   const [searchName, setSearchName] = useState('');
   const [instances, setInstances] = useState<RangeInstance[]>([]);
+  const [batchGroups, setBatchGroups] = useState<SingleInstanceBatchGroup[]>([]);
   const [jobs, setJobs] = useState<ProvisionJob[]>([]);
   const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -335,6 +386,7 @@ export function SingleInstancesScreen({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
+  const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
   const [copiedPasswordInstanceId, setCopiedPasswordInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
@@ -343,16 +395,20 @@ export function SingleInstancesScreen({
   const copiedPasswordTimerRef = useRef<number | null>(null);
 
   async function reloadSingleInstanceRows(token: string) {
-    const [nextInstances, nextJobs] = await Promise.all([
+    const [nextPayload, nextJobs] = await Promise.all([
       fetchSingleInstances(apiBaseUrl, token),
       fetchProvisionJobs(apiBaseUrl, token),
     ]);
-    const singleInstances = nextInstances.filter((instance) => instance.instanceMode === 'single');
+    const normalizedPayload = normalizeSingleInstanceListPayload(nextPayload);
+    const singleInstances = normalizedPayload.standaloneInstances.filter((instance) => instance.instanceMode === 'single');
+    const batchInstanceIds = normalizedPayload.batches.flatMap((group) => group.instances.map((instance) => instance.id));
+    const trackedInstanceIds = new Set([...singleInstances.map((instance) => instance.id), ...batchInstanceIds]);
 
+    setBatchGroups(normalizedPayload.batches);
     setInstances(singleInstances);
-    setJobs(nextJobs.filter((job) => singleInstances.some((instance) => instance.id === job.rangeInstanceId)));
+    setJobs(nextJobs.filter((job) => trackedInstanceIds.has(job.rangeInstanceId)));
 
-    return singleInstances;
+    return normalizedPayload;
   }
 
   useEffect(() => {
@@ -490,6 +546,14 @@ export function SingleInstancesScreen({
   const enabledPlatformImages = useMemo(
     () => platformImages.filter((item) => item.enabled),
     [platformImages],
+  );
+  const activeBatchGroups = useMemo(
+    () => batchGroups.filter((group) => !isHistoryBatch(group)),
+    [batchGroups],
+  );
+  const historyBatchGroups = useMemo(
+    () => batchGroups.filter((group) => isHistoryBatch(group)),
+    [batchGroups],
   );
   const normalizedSearchName = searchName.trim().toLowerCase();
 
@@ -749,6 +813,27 @@ export function SingleInstancesScreen({
     }
   }
 
+  async function handleBatchDestroy(batchId: string) {
+    if (!session.token) {
+      return;
+    }
+
+    setErrorMessage(null);
+
+    try {
+      await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId, 'admin');
+      await reloadSingleInstanceRows(session.token);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('批量关闭失败，请稍后重试。');
+    }
+  }
+
   if (!session.isReady) {
     return null;
   }
@@ -768,6 +853,10 @@ export function SingleInstancesScreen({
       ? (instance.name?.trim().toLowerCase() || '').includes(normalizedSearchName)
       : true,
   );
+  const visibleBatchGroups = (listMode === 'history' ? historyBatchGroups : activeBatchGroups).filter((group) =>
+    normalizedSearchName ? group.batch.name.trim().toLowerCase().includes(normalizedSearchName) : true,
+  );
+  const hasVisibleContent = visibleBatchGroups.length > 0 || visibleInstances.length > 0;
 
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen">
@@ -844,8 +933,129 @@ export function SingleInstancesScreen({
             </div>
           )}
 
-          {visibleInstances.length ? (
-            <div className="range-workbench-rows">
+          {hasVisibleContent ? (
+            <>
+              {visibleBatchGroups.length ? (
+                <div className="single-instance-batch-section">
+                  <div className="single-instance-batch-header">
+                    <div></div>
+                    <div>批次名</div>
+                    <div>镜像</div>
+                    <div>数量</div>
+                    <div>状态汇总</div>
+                    <div>创建时间</div>
+                    <div>到期时间</div>
+                    <div>创建人</div>
+                    <div>操作</div>
+                  </div>
+                  {visibleBatchGroups.map((group) => {
+                    const isExpanded = expandedBatchIds.includes(group.batch.id);
+
+                    return (
+                      <div key={group.batch.id} className="single-instance-batch-card">
+                        <div className="single-instance-batch-row">
+                          <button
+                            type="button"
+                            className="single-instance-batch-toggle"
+                            aria-label={`展开批次 ${group.batch.name}`}
+                            onClick={() =>
+                              setExpandedBatchIds((current) =>
+                                current.includes(group.batch.id)
+                                  ? current.filter((id) => id !== group.batch.id)
+                                  : [...current, group.batch.id],
+                              )
+                            }
+                          >
+                            {isExpanded ? '−' : '+'}
+                          </button>
+                          <div className="range-workbench-main">
+                            <strong>{group.batch.name}</strong>
+                          </div>
+                          <div className="range-workbench-main">
+                            <span>{group.batch.imageDisplayName}</span>
+                          </div>
+                          <div className="range-workbench-main">
+                            <span>{group.batch.quantity}</span>
+                          </div>
+                          <div className="range-workbench-main">
+                            <span>{formatBatchSummary(group.instances)}</span>
+                          </div>
+                          <div className="range-workbench-created-at">
+                            <span>{formatDateTime(group.batch.createdAt)}</span>
+                          </div>
+                          <div className="range-workbench-created-at">
+                            <span>{formatDateTime(group.batch.expiresAt)}</span>
+                          </div>
+                          <div className="range-workbench-main">
+                            <span>{group.batch.createdBy?.trim() || 'admin'}</span>
+                          </div>
+                          <div className="single-instance-batch-actions">
+                            {!isHistoryBatch(group) ? (
+                              <button type="button" onClick={() => void handleBatchDestroy(group.batch.id)}>
+                                一键关闭
+                              </button>
+                            ) : (
+                              <span>已关闭</span>
+                            )}
+                          </div>
+                        </div>
+                        {isExpanded ? (
+                          <div className="single-instance-batch-children">
+                            <div className="single-instance-batch-child-head">
+                              <div>子实例</div>
+                              <div>规格</div>
+                              <div>公网 IP</div>
+                              <div>账号/密码</div>
+                              <div>状态</div>
+                              <div>操作</div>
+                            </div>
+                            {group.instances.map((instance) => {
+                              const actions = getAvailableActions(instance.status);
+                              const isActionPending = pendingActionInstanceId === instance.id;
+
+                              return (
+                                <div key={instance.id} className="single-instance-batch-child-row">
+                                  <div className="range-workbench-main">
+                                    <strong>{instance.name?.trim() || instance.id}</strong>
+                                  </div>
+                                  <div className="range-workbench-main">
+                                    <span>{getSpecLabel(instance)}</span>
+                                  </div>
+                                  <div className="range-workbench-main">
+                                    <span>{getPublicIp(instance)}</span>
+                                  </div>
+                                  <div className="single-instance-credential-cell">
+                                    <span className="single-instance-credential-mask">{formatMaskedCredential(instance)}</span>
+                                    <span className="single-instance-credential-tooltip">{formatFullCredential(instance)}</span>
+                                    <button type="button" aria-label="复制密码" className="single-instance-copy-button" onClick={() => void handleCopyPassword(instance)}>
+                                      {copiedPasswordInstanceId === instance.id ? '已复制' : '复制'}
+                                    </button>
+                                  </div>
+                                  <div className="range-workbench-main">
+                                    <span className={`template-workbench-status-pill ${getStatusTone(instance.status)}`}>
+                                      {getStatusLabel(instance.status)}
+                                    </span>
+                                  </div>
+                                  <div className="single-instance-batch-child-actions">
+                                    {actions.map((action) => (
+                                      <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                        {getActionLabel(action, instance.status)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {visibleInstances.length ? (
+                <div className="range-workbench-rows">
               {visibleInstances.map((instance) => {
                 const isHistory = listMode === 'history';
                 const lifecycle = lifecycleByInstanceId.get(instance.id);
@@ -948,7 +1158,9 @@ export function SingleInstancesScreen({
                   </article>
                 );
               })}
-            </div>
+                </div>
+              ) : null}
+            </>
           ) : (
             <div className="template-workbench-empty">
               <strong>{listMode === 'history' ? '暂无实例历史' : '暂无实例'}</strong>
