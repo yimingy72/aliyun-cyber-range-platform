@@ -1,6 +1,6 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
-import type { UserRole } from './admin.repository';
+import type { UserRole, UserStatus } from './admin.repository';
 
 const PASSWORD_HASH_SCHEME = 'scrypt';
 const SESSION_TOKEN_VERSION = 'v1';
@@ -16,6 +16,15 @@ export type SessionUserProfile = {
 
 type SessionTokenPayload = {
   sub: string;
+  fp: string;
+};
+
+type SessionFingerprintUser = {
+  id: string;
+  passwordHash: string;
+  role: UserRole;
+  status: UserStatus;
+  updatedAt: Date;
 };
 
 export function resolveSeededAdminCredentials() {
@@ -49,10 +58,14 @@ export function verifyPassword(password: string, passwordHash: string) {
   return safeEqual(actualHash, expectedHash);
 }
 
-export function signSessionToken(userId: string, secret: string) {
-  const payload = Buffer.from(JSON.stringify({ sub: userId } satisfies SessionTokenPayload), 'utf8').toString(
-    'base64url',
-  );
+export function signSessionToken(user: SessionFingerprintUser, secret: string) {
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub: user.id,
+      fp: buildSessionFingerprint(user),
+    } satisfies SessionTokenPayload),
+    'utf8',
+  ).toString('base64url');
   const signature = createSessionSignature(payload, secret);
 
   return `${SESSION_TOKEN_VERSION}.${payload}.${signature}`;
@@ -74,18 +87,42 @@ export function verifySessionToken(token: string, secret: string): SessionTokenP
   try {
     const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Partial<SessionTokenPayload>;
 
-    if (typeof decoded.sub !== 'string' || decoded.sub.length === 0) {
+    if (
+      typeof decoded.sub !== 'string' ||
+      decoded.sub.length === 0 ||
+      typeof decoded.fp !== 'string' ||
+      decoded.fp.length === 0
+    ) {
       return null;
     }
 
-    return { sub: decoded.sub };
+    return {
+      sub: decoded.sub,
+      fp: decoded.fp,
+    };
   } catch {
     return null;
   }
 }
 
+export function hasValidSessionFingerprint(payload: SessionTokenPayload, user: SessionFingerprintUser) {
+  return safeEqual(payload.fp, buildSessionFingerprint(user));
+}
+
 function createSessionSignature(payload: string, secret: string) {
   return createHmac('sha256', secret).update(payload).digest('base64url');
+}
+
+function buildSessionFingerprint(user: SessionFingerprintUser) {
+  return createHash('sha256')
+    .update(user.passwordHash)
+    .update('\0')
+    .update(user.role)
+    .update('\0')
+    .update(user.status)
+    .update('\0')
+    .update(user.updatedAt.toISOString())
+    .digest('base64url');
 }
 
 function safeEqual(left: string, right: string) {

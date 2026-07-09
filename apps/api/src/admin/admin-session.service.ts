@@ -67,7 +67,7 @@ export class AdminSessionService {
     }
 
     return {
-      token: signSessionToken(user.id, this.getSessionSecret()),
+      token: signSessionToken(user, this.getSessionSecret()),
       profile: this.toSessionProfile(user),
     };
   }

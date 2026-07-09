@@ -137,12 +137,10 @@ describe('Admin users', () => {
 
     const userToken = userLoginResponse.body.token as string;
 
-    const scenariosResponse = await request(app.getHttpServer())
+    await request(app.getHttpServer())
       .get('/admin/scenarios')
       .set('authorization', `Bearer ${userToken}`)
-      .expect(200);
-
-    expect(Array.isArray(scenariosResponse.body)).toBe(true);
+      .expect(403);
 
     await request(app.getHttpServer())
       .get('/admin/users')
@@ -302,12 +300,42 @@ describe('Admin users', () => {
     await request(app.getHttpServer())
       .get('/admin/scenarios')
       .set('authorization', `Bearer ${demotedAdminToken}`)
-      .expect(200);
+      .expect(403);
 
     await request(app.getHttpServer())
       .get('/admin/users')
       .set('authorization', `Bearer ${demotedAdminToken}`)
       .expect(403);
+  });
+
+  it('revokes an already-issued token when an admin password is reset', async () => {
+    const adminToken = await login('admin', 'change-me');
+    const adminUser = await createUser(adminToken, {
+      username: `admin-${randomUUID()}`,
+      password: 'ResetOld123!',
+      role: 'admin',
+    });
+    const issuedToken = await login(adminUser.username, 'ResetOld123!');
+
+    await request(app.getHttpServer())
+      .post(`/admin/users/${adminUser.id}/reset-password`)
+      .set('authorization', `Bearer ${issuedToken}`)
+      .send({
+        password: 'ResetNew123!',
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .get('/admin/users')
+      .set('authorization', `Bearer ${issuedToken}`)
+      .expect(401);
+
+    const refreshedToken = await login(adminUser.username, 'ResetNew123!');
+
+    await request(app.getHttpServer())
+      .get('/admin/users')
+      .set('authorization', `Bearer ${refreshedToken}`)
+      .expect(200);
   });
 
   async function login(username: string, password: string) {

@@ -1,7 +1,7 @@
-import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 
 import { ADMIN_REPOSITORY, AdminRepository } from './admin.repository';
-import { SessionUserProfile, verifySessionToken } from './admin-user-auth';
+import { hasValidSessionFingerprint, SessionUserProfile, verifySessionToken } from './admin-user-auth';
 import { AdminSessionService } from './admin-session.service';
 
 @Injectable()
@@ -31,7 +31,7 @@ export class AdminAuthGuard implements CanActivate {
 
     const user = await this.repository.getPlatformUserById(payload.sub);
 
-    if (!user || user.status !== 'active') {
+    if (!user || user.status !== 'active' || !hasValidSessionFingerprint(payload, user)) {
       throw new UnauthorizedException('Missing or invalid admin token');
     }
 
@@ -40,6 +40,10 @@ export class AdminAuthGuard implements CanActivate {
       username: user.username,
       role: user.role,
     };
+
+    if (user.role !== 'admin') {
+      throw new ForbiddenException('Admin access required');
+    }
 
     return true;
   }
