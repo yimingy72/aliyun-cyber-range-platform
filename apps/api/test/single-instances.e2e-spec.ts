@@ -398,10 +398,11 @@ describe('single instances', () => {
 
   it('executes launched batch create jobs through ECS-native APIs and marks child instances running', async () => {
     let runInstancesCallCount = 0;
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
 
-      if (url.includes('Action=RunInstances')) {
+      if (body.includes('Action=RunInstances')) {
         runInstancesCallCount += 1;
         return new Response(
           JSON.stringify({
@@ -486,10 +487,10 @@ describe('single instances', () => {
   });
 
   it('executes batch destroy-all through ECS-native APIs and marks child instances destroyed', async () => {
-    fetchMock.mockImplementation(async (input) => {
-      const url = String(input);
+    fetchMock.mockImplementation(async (_input, init) => {
+      const body = typeof init?.body === 'string' ? init.body : '';
 
-      if (url.includes('Action=DeleteInstances')) {
+      if (body.includes('Action=DeleteInstances')) {
         return new Response(JSON.stringify({ RequestId: 'delete-ok' }), { status: 200 });
       }
 

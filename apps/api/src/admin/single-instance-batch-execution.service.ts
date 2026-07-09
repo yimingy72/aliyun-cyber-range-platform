@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -11,7 +11,6 @@ import {
   type RangeInstanceRecord,
   type RangeResourceSummary,
 } from './admin.repository';
-import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -122,6 +121,7 @@ export class SingleInstanceBatchExecutionService {
             accessKeySecret: snapshot.accessKeySecret,
             regionId: snapshot.defaultRegion,
             action: 'RunInstances',
+            method: 'POST',
             parameters: {
               ImageId: group[0].instance.singleInstanceConfig!.imageId,
               InstanceType: resolvedInstanceType,
@@ -171,6 +171,7 @@ export class SingleInstanceBatchExecutionService {
                 accessKeySecret: snapshot.accessKeySecret,
                 regionId: snapshot.defaultRegion,
                 action: 'ModifyInstanceAttribute',
+                method: 'POST',
                 parameters: {
                   InstanceId: detail.instanceId,
                   InstanceName: group[index].instance.name,
@@ -216,6 +217,7 @@ export class SingleInstanceBatchExecutionService {
           accessKeySecret: snapshot.accessKeySecret,
           regionId: snapshot.defaultRegion,
           action: 'DeleteInstances',
+          method: 'POST',
           parameters: {
             InstanceIds: JSON.stringify(instanceIds),
             Force: 'true',
@@ -347,10 +349,12 @@ export class SingleInstanceBatchExecutionService {
     accessKeySecret: string;
     regionId: string;
     action: string;
+    method?: 'GET' | 'POST';
     parameters?: Record<string, string>;
   }): Promise<ResponsePayload> {
     const endpoint = `https://ecs.${input.regionId}.aliyuncs.com/`;
-    const query = signAliyunRpcQuery(
+    const method = input.method ?? 'GET';
+    const signedQuery = signAliyunRpcRequest(
       {
         Action: input.action,
         AccessKeyId: input.accessKeyId,
@@ -364,12 +368,23 @@ export class SingleInstanceBatchExecutionService {
         ...(input.parameters ?? {}),
       },
       input.accessKeySecret,
+      method,
     );
-    const response = await fetch(`${endpoint}?${query}`, {
-      method: 'GET',
+    const response = await fetch(method === 'GET' ? `${endpoint}?${signedQuery}` : endpoint, {
+      method,
       headers: {
         Accept: 'application/json',
+        ...(method === 'POST'
+          ? {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            }
+          : {}),
       },
+      ...(method === 'POST'
+        ? {
+            body: signedQuery,
+          }
+        : {}),
     });
 
     if (!response.ok) {
@@ -379,6 +394,27 @@ export class SingleInstanceBatchExecutionService {
 
     return (await response.json()) as ResponsePayload;
   }
+}
+
+function signAliyunRpcRequest(
+  parameters: Record<string, string>,
+  accessKeySecret: string,
+  method: 'GET' | 'POST',
+) {
+  const canonicalizedQuery = Object.entries(parameters)
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .map(([key, value]) => `${percentEncode(key)}=${percentEncode(value)}`)
+    .join('&');
+  const stringToSign = `${method}&${percentEncode('/')}&${percentEncode(canonicalizedQuery)}`;
+  const signature = createHmac('sha1', `${accessKeySecret}&`).update(stringToSign).digest('base64');
+
+  return `${canonicalizedQuery}&Signature=${percentEncode(signature)}`;
+}
+
+function percentEncode(value: string) {
+  return encodeURIComponent(value)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%7E/g, '~');
 }
 
 type NormalizedInstanceDetail = {

@@ -126,12 +126,6 @@ export class ProvisioningWorkerService {
           runtimeConfig,
           reportStep,
         });
-
-        await this.adminRepository.updateProvisionJob(job.id, {
-          status: 'succeeded',
-          finishedAt: new Date(),
-          errorSummary: null,
-        });
         return;
       }
 
