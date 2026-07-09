@@ -12,6 +12,7 @@ import {
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
+import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
 import {
   RANGE_PROVISIONER,
@@ -31,24 +32,37 @@ const SINGLE_INSTANCE_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-vp
 
 @Injectable()
 export class ProvisioningWorkerService {
+  private readonly activeSingleBatchIds = new Set<string>();
+  private readonly activeTasks = new Set<Promise<void>>();
+  private rangeTaskActive = false;
+  private readonly singleInstanceBatchExecutionService: SingleInstanceBatchExecutionService;
+
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     @Inject(RANGE_PROVISIONER) private readonly rangeProvisioner: RangeProvisioner,
     private readonly systemConfigService: SystemConfigService,
-  ) {}
+    singleInstanceBatchExecutionService?: SingleInstanceBatchExecutionService,
+  ) {
+    this.singleInstanceBatchExecutionService =
+      singleInstanceBatchExecutionService ??
+      new SingleInstanceBatchExecutionService(this.adminRepository, this.systemConfigService);
+  }
 
-  dispatch(_jobId: string) {
-    // ponytail: API role only enqueues in DB; the dedicated worker loop claims jobs later.
+  dispatch(jobId: string) {
+    void this.dispatchSingleInstanceJob(jobId);
   }
 
   async runLoop(): Promise<void> {
     while (true) {
       await this.processExpiredInstances(new Date());
+      const started = await this.startEligiblePendingJobs();
 
-      const pendingJob = (await this.adminRepository.listProvisionJobs()).find((job) => job.status === 'pending');
+      if (started > 0) {
+        continue;
+      }
 
-      if (pendingJob) {
-        await this.process(pendingJob.id);
+      if (this.activeTasks.size > 0) {
+        await Promise.race(this.activeTasks);
         continue;
       }
 
@@ -288,6 +302,91 @@ export class ProvisioningWorkerService {
     }
   }
 
+  private async startEligiblePendingJobs() {
+    const pendingJobs = (await this.adminRepository.listProvisionJobs()).filter((job) => job.status === 'pending');
+
+    if (!pendingJobs.length) {
+      return 0;
+    }
+
+    const instances = await this.adminRepository.listRangeInstances();
+    const instancesById = new Map(instances.map((instance) => [instance.id, instance]));
+    let started = 0;
+
+    for (const job of pendingJobs) {
+      const instance = instancesById.get(job.rangeInstanceId);
+
+      if (!instance) {
+        continue;
+      }
+
+      if (instance.instanceMode === 'single') {
+        const batchLockId = instance.singleInstanceBatchId ?? instance.id;
+
+        if (this.activeSingleBatchIds.has(batchLockId)) {
+          continue;
+        }
+
+        this.activeSingleBatchIds.add(batchLockId);
+        started += 1;
+        this.trackTask(
+          this.process(job.id).finally(() => {
+            this.activeSingleBatchIds.delete(batchLockId);
+          }),
+        );
+        continue;
+      }
+
+      if (this.rangeTaskActive) {
+        continue;
+      }
+
+      this.rangeTaskActive = true;
+      started += 1;
+      this.trackTask(
+        this.process(job.id).finally(() => {
+          this.rangeTaskActive = false;
+        }),
+      );
+    }
+
+    return started;
+  }
+
+  private trackTask(task: Promise<void>) {
+    this.activeTasks.add(task);
+    void task.finally(() => {
+      this.activeTasks.delete(task);
+    });
+  }
+
+  private async dispatchSingleInstanceJob(jobId: string) {
+    const job = await this.adminRepository.getProvisionJobById(jobId);
+
+    if (!job || job.status !== 'pending') {
+      return;
+    }
+
+    const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
+
+    if (!instance || instance.instanceMode !== 'single') {
+      return;
+    }
+
+    const batchLockId = instance.singleInstanceBatchId ?? instance.id;
+
+    if (this.activeSingleBatchIds.has(batchLockId)) {
+      return;
+    }
+
+    this.activeSingleBatchIds.add(batchLockId);
+    this.trackTask(
+      this.process(jobId).finally(() => {
+        this.activeSingleBatchIds.delete(batchLockId);
+      }),
+    );
+  }
+
   private async processSingleInstanceJob(input: {
     job: ProvisionJobRecord;
     instance: RangeInstanceRecord;
@@ -308,68 +407,103 @@ export class ProvisioningWorkerService {
       throw new Error('Single instance update jobs are not supported');
     }
 
-    const launchNetworkIdentity = this.resolveSingleInstanceNetworkIdentity(input.instance);
-    const singleNetworkProfile = await this.adminRepository.getSingleInstanceNetworkProfile({
-      provider: input.instance.cloudProvider,
-      regionId: launchNetworkIdentity.regionId,
-      zoneId: launchNetworkIdentity.zoneId,
-    });
-
-    if (!singleNetworkProfile) {
-      throw new Error('Single instance network profile missing');
-    }
-
-    const effectiveRuntimeConfig = {
-      ...input.runtimeConfig,
-      defaultRegion: launchNetworkIdentity.regionId,
-      defaultZoneId: launchNetworkIdentity.zoneId,
-    };
-
-    const provisionInput = {
-      rangeInstanceId: input.instance.id,
-      templateModulePath: SINGLE_INSTANCE_TEMPLATE_MODULE_PATH,
-      allocatedCidr: singleNetworkProfile.vpcCidr,
-      runtimeConfig: effectiveRuntimeConfig,
-      runtimeCredentials: input.instance.runtimeCredentials ?? undefined,
-      reportStep: input.reportStep,
-      instanceMode: 'single' as const,
-      singleInstanceConfig: input.instance.singleInstanceConfig,
-      singleNetworkProfile,
-    };
+    const items = await this.collectSingleInstanceExecutionItems(input);
 
     if (input.effectiveJobType === 'create') {
       await this.runWorkerStep(input.reportStep, 'prepare', async () => {
-        await this.adminRepository.updateRangeInstance(input.instance.id, {
-          status: 'creating',
-        });
+        for (const item of items) {
+          await this.adminRepository.updateRangeInstance(item.instance.id, {
+            status: 'creating',
+          });
+          if (item.job.status === 'pending') {
+            await this.adminRepository.updateProvisionJob(item.job.id, {
+              status: 'running',
+              startedAt: new Date(),
+              finishedAt: null,
+              errorSummary: null,
+            });
+          }
+        }
       });
 
-      const result = await this.rangeProvisioner.create(provisionInput);
-
-      await this.runWorkerStep(input.reportStep, 'persist_access_entry', async () => {
-        await this.adminRepository.updateRangeInstance(input.instance.id, {
-          status: 'running',
-          accessEntry: result.accessEntry,
-          resourceSummary: result.resourceSummary,
-          errorSummary: null,
-        });
-      });
+      await this.singleInstanceBatchExecutionService.executeCreateBatch(items);
       return;
     }
 
     await this.runWorkerStep(input.reportStep, 'prepare', async () => {
-      await this.adminRepository.updateRangeInstance(input.instance.id, {
-        status: 'destroying',
-      });
+      for (const item of items) {
+        await this.adminRepository.updateRangeInstance(item.instance.id, {
+          status: 'destroying',
+        });
+        if (item.job.status === 'pending') {
+          await this.adminRepository.updateProvisionJob(item.job.id, {
+            status: 'running',
+            startedAt: new Date(),
+            finishedAt: null,
+            errorSummary: null,
+          });
+        }
+      }
     });
 
-    await this.rangeProvisioner.destroy(provisionInput);
+    await this.singleInstanceBatchExecutionService.executeDestroyBatch(items);
+  }
 
-    await this.adminRepository.updateRangeInstance(input.instance.id, {
-      status: 'destroyed',
-      accessEntry: null,
-      resourceSummary: null,
-      errorSummary: null,
+  private async collectSingleInstanceExecutionItems(input: {
+    job: ProvisionJobRecord;
+    instance: RangeInstanceRecord;
+    effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
+  }) {
+    const batchId = input.instance.singleInstanceBatchId;
+
+    if (!batchId || input.job.jobType === 'retry') {
+      return [
+        {
+          instance: input.instance,
+          job: input.job,
+        },
+      ];
+    }
+
+    const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
+    const group = groups.find((entry) => entry.batch.id === batchId);
+
+    if (!group) {
+      return [
+        {
+          instance: input.instance,
+          job: input.job,
+        },
+      ];
+    }
+
+    const targetStatus = input.effectiveJobType === 'create' ? 'pending_create' : 'pending_destroy';
+    const candidateInstances = group.instances.filter((instance) => instance.status === targetStatus);
+    const jobsById = new Map(
+      (
+        await Promise.all(
+          candidateInstances.map((instance) =>
+            instance.lastJobId ? this.adminRepository.getProvisionJobById(instance.lastJobId) : Promise.resolve(null),
+          ),
+        )
+      )
+        .filter((job): job is ProvisionJobRecord => Boolean(job))
+        .map((job) => [job.id, job]),
+    );
+
+    return candidateInstances.flatMap((instance) => {
+      const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
+
+      if (!job) {
+        return [];
+      }
+
+      return [
+        {
+          instance,
+          job,
+        },
+      ];
     });
   }
 

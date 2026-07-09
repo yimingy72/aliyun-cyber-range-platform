@@ -131,7 +131,7 @@ export type RangeResourceTopologySummary = {
 };
 
 export type RangeResourceSummary = {
-  mode: 'dry-run' | 'opentofu';
+  mode: 'dry-run' | 'opentofu' | 'ecs-native';
   modulePath?: string;
   workspaceDir?: string;
   outputFilePath?: string;

@@ -169,7 +169,7 @@ export type SingleInstanceConfig = {
 };
 
 export type RangeResourceSummary = {
-  mode?: string | null;
+  mode?: 'dry-run' | 'opentofu' | 'ecs-native' | null;
   modulePath?: string | null;
   workspaceDir?: string | null;
   outputFilePath?: string | null;

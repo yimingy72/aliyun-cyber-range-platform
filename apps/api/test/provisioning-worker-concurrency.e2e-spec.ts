@@ -1,3 +1,4 @@
+import type { ProvisionJobRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
@@ -1102,38 +1103,63 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
 
     const provisioner: RangeProvisioner = {
-      create: jest.fn().mockResolvedValue({
-        accessEntry: {
-          hostRole: 'single-ecs-1',
-          publicIp: '47.100.10.10',
-          privateIp: '10.200.1.10',
-          ssh: 'ssh root@47.100.10.10',
-        },
-        resourceSummary: {
-          mode: 'opentofu',
-          vpcId: 'vpc-single-default',
-          hostIds: {
-            'single-ecs-1': 'i-single-001',
-          },
-        },
-      }),
+      create: jest.fn(),
       destroy: jest.fn(),
     };
+    const batchExecutionService = {
+      executeCreateBatch: jest.fn(async (items: Array<{ instance: RangeInstanceRecord; job: ProvisionJobRecord }>) => {
+        for (const item of items) {
+          await repository.updateRangeInstance(item.instance.id, {
+            status: 'running',
+            errorSummary: null,
+            accessEntry: {
+              hostRole: 'single-ecs-1',
+              publicIp: '47.100.10.10',
+              privateIp: '10.200.1.10',
+              ssh: 'ssh root@47.100.10.10',
+            },
+            resourceSummary: {
+              mode: 'ecs-native',
+              vpcId: 'vpc-single-default',
+              hostIds: {
+                'single-ecs-1': 'i-single-001',
+              },
+            },
+          });
+          await repository.updateProvisionJob(item.job.id, {
+            status: 'succeeded',
+            finishedAt: new Date(),
+            errorSummary: null,
+          });
+        }
+      }),
+      executeDestroyBatch: jest.fn(),
+    };
 
-    const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+    const worker = new ProvisioningWorkerService(
+      repository,
+      provisioner,
+      createSystemConfigServiceStub() as any,
+      batchExecutionService as any,
+    );
 
     await worker.process(job.id);
 
-    expect(provisioner.create).toHaveBeenCalledWith(
+    expect(batchExecutionService.executeCreateBatch).toHaveBeenCalledWith([
       expect.objectContaining({
-        instanceMode: 'single',
-        singleInstanceConfig: expect.objectContaining({
-          hostKey: 'single-ecs-1',
-          assignedVswitchId: 'vsw-single-1',
+        instance: expect.objectContaining({
+          id: instance.id,
+          instanceMode: 'single',
+          singleInstanceConfig: expect.objectContaining({
+            hostKey: 'single-ecs-1',
+            assignedVswitchId: 'vsw-single-1',
+          }),
         }),
-        singleNetworkProfile: profile,
+        job: expect.objectContaining({
+          id: job.id,
+        }),
       }),
-    );
+    ]);
     await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
       expect.objectContaining({
         id: instance.id,
@@ -1206,7 +1232,7 @@ describe('ProvisioningWorkerService concurrency', () => {
 
     const provisioner: RangeProvisioner = {
       create: jest.fn(),
-      destroy: jest.fn().mockResolvedValue(undefined),
+      destroy: jest.fn(),
     };
     const changedDefaultsSystemConfig = {
       getSnapshot: jest.fn().mockResolvedValue({
@@ -1217,25 +1243,46 @@ describe('ProvisioningWorkerService concurrency', () => {
         accessKeySecret: 'test-sk',
       }),
     };
+    const batchExecutionService = {
+      executeCreateBatch: jest.fn(),
+      executeDestroyBatch: jest.fn(async (items: Array<{ instance: RangeInstanceRecord; job: ProvisionJobRecord }>) => {
+        expect(items).toEqual([
+          expect.objectContaining({
+            instance: expect.objectContaining({
+              id: instance.id,
+              singleInstanceConfig: expect.objectContaining({
+                assignedVswitchId: 'vsw-launch-1',
+              }),
+            }),
+            job: expect.objectContaining({
+              id: job.id,
+            }),
+          }),
+        ]);
+
+        for (const item of items) {
+          await repository.updateRangeInstance(item.instance.id, {
+            status: 'destroyed',
+            errorSummary: null,
+          });
+          await repository.updateProvisionJob(item.job.id, {
+            status: 'succeeded',
+            finishedAt: new Date(),
+            errorSummary: null,
+          });
+        }
+      }),
+    };
     const worker = new ProvisioningWorkerService(
       repository,
       provisioner,
       changedDefaultsSystemConfig as any,
+      batchExecutionService as any,
     );
 
     await worker.process(job.id);
 
-    expect(provisioner.destroy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        instanceMode: 'single',
-        allocatedCidr: '10.210.0.0/16',
-        runtimeConfig: expect.objectContaining({
-          defaultRegion: 'cn-hangzhou',
-          defaultZoneId: 'cn-hangzhou-h',
-        }),
-        singleNetworkProfile: launchProfile,
-      }),
-    );
+    expect(batchExecutionService.executeDestroyBatch).toHaveBeenCalledTimes(1);
     await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
       expect.objectContaining({
         id: instance.id,
