@@ -4,6 +4,7 @@ import { AdminAuthGuard } from './admin-auth.guard';
 import {
   LaunchSingleInstanceDto,
   TriggerSingleInstanceActionDto,
+  TriggerSingleInstanceBatchDestroyDto,
   TriggerSingleInstanceDestroyDto,
 } from './dto/single-instance.dto';
 import { SingleInstancesService } from './single-instances.service';
@@ -26,6 +27,11 @@ export class SingleInstancesController {
   @Post(':id/destroy')
   destroy(@Param('id') id: string, @Body() body: TriggerSingleInstanceDestroyDto) {
     return this.singleInstancesService.destroy(id, body.triggeredBy);
+  }
+
+  @Post('batches/:id/destroy-all')
+  destroyBatch(@Param('id') id: string, @Body() body: TriggerSingleInstanceBatchDestroyDto) {
+    return this.singleInstancesService.destroyBatch(id, body.triggeredBy);
   }
 
   @Post(':id/retry')

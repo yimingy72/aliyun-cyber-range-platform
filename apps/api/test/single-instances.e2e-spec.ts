@@ -143,14 +143,23 @@ describe('single instances', () => {
       });
 
     expect(response.status).toBe(201);
+    expect(response.body.batch).toEqual(
+      expect.objectContaining({
+        name: 'web-lab',
+        quantity: 2,
+        createdBy: 'admin',
+      }),
+    );
     expect(response.body.instances).toHaveLength(2);
     expect(response.body.instances[0]).toMatchObject({
       createdBy: 'admin',
       instanceMode: 'single',
       name: 'web-lab-01',
+      singleInstanceBatchId: response.body.batch.id,
     });
     expect(response.body.instances[1]).toMatchObject({
       name: 'web-lab-02',
+      singleInstanceBatchId: response.body.batch.id,
     });
     expect(bootstrapServiceStub.bootstrapDefaultProfile).toHaveBeenCalledTimes(1);
 
@@ -309,6 +318,74 @@ describe('single instances', () => {
         standaloneInstances: expect.arrayContaining([
           expect.objectContaining({ name: 'legacy-single' }),
         ]),
+      }),
+    );
+  });
+
+  it('bulk-destroys all active child instances in a batch', async () => {
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'destroy-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 2,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    await repository.createRangeInstance({
+      name: 'destroy-child-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-batch',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'destroy-child-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    await repository.createRangeInstance({
+      name: 'destroy-child-02',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'destroyed',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-batch',
+        quantityIndex: 2,
+        hostKey: 'single-ecs-2',
+        hostName: 'destroy-child-02',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/instances/batches/${batch.id}/destroy-all`)
+      .set('Authorization', 'Bearer dev-admin-token')
+      .send({ triggeredBy: 'admin' });
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        batchId: batch.id,
+        jobCount: 1,
       }),
     );
   });

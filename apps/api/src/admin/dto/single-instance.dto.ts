@@ -68,3 +68,9 @@ export class TriggerSingleInstanceDestroyDto {
   @IsNotEmpty()
   triggeredBy!: string;
 }
+
+export class TriggerSingleInstanceBatchDestroyDto {
+  @IsString()
+  @IsNotEmpty()
+  triggeredBy!: string;
+}

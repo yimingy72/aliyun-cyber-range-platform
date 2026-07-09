@@ -53,6 +53,19 @@ export class SingleInstancesService {
       (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
     ).length;
     const created = [];
+    const batch = await this.adminRepository.createSingleInstanceBatch({
+      name: input.name,
+      platformImageAssetId: image.id,
+      imageId: image.imageId,
+      imageDisplayName: image.displayName,
+      cpu: input.cpu,
+      memory: input.memory,
+      systemDiskSize: input.systemDiskSize ?? 40,
+      quantity,
+      remark: input.remark?.trim() || null,
+      createdBy: input.triggeredBy,
+      expiresAt: new Date(input.expiresAt),
+    });
 
     for (let index = 0; index < quantity; index += 1) {
       const quantityIndex = index + 1;
@@ -80,6 +93,7 @@ export class SingleInstancesService {
         name,
         createdBy: input.triggeredBy,
         instanceMode: 'single',
+        singleInstanceBatchId: batch.id,
         status: 'pending_create',
         expiresAt: input.expiresAt,
         runtimeTopologyGraph: blueprint.runtimeTopologyGraph,
@@ -119,7 +133,38 @@ export class SingleInstancesService {
       created.push(updated);
     }
 
-    return { instances: created };
+    return { batch, instances: created };
+  }
+
+  async destroyBatch(batchId: string, triggeredBy: string) {
+    const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
+    const group = groups.find((entry) => entry.batch.id === batchId);
+
+    if (!group) {
+      throw new NotFoundException('Single instance batch not found');
+    }
+
+    const targetInstances = group.instances.filter((instance) => instance.status !== 'destroyed');
+
+    for (const instance of targetInstances) {
+      const job = await this.adminRepository.createProvisionJob({
+        rangeInstanceId: instance.id,
+        jobType: 'destroy',
+        triggeredBy,
+      });
+
+      await this.adminRepository.updateRangeInstance(instance.id, {
+        status: 'pending_destroy',
+        lastJobId: job.id,
+      });
+
+      this.provisioningWorkerService.dispatch(job.id);
+    }
+
+    return {
+      batchId,
+      jobCount: targetInstances.length,
+    };
   }
 
   async destroy(id: string, triggeredBy: string) {
