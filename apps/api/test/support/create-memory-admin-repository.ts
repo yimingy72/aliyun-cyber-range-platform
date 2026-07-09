@@ -3,6 +3,7 @@ import {
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreateSingleInstanceBatchInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
   CreateRangeInstanceInput,
@@ -19,6 +20,7 @@ import {
   RangeTemplateRecord,
   RangeTemplateVersionRecord,
   SingleInstanceNetworkProfileRecord,
+  SingleInstanceBatchRecord,
   UpsertImageSnapshotsInput,
   UpsertSingleInstanceNetworkProfileInput,
   UpdateProvisionJobInput,
@@ -41,6 +43,7 @@ function shouldAutoUnpublishTemplate(input: UpdateRangeTemplateInput) {
 export function createMemoryAdminRepository(): AdminRepository {
   const rangeTemplates: RangeTemplateRecord[] = [];
   const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
+  const singleInstanceBatches: SingleInstanceBatchRecord[] = [];
   const rangeInstances: RangeInstanceRecord[] = [];
   const provisionJobs: ProvisionJobRecord[] = [];
   const provisionJobStepLogs: ProvisionJobStepLogRecord[] = [];
@@ -311,6 +314,42 @@ export function createMemoryAdminRepository(): AdminRepository {
         }
       }
     },
+    async createSingleInstanceBatch(input: CreateSingleInstanceBatchInput) {
+      const timestamp = now();
+      const record: SingleInstanceBatchRecord = {
+        id: nextId(),
+        name: input.name,
+        platformImageAssetId: input.platformImageAssetId,
+        imageId: input.imageId,
+        imageDisplayName: input.imageDisplayName,
+        cpu: input.cpu,
+        memory: input.memory,
+        systemDiskSize: input.systemDiskSize,
+        quantity: input.quantity,
+        remark: input.remark ?? null,
+        createdBy: input.createdBy ?? null,
+        expiresAt: input.expiresAt ?? null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+
+      singleInstanceBatches.unshift(record);
+
+      return clone(record);
+    },
+    async getSingleInstanceBatchById(id: string) {
+      const record = singleInstanceBatches.find((batch) => batch.id === id);
+
+      return record ? clone(record) : null;
+    },
+    async listSingleInstanceBatchesWithInstances() {
+      return cloneList(
+        singleInstanceBatches.map((batch) => ({
+          batch,
+          instances: rangeInstances.filter((instance) => instance.singleInstanceBatchId === batch.id),
+        })),
+      );
+    },
     async listRangeInstances() {
       return cloneList(rangeInstances);
     },
@@ -358,6 +397,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
         instanceMode: input.instanceMode ?? 'range',
+        singleInstanceBatchId: input.singleInstanceBatchId ?? null,
         singleInstanceConfig: cloneIfDefined(input.singleInstanceConfig ?? null),
         templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
@@ -402,6 +442,8 @@ export function createMemoryAdminRepository(): AdminRepository {
         name: input.name ?? record.name,
         createdBy: input.createdBy !== undefined ? input.createdBy : record.createdBy,
         instanceMode: input.instanceMode ?? record.instanceMode,
+        singleInstanceBatchId:
+          input.singleInstanceBatchId !== undefined ? input.singleInstanceBatchId : record.singleInstanceBatchId,
         singleInstanceConfig:
           input.singleInstanceConfig !== undefined
             ? cloneIfDefined(input.singleInstanceConfig)

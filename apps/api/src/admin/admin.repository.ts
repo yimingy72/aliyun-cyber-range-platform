@@ -173,6 +173,28 @@ export type SingleInstanceConfig = {
   assignedVswitchId?: string | null;
 };
 
+export type SingleInstanceBatchRecord = {
+  id: string;
+  name: string;
+  platformImageAssetId: string;
+  imageId: string;
+  imageDisplayName: string;
+  cpu: number;
+  memory: number;
+  systemDiskSize: number;
+  quantity: number;
+  remark: string | null;
+  createdBy: string | null;
+  expiresAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type SingleInstanceBatchWithInstancesRecord = {
+  batch: SingleInstanceBatchRecord;
+  instances: RangeInstanceRecord[];
+};
+
 export type RangeTemplateRecord = {
   id: string;
   name: string;
@@ -205,6 +227,7 @@ export type RangeInstanceRecord = {
   name: string;
   createdBy: string | null;
   instanceMode: RangeInstanceMode;
+  singleInstanceBatchId?: string | null;
   singleInstanceConfig: SingleInstanceConfig | null;
   templateId: string | null;
   sourceTemplateVersionId: string | null;
@@ -427,6 +450,20 @@ export type CreateRangeTemplateInput = {
 
 export type UpdateRangeTemplateInput = Partial<Omit<CreateRangeTemplateInput, 'createdBy'>>;
 
+export type CreateSingleInstanceBatchInput = {
+  name: string;
+  platformImageAssetId: string;
+  imageId: string;
+  imageDisplayName: string;
+  cpu: number;
+  memory: number;
+  systemDiskSize: number;
+  quantity: number;
+  remark?: string | null;
+  createdBy?: string | null;
+  expiresAt?: Date | null;
+};
+
 export type CreateRangeInstanceInput = {
   name: string;
   createdBy?: string;
@@ -443,6 +480,7 @@ export type CreateRangeInstanceInput = {
   draftUpdatedAt?: Date | null;
   status?: RangeInstanceStatus;
   instanceMode?: RangeInstanceMode;
+  singleInstanceBatchId?: string | null;
   singleInstanceConfig?: SingleInstanceConfig | null;
   allocatedCidr?: string;
   accessEntry?: RangeAccessEntry | null;
@@ -456,6 +494,7 @@ export type UpdateRangeInstanceInput = Partial<{
   name: string;
   createdBy: string | null;
   instanceMode: RangeInstanceMode;
+  singleInstanceBatchId: string | null;
   singleInstanceConfig: SingleInstanceConfig | null;
   sourceTemplateVersionId: string | null;
   runtimeTopologyGraph: Record<string, unknown> | null;
@@ -521,6 +560,9 @@ export interface AdminRepository {
   publishRangeTemplate(id: string): Promise<RangeTemplateRecord>;
   unpublishRangeTemplate(id: string): Promise<RangeTemplateRecord>;
   deleteRangeTemplate(id: string): Promise<void>;
+  createSingleInstanceBatch(input: CreateSingleInstanceBatchInput): Promise<SingleInstanceBatchRecord>;
+  getSingleInstanceBatchById(id: string): Promise<SingleInstanceBatchRecord | null>;
+  listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
   archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void>;
   deleteRangeInstance(id: string): Promise<void>;

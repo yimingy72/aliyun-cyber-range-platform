@@ -197,10 +197,31 @@ model RangeTemplateVersion {
   @@index([status])
 }
 
+model SingleInstanceBatch {
+  id                   String          @id @default(cuid())
+  name                 String
+  platformImageAssetId String
+  imageId              String
+  imageDisplayName     String
+  cpu                  Int
+  memory               Int
+  systemDiskSize       Int
+  quantity             Int
+  remark               String?
+  createdBy            String?
+  expiresAt            DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  instances            RangeInstance[]
+
+  @@index([createdAt])
+}
+
 model RangeInstance {
   id                           String              @id @default(cuid())
   name                         String
   createdBy                    String?             @default("admin")
+  singleInstanceBatchId        String?
   templateId                   String?
   sourceTemplateVersionId      String?
   templateNameSnapshot         String?
@@ -228,10 +249,12 @@ model RangeInstance {
   lastJobId                    String?             @unique
   createdAt                    DateTime            @default(now())
   updatedAt                    DateTime            @updatedAt
+  singleInstanceBatch          SingleInstanceBatch? @relation(fields: [singleInstanceBatchId], references: [id], onDelete: SetNull)
   template                     RangeTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
   jobs                         ProvisionJob[]
   lastJob                      ProvisionJob?       @relation("RangeInstanceLastJob", fields: [lastJobId], references: [id], onDelete: SetNull)
 
+  @@index([singleInstanceBatchId])
   @@index([templateId])
   @@index([sourceTemplateVersionId])
   @@index([status])

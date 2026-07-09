@@ -1,6 +1,53 @@
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('createMemoryAdminRepository single-instance extensions', () => {
+  it('stores a single-instance batch and links child instances to it', async () => {
+    const repository = createMemoryAdminRepository();
+
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'web-lab-batch',
+      platformImageAssetId: 'platform-image-1',
+      imageId: 'm-123',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 5,
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      createdBy: 'admin',
+      remark: 'batch create',
+    });
+
+    await repository.createRangeInstance({
+      name: 'web-lab-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'pending_create',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'web-lab',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'web-lab-01',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const grouped = await repository.listSingleInstanceBatchesWithInstances();
+
+    expect(grouped).toEqual([
+      expect.objectContaining({
+        batch: expect.objectContaining({ id: batch.id, quantity: 5, createdBy: 'admin' }),
+        instances: [expect.objectContaining({ name: 'web-lab-01', singleInstanceBatchId: batch.id })],
+      }),
+    ]);
+  });
+
   it('stores instanceMode, singleInstanceConfig, and default network profile fields', async () => {
     const repository = createMemoryAdminRepository();
     const singleInstanceConfig = {
