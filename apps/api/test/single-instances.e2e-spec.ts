@@ -9,6 +9,7 @@ import { configureApp } from '../src/bootstrap/configure-app';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { CidrPoolService } from '../src/provisioning/cidr-pool.service';
 import { SingleInstanceNetworkBootstrapService } from '../src/provisioning/single-instance-network-bootstrap';
+import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 function createSystemConfigServiceStub() {
@@ -396,6 +397,274 @@ describe('single instances', () => {
     );
   });
 
+  it('dispatches launched batch jobs only after every child instance has its pending job recorded', async () => {
+    const worker = app.get(ProvisioningWorkerService);
+    const order: string[] = [];
+    const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
+    const updateSpy = jest
+      .spyOn(repository, 'updateRangeInstance')
+      .mockImplementation(async (...args) => {
+        order.push(`update:${args[0]}`);
+        return originalUpdateRangeInstance(...args);
+      });
+    const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation((jobId: string) => {
+      order.push(`dispatch:${jobId}`);
+    });
+
+    try {
+      await request(app.getHttpServer())
+        .post('/admin/instances/launch')
+        .set('Authorization', 'Bearer dev-admin-token')
+        .send({
+          name: 'dispatch-order-lab',
+          hostName: 'dispatch-order-host',
+          platformImageAssetId: 'memory-2',
+          cpu: 2,
+          memory: 2,
+          systemDiskSize: 40,
+          expiresAt: '2026-07-10T12:00:00.000Z',
+          quantity: 2,
+          password: '',
+          remark: 'dispatch order',
+          triggeredBy: 'admin',
+        })
+        .expect(201);
+    } finally {
+      updateSpy.mockRestore();
+      dispatchSpy.mockRestore();
+    }
+
+    const firstDispatchIndex = order.findIndex((entry) => entry.startsWith('dispatch:'));
+    expect(firstDispatchIndex).toBeGreaterThan(-1);
+    expect(order.slice(0, firstDispatchIndex).filter((entry) => entry.startsWith('update:'))).toHaveLength(2);
+  });
+
+  it('dispatches batch destroy only after every child instance has been marked pending_destroy', async () => {
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'destroy-order-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 2,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    await repository.createRangeInstance({
+      name: 'destroy-order-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-order',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'destroy-order-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-destroy-order-01',
+        },
+      },
+    });
+
+    await repository.createRangeInstance({
+      name: 'destroy-order-02',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-order',
+        quantityIndex: 2,
+        hostKey: 'single-ecs-2',
+        hostName: 'destroy-order-02',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-2': 'i-destroy-order-02',
+        },
+      },
+    });
+
+    const worker = app.get(ProvisioningWorkerService);
+    const order: string[] = [];
+    const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
+    const updateSpy = jest
+      .spyOn(repository, 'updateRangeInstance')
+      .mockImplementation(async (...args) => {
+        order.push(`update:${args[0]}`);
+        return originalUpdateRangeInstance(...args);
+      });
+    const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation((jobId: string) => {
+      order.push(`dispatch:${jobId}`);
+    });
+
+    try {
+      await request(app.getHttpServer())
+        .post(`/admin/instances/batches/${batch.id}/destroy-all`)
+        .set('Authorization', 'Bearer dev-admin-token')
+        .send({ triggeredBy: 'admin' })
+        .expect(201);
+    } finally {
+      updateSpy.mockRestore();
+      dispatchSpy.mockRestore();
+    }
+
+    const firstDispatchIndex = order.findIndex((entry) => entry.startsWith('dispatch:'));
+    expect(firstDispatchIndex).toBeGreaterThan(-1);
+    expect(order.slice(0, firstDispatchIndex).filter((entry) => entry.startsWith('update:'))).toHaveLength(2);
+  });
+
+  it('still dispatches already-created launch jobs when a later batch row fails during setup', async () => {
+    const worker = app.get(ProvisioningWorkerService);
+    const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
+    const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation(() => {});
+    const updateSpy = jest
+      .spyOn(repository, 'updateRangeInstance')
+      .mockImplementation(async (...args) => {
+        if (dispatchSpy.mock.calls.length === 0 && updateSpy.mock.calls.length === 2) {
+          throw new Error('simulated launch setup failure');
+        }
+
+        return originalUpdateRangeInstance(...args);
+      });
+
+    try {
+      await request(app.getHttpServer())
+        .post('/admin/instances/launch')
+        .set('Authorization', 'Bearer dev-admin-token')
+        .send({
+          name: 'dispatch-failure-lab',
+          hostName: 'dispatch-failure-host',
+          platformImageAssetId: 'memory-2',
+          cpu: 2,
+          memory: 2,
+          systemDiskSize: 40,
+          expiresAt: '2026-07-10T12:00:00.000Z',
+          quantity: 2,
+          password: '',
+          remark: 'dispatch failure fallback',
+          triggeredBy: 'admin',
+        })
+        .expect(500);
+      expect(dispatchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      updateSpy.mockRestore();
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  it('still dispatches already-created destroy jobs when a later batch row fails during setup', async () => {
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'destroy-dispatch-failure-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 2,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    await repository.createRangeInstance({
+      name: 'destroy-dispatch-failure-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-dispatch-failure',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'destroy-dispatch-failure-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-destroy-dispatch-failure-01',
+        },
+      },
+    });
+
+    await repository.createRangeInstance({
+      name: 'destroy-dispatch-failure-02',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-dispatch-failure',
+        quantityIndex: 2,
+        hostKey: 'single-ecs-2',
+        hostName: 'destroy-dispatch-failure-02',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-2': 'i-destroy-dispatch-failure-02',
+        },
+      },
+    });
+
+    const worker = app.get(ProvisioningWorkerService);
+    const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
+    const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation(() => {});
+    const updateSpy = jest
+      .spyOn(repository, 'updateRangeInstance')
+      .mockImplementation(async (...args) => {
+        if (dispatchSpy.mock.calls.length === 0 && updateSpy.mock.calls.length === 2) {
+          throw new Error('simulated destroy setup failure');
+        }
+
+        return originalUpdateRangeInstance(...args);
+      });
+
+    try {
+      await request(app.getHttpServer())
+        .post(`/admin/instances/batches/${batch.id}/destroy-all`)
+        .set('Authorization', 'Bearer dev-admin-token')
+        .send({ triggeredBy: 'admin' })
+        .expect(500);
+      expect(dispatchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      updateSpy.mockRestore();
+      dispatchSpy.mockRestore();
+    }
+  });
+
   it('executes launched batch create jobs through ECS-native APIs and marks child instances running', async () => {
     let runInstancesCallCount = 0;
     fetchMock.mockImplementation(async (input, init) => {
@@ -484,6 +753,79 @@ describe('single instances', () => {
       expect(first?.accessEntry?.publicIp).toBe('47.100.10.10');
       expect(second?.accessEntry?.publicIp).toBe('47.100.10.11');
     });
+  });
+
+  it('waits for public ip readiness before persisting the created single-instance access entry', async () => {
+    let describeCalls = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=RunInstances')) {
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-public-ip-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances') && url.includes('i-public-ip-01')) {
+        describeCalls += 1;
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-public-ip-01',
+                  InstanceName: 'public-ip-lab',
+                  HostName: 'public-ip-host',
+                  Status: 'Running',
+                  VpcAttributes: { PrivateIpAddress: { IpAddress: ['10.200.1.10'] } },
+                  PublicIpAddress:
+                    describeCalls >= 2 ? { IpAddress: ['47.100.20.10'] } : { IpAddress: [] },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', 'Bearer dev-admin-token')
+      .send({
+        name: 'public-ip-lab',
+        hostName: 'public-ip-host',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'public ip readiness',
+        triggeredBy: 'admin',
+      })
+      .expect(201);
+
+    await waitForAsync(
+      async () => {
+        const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
+
+        expect(instance?.status).toBe('running');
+        expect(instance?.accessEntry?.publicIp).toBe('47.100.20.10');
+      },
+      160,
+      25,
+    );
+    expect(describeCalls).toBeGreaterThanOrEqual(2);
   });
 
   it('executes batch destroy-all through ECS-native APIs and marks child instances destroyed', async () => {
@@ -579,6 +921,124 @@ describe('single instances', () => {
       expect(refreshedFirst?.status).toBe('destroyed');
       expect(refreshedSecond?.status).toBe('destroyed');
     });
+  });
+
+  it('retries batch destroy-all while aliyun still reports the ecs instances as initializing', async () => {
+    const previousRetryInterval = process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS;
+    process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS = '1';
+    let deleteCalls = 0;
+    fetchMock.mockImplementation(async (_input, init) => {
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=DeleteInstances')) {
+        deleteCalls += 1;
+
+        if (deleteCalls < 3) {
+          return new Response(
+            JSON.stringify({
+              RequestId: `retry-${deleteCalls}`,
+              Code: 'IncorrectInstanceStatus.Initializing',
+              Message: 'You cannot operate this action cause ecs is creating',
+            }),
+            { status: 403 },
+          );
+        }
+
+        return new Response(JSON.stringify({ RequestId: 'delete-ok' }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'destroy-retry-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 2,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const first = await repository.createRangeInstance({
+      name: 'destroy-retry-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-retry',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'destroy-retry-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-bootstrap-1',
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-destroy-retry-01',
+        },
+      },
+    });
+
+    const second = await repository.createRangeInstance({
+      name: 'destroy-retry-02',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'destroy-retry',
+        quantityIndex: 2,
+        hostKey: 'single-ecs-2',
+        hostName: 'destroy-retry-02',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-bootstrap-2',
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-2': 'i-destroy-retry-02',
+        },
+      },
+    });
+
+    try {
+      await request(app.getHttpServer())
+        .post(`/admin/instances/batches/${batch.id}/destroy-all`)
+        .set('Authorization', 'Bearer dev-admin-token')
+        .send({ triggeredBy: 'admin' })
+        .expect(201);
+
+      await waitForAsync(async () => {
+        const refreshedFirst = await repository.getRangeInstanceById(first.id);
+        const refreshedSecond = await repository.getRangeInstanceById(second.id);
+
+        expect(refreshedFirst?.status).toBe('destroyed');
+        expect(refreshedSecond?.status).toBe('destroyed');
+      });
+      expect(deleteCalls).toBe(3);
+    } finally {
+      if (previousRetryInterval === undefined) {
+        delete process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS;
+      } else {
+        process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS = previousRetryInterval;
+      }
+    }
   });
 
   it('rejects stop for single-instance row actions', async () => {

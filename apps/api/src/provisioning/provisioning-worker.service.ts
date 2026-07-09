@@ -449,26 +449,20 @@ export class ProvisioningWorkerService {
     effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
   }) {
     const batchId = input.instance.singleInstanceBatchId;
+    const currentItem = {
+      instance: input.instance,
+      job: input.job,
+    };
 
     if (!batchId || input.job.jobType === 'retry') {
-      return [
-        {
-          instance: input.instance,
-          job: input.job,
-        },
-      ];
+      return [currentItem];
     }
 
     const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
     const group = groups.find((entry) => entry.batch.id === batchId);
 
     if (!group) {
-      return [
-        {
-          instance: input.instance,
-          job: input.job,
-        },
-      ];
+      return [currentItem];
     }
 
     const targetStatus = input.effectiveJobType === 'create' ? 'pending_create' : 'pending_destroy';
@@ -485,7 +479,7 @@ export class ProvisioningWorkerService {
         .map((job) => [job.id, job]),
     );
 
-    return candidateInstances.flatMap((instance) => {
+    const groupedItems = candidateInstances.flatMap((instance) => {
       const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
 
       if (!job) {
@@ -499,6 +493,15 @@ export class ProvisioningWorkerService {
         },
       ];
     });
+
+    const itemsByInstanceId = new Map<string, { instance: RangeInstanceRecord; job: ProvisionJobRecord }>();
+    itemsByInstanceId.set(currentItem.instance.id, currentItem);
+
+    for (const item of groupedItems) {
+      itemsByInstanceId.set(item.instance.id, item);
+    }
+
+    return Array.from(itemsByInstanceId.values());
   }
 
   private resolveEffectiveJobType(job: ProvisionJobRecord, instance: RangeInstanceRecord) {

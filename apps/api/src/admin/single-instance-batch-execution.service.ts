@@ -20,6 +20,9 @@ const DEFAULT_SYSTEM_DISK_CATEGORY = 'cloud_essd';
 const DEFAULT_INTERNET_MAX_BANDWIDTH_OUT = 10;
 const DESCRIBE_INSTANCE_ATTEMPTS = 10;
 const DESCRIBE_INSTANCE_INTERVAL_MS = 2_000;
+const DESTROY_RETRYABLE_ERROR_CODE = 'IncorrectInstanceStatus.Initializing';
+const DEFAULT_DESTROY_RETRY_INTERVAL_MS = 5_000;
+const DESTROY_RETRY_ATTEMPTS = 12;
 
 type SingleInstanceExecutionItem = {
   instance: RangeInstanceRecord;
@@ -155,6 +158,7 @@ export class SingleInstanceBatchExecutionService {
           const details = await this.waitForInstancesVisible({
             regionId: snapshot.defaultRegion,
             instanceIds,
+            requirePublicIp: true,
           });
           const orderedDetails = orderDetailsByInstanceName(details, group);
 
@@ -212,16 +216,11 @@ export class SingleInstanceBatchExecutionService {
       }
 
       try {
-        await this.performAliyunRpcRequest({
+        await this.deleteInstancesWithRetry({
           accessKeyId: snapshot.accessKeyId,
           accessKeySecret: snapshot.accessKeySecret,
           regionId: snapshot.defaultRegion,
-          action: 'DeleteInstances',
-          method: 'POST',
-          parameters: {
-            Force: 'true',
-            ...buildAliyunArrayParameters('InstanceId', instanceIds),
-          },
+          instanceIds,
         });
 
         for (const item of items) {
@@ -244,14 +243,69 @@ export class SingleInstanceBatchExecutionService {
     });
   }
 
-  private async waitForInstancesVisible(input: { regionId: string; instanceIds: string[] }) {
+  private async deleteInstancesWithRetry(input: {
+    accessKeyId: string;
+    accessKeySecret: string;
+    regionId: string;
+    instanceIds: string[];
+  }) {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        await this.performAliyunRpcRequest({
+          accessKeyId: input.accessKeyId,
+          accessKeySecret: input.accessKeySecret,
+          regionId: input.regionId,
+          action: 'DeleteInstances',
+          method: 'POST',
+          parameters: {
+            Force: 'true',
+            ...buildAliyunArrayParameters('InstanceId', input.instanceIds),
+          },
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : 'Unknown single-instance batch destroy error';
+
+        if (!isRetryableDestroyError(message) || attempt >= DESTROY_RETRY_ATTEMPTS - 1) {
+          throw error;
+        }
+
+        await sleep(readDestroyRetryIntervalMs());
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Single-instance batch destroy exhausted retry attempts.');
+  }
+
+  private async waitForInstancesVisible(input: {
+    regionId: string;
+    instanceIds: string[];
+    requirePublicIp?: boolean;
+  }) {
+    let lastVisibleDetails: NormalizedInstanceDetail[] = [];
+
     for (let attempt = 0; attempt < DESCRIBE_INSTANCE_ATTEMPTS; attempt += 1) {
       const details = await this.describeInstances(input);
-      if (details.length >= input.instanceIds.length) {
-        return details;
+      const visibleDetails = details.filter((detail) => input.instanceIds.includes(detail.instanceId));
+
+      if (visibleDetails.length >= input.instanceIds.length) {
+        lastVisibleDetails = visibleDetails;
+
+        if (!input.requirePublicIp || visibleDetails.every((detail) => Boolean(detail.publicIp))) {
+          return visibleDetails;
+        }
       }
 
-      await sleep(DESCRIBE_INSTANCE_INTERVAL_MS);
+      if (attempt < DESCRIBE_INSTANCE_ATTEMPTS - 1) {
+        await sleep(DESCRIBE_INSTANCE_INTERVAL_MS);
+      }
+    }
+
+    if (lastVisibleDetails.length >= input.instanceIds.length) {
+      return lastVisibleDetails;
     }
 
     throw new Error('Timed out waiting for ECS instances to become visible.');
@@ -632,4 +686,13 @@ function buildAliyunArrayParameters(prefix: string, values: string[]) {
   return Object.fromEntries(
     values.map((value, index) => [`${prefix}.${index + 1}`, value]),
   );
+}
+
+function isRetryableDestroyError(message: string) {
+  return message.includes(DESTROY_RETRYABLE_ERROR_CODE);
+}
+
+function readDestroyRetryIntervalMs() {
+  const value = Number(process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS ?? DEFAULT_DESTROY_RETRY_INTERVAL_MS);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_DESTROY_RETRY_INTERVAL_MS;
 }

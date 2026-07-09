@@ -53,6 +53,7 @@ export class SingleInstancesService {
       (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
     ).length;
     const created = [];
+    const jobIds: string[] = [];
     const batch = await this.adminRepository.createSingleInstanceBatch({
       name: input.name,
       platformImageAssetId: image.id,
@@ -67,70 +68,76 @@ export class SingleInstancesService {
       expiresAt: new Date(input.expiresAt),
     });
 
-    for (let index = 0; index < quantity; index += 1) {
-      const quantityIndex = index + 1;
-      const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
-      const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
-      const hostName = this.resolveIndexedValue(input.hostName?.trim() || input.name, quantityIndex, quantity);
-      const hostKey = `single-ecs-${quantityIndex}`;
-      const blueprint = buildSingleInstanceBlueprint({
-        name,
-        hostKey,
-        hostName,
-        privateIp: network.privateIp,
-        password,
-        cpu: input.cpu,
-        memory: input.memory,
-        image,
-        regionId: profile.regionId,
-        zoneId: profile.zoneId,
-        vpcCidr: profile.vpcCidr,
-        zoneKey: network.zoneKey,
-        zoneCidr: network.vswitchCidr,
-      });
-
-      const instance = await this.adminRepository.createRangeInstance({
-        name,
-        createdBy: input.triggeredBy,
-        instanceMode: 'single',
-        singleInstanceBatchId: batch.id,
-        status: 'pending_create',
-        expiresAt: input.expiresAt,
-        runtimeTopologyGraph: blueprint.runtimeTopologyGraph,
-        runtimeScenarioTemplateSpec: blueprint.runtimeScenarioTemplateSpec as Record<string, unknown>,
-        runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as Record<string, unknown>,
-        runtimeCredentials: {
-          [hostKey]: {
-            username: 'root',
-            password,
-          },
-        },
-        singleInstanceConfig: {
-          baseName: input.name,
-          quantityIndex,
+    try {
+      for (let index = 0; index < quantity; index += 1) {
+        const quantityIndex = index + 1;
+        const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
+        const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
+        const hostName = this.resolveIndexedValue(input.hostName?.trim() || input.name, quantityIndex, quantity);
+        const hostKey = `single-ecs-${quantityIndex}`;
+        const blueprint = buildSingleInstanceBlueprint({
+          name,
           hostKey,
           hostName,
-          platformImageAssetId: image.id,
-          imageId: image.imageId,
-          imageDisplayName: image.displayName,
+          privateIp: network.privateIp,
+          password,
           cpu: input.cpu,
           memory: input.memory,
-          systemDiskSize: input.systemDiskSize ?? 40,
-          remark: input.remark?.trim() || null,
-          assignedVswitchId: network.vswitchId,
-        },
-      });
-      const job = await this.adminRepository.createProvisionJob({
-        rangeInstanceId: instance.id,
-        jobType: 'create',
-        triggeredBy: input.triggeredBy,
-      });
-      const updated = await this.adminRepository.updateRangeInstance(instance.id, {
-        lastJobId: job.id,
-      });
+          image,
+          regionId: profile.regionId,
+          zoneId: profile.zoneId,
+          vpcCidr: profile.vpcCidr,
+          zoneKey: network.zoneKey,
+          zoneCidr: network.vswitchCidr,
+        });
 
-      this.provisioningWorkerService.dispatch(job.id);
-      created.push(updated);
+        const instance = await this.adminRepository.createRangeInstance({
+          name,
+          createdBy: input.triggeredBy,
+          instanceMode: 'single',
+          singleInstanceBatchId: batch.id,
+          status: 'pending_create',
+          expiresAt: input.expiresAt,
+          runtimeTopologyGraph: blueprint.runtimeTopologyGraph,
+          runtimeScenarioTemplateSpec: blueprint.runtimeScenarioTemplateSpec as Record<string, unknown>,
+          runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as Record<string, unknown>,
+          runtimeCredentials: {
+            [hostKey]: {
+              username: 'root',
+              password,
+            },
+          },
+          singleInstanceConfig: {
+            baseName: input.name,
+            quantityIndex,
+            hostKey,
+            hostName,
+            platformImageAssetId: image.id,
+            imageId: image.imageId,
+            imageDisplayName: image.displayName,
+            cpu: input.cpu,
+            memory: input.memory,
+            systemDiskSize: input.systemDiskSize ?? 40,
+            remark: input.remark?.trim() || null,
+            assignedVswitchId: network.vswitchId,
+          },
+        });
+        const job = await this.adminRepository.createProvisionJob({
+          rangeInstanceId: instance.id,
+          jobType: 'create',
+          triggeredBy: input.triggeredBy,
+        });
+        jobIds.push(job.id);
+        const updated = await this.adminRepository.updateRangeInstance(instance.id, {
+          lastJobId: job.id,
+        });
+
+        created.push(updated);
+      }
+    } finally {
+      for (const jobId of jobIds) {
+        this.provisioningWorkerService.dispatch(jobId);
+      }
     }
 
     return { batch, instances: created };
@@ -145,20 +152,26 @@ export class SingleInstancesService {
     }
 
     const targetInstances = group.instances.filter((instance) => instance.status !== 'destroyed');
+    const jobIds: string[] = [];
 
-    for (const instance of targetInstances) {
-      const job = await this.adminRepository.createProvisionJob({
-        rangeInstanceId: instance.id,
-        jobType: 'destroy',
-        triggeredBy,
-      });
+    try {
+      for (const instance of targetInstances) {
+        const job = await this.adminRepository.createProvisionJob({
+          rangeInstanceId: instance.id,
+          jobType: 'destroy',
+          triggeredBy,
+        });
+        jobIds.push(job.id);
 
-      await this.adminRepository.updateRangeInstance(instance.id, {
-        status: 'pending_destroy',
-        lastJobId: job.id,
-      });
-
-      this.provisioningWorkerService.dispatch(job.id);
+        await this.adminRepository.updateRangeInstance(instance.id, {
+          status: 'pending_destroy',
+          lastJobId: job.id,
+        });
+      }
+    } finally {
+      for (const jobId of jobIds) {
+        this.provisioningWorkerService.dispatch(jobId);
+      }
     }
 
     return {

@@ -40,6 +40,118 @@ describe('ProvisioningWorkerService concurrency', () => {
     expect(maxInFlight).toBe(3);
   });
 
+  it('includes the claimed single-instance destroy job even when that instance has not persisted lastJobId yet', async () => {
+    const repository = createMemoryAdminRepository();
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'fallback-batch',
+      platformImageAssetId: 'platform-image-1',
+      imageId: 'm-123',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 2,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const first = await repository.createRangeInstance({
+      name: 'fallback-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'fallback',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'fallback-01',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-fallback-01',
+        },
+      },
+    });
+    const firstJob = await repository.createProvisionJob({
+      rangeInstanceId: first.id,
+      jobType: 'destroy',
+      triggeredBy: 'admin',
+    });
+
+    const second = await repository.createRangeInstance({
+      name: 'fallback-02',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'pending_destroy',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'fallback',
+        quantityIndex: 2,
+        hostKey: 'single-ecs-2',
+        hostName: 'fallback-02',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-2': 'i-fallback-02',
+        },
+      },
+    });
+    const secondJob = await repository.createProvisionJob({
+      rangeInstanceId: second.id,
+      jobType: 'destroy',
+      triggeredBy: 'admin',
+    });
+
+    await repository.updateRangeInstance(second.id, {
+      lastJobId: secondJob.id,
+    });
+
+    const executeDestroyBatch = jest.fn().mockResolvedValue(undefined);
+    const worker = new ProvisioningWorkerService(
+      repository,
+      {
+        create: jest.fn(),
+        destroy: jest.fn(),
+      } as any,
+      createSystemConfigServiceStub() as any,
+      {
+        executeCreateBatch: jest.fn(),
+        executeDestroyBatch,
+      } as any,
+    );
+
+    await worker.process(firstJob.id);
+
+    expect(executeDestroyBatch).toHaveBeenCalledTimes(1);
+    expect(executeDestroyBatch.mock.calls[0][0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          instance: expect.objectContaining({ id: first.id }),
+          job: expect.objectContaining({ id: firstJob.id }),
+        }),
+        expect.objectContaining({
+          instance: expect.objectContaining({ id: second.id }),
+          job: expect.objectContaining({ id: secondJob.id }),
+        }),
+      ]),
+    );
+  });
+
   it('marks a failed destroy retry back to destroy_failed instead of create_failed', async () => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({
