@@ -1,10 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
+import type { SessionUserProfile } from './admin-user-auth';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { CreateRangeInstanceDto, LaunchRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { RangeInstancesService } from './range-instances.service';
+
+type AuthenticatedAdminRequest = {
+  adminUser: SessionUserProfile;
+};
 
 @Controller('admin/ranges')
 @UseGuards(AdminAuthGuard)
@@ -76,11 +81,15 @@ export class RangesController {
 
   @Post(':id/nodes/:nodeId/actions/:action')
   runNodeAction(
+    @Req() request: AuthenticatedAdminRequest,
     @Param('id') id: string,
     @Param('nodeId') nodeId: string,
     @Param('action') action: string,
     @Body() body: Record<string, string>,
   ) {
-    return this.rangeInstanceNodeActionsService.run(id, nodeId, action, body);
+    return this.rangeInstanceNodeActionsService.run(id, nodeId, action, {
+      ...body,
+      ownerUserId: request.adminUser.id,
+    });
   }
 }

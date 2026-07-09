@@ -29,6 +29,15 @@ function createSystemConfigServiceStub() {
   };
 }
 
+async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
+  const response = await request(app.getHttpServer())
+    .post('/admin/session')
+    .send({ username, password })
+    .expect(200);
+
+  return response.body.token as string;
+}
+
 describe('Range instance node actions API', () => {
   let app: INestApplication;
   let repository: AdminRepository;
@@ -36,6 +45,7 @@ describe('Range instance node actions API', () => {
   let singleInstanceId: string;
   let singlePlatformImageAssetId: string;
   let fetchMock: jest.SpiedFunction<typeof fetch>;
+  let adminToken: string;
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -136,6 +146,7 @@ describe('Range instance node actions API', () => {
           })
         )[0].id,
       displayName: 'Ubuntu',
+      visibility: 'platform',
     });
 
     singlePlatformImageAssetId = singlePlatformImageAsset.id;
@@ -166,6 +177,7 @@ describe('Range instance node actions API', () => {
     });
 
     singleInstanceId = singleInstance.id;
+    adminToken = await loginAs(app);
   });
 
   afterAll(async () => {
@@ -176,7 +188,7 @@ describe('Range instance node actions API', () => {
   it('reboots a host node through the node action route', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/reboot`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 
@@ -186,7 +198,7 @@ describe('Range instance node actions API', () => {
   it('opens a VNC URL for the selected host node', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/open-vnc`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 
@@ -198,7 +210,7 @@ describe('Range instance node actions API', () => {
   it('creates a custom image and platform asset from the selected host node', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/pack-image`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({
         displayName: 'checker-snapshot',
         defaultHostName: 'checker-host',
@@ -220,6 +232,8 @@ describe('Range instance node actions API', () => {
         defaultHostName: 'checker-host',
         defaultPassword: 'DefaultPass123!',
         description: 'snapshot note',
+        ownerUserId: 'admin',
+        visibility: 'private',
       }),
     );
   });
@@ -227,7 +241,7 @@ describe('Range instance node actions API', () => {
   it('opens a VNC URL for a single instance row action', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/${singleInstanceId}/actions/open-vnc`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 

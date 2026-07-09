@@ -11,6 +11,7 @@ import {
   type PlatformImageAssetRecord,
   type UpsertImageSnapshotInput,
 } from './admin.repository';
+import type { PlatformImageView } from './dto/platform-image.dto';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
@@ -69,7 +70,10 @@ export class ImageCatalogService {
     return this.syncScope('custom', 'self');
   }
 
-  async listPlatformAssets(): Promise<PlatformImageAssetsPayload> {
+  async listPlatformAssets(
+    currentUserId: string,
+    view: PlatformImageView = 'platform',
+  ): Promise<PlatformImageAssetsPayload> {
     const accountContext = await this.systemConfigService.getAccountContext();
 
     const items = await this.adminRepository.listPlatformImageAssets({
@@ -77,6 +81,7 @@ export class ImageCatalogService {
       accountUid: accountContext.accountUid,
       regionId: accountContext.defaultRegion,
       onlyAvailableSourceSnapshots: true,
+      ...(view === 'platform' ? { visibility: 'platform' } : { ownerUserId: currentUserId }),
     });
 
     return { items };
@@ -98,23 +103,25 @@ export class ImageCatalogService {
     return this.adminRepository.collectPlatformImageAsset({
       snapshotId,
       displayName,
+      ownerUserId: null,
+      visibility: 'platform',
     });
   }
 
-  async renamePlatformAsset(id: string, displayName: string) {
-    await this.getScopedPlatformAssetOrThrow(id);
+  async renamePlatformAsset(id: string, displayName: string, currentUserId: string) {
+    await this.getScopedPlatformAssetOrThrow(id, currentUserId);
 
     return this.adminRepository.updatePlatformImageAsset(id, { displayName });
   }
 
-  async setPlatformAssetEnabled(id: string, enabled: boolean) {
-    await this.getScopedPlatformAssetOrThrow(id);
+  async setPlatformAssetEnabled(id: string, enabled: boolean, currentUserId: string) {
+    await this.getScopedPlatformAssetOrThrow(id, currentUserId);
 
     return this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
   }
 
-  async removePlatformAsset(id: string): Promise<void> {
-    await this.getScopedPlatformAssetOrThrow(id);
+  async removePlatformAsset(id: string, currentUserId: string): Promise<void> {
+    await this.getScopedPlatformAssetOrThrow(id, currentUserId);
 
     await this.adminRepository.deletePlatformImageAsset(id);
   }
@@ -210,11 +217,15 @@ export class ImageCatalogService {
     return { snapshots, catalogItems };
   }
 
-  private async getScopedPlatformAssetOrThrow(id: string): Promise<PlatformImageAssetRecord> {
-    const { items } = await this.listPlatformAssets();
-    const asset = items.find((item) => item.id === id);
+  private async getScopedPlatformAssetOrThrow(id: string, currentUserId: string): Promise<PlatformImageAssetRecord> {
+    const asset = await this.adminRepository.getPlatformImageAssetById(id);
+    const accountContext = await this.systemConfigService.getAccountContext();
 
-    if (!asset) {
+    if (
+      !asset ||
+      !this.isPlatformAssetInScope(asset, accountContext) ||
+      (asset.visibility !== 'platform' && asset.ownerUserId !== currentUserId)
+    ) {
       throw new NotFoundException('Platform image asset not found');
     }
 
@@ -233,6 +244,21 @@ export class ImageCatalogService {
       snapshot.provider === accountContext.provider &&
       snapshot.accountUid === accountContext.accountUid &&
       snapshot.regionId === accountContext.defaultRegion
+    );
+  }
+
+  private isPlatformAssetInScope(
+    asset: PlatformImageAssetRecord,
+    accountContext: {
+      provider: string;
+      accountUid: string | null;
+      defaultRegion: string;
+    },
+  ) {
+    return (
+      asset.provider === accountContext.provider &&
+      asset.accountUid === accountContext.accountUid &&
+      asset.regionId === accountContext.defaultRegion
     );
   }
 

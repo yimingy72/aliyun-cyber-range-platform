@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
+import type { SessionUserProfile } from './admin-user-auth';
 import {
   LaunchSingleInstanceDto,
   TriggerSingleInstanceActionDto,
@@ -8,6 +9,10 @@ import {
   TriggerSingleInstanceDestroyDto,
 } from './dto/single-instance.dto';
 import { SingleInstancesService } from './single-instances.service';
+
+type AuthenticatedAdminRequest = {
+  adminUser: SessionUserProfile;
+};
 
 @Controller('admin/instances')
 @UseGuards(AdminAuthGuard)
@@ -41,12 +46,14 @@ export class SingleInstancesController {
 
   @Post(':id/actions/:action')
   runAction(
+    @Req() request: AuthenticatedAdminRequest,
     @Param('id') id: string,
     @Param('action') action: 'reboot' | 'open-vnc' | 'pack-image',
     @Body() body: TriggerSingleInstanceActionDto,
   ) {
     return this.singleInstancesService.runAction(id, action, {
       triggeredBy: body.triggeredBy,
+      ownerUserId: request.adminUser.id,
       ...(body.displayName ? { displayName: body.displayName } : {}),
     });
   }

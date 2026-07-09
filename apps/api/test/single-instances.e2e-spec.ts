@@ -33,6 +33,15 @@ function createSystemConfigServiceStub() {
   };
 }
 
+async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
+  const response = await request(app.getHttpServer())
+    .post('/admin/session')
+    .send({ username, password })
+    .expect(200);
+
+  return response.body.token as string;
+}
+
 describe('single instances', () => {
   let app: INestApplication;
   let repository: AdminRepository;
@@ -40,6 +49,7 @@ describe('single instances', () => {
   let bootstrapServiceStub: {
     bootstrapDefaultProfile: jest.Mock;
   };
+  let adminToken: string;
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -108,6 +118,7 @@ describe('single instances', () => {
     await repository.collectPlatformImageAsset({
       snapshotId: snapshot.id,
       displayName: 'Ubuntu 24.04',
+      visibility: 'platform',
     });
 
     const [asset] = await repository.listPlatformImageAssets({
@@ -118,6 +129,7 @@ describe('single instances', () => {
     });
 
     expect(asset?.id).toBe('memory-2');
+    adminToken = await loginAs(app);
   });
 
   beforeEach(() => {
@@ -134,7 +146,7 @@ describe('single instances', () => {
   it('creates a single-instance record with mode single and generated names for quantity > 1', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'web-lab',
         hostName: 'web-host',
@@ -229,7 +241,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'offset-lab',
         hostName: 'offset-host',
@@ -305,7 +317,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .get('/admin/instances')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
 
     expect(response.body).toEqual(
@@ -385,7 +397,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' });
 
     expect(response.status).toBe(201);
@@ -414,7 +426,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post('/admin/instances/launch')
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'dispatch-order-lab',
           hostName: 'dispatch-order-host',
@@ -521,7 +533,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ triggeredBy: 'admin' })
         .expect(201);
     } finally {
@@ -551,7 +563,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post('/admin/instances/launch')
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'dispatch-failure-lab',
           hostName: 'dispatch-failure-host',
@@ -655,7 +667,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ triggeredBy: 'admin' })
         .expect(500);
       expect(dispatchSpy).toHaveBeenCalledTimes(2);
@@ -728,7 +740,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'web-lab',
         hostName: 'web-host',
@@ -799,7 +811,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'public-ip-lab',
         hostName: 'public-ip-host',
@@ -908,7 +920,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 
@@ -1020,7 +1032,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ triggeredBy: 'admin' })
         .expect(201);
 
@@ -1069,7 +1081,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/${instance.id}/actions/stop`)
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' });
 
     expect(response.status).toBe(404);
