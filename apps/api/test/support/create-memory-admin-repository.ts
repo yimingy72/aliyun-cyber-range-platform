@@ -129,6 +129,22 @@ export function createMemoryAdminRepository(): AdminRepository {
     return record;
   };
 
+  const assertPlatformUserUnique = (input: { id?: string; username?: string }, ignoreId?: string) => {
+    if (
+      input.id !== undefined &&
+      platformUsers.some((user) => user.id === input.id && user.id !== ignoreId)
+    ) {
+      throw new Error(`Platform user unique constraint failed: id (${input.id})`);
+    }
+
+    if (
+      input.username !== undefined &&
+      platformUsers.some((user) => user.username === input.username && user.id !== ignoreId)
+    ) {
+      throw new Error(`Platform user unique constraint failed: username (${input.username})`);
+    }
+  };
+
   const findPlatformImageAssetOrThrow = (id: string) => {
     const record = platformImageAssets.find((asset) => asset.id === id);
 
@@ -141,6 +157,11 @@ export function createMemoryAdminRepository(): AdminRepository {
 
   return {
     async createPlatformUser(input: CreatePlatformUserInput) {
+      assertPlatformUserUnique({
+        id: input.id,
+        username: input.username,
+      });
+
       const record: PlatformUserRecord = {
         id: input.id,
         username: input.username,
@@ -170,6 +191,13 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async updatePlatformUser(id: string, input: UpdatePlatformUserInput) {
       const record = findPlatformUserOrThrow(id);
+
+      assertPlatformUserUnique(
+        {
+          username: input.username,
+        },
+        id,
+      );
 
       Object.assign(record, {
         username: input.username ?? record.username,

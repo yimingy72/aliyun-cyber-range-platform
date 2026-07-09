@@ -1,6 +1,50 @@
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('createMemoryAdminRepository multi-user extensions', () => {
+  it('rejects duplicate platform user ids', async () => {
+    const repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'admin',
+      username: 'admin',
+      passwordHash: 'hash-admin',
+      role: 'admin',
+      status: 'active',
+    });
+
+    await expect(
+      repository.createPlatformUser({
+        id: 'admin',
+        username: 'admin-2',
+        passwordHash: 'hash-admin-2',
+        role: 'user',
+        status: 'active',
+      }),
+    ).rejects.toThrow(/unique|duplicate|id/i);
+  });
+
+  it('rejects duplicate platform usernames', async () => {
+    const repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'admin',
+      username: 'admin',
+      passwordHash: 'hash-admin',
+      role: 'admin',
+      status: 'active',
+    });
+
+    await expect(
+      repository.createPlatformUser({
+        id: 'user-admin-copy',
+        username: 'admin',
+        passwordHash: 'hash-admin-copy',
+        role: 'user',
+        status: 'active',
+      }),
+    ).rejects.toThrow(/unique|duplicate|username/i);
+  });
+
   it('persists platform users and supports lookup, update, and active-admin counting', async () => {
     const repository = createMemoryAdminRepository();
 
