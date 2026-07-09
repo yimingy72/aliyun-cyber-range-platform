@@ -1695,10 +1695,10 @@ describe('TemplateEditorScreen', () => {
             id: 'ecs-1',
             cpu: 2,
             memory: 4,
-            instanceType: undefined,
+            instanceType: 'ecs.e-c1m2.large',
             instanceTypeStrategy: {
-              mode: 'auto',
-              preferredInstanceTypes: [],
+              mode: 'fixed',
+              instanceType: 'ecs.e-c1m2.large',
             },
           }),
         ]),
@@ -1707,15 +1707,15 @@ describe('TemplateEditorScreen', () => {
     expect(latestPayload?.scenarioTemplateSpec?.runtimePreferences?.instanceTypePolicies).toEqual([
       expect.objectContaining({
         key: 'ecs-1-instance-type-policy',
-        mode: 'auto',
-        preferredInstanceTypes: [],
+        mode: 'fixed',
+        instanceType: 'ecs.e-c1m2.large',
       }),
     ]);
     expect(latestPayload?.compiledProvisionSpec?.runtimeSelections?.instanceTypePolicies).toEqual(
       expect.objectContaining({
         'ecs-1-instance-type-policy': expect.objectContaining({
-          mode: 'auto',
-          preferredInstanceTypes: [],
+          mode: 'fixed',
+          instanceType: 'ecs.e-c1m2.large',
         }),
       }),
     );
@@ -2044,45 +2044,48 @@ describe('TemplateEditorScreen', () => {
     window.localStorage.setItem(
       'template-editor:draft-cache:template-1:draft-1',
       JSON.stringify({
-        schemaVersion: '2.0.0',
-        nodes: [
-          {
-            id: 'ecs-1',
-            kind: 'ecs',
-            label: 'ECS 1',
-            position: { x: 620, y: 180 },
-            instanceName: 'ECS 1',
-            hostName: 'ecs-1',
-            zoneKey: 'core',
-            role: 'host',
-            privateIp: '',
-            exposePublic: false,
-            image: 'ubuntu_22_04_x64_20G_alibase',
-            imageName: 'ubuntu_22_04_x64_20G_alibase',
-            imageId: 'ubuntu_22_04_x64_20G_alibase',
-            cpu: 1,
-            memory: 2,
-            description: '',
-            bootPriority: 1,
-            bootWaitSeconds: 0,
-            dnatMappings: [],
-            networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
-            portGroups: [],
-            nics: [
-              {
-                id: 'ecs-1-nic-1',
-                switchId: '',
-                privateIp: '',
-                secondaryIps: [],
-                securityGroupRules: [],
-              },
-            ],
-            initScript: '',
-            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
-            instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
-          },
-        ],
-        edges: [],
+        persistedGraphSignature: JSON.stringify({ nodes: [], edges: [] }),
+        topologyGraph: {
+          schemaVersion: '2.0.0',
+          nodes: [
+            {
+              id: 'ecs-1',
+              kind: 'ecs',
+              label: 'ECS 1',
+              position: { x: 620, y: 180 },
+              instanceName: 'ECS 1',
+              hostName: 'ecs-1',
+              zoneKey: 'core',
+              role: 'host',
+              privateIp: '',
+              exposePublic: false,
+              image: 'ubuntu_22_04_x64_20G_alibase',
+              imageName: 'ubuntu_22_04_x64_20G_alibase',
+              imageId: 'ubuntu_22_04_x64_20G_alibase',
+              cpu: 1,
+              memory: 2,
+              description: '',
+              bootPriority: 1,
+              bootWaitSeconds: 0,
+              dnatMappings: [],
+              networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+              portGroups: [],
+              nics: [
+                {
+                  id: 'ecs-1-nic-1',
+                  switchId: '',
+                  privateIp: '',
+                  secondaryIps: [],
+                  securityGroupRules: [],
+                },
+              ],
+              initScript: '',
+              imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+              instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+            },
+          ],
+          edges: [],
+        },
       }),
     );
 
@@ -2112,6 +2115,136 @@ describe('TemplateEditorScreen', () => {
     );
 
     expect(screen.getByRole('button', { name: /ECS 1/ })).toBeTruthy();
+  });
+
+  it('ignores stale local cache when the server draft topology has changed', () => {
+    window.localStorage.setItem(
+      'template-editor:draft-cache:template-1:draft-1',
+      JSON.stringify({
+        persistedGraphSignature: JSON.stringify({
+          nodes: [
+            {
+              id: 'ecs-1',
+              kind: 'ecs',
+              cpu: 1,
+              memory: 2,
+            },
+          ],
+          edges: [],
+        }),
+        topologyGraph: {
+          schemaVersion: '2.0.0',
+          nodes: [
+            {
+              id: 'ecs-1',
+              kind: 'ecs',
+              label: 'ECS 1',
+              position: { x: 620, y: 180 },
+              instanceName: 'ECS 1',
+              hostName: 'ecs-1',
+              zoneKey: 'core',
+              role: 'host',
+              privateIp: '',
+              exposePublic: false,
+              image: 'ubuntu_22_04_x64_20G_alibase',
+              imageName: 'ubuntu_22_04_x64_20G_alibase',
+              imageId: 'ubuntu_22_04_x64_20G_alibase',
+              cpu: 1,
+              memory: 2,
+              description: '',
+              bootPriority: 1,
+              bootWaitSeconds: 0,
+              dnatMappings: [],
+              networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+              portGroups: [],
+              nics: [
+                {
+                  id: 'ecs-1-nic-1',
+                  switchId: '',
+                  privateIp: '',
+                  secondaryIps: [],
+                  securityGroupRules: [],
+                },
+              ],
+              initScript: '',
+              imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+              instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+            },
+          ],
+          edges: [],
+        },
+      }),
+    );
+
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: {
+              schemaVersion: '2.0.0',
+              nodes: [
+                {
+                  id: 'ecs-1',
+                  kind: 'ecs',
+                  label: 'ECS 1',
+                  position: { x: 620, y: 180 },
+                  instanceName: 'ECS 1',
+                  hostName: 'ecs-1',
+                  zoneKey: 'core',
+                  role: 'host',
+                  privateIp: '',
+                  exposePublic: false,
+                  image: 'ubuntu_22_04_x64_20G_alibase',
+                  imageName: 'ubuntu_22_04_x64_20G_alibase',
+                  imageId: 'ubuntu_22_04_x64_20G_alibase',
+                  cpu: 2,
+                  memory: 4,
+                  instanceType: 'ecs.e-c1m2.large',
+                  description: '',
+                  bootPriority: 1,
+                  bootWaitSeconds: 0,
+                  dnatMappings: [],
+                  networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+                  portGroups: [],
+                  nics: [
+                    {
+                      id: 'ecs-1-nic-1',
+                      switchId: '',
+                      privateIp: '',
+                      secondaryIps: [],
+                      securityGroupRules: [],
+                    },
+                  ],
+                  initScript: '',
+                  imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+                  instanceTypeStrategy: { mode: 'fixed', instanceType: 'ecs.e-c1m2.large' },
+                },
+              ],
+              edges: [],
+            },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('2');
+    expect((screen.getByLabelText('内存') as HTMLInputElement).value).toBe('4');
   });
 
   it('preserves persisted top-level instanceType when reloading saved topology graph', async () => {

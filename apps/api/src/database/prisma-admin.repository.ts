@@ -794,6 +794,14 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(filter.enabled !== undefined ? { enabled: filter.enabled } : {}),
         ...(filter.imageId !== undefined ? { imageId: filter.imageId } : {}),
         ...(filter.sourceSnapshotId !== undefined ? { sourceSnapshotId: filter.sourceSnapshotId } : {}),
+        ...(filter.onlyAvailableSourceSnapshots
+          ? {
+              OR: [
+                { sourceSnapshotId: null },
+                { sourceSnapshot: { is: { isAvailable: true } } },
+              ],
+            }
+          : {}),
       },
       orderBy: {
         createdAt: 'desc',
@@ -819,6 +827,9 @@ export class PrismaAdminRepository implements AdminRepository {
       },
       update: {
         displayName: input.displayName,
+        defaultHostName: input.defaultHostName ?? null,
+        defaultPassword: input.defaultPassword ?? null,
+        description: input.description ?? null,
         enabled: true,
         sourceScope: snapshot.scope,
         sourceSnapshotId: snapshot.id,
@@ -833,6 +844,9 @@ export class PrismaAdminRepository implements AdminRepository {
         sourceSnapshotId: snapshot.id,
         imageId: snapshot.imageId,
         displayName: input.displayName,
+        defaultHostName: input.defaultHostName ?? null,
+        defaultPassword: input.defaultPassword ?? null,
+        description: input.description ?? null,
         enabled: true,
       },
     }) as Promise<PlatformImageAssetRecord>;

@@ -92,7 +92,10 @@ export function createMemoryAdminRepository(): AdminRepository {
     (filter.regionId === undefined || record.regionId === filter.regionId) &&
     (filter.enabled === undefined || record.enabled === filter.enabled) &&
     (filter.imageId === undefined || record.imageId === filter.imageId) &&
-    (filter.sourceSnapshotId === undefined || record.sourceSnapshotId === filter.sourceSnapshotId);
+    (filter.sourceSnapshotId === undefined || record.sourceSnapshotId === filter.sourceSnapshotId) &&
+    (!filter.onlyAvailableSourceSnapshots ||
+      record.sourceSnapshotId === null ||
+      imageSnapshots.some((snapshot) => snapshot.id === record.sourceSnapshotId && snapshot.isAvailable));
 
   const findPlatformImageAssetOrThrow = (id: string) => {
     const record = platformImageAssets.find((asset) => asset.id === id);
@@ -670,6 +673,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       if (existing) {
         Object.assign(existing, {
           displayName: input.displayName,
+          defaultHostName: input.defaultHostName ?? null,
+          defaultPassword: input.defaultPassword ?? null,
+          description: input.description ?? null,
           enabled: true,
           sourceScope: snapshot.scope,
           sourceSnapshotId: snapshot.id,
@@ -691,6 +697,9 @@ export function createMemoryAdminRepository(): AdminRepository {
         sourceSnapshotId: snapshot.id,
         imageId: snapshot.imageId,
         displayName: input.displayName,
+        defaultHostName: input.defaultHostName ?? null,
+        defaultPassword: input.defaultPassword ?? null,
+        description: input.description ?? null,
         enabled: true,
         createdAt: now(),
         updatedAt: now(),

@@ -76,6 +76,7 @@ export class ImageCatalogService {
       provider: accountContext.provider,
       accountUid: accountContext.accountUid,
       regionId: accountContext.defaultRegion,
+      onlyAvailableSourceSnapshots: true,
     });
 
     return { items };

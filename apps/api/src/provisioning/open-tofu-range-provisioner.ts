@@ -274,7 +274,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
       const preparedWorkspace = await this.prepareWorkspace(input, {
-        preserveWorkspaceState: false,
+        preserveWorkspaceState: input.preserveWorkspaceState === true,
       });
 
       return {
@@ -1001,19 +1001,6 @@ function resolveHostInstanceTypePolicy(input: {
   runtimeSelections: Record<string, unknown>;
   runtimeHint: HostInstanceResolutionHint | undefined;
 }) {
-  const derivedPreferences = deriveInstanceTypePreferencesForResources(
-    input.runtimeHint?.requestedCpu,
-    input.runtimeHint?.requestedMemoryGiB,
-  );
-
-  if (derivedPreferences.length > 0) {
-    return {
-      fixedInstanceType: derivedPreferences[0],
-      preferredInstanceTypes: [] as string[],
-      strictPreferredInstanceTypes: true,
-    };
-  }
-
   const runtimeSelectionRecord =
     input.runtimeHint?.instanceTypePolicyKey
       ? readObjectRecord(input.runtimeSelections[input.runtimeHint.instanceTypePolicyKey])
@@ -1050,6 +1037,19 @@ function resolveHostInstanceTypePolicy(input: {
   if (input.runtimeHint?.finalInstanceType) {
     return {
       fixedInstanceType: input.runtimeHint.finalInstanceType,
+      preferredInstanceTypes: [] as string[],
+      strictPreferredInstanceTypes: true,
+    };
+  }
+
+  const derivedPreferences = deriveInstanceTypePreferencesForResources(
+    input.runtimeHint?.requestedCpu,
+    input.runtimeHint?.requestedMemoryGiB,
+  );
+
+  if (derivedPreferences.length > 0) {
+    return {
+      fixedInstanceType: derivedPreferences[0],
       preferredInstanceTypes: [] as string[],
       strictPreferredInstanceTypes: true,
     };

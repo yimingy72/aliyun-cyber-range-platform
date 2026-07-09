@@ -20,6 +20,11 @@ export const INSTANCE_TYPE_CANDIDATE_CATALOG: readonly InstanceTypeCandidateCata
     preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
   }),
   freezeCatalogEntry({
+    cpu: 2,
+    memory: 4,
+    preferredInstanceTypes: ['ecs.e-c1m2.large', 'ecs.u1-c1m2.large'],
+  }),
+  freezeCatalogEntry({
     cpu: 4,
     memory: 8,
     preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.xlarge'],

@@ -128,20 +128,35 @@ describe('Range instance node actions API', () => {
       .expect(201);
 
     expect(response.body.vncUrl).toBe('wss://vnc.example.test');
+    expect(response.body.webTerminalUrl).toContain('index.html?vncUrl=');
+    expect(response.body.webTerminalUrl).toContain('instanceId=i-instance-123');
   });
 
   it('creates a custom image and platform asset from the selected host node', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/pack-image`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ displayName: 'checker-snapshot', triggeredBy: 'admin' })
+      .send({
+        displayName: 'checker-snapshot',
+        defaultHostName: 'checker-host',
+        defaultPassword: 'DefaultPass123!',
+        description: 'snapshot note',
+        triggeredBy: 'admin',
+      })
       .expect(201);
 
     expect(response.body.imageId).toBe('m-image-123');
+    expect(response.body.defaultHostName).toBe('checker-host');
+    expect(response.body.defaultPassword).toBe('DefaultPass123!');
+    expect(response.body.description).toBe('snapshot note');
+    expect(response.body.imageReady).toBe(false);
     expect(response.body.platformImageAsset).toEqual(
       expect.objectContaining({
         imageId: 'm-image-123',
         displayName: 'checker-snapshot',
+        defaultHostName: 'checker-host',
+        defaultPassword: 'DefaultPass123!',
+        description: 'snapshot note',
       }),
     );
   });

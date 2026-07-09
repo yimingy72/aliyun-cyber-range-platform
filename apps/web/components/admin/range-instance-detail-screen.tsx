@@ -8,13 +8,21 @@ import {
   compileScenarioTemplateSpec,
 } from '@aliyun-cyber-range/scenario-runtime';
 
-import { AdminApiError, applyRangeInstanceDraft, fetchRangeInstanceDetail, runRangeInstanceNodeAction } from '../../lib/admin-api';
-import type { RangeInstanceDetail } from '../../lib/admin-types';
+import {
+  applyRangeInstanceDraft,
+  fetchRangeInstanceDetail,
+  runRangeInstanceNodeAction,
+  saveRangeInstanceDraft,
+  syncRangeInstanceTemplate,
+} from '../../lib/admin-api';
+import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
+import type { RangeInstanceDetail, RangeInstanceNodeActionResult } from '../../lib/admin-types';
+import { isPhaseOneNodeKind, type ScenarioGraphDraft, type TemplateNode } from '../../lib/scenario-graph';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
-import { RangeInstancePropertyPanel } from './range-instance-property-panel';
-import { RangeInstanceTopologyWorkbench } from './range-instance-topology-workbench';
+import { TemplateCanvas } from './template-editor/template-canvas';
+import type { TemplateEdge } from './template-editor/template-editor-screen';
+import { TemplatePropertyPanel } from './template-editor/template-property-panel';
 import { useAdminSession } from './use-admin-session';
-import { discardRangeInstanceDraft, saveRangeInstanceDraft } from '../../lib/admin-api';
 
 type RangeInstanceDetailScreenProps = {
   rangeId: string;
@@ -22,12 +30,14 @@ type RangeInstanceDetailScreenProps = {
 };
 
 type WorkbenchTab = 'directory' | 'topology';
+type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
 
 type WorkbenchNode = {
   id: string;
   label: string;
   kind: string;
   statusLabel: string;
+  cloudStatus?: string;
   ipAddress?: string;
   specLabel?: string;
   typeLabel?: string;
@@ -49,33 +59,13 @@ type WorkbenchNode = {
   y?: number;
 };
 
-function isUnauthorizedError(error: unknown) {
-  return error instanceof AdminApiError && error.status === 401;
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) {
-    return '暂无';
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-    .format(date)
-    .replace(/\//g, '-');
-}
+type PackImageDialogDraft = {
+  nodeId: string;
+  displayName: string;
+  defaultHostName: string;
+  defaultPassword: string;
+  description: string;
+};
 
 function readNodeLabel(node: Record<string, unknown>) {
   if (typeof node.label === 'string' && node.label.trim()) {
@@ -124,6 +114,30 @@ function getStatusLabel(status: string) {
   }
 
   return status;
+}
+
+function getCloudStatusLabel(status?: string | null) {
+  if (status === 'Running') {
+    return '运行中';
+  }
+
+  if (status === 'Starting') {
+    return '开机中';
+  }
+
+  if (status === 'Stopping') {
+    return '关机中';
+  }
+
+  if (status === 'Stopped') {
+    return '已关机';
+  }
+
+  if (status === 'Rebooting') {
+    return '重启中';
+  }
+
+  return null;
 }
 
 function getTypeLabel(kind: string) {
@@ -226,6 +240,177 @@ function readNodeCredential(
   return '待回填';
 }
 
+function readDefaultPackImageName(nodeLabel: string) {
+  const suffix = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 12);
+  return `${nodeLabel || 'ecs'}-snapshot-${suffix}`;
+}
+
+function normalizeTopologyNode(value: Record<string, unknown>): TemplateNode | null {
+  if (typeof value.id !== 'string' || !isPhaseOneNodeKind(value.kind)) {
+    return null;
+  }
+
+  const position =
+    value.position && typeof value.position === 'object'
+      ? {
+          x: typeof (value.position as Record<string, unknown>).x === 'number' ? ((value.position as Record<string, unknown>).x as number) : 0,
+          y: typeof (value.position as Record<string, unknown>).y === 'number' ? ((value.position as Record<string, unknown>).y as number) : 0,
+        }
+      : undefined;
+
+  if (value.kind === 'router') {
+    return {
+      id: value.id,
+      kind: 'router',
+      label: readNodeLabel(value),
+      position,
+      description: typeof value.description === 'string' ? value.description : '',
+      routeRole: typeof value.routeRole === 'string' ? value.routeRole : 'root',
+      egressType: typeof value.egressType === 'string' ? value.egressType : 'internet',
+      bindEip: typeof value.bindEip === 'boolean' ? value.bindEip : false,
+    };
+  }
+
+  if (value.kind === 'switch') {
+    return {
+      id: value.id,
+      kind: 'switch',
+      label: readNodeLabel(value),
+      position,
+      zoneKey: typeof value.zoneKey === 'string' ? value.zoneKey : value.id,
+      cidr: typeof value.cidr === 'string' ? value.cidr : '10.0.0.0/24',
+      purpose: typeof value.purpose === 'string' ? value.purpose : 'business-zone',
+      description: typeof value.description === 'string' ? value.description : '',
+      aclRules: Array.isArray(value.aclRules) ? (value.aclRules as any[]) : [],
+      nat:
+        value.nat && typeof value.nat === 'object'
+          ? {
+              snatEnabled: typeof (value.nat as Record<string, unknown>).snatEnabled === 'boolean'
+                ? ((value.nat as Record<string, unknown>).snatEnabled as boolean)
+                : false,
+              dnatMappings: Array.isArray((value.nat as Record<string, unknown>).dnatMappings)
+                ? (((value.nat as Record<string, unknown>).dnatMappings as unknown[]) as any[])
+                : [],
+            }
+          : {
+              snatEnabled: false,
+              dnatMappings: [],
+            },
+    };
+  }
+
+  const imageName =
+    typeof value.imageName === 'string'
+      ? value.imageName
+      : typeof value.image === 'string'
+        ? value.image
+        : typeof value.imageId === 'string'
+          ? value.imageId
+          : '';
+  const imageId = typeof value.imageId === 'string' ? value.imageId : imageName;
+  const defaultPrivateIp = typeof value.privateIp === 'string' ? value.privateIp : '';
+  const normalizedNics = Array.isArray(value.nics)
+    ? ((value.nics as unknown[]) as any[])
+    : defaultPrivateIp
+      ? [
+          {
+            id: `${value.id}-nic-1`,
+            switchId: '',
+            privateIp: defaultPrivateIp,
+            secondaryIps: [],
+            securityGroupRules: [],
+          },
+        ]
+      : [];
+
+  return {
+    id: value.id,
+    kind: 'ecs',
+    label: readNodeLabel(value),
+    position,
+    zoneKey: typeof value.zoneKey === 'string' ? value.zoneKey : '',
+    role: typeof value.role === 'string' ? value.role : 'host',
+    privateIp: defaultPrivateIp,
+    customPassword: typeof value.customPassword === 'string' ? value.customPassword : undefined,
+    exposePublic: typeof value.exposePublic === 'boolean' ? value.exposePublic : false,
+    image: imageName,
+    instanceName: typeof value.instanceName === 'string' ? value.instanceName : readNodeLabel(value),
+    hostName: typeof value.hostName === 'string' ? value.hostName : '',
+    imageName,
+    imageId,
+    cpu: typeof value.cpu === 'number' ? value.cpu : 1,
+    memory: typeof value.memory === 'number' ? value.memory : 2,
+    instanceType: typeof value.instanceType === 'string' ? value.instanceType : undefined,
+    description: typeof value.description === 'string' ? value.description : '',
+    bootPriority: typeof value.bootPriority === 'number' ? value.bootPriority : 1,
+    bootWaitSeconds: typeof value.bootWaitSeconds === 'number' ? value.bootWaitSeconds : 0,
+    dnatMappings: Array.isArray(value.dnatMappings) ? ((value.dnatMappings as unknown[]) as any[]) : [],
+    networkInterfaces: Array.isArray(value.networkInterfaces) ? ((value.networkInterfaces as unknown[]) as any[]) : [],
+    portGroups: Array.isArray(value.portGroups) ? ((value.portGroups as unknown[]) as any[]) : [],
+    nics: normalizedNics,
+    initScript: typeof value.initScript === 'string' ? value.initScript : '',
+    imageStrategy:
+      value.imageStrategy && typeof value.imageStrategy === 'object'
+        ? ((value.imageStrategy as Record<string, unknown>) as any)
+        : {
+            mode: 'fixed',
+            imageId,
+          },
+    instanceTypeStrategy:
+      value.instanceTypeStrategy && typeof value.instanceTypeStrategy === 'object'
+        ? ((value.instanceTypeStrategy as Record<string, unknown>) as any)
+        : {
+            mode: 'auto',
+            preferredInstanceTypes: [],
+          },
+  };
+}
+
+function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefined): ScenarioGraphDraft | null {
+  if (!graph || typeof graph !== 'object') {
+    return null;
+  }
+
+  const nodes = Array.isArray(graph.nodes)
+    ? (graph.nodes as Array<Record<string, unknown>>).flatMap((node) => {
+        if (!node || typeof node !== 'object') {
+          return [];
+        }
+
+        const normalized = normalizeTopologyNode(node);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+
+  const edges = Array.isArray(graph.edges)
+    ? (graph.edges as Array<Record<string, unknown>>).flatMap((edge) => {
+        if (
+          typeof edge.id === 'string' &&
+          typeof edge.fromNodeId === 'string' &&
+          typeof edge.toNodeId === 'string'
+        ) {
+          return [
+            {
+              id: edge.id,
+              fromNodeId: edge.fromNodeId,
+              toNodeId: edge.toNodeId,
+              relationType: 'manual' as const,
+              label: typeof edge.label === 'string' ? edge.label : undefined,
+            },
+          ];
+        }
+
+        return [];
+      })
+    : [];
+
+  return {
+    schemaVersion: typeof graph.schemaVersion === 'string' ? graph.schemaVersion : '1',
+    nodes,
+    edges,
+  };
+}
+
 function readWorkbenchNodesFromGraph(
   graph: Record<string, unknown> | null | undefined,
   detail: RangeInstanceDetail | null,
@@ -262,6 +447,8 @@ function readWorkbenchNodesFromGraph(
       (hostSpec && typeof hostSpec.primaryPrivateIp === 'string' ? hostSpec.primaryPrivateIp : undefined) ||
       (typeof node.privateIp === 'string' && node.privateIp) ||
       (kind === 'switch' && typeof node.cidr === 'string' ? node.cidr : undefined);
+    const cloudStatus = detail?.nodeStatuses?.[id] ?? undefined;
+    const statusLabel = kind === 'ecs' ? getCloudStatusLabel(cloudStatus) ?? getStatusLabel(detail?.status ?? 'unknown') : getStatusLabel(detail?.status ?? 'unknown');
 
     if (!id) {
       return [];
@@ -272,7 +459,8 @@ function readWorkbenchNodesFromGraph(
         id,
         label: readNodeLabel(node),
         kind,
-        statusLabel: getStatusLabel(detail?.status ?? 'unknown'),
+        statusLabel,
+        cloudStatus,
         ipAddress,
         specLabel:
           kind === 'ecs'
@@ -332,10 +520,33 @@ export function RangeInstanceDetailScreen({
   const session = useAdminSession();
   const [detail, setDetail] = useState<RangeInstanceDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('directory');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(null);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [isSyncingTemplate, setIsSyncingTemplate] = useState(false);
+  const [pendingNodeAction, setPendingNodeAction] = useState<{
+    nodeId: string;
+    action: NodeActionName;
+  } | null>(null);
+  const [nodeStatusOverrides, setNodeStatusOverrides] = useState<Record<string, string>>({});
+  const [packImageDialog, setPackImageDialog] = useState<PackImageDialogDraft | null>(null);
+
+  async function reloadDetailSnapshot() {
+    if (!session.token) {
+      return null;
+    }
+
+    const payload = await fetchRangeInstanceDetail(apiBaseUrl, session.token, rangeId);
+    setDetail(payload);
+    setDraftGraph(
+      (payload.draftTopologyGraph as Record<string, unknown> | null) ??
+        (payload.runtimeTopologyGraph as Record<string, unknown> | null) ??
+        null,
+    );
+    return payload;
+  }
 
   useEffect(() => {
     if (!session.isReady || !session.token) {
@@ -358,7 +569,7 @@ export function RangeInstanceDetailScreen({
           return;
         }
 
-        if (isUnauthorizedError(error)) {
+        if (isUnauthorizedAdminError(error)) {
           session.logout();
           router.replace('/admin/login');
           return;
@@ -370,9 +581,16 @@ export function RangeInstanceDetailScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, rangeId, router, session]);
+  }, [apiBaseUrl, rangeId, router, session.isReady, session.token]);
 
-  const nodes = useMemo(() => {
+  const topologyDraft = useMemo(() => {
+    return (
+      readTopologyGraphDraft(draftGraph) ??
+      readTopologyGraphDraft((detail?.runtimeTopologyGraph as Record<string, unknown> | null) ?? null)
+    );
+  }, [detail, draftGraph]);
+
+  const directoryNodes = useMemo(() => {
     if (!draftGraph || typeof draftGraph !== 'object') {
       return readWorkbenchNodesFromGraph(
         (detail?.runtimeTopologyGraph as Record<string, unknown> | null) ?? null,
@@ -382,57 +600,56 @@ export function RangeInstanceDetailScreen({
 
     return readWorkbenchNodesFromGraph(draftGraph, detail);
   }, [detail, draftGraph]);
+  const displayedDirectoryNodes = useMemo(
+    () =>
+      directoryNodes.map((node) => ({
+        ...node,
+        statusLabel: nodeStatusOverrides[node.id] ?? node.statusLabel,
+      })),
+    [directoryNodes, nodeStatusOverrides],
+  );
 
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
-    [nodes, selectedNodeId],
+  const topologyNodes = topologyDraft?.nodes ?? [];
+  const topologyEdges = useMemo<TemplateEdge[]>(() => topologyDraft?.edges ?? [], [topologyDraft]);
+  const selectedTopologyNode = useMemo(
+    () => topologyNodes.find((node) => node.id === selectedNodeId) ?? null,
+    [topologyNodes, selectedNodeId],
   );
   const canOperateInstance = detail?.status === 'running';
+  const linkedSwitchIdsByHostId = useMemo(() => {
+    const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
+    const nextMap: Record<string, string[]> = {};
 
-  const activeGraph = useMemo(() => {
-    return (
-      (detail?.draftTopologyGraph as Record<string, unknown> | null) ??
-      (detail?.runtimeTopologyGraph as Record<string, unknown> | null) ??
-      null
-    );
-  }, [detail]);
+    for (const edge of topologyEdges) {
+      const sourceNode = nodeById.get(edge.fromNodeId);
+      const targetNode = nodeById.get(edge.toNodeId);
 
-  const topologyEdges = useMemo(() => {
-    if (!activeGraph || !Array.isArray(activeGraph.edges)) {
-      return [];
-    }
-
-    return (activeGraph.edges as Array<Record<string, unknown>>).flatMap((edge) => {
-      if (
-        typeof edge.id === 'string' &&
-        typeof edge.fromNodeId === 'string' &&
-        typeof edge.toNodeId === 'string'
-      ) {
-        return [
-          {
-            id: edge.id,
-            fromNodeId: edge.fromNodeId,
-            toNodeId: edge.toNodeId,
-          },
-        ];
+      if (sourceNode?.kind !== 'switch' || targetNode?.kind !== 'ecs') {
+        continue;
       }
 
-      return [];
-    });
-  }, [activeGraph]);
+      nextMap[targetNode.id] = [...(nextMap[targetNode.id] ?? []), sourceNode.id];
+    }
+
+    return nextMap;
+  }, [topologyEdges, topologyNodes]);
+  const topologyStatusMessage = !canOperateInstance
+    ? '历史实例只读预览。'
+    : detail?.draftUpdatedAt
+      ? '存在未应用草稿变更，可继续编辑并保存。'
+      : '点击节点后可在右侧编辑属性。';
 
   useEffect(() => {
-    if (!selectedNodeId && nodes.length > 0) {
-      setSelectedNodeId(nodes[0].id);
+    if (!selectedNodeId && topologyNodes.length > 0) {
+      setSelectedNodeId(topologyNodes[0].id);
     }
-  }, [nodes, selectedNodeId]);
+  }, [topologyNodes, selectedNodeId]);
 
-  async function handleSaveDraft() {
+  async function persistDraftChanges() {
     if (!session.token || !detail || !draftGraph) {
-      return;
+      return null;
     }
 
-    setIsSavingDraft(true);
     setErrorMessage(null);
 
     try {
@@ -493,41 +710,16 @@ export function RangeInstanceDetailScreen({
 
       setDetail(updated);
       setDraftGraph((updated.draftTopologyGraph as Record<string, unknown> | null) ?? draftGraph);
+      return updated;
     } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
-        return;
+        return null;
       }
 
       setErrorMessage('保存变更草稿失败，请稍后重试。');
-    } finally {
-      setIsSavingDraft(false);
-    }
-  }
-
-  async function handleDiscardDraft() {
-    if (!session.token || !detail) {
-      return;
-    }
-
-    setIsSavingDraft(true);
-    setErrorMessage(null);
-
-    try {
-      const updated = await discardRangeInstanceDraft(apiBaseUrl, session.token, detail.id);
-      setDetail(updated);
-      setDraftGraph((updated.runtimeTopologyGraph as Record<string, unknown> | null) ?? null);
-    } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
-        session.logout();
-        router.replace('/admin/login');
-        return;
-      }
-
-      setErrorMessage('放弃未应用修改失败，请稍后重试。');
-    } finally {
-      setIsSavingDraft(false);
+      return null;
     }
   }
 
@@ -538,11 +730,19 @@ export function RangeInstanceDetailScreen({
 
     setIsSavingDraft(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     try {
+      const saved = await persistDraftChanges();
+
+      if (!saved) {
+        return;
+      }
+
       await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, 'admin');
+      setSuccessMessage('实例配置变更已提交应用。');
     } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
         return;
@@ -554,33 +754,211 @@ export function RangeInstanceDetailScreen({
     }
   }
 
-  async function handleNodeAction(nodeId: string, action: 'stop' | 'reboot' | 'open-vnc' | 'pack-image') {
+  async function handleSaveDraft() {
     if (!session.token || !detail) {
       return;
     }
 
+    setIsSavingDraft(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     try {
-      await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, nodeId, action, {
-        ...(action === 'pack-image' ? { displayName: `${nodeId}-snapshot` } : {}),
-      });
+      const saved = await persistDraftChanges();
+
+      if (!saved) {
+        return;
+      }
+
+      setSuccessMessage('实例草稿已保存。');
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }
+
+  async function handleSyncTemplate() {
+    if (!session.token || !detail) {
+      return;
+    }
+
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm('将当前实例拓扑与配置覆盖为模板当前草稿。该操作不会自动创建或修改实例，是否继续？')
+    ) {
+      return;
+    }
+
+    setIsSyncingTemplate(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const saved = await persistDraftChanges();
+
+      if (!saved) {
+        return;
+      }
+
+      await syncRangeInstanceTemplate(apiBaseUrl, session.token, detail.id, 'admin');
+      setSuccessMessage('当前实例拓扑已更新到模板草稿。');
     } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
         return;
       }
 
-      setErrorMessage('节点操作失败，请稍后重试。');
+      setErrorMessage(error instanceof Error ? error.message : '更新编排拓扑失败，请稍后重试。');
+    } finally {
+      setIsSyncingTemplate(false);
     }
   }
 
-  function handleEditedNodeFieldChange(
-    field: 'label' | 'hostName' | 'imageName' | 'cpu' | 'memory' | 'ipAddress' | 'account' | 'password',
-    value: string,
-  ) {
-    if (!selectedNodeId || !draftGraph || typeof draftGraph !== 'object') {
+  function openPackImageDialog(nodeId: string) {
+    const node =
+      displayedDirectoryNodes.find((item) => item.id === nodeId) ??
+      topologyNodes.find((item) => item.id === nodeId) ??
+      null;
+
+    if (!node) {
+      return;
+    }
+
+    setPackImageDialog({
+      nodeId,
+      displayName: readDefaultPackImageName(node.label),
+      defaultHostName: node.kind === 'ecs' ? (node.hostName ?? '') : '',
+      defaultPassword: '',
+      description: '',
+    });
+  }
+
+  async function handleConfirmPackImage() {
+    if (!session.token || !detail || !packImageDialog) {
+      return;
+    }
+
+    setPendingNodeAction({
+      nodeId: packImageDialog.nodeId,
+      action: 'pack-image',
+    });
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const result = await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, packImageDialog.nodeId, 'pack-image', {
+        displayName: packImageDialog.displayName,
+        defaultHostName: packImageDialog.defaultHostName,
+        defaultPassword: packImageDialog.defaultPassword,
+        description: packImageDialog.description,
+      });
+
+      setPackImageDialog(null);
+      setSuccessMessage(
+        result.imageReady
+          ? `镜像打包完成，已收录到平台镜像目录：${result.platformImageAsset?.displayName ?? packImageDialog.displayName}`
+          : `镜像打包任务已提交，镜像可用后才会在平台收录镜像中展示：${packImageDialog.displayName}`,
+      );
+    } catch (error: unknown) {
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage(error instanceof Error ? error.message : '二次打包镜像失败，请稍后重试。');
+    } finally {
+      setPendingNodeAction(null);
+    }
+  }
+
+  async function handleNodeAction(nodeId: string, action: NodeActionName) {
+    if (!session.token || !detail) {
+      return;
+    }
+
+    if (action === 'pack-image') {
+      openPackImageDialog(nodeId);
+      return;
+    }
+
+    if (action === 'reset') {
+      setErrorMessage('重置功能对应主机系统盘恢复到当前镜像初始状态，本轮先不执行该危险动作。');
+      setSuccessMessage(null);
+      return;
+    }
+
+    setPendingNodeAction({ nodeId, action });
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const result = await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, nodeId, action, {});
+
+      if (action === 'start') {
+        setNodeStatusOverrides((current) => ({
+          ...current,
+          [nodeId]: 'Starting',
+        }));
+        setSuccessMessage('开机指令已提交。');
+      }
+
+      if (action === 'stop') {
+        setNodeStatusOverrides((current) => ({
+          ...current,
+          [nodeId]: 'Stopping',
+        }));
+        setSuccessMessage('关机指令已提交。');
+      }
+
+      if (action === 'reboot') {
+        setNodeStatusOverrides((current) => ({
+          ...current,
+          [nodeId]: 'Rebooting',
+        }));
+        setSuccessMessage('重启指令已提交。');
+      }
+
+      if (action === 'open-vnc') {
+        const nextUrl = result.webTerminalUrl ?? result.vncUrl ?? null;
+
+        if (!nextUrl) {
+          throw new Error('当前未获取到可用的 VNC 访问地址。');
+        }
+
+        window.open(nextUrl, '_blank', 'noopener,noreferrer');
+        setSuccessMessage('VNC 页面已在新标签页打开。');
+      }
+
+      if (action === 'start' || action === 'stop' || action === 'reboot') {
+        window.setTimeout(() => {
+          void reloadDetailSnapshot().then((payload) => {
+            if (!payload?.nodeStatuses?.[nodeId]) {
+              return;
+            }
+
+            setNodeStatusOverrides((current) => ({
+              ...current,
+              [nodeId]: payload.nodeStatuses?.[nodeId] ?? current[nodeId],
+            }));
+          }).catch(() => undefined);
+        }, 2500);
+      }
+    } catch (error: unknown) {
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage(error instanceof Error ? error.message : '节点操作失败，请稍后重试。');
+    } finally {
+      setPendingNodeAction(null);
+    }
+  }
+
+  function updateDraftTopologyNode(nodeId: string, updater: (node: TemplateNode) => TemplateNode) {
+    if (!canOperateInstance || !draftGraph || typeof draftGraph !== 'object') {
       return;
     }
 
@@ -597,101 +975,39 @@ export function RangeInstanceDetailScreen({
 
         const node = valueItem as Record<string, unknown>;
 
-        if (node.id !== selectedNodeId) {
+        if (node.id !== nodeId || !isPhaseOneNodeKind(node.kind)) {
           return node;
         }
 
+        const nextNode = updater(normalizeTopologyNode(node) ?? (node as unknown as TemplateNode));
         const nextData =
           node.data && typeof node.data === 'object'
-            ? { ...(node.data as Record<string, unknown>) }
-            : {};
+            ? {
+                ...(node.data as Record<string, unknown>),
+                label: nextNode.label,
+              }
+            : {
+                label: nextNode.label,
+              };
 
-        if (field === 'label') {
-          nextData.label = value;
-          return {
-            ...node,
-            label: value,
-            instanceName: value,
-            data: nextData,
-          };
-        }
-
-        if (field === 'hostName') {
-          return {
-            ...node,
-            hostName: value,
-            data: nextData,
-          };
-        }
-
-        if (field === 'imageName') {
-          return {
-            ...node,
-            imageName: value,
-            imageId: value,
-            image: value,
-            data: nextData,
-          };
-        }
-
-        if (field === 'cpu') {
-          const cpu = Number(value);
-          return {
-            ...node,
-            cpu: Number.isFinite(cpu) ? cpu : node.cpu,
-            data: nextData,
-          };
-        }
-
-        if (field === 'memory') {
-          const memory = Number(value);
-          return {
-            ...node,
-            memory: Number.isFinite(memory) ? memory : node.memory,
-            data: nextData,
-          };
-        }
-
-        if (field === 'ipAddress') {
-          const nextNics =
-            Array.isArray(node.nics) && node.nics.length > 0
-              ? (node.nics as Array<Record<string, unknown>>).map((nic, index) =>
-                  index === 0
-                    ? {
-                        ...nic,
-                        privateIp: value,
-                      }
-                    : nic,
-                )
-              : node.nics;
-
-          return {
-            ...node,
-            privateIp: value,
-            nics: nextNics,
-            data: nextData,
-          };
-        }
-
-        if (field === 'account') {
-          return {
-            ...node,
-            account: value,
-            data: nextData,
-          };
-        }
-
-        if (field === 'password') {
-          return {
-            ...node,
-            password: value,
-            data: nextData,
-          };
-        }
-
-        return node;
+        return {
+          ...node,
+          ...nextNode,
+          data: nextData,
+        };
       }),
     });
+  }
+
+  function handleUpdateTopologyNode(nodeId: string, nextNode: TemplateNode) {
+    updateDraftTopologyNode(nodeId, () => nextNode);
+  }
+
+  function handleMoveTopologyNode(nodeId: string, position: { x: number; y: number }) {
+    updateDraftTopologyNode(nodeId, (node) => ({
+      ...node,
+      position,
+    }));
   }
 
   return (
@@ -705,6 +1021,7 @@ export function RangeInstanceDetailScreen({
           </div>
 
           {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+          {successMessage ? <p className="admin-success">{successMessage}</p> : null}
 
           {detail ? (
             <>
@@ -727,11 +1044,11 @@ export function RangeInstanceDetailScreen({
                 </div>
                 <div className="range-instance-overview-item">
                   <span>创建时间</span>
-                  <strong>{formatDateTime(detail.createdAt)}</strong>
+                  <strong>{formatAdminDateTime(detail.createdAt)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
                   <span>到期时间</span>
-                  <strong>{formatDateTime(detail.expiresAt)}</strong>
+                  <strong>{formatAdminDateTime(detail.expiresAt)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
                   <span>公网IP</span>
@@ -745,28 +1062,42 @@ export function RangeInstanceDetailScreen({
                 ) : null}
               </section>
 
-              <div className="template-workbench-segmented" role="tablist" aria-label="实例详情视图切换">
-                <button type="button" aria-pressed={activeTab === 'directory'} onClick={() => setActiveTab('directory')}>
-                  节点目录
-                </button>
-                <button type="button" aria-pressed={activeTab === 'topology'} onClick={() => setActiveTab('topology')}>
-                  拓扑结构
-                </button>
-              </div>
-
-              {activeTab === 'topology' && canOperateInstance ? (
-                <div className="range-instance-workbench-actions">
-                  <button type="button" disabled={isSavingDraft} onClick={() => void handleSaveDraft()}>
-                    保存变更草稿
+              <div className="range-instance-detail-toolbar">
+                <div className="template-workbench-segmented" role="tablist" aria-label="实例详情视图切换">
+                  <button type="button" aria-pressed={activeTab === 'directory'} onClick={() => setActiveTab('directory')}>
+                    节点目录
                   </button>
-                  <button type="button" disabled={isSavingDraft} onClick={() => void handleApplyDraft()}>
-                    应用变更
-                  </button>
-                  <button type="button" disabled={isSavingDraft} onClick={() => void handleDiscardDraft()}>
-                    放弃未应用修改
+                  <button type="button" aria-pressed={activeTab === 'topology'} onClick={() => setActiveTab('topology')}>
+                    拓扑结构
                   </button>
                 </div>
-              ) : null}
+
+                {activeTab === 'topology' && canOperateInstance ? (
+                  <div className="range-instance-workbench-actions">
+                    <button
+                      type="button"
+                      disabled={isSavingDraft || isSyncingTemplate}
+                      onClick={() => void handleSaveDraft()}
+                    >
+                      {isSavingDraft ? '处理中...' : '保存草稿'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingDraft || isSyncingTemplate}
+                      onClick={() => void handleApplyDraft()}
+                    >
+                      {isSavingDraft ? '处理中...' : '应用变更'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingDraft || isSyncingTemplate}
+                      onClick={() => void handleSyncTemplate()}
+                    >
+                      {isSyncingTemplate ? '处理中...' : '更新编排拓扑'}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
 
               <div
                 className={
@@ -775,33 +1106,50 @@ export function RangeInstanceDetailScreen({
                     : 'range-instance-detail-content is-topology'
                 }
               >
-                <div className="range-instance-detail-main">
+                <div
+                  className={
+                    activeTab === 'topology'
+                      ? 'range-instance-detail-main range-instance-topology-main'
+                      : 'range-instance-detail-main'
+                  }
+                >
                   {activeTab === 'directory' ? (
                     <RangeInstanceNodeDirectory
-                      nodes={nodes.map((node) => ({
+                      nodes={displayedDirectoryNodes.map((node) => ({
                         ...node,
                         createdBy: detail.createdBy ?? 'admin',
-                        expiresAt: formatDateTime(detail.expiresAt),
-                        createdAt: formatDateTime(detail.createdAt),
+                        expiresAt: formatAdminDateTime(detail.expiresAt),
+                        createdAt: formatAdminDateTime(detail.createdAt),
                       }))}
                       onNodeAction={handleNodeAction}
                       allowActions={canOperateInstance}
+                      pendingAction={pendingNodeAction}
                     />
                   ) : (
-                    <RangeInstanceTopologyWorkbench
-                      nodes={nodes}
+                    <TemplateCanvas
+                      topologyGraph={draftGraph}
+                      nodes={topologyNodes}
                       edges={topologyEdges}
-                      onSelectNode={setSelectedNodeId}
                       selectedNodeId={selectedNodeId}
+                      pendingLinkSourceNodeId={null}
+                      statusMessage={topologyStatusMessage}
+                      onSelectNode={setSelectedNodeId}
+                      onOpenNode={setSelectedNodeId}
+                      onMoveNode={handleMoveTopologyNode}
+                      onBoardClick={() => undefined}
                     />
                   )}
                 </div>
 
-                {activeTab === 'topology' && selectedNode ? (
-                  <RangeInstancePropertyPanel
-                    selectedNode={selectedNode}
-                    onEditedNodeFieldChange={handleEditedNodeFieldChange}
+                {activeTab === 'topology' ? (
+                  <TemplatePropertyPanel
+                    selectedNode={selectedTopologyNode}
+                    allNodes={topologyNodes}
+                    linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
+                    onUpdateNode={handleUpdateTopologyNode}
                     readOnly={!canOperateInstance}
+                    instanceDetailMode
+                    runtimeNodeStatus={selectedTopologyNode ? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
                   />
                 ) : null}
               </div>
@@ -813,6 +1161,98 @@ export function RangeInstanceDetailScreen({
           )}
         </div>
       </section>
+
+      {packImageDialog ? (
+        <div className="template-workbench-dialog-backdrop" role="presentation">
+          <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label="二次打包镜像">
+            <div className="template-workbench-dialog-header">
+              <h2>二次打包镜像</h2>
+              <p>将当前主机保存为阿里云自定义镜像，并同步收录到平台镜像目录。</p>
+            </div>
+            <div className="template-workbench-dialog-grid">
+              <label>
+                <span>镜像名</span>
+                <input
+                  aria-label="镜像名"
+                  value={packImageDialog.displayName}
+                  onChange={(event) =>
+                    setPackImageDialog((current) =>
+                      current
+                        ? {
+                            ...current,
+                            displayName: event.target.value,
+                          }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>默认主机名</span>
+                <input
+                  aria-label="默认主机名"
+                  placeholder="留空则使用当前主机名"
+                  value={packImageDialog.defaultHostName}
+                  onChange={(event) =>
+                    setPackImageDialog((current) =>
+                      current
+                        ? {
+                            ...current,
+                            defaultHostName: event.target.value,
+                          }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>默认密码</span>
+                <input
+                  aria-label="默认密码"
+                  placeholder="留空则随机生成"
+                  value={packImageDialog.defaultPassword}
+                  onChange={(event) =>
+                    setPackImageDialog((current) =>
+                      current
+                        ? {
+                            ...current,
+                            defaultPassword: event.target.value,
+                          }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>镜像备注</span>
+                <input
+                  aria-label="镜像备注"
+                  placeholder="选填"
+                  value={packImageDialog.description}
+                  onChange={(event) =>
+                    setPackImageDialog((current) =>
+                      current
+                        ? {
+                            ...current,
+                            description: event.target.value,
+                          }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+            </div>
+            <div className="template-workbench-dialog-actions">
+              <button type="button" disabled={pendingNodeAction?.action === 'pack-image'} onClick={() => setPackImageDialog(null)}>
+                取消
+              </button>
+              <button type="button" disabled={pendingNodeAction?.action === 'pack-image' || packImageDialog.displayName.trim().length === 0} onClick={() => void handleConfirmPackImage()}>
+                {pendingNodeAction?.action === 'pack-image' ? '处理中...' : '确认打包'}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

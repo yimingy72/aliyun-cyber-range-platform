@@ -210,6 +210,7 @@ export type RangeInstanceRecord = {
   errorSummary: string | null;
   expiresAt: Date | null;
   lastJobId: string | null;
+  nodeStatuses?: Record<string, string> | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -284,6 +285,9 @@ export type PlatformImageAssetRecord = {
   sourceSnapshotId: string | null;
   imageId: string;
   displayName: string;
+  defaultHostName: string | null;
+  defaultPassword: string | null;
+  description: string | null;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -345,11 +349,15 @@ export type ListPlatformImageAssetsFilter = Partial<{
   enabled: boolean;
   imageId: string;
   sourceSnapshotId: string | null;
+  onlyAvailableSourceSnapshots: boolean;
 }>;
 
 export type CollectPlatformImageAssetInput = {
   snapshotId: string;
   displayName: string;
+  defaultHostName?: string | null;
+  defaultPassword?: string | null;
+  description?: string | null;
 };
 
 export type CreateRangeTemplateInput = {

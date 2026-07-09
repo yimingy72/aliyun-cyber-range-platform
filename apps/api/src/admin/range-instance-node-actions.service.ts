@@ -1,8 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { ADMIN_REPOSITORY, AdminRepository, RangeInstanceRecord } from './admin.repository';
+import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
@@ -10,7 +16,7 @@ const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 
-type NodeActionName = 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
+type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
 
 @Injectable()
 export class RangeInstanceNodeActionsService {
@@ -31,7 +37,22 @@ export class RangeInstanceNodeActionsService {
     }
 
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);
+    const hostNode = this.resolveHostTopologyNode(instance, nodeId);
     const accountContext = await this.systemConfigService.getAccountContext();
+
+    if (action === 'start') {
+      const response = await this.performAliyunRpcRequest({
+        accessKeyId: accountContext.accessKeyId,
+        accessKeySecret: accountContext.accessKeySecret,
+        regionId: accountContext.defaultRegion,
+        action: 'StartInstance',
+        parameters: {
+          InstanceId: hostInstanceId,
+        },
+      });
+
+      return { status: 'accepted', action, response };
+    }
 
     if (action === 'stop') {
       const response = await this.performAliyunRpcRequest({
@@ -76,22 +97,40 @@ export class RangeInstanceNodeActionsService {
         },
       });
 
-      return { status: 'accepted', action, vncUrl: response.VncUrl ?? null };
+      const vncUrl = response.VncUrl ?? null;
+
+      return {
+        status: 'accepted',
+        action,
+        vncUrl,
+        webTerminalUrl: vncUrl
+          ? buildAliyunWebTerminalUrl({
+              regionId: accountContext.defaultRegion,
+              instanceId: hostInstanceId,
+              vncUrl,
+              isWindows: isWindowsHost(hostNode),
+            })
+          : null,
+      };
     }
 
     const displayName = payload.displayName?.trim() || `${nodeId}-snapshot`;
+    const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
+    const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
+    const description = payload.description?.trim() || null;
     const createImageResponse = await this.performAliyunRpcRequest<{
       ImageId?: string;
     }>({
       accessKeyId: accountContext.accessKeyId,
       accessKeySecret: accountContext.accessKeySecret,
       regionId: accountContext.defaultRegion,
-      action: 'CreateImage',
-      parameters: {
-        InstanceId: hostInstanceId,
-        ImageName: displayName,
-      },
-    });
+        action: 'CreateImage',
+        parameters: {
+          InstanceId: hostInstanceId,
+          ImageName: displayName,
+          ...(description ? { Description: description } : {}),
+        },
+      });
 
     const imageId = createImageResponse.ImageId?.trim();
 
@@ -131,12 +170,19 @@ export class RangeInstanceNodeActionsService {
     const platformImageAsset = await this.adminRepository.collectPlatformImageAsset({
       snapshotId: snapshot.id,
       displayName,
+      defaultHostName,
+      defaultPassword,
+      description,
     });
 
     return {
       status: 'accepted',
       action,
       imageId,
+      defaultHostName,
+      defaultPassword,
+      description,
+      imageReady: snapshot.isAvailable,
       platformImageAsset,
     };
   }
@@ -150,6 +196,27 @@ export class RangeInstanceNodeActionsService {
     }
 
     return hostInstanceId;
+  }
+
+  private resolveHostTopologyNode(instance: RangeInstanceRecord, nodeId: string) {
+    const graph =
+      (instance.draftTopologyGraph as Record<string, unknown> | null) ??
+      (instance.runtimeTopologyGraph as Record<string, unknown> | null) ??
+      null;
+
+    const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') {
+        continue;
+      }
+
+      if ((node as { id?: unknown }).id === nodeId) {
+        return node as Record<string, unknown>;
+      }
+    }
+
+    return null;
   }
 
   private async performAliyunRpcRequest<ResponsePayload>(input: {
@@ -183,7 +250,32 @@ export class RangeInstanceNodeActionsService {
     });
 
     if (!response.ok) {
-      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}`);
+      const bodyText = await response.text();
+      let details: Record<string, unknown> | null = null;
+
+      try {
+        details = JSON.parse(bodyText) as Record<string, unknown>;
+      } catch {
+        details = null;
+      }
+
+      const detailMessage =
+        typeof details?.Message === 'string'
+          ? details.Message
+          : typeof details?.message === 'string'
+            ? details.message
+            : bodyText.trim();
+      const code =
+        typeof details?.Code === 'string'
+          ? details.Code
+          : typeof details?.code === 'string'
+            ? details.code
+            : null;
+      const message = code
+        ? `Aliyun ${input.action} request failed: ${code}${detailMessage ? ` - ${detailMessage}` : ''}`
+        : `Aliyun ${input.action} request failed with status ${response.status}${detailMessage ? ` - ${detailMessage}` : ''}`;
+
+      throw new BadGatewayException(message);
     }
 
     return (await response.json()) as ResponsePayload;
@@ -191,5 +283,41 @@ export class RangeInstanceNodeActionsService {
 }
 
 function isNodeActionName(value: string): value is NodeActionName {
-  return value === 'stop' || value === 'reboot' || value === 'open-vnc' || value === 'pack-image';
+  return value === 'start' || value === 'stop' || value === 'reboot' || value === 'open-vnc' || value === 'pack-image';
+}
+
+function buildAliyunWebTerminalUrl(input: {
+  regionId: string;
+  instanceId: string;
+  vncUrl: string;
+  isWindows: boolean;
+}) {
+  const searchParams = new URLSearchParams({
+    vncUrl: input.vncUrl,
+    instanceId: input.instanceId,
+    regionId: input.regionId,
+    isWindows: input.isWindows ? 'true' : 'false',
+  });
+
+  return `https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html?${searchParams.toString()}`;
+}
+
+function readHostName(hostNode: Record<string, unknown> | null, fallback: string) {
+  if (typeof hostNode?.hostName === 'string' && hostNode.hostName.trim()) {
+    return hostNode.hostName.trim();
+  }
+
+  if (typeof hostNode?.label === 'string' && hostNode.label.trim()) {
+    return hostNode.label.trim();
+  }
+
+  return fallback;
+}
+
+function isWindowsHost(hostNode: Record<string, unknown> | null) {
+  const imageName = String(
+    hostNode?.imageName ?? hostNode?.imageId ?? hostNode?.image ?? '',
+  ).toLowerCase();
+
+  return imageName.includes('windows');
 }

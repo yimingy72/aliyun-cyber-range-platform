@@ -172,6 +172,20 @@ export class ProvisioningWorkerService {
         await this.runWorkerStep(reportStep, 'persist_access_entry', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
             status: 'running',
+            runtimeTopologyGraph:
+              sourceVersion?.topologyGraph ??
+              template.topologyGraph ??
+              instance.runtimeTopologyGraph ??
+              null,
+            runtimeScenarioTemplateSpec:
+              sourceVersion?.scenarioTemplateSpec ??
+              template.scenarioTemplateSpec ??
+              instance.runtimeScenarioTemplateSpec ??
+              null,
+            runtimeCompiledProvisionSpec:
+              baseCompiledProvisionSpec ??
+              instance.runtimeCompiledProvisionSpec ??
+              null,
             accessEntry: result.accessEntry,
             resourceSummary: result.resourceSummary,
             errorSummary: null,
@@ -188,6 +202,7 @@ export class ProvisioningWorkerService {
           rangeInstanceId: instance.id,
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
+          preserveWorkspaceState: true,
           runtimeConfig,
           runtimeCredentials: instance.runtimeCredentials ?? undefined,
           topologySpec,

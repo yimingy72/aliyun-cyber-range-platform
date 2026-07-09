@@ -44,6 +44,7 @@ export type RangeProvisionCreateInput = {
   rangeInstanceId: string;
   templateModulePath: string;
   allocatedCidr: string | null;
+  preserveWorkspaceState?: boolean;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
   runtimeCredentials?: RangeRuntimeCredentials;
   topologySpec?: RangeTemplateTopologySpec | null;

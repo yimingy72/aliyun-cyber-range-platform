@@ -125,6 +125,9 @@ model PlatformImageAsset {
   sourceSnapshotId String?
   imageId          String
   displayName      String
+  defaultHostName  String?
+  defaultPassword  String?
+  description      String?
   enabled          Boolean             @default(true)
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt

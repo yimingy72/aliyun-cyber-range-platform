@@ -4,7 +4,6 @@ import React from 'react';
 import { useEffect, useRef, useState } from 'react';
 
 import {
-  AdminApiError,
   collectPlatformImage,
   deleteCustomImageSnapshot,
   disablePlatformImage,
@@ -17,6 +16,7 @@ import {
   syncCustomImages,
   syncPublicImages,
 } from '../../lib/admin-api';
+import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   ImageCatalogScopePayload,
   ImageSnapshot,
@@ -47,10 +47,6 @@ function getAutoPageSize(viewportHeight?: number) {
   }
 
   return Math.max(1, Math.floor((viewportHeight - PAGE_SIZE_RESERVED_HEIGHT) / ROW_HEIGHT));
-}
-
-function isUnauthorizedError(error: unknown) {
-  return error instanceof AdminApiError && error.status === 401;
 }
 
 function formatImageStatus(snapshot: ImageSnapshot) {
@@ -159,6 +155,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
   const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(null);
   const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
   const [pageSizeMode, setPageSizeMode] = useState<string>(PAGE_SIZE_AUTO);
   const [pageSize, setPageSize] = useState(() => getAutoPageSize(typeof window === 'undefined' ? undefined : window.innerHeight));
@@ -204,7 +201,12 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
   }, [pageSizeMode]);
 
   useEffect(() => {
-    if (!session.isReady || !session.token) {
+    if (!session.isReady) {
+      return;
+    }
+
+    if (!session.token) {
+      setIsLoading(false);
       return;
     }
 
@@ -215,6 +217,8 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
     publicScopeRequestVersionRef.current = publicRequestVersion;
     customScopeRequestVersionRef.current = customRequestVersion;
     let isActive = true;
+    setIsLoading(true);
+    setErrorMessage('');
 
     Promise.all([
       fetchPlatformImages(apiBaseUrl, session.token),
@@ -243,12 +247,19 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
           return;
         }
 
-        if (isUnauthorizedError(error)) {
+        if (isUnauthorizedAdminError(error)) {
           session.logout();
           return;
         }
 
         setErrorMessage(error instanceof Error ? error.message : '镜像中心加载失败');
+      })
+      .finally(() => {
+        if (!isActive) {
+          return;
+        }
+
+        setIsLoading(false);
       });
 
     return () => {
@@ -274,7 +285,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
         setPublicScope(nextScope);
       }
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -303,7 +314,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
         setCustomScope(nextScope);
       }
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -331,7 +342,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
 
       setPlatformAssets((previous) => upsertPlatformAsset(previous, nextPlatformAsset));
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -376,7 +387,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
       setPlatformAssets((previous) => replacePlatformAsset(previous, nextAsset));
       closeRenameDialog();
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -402,7 +413,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
         : await enablePlatformImage(apiBaseUrl, session.token, asset.id);
       setPlatformAssets((previous) => replacePlatformAsset(previous, nextAsset));
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -427,7 +438,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
       setPlatformAssets((previous) => previous.filter((item) => item.id !== asset.id));
       closeConfirmDialog();
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -457,7 +468,7 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
       }
       closeConfirmDialog();
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
@@ -631,6 +642,16 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
   const activeTabTitle =
     activeTab === 'platform' ? '平台收录镜像' : activeTab === 'custom' ? '阿里云自定义镜像' : '阿里云公共镜像';
 
+  if (!session.isReady) {
+    return null;
+  }
+
+  if (!session.token) {
+    return null;
+  }
+
+  const isBootstrapLoading = isLoading && platformAssets.length === 0 && !publicScope && !customScope;
+
   return (
     <div className="admin-screen admin-workbench-screen image-center-screen">
       {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
@@ -706,9 +727,9 @@ export function ImageCenterScreen({ apiBaseUrl = 'http://localhost:3001' }: Imag
           </div>
 
           <div className="image-center-rows">
-            {activeTab === 'platform' ? renderPlatformRows(pagedPlatformAssets) : null}
-            {activeTab === 'custom' ? renderScopeRows('custom', pagedCustomSnapshots) : null}
-            {activeTab === 'public' ? renderScopeRows('public', pagedPublicSnapshots) : null}
+            {isBootstrapLoading ? (
+              <div className="template-workbench-empty image-center-empty-state" aria-hidden="true" />
+            ) : activeTab === 'platform' ? renderPlatformRows(pagedPlatformAssets) : activeTab === 'custom' ? renderScopeRows('custom', pagedCustomSnapshots) : renderScopeRows('public', pagedPublicSnapshots)}
           </div>
 
           <div className="image-center-pagination" aria-label={`${activeTabTitle} 分页`}>

@@ -98,7 +98,6 @@ function readConfiguredInstanceType(value: unknown) {
 
 function readResolvedInstanceTypePolicy(node: Extract<TemplateNode, { kind: 'ecs' }>) {
   const fixedInstanceType =
-    readConfiguredInstanceType(node.instanceType) ??
     readConfiguredInstanceType(node.instanceTypeStrategy.instanceType) ??
     resolveFixedInstanceType(node.cpu, node.memory);
 

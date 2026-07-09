@@ -23,6 +23,9 @@ type TemplatePropertyPanelProps = {
   instanceTypeAvailability?: InstanceTypeAvailabilitySnapshot | null;
   linkedSwitchIdsByHostId?: Record<string, string[]>;
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void;
+  readOnly?: boolean;
+  instanceDetailMode?: boolean;
+  runtimeNodeStatus?: string | null;
 };
 
 type EcsTemplateNodeWithPlatformImageAssetId = EcsTemplateNode & {
@@ -326,7 +329,13 @@ function renderHostFields(
   instanceTypeAvailability: InstanceTypeAvailabilitySnapshot | null,
   linkedSwitchIdsByHostId: Record<string, string[]>,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
+  options?: {
+    instanceDetailMode?: boolean;
+    runtimeNodeStatus?: string | null;
+  },
 ) {
+  const instanceDetailMode = options?.instanceDetailMode ?? false;
+  const isLockedByInstanceDetail = instanceDetailMode;
   const selectedNodeWithPlatformImageAsset = selectedNode as EcsTemplateNodeWithPlatformImageAssetId;
   const nicItems = selectedNode.nics ?? [];
   const allSwitchOptions = allNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
@@ -440,6 +449,19 @@ function renderHostFields(
     });
   }
 
+  function buildNodeWithUpdatedCompute(nextPatch: Partial<EcsTemplateNode>) {
+    return {
+      ...selectedNode,
+      ...nextPatch,
+      // ponytail: CPU/内存是规格源，改它们时清掉旧实例规格，避免旧 instanceType 把新规格覆盖掉。
+      instanceType: undefined,
+      instanceTypeStrategy: {
+        ...selectedNode.instanceTypeStrategy,
+        instanceType: undefined,
+      },
+    };
+  }
+
   return (
     <>
       <PropertyGroup
@@ -452,6 +474,7 @@ function renderHostFields(
         <PropertyField label="名称">
           <input
             aria-label="名称"
+            disabled={isLockedByInstanceDetail}
             value={selectedNode.label}
             onChange={(event) =>
               onUpdateNode(selectedNode.id, {
@@ -465,6 +488,7 @@ function renderHostFields(
         <PropertyField label="主机名">
           <input
             aria-label="主机名"
+            disabled={isLockedByInstanceDetail}
             value={selectedNode.hostName ?? ''}
             onChange={(event) =>
               onUpdateNode(selectedNode.id, {
@@ -475,11 +499,15 @@ function renderHostFields(
           />
         </PropertyField>
         <PropertyField label="镜像名" className="template-property-field-full">
-          <TemplateImageCombobox
-            selectedImageAsset={selectedPlatformImageAsset}
-            imageOptions={platformImageOptions}
-            onSelectImageAsset={handleSelectPlatformImageAsset}
-          />
+          {instanceDetailMode ? (
+            <input aria-label="镜像名" disabled value={selectedNode.imageName ?? selectedNode.image ?? ''} />
+          ) : (
+            <TemplateImageCombobox
+              selectedImageAsset={selectedPlatformImageAsset}
+              imageOptions={platformImageOptions}
+              onSelectImageAsset={handleSelectPlatformImageAsset}
+            />
+          )}
         </PropertyField>
         <PropertyField label="CPU">
           <input
@@ -487,10 +515,9 @@ function renderHostFields(
             type="number"
             value={selectedNode.cpu ?? 1}
             onChange={(event) =>
-              onUpdateNode(selectedNode.id, {
-                ...selectedNode,
+              onUpdateNode(selectedNode.id, buildNodeWithUpdatedCompute({
                 cpu: Number(event.target.value) || 1,
-              })
+              }))
             }
           />
         </PropertyField>
@@ -500,23 +527,28 @@ function renderHostFields(
             type="number"
             value={selectedNode.memory ?? 2}
             onChange={(event) =>
-              onUpdateNode(selectedNode.id, {
-                ...selectedNode,
+              onUpdateNode(selectedNode.id, buildNodeWithUpdatedCompute({
                 memory: Number(event.target.value) || 1,
-              })
+              }))
             }
           />
         </PropertyField>
-        <EcsCustomPasswordField
-          nodeId={selectedNode.id}
-          value={selectedNode.customPassword}
-          onChange={(nextValue) =>
-            onUpdateNode(selectedNode.id, {
-              ...selectedNode,
-              customPassword: nextValue,
-            })
-          }
-        />
+        {instanceDetailMode ? (
+          <PropertyField label="自定义密码" hint="实例详情页不支持实时修改自定义密码。">
+            <input aria-label="自定义密码" disabled value={selectedNode.customPassword ?? ''} />
+          </PropertyField>
+        ) : (
+          <EcsCustomPasswordField
+            nodeId={selectedNode.id}
+            value={selectedNode.customPassword}
+            onChange={(nextValue) =>
+              onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                customPassword: nextValue,
+              })
+            }
+          />
+        )}
         {instanceTypeAvailability?.warning ? (
           <div className="template-property-warning-note" role="status">
             {instanceTypeAvailability.warning}
@@ -527,7 +559,7 @@ function renderHostFields(
       <PropertyGroup
         title="网卡配置"
         action={
-          <button type="button" className="template-property-inline-button" onClick={handleAddNic}>
+          <button type="button" className="template-property-inline-button" disabled={instanceDetailMode} onClick={handleAddNic}>
             添加网卡
           </button>
         }
@@ -560,7 +592,7 @@ function renderHostFields(
                 <button
                   type="button"
                   className="template-property-inline-button is-danger"
-                  disabled={nicItems.length <= 1}
+                  disabled={instanceDetailMode || nicItems.length <= 1}
                   aria-label={`删除网卡 ${index + 1}`}
                   onClick={() => handleDeleteNic(nic.id)}
                 >
@@ -572,6 +604,7 @@ function renderHostFields(
               <PropertyField label="交换机标识" className="template-property-field-full">
                 <select
                   aria-label={`交换机标识 ${index + 1}`}
+                  disabled={instanceDetailMode}
                   value={nic.switchId}
                   onChange={(event) => {
                     const nextSwitch = switchById.get(event.target.value) ?? null;
@@ -600,7 +633,7 @@ function renderHostFields(
               <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
                 <input
                   aria-label={`私网 IP ${index + 1}`}
-                  disabled={!selectedSwitch}
+                  disabled={instanceDetailMode || !selectedSwitch}
                   value={nic.privateIp}
                   onChange={(event) => {
                     const nextValue = event.target.value.trim();
@@ -832,6 +865,7 @@ function renderHostFields(
         <div className="template-property-field">
           <textarea
             aria-label="初始化脚本"
+            disabled={instanceDetailMode}
             rows={4}
             value={selectedNode.initScript}
             onChange={(event) =>
@@ -1344,6 +1378,10 @@ function renderNodeGroups(
   instanceTypeAvailability: InstanceTypeAvailabilitySnapshot | null,
   linkedSwitchIdsByHostId: Record<string, string[]>,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
+  options?: {
+    instanceDetailMode?: boolean;
+    runtimeNodeStatus?: string | null;
+  },
 ) {
   switch (selectedNode.kind) {
     case 'ecs':
@@ -1354,6 +1392,7 @@ function renderNodeGroups(
         instanceTypeAvailability,
         linkedSwitchIdsByHostId,
         onUpdateNode,
+        options,
       );
     case 'switch':
       return renderSwitchFields(selectedNode, allNodes, onUpdateNode);
@@ -1371,6 +1410,9 @@ export function TemplatePropertyPanel({
   instanceTypeAvailability = null,
   linkedSwitchIdsByHostId = {},
   onUpdateNode,
+  readOnly = false,
+  instanceDetailMode = false,
+  runtimeNodeStatus = null,
 }: TemplatePropertyPanelProps) {
   const shellRef = useRef<HTMLDivElement | null>(null);
 
@@ -1388,16 +1430,22 @@ export function TemplatePropertyPanel({
 
       <div ref={shellRef} className="template-property-shell">
         {selectedNode ? (
-          <div className="template-property-stack">
-            {renderNodeGroups(
-              selectedNode,
-              allNodes,
+          <fieldset className="template-property-readonly-shell" disabled={readOnly}>
+            <div className="template-property-stack">
+              {renderNodeGroups(
+                selectedNode,
+                allNodes,
               platformImageAssets,
               instanceTypeAvailability,
               linkedSwitchIdsByHostId,
               onUpdateNode,
+              {
+                instanceDetailMode,
+                runtimeNodeStatus,
+              },
             )}
-          </div>
+            </div>
+          </fieldset>
         ) : (
           <div className="template-property-placeholder">
             <strong>选择节点后配置</strong>

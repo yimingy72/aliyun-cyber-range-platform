@@ -244,7 +244,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
     ]);
   });
 
-  it('prefers a persisted top-level instanceType over the cpu-memory fixed catalog mapping', () => {
+  it('ignores a stale persisted top-level instanceType and recomputes from the cpu-memory fixed catalog mapping', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {
         name: '综合靶场',
@@ -320,7 +320,7 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
       expect.objectContaining({
         key: 'ecs-persisted-instance-type-policy',
         mode: 'fixed',
-        instanceType: 'ecs.persisted.custom',
+        instanceType: 'ecs.e-c1m1.large',
       }),
     ]);
   });

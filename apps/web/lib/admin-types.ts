@@ -191,6 +191,7 @@ export type RangeInstance = {
   name?: string | null;
   createdBy?: string | null;
   defaultInstancePassword?: string | null;
+  nodeStatuses?: Record<string, string> | null;
   status: string;
   templateId?: string | null;
   templateNameSnapshot?: string | null;
@@ -327,6 +328,9 @@ export type PlatformImageAsset = {
   sourceSnapshotId?: string | null;
   imageId: string;
   displayName: string;
+  defaultHostName?: string | null;
+  defaultPassword?: string | null;
+  description?: string | null;
   enabled: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -339,6 +343,19 @@ export type ImageCatalogScopePayload = {
 
 export type PlatformImageAssetListPayload = {
   items: PlatformImageAsset[];
+};
+
+export type RangeInstanceNodeActionResult = {
+  status: 'accepted';
+  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
+  vncUrl?: string | null;
+  webTerminalUrl?: string | null;
+  imageId?: string | null;
+  imageReady?: boolean;
+  defaultHostName?: string | null;
+  defaultPassword?: string | null;
+  description?: string | null;
+  platformImageAsset?: PlatformImageAsset | null;
 };
 
 export type CollectImageCatalogItemInput = {

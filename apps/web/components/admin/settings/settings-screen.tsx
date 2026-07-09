@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { AdminApiError, fetchCloudConfig, saveCloudConfig } from '../../../lib/admin-api';
+import { fetchCloudConfig, saveCloudConfig } from '../../../lib/admin-api';
+import { isUnauthorizedAdminError } from '../../../lib/admin-screen';
 import type { CloudConfigSnapshot } from '../../../lib/admin-types';
 import { useAdminSession } from '../use-admin-session';
 import { CloudConfigPanel } from './cloud-config-panel';
@@ -19,10 +20,6 @@ const emptyCloudConfig: CloudConfigSnapshot = {
   accessKeyId: '',
   accessKeySecret: '',
 };
-
-function isUnauthorizedError(error: unknown) {
-  return error instanceof AdminApiError && error.status === 401;
-}
 
 export function SettingsScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
@@ -72,7 +69,7 @@ export function SettingsScreen({
           return;
         }
 
-        if (isUnauthorizedError(error)) {
+        if (isUnauthorizedAdminError(error)) {
           logout();
           router.replace('/admin/login');
           return;
@@ -116,7 +113,7 @@ export function SettingsScreen({
       setCloudConfig(savedConfig);
       setCloudConfigSaveSuccessMessage('云配置已保存。');
     } catch (error) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         logout();
         router.replace('/admin/login');
         return;

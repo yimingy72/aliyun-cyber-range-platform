@@ -227,6 +227,74 @@ describe('TemplatePropertyPanel', () => {
     ).toBeTruthy();
   });
 
+  it('clears stale fixed instance type when cpu or memory changes', () => {
+    const onUpdateNode = vi.fn();
+    const nodes: TemplateNode[] = [
+      {
+        id: 'ecs-1',
+        kind: 'ecs',
+        label: 'ECS 1',
+        position: { x: 620, y: 180 },
+        instanceName: 'ECS 1',
+        hostName: 'ecs-1',
+        zoneKey: 'core',
+        role: 'host',
+        privateIp: '',
+        exposePublic: false,
+        image: 'ubuntu_22_04_x64_20G_alibase',
+        imageName: 'ubuntu_22_04_x64_20G_alibase',
+        imageId: 'ubuntu_22_04_x64_20G_alibase',
+        cpu: 2,
+        memory: 2,
+        instanceType: 'ecs.e-c1m1.large',
+        description: '',
+        bootPriority: 1,
+        bootWaitSeconds: 0,
+        dnatMappings: [],
+        networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+        portGroups: [],
+        nics: [
+          {
+            id: 'ecs-1-nic-1',
+            switchId: '',
+            privateIp: '',
+            secondaryIps: [],
+            securityGroupRules: [],
+          },
+        ],
+        initScript: '',
+        imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+        instanceTypeStrategy: { mode: 'fixed', instanceType: 'ecs.e-c1m1.large' },
+      },
+    ];
+
+    render(
+      <TemplatePropertyPanel
+        selectedNode={nodes[0] ?? null}
+        allNodes={nodes}
+        linkedSwitchIdsByHostId={{}}
+        platformImageAssets={[]}
+        onUpdateNode={onUpdateNode}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('内存'), {
+      target: { value: '4' },
+    });
+
+    expect(onUpdateNode).toHaveBeenLastCalledWith(
+      'ecs-1',
+      expect.objectContaining({
+        memory: 4,
+        instanceType: undefined,
+        instanceTypeStrategy: expect.objectContaining({
+          mode: 'fixed',
+          instanceType: undefined,
+        }),
+      }),
+    );
+  });
+
   it('resets custom password visibility back to hidden when switching to another ecs node', () => {
     const nodes: TemplateNode[] = [
       {

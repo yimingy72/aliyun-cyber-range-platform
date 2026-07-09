@@ -48,6 +48,11 @@ const SCENARIO_GRAPH_SCHEMA_VERSION = '2.0.0';
 const DEFAULT_SWITCH_CIDRS = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'] as const;
 const DRAFT_CACHE_PREFIX = 'template-editor:draft-cache';
 
+type DraftCachePayload = {
+  topologyGraph: DraftTopologyGraph;
+  persistedGraphSignature: string;
+};
+
 function applyFixedInstanceType(
   node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'instanceType' | 'instanceTypeStrategy'>,
   options?: { preserveExisting?: boolean },
@@ -114,7 +119,10 @@ function readDraftCacheKey(template: RangeTemplate | null | undefined, fallbackT
   return `${DRAFT_CACHE_PREFIX}:${resolvedTemplateId}:${draftVersionId}`;
 }
 
-function readTopologyGraphFromCache(cacheKey: string | null): DraftTopologyGraph | null {
+function readTopologyGraphFromCache(
+  cacheKey: string | null,
+  currentPersistedGraphSignature: string,
+): DraftTopologyGraph | null {
   if (!cacheKey || typeof window === 'undefined' || typeof window.localStorage?.getItem !== 'function') {
     return null;
   }
@@ -126,36 +134,66 @@ function readTopologyGraphFromCache(cacheKey: string | null): DraftTopologyGraph
       return null;
     }
 
-    const parsedValue = JSON.parse(rawValue) as Partial<DraftTopologyGraph> | null;
+    const parsedValue = JSON.parse(rawValue) as
+      | DraftCachePayload
+      | Partial<DraftTopologyGraph>
+      | null;
 
-    if (
-      !parsedValue ||
-      typeof parsedValue !== 'object' ||
-      !Array.isArray(parsedValue.nodes) ||
-      !Array.isArray(parsedValue.edges)
-    ) {
+    if (!parsedValue || typeof parsedValue !== 'object') {
       return null;
     }
 
-    return {
-      schemaVersion:
-        typeof parsedValue.schemaVersion === 'string'
-          ? parsedValue.schemaVersion
-          : SCENARIO_GRAPH_SCHEMA_VERSION,
-      nodes: parsedValue.nodes as DraftTopologyGraph['nodes'],
-      edges: parsedValue.edges as DraftTopologyGraph['edges'],
-    };
+    if ('topologyGraph' in parsedValue) {
+      const topologyGraph =
+        parsedValue.topologyGraph && typeof parsedValue.topologyGraph === 'object'
+          ? (parsedValue.topologyGraph as Partial<DraftTopologyGraph>)
+          : null;
+
+      if (
+        !topologyGraph ||
+        !Array.isArray(topologyGraph.nodes) ||
+        !Array.isArray(topologyGraph.edges) ||
+        parsedValue.persistedGraphSignature !== currentPersistedGraphSignature
+      ) {
+        window.localStorage.removeItem(cacheKey);
+        return null;
+      }
+
+      return {
+        schemaVersion:
+          typeof topologyGraph.schemaVersion === 'string'
+            ? topologyGraph.schemaVersion
+            : SCENARIO_GRAPH_SCHEMA_VERSION,
+        nodes: topologyGraph.nodes as DraftTopologyGraph['nodes'],
+        edges: topologyGraph.edges as DraftTopologyGraph['edges'],
+      };
+    }
+
+    // ponytail: invalidate legacy cache payloads after the cache format upgrade so stale local graphs
+    // cannot override newer server-side template changes.
+    window.localStorage.removeItem(cacheKey);
+    return null;
   } catch {
     return null;
   }
 }
 
-function writeTopologyGraphToCache(cacheKey: string | null, topologyGraph: DraftTopologyGraph) {
+function writeTopologyGraphToCache(
+  cacheKey: string | null,
+  topologyGraph: DraftTopologyGraph,
+  persistedGraphSignature: string,
+) {
   if (!cacheKey || typeof window === 'undefined' || typeof window.localStorage?.setItem !== 'function') {
     return;
   }
 
-  window.localStorage.setItem(cacheKey, JSON.stringify(topologyGraph));
+  window.localStorage.setItem(
+    cacheKey,
+    JSON.stringify({
+      topologyGraph,
+      persistedGraphSignature,
+    } satisfies DraftCachePayload),
+  );
 }
 
 function removeTopologyGraphCache(cacheKey: string | null) {
@@ -172,14 +210,34 @@ function readTemplateTopologyGraph(template: RangeTemplate | null) {
 }
 
 function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTemplateId?: string) {
+  const persistedTopologyGraph = readTemplateTopologyGraph(template);
+  const currentPersistedGraphSignature = readGraphSignature(
+    persistedTopologyGraph && typeof persistedTopologyGraph === 'object' && Array.isArray((persistedTopologyGraph as { nodes?: unknown }).nodes)
+      ? readNodesFromRawTopologyGraph(persistedTopologyGraph)
+      : [],
+    persistedTopologyGraph && typeof persistedTopologyGraph === 'object' && Array.isArray((persistedTopologyGraph as { edges?: unknown }).edges)
+      ? readEdgesFromRawTopologyGraph(persistedTopologyGraph)
+      : [],
+  );
+
   return (
-    readTopologyGraphFromCache(readDraftCacheKey(template, fallbackTemplateId)) ??
-    readTemplateTopologyGraph(template)
+    readTopologyGraphFromCache(readDraftCacheKey(template, fallbackTemplateId), currentPersistedGraphSignature) ??
+    persistedTopologyGraph
   );
 }
 
 function readGraphSignature(nodes: TemplateNode[], edges: TemplateEdge[]) {
   return JSON.stringify({ nodes, edges });
+}
+
+function readNodesFromRawTopologyGraph(topologyGraph: Record<string, unknown>) {
+  const rawNodes = (topologyGraph as { nodes?: unknown }).nodes;
+  return Array.isArray(rawNodes) ? (rawNodes as TemplateNode[]) : [];
+}
+
+function readEdgesFromRawTopologyGraph(topologyGraph: Record<string, unknown>) {
+  const rawEdges = (topologyGraph as { edges?: unknown }).edges;
+  return Array.isArray(rawEdges) ? (rawEdges as TemplateEdge[]) : [];
 }
 
 function parseIpv4ToNumber(value: string) {
@@ -1248,7 +1306,7 @@ function buildDraftUpdatePayload(
       schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
       nodes,
       edges,
-    });
+    }, lastPersistedGraphRef.current);
   }, [draftCacheKey, edges, nodes, template]);
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));

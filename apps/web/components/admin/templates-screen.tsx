@@ -15,6 +15,7 @@ import {
   unpublishRangeTemplate,
   updateRangeTemplate,
 } from '../../lib/admin-api';
+import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import { createDefaultEnterpriseTopologySpec, DEFAULT_TEMPLATE_MODULE_PATH } from '../../lib/admin-template-defaults';
 import type {
   AdminBootstrapData,
@@ -77,10 +78,6 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
   name: '',
   expiresAt: '',
 };
-
-function isUnauthorizedError(error: unknown) {
-  return error instanceof AdminApiError && error.status === 401;
-}
 
 function readNodeCount(scenario: Scenario) {
   const graph = scenario.currentDraftVersion?.topologyGraph;
@@ -212,7 +209,7 @@ export function TemplatesScreen({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [menuTemplateId, setMenuTemplateId] = useState<string | null>(null);
@@ -259,7 +256,7 @@ export function TemplatesScreen({
           return;
         }
 
-        if (isUnauthorizedError(error)) {
+        if (isUnauthorizedAdminError(error)) {
           session.logout();
           router.replace('/admin/login');
           return;
@@ -326,7 +323,7 @@ export function TemplatesScreen({
   }
 
   function handleProtectedActionError(error: unknown, fallbackMessage: string): never {
-    if (isUnauthorizedError(error)) {
+    if (isUnauthorizedAdminError(error)) {
       session.logout();
       router.replace('/admin/login');
       throw error;
@@ -535,7 +532,7 @@ export function TemplatesScreen({
       closeConfirmDialog();
       setActionSuccessMessage('靶场模板已删除。');
     } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
         throw error;
@@ -637,9 +634,7 @@ export function TemplatesScreen({
     );
   }
 
-  if (isLoading && !snapshot) {
-    return null;
-  }
+  const isBootstrapLoading = isLoading && !snapshot;
 
   return (
     <div className="admin-screen template-workbench-screen" onClickCapture={handleScreenClickCapture}>
@@ -710,7 +705,9 @@ export function TemplatesScreen({
             </div>
           </div>
 
-          {filteredTemplates.length ? (
+          {isBootstrapLoading ? (
+            <div className="template-workbench-empty" aria-hidden="true" />
+          ) : filteredTemplates.length ? (
             <div className="template-workbench-rows">
               {filteredTemplates.map((template) => {
                 const menuOpen = menuTemplateId === template.id;

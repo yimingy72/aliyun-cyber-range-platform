@@ -69,6 +69,11 @@ export class RangesController {
     return this.rangeInstancesService.applyDraft(id, body.triggeredBy);
   }
 
+  @Post(':id/sync-template')
+  syncTemplate(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.syncTemplate(id, body.triggeredBy);
+  }
+
   @Post(':id/nodes/:nodeId/actions/:action')
   runNodeAction(
     @Param('id') id: string,

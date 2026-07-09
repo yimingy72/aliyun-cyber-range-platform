@@ -1,11 +1,14 @@
 import React from 'react';
 import { useState } from 'react';
 
+type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
+
 type RangeInstanceWorkbenchNode = {
   id: string;
   label: string;
   kind: string;
   statusLabel?: string;
+  cloudStatus?: string;
   ipAddress?: string;
   specLabel?: string;
   account?: string;
@@ -18,14 +21,16 @@ type RangeInstanceWorkbenchNode = {
 
 type RangeInstanceNodeDirectoryProps = {
   nodes: RangeInstanceWorkbenchNode[];
-  onNodeAction?: (nodeId: string, action: 'stop' | 'reboot' | 'open-vnc' | 'pack-image') => void;
+  onNodeAction?: (nodeId: string, action: NodeActionName) => void;
   allowActions?: boolean;
+  pendingAction?: { nodeId: string; action: NodeActionName } | null;
 };
 
 export function RangeInstanceNodeDirectory({
   nodes,
   onNodeAction,
   allowActions = true,
+  pendingAction = null,
 }: RangeInstanceNodeDirectoryProps) {
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
   const hostNodes = nodes.filter((node) => node.kind === 'ecs');
@@ -46,6 +51,9 @@ export function RangeInstanceNodeDirectory({
       <div className="range-instance-directory-body">
         {hostNodes.map((node) => {
           const menuOpen = expandedNodeId === node.id;
+          const isPendingNode = pendingAction?.nodeId === node.id;
+          const pendingActionName = isPendingNode ? pendingAction.action : null;
+          const isStopped = node.cloudStatus === 'Stopped';
 
           return (
             <div key={node.id} className={`range-instance-directory-row${menuOpen ? ' is-menu-open' : ''}`}>
@@ -78,23 +86,10 @@ export function RangeInstanceNodeDirectory({
                     <button
                       type="button"
                       className="template-workbench-secondary-action"
-                      onClick={() => onNodeAction?.(node.id, 'stop')}
-                    >
-                      关机
-                    </button>
-                    <button
-                      type="button"
-                      className="template-workbench-secondary-action"
-                      onClick={() => onNodeAction?.(node.id, 'reboot')}
-                    >
-                      重启
-                    </button>
-                    <button
-                      type="button"
-                      className="template-workbench-secondary-action"
+                      disabled={isPendingNode || isStopped}
                       onClick={() => onNodeAction?.(node.id, 'open-vnc')}
                     >
-                      打开VNC
+                      {pendingActionName === 'open-vnc' ? '处理中...' : '打开VNC'}
                     </button>
 
                     <div className="template-workbench-row-menu range-instance-directory-row-menu">
@@ -102,14 +97,53 @@ export function RangeInstanceNodeDirectory({
                         type="button"
                         className="template-workbench-secondary-action"
                         aria-expanded={menuOpen}
+                        disabled={isPendingNode}
                         onClick={() => setExpandedNodeId((current) => (current === node.id ? null : node.id))}
                       >
-                        更多
+                        更多操作
                       </button>
 
                       {menuOpen ? (
                         <div className="template-workbench-action-menu range-instance-directory-action-menu">
-                          <button type="button" onClick={() => setExpandedNodeId(null)}>
+                          {isStopped ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExpandedNodeId(null);
+                                onNodeAction?.(node.id, 'start');
+                              }}
+                            >
+                              开机
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExpandedNodeId(null);
+                                  onNodeAction?.(node.id, 'stop');
+                                }}
+                              >
+                                关机
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExpandedNodeId(null);
+                                  onNodeAction?.(node.id, 'reboot');
+                                }}
+                              >
+                                重启
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedNodeId(null);
+                              onNodeAction?.(node.id, 'reset');
+                            }}
+                          >
                             重置
                           </button>
                           <button

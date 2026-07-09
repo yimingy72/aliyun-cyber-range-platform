@@ -1721,6 +1721,17 @@ body {
   overflow-x: hidden;
 }
 
+.template-property-readonly-shell {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.template-property-readonly-shell:disabled {
+  opacity: 1;
+}
+
 .template-property-node-header {
   display: grid;
   gap: 5px;
@@ -3319,58 +3330,32 @@ body {
   width: 148px;
 }
 
-.range-instance-topology-workbench {
-  min-height: 600px;
-  padding: 8px;
-  border-radius: 18px;
-  background: #fff;
-  border: 1px solid #e7ecf2;
-  box-shadow: 0 10px 26px rgba(19, 35, 60, 0.04);
-}
-
-.range-instance-topology-legend {
-  display: inline-flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 12px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #f6f9fc;
-  border: 1px solid #e8edf3;
-  color: #5f6f87;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.range-instance-topology-canvas {
-  position: relative;
-  min-height: 560px;
-  overflow: hidden;
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at top left, rgba(31, 95, 191, 0.07), transparent 26%),
-    linear-gradient(180deg, #f8fbff 0%, #f2f6fb 100%);
-  border: 1px solid #edf1f5;
-}
-
 .range-instance-workbench-actions {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
-  padding: 2px 0 0;
 }
 
 .range-instance-workbench-actions button {
-  min-height: 40px;
-  padding: 0 16px;
+  min-height: 32px;
+  padding: 0 12px;
   border-radius: 999px;
-  border: 1px solid rgba(24, 50, 48, 0.12);
-  background: rgba(255, 255, 255, 0.78);
-  color: #183230;
+  border: 1px solid #d5e1f0;
+  background: #f8fbff;
+  color: #234774;
+  font-size: var(--ui-font-button);
+  font-weight: 600;
 }
 
 .range-instance-workbench-actions button:disabled {
   opacity: 0.5;
+}
+
+.range-instance-detail-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
 }
 
 .range-instance-detail-content {
@@ -3385,134 +3370,31 @@ body {
 }
 
 .range-instance-detail-content.is-topology {
-  grid-template-columns: minmax(0, 1.24fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 324px;
+  gap: 8px;
+  align-items: stretch;
 }
 
 .range-instance-detail-main {
   min-width: 0;
 }
 
-.range-instance-property-panel {
+.range-instance-topology-main {
   display: grid;
-  gap: 14px;
-  padding: 14px;
-  border-radius: 18px;
-  background: #fff;
-  border: 1px solid #e7ecf2;
-  box-shadow: 0 10px 26px rgba(19, 35, 60, 0.04);
+  gap: 8px;
+  align-content: start;
+  min-height: 0;
 }
 
-.range-instance-property-section {
-  display: grid;
-  gap: 12px;
+.range-instance-topology-main .template-canvas-panel {
+  min-height: 620px;
+  height: 620px;
 }
 
-.range-instance-property-section strong {
-  color: #22314d;
-  font-size: 14px;
-}
-
-.range-instance-property-inline {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
-}
-
-.range-instance-property-kv {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #f7f9fc;
-  border: 1px solid #edf1f5;
-}
-
-.range-instance-property-kv span {
-  color: #6d7c94;
-  font-size: 12px;
-}
-
-.range-instance-property-kv strong {
-  color: #22314d;
-  font-size: 13px;
-}
-
-.range-instance-topology-lines {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.range-instance-topology-lines line {
-  stroke: #8aa9df;
-  stroke-width: 2;
-  stroke-linecap: round;
-}
-
-.range-instance-topology-node {
-  position: absolute;
-  width: 196px;
-  min-height: 60px;
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #d9e4f4;
-  box-shadow: 0 12px 28px rgba(27, 46, 79, 0.08);
-  text-align: left;
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  align-items: center;
-  justify-items: stretch;
-  gap: 10px;
-}
-
-.range-instance-topology-node strong {
-  font-size: 14px;
-  color: #22314d;
-}
-
-.range-instance-topology-node-copy {
-  display: grid;
-  gap: 2px;
-}
-
-.range-instance-topology-node span {
-  color: #667890;
-  font-size: 12px;
-}
-
-.range-instance-topology-node-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #dbe8ff, #eef5ff);
-  border: 1px solid #bfd2f4;
-  box-shadow: 0 8px 18px rgba(41, 87, 163, 0.12);
-}
-
-.range-instance-topology-node.kind-ecs .range-instance-topology-node-icon {
-  background: linear-gradient(180deg, #d9ebff, #edf5ff);
-}
-
-.range-instance-topology-node.kind-switch .range-instance-topology-node-icon {
-  background: linear-gradient(180deg, #e4ecff, #f5f8ff);
-}
-
-.range-instance-topology-node.kind-router .range-instance-topology-node-icon {
-  background: linear-gradient(180deg, #eef3ff, #fafcff);
-}
-
-.range-instance-topology-node.is-selected {
-  transform: scale(1.03);
-}
-
-.range-instance-topology-node.is-selected .range-instance-topology-node-icon {
-  border-color: #7da3e7;
-  box-shadow: 0 12px 24px rgba(31, 95, 191, 0.22);
+.range-instance-topology-main .template-canvas-placeholder,
+.range-instance-topology-main .template-canvas-board {
+  min-height: 560px;
+  height: 560px !important;
 }
 
 @media (max-width: 980px) {

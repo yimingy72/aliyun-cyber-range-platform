@@ -5,11 +5,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
-  AdminApiError,
   deleteRangeInstance,
   fetchAdminBootstrap,
   triggerRangeAction,
 } from '../../lib/admin-api';
+import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   AdminBootstrapData,
   ProvisionJob,
@@ -19,7 +19,6 @@ import { useAdminSession } from './use-admin-session';
 
 type RangeInstancesScreenProps = {
   apiBaseUrl?: string;
-  pollIntervalMs?: number;
 };
 
 type ExtendedRangeInstance = RangeInstance & {
@@ -32,10 +31,6 @@ type ExtendedProvisionJob = ProvisionJob & {
 };
 
 type RangeListMode = 'active' | 'history';
-
-function isUnauthorizedError(error: unknown) {
-  return error instanceof AdminApiError && error.status === 401;
-}
 
 function getStatusLabel(status: string) {
   if (status === 'draft') {
@@ -89,30 +84,6 @@ function getStatusLabel(status: string) {
   return status;
 }
 
-function formatDateTime(value?: string | null) {
-  if (!value) {
-    return '暂无';
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-    .format(date)
-    .replace(/\//g, '-');
-}
-
 function getInstanceTemplateLabel(
   instance: ExtendedRangeInstance,
   template: AdminBootstrapData['rangeTemplates'][number] | undefined,
@@ -159,7 +130,7 @@ function getInstanceDisplayName(instance: ExtendedRangeInstance) {
 }
 
 function getInstanceCreatedAt(instance: ExtendedRangeInstance, recentJob?: ExtendedProvisionJob | null) {
-  return formatDateTime(instance.createdAt ?? recentJob?.startedAt ?? null);
+  return formatAdminDateTime(instance.createdAt ?? recentJob?.startedAt ?? null);
 }
 
 function getInstanceActionLabel(instance: ExtendedRangeInstance) {
@@ -179,7 +150,7 @@ function getInstanceActionLabel(instance: ExtendedRangeInstance) {
 }
 
 function getEndedAtLabel(job?: ExtendedProvisionJob | null) {
-  return formatDateTime(job?.finishedAt ?? job?.startedAt ?? null);
+  return formatAdminDateTime(job?.finishedAt ?? job?.startedAt ?? null);
 }
 
 function getDurationLabel(start?: string | null, end?: string | null) {
@@ -213,7 +184,6 @@ function getDurationLabel(start?: string | null, end?: string | null) {
 
 export function RangeInstancesScreen({
   apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
-  pollIntervalMs: _pollIntervalMs = 2500,
 }: RangeInstancesScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
@@ -221,7 +191,7 @@ export function RangeInstancesScreen({
   const [listMode, setListMode] = useState<RangeListMode>('active');
   const [searchName, setSearchName] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
   const [removedInstanceIds, setRemovedInstanceIds] = useState<string[]>([]);
 
@@ -257,7 +227,7 @@ export function RangeInstancesScreen({
           return;
         }
 
-        if (isUnauthorizedError(error)) {
+        if (isUnauthorizedAdminError(error)) {
           session.logout();
           router.replace('/admin/login');
           return;
@@ -376,7 +346,7 @@ export function RangeInstancesScreen({
     });
   }
 
-  async function handleViewDetail(instanceId: string) {
+  function handleViewDetail(instanceId: string) {
     router.push(`/admin/ranges/${instanceId}`);
   }
 
@@ -399,7 +369,7 @@ export function RangeInstancesScreen({
       });
       upsertJobInSnapshot(job);
     } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
         return;
@@ -424,7 +394,7 @@ export function RangeInstancesScreen({
       setRemovedInstanceIds((current) => [...current, instance.id]);
       removeInstanceFromSnapshot(instance.id);
     } catch (error: unknown) {
-      if (isUnauthorizedError(error)) {
+      if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
         return;
@@ -450,6 +420,8 @@ export function RangeInstancesScreen({
       </main>
     );
   }
+
+  const isBootstrapLoading = isLoading && !snapshot;
 
   return (
     <div className="admin-screen admin-workbench-screen">
@@ -505,7 +477,9 @@ export function RangeInstancesScreen({
             </div>
           )}
 
-          {visibleListInstances.length ? (
+          {isBootstrapLoading ? (
+            <div className="admin-workbench-empty" aria-hidden="true" />
+          ) : visibleListInstances.length ? (
             listMode === 'history' ? (
               <div className="range-history-rows">
                 {filteredHistoryInstances.map((instance) => {
@@ -524,7 +498,7 @@ export function RangeInstancesScreen({
                       </div>
 
                       <div className="range-history-time">
-                        <span>{formatDateTime(instance.createdAt)}</span>
+                        <span>{formatAdminDateTime(instance.createdAt)}</span>
                       </div>
 
                       <div className="range-history-time">

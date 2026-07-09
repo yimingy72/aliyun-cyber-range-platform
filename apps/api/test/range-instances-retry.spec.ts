@@ -18,6 +18,11 @@ describe('RangeInstancesService retry flow', () => {
 
     const service = new RangeInstancesService(
       repository,
+      {
+        update: async () => {
+          throw new Error('not used in retry test');
+        },
+      } as never,
       cidrPoolService as never,
       provisioningWorkerService as never,
     );

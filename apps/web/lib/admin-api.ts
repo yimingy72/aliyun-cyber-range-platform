@@ -7,6 +7,7 @@ import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
   PlatformImageAssetListPayload,
+  RangeInstanceNodeActionResult,
   ProvisionJob,
   ProvisionJobStep,
   RangeInstanceCreateInput,
@@ -125,12 +126,22 @@ export async function applyRangeInstanceDraft(apiBaseUrl: string, token: string,
   return readJson<ProvisionJob>(response);
 }
 
+export async function syncRangeInstanceTemplate(apiBaseUrl: string, token: string, id: string, triggeredBy: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/sync-template`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify({ triggeredBy }),
+  });
+
+  return readJson<Scenario>(response);
+}
+
 export async function runRangeInstanceNodeAction(
   apiBaseUrl: string,
   token: string,
   rangeInstanceId: string,
   nodeId: string,
-  action: 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
   payload: Record<string, string>,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${rangeInstanceId}/nodes/${nodeId}/actions/${action}`, {
@@ -139,7 +150,7 @@ export async function runRangeInstanceNodeAction(
     body: JSON.stringify(payload),
   });
 
-  return readJson<Record<string, unknown>>(response);
+  return readJson<RangeInstanceNodeActionResult>(response);
 }
 
 export async function createRangeInstance(

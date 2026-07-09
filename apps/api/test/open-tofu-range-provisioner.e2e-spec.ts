@@ -189,6 +189,192 @@ describe('OpenTofuRangeProvisioner', () => {
     expect(imageResolver).not.toHaveBeenCalled();
   });
 
+  it('preserves the existing workspace state during update-style apply runs', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-update-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const workspaceDir = path.join(workspacesRootDir, 'range-instance-update');
+    const sentinelPath = path.join(workspaceDir, 'terraform.tfstate');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(sentinelPath, 'sentinel-state', 'utf8');
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.92.10.10', ssh: null } },
+        resource_summary: { value: { vpc_id: 'vpc-update' } },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        OPENTOFU_INSTANCE_TYPE: 'ecs.e-c1m1.large',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-update',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      preserveWorkspaceState: true,
+      topologySpec: {
+        vpcCidr: '10.92.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.92.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.92.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+
+    await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('sentinel-state');
+  });
+
+  it('prefers an explicit fixed instance type policy over stale cpu-memory derived candidates', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-fixed-policy-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.93.10.10', ssh: null } },
+        resource_summary: { value: { vpc_id: 'vpc-fixed-policy' } },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      enableZoneScheduling: false,
+      availableImageIdResolver: jest.fn().mockResolvedValue('ubuntu_24_04_x64_20G_alibase_20260615.vhd'),
+      env: {
+        ALICLOUD_REGION: 'cn-hangzhou',
+        ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
+        ALICLOUD_ACCESS_KEY: 'test-ak',
+        ALICLOUD_SECRET_KEY: 'test-sk',
+        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-fixed-policy',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      topologySpec: {
+        vpcCidr: '10.93.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.93.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.93.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        topology: {
+          vpcCidr: '10.93.0.0/16',
+          entryHostKey: 'ecs-1',
+        },
+        networkZones: [{ key: 'dmz', name: 'DMZ', cidr: '10.93.10.0/24', purpose: 'public-entry', isPublicEntry: true }],
+        hosts: [{ key: 'ecs-1', name: 'ECS 1', zoneKey: 'dmz', role: 'entry', primaryPrivateIp: '10.93.10.10', exposePublic: true, instanceTypePolicyKey: 'ecs-1-instance-type-policy' }],
+        runtimeSelections: {
+          instanceTypePolicies: {
+            'ecs-1-instance-type-policy': {
+              key: 'ecs-1-instance-type-policy',
+              mode: 'fixed',
+              instanceType: 'ecs.e-c1m2.large',
+            },
+          },
+        },
+      },
+      compiledSpec: {
+        schemaVersion: '1.0.0',
+        resources: [
+          {
+            id: 'ecs-1',
+            type: 'host',
+            provider: 'alibaba_cloud',
+            config: {
+              cpu: 2,
+              memory: 2,
+              instanceType: 'ecs.e-c1m1.large',
+            },
+          },
+        ],
+      },
+    });
+
+    const varsFilePath = path.join(workspacesRootDir, 'range-instance-fixed-policy', 'range.auto.tfvars.json');
+    const varsPayload = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
+
+    expect(varsPayload.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'ecs-1',
+          instance_type: 'ecs.e-c1m2.large',
+        }),
+      ]),
+    );
+  });
+
   it('prepares a dedicated workspace, writes variables, and runs the OpenTofu lifecycle', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
@@ -1518,7 +1704,7 @@ describe('OpenTofuRangeProvisioner', () => {
     ]);
   });
 
-  it('prefers cpu-memory derived fixed instance types over stale persisted host instanceType values', async () => {
+  it('prefers an explicit fixed instance type over stale cpu-memory derived candidates', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-stale-host-instance-type-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
@@ -1703,7 +1889,7 @@ describe('OpenTofuRangeProvisioner', () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: 'ecs-1',
-          instance_type: 'ecs.e-c1m1.large',
+          instance_type: 'ecs.u1-c1m2.large',
         }),
       ]),
     );
