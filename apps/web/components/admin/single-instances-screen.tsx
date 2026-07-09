@@ -983,7 +983,9 @@ export function SingleInstancesScreen({
                               {isHistoryGroup ? null : <div className="single-instance-batch-child-action-head">操作</div>}
                             </div>
                             {group.instances.map((instance) => {
-                              const actions = getAvailableActions(instance.status).filter((action) => action !== 'pack-image');
+                              const actions = getAvailableActions(instance.status).filter(
+                                (action) => action !== 'pack-image' || group.batch.quantity <= 1,
+                              );
                               const isActionPending = pendingActionInstanceId === instance.id;
 
                               return (

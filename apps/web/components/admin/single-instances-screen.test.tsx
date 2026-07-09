@@ -264,6 +264,63 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
   });
 
+  it('keeps pack image available for a quantity-1 batch child row', async () => {
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [
+        {
+          batch: {
+            id: 'batch-1',
+            name: 'single-child-batch',
+            imageDisplayName: 'Ubuntu 24.04 LTS',
+            imageId: 'm-123',
+            platformImageAssetId: 'platform-image-1',
+            cpu: 2,
+            memory: 2,
+            systemDiskSize: 40,
+            quantity: 1,
+            createdBy: 'admin',
+            createdAt: '2026-07-08T09:00:00.000Z',
+            expiresAt: '2026-07-10T12:00:00.000Z',
+          },
+          instances: [
+            {
+              id: 'single-1',
+              name: 'single-child-01',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'running',
+              accessEntry: { publicIp: '47.1.2.3' },
+              runtimeCredentials: {
+                'single-ecs-1': {
+                  username: 'root',
+                  password: 'super-secret-password',
+                },
+              },
+              singleInstanceConfig: {
+                hostKey: 'single-ecs-1',
+                imageDisplayName: 'Ubuntu 24.04 LTS',
+                cpu: 2,
+                memory: 2,
+              },
+            },
+          ],
+        },
+      ],
+      standaloneInstances: [],
+    });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('single-child-batch')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '展开批次 single-child-batch' }));
+    expect(await screen.findByText('single-child-01')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打包为镜像' })).toBeTruthy();
+  });
+
   it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
     fetchSingleInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);
