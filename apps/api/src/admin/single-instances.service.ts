@@ -30,8 +30,18 @@ export class SingleInstancesService {
 
   async list() {
     const instances = await this.adminRepository.listRangeInstances();
+    const batches = await this.adminRepository.listSingleInstanceBatchesWithInstances();
+    const batchIds = new Set(batches.map((entry) => entry.batch.id));
+    const standaloneInstances = instances.filter(
+      (instance) =>
+        instance.instanceMode === 'single' &&
+        (!instance.singleInstanceBatchId || !batchIds.has(instance.singleInstanceBatchId)),
+    );
 
-    return instances.filter((instance) => instance.instanceMode === 'single');
+    return {
+      batches,
+      standaloneInstances,
+    };
   }
 
   async launch(input: LaunchSingleInstanceDto) {

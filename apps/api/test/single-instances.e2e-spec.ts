@@ -233,6 +233,86 @@ describe('single instances', () => {
     expect(response.body.instances[1].singleInstanceConfig.assignedVswitchId).toBe(expectedVswitchIds[(activeCount + 1) % 3]);
   });
 
+  it('returns grouped batch payloads and leaves legacy single rows standalone', async () => {
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'web-lab-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 5,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      remark: 'grouped launch',
+    });
+
+    await repository.createRangeInstance({
+      name: 'web-lab-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'web-lab',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'web-lab-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    await repository.createRangeInstance({
+      name: 'legacy-single',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'legacy-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-legacy',
+        hostName: 'legacy-single',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/admin/instances')
+      .set('Authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        batches: expect.arrayContaining([
+          expect.objectContaining({
+            batch: expect.objectContaining({
+              id: batch.id,
+              name: 'web-lab-batch',
+              quantity: 5,
+            }),
+            instances: expect.arrayContaining([
+              expect.objectContaining({ name: 'web-lab-01', singleInstanceBatchId: batch.id }),
+            ]),
+          }),
+        ]),
+        standaloneInstances: expect.arrayContaining([
+          expect.objectContaining({ name: 'legacy-single' }),
+        ]),
+      }),
+    );
+  });
+
   it('rejects stop for single-instance row actions', async () => {
     const instance = await repository.createRangeInstance({
       name: 'stop-guard',

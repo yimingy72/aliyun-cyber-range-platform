@@ -8,6 +8,7 @@ import {
   CollectPlatformImageAssetInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
+  CreateSingleInstanceBatchInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
   ImageCatalogItemRecord,
@@ -19,6 +20,8 @@ import {
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
+  SingleInstanceBatchRecord,
+  SingleInstanceBatchWithInstancesRecord,
   RangeTemplateRecord,
   UpsertImageSnapshotsInput,
   UpdateProvisionJobInput,
@@ -391,6 +394,52 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
+  async createSingleInstanceBatch(input: CreateSingleInstanceBatchInput): Promise<SingleInstanceBatchRecord> {
+    return this.prisma.singleInstanceBatch.create({
+      data: {
+        name: input.name,
+        platformImageAssetId: input.platformImageAssetId,
+        imageId: input.imageId,
+        imageDisplayName: input.imageDisplayName,
+        cpu: input.cpu,
+        memory: input.memory,
+        systemDiskSize: input.systemDiskSize,
+        quantity: input.quantity,
+        remark: input.remark ?? null,
+        createdBy: input.createdBy ?? null,
+        expiresAt: input.expiresAt ?? null,
+      },
+    }) as Promise<SingleInstanceBatchRecord>;
+  }
+
+  async getSingleInstanceBatchById(id: string): Promise<SingleInstanceBatchRecord | null> {
+    return this.prisma.singleInstanceBatch.findUnique({
+      where: {
+        id,
+      },
+    }) as Promise<SingleInstanceBatchRecord | null>;
+  }
+
+  async listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]> {
+    const batches = await this.prisma.singleInstanceBatch.findMany({
+      include: {
+        instances: {
+          orderBy: {
+            createdAt: 'asc',
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    return batches.map((record) => ({
+      batch: record as unknown as SingleInstanceBatchRecord,
+      instances: record.instances as unknown as RangeInstanceRecord[],
+    }));
+  }
+
   async listRangeInstances(): Promise<RangeInstanceRecord[]> {
     return this.prisma.rangeInstance.findMany({
       orderBy: {
@@ -456,6 +505,7 @@ export class PrismaAdminRepository implements AdminRepository {
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
         instanceMode: input.instanceMode ?? 'range',
+        singleInstanceBatchId: input.singleInstanceBatchId ?? null,
         singleInstanceConfig: (input.singleInstanceConfig ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
@@ -488,6 +538,9 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
         ...(input.instanceMode !== undefined ? { instanceMode: input.instanceMode } : {}),
+        ...(input.singleInstanceBatchId !== undefined
+          ? { singleInstanceBatchId: input.singleInstanceBatchId }
+          : {}),
         ...(input.singleInstanceConfig !== undefined
           ? {
               singleInstanceConfig: input.singleInstanceConfig as
