@@ -103,6 +103,8 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       systemDiskSize: 40,
     });
 
+    expect(variables).not.toHaveProperty('selected_zone_id');
+    expect(variables).not.toHaveProperty('attempted_zones');
     expect(variables).toEqual(
       expect.objectContaining({
         resource_name_prefix: 'range-demo',

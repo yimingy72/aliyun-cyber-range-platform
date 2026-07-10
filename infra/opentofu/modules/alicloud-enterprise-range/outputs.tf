@@ -59,8 +59,8 @@ output "resource_summary" {
       instance_type_policies = var.runtime_selections.instance_type_policies
       attempted_zones        = try(var.runtime_selections.attempted_zones, [])
     }
-    selected_zone_id       = var.zone_id
-    attempted_zones        = try(var.runtime_selections.attempted_zones, [])
+    selected_zone_id      = var.zone_id
+    attempted_zones       = try(var.runtime_selections.attempted_zones, [])
     resolved_instance_type = var.instance_type
     resolved_image_id      = var.image_id
   }

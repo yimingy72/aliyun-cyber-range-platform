@@ -897,6 +897,7 @@ describe('OpenTofuRangeProvisioner', () => {
         ssh: 'ssh root@example.range',
       },
       resourceSummary: {
+        attemptedZones: null,
         bootstrapHostKeys: null,
         eipAllocationId: 'eip-local',
         eipAllocationIds: {
@@ -3105,6 +3106,8 @@ describe('OpenTofuRangeProvisioner', () => {
       const moduleVariablesTf = await fs.readFile(moduleVariablesTfPath, 'utf8');
 
       expect(renderedVariables.zone_id).toBe('cn-hangzhou-i');
+      expect(renderedVariables).not.toHaveProperty('selected_zone_id');
+      expect(renderedVariables).not.toHaveProperty('attempted_zones');
       expect(renderedVariables.runtime_selections.attempted_zones).toEqual([
         {
           zone_id: 'cn-hangzhou-g',
