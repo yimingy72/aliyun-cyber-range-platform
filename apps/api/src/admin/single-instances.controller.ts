@@ -55,6 +55,9 @@ export class SingleInstancesController {
       triggeredBy: body.triggeredBy,
       ownerUserId: request.adminUser.id,
       ...(body.displayName ? { displayName: body.displayName } : {}),
+      ...(body.defaultHostName ? { defaultHostName: body.defaultHostName } : {}),
+      ...(body.defaultPassword ? { defaultPassword: body.defaultPassword } : {}),
+      ...(body.description ? { description: body.description } : {}),
     });
   }
 }

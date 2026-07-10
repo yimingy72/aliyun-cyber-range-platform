@@ -61,6 +61,18 @@ export class TriggerSingleInstanceActionDto {
   @IsOptional()
   @IsString()
   displayName?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultHostName?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultPassword?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
 export class TriggerSingleInstanceDestroyDto {

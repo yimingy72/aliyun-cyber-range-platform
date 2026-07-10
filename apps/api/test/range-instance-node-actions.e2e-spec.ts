@@ -249,4 +249,45 @@ describe('Range instance node actions API', () => {
     expect(response.body.webTerminalUrl).toContain('instanceId=i-instance-single-123');
     expect(response.body.webTerminalUrl).toContain('isWindows=false');
   });
+
+  it('creates a custom image from a single instance row action preserving caller metadata', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('CreateImage')) {
+        return new Response(JSON.stringify({ ImageId: 'm-image-single-456' }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/instances/${singleInstanceId}/actions/pack-image`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: 'single-snapshot',
+        defaultHostName: 'single-host',
+        defaultPassword: 'SinglePass123!',
+        description: 'single snapshot note',
+        triggeredBy: 'admin',
+      })
+      .expect(201);
+
+    expect(response.body.imageId).toBe('m-image-single-456');
+    expect(response.body.defaultHostName).toBe('single-host');
+    expect(response.body.defaultPassword).toBe('SinglePass123!');
+    expect(response.body.description).toBe('single snapshot note');
+    expect(response.body.imageReady).toBe(false);
+    expect(response.body.platformImageAsset).toEqual(
+      expect.objectContaining({
+        imageId: 'm-image-single-456',
+        displayName: 'single-snapshot',
+        defaultHostName: 'single-host',
+        defaultPassword: 'SinglePass123!',
+        description: 'single snapshot note',
+        ownerUserId: 'admin',
+        visibility: 'private',
+      }),
+    );
+  });
 });
