@@ -125,6 +125,7 @@ function createTemplateRecord(overrides: Partial<RangeTemplateRecord> = {}): Ran
     id: 'template-1',
     name: 'Enterprise Template',
     createdBy: 'admin',
+    ownerUserId: null,
     description: null,
     slug: 'enterprise-template',
     version: 'v1',
@@ -139,6 +140,7 @@ function createTemplateRecord(overrides: Partial<RangeTemplateRecord> = {}): Ran
     variableSchema: {},
     outputSchema: {},
     defaultNetworkPolicy: null,
+    visibility: 'private',
     currentDraftVersionId: 'draft-1',
     currentPublishedVersionId: null,
     currentDraftVersion: createDraftVersion(),
@@ -151,9 +153,16 @@ function createTemplateRecord(overrides: Partial<RangeTemplateRecord> = {}): Ran
 }
 
 describe('RangeTemplatesService publish precheck', () => {
+  const ownerUser = {
+    id: 'owner-user',
+    username: 'owner-user',
+    role: 'user' as const,
+  };
+
   function createRepository(template: RangeTemplateRecord) {
     return {
       getRangeTemplateById: jest.fn().mockResolvedValue(template),
+      updateRangeTemplate: jest.fn().mockResolvedValue(template),
       publishRangeTemplate: jest.fn().mockResolvedValue(template),
       unpublishRangeTemplate: jest.fn().mockResolvedValue(template),
     } as unknown as AdminRepository;
@@ -223,6 +232,58 @@ describe('RangeTemplatesService publish precheck', () => {
 
     await expect(service.validate(template.id)).resolves.toEqual({ valid: true });
     expect((repository as unknown as { publishRangeTemplate: jest.Mock }).publishRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('shares a template without calling publish or changing template version state', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+      visibility: 'private',
+      currentPublishedVersionId: 'published-1',
+    });
+    const sharedTemplate = {
+      ...template,
+      visibility: 'platform' as const,
+    };
+    const repository = {
+      ...createRepository(template),
+      updateRangeTemplate: jest.fn().mockResolvedValue(sharedTemplate),
+    } as unknown as AdminRepository & {
+      updateRangeTemplate: jest.Mock;
+      publishRangeTemplate: jest.Mock;
+      unpublishRangeTemplate: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository);
+
+    await expect(service.share(template.id, ownerUser)).resolves.toEqual(sharedTemplate);
+    expect(repository.updateRangeTemplate).toHaveBeenCalledWith(template.id, { visibility: 'platform' });
+    expect(repository.publishRangeTemplate).not.toHaveBeenCalled();
+    expect(repository.unpublishRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('unshares a template without calling unpublish or changing template version state', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+      visibility: 'platform',
+      currentPublishedVersionId: 'published-1',
+    });
+    const unsharedTemplate = {
+      ...template,
+      visibility: 'private' as const,
+    };
+    const repository = {
+      ...createRepository(template),
+      updateRangeTemplate: jest.fn().mockResolvedValue(unsharedTemplate),
+    } as unknown as AdminRepository & {
+      updateRangeTemplate: jest.Mock;
+      publishRangeTemplate: jest.Mock;
+      unpublishRangeTemplate: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository);
+
+    await expect(service.unshare(template.id, ownerUser)).resolves.toEqual(unsharedTemplate);
+    expect(repository.updateRangeTemplate).toHaveBeenCalledWith(template.id, { visibility: 'private' });
+    expect(repository.publishRangeTemplate).not.toHaveBeenCalled();
+    expect(repository.unpublishRangeTemplate).not.toHaveBeenCalled();
   });
 
   it('publishes successfully when draft only carries scenarioTemplateSpec and compiledProvisionSpec', async () => {

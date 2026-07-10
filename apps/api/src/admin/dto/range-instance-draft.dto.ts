@@ -1,4 +1,4 @@
-import { IsDefined, IsNotEmpty, IsObject, IsString } from 'class-validator';
+import { IsDefined, IsNotEmpty, IsObject, IsOptional, IsString } from 'class-validator';
 
 export class SaveRangeInstanceDraftDto {
   @IsDefined()
@@ -13,7 +13,8 @@ export class SaveRangeInstanceDraftDto {
   @IsObject()
   draftCompiledProvisionSpec!: Record<string, unknown>;
 
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  draftUpdatedBy!: string;
+  draftUpdatedBy?: string;
 }

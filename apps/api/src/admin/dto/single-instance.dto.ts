@@ -48,12 +48,14 @@ export class LaunchSingleInstanceDto {
   @IsString()
   remark?: string;
 
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   triggeredBy!: string;
 }
 
 export class TriggerSingleInstanceActionDto {
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   triggeredBy!: string;
@@ -76,12 +78,14 @@ export class TriggerSingleInstanceActionDto {
 }
 
 export class TriggerSingleInstanceDestroyDto {
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   triggeredBy!: string;
 }
 
 export class TriggerSingleInstanceBatchDestroyDto {
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   triggeredBy!: string;

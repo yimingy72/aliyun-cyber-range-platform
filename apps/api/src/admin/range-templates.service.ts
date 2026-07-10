@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -8,32 +8,55 @@ import {
   RangeTemplateTopologySpec,
   UpdateRangeTemplateInput,
 } from './admin.repository';
+import type { SessionUserProfile } from './admin-user-auth';
 
 type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
+type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
+type RangeTemplateView = 'platform' | 'mine';
 
 @Injectable()
 export class RangeTemplatesService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
-  list() {
-    return this.adminRepository.listRangeTemplates();
+  async list(currentUser?: AuthenticatedUser, viewText?: string) {
+    if (!currentUser) {
+      return this.adminRepository.listRangeTemplates();
+    }
+
+    const view = this.normalizeView(viewText);
+    const templates = await this.adminRepository.listRangeTemplates();
+
+    return templates.filter((template) =>
+      view === 'platform' ? template.visibility === 'platform' : template.ownerUserId === currentUser.id,
+    );
   }
 
-  create(input: CreateRangeTemplateInput) {
+  create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {
+    const actorId = currentUser?.id ?? input.createdBy ?? 'admin';
+
     this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
     this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
     this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
     this.validateTopologySpec(input.topologySpec);
 
-    return this.adminRepository.createRangeTemplate(input);
+    return this.adminRepository.createRangeTemplate({
+      ...input,
+      createdBy: actorId,
+      ownerUserId: currentUser?.id ?? input.ownerUserId ?? null,
+      visibility: currentUser ? 'private' : input.visibility ?? 'private',
+    });
   }
 
-  async clone(id: string) {
+  async clone(id: string, currentUser?: AuthenticatedUser) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateReadable(existingTemplate, currentUser);
     }
 
     const topologySpec =
@@ -46,11 +69,15 @@ export class RangeTemplatesService {
     }
 
     const rangeTemplates = await this.adminRepository.listRangeTemplates();
+    const actorId = currentUser?.id ?? existingTemplate.createdBy;
 
     return this.adminRepository.createRangeTemplate({
       name: `${existingTemplate.name} 副本`,
+      createdBy: actorId,
+      ownerUserId: currentUser?.id ?? existingTemplate.ownerUserId,
       description: existingTemplate.description ?? undefined,
       slug: this.buildClonedSlug(existingTemplate.slug, rangeTemplates.map((item) => item.slug)),
+      visibility: 'private',
       version: existingTemplate.version,
       cloudProvider: existingTemplate.cloudProvider,
       iacType: existingTemplate.iacType,
@@ -82,11 +109,15 @@ export class RangeTemplatesService {
     });
   }
 
-  async update(id: string, input: UpdateRangeTemplateInput) {
+  async update(id: string, input: UpdateRangeTemplateInput, currentUser?: AuthenticatedUser) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
     const topologySpec = input.topologySpec ?? existingTemplate.topologySpec;
@@ -103,11 +134,15 @@ export class RangeTemplatesService {
     return this.adminRepository.updateRangeTemplate(id, input);
   }
 
-  async publish(id: string) {
+  async publish(id: string, currentUser?: AuthenticatedUser) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
     this.assertTemplateReadyForPublish(existingTemplate);
@@ -115,11 +150,15 @@ export class RangeTemplatesService {
     return this.adminRepository.publishRangeTemplate(id);
   }
 
-  async validate(id: string) {
+  async validate(id: string, currentUser?: AuthenticatedUser) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateReadable(existingTemplate, currentUser);
     }
 
     this.assertTemplateReadyForPublish(existingTemplate);
@@ -127,11 +166,15 @@ export class RangeTemplatesService {
     return { valid: true as const };
   }
 
-  async unpublish(id: string) {
+  async unpublish(id: string, currentUser?: AuthenticatedUser) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
     if (!existingTemplate.currentPublishedVersionId) {
@@ -141,11 +184,43 @@ export class RangeTemplatesService {
     return this.adminRepository.unpublishRangeTemplate(id);
   }
 
-  async delete(id: string) {
+  async share(id: string, currentUser?: AuthenticatedUser) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
+    }
+
+    return this.adminRepository.updateRangeTemplate(id, { visibility: 'platform' });
+  }
+
+  async unshare(id: string, currentUser?: AuthenticatedUser) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
+    }
+
+    return this.adminRepository.updateRangeTemplate(id, { visibility: 'private' });
+  }
+
+  async delete(id: string, currentUser?: AuthenticatedUser) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
     const linkedInstances = (await this.adminRepository.listRangeInstances()).filter((instance) => instance.templateId === id);
@@ -173,6 +248,42 @@ export class RangeTemplatesService {
 
       throw error;
     }
+  }
+
+  private normalizeView(viewText?: string): RangeTemplateView {
+    if (!viewText || viewText === 'mine') {
+      return 'mine';
+    }
+
+    if (viewText === 'platform') {
+      return viewText;
+    }
+
+    throw new BadRequestException('view must be one of: platform, mine');
+  }
+
+  private assertTemplateReadable(template: ExistingRangeTemplate, currentUser: AuthenticatedUser) {
+    if (currentUser.role === 'admin') {
+      return;
+    }
+
+    if (template.ownerUserId === currentUser.id || template.visibility === 'platform') {
+      return;
+    }
+
+    throw new ForbiddenException('Template access denied');
+  }
+
+  private assertTemplateOwnerOrAdmin(template: ExistingRangeTemplate, currentUser: AuthenticatedUser) {
+    if (currentUser.role === 'admin') {
+      return;
+    }
+
+    if (template.ownerUserId === currentUser.id) {
+      return;
+    }
+
+    throw new ForbiddenException('Template access denied');
   }
 
   private buildClonedSlug(sourceSlug: string, existingSlugs: string[]) {

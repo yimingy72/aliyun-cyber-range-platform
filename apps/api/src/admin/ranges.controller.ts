@@ -20,63 +20,63 @@ export class RangesController {
   ) {}
 
   @Get()
-  list() {
-    return this.rangeInstancesService.list();
+  list(@Req() request: AuthenticatedAdminRequest) {
+    return this.rangeInstancesService.list(request.adminUser);
   }
 
   @Get(':id')
-  getById(@Param('id') id: string) {
-    return this.rangeInstancesService.getById(id);
+  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    return this.rangeInstancesService.getById(id, request.adminUser);
   }
 
   @Patch(':id/draft')
-  saveDraft(@Param('id') id: string, @Body() body: SaveRangeInstanceDraftDto) {
-    return this.rangeInstancesService.saveDraft(id, body);
+  saveDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: SaveRangeInstanceDraftDto) {
+    return this.rangeInstancesService.saveDraft(id, body, request.adminUser);
   }
 
   @Delete(':id')
-  async delete(@Param('id') id: string) {
-    await this.rangeInstancesService.delete(id);
+  async delete(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    await this.rangeInstancesService.delete(id, request.adminUser);
   }
 
   @Delete(':id/draft')
-  discardDraft(@Param('id') id: string) {
-    return this.rangeInstancesService.discardDraft(id);
+  discardDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    return this.rangeInstancesService.discardDraft(id, request.adminUser);
   }
 
   @Post()
-  create(@Body() body: CreateRangeInstanceDto) {
-    return this.rangeInstancesService.create(body);
+  create(@Req() request: AuthenticatedAdminRequest, @Body() body: CreateRangeInstanceDto) {
+    return this.rangeInstancesService.create(body, request.adminUser);
   }
 
   @Post('launch')
-  launch(@Body() body: LaunchRangeInstanceDto) {
-    return this.rangeInstancesService.launch(body);
+  launch(@Req() request: AuthenticatedAdminRequest, @Body() body: LaunchRangeInstanceDto) {
+    return this.rangeInstancesService.launch(body, request.adminUser);
   }
 
   @Post(':id/create')
-  triggerCreate(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
-    return this.rangeInstancesService.triggerCreate(id, body.triggeredBy);
+  triggerCreate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.triggerCreate(id, request.adminUser);
   }
 
   @Post(':id/destroy')
-  triggerDestroy(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
-    return this.rangeInstancesService.triggerDestroy(id, body.triggeredBy);
+  triggerDestroy(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.triggerDestroy(id, request.adminUser);
   }
 
   @Post(':id/retry')
-  triggerRetry(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
-    return this.rangeInstancesService.triggerRetry(id, body.triggeredBy);
+  triggerRetry(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.triggerRetry(id, request.adminUser);
   }
 
   @Post(':id/apply')
-  applyDraft(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
-    return this.rangeInstancesService.applyDraft(id, body.triggeredBy);
+  applyDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.applyDraft(id, request.adminUser);
   }
 
   @Post(':id/sync-template')
-  syncTemplate(@Param('id') id: string, @Body() body: TriggerProvisionJobDto) {
-    return this.rangeInstancesService.syncTemplate(id, body.triggeredBy);
+  syncTemplate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    return this.rangeInstancesService.syncTemplate(id, request.adminUser);
   }
 
   @Post(':id/nodes/:nodeId/actions/:action')

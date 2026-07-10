@@ -6,6 +6,8 @@ import { AdminSessionService } from './admin-session.service';
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
+  private static readonly AUTHENTICATED_USER_PREFIXES = ['/admin/scenarios', '/admin/ranges'] as const;
+
   constructor(
     private readonly adminSessionService: AdminSessionService,
     @Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository,
@@ -14,6 +16,8 @@ export class AdminAuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<{
       headers: Record<string, string | undefined>;
+      originalUrl?: string;
+      url?: string;
       adminUser?: SessionUserProfile;
     }>();
     const authorizationHeader = request.headers.authorization ?? '';
@@ -41,11 +45,17 @@ export class AdminAuthGuard implements CanActivate {
       role: user.role,
     };
 
-    if (user.role !== 'admin') {
+    if (this.requiresAdmin(request) && user.role !== 'admin') {
       throw new ForbiddenException('Admin access required');
     }
 
     return true;
+  }
+
+  private requiresAdmin(request: { originalUrl?: string; url?: string }) {
+    const pathname = (request.originalUrl ?? request.url ?? '').split('?')[0];
+
+    return !AdminAuthGuard.AUTHENTICATED_USER_PREFIXES.some((prefix) => pathname.startsWith(prefix));
   }
 
   private readBearerToken(authorizationHeader: string) {

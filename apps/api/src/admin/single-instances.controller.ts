@@ -26,22 +26,32 @@ export class SingleInstancesController {
 
   @Post('launch')
   launch(@Req() request: AuthenticatedAdminRequest, @Body() body: LaunchSingleInstanceDto) {
-    return this.singleInstancesService.launch(body, request.adminUser.id);
+    return this.singleInstancesService.launch(
+      {
+        ...body,
+        triggeredBy: request.adminUser.id,
+      },
+      request.adminUser.id,
+    );
   }
 
   @Post(':id/destroy')
-  destroy(@Param('id') id: string, @Body() body: TriggerSingleInstanceDestroyDto) {
-    return this.singleInstancesService.destroy(id, body.triggeredBy);
+  destroy(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerSingleInstanceDestroyDto) {
+    return this.singleInstancesService.destroy(id, request.adminUser.id);
   }
 
   @Post('batches/:id/destroy-all')
-  destroyBatch(@Param('id') id: string, @Body() body: TriggerSingleInstanceBatchDestroyDto) {
-    return this.singleInstancesService.destroyBatch(id, body.triggeredBy);
+  destroyBatch(
+    @Req() request: AuthenticatedAdminRequest,
+    @Param('id') id: string,
+    @Body() _body: TriggerSingleInstanceBatchDestroyDto,
+  ) {
+    return this.singleInstancesService.destroyBatch(id, request.adminUser.id);
   }
 
   @Post(':id/retry')
-  retry(@Param('id') id: string, @Body() body: TriggerSingleInstanceDestroyDto) {
-    return this.singleInstancesService.retry(id, body.triggeredBy);
+  retry(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerSingleInstanceDestroyDto) {
+    return this.singleInstancesService.retry(id, request.adminUser.id);
   }
 
   @Post(':id/actions/:action')
@@ -52,7 +62,7 @@ export class SingleInstancesController {
     @Body() body: TriggerSingleInstanceActionDto,
   ) {
     return this.singleInstancesService.runAction(id, action, {
-      triggeredBy: body.triggeredBy,
+      triggeredBy: request.adminUser.id,
       ownerUserId: request.adminUser.id,
       ...(body.displayName ? { displayName: body.displayName } : {}),
       ...(body.defaultHostName ? { defaultHostName: body.defaultHostName } : {}),

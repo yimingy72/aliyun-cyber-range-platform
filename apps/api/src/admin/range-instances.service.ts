@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -9,6 +9,7 @@ import {
   RangeTemplateTopologySpec,
   RangeRuntimeCredentials,
 } from './admin.repository';
+import type { SessionUserProfile } from './admin-user-auth';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
@@ -24,6 +25,7 @@ import { compileTopologyGraph } from '../../../web/lib/template-compiler';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
+type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
 
 @Injectable()
 export class RangeInstancesService {
@@ -35,21 +37,29 @@ export class RangeInstancesService {
     private readonly provisioningWorkerService: ProvisioningWorkerService,
   ) {}
 
-  async list() {
+  async list(currentUser?: AuthenticatedUser) {
     const instances = await this.adminRepository.listRangeInstances();
+    const scopedInstances =
+      currentUser && currentUser.role !== 'admin'
+        ? instances.filter((instance) => instance.ownerUserId === currentUser.id)
+        : instances;
 
     return Promise.all(
-      instances
+      scopedInstances
         .filter((instance) => instance.instanceMode === 'range')
         .map((instance) => this.attachRecoverySummary(instance)),
     );
   }
 
-  async getById(id: string) {
+  async getById(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     const hydrated = await this.attachRecoverySummary(instance);
@@ -66,7 +76,7 @@ export class RangeInstancesService {
     });
   }
 
-  async create(input: CreateRangeInstanceInput) {
+  async create(input: CreateRangeInstanceInput, currentUser?: AuthenticatedUser) {
     if (!input.templateId) {
       throw new ConflictException('Range instance requires a template id');
     }
@@ -77,6 +87,10 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
+    if (currentUser) {
+      this.assertTemplateReadable(template, currentUser);
+    }
+
     const sourceTemplateVersionId = template.currentDraftVersionId ?? template.currentPublishedVersionId;
 
     if (!sourceTemplateVersionId) {
@@ -85,15 +99,21 @@ export class RangeInstancesService {
 
     return this.adminRepository.createRangeInstance({
       ...input,
+      createdBy: currentUser?.id ?? input.createdBy,
+      ownerUserId: currentUser?.id ?? input.ownerUserId,
       sourceTemplateVersionId,
     });
   }
 
-  async launch(input: LaunchRangeInstanceDto) {
+  async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
     const template = await this.adminRepository.getRangeTemplateById(input.templateId);
 
     if (!template) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateReadable(template, currentUser);
     }
 
     const sourceTemplateVersion = template.currentDraftVersion ?? template.currentPublishedVersion;
@@ -105,10 +125,12 @@ export class RangeInstancesService {
     const runtimeScenarioTemplateSpec =
       sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null;
     const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
+    const actorId = currentUser?.id ?? input.triggeredBy ?? 'admin';
 
     const instance = await this.adminRepository.createRangeInstance({
       name: input.name,
-      createdBy: input.triggeredBy,
+      createdBy: actorId,
+      ownerUserId: currentUser?.id ?? null,
       instanceMode: 'range',
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
@@ -124,7 +146,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'create',
-      triggeredBy: input.triggeredBy,
+      triggeredBy: actorId,
     });
 
     const updated = await this.adminRepository.updateRangeInstance(instance.id, {
@@ -142,11 +164,15 @@ export class RangeInstancesService {
     return this.withDefaultInstancePassword(hydrated);
   }
 
-  async saveDraft(id: string, input: SaveRangeInstanceDraftDto) {
+  async saveDraft(id: string, input: SaveRangeInstanceDraftDto, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     if (instance.status !== 'running') {
@@ -159,24 +185,28 @@ export class RangeInstancesService {
       draftTopologyGraph: input.draftTopologyGraph,
       draftScenarioTemplateSpec: input.draftScenarioTemplateSpec,
       draftCompiledProvisionSpec: input.draftCompiledProvisionSpec,
-      draftUpdatedBy: input.draftUpdatedBy,
+      draftUpdatedBy: currentUser?.id ?? input.draftUpdatedBy ?? null,
       draftUpdatedAt: new Date(),
     });
 
-      const hydrated = await this.attachRecoverySummary(updated);
+    const hydrated = await this.attachRecoverySummary(updated);
 
-      if (!hydrated) {
-        throw new NotFoundException('Range instance not found');
-      }
+    if (!hydrated) {
+      throw new NotFoundException('Range instance not found');
+    }
 
-      return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(hydrated);
   }
 
-  async discardDraft(id: string) {
+  async discardDraft(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     const updated = await this.adminRepository.updateRangeInstance(id, {
@@ -196,11 +226,20 @@ export class RangeInstancesService {
     return this.withDefaultInstancePassword(hydrated);
   }
 
-  async applyDraft(id: string, triggeredBy: string) {
+  async applyDraft(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
+
+    if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
     if (instance.status !== 'running') {
@@ -214,7 +253,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: id,
       jobType: 'update',
-      triggeredBy,
+      triggeredBy: actorId,
     });
 
     await this.adminRepository.updateRangeInstance(id, {
@@ -227,11 +266,15 @@ export class RangeInstancesService {
     return job;
   }
 
-  async syncTemplate(id: string, _triggeredBy: string) {
+  async syncTemplate(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     if (!instance.templateId) {
@@ -264,16 +307,24 @@ export class RangeInstancesService {
 
     const compiledSpec = this.buildCompiledSpecFromTopologyGraph(topologyGraph, topologySpec);
 
-    return this.rangeTemplatesService.update(template.id, {
-      topologySpec,
-      topologyGraph,
-      scenarioTemplateSpec,
-      compiledProvisionSpec,
-      ...(compiledSpec ? { compiledSpec } : {}),
-    });
+    return this.rangeTemplatesService.update(
+      template.id,
+      {
+        topologySpec,
+        topologyGraph,
+        scenarioTemplateSpec,
+        compiledProvisionSpec,
+        ...(compiledSpec ? { compiledSpec } : {}),
+      },
+      currentUser,
+    );
   }
 
-  async triggerCreate(id: string, triggeredBy: string) {
+  async triggerCreate(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
     const job = await this.cidrPoolService.serialize(async () => {
       const instance = await this.adminRepository.getRangeInstanceById(id);
 
@@ -281,7 +332,11 @@ export class RangeInstancesService {
         throw new NotFoundException('Range instance not found');
       }
 
-       if (!instance.templateId) {
+      if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+        this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
+      }
+
+      if (!instance.templateId) {
         throw new ConflictException('Range instance no longer references an active template');
       }
 
@@ -325,7 +380,7 @@ export class RangeInstancesService {
       const nextJob = await this.adminRepository.createProvisionJob({
         rangeInstanceId: instance.id,
         jobType: 'create',
-        triggeredBy,
+        triggeredBy: actorId,
       });
 
       await this.adminRepository.updateRangeInstance(instance.id, {
@@ -342,11 +397,20 @@ export class RangeInstancesService {
     return job;
   }
 
-  async triggerDestroy(id: string, triggeredBy: string) {
+  async triggerDestroy(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
+
+    if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
     if (!instance.templateId) {
@@ -360,7 +424,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'destroy',
-      triggeredBy,
+      triggeredBy: actorId,
     });
 
     await this.adminRepository.updateRangeInstance(instance.id, {
@@ -373,11 +437,20 @@ export class RangeInstancesService {
     return job;
   }
 
-  async triggerRetry(id: string, triggeredBy: string) {
+  async triggerRetry(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
+
+    if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
     if (!instance.templateId) {
@@ -398,7 +471,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'retry',
-      triggeredBy,
+      triggeredBy: actorId,
       retryCount,
     });
 
@@ -413,11 +486,15 @@ export class RangeInstancesService {
     return job;
   }
 
-  async delete(id: string) {
+  async delete(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     if (instance.status !== 'create_failed') {
@@ -425,6 +502,36 @@ export class RangeInstancesService {
     }
 
     await this.adminRepository.deleteRangeInstance(id);
+  }
+
+  private assertInstanceOwnerOrAdmin(
+    instance: NonNullable<Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>>,
+    currentUser: AuthenticatedUser,
+  ) {
+    if (currentUser.role === 'admin') {
+      return;
+    }
+
+    if (instance.ownerUserId === currentUser.id) {
+      return;
+    }
+
+    throw new ForbiddenException('Range instance access denied');
+  }
+
+  private assertTemplateReadable(
+    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
+    currentUser: AuthenticatedUser,
+  ) {
+    if (currentUser.role === 'admin') {
+      return;
+    }
+
+    if (template.ownerUserId === currentUser.id || template.visibility === 'platform') {
+      return;
+    }
+
+    throw new ForbiddenException('Template access denied');
   }
 
   private async attachRecoverySummary(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
