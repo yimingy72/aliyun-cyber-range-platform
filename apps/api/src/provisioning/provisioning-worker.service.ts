@@ -599,9 +599,77 @@ export class ProvisioningWorkerService {
       return null;
     }
 
-    const candidate = compiledSpec.topologySpec;
+    if (compiledSpec.topologySpec) {
+      return compiledSpec.topologySpec;
+    }
 
-    return candidate ?? null;
+    const switchResources = compiledSpec.resources.filter((resource) => resource.type === 'switch');
+    const hostResources = compiledSpec.resources.filter((resource) => resource.type === 'host');
+    const vpcCidr = compiledSpec.topology?.vpcCidr;
+
+    if (!vpcCidr || switchResources.length === 0 || hostResources.length === 0) {
+      return null;
+    }
+
+    const publicEntryHostKey =
+      compiledSpec.topology?.publicEntryHostKey ??
+      hostResources.find((resource) => resource.config.exposePublic === true)?.id ??
+      hostResources.find((resource) => resource.config.role === 'entry')?.id;
+
+    if (!publicEntryHostKey) {
+      return null;
+    }
+
+    const publicEntryHost = hostResources.find((resource) => resource.id === publicEntryHostKey);
+
+    if (!publicEntryHost?.config.zoneKey) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: switchResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const name = typeof resource.config.label === 'string' ? resource.config.label : null;
+        const cidr = typeof resource.config.cidr === 'string' ? resource.config.cidr : null;
+
+        if (!zoneKey || !name || !cidr) {
+          return [];
+        }
+
+        return [{
+          key: zoneKey,
+          name,
+          purpose: typeof resource.config.purpose === 'string' ? resource.config.purpose : zoneKey,
+          cidr,
+          ...(zoneKey === publicEntryHost.config.zoneKey ? { isPublicEntry: true } : {}),
+        }];
+      }),
+      hosts: hostResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const role = typeof resource.config.role === 'string' ? resource.config.role : null;
+        const privateIp = typeof resource.config.privateIp === 'string' ? resource.config.privateIp : null;
+
+        if (!zoneKey || !role || !privateIp) {
+          return [];
+        }
+
+        return [{
+          key: resource.id,
+          name: typeof resource.config.label === 'string' ? resource.config.label : resource.id,
+          zoneKey,
+          role,
+          privateIp,
+          ...(typeof resource.config.exposePublic === 'boolean'
+            ? { exposePublic: resource.config.exposePublic }
+            : {}),
+        }];
+      }),
+      publicEntry: {
+        hostKey: publicEntryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
   }
 
   private getCompiledSpec(
@@ -682,9 +750,14 @@ export class ProvisioningWorkerService {
           typeof host.key !== 'string' ||
           typeof host.name !== 'string' ||
           typeof host.zoneKey !== 'string' ||
-          typeof host.role !== 'string' ||
-          typeof host.primaryPrivateIp !== 'string'
+          typeof host.role !== 'string'
         ) {
+          return [];
+        }
+
+        const privateIp = this.readCompiledProvisionHostPrivateIp(host);
+
+        if (!privateIp) {
           return [];
         }
 
@@ -693,7 +766,7 @@ export class ProvisioningWorkerService {
           name: host.name,
           zoneKey: host.zoneKey,
           role: host.role,
-          privateIp: host.primaryPrivateIp,
+          privateIp,
           ...(host.exposePublic === true ? { exposePublic: true } : {}),
         }];
       }),
@@ -713,7 +786,21 @@ export class ProvisioningWorkerService {
   }
 
   private readJsonArray(value: unknown): unknown[] {
-    return Array.isArray(value) ? value : [];
+      return Array.isArray(value) ? value : [];
+  }
+
+  private readCompiledProvisionHostPrivateIp(host: Record<string, unknown>) {
+    if (typeof host.primaryPrivateIp === 'string') {
+      return host.primaryPrivateIp;
+    }
+
+    const primaryInterface = this.readJsonObject(this.readJsonArray(host.networkInterfaces)[0]);
+
+    if (typeof primaryInterface?.privateIp === 'string') {
+      return primaryInterface.privateIp;
+    }
+
+    return null;
   }
 
   private async verifyDestroyCompletion(

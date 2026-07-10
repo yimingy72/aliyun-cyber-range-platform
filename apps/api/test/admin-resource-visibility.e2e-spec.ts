@@ -669,10 +669,12 @@ describe('Admin resource visibility', () => {
   it('does not fall back to draft topology when delayed create uses a pinned published version', async () => {
     const aliceToken = await loginAs(app, alice.username, alice.password);
     const bobToken = await loginAs(app, bob.username, bob.password);
+    const provisioningWorker = app.get(ProvisioningWorkerService);
     const draftOnlyVpcCidr = '10.250.0.0/16';
+    const compiledSpecVpcCidr = '10.91.0.0/16';
     const previousPool = process.env.RANGE_CIDR_POOL;
 
-    process.env.RANGE_CIDR_POOL = '';
+    process.env.RANGE_CIDR_POOL = '10.200.0.0/16';
 
     try {
       const createResponse = await request(app.getHttpServer())
@@ -755,7 +757,41 @@ describe('Admin resource visibility', () => {
             ...version,
             topologySpec: null,
             compiledProvisionSpec: null,
-            compiledSpec: null,
+            compiledSpec: {
+              ...(version.compiledSpec as Record<string, unknown> | null | undefined),
+              topologySpec: null,
+              topology: {
+                vpcCidr: compiledSpecVpcCidr,
+                publicEntryHostKey: 'entry',
+                networkZoneKeys: ['dmz'],
+                hostKeys: ['entry'],
+              },
+              resources: [
+                {
+                  id: 'switch-dmz',
+                  type: 'switch',
+                  provider: 'alibaba_cloud',
+                  config: {
+                    label: 'DMZ',
+                    zoneKey: 'dmz',
+                    cidr: '10.66.10.0/24',
+                    purpose: 'public-entry',
+                  },
+                },
+                {
+                  id: 'entry',
+                  type: 'host',
+                  provider: 'alibaba_cloud',
+                  config: {
+                    label: 'published-delayed-entry',
+                    zoneKey: 'dmz',
+                    role: 'entry',
+                    privateIp: '10.66.10.10',
+                    exposePublic: true,
+                  },
+                },
+              ],
+            },
           };
         });
 
@@ -768,12 +804,27 @@ describe('Admin resource visibility', () => {
 
         const persisted = await repository.getRangeInstanceById(createInstanceResponse.body.id);
 
-        expect(persisted?.allocatedCidr).toBeNull();
+        expect(persisted?.allocatedCidr).toBe(compiledSpecVpcCidr);
         expect(persisted?.allocatedCidr).not.toBe(draftOnlyVpcCidr);
+        expect(persisted?.allocatedCidr).not.toBe('10.200.0.0/16');
 
         const createJob = await repository.getProvisionJobById(createJobResponse.body.id as string);
 
         expect(createJob?.status).toBe('pending');
+
+        await provisioningWorker.process(createJobResponse.body.id as string);
+
+        const afterWorker = await repository.getRangeInstanceById(createInstanceResponse.body.id);
+
+        expect(afterWorker?.status).toBe('running');
+        expect(afterWorker?.allocatedCidr).toBe(compiledSpecVpcCidr);
+        expect(afterWorker?.resourceSummary).toEqual(
+          expect.objectContaining({
+            topologySpec: expect.objectContaining({
+              vpcCidr: compiledSpecVpcCidr,
+            }),
+          }),
+        );
       } finally {
         getRangeTemplateVersionByIdSpy.mockRestore();
       }

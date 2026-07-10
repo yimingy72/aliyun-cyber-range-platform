@@ -6,6 +6,7 @@ import {
   ADMIN_REPOSITORY,
   AdminRepository,
   CreateRangeInstanceInput,
+  RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
   RangeRuntimeCredentials,
 } from './admin.repository';
@@ -816,8 +817,9 @@ export class RangeInstancesService {
     }
 
     return (
-      sourceTemplateVersion.topologySpec ??
-      this.readTopologySpecFromCompiledProvisionSpec(sourceTemplateVersion.compiledProvisionSpec)
+      this.readTopologySpecFromCompiledProvisionSpec(sourceTemplateVersion.compiledProvisionSpec) ??
+      this.readTopologySpecFromCompiledSpec(sourceTemplateVersion.compiledSpec as RangeTemplateCompiledSpec | null | undefined) ??
+      sourceTemplateVersion.topologySpec
     );
   }
 
@@ -870,13 +872,7 @@ export class RangeInstancesService {
           return [];
         }
 
-        const privateIp =
-          typeof host.primaryPrivateIp === 'string'
-            ? host.primaryPrivateIp
-            : this.readArray(host.networkInterfaces)[0] &&
-                typeof this.readRecord(this.readArray(host.networkInterfaces)[0])?.privateIp === 'string'
-              ? (this.readRecord(this.readArray(host.networkInterfaces)[0])?.privateIp as string)
-              : null;
+        const privateIp = this.readCompiledProvisionHostPrivateIp(host);
 
         if (!privateIp) {
           return [];
@@ -898,5 +894,103 @@ export class RangeInstancesService {
         protocols: [{ protocol: 'ssh', port: 22 }],
       },
     };
+  }
+
+  private readTopologySpecFromCompiledSpec(
+    compiledSpec: RangeTemplateCompiledSpec | null | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!compiledSpec) {
+      return null;
+    }
+
+    if (compiledSpec.topologySpec) {
+      return compiledSpec.topologySpec;
+    }
+
+    const switchResources = compiledSpec.resources.filter((resource) => resource.type === 'switch');
+    const hostResources = compiledSpec.resources.filter((resource) => resource.type === 'host');
+    const vpcCidr = compiledSpec.topology?.vpcCidr;
+
+    if (!vpcCidr || switchResources.length === 0 || hostResources.length === 0) {
+      return null;
+    }
+
+    const publicEntryHostKey =
+      compiledSpec.topology?.publicEntryHostKey ??
+      hostResources.find((resource) => resource.config.exposePublic === true)?.id ??
+      hostResources.find((resource) => resource.config.role === 'entry')?.id;
+
+    if (!publicEntryHostKey) {
+      return null;
+    }
+
+    const publicEntryHost = hostResources.find((resource) => resource.id === publicEntryHostKey);
+
+    if (!publicEntryHost?.config.zoneKey) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: switchResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const name = typeof resource.config.label === 'string' ? resource.config.label : null;
+        const cidr = typeof resource.config.cidr === 'string' ? resource.config.cidr : null;
+
+        if (!zoneKey || !name || !cidr) {
+          return [];
+        }
+
+        return [
+          {
+            key: zoneKey,
+            name,
+            purpose: typeof resource.config.purpose === 'string' ? resource.config.purpose : zoneKey,
+            cidr,
+            ...(zoneKey === publicEntryHost.config.zoneKey ? { isPublicEntry: true } : {}),
+          },
+        ];
+      }),
+      hosts: hostResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const role = typeof resource.config.role === 'string' ? resource.config.role : null;
+        const privateIp = typeof resource.config.privateIp === 'string' ? resource.config.privateIp : null;
+
+        if (!zoneKey || !role || !privateIp) {
+          return [];
+        }
+
+        return [
+          {
+            key: resource.id,
+            name: typeof resource.config.label === 'string' ? resource.config.label : resource.id,
+            zoneKey,
+            role,
+            privateIp,
+            ...(typeof resource.config.exposePublic === 'boolean'
+              ? { exposePublic: resource.config.exposePublic }
+              : {}),
+          },
+        ];
+      }),
+      publicEntry: {
+        hostKey: publicEntryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
+  }
+
+  private readCompiledProvisionHostPrivateIp(host: Record<string, unknown>) {
+    if (typeof host.primaryPrivateIp === 'string') {
+      return host.primaryPrivateIp;
+    }
+
+    const primaryInterface = this.readRecord(this.readArray(host.networkInterfaces)[0]);
+
+    if (typeof primaryInterface?.privateIp === 'string') {
+      return primaryInterface.privateIp;
+    }
+
+    return null;
   }
 }
