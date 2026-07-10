@@ -22,7 +22,6 @@ COPY packages/iac-runner/package.json packages/iac-runner/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-COPY infra/opentofu/examples/alicloud-enterprise-range/.terraform/providers/registry.opentofu.org/aliyun/alicloud/1.282.0/linux_amd64/terraform-provider-alicloud_v1.282.0 /opt/provider-seed/terraform-provider-alicloud_v1.282.0
 COPY scripts/docker/seed-provider-mirror.sh /usr/local/bin/seed-provider-mirror.sh
 
 RUN chmod +x /usr/local/bin/tofu /usr/local/bin/seed-provider-mirror.sh
