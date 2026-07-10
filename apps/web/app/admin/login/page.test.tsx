@@ -71,8 +71,8 @@ describe('AdminLoginPage', () => {
     expect(screen.queryByDisplayValue('change-me')).toBeNull();
     expect(screen.queryByText('选手入口')).toBeNull();
 
-    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
     fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
 
     await waitFor(() => {
@@ -116,9 +116,14 @@ describe('AdminLoginPage', () => {
   it('renders a single admin-only login experience without player entry copy', () => {
     render(<AdminLoginPage />);
 
-    expect(screen.getByRole('heading', { name: '管理员登录' })).toBeTruthy();
+    expect(screen.getByText('综合靶场平台')).toBeTruthy();
     expect(screen.queryByText(/选手/)).toBeNull();
     expect(screen.queryByRole('link', { name: '选手入口' })).toBeNull();
+    expect(screen.queryByText('阿里云企业网络型靶场编排与实例管理工作台')).toBeNull();
+    expect(screen.queryByText('工作台 / 靶场编排')).toBeNull();
+    expect(screen.queryByText('管理员登录')).toBeNull();
+    expect(screen.getByText('账号')).toBeTruthy();
+    expect(screen.getByText('密码')).toBeTruthy();
   });
 
   it('normalizes shared admin sessions before persisting them', async () => {
@@ -258,8 +263,8 @@ describe('AdminLoginPage', () => {
 
     render(<AdminLoginPage />);
 
-    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
     fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
 
     await waitFor(() => {
@@ -310,8 +315,8 @@ describe('AdminLoginPage', () => {
 
     render(<AdminLoginPage />);
 
-    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
     fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
 
     await waitFor(() => {
