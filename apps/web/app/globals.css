@@ -564,10 +564,6 @@ body {
   overflow: hidden;
 }
 
-.admin-login-workspace {
-  align-items: stretch;
-}
-
 .admin-sidebar {
   display: grid;
   grid-template-rows: auto 1fr;
@@ -961,44 +957,55 @@ body {
   line-height: 1.6;
 }
 
-.admin-login-sidebar {
-  grid-template-rows: auto auto 1fr;
-}
-
-.admin-login-note {
-  align-self: end;
-}
-
-.admin-login-main-shell {
-  min-height: calc(100vh - 36px);
-}
-
-.admin-login-topbar {
-  align-items: flex-start;
-}
-
-.admin-login-content {
+.admin-login-shell {
+  min-height: 100vh;
   display: grid;
   place-items: center;
-  padding-block: 40px;
+  padding: 24px;
+  background: #f5f7fb;
 }
 
-.admin-login-form-panel {
-  width: min(560px, 100%);
+.admin-login-card {
+  width: min(420px, 100%);
+  padding: 32px 28px 28px;
+  border-radius: 24px;
+  background: #ffffff;
+  border: 1px solid #e7ecf2;
+  box-shadow: 0 20px 50px rgba(39, 69, 66, 0.08);
+  display: grid;
+  gap: 24px;
+}
+
+.admin-login-card-copy {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  text-align: center;
+}
+
+.admin-login-card-copy strong,
+.admin-login-card-copy h1 {
   margin: 0;
+  color: #1d2b44;
 }
 
-.admin-login-header {
-  display: block;
+.admin-login-card-copy strong {
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 700;
 }
 
-.admin-login-header h2 {
-  margin-top: 8px;
+.admin-login-card-copy h1 {
+  font-size: 28px;
+  line-height: 1.1;
 }
 
-.admin-login-description {
-  margin-bottom: 0;
-  font-size: 15px;
+.admin-login-form {
+  margin-top: 0;
+}
+
+.admin-login-form button {
+  width: 100%;
 }
 
 .admin-inline-actions {
