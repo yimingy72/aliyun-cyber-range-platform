@@ -360,7 +360,7 @@ export function RangeInstancesScreen({
 
     try {
       const trigger = getActionTrigger(instance, 'destroy');
-      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger, 'admin')) as ExtendedProvisionJob;
+      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger)) as ExtendedProvisionJob;
 
       upsertInstanceInSnapshot({
         ...instance,

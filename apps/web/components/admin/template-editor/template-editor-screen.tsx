@@ -6,7 +6,7 @@ import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime'
 
 import {
   AdminApiError,
-  fetchAdminBootstrap,
+  fetchRangeTemplates,
   fetchInstanceTypeAvailability,
   fetchPlatformImages,
   publishRangeTemplate,
@@ -1182,12 +1182,18 @@ function buildDraftUpdatePayload(
 
     let isActive = true;
 
-    fetchAdminBootstrap(apiBaseUrl, session.token).then((payload) => {
+    Promise.all([
+      fetchRangeTemplates(apiBaseUrl, session.token, 'mine'),
+      fetchRangeTemplates(apiBaseUrl, session.token, 'platform'),
+    ]).then(([myTemplates, platformTemplates]) => {
       if (!isActive) {
         return;
       }
 
-      const nextTemplate = payload.rangeTemplates.find((item) => item.id === templateId) ?? null;
+      const nextTemplate =
+        myTemplates.find((item) => item.id === templateId) ??
+        platformTemplates.find((item) => item.id === templateId) ??
+        null;
       applyTemplateState(nextTemplate);
     });
 

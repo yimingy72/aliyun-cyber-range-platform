@@ -11,6 +11,7 @@ import {
   type PlatformImageAssetRecord,
   type UpsertImageSnapshotInput,
 } from './admin.repository';
+import type { SessionUserProfile } from './admin-user-auth';
 import type { PlatformImageView } from './dto/platform-image.dto';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
@@ -108,20 +109,20 @@ export class ImageCatalogService {
     });
   }
 
-  async renamePlatformAsset(id: string, displayName: string, currentUserId: string) {
-    await this.getScopedPlatformAssetOrThrow(id, currentUserId);
+  async renamePlatformAsset(id: string, displayName: string, currentUser: SessionUserProfile) {
+    await this.getScopedPlatformAssetOrThrow(id, currentUser);
 
     return this.adminRepository.updatePlatformImageAsset(id, { displayName });
   }
 
-  async setPlatformAssetEnabled(id: string, enabled: boolean, currentUserId: string) {
-    await this.getScopedPlatformAssetOrThrow(id, currentUserId);
+  async setPlatformAssetEnabled(id: string, enabled: boolean, currentUser: SessionUserProfile) {
+    await this.getScopedPlatformAssetOrThrow(id, currentUser);
 
     return this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
   }
 
-  async removePlatformAsset(id: string, currentUserId: string): Promise<void> {
-    await this.getScopedPlatformAssetOrThrow(id, currentUserId);
+  async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
+    await this.getScopedPlatformAssetOrThrow(id, currentUser);
 
     await this.adminRepository.deletePlatformImageAsset(id);
   }
@@ -217,14 +218,17 @@ export class ImageCatalogService {
     return { snapshots, catalogItems };
   }
 
-  private async getScopedPlatformAssetOrThrow(id: string, currentUserId: string): Promise<PlatformImageAssetRecord> {
+  private async getScopedPlatformAssetOrThrow(
+    id: string,
+    currentUser: SessionUserProfile,
+  ): Promise<PlatformImageAssetRecord> {
     const asset = await this.adminRepository.getPlatformImageAssetById(id);
     const accountContext = await this.systemConfigService.getAccountContext();
 
     if (
       !asset ||
       !this.isPlatformAssetInScope(asset, accountContext) ||
-      (asset.visibility !== 'platform' && asset.ownerUserId !== currentUserId)
+      (currentUser.role !== 'admin' && asset.ownerUserId !== currentUser.id)
     ) {
       throw new NotFoundException('Platform image asset not found');
     }

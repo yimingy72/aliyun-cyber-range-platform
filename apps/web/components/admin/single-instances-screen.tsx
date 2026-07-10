@@ -683,7 +683,6 @@ export function SingleInstancesScreen({
       password: createForm.password.trim() || undefined,
       quantity: Number(createForm.quantity),
       remark: createForm.remark.trim() || undefined,
-      triggeredBy: 'admin',
     };
 
     setIsSubmitting(true);
@@ -742,7 +741,6 @@ export function SingleInstancesScreen({
       }
 
       const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
-        triggeredBy: 'admin',
         ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
       });
 
@@ -821,7 +819,7 @@ export function SingleInstancesScreen({
     setErrorMessage(null);
 
     try {
-      await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId, 'admin');
+      await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId);
       await reloadSingleInstanceRows(session.token);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {

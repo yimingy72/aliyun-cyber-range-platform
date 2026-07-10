@@ -18,6 +18,7 @@ export class AdminAuthGuard implements CanActivate {
       headers: Record<string, string | undefined>;
       originalUrl?: string;
       url?: string;
+      method?: string;
       adminUser?: SessionUserProfile;
     }>();
     const authorizationHeader = request.headers.authorization ?? '';
@@ -52,10 +53,39 @@ export class AdminAuthGuard implements CanActivate {
     return true;
   }
 
-  private requiresAdmin(request: { originalUrl?: string; url?: string }) {
+  private requiresAdmin(request: { originalUrl?: string; url?: string; method?: string }) {
     const pathname = (request.originalUrl ?? request.url ?? '').split('?')[0];
+    const method = (request.method ?? 'GET').toUpperCase();
 
-    return !AdminAuthGuard.AUTHENTICATED_USER_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+    if (!this.isAuthenticatedUserRoute(pathname, method)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isAuthenticatedUserRoute(pathname: string, method: string) {
+    if (AdminAuthGuard.AUTHENTICATED_USER_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+      return true;
+    }
+
+    if (pathname === '/admin/platform-images' && method === 'GET') {
+      return true;
+    }
+
+    if (/^\/admin\/platform-images\/[^/]+$/.test(pathname) && (method === 'PATCH' || method === 'DELETE')) {
+      return true;
+    }
+
+    if (/^\/admin\/platform-images\/[^/]+\/(enable|disable)$/.test(pathname) && method === 'POST') {
+      return true;
+    }
+
+    if ((pathname === '/admin/image-catalog/public' || pathname === '/admin/image-catalog/custom') && method === 'GET') {
+      return true;
+    }
+
+    return false;
   }
 
   private readBearerToken(authorizationHeader: string) {

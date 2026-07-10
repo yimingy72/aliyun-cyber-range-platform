@@ -26,22 +26,22 @@ export class PlatformImagesController {
 
   @Patch(':id')
   rename(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: RenamePlatformImageDto) {
-    return this.imageCatalogService.renamePlatformAsset(id, body.displayName, request.adminUser.id);
+    return this.imageCatalogService.renamePlatformAsset(id, body.displayName, request.adminUser);
   }
 
   @Post(':id/enable')
   enable(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.imageCatalogService.setPlatformAssetEnabled(id, true, request.adminUser.id);
+    return this.imageCatalogService.setPlatformAssetEnabled(id, true, request.adminUser);
   }
 
   @Post(':id/disable')
   disable(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.imageCatalogService.setPlatformAssetEnabled(id, false, request.adminUser.id);
+    return this.imageCatalogService.setPlatformAssetEnabled(id, false, request.adminUser);
   }
 
   @Delete(':id')
   @HttpCode(204)
   remove(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.imageCatalogService.removePlatformAsset(id, request.adminUser.id);
+    return this.imageCatalogService.removePlatformAsset(id, request.adminUser);
   }
 }

@@ -705,7 +705,6 @@ export function RangeInstanceDetailScreen({
         draftTopologyGraph: draftGraph,
         draftScenarioTemplateSpec: nextScenarioTemplateSpec,
         draftCompiledProvisionSpec: nextCompiledProvisionSpec,
-        draftUpdatedBy: 'admin',
       });
 
       setDetail(updated);
@@ -739,7 +738,7 @@ export function RangeInstanceDetailScreen({
         return;
       }
 
-      await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, 'admin');
+      await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id);
       setSuccessMessage('实例配置变更已提交应用。');
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
@@ -799,7 +798,7 @@ export function RangeInstanceDetailScreen({
         return;
       }
 
-      await syncRangeInstanceTemplate(apiBaseUrl, session.token, detail.id, 'admin');
+      await syncRangeInstanceTemplate(apiBaseUrl, session.token, detail.id);
       setSuccessMessage('当前实例拓扑已更新到模板草稿。');
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
@@ -856,8 +855,8 @@ export function RangeInstanceDetailScreen({
       setPackImageDialog(null);
       setSuccessMessage(
         result.imageReady
-          ? `镜像打包完成，已收录到平台镜像目录：${result.platformImageAsset?.displayName ?? packImageDialog.displayName}`
-          : `镜像打包任务已提交，镜像可用后才会在平台收录镜像中展示：${packImageDialog.displayName}`,
+          ? `镜像打包完成，已保存到我的镜像：${result.platformImageAsset?.displayName ?? packImageDialog.displayName}`
+          : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
@@ -1167,7 +1166,7 @@ export function RangeInstanceDetailScreen({
           <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label="二次打包镜像">
             <div className="template-workbench-dialog-header">
               <h2>二次打包镜像</h2>
-              <p>将当前主机保存为阿里云自定义镜像，并同步收录到平台镜像目录。</p>
+              <p>将当前主机保存为阿里云自定义镜像，并归档到我的镜像。</p>
             </div>
             <div className="template-workbench-dialog-grid">
               <label>

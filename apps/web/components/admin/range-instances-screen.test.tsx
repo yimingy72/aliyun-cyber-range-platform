@@ -294,7 +294,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getByText('实例会在靶场编排页生成后进入这里。')).toBeTruthy();
   });
 
-  it('triggers a destroy lifecycle action from the list row', async () => {
+  it('triggers a destroy lifecycle action from the list row without sending triggeredBy', async () => {
     fetchAdminBootstrapMock.mockResolvedValue({
       competitions: [],
       teams: [],
@@ -334,7 +334,6 @@ describe('RangeInstancesScreen', () => {
         'dev-admin-token',
         'range-1',
         'destroy',
-        'admin',
       );
     });
   });
