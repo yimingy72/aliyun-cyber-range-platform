@@ -897,7 +897,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ssh: 'ssh root@example.range',
       },
       resourceSummary: {
-        attemptedZones: null,
         bootstrapHostKeys: null,
         eipAllocationId: 'eip-local',
         eipAllocationIds: {

@@ -99,8 +99,8 @@ describe('AdminLoginPage', () => {
 
     render(<AdminLoginPage />);
 
-    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
     fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
 
     await waitFor(() => {
@@ -290,8 +290,8 @@ describe('AdminLoginPage', () => {
 
     render(<AdminLoginPage />);
 
-    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
     fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
 
     await waitFor(() => {

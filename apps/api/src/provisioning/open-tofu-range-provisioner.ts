@@ -30,7 +30,6 @@ import {
   type RangeProvisionCreateInput,
   type RangeProvisionCreateResult,
   type RangeProvisionDestroyInput,
-  type ProvisioningAttemptedZoneSummary,
   type RangeProvisioner,
   type ResolvedProvisioningRuntimeConfig,
   type RangeProvisionStepReporter,
