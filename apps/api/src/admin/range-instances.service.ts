@@ -366,11 +366,12 @@ export class RangeInstancesService {
         .filter((value): value is string => Boolean(value));
 
       const cidrPool = this.cidrPoolService.getPool();
-      const effectiveTopologySpec =
-        sourceTemplateVersion?.topologySpec ??
-        template.currentDraftVersion?.topologySpec ??
-        template.currentPublishedVersion?.topologySpec ??
-        template.topologySpec;
+      const effectiveTopologySpec = instance.sourceTemplateVersionId
+        ? this.resolveFrozenSourceTopologySpec(sourceTemplateVersion)
+        : sourceTemplateVersion?.topologySpec ??
+          template.currentDraftVersion?.topologySpec ??
+          template.currentPublishedVersion?.topologySpec ??
+          template.topologySpec;
       const fixedVpcCidr = effectiveTopologySpec?.vpcCidr ?? null;
 
       const allocatedCidr =
@@ -805,5 +806,97 @@ export class RangeInstancesService {
 
   private readArray(value: unknown): unknown[] {
     return Array.isArray(value) ? value : [];
+  }
+
+  private resolveFrozenSourceTopologySpec(
+    sourceTemplateVersion: Awaited<ReturnType<AdminRepository['getRangeTemplateVersionById']>> | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!sourceTemplateVersion) {
+      return null;
+    }
+
+    return (
+      sourceTemplateVersion.topologySpec ??
+      this.readTopologySpecFromCompiledProvisionSpec(sourceTemplateVersion.compiledProvisionSpec)
+    );
+  }
+
+  private readTopologySpecFromCompiledProvisionSpec(
+    value: Record<string, unknown> | null | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!value) {
+      return null;
+    }
+
+    const topology = this.readRecord(value.topology);
+    const networkZones = this.readArray(value.networkZones);
+    const hosts = this.readArray(value.hosts);
+    const publicEntryHostKey = typeof topology?.entryHostKey === 'string' ? topology.entryHostKey : null;
+    const vpcCidr = typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : null;
+
+    if (!publicEntryHostKey || !vpcCidr || networkZones.length === 0 || hosts.length === 0) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: networkZones.flatMap((zoneValue) => {
+        const zone = this.readRecord(zoneValue);
+
+        if (!zone || typeof zone.key !== 'string' || typeof zone.name !== 'string' || typeof zone.cidr !== 'string') {
+          return [];
+        }
+
+        return [
+          {
+            key: zone.key,
+            name: zone.name,
+            purpose: typeof zone.purpose === 'string' ? zone.purpose : zone.key,
+            cidr: zone.cidr,
+            ...(zone.isPublicEntry === true ? { isPublicEntry: true } : {}),
+          },
+        ];
+      }),
+      hosts: hosts.flatMap((hostValue) => {
+        const host = this.readRecord(hostValue);
+
+        if (
+          !host ||
+          typeof host.key !== 'string' ||
+          typeof host.name !== 'string' ||
+          typeof host.zoneKey !== 'string' ||
+          typeof host.role !== 'string'
+        ) {
+          return [];
+        }
+
+        const privateIp =
+          typeof host.primaryPrivateIp === 'string'
+            ? host.primaryPrivateIp
+            : this.readArray(host.networkInterfaces)[0] &&
+                typeof this.readRecord(this.readArray(host.networkInterfaces)[0])?.privateIp === 'string'
+              ? (this.readRecord(this.readArray(host.networkInterfaces)[0])?.privateIp as string)
+              : null;
+
+        if (!privateIp) {
+          return [];
+        }
+
+        return [
+          {
+            key: host.key,
+            name: host.name,
+            zoneKey: host.zoneKey,
+            role: host.role,
+            privateIp,
+            ...(host.exposePublic === true ? { exposePublic: true } : {}),
+          },
+        ];
+      }),
+      publicEntry: {
+        hostKey: publicEntryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
   }
 }

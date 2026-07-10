@@ -150,7 +150,8 @@ export class ProvisioningWorkerService {
         return;
       }
 
-      const allowTemplateFallback = await this.shouldAllowTemplateFallback(instance, template, job.triggeredBy);
+      const allowTemplateFallback = !instance.sourceTemplateVersionId
+        && (await this.shouldAllowTemplateFallback(instance, template, job.triggeredBy));
       const templateModulePath =
         sourceVersion?.modulePathOrRef ??
         (allowTemplateFallback ? template.modulePathOrRef : null);

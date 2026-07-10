@@ -666,6 +666,126 @@ describe('Admin resource visibility', () => {
     );
   });
 
+  it('does not fall back to draft topology when delayed create uses a pinned published version', async () => {
+    const aliceToken = await loginAs(app, alice.username, alice.password);
+    const bobToken = await loginAs(app, bob.username, bob.password);
+    const draftOnlyVpcCidr = '10.250.0.0/16';
+    const previousPool = process.env.RANGE_CIDR_POOL;
+
+    process.env.RANGE_CIDR_POOL = '';
+
+    try {
+      const createResponse = await request(app.getHttpServer())
+        .post('/admin/scenarios')
+        .set('authorization', `Bearer ${aliceToken}`)
+        .send(
+          createConsumableTemplatePayload({
+            name: 'Alice Shared Delayed Create',
+            slug: 'alice-shared-delayed-create',
+            version: 'v1',
+            scenarioName: 'Published Delayed Create',
+            hostName: 'published-delayed-entry',
+            vpcCidr: '10.85.0.0/16',
+          }),
+        )
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/admin/scenarios/${createResponse.body.id}/share`)
+        .set('authorization', `Bearer ${aliceToken}`)
+        .expect(200);
+
+      const publishResponse = await request(app.getHttpServer())
+        .post(`/admin/scenarios/${createResponse.body.id}/publish`)
+        .set('authorization', `Bearer ${aliceToken}`)
+        .expect(200);
+
+      const publishedVersionId = publishResponse.body.currentPublishedVersionId as string;
+
+      await request(app.getHttpServer())
+        .patch(`/admin/scenarios/${createResponse.body.id}`)
+        .set('authorization', `Bearer ${aliceToken}`)
+        .send({
+          version: 'v2',
+          topologySpec: {
+            vpcCidr: draftOnlyVpcCidr,
+            networkZones: [
+              { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true },
+            ],
+            hosts: [
+              {
+                key: 'entry',
+                name: 'draft-delayed-entry',
+                zoneKey: 'dmz',
+                role: 'entry',
+                privateIp: '10.66.10.10',
+                exposePublic: true,
+              },
+            ],
+            publicEntry: {
+              hostKey: 'entry',
+              protocols: [{ protocol: 'ssh', port: 22 }],
+            },
+          },
+        })
+        .expect(200);
+
+      const createInstanceResponse = await request(app.getHttpServer())
+        .post('/admin/ranges')
+        .set('authorization', `Bearer ${bobToken}`)
+        .send({
+          name: 'bob-delayed-create-instance',
+          templateId: createResponse.body.id,
+        })
+        .expect(201);
+
+      expect(createInstanceResponse.body.sourceTemplateVersionId).toBe(publishedVersionId);
+
+      const originalGetRangeTemplateVersionById = repository.getRangeTemplateVersionById.bind(repository);
+      const getRangeTemplateVersionByIdSpy = jest
+        .spyOn(repository, 'getRangeTemplateVersionById')
+        .mockImplementation(async (id: string) => {
+          const version = await originalGetRangeTemplateVersionById(id);
+
+          if (id !== publishedVersionId || !version) {
+            return version;
+          }
+
+          return {
+            ...version,
+            topologySpec: null,
+            compiledProvisionSpec: null,
+            compiledSpec: null,
+          };
+        });
+
+      try {
+        const createJobResponse = await request(app.getHttpServer())
+          .post(`/admin/ranges/${createInstanceResponse.body.id}/create`)
+          .set('authorization', `Bearer ${bobToken}`)
+          .send({})
+          .expect(201);
+
+        const persisted = await repository.getRangeInstanceById(createInstanceResponse.body.id);
+
+        expect(persisted?.allocatedCidr).toBeNull();
+        expect(persisted?.allocatedCidr).not.toBe(draftOnlyVpcCidr);
+
+        const createJob = await repository.getProvisionJobById(createJobResponse.body.id as string);
+
+        expect(createJob?.status).toBe('pending');
+      } finally {
+        getRangeTemplateVersionByIdSpy.mockRestore();
+      }
+    } finally {
+      if (previousPool === undefined) {
+        delete process.env.RANGE_CIDR_POOL;
+      } else {
+        process.env.RANGE_CIDR_POOL = previousPool;
+      }
+    }
+  });
+
   it('shows regular users only their own range instances', async () => {
     const aliceTemplate = await repository.createRangeTemplate({
       ...createTemplatePayload('Alice Range Template', 'alice-range-template'),
