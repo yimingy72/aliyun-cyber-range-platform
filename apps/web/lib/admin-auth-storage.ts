@@ -37,7 +37,7 @@ function normalizeAdminProfile(profile: unknown): AdminProfile | null {
   };
 }
 
-function normalizeAdminSession(session: unknown): AdminSessionPayload | null {
+export function parseAdminSessionPayload(session: unknown): AdminSessionPayload | null {
   if (!session || typeof session !== 'object') {
     return null;
   }
@@ -56,8 +56,11 @@ function normalizeAdminSession(session: unknown): AdminSessionPayload | null {
   };
 }
 
-function clearAdminStorageKeys() {
+function clearAdminSessionRecord() {
   window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+}
+
+function clearLegacyAdminTokenRecord() {
   window.localStorage.removeItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY);
 }
 
@@ -82,6 +85,9 @@ export function readAdminSession() {
   const storedSession = window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
 
   if (!storedSession) {
+    if (window.localStorage.getItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY) !== null) {
+      clearLegacyAdminTokenRecord();
+    }
     updateCachedSession(null, null);
     return null;
   }
@@ -91,10 +97,11 @@ export function readAdminSession() {
   }
 
   try {
-    const normalizedSession = normalizeAdminSession(JSON.parse(storedSession));
+    const normalizedSession = parseAdminSessionPayload(JSON.parse(storedSession));
 
     if (!normalizedSession) {
-      clearAdminStorageKeys();
+      clearAdminSessionRecord();
+      clearLegacyAdminTokenRecord();
       updateCachedSession(null, null);
       return null;
     }
@@ -105,11 +112,16 @@ export function readAdminSession() {
       window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
     }
 
+    if (window.localStorage.getItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY) !== null) {
+      clearLegacyAdminTokenRecord();
+    }
+
     updateCachedSession(serializedSession, normalizedSession);
 
     return normalizedSession;
   } catch {
-    clearAdminStorageKeys();
+    clearAdminSessionRecord();
+    clearLegacyAdminTokenRecord();
     updateCachedSession(null, null);
     return null;
   }
@@ -147,7 +159,7 @@ export function writeAdminSession(session: AdminSessionPayload) {
     return null;
   }
 
-  const normalizedSession = normalizeAdminSession(session);
+  const normalizedSession = parseAdminSessionPayload(session);
 
   if (!normalizedSession) {
     clearAdminSession();
@@ -156,9 +168,13 @@ export function writeAdminSession(session: AdminSessionPayload) {
 
   const serializedSession = JSON.stringify(normalizedSession);
 
-  clearAdminStorageKeys();
   window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
   updateCachedSession(serializedSession, normalizedSession);
+
+  if (window.localStorage.getItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY) !== null) {
+    clearLegacyAdminTokenRecord();
+  }
+
   emitAdminSessionChanged();
 
   return normalizedSession;
@@ -169,7 +185,8 @@ export function clearAdminSession() {
     return;
   }
 
-  clearAdminStorageKeys();
+  clearAdminSessionRecord();
+  clearLegacyAdminTokenRecord();
   updateCachedSession(null, null);
   emitAdminSessionChanged();
 }

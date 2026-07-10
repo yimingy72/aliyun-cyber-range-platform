@@ -2,11 +2,12 @@ import { cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testin
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useAdminSession } from '../../../components/admin/use-admin-session';
+import { ADMIN_SESSION_STORAGE_KEY, writeAdminSession } from '../../../lib/admin-auth-storage';
 
 const replace = vi.fn();
 const fetchMock = vi.fn();
 const storage = new Map<string, string>();
-const ADMIN_SESSION_STORAGE_KEY = 'aliyun-cyber-range-admin-session';
+const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'aliyun-cyber-range-admin-token';
 const ADMIN_PROFILE = {
   id: 'admin',
   username: 'admin',
@@ -169,6 +170,21 @@ describe('AdminLoginPage', () => {
     expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
   });
 
+  it('uses controlled migration for legacy token-only storage by clearing it and keeping the user logged out', async () => {
+    window.localStorage.setItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY, ' legacy-admin-token ');
+
+    const { result } = renderHook(() => useAdminSession());
+
+    await waitFor(() => {
+      expect(result.current.isReady).toBe(true);
+    });
+
+    expect(result.current.token).toBeNull();
+    expect(result.current.profile).toBeNull();
+    expect(window.localStorage.getItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
+  });
+
   it('restores the persisted admin session once the admin session is ready', async () => {
     window.localStorage.setItem(
       ADMIN_SESSION_STORAGE_KEY,
@@ -187,6 +203,39 @@ describe('AdminLoginPage', () => {
     expect(result.current.token).toBe('persisted-admin-token');
     expect(result.current.profile).toEqual(ADMIN_PROFILE);
     expect(result.current.isAdmin).toBe(true);
+  });
+
+  it('keeps the current session when a 200 login response payload is invalid', async () => {
+    writeAdminSession({
+      token: 'persisted-admin-token',
+      profile: ADMIN_PROFILE,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          token: 'next-admin-token',
+          profile: { username: 'admin' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<AdminLoginPage />);
+
+    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('管理员登录失败，服务返回了无效会话。')).toBeTruthy();
+    });
+
+    expect(JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ?? 'null')).toEqual({
+      token: 'persisted-admin-token',
+      profile: ADMIN_PROFILE,
+    });
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it('shows an error and does not redirect when the response token is missing', async () => {
