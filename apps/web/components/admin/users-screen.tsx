@@ -65,7 +65,19 @@ function getUserStatusTone(status: AdminUser['status']) {
 }
 
 function readActionErrorMessage(error: unknown, fallbackMessage: string) {
-  return error instanceof Error && error.message ? error.message : fallbackMessage;
+  if (!(error instanceof Error) || !error.message) {
+    return fallbackMessage;
+  }
+
+  if (error.message === 'Cannot disable the last active admin') {
+    return '至少需要保留一个可用的管理员账号，无法禁用最后一个管理员。';
+  }
+
+  if (error.message === 'Cannot demote the last active admin') {
+    return '至少需要保留一个可用的管理员账号，无法将最后一个管理员降级为普通用户。';
+  }
+
+  return error.message;
 }
 
 function replaceUser(users: AdminUser[], updatedUser: AdminUser) {
@@ -173,6 +185,14 @@ export function UsersScreen({
     setResetPasswordState(null);
   };
 
+  const currentUserId = session.profile?.id ?? null;
+
+  const handleSessionInvalidationForCurrentUser = (message: string) => {
+    setActionSuccessMessage(message);
+    session.logout();
+    router.replace('/admin/login');
+  };
+
   const handleScreenClickCapture = (event: MouseEvent<HTMLDivElement>) => {
     if (!menuUserId) {
       return;
@@ -237,6 +257,12 @@ export function UsersScreen({
     try {
       const updatedUser = await updateAdminUserRole(apiBaseUrl, session.token, user.id, { role });
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
+
+      if (updatedUser.id === currentUserId && updatedUser.role !== 'admin') {
+        handleSessionInvalidationForCurrentUser(`已更新 ${updatedUser.username} 的角色，请重新登录。`);
+        return;
+      }
+
       setActionSuccessMessage(`已更新 ${updatedUser.username} 的角色。`);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -264,6 +290,12 @@ export function UsersScreen({
     try {
       const updatedUser = await updateAdminUserStatus(apiBaseUrl, session.token, user.id, { status });
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
+
+      if (updatedUser.id === currentUserId && updatedUser.status === 'disabled') {
+        handleSessionInvalidationForCurrentUser(`已更新 ${updatedUser.username} 的状态，请重新登录。`);
+        return;
+      }
+
       setActionSuccessMessage(`已更新 ${updatedUser.username} 的状态。`);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -298,8 +330,14 @@ export function UsersScreen({
     try {
       const updatedUser = await resetAdminUserPassword(apiBaseUrl, session.token, resetPasswordState.userId, { password });
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
-      setActionSuccessMessage(`已重置 ${resetPasswordState.username} 的密码。`);
       closeResetPasswordDialog();
+
+      if (updatedUser.id === currentUserId) {
+        handleSessionInvalidationForCurrentUser(`已重置 ${resetPasswordState.username} 的密码，请重新登录。`);
+        return;
+      }
+
+      setActionSuccessMessage(`已重置 ${resetPasswordState.username} 的密码。`);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();

@@ -9,6 +9,7 @@ const {
   updateAdminUserStatusMock,
   resetAdminUserPasswordMock,
   replaceMock,
+  logoutMock,
 } = vi.hoisted(() => ({
   fetchAdminUsersMock: vi.fn(),
   createAdminUserMock: vi.fn(),
@@ -16,6 +17,7 @@ const {
   updateAdminUserStatusMock: vi.fn(),
   resetAdminUserPasswordMock: vi.fn(),
   replaceMock: vi.fn(),
+  logoutMock: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -67,6 +69,7 @@ describe('UsersScreen', () => {
     updateAdminUserStatusMock.mockReset();
     resetAdminUserPasswordMock.mockReset();
     replaceMock.mockReset();
+    logoutMock.mockReset();
   });
 
   afterEach(() => {
@@ -85,7 +88,7 @@ describe('UsersScreen', () => {
       isAdmin: true,
       isReady: true,
       login: vi.fn(),
-      logout: vi.fn(),
+      logout: logoutMock,
     });
     fetchAdminUsersMock.mockResolvedValue(adminUsersPayload);
 
@@ -116,7 +119,7 @@ describe('UsersScreen', () => {
       isAdmin: true,
       isReady: true,
       login: vi.fn(),
-      logout: vi.fn(),
+      logout: logoutMock,
     });
     fetchAdminUsersMock.mockResolvedValue([]);
     createAdminUserMock.mockResolvedValue({
@@ -168,7 +171,7 @@ describe('UsersScreen', () => {
       isAdmin: true,
       isReady: true,
       login: vi.fn(),
-      logout: vi.fn(),
+      logout: logoutMock,
     });
     fetchAdminUsersMock.mockResolvedValue(adminUsersPayload);
     updateAdminUserStatusMock.mockResolvedValue({
@@ -205,12 +208,128 @@ describe('UsersScreen', () => {
       isAdmin: false,
       isReady: true,
       login: vi.fn(),
-      logout: vi.fn(),
+      logout: logoutMock,
     });
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(screen.getByText('只有管理员可以访问用户管理页。')).toBeTruthy();
     expect(fetchAdminUsersMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a localized message when disabling the last active admin is rejected', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockResolvedValue([adminUsersPayload[0]]);
+    updateAdminUserStatusMock.mockRejectedValue(new Error('Cannot disable the last active admin'));
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    expect(row).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('至少需要保留一个可用的管理员账号，无法禁用最后一个管理员。'),
+      ).toBeTruthy();
+    });
+  });
+
+  it('logs the current admin out after resetting their own password', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockResolvedValue([adminUsersPayload[0]]);
+    resetAdminUserPasswordMock.mockResolvedValue({
+      ...adminUsersPayload[0],
+      updatedAt: '2026-07-10T05:00:00.000Z',
+    });
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    expect(row).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(within(row!).getByRole('button', { name: '重置密码' }));
+
+    const dialog = screen.getByRole('dialog', { name: '重置密码' });
+    fireEvent.change(within(dialog).getByLabelText('新密码'), {
+      target: { value: 'NewPassword123!' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认重置' }));
+
+    await waitFor(() => {
+      expect(resetAdminUserPasswordMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'admin',
+        { password: 'NewPassword123!' },
+      );
+      expect(logoutMock).toHaveBeenCalled();
+      expect(replaceMock).toHaveBeenCalledWith('/admin/login');
+    });
+  });
+
+  it('logs the current admin out after demoting themselves', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockResolvedValue([adminUsersPayload[0]]);
+    updateAdminUserRoleMock.mockResolvedValue({
+      ...adminUsersPayload[0],
+      role: 'user',
+      updatedAt: '2026-07-10T06:00:00.000Z',
+    });
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    expect(row).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(within(row!).getByRole('button', { name: '设为普通用户' }));
+
+    await waitFor(() => {
+      expect(updateAdminUserRoleMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'admin',
+        { role: 'user' },
+      );
+      expect(logoutMock).toHaveBeenCalled();
+      expect(replaceMock).toHaveBeenCalledWith('/admin/login');
+    });
   });
 });
