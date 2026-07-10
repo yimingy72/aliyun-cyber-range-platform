@@ -1,10 +1,57 @@
 import type { CompiledProvisionSpec } from './compiled-provision-spec';
 import type { ScenarioTemplateSpec } from './scenario-template-spec';
 
+export type AdminProfile = {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+};
+
+export type AdminSessionPayload = {
+  token: string;
+  profile: AdminProfile;
+};
+
+export type AdminUserRole = AdminProfile['role'];
+export type ResourceVisibility = 'private' | 'platform';
+export type RangeTemplateView = 'platform' | 'mine';
+export type PlatformImageView = 'platform' | 'mine';
+
+export type AdminUserStatus = 'active' | 'disabled';
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  role: AdminUserRole;
+  status: AdminUserStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateAdminUserInput = {
+  username: string;
+  password: string;
+  role: AdminUserRole;
+};
+
+export type UpdateAdminUserRoleInput = {
+  role: AdminUserRole;
+};
+
+export type UpdateAdminUserStatusInput = {
+  status: AdminUserStatus;
+};
+
+export type ResetAdminUserPasswordInput = {
+  password: string;
+};
+
 export type RangeTemplate = {
   id: string;
   name?: string | null;
   createdBy?: string | null;
+  ownerUserId?: string | null;
+  visibility?: ResourceVisibility;
   description?: string | null;
   slug: string;
   version: string;
@@ -247,7 +294,6 @@ export type RangeInstanceLaunchInput = {
   templateId: string;
   name: string;
   expiresAt: string;
-  triggeredBy: string;
 };
 
 export type SingleInstanceLaunchInput = {
@@ -261,7 +307,6 @@ export type SingleInstanceLaunchInput = {
   password?: string;
   quantity: number;
   remark?: string;
-  triggeredBy: string;
 };
 
 export type SingleInstanceLaunchResult = {
@@ -404,6 +449,8 @@ export type PlatformImageAsset = {
   id: string;
   provider: 'alibaba_cloud';
   accountUid?: string | null;
+  ownerUserId?: string | null;
+  visibility?: ResourceVisibility;
   accountScopeKey: string;
   regionId: string;
   sourceScope: 'public' | 'custom' | string;

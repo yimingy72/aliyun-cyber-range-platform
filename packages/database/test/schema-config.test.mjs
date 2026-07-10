@@ -20,11 +20,24 @@ function buildDatabaseUrlSample({ user, password, port, database }) {
   return `postgresql://${user}:${password}@localhost:${port}/${database}?schema=public`;
 }
 
+function extractSchemaBlock(schema, kind, name) {
+  const match = schema.match(new RegExp(`${kind}\\s+${name}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm'));
+
+  assert.ok(match, `expected ${kind} ${name} block`);
+
+  return match[1];
+}
+
 test('database bootstrap exposes postgres + prisma contract', () => {
   const envExample = fs.readFileSync(new URL('../../../.env.example', import.meta.url), 'utf8');
   const schema = fs.readFileSync(new URL('../prisma/schema.prisma', import.meta.url), 'utf8');
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const env = readEnvAssignments(envExample);
+  const platformUser = extractSchemaBlock(schema, 'model', 'PlatformUser');
+  const platformImageAsset = extractSchemaBlock(schema, 'model', 'PlatformImageAsset');
+  const rangeTemplate = extractSchemaBlock(schema, 'model', 'RangeTemplate');
+  const rangeInstance = extractSchemaBlock(schema, 'model', 'RangeInstance');
+  const singleInstanceBatch = extractSchemaBlock(schema, 'model', 'SingleInstanceBatch');
 
   assert.match(envExample, /^DATABASE_URL=/m);
   assert.match(schema, /provider\s*=\s*"postgresql"/);
@@ -43,15 +56,36 @@ test('database bootstrap exposes postgres + prisma contract', () => {
   assert.equal(typeof env.ADMIN_PASSWORD, 'string');
   assert.equal(typeof env.ADMIN_TOKEN, 'string');
   assert.equal(typeof env.NEXT_PUBLIC_API_BASE_URL, 'string');
-  assert.match(schema, /model Competition/);
-  assert.match(schema, /model Team/);
+  assert.match(schema, /model PlatformUser/);
+  assert.match(schema, /enum UserRole/);
+  assert.match(schema, /enum UserStatus/);
+  assert.match(schema, /enum ResourceVisibility/);
+  assert.match(schema, /model PlatformImageAsset/);
   assert.match(schema, /model RangeTemplate/);
   assert.match(schema, /topologySpec\s+Json\?/);
   assert.match(schema, /model RangeInstance/);
+  assert.match(schema, /model SingleInstanceBatch/);
   assert.match(schema, /model ProvisionJob/);
   assert.match(schema, /model ProvisionJobStepLog/);
   assert.match(schema, /enum RangeInstanceStatus/);
   assert.match(schema, /enum ProvisionJobStatus/);
+  assert.match(platformUser, /username\s+String\s+@unique/);
+  assert.match(platformUser, /role\s+UserRole\s+@default\(user\)/);
+  assert.match(platformUser, /status\s+UserStatus\s+@default\(active\)/);
+  assert.match(platformImageAsset, /ownerUserId\s+String\?/);
+  assert.match(platformImageAsset, /visibility\s+ResourceVisibility\s+@default\(private\)/);
+  assert.match(platformImageAsset, /ownerUser\s+PlatformUser\?/);
+  assert.match(platformImageAsset, /@@index\(\[visibility,\s*enabled\]\)/);
+  assert.match(rangeTemplate, /ownerUserId\s+String\?/);
+  assert.match(rangeTemplate, /visibility\s+ResourceVisibility\s+@default\(private\)/);
+  assert.match(rangeTemplate, /ownerUser\s+PlatformUser\?/);
+  assert.match(rangeTemplate, /@@index\(\[visibility,\s*updatedAt\]\)/);
+  assert.match(rangeInstance, /ownerUserId\s+String\?/);
+  assert.match(rangeInstance, /ownerUser\s+PlatformUser\?/);
+  assert.match(rangeInstance, /@@index\(\[ownerUserId,\s*createdAt\]\)/);
+  assert.match(singleInstanceBatch, /ownerUserId\s+String\?/);
+  assert.match(singleInstanceBatch, /ownerUser\s+PlatformUser\?/);
+  assert.match(singleInstanceBatch, /@@index\(\[ownerUserId,\s*createdAt\]\)/);
   assert.match(schema, /output\s*=\s*"\.\.\/generated\/client"/);
   assert.equal(typeof pkg.scripts['prisma:generate'], 'string');
   assert.equal(typeof pkg.scripts.test, 'string');

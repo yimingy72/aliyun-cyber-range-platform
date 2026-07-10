@@ -369,7 +369,7 @@ function SingleInstanceDialog({
 }
 
 export function SingleInstancesScreen({
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
   pollIntervalMs = 5000,
 }: SingleInstancesScreenProps) {
   const router = useRouter();
@@ -688,7 +688,6 @@ export function SingleInstancesScreen({
       password: createForm.password.trim() || undefined,
       quantity: Number(createForm.quantity),
       remark: createForm.remark.trim() || undefined,
-      triggeredBy: 'admin',
     };
 
     setIsSubmitting(true);
@@ -747,7 +746,6 @@ export function SingleInstancesScreen({
       }
 
       const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
-        triggeredBy: 'admin',
         ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
       });
 
@@ -826,7 +824,7 @@ export function SingleInstancesScreen({
     setErrorMessage(null);
 
     try {
-      await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId, 'admin');
+      await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId);
       await reloadSingleInstanceRows(session.token);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {

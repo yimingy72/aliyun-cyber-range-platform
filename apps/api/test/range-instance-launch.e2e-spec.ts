@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { hashPassword } from '../src/admin/admin-user-auth';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { generateAliyunEcsPassword } from '../src/admin/ecs-password-generator';
 import { AppModule } from '../src/app.module';
@@ -25,6 +26,15 @@ function createSystemConfigServiceStub() {
       accessKeySecret: 'test-sk',
     }),
   };
+}
+
+async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
+  const response = await request(app.getHttpServer())
+    .post('/admin/session')
+    .send({ username, password })
+    .expect(200);
+
+  return response.body.token as string;
 }
 
 describe('Range instance runtime snapshot persistence', () => {
@@ -183,6 +193,13 @@ describe('Range instance launch API', () => {
   let app: INestApplication;
   let repository: AdminRepository;
   let templateId: string;
+  let userToken: string;
+
+  const launchUser = {
+    id: 'range-user-1',
+    username: 'range-user',
+    password: 'RangeUser123!',
+  };
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -205,9 +222,20 @@ describe('Range instance launch API', () => {
 
     repository = app.get(ADMIN_REPOSITORY);
 
+    await repository.createPlatformUser({
+      id: launchUser.id,
+      username: launchUser.username,
+      passwordHash: hashPassword(launchUser.password),
+      role: 'user',
+      status: 'active',
+    });
+
     const template = await repository.createRangeTemplate({
       name: 'Launchable Template',
+      createdBy: launchUser.id,
+      ownerUserId: launchUser.id,
       slug: 'launchable-template',
+      visibility: 'private',
       version: 'v1',
       modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
       topologySpec: {
@@ -252,6 +280,7 @@ describe('Range instance launch API', () => {
     });
 
     templateId = template.id;
+    userToken = await loginAs(app, launchUser.username, launchUser.password);
   });
 
   afterAll(async () => {
@@ -261,12 +290,11 @@ describe('Range instance launch API', () => {
   it('launches a range instance atomically with snapshots and a pending create job', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/ranges/launch')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${userToken}`)
       .send({
         templateId,
         name: '攻防实例-一号',
         expiresAt: '2026-07-09T12:00:00.000Z',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -275,7 +303,8 @@ describe('Range instance launch API', () => {
         id: expect.any(String),
         name: '攻防实例-一号',
         status: 'pending_create',
-        createdBy: 'admin',
+        createdBy: launchUser.id,
+        ownerUserId: launchUser.id,
         expiresAt: '2026-07-09T12:00:00.000Z',
         lastJobId: expect.any(String),
         runtimeTopologyGraph: expect.objectContaining({
@@ -298,12 +327,11 @@ describe('Range instance launch API', () => {
   it('reuses custom host passwords and generates per-host runtime passwords during launch', async () => {
     const launchResponse = await request(app.getHttpServer())
       .post('/admin/ranges/launch')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${userToken}`)
       .send({
         templateId,
         name: '攻防实例-二号',
         expiresAt: '2026-07-10T12:00:00.000Z',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -329,7 +357,7 @@ describe('Range instance launch API', () => {
 
     const detailResponse = await request(app.getHttpServer())
       .get(`/admin/ranges/${launchResponse.body.id}`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${userToken}`)
       .expect(200);
 
     expect(detailResponse.body).toEqual(
@@ -339,5 +367,21 @@ describe('Range instance launch API', () => {
         runtimeCredentials: launchResponse.body.runtimeCredentials,
       }),
     );
+  });
+
+  it('rejects client-sent triggeredBy on range launch requests', async () => {
+    await request(app.getHttpServer())
+      .post('/admin/ranges/launch')
+      .set('authorization', `Bearer ${userToken}`)
+      .send({
+        templateId,
+        name: '攻防实例-三号',
+        expiresAt: '2026-07-11T12:00:00.000Z',
+        triggeredBy: 'malicious-client',
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toEqual(expect.arrayContaining(['property triggeredBy should not exist']));
+      });
   });
 });

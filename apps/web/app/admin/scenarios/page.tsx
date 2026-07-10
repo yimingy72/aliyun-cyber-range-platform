@@ -1,5 +1,6 @@
 import { TemplatesScreen } from '../../../components/admin/templates-screen';
+import { resolveAdminApiBaseUrl } from '../../../lib/admin-api-base-url';
 
 export default function AdminScenariosPage() {
-  return <TemplatesScreen />;
+  return <TemplatesScreen apiBaseUrl={resolveAdminApiBaseUrl()} />;
 }

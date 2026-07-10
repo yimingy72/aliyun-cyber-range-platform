@@ -9,16 +9,18 @@ import {
   cloneRangeTemplate,
   createRangeTemplate,
   deleteRangeTemplate,
-  fetchAdminBootstrap,
+  fetchRangeTemplates,
   launchRangeInstance,
   publishRangeTemplate,
+  shareRangeTemplate,
   unpublishRangeTemplate,
+  unshareRangeTemplate,
   updateRangeTemplate,
 } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import { createDefaultEnterpriseTopologySpec, DEFAULT_TEMPLATE_MODULE_PATH } from '../../lib/admin-template-defaults';
 import type {
-  AdminBootstrapData,
+  RangeTemplateView,
   Scenario,
   ScenarioCreateInput,
   ScenarioUpdateInput,
@@ -179,6 +181,16 @@ function isPublishedScenario(scenario: Scenario) {
   return Boolean(scenario.currentPublishedVersionId);
 }
 
+function upsertScenario(items: Scenario[], nextScenario: Scenario) {
+  return items.some((scenario) => scenario.id === nextScenario.id)
+    ? items.map((scenario) => (scenario.id === nextScenario.id ? nextScenario : scenario))
+    : [nextScenario, ...items];
+}
+
+function removeScenario(items: Scenario[], scenarioId: string) {
+  return items.filter((scenario) => scenario.id !== scenarioId);
+}
+
 function TemplateDialog({
   title,
   children,
@@ -201,11 +213,13 @@ function TemplateDialog({
 }
 
 export function TemplatesScreen({
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
 }: TemplatesScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
-  const [snapshot, setSnapshot] = useState<AdminBootstrapData | null>(null);
+  const [activeView, setActiveView] = useState<RangeTemplateView>('mine');
+  const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>([]);
+  const [myTemplates, setMyTemplates] = useState<Scenario[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
@@ -227,7 +241,8 @@ export function TemplatesScreen({
     }
 
     if (!session.token) {
-      setSnapshot(null);
+      setPlatformTemplates([]);
+      setMyTemplates([]);
       setErrorMessage(null);
       setActionErrorMessage(null);
       setActionSuccessMessage(null);
@@ -237,19 +252,24 @@ export function TemplatesScreen({
 
     let isActive = true;
 
-    setSnapshot(null);
+    setPlatformTemplates([]);
+    setMyTemplates([]);
     setErrorMessage(null);
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
     setIsLoading(true);
 
-    fetchAdminBootstrap(apiBaseUrl, session.token)
-      .then((payload) => {
+    Promise.all([
+      fetchRangeTemplates(apiBaseUrl, session.token, 'platform'),
+      fetchRangeTemplates(apiBaseUrl, session.token, 'mine'),
+    ])
+      .then(([nextPlatformTemplates, nextMyTemplates]) => {
         if (!isActive) {
           return;
         }
 
-        setSnapshot(payload);
+        setPlatformTemplates(nextPlatformTemplates);
+        setMyTemplates(nextMyTemplates);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -262,7 +282,7 @@ export function TemplatesScreen({
           return;
         }
 
-      setErrorMessage('靶场编排加载失败，请刷新页面后重试。');
+        setErrorMessage('靶场编排加载失败，请刷新页面后重试。');
       })
       .finally(() => {
         if (!isActive) {
@@ -277,7 +297,7 @@ export function TemplatesScreen({
     };
   }, [apiBaseUrl, session.isReady, session.token]);
 
-  const scenarios = snapshot?.scenarios ?? snapshot?.rangeTemplates ?? [];
+  const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
   const publishedCount = useMemo(
     () => scenarios.filter((scenario) => isPublishedScenario(scenario)).length,
     [scenarios],
@@ -296,30 +316,32 @@ export function TemplatesScreen({
     });
   }, [searchName, statusFilter, scenarios]);
 
-  const editingTemplate = useMemo(
-    () => scenarios.find((scenario) => scenario.id === editingTemplateId) ?? null,
-    [editingTemplateId, scenarios],
-  );
+  const editingTemplate = useMemo(() => {
+    if (!editingTemplateId) {
+      return null;
+    }
 
-  function upsertTemplateInSnapshot(savedScenario: Scenario) {
-    setSnapshot((previous) => {
-      if (!previous) {
-        return previous;
-      }
+    return (
+      myTemplates.find((scenario) => scenario.id === editingTemplateId) ??
+      platformTemplates.find((scenario) => scenario.id === editingTemplateId) ??
+      null
+    );
+  }, [editingTemplateId, myTemplates, platformTemplates]);
 
-      const currentScenarios = previous.scenarios ?? previous.rangeTemplates;
-      const alreadyExists = currentScenarios.some((scenario) => scenario.id === savedScenario.id);
+  function syncOwnedTemplate(savedScenario: Scenario) {
+    setMyTemplates((previous) =>
+      savedScenario.ownerUserId === session.profile?.id
+        ? upsertScenario(previous, savedScenario)
+        : removeScenario(previous, savedScenario.id),
+    );
+    setPlatformTemplates((previous) =>
+      savedScenario.visibility === 'platform' ? upsertScenario(previous, savedScenario) : removeScenario(previous, savedScenario.id),
+    );
+  }
 
-      return {
-        ...previous,
-        scenarios: alreadyExists
-          ? currentScenarios.map((scenario) => (scenario.id === savedScenario.id ? savedScenario : scenario))
-          : [savedScenario, ...currentScenarios],
-        rangeTemplates: alreadyExists
-          ? previous.rangeTemplates.map((scenario) => (scenario.id === savedScenario.id ? savedScenario : scenario))
-          : [savedScenario, ...previous.rangeTemplates],
-      };
-    });
+  function removeTemplateFromViews(id: string) {
+    setMyTemplates((previous) => removeScenario(previous, id));
+    setPlatformTemplates((previous) => removeScenario(previous, id));
   }
 
   function handleProtectedActionError(error: unknown, fallbackMessage: string): never {
@@ -410,7 +432,7 @@ export function TemplatesScreen({
     const payload = {
       name: createDraft.name.trim(),
       description: createDraft.description.trim(),
-      slug: buildGeneratedSlug(createDraft.name, scenarios),
+      slug: buildGeneratedSlug(createDraft.name, myTemplates),
       version: 'v1',
       modulePathOrRef: DEFAULT_TEMPLATE_MODULE_PATH,
       defaultRegion: 'cn-hangzhou',
@@ -427,7 +449,7 @@ export function TemplatesScreen({
 
     try {
       const savedTemplate = await createRangeTemplate(apiBaseUrl, session.token, buildCreatePayload(payload));
-      upsertTemplateInSnapshot(savedTemplate);
+      syncOwnedTemplate(savedTemplate);
       closeCreateDialog();
       router.push(`/admin/scenarios/${savedTemplate.id}`);
     } catch (error: unknown) {
@@ -456,7 +478,7 @@ export function TemplatesScreen({
 
     try {
       const savedTemplate = await updateRangeTemplate(apiBaseUrl, session.token, id, payload);
-      upsertTemplateInSnapshot(savedTemplate);
+      syncOwnedTemplate(savedTemplate);
       closeEditDialog();
       setActionSuccessMessage('靶场信息已保存。');
     } catch (error: unknown) {
@@ -476,7 +498,7 @@ export function TemplatesScreen({
 
     try {
       const savedTemplate = await publishRangeTemplate(apiBaseUrl, session.token, id);
-      upsertTemplateInSnapshot(savedTemplate);
+      syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
       setActionSuccessMessage('靶场模板已发布。');
       return savedTemplate;
@@ -495,13 +517,51 @@ export function TemplatesScreen({
 
     try {
       const savedTemplate = await unpublishRangeTemplate(apiBaseUrl, session.token, id);
-      upsertTemplateInSnapshot(savedTemplate);
+      syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
       closeConfirmDialog();
       setActionSuccessMessage('已取消发布。');
       return savedTemplate;
     } catch (error: unknown) {
       return handleProtectedActionError(error, '取消发布失败，请稍后重试。');
+    }
+  }
+
+  async function handleShareTemplate(id: string): Promise<Scenario> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+    setActionSuccessMessage(null);
+
+    try {
+      const savedTemplate = await shareRangeTemplate(apiBaseUrl, session.token, id);
+      syncOwnedTemplate(savedTemplate);
+      setMenuTemplateId(null);
+      setActionSuccessMessage('已发布到平台。');
+      return savedTemplate;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '发布到平台失败，请稍后重试。');
+    }
+  }
+
+  async function handleUnshareTemplate(id: string): Promise<Scenario> {
+    if (!session.token) {
+      throw new Error('admin session missing');
+    }
+
+    setActionErrorMessage(null);
+    setActionSuccessMessage(null);
+
+    try {
+      const savedTemplate = await unshareRangeTemplate(apiBaseUrl, session.token, id);
+      syncOwnedTemplate(savedTemplate);
+      setMenuTemplateId(null);
+      setActionSuccessMessage('已回退为私有。');
+      return savedTemplate;
+    } catch (error: unknown) {
+      return handleProtectedActionError(error, '回退为私有失败，请稍后重试。');
     }
   }
 
@@ -515,19 +575,7 @@ export function TemplatesScreen({
 
     try {
       await deleteRangeTemplate(apiBaseUrl, session.token, id);
-      setSnapshot((previous) => {
-        if (!previous) {
-          return previous;
-        }
-
-        const nextScenarios = previous.rangeTemplates.filter((template) => template.id !== id);
-
-        return {
-          ...previous,
-          scenarios: nextScenarios,
-          rangeTemplates: nextScenarios,
-        };
-      });
+      removeTemplateFromViews(id);
       setMenuTemplateId(null);
       closeConfirmDialog();
       setActionSuccessMessage('靶场模板已删除。');
@@ -554,7 +602,7 @@ export function TemplatesScreen({
 
     try {
       const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id);
-      upsertTemplateInSnapshot(savedTemplate);
+      syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
       setActionSuccessMessage('靶场模板副本已创建。');
     } catch (error: unknown) {
@@ -608,7 +656,6 @@ export function TemplatesScreen({
         templateId: launchDraft.templateId,
         name,
         expiresAt: new Date(expiresAt).toISOString(),
-        triggeredBy: 'admin',
       });
       closeLaunchDialog();
       router.push(`/admin/ranges/${instance.id}`);
@@ -634,7 +681,12 @@ export function TemplatesScreen({
     );
   }
 
-  const isBootstrapLoading = isLoading && !snapshot;
+  const isBootstrapLoading = isLoading && platformTemplates.length === 0 && myTemplates.length === 0;
+  const canCreateTemplates = activeView === 'mine';
+
+  function canManageTemplate(template: Scenario) {
+    return session.isAdmin || template.ownerUserId === session.profile?.id;
+  }
 
   return (
     <div className="admin-screen template-workbench-screen" onClickCapture={handleScreenClickCapture}>
@@ -664,6 +716,15 @@ export function TemplatesScreen({
               </label>
             </div>
 
+            <div className="template-workbench-segmented" role="tablist" aria-label="靶场编排视图">
+              <button type="button" aria-pressed={activeView === 'platform'} onClick={() => setActiveView('platform')}>
+                平台拓扑
+              </button>
+              <button type="button" aria-pressed={activeView === 'mine'} onClick={() => setActiveView('mine')}>
+                我的拓扑
+              </button>
+            </div>
+
             <div className="template-workbench-segmented" role="tablist" aria-label="靶场编排状态筛选">
               <div className="template-workbench-list-meta" aria-label="靶场编排统计">
                 <span>已发布 {publishedCount}</span>
@@ -681,9 +742,11 @@ export function TemplatesScreen({
                 草稿中
               </button>
 
-              <button type="button" className="template-workbench-create-button" onClick={() => setIsCreateDialogOpen(true)}>
-                新建靶场
-              </button>
+              {canCreateTemplates ? (
+                <button type="button" className="template-workbench-create-button" onClick={() => setIsCreateDialogOpen(true)}>
+                  新建靶场
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -715,6 +778,9 @@ export function TemplatesScreen({
               {filteredTemplates.map((template) => {
                 const menuOpen = menuTemplateId === template.id;
                 const isPublished = isPublishedScenario(template);
+                const isShared = template.visibility === 'platform';
+                const canManageCurrentTemplate = canManageTemplate(template);
+                const canConsumeTemplate = canManageCurrentTemplate || isPublished;
 
                 return (
                   <article key={template.id} className={`template-workbench-row${menuOpen ? ' is-menu-open' : ''}`}>
@@ -750,7 +816,7 @@ export function TemplatesScreen({
                       <button
                         type="button"
                         className="template-workbench-primary-action"
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || !canManageCurrentTemplate}
                         onClick={() => handleOpenTemplateEditor(template.id)}
                       >
                         进入编排
@@ -769,27 +835,46 @@ export function TemplatesScreen({
 
                         {menuOpen ? (
                           <div className="template-workbench-action-menu">
-                            <button type="button" onClick={() => openEditDialog(template)}>
-                              编辑信息
-                            </button>
-                            <button type="button" onClick={() => void handleCloneTemplate(template)}>
-                              复制模板
-                            </button>
-                            {isPublished ? (
-                              <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
-                                取消发布
+                            {canConsumeTemplate ? (
+                              <button type="button" onClick={() => void handleCloneTemplate(template)}>
+                                复制模板
                               </button>
-                            ) : (
-                              <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
-                                发布模板
+                            ) : null}
+                            {canManageCurrentTemplate ? (
+                              <>
+                                <button type="button" onClick={() => openEditDialog(template)}>
+                                  编辑信息
+                                </button>
+                                {isPublished ? (
+                                  <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
+                                    取消发布
+                                  </button>
+                                ) : (
+                                  <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
+                                    发布版本
+                                  </button>
+                                )}
+                                {isShared ? (
+                                  <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
+                                    回退为私有
+                                  </button>
+                                ) : (
+                                  <button type="button" onClick={() => void handleShareTemplate(template.id)}>
+                                    发布到平台
+                                  </button>
+                                )}
+                              </>
+                            ) : null}
+                            {canConsumeTemplate ? (
+                              <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
+                                生成实例
                               </button>
-                            )}
-                            <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
-                              生成实例
-                            </button>
-                            <button type="button" onClick={() => openConfirmDialog('delete', template)}>
-                              删除模板
-                            </button>
+                            ) : null}
+                            {canManageCurrentTemplate ? (
+                              <button type="button" onClick={() => openConfirmDialog('delete', template)}>
+                                删除模板
+                              </button>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -801,7 +886,7 @@ export function TemplatesScreen({
           ) : (
             <div className="template-workbench-empty">
               <strong>当前筛选条件下没有靶场。</strong>
-              <p>你可以调整筛选条件，或者直接新建靶场进入拓扑编排页。</p>
+              <p>{canCreateTemplates ? '你可以调整筛选条件，或者直接新建靶场进入拓扑编排页。' : '你可以切换到我的拓扑继续维护自有编排。'}</p>
             </div>
           )}
         </div>

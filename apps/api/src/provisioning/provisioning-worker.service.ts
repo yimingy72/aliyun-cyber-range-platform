@@ -150,17 +150,28 @@ export class ProvisioningWorkerService {
         return;
       }
 
-      const templateModulePath = sourceVersion?.modulePathOrRef ?? template.modulePathOrRef;
+      const allowTemplateFallback = !instance.sourceTemplateVersionId
+        && (await this.shouldAllowTemplateFallback(instance, template, job.triggeredBy));
+      const templateModulePath =
+        sourceVersion?.modulePathOrRef ??
+        (allowTemplateFallback ? template.modulePathOrRef : null);
       const baseCompiledProvisionSpec =
         this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
-        this.getCompiledProvisionSpec(template.compiledProvisionSpec);
+        (allowTemplateFallback ? this.getCompiledProvisionSpec(template.compiledProvisionSpec) : null) ??
+        this.getCompiledProvisionSpec(instance.runtimeCompiledProvisionSpec);
       const baseCompiledSpec =
-        this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
+        this.getCompiledSpec(sourceVersion?.compiledSpec) ??
+        (allowTemplateFallback ? this.getCompiledSpec(template.compiledSpec) : null);
       const baseTopologySpec =
         this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
         this.getCompiledTopologySpec(baseCompiledSpec) ??
         sourceVersion?.topologySpec ??
-        template.topologySpec;
+        (allowTemplateFallback ? template.topologySpec : null);
+
+      if (!templateModulePath) {
+        await this.failJob(job, instance, 'Template module path not found');
+        return;
+      }
 
       if (!baseTopologySpec && !baseCompiledSpec && !baseCompiledProvisionSpec) {
         await this.failJob(job, instance, 'Template provisioning blueprint not found');
@@ -202,12 +213,12 @@ export class ProvisioningWorkerService {
             status: 'running',
             runtimeTopologyGraph:
               sourceVersion?.topologyGraph ??
-              template.topologyGraph ??
+              (allowTemplateFallback ? template.topologyGraph : null) ??
               instance.runtimeTopologyGraph ??
               null,
             runtimeScenarioTemplateSpec:
               sourceVersion?.scenarioTemplateSpec ??
-              template.scenarioTemplateSpec ??
+              (allowTemplateFallback ? template.scenarioTemplateSpec : null) ??
               instance.runtimeScenarioTemplateSpec ??
               null,
             runtimeCompiledProvisionSpec:
@@ -345,6 +356,24 @@ export class ProvisioningWorkerService {
     }
 
     return started;
+  }
+
+  private async shouldAllowTemplateFallback(
+    instance: RangeInstanceRecord,
+    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
+    triggeredBy: string,
+  ) {
+    const actor = await this.adminRepository.getPlatformUserById(triggeredBy);
+
+    if (!actor) {
+      return true;
+    }
+
+    if (actor.role === 'admin') {
+      return true;
+    }
+
+    return template.ownerUserId === actor.id || instance.ownerUserId === template.ownerUserId;
   }
 
   private trackTask(task: Promise<void>) {
@@ -570,9 +599,77 @@ export class ProvisioningWorkerService {
       return null;
     }
 
-    const candidate = compiledSpec.topologySpec;
+    if (compiledSpec.topologySpec) {
+      return compiledSpec.topologySpec;
+    }
 
-    return candidate ?? null;
+    const switchResources = compiledSpec.resources.filter((resource) => resource.type === 'switch');
+    const hostResources = compiledSpec.resources.filter((resource) => resource.type === 'host');
+    const vpcCidr = compiledSpec.topology?.vpcCidr;
+
+    if (!vpcCidr || switchResources.length === 0 || hostResources.length === 0) {
+      return null;
+    }
+
+    const publicEntryHostKey =
+      compiledSpec.topology?.publicEntryHostKey ??
+      hostResources.find((resource) => resource.config.exposePublic === true)?.id ??
+      hostResources.find((resource) => resource.config.role === 'entry')?.id;
+
+    if (!publicEntryHostKey) {
+      return null;
+    }
+
+    const publicEntryHost = hostResources.find((resource) => resource.id === publicEntryHostKey);
+
+    if (!publicEntryHost?.config.zoneKey) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: switchResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const name = typeof resource.config.label === 'string' ? resource.config.label : null;
+        const cidr = typeof resource.config.cidr === 'string' ? resource.config.cidr : null;
+
+        if (!zoneKey || !name || !cidr) {
+          return [];
+        }
+
+        return [{
+          key: zoneKey,
+          name,
+          purpose: typeof resource.config.purpose === 'string' ? resource.config.purpose : zoneKey,
+          cidr,
+          ...(zoneKey === publicEntryHost.config.zoneKey ? { isPublicEntry: true } : {}),
+        }];
+      }),
+      hosts: hostResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const role = typeof resource.config.role === 'string' ? resource.config.role : null;
+        const privateIp = typeof resource.config.privateIp === 'string' ? resource.config.privateIp : null;
+
+        if (!zoneKey || !role || !privateIp) {
+          return [];
+        }
+
+        return [{
+          key: resource.id,
+          name: typeof resource.config.label === 'string' ? resource.config.label : resource.id,
+          zoneKey,
+          role,
+          privateIp,
+          ...(typeof resource.config.exposePublic === 'boolean'
+            ? { exposePublic: resource.config.exposePublic }
+            : {}),
+        }];
+      }),
+      publicEntry: {
+        hostKey: publicEntryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
   }
 
   private getCompiledSpec(
@@ -653,9 +750,14 @@ export class ProvisioningWorkerService {
           typeof host.key !== 'string' ||
           typeof host.name !== 'string' ||
           typeof host.zoneKey !== 'string' ||
-          typeof host.role !== 'string' ||
-          typeof host.primaryPrivateIp !== 'string'
+          typeof host.role !== 'string'
         ) {
+          return [];
+        }
+
+        const privateIp = this.readCompiledProvisionHostPrivateIp(host);
+
+        if (!privateIp) {
           return [];
         }
 
@@ -664,7 +766,7 @@ export class ProvisioningWorkerService {
           name: host.name,
           zoneKey: host.zoneKey,
           role: host.role,
-          privateIp: host.primaryPrivateIp,
+          privateIp,
           ...(host.exposePublic === true ? { exposePublic: true } : {}),
         }];
       }),
@@ -684,7 +786,21 @@ export class ProvisioningWorkerService {
   }
 
   private readJsonArray(value: unknown): unknown[] {
-    return Array.isArray(value) ? value : [];
+      return Array.isArray(value) ? value : [];
+  }
+
+  private readCompiledProvisionHostPrivateIp(host: Record<string, unknown>) {
+    if (typeof host.primaryPrivateIp === 'string') {
+      return host.primaryPrivateIp;
+    }
+
+    const primaryInterface = this.readJsonObject(this.readJsonArray(host.networkInterfaces)[0]);
+
+    if (typeof primaryInterface?.privateIp === 'string') {
+      return primaryInterface.privateIp;
+    }
+
+    return null;
   }
 
   private async verifyDestroyCompletion(

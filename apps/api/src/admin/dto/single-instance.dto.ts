@@ -47,30 +47,26 @@ export class LaunchSingleInstanceDto {
   @IsOptional()
   @IsString()
   remark?: string;
-
-  @IsString()
-  @IsNotEmpty()
-  triggeredBy!: string;
 }
 
 export class TriggerSingleInstanceActionDto {
-  @IsString()
-  @IsNotEmpty()
-  triggeredBy!: string;
-
   @IsOptional()
   @IsString()
   displayName?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultHostName?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultPassword?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
-export class TriggerSingleInstanceDestroyDto {
-  @IsString()
-  @IsNotEmpty()
-  triggeredBy!: string;
-}
+export class TriggerSingleInstanceDestroyDto {}
 
-export class TriggerSingleInstanceBatchDestroyDto {
-  @IsString()
-  @IsNotEmpty()
-  triggeredBy!: string;
-}
+export class TriggerSingleInstanceBatchDestroyDto {}

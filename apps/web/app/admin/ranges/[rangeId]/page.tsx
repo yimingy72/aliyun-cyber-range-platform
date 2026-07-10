@@ -1,4 +1,5 @@
 import { RangeInstanceDetailScreen } from '../../../../components/admin/range-instance-detail-screen';
+import { resolveAdminApiBaseUrl } from '../../../../lib/admin-api-base-url';
 
 export default async function AdminRangeDetailPage({
   params,
@@ -7,5 +8,5 @@ export default async function AdminRangeDetailPage({
 }) {
   const { rangeId } = await params;
 
-  return <RangeInstanceDetailScreen rangeId={rangeId} />;
+  return <RangeInstanceDetailScreen apiBaseUrl={resolveAdminApiBaseUrl()} rangeId={rangeId} />;
 }

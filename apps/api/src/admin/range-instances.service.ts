@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
   AdminRepository,
   CreateRangeInstanceInput,
+  RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
   RangeRuntimeCredentials,
 } from './admin.repository';
+import type { SessionUserProfile } from './admin-user-auth';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
@@ -24,6 +26,7 @@ import { compileTopologyGraph } from '../../../web/lib/template-compiler';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
+type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
 
 @Injectable()
 export class RangeInstancesService {
@@ -35,21 +38,29 @@ export class RangeInstancesService {
     private readonly provisioningWorkerService: ProvisioningWorkerService,
   ) {}
 
-  async list() {
+  async list(currentUser?: AuthenticatedUser) {
     const instances = await this.adminRepository.listRangeInstances();
+    const scopedInstances =
+      currentUser && currentUser.role !== 'admin'
+        ? instances.filter((instance) => instance.ownerUserId === currentUser.id)
+        : instances;
 
     return Promise.all(
-      instances
+      scopedInstances
         .filter((instance) => instance.instanceMode === 'range')
         .map((instance) => this.attachRecoverySummary(instance)),
     );
   }
 
-  async getById(id: string) {
+  async getById(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     const hydrated = await this.attachRecoverySummary(instance);
@@ -66,7 +77,7 @@ export class RangeInstancesService {
     });
   }
 
-  async create(input: CreateRangeInstanceInput) {
+  async create(input: CreateRangeInstanceInput, currentUser?: AuthenticatedUser) {
     if (!input.templateId) {
       throw new ConflictException('Range instance requires a template id');
     }
@@ -77,7 +88,8 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
-    const sourceTemplateVersionId = template.currentDraftVersionId ?? template.currentPublishedVersionId;
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
+    const sourceTemplateVersionId = sourceTemplateVersion?.id ?? null;
 
     if (!sourceTemplateVersionId) {
       throw new ConflictException('Range template does not have an active template version');
@@ -85,37 +97,49 @@ export class RangeInstancesService {
 
     return this.adminRepository.createRangeInstance({
       ...input,
+      createdBy: currentUser?.id ?? input.createdBy,
+      ownerUserId: currentUser?.id ?? input.ownerUserId,
       sourceTemplateVersionId,
     });
   }
 
-  async launch(input: LaunchRangeInstanceDto) {
+  async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
     const template = await this.adminRepository.getRangeTemplateById(input.templateId);
 
     if (!template) {
       throw new NotFoundException('Range template not found');
     }
 
-    const sourceTemplateVersion = template.currentDraftVersion ?? template.currentPublishedVersion;
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
+    const allowTemplateFallback = !this.isSharedTemplateConsumer(template, currentUser);
 
     if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
     }
 
     const runtimeScenarioTemplateSpec =
-      sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null;
+      sourceTemplateVersion.scenarioTemplateSpec ??
+      (allowTemplateFallback ? template.scenarioTemplateSpec : null) ??
+      null;
     const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
+    const actorId = currentUser?.id ?? 'admin';
 
     const instance = await this.adminRepository.createRangeInstance({
       name: input.name,
-      createdBy: input.triggeredBy,
+      createdBy: actorId,
+      ownerUserId: currentUser?.id ?? null,
       instanceMode: 'range',
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
-      runtimeTopologyGraph: sourceTemplateVersion.topologyGraph ?? template.topologyGraph ?? null,
+      runtimeTopologyGraph:
+        sourceTemplateVersion.topologyGraph ??
+        (allowTemplateFallback ? template.topologyGraph : null) ??
+        null,
       runtimeScenarioTemplateSpec,
       runtimeCompiledProvisionSpec:
-        sourceTemplateVersion.compiledProvisionSpec ?? template.compiledProvisionSpec ?? null,
+        sourceTemplateVersion.compiledProvisionSpec ??
+        (allowTemplateFallback ? template.compiledProvisionSpec : null) ??
+        null,
       runtimeCredentials,
       status: 'pending_create',
       expiresAt: input.expiresAt,
@@ -124,7 +148,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'create',
-      triggeredBy: input.triggeredBy,
+      triggeredBy: actorId,
     });
 
     const updated = await this.adminRepository.updateRangeInstance(instance.id, {
@@ -142,11 +166,15 @@ export class RangeInstancesService {
     return this.withDefaultInstancePassword(hydrated);
   }
 
-  async saveDraft(id: string, input: SaveRangeInstanceDraftDto) {
+  async saveDraft(id: string, input: SaveRangeInstanceDraftDto, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     if (instance.status !== 'running') {
@@ -159,24 +187,28 @@ export class RangeInstancesService {
       draftTopologyGraph: input.draftTopologyGraph,
       draftScenarioTemplateSpec: input.draftScenarioTemplateSpec,
       draftCompiledProvisionSpec: input.draftCompiledProvisionSpec,
-      draftUpdatedBy: input.draftUpdatedBy,
+      draftUpdatedBy: currentUser?.id ?? null,
       draftUpdatedAt: new Date(),
     });
 
-      const hydrated = await this.attachRecoverySummary(updated);
+    const hydrated = await this.attachRecoverySummary(updated);
 
-      if (!hydrated) {
-        throw new NotFoundException('Range instance not found');
-      }
+    if (!hydrated) {
+      throw new NotFoundException('Range instance not found');
+    }
 
-      return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(hydrated);
   }
 
-  async discardDraft(id: string) {
+  async discardDraft(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     const updated = await this.adminRepository.updateRangeInstance(id, {
@@ -196,11 +228,20 @@ export class RangeInstancesService {
     return this.withDefaultInstancePassword(hydrated);
   }
 
-  async applyDraft(id: string, triggeredBy: string) {
+  async applyDraft(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
+
+    if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
     if (instance.status !== 'running') {
@@ -214,7 +255,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: id,
       jobType: 'update',
-      triggeredBy,
+      triggeredBy: actorId,
     });
 
     await this.adminRepository.updateRangeInstance(id, {
@@ -227,11 +268,15 @@ export class RangeInstancesService {
     return job;
   }
 
-  async syncTemplate(id: string, _triggeredBy: string) {
+  async syncTemplate(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     if (!instance.templateId) {
@@ -264,16 +309,24 @@ export class RangeInstancesService {
 
     const compiledSpec = this.buildCompiledSpecFromTopologyGraph(topologyGraph, topologySpec);
 
-    return this.rangeTemplatesService.update(template.id, {
-      topologySpec,
-      topologyGraph,
-      scenarioTemplateSpec,
-      compiledProvisionSpec,
-      ...(compiledSpec ? { compiledSpec } : {}),
-    });
+    return this.rangeTemplatesService.update(
+      template.id,
+      {
+        topologySpec,
+        topologyGraph,
+        scenarioTemplateSpec,
+        compiledProvisionSpec,
+        ...(compiledSpec ? { compiledSpec } : {}),
+      },
+      currentUser,
+    );
   }
 
-  async triggerCreate(id: string, triggeredBy: string) {
+  async triggerCreate(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
     const job = await this.cidrPoolService.serialize(async () => {
       const instance = await this.adminRepository.getRangeInstanceById(id);
 
@@ -281,7 +334,11 @@ export class RangeInstancesService {
         throw new NotFoundException('Range instance not found');
       }
 
-       if (!instance.templateId) {
+      if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+        this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
+      }
+
+      if (!instance.templateId) {
         throw new ConflictException('Range instance no longer references an active template');
       }
 
@@ -310,11 +367,12 @@ export class RangeInstancesService {
         .filter((value): value is string => Boolean(value));
 
       const cidrPool = this.cidrPoolService.getPool();
-      const effectiveTopologySpec =
-        sourceTemplateVersion?.topologySpec ??
-        template.currentDraftVersion?.topologySpec ??
-        template.currentPublishedVersion?.topologySpec ??
-        template.topologySpec;
+      const effectiveTopologySpec = instance.sourceTemplateVersionId
+        ? this.resolveFrozenSourceTopologySpec(sourceTemplateVersion)
+        : sourceTemplateVersion?.topologySpec ??
+          template.currentDraftVersion?.topologySpec ??
+          template.currentPublishedVersion?.topologySpec ??
+          template.topologySpec;
       const fixedVpcCidr = effectiveTopologySpec?.vpcCidr ?? null;
 
       const allocatedCidr =
@@ -325,7 +383,7 @@ export class RangeInstancesService {
       const nextJob = await this.adminRepository.createProvisionJob({
         rangeInstanceId: instance.id,
         jobType: 'create',
-        triggeredBy,
+        triggeredBy: actorId,
       });
 
       await this.adminRepository.updateRangeInstance(instance.id, {
@@ -342,11 +400,20 @@ export class RangeInstancesService {
     return job;
   }
 
-  async triggerDestroy(id: string, triggeredBy: string) {
+  async triggerDestroy(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
+
+    if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
     if (!instance.templateId) {
@@ -360,7 +427,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'destroy',
-      triggeredBy,
+      triggeredBy: actorId,
     });
 
     await this.adminRepository.updateRangeInstance(instance.id, {
@@ -373,11 +440,20 @@ export class RangeInstancesService {
     return job;
   }
 
-  async triggerRetry(id: string, triggeredBy: string) {
+  async triggerRetry(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    const actorId =
+      typeof currentUserOrTriggeredBy === 'string'
+        ? currentUserOrTriggeredBy
+        : currentUserOrTriggeredBy?.id ?? 'admin';
+
+    if (typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
     if (!instance.templateId) {
@@ -398,7 +474,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'retry',
-      triggeredBy,
+      triggeredBy: actorId,
       retryCount,
     });
 
@@ -413,11 +489,15 @@ export class RangeInstancesService {
     return job;
   }
 
-  async delete(id: string) {
+  async delete(id: string, currentUser?: AuthenticatedUser) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
     if (instance.status !== 'create_failed') {
@@ -425,6 +505,28 @@ export class RangeInstancesService {
     }
 
     await this.adminRepository.deleteRangeInstance(id);
+  }
+
+  private assertInstanceOwnerOrAdmin(
+    instance: NonNullable<Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>>,
+    currentUser: AuthenticatedUser,
+  ) {
+    if (currentUser.role === 'admin') {
+      return;
+    }
+
+    if (instance.ownerUserId === currentUser.id) {
+      return;
+    }
+
+    throw new ForbiddenException('Range instance access denied');
+  }
+
+  private isSharedTemplateConsumer(
+    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
+    currentUser?: AuthenticatedUser,
+  ) {
+    return Boolean(currentUser) && currentUser!.role !== 'admin' && template.ownerUserId !== currentUser!.id;
   }
 
   private async attachRecoverySummary(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
@@ -705,5 +807,190 @@ export class RangeInstancesService {
 
   private readArray(value: unknown): unknown[] {
     return Array.isArray(value) ? value : [];
+  }
+
+  private resolveFrozenSourceTopologySpec(
+    sourceTemplateVersion: Awaited<ReturnType<AdminRepository['getRangeTemplateVersionById']>> | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!sourceTemplateVersion) {
+      return null;
+    }
+
+    return (
+      this.readTopologySpecFromCompiledProvisionSpec(sourceTemplateVersion.compiledProvisionSpec) ??
+      this.readTopologySpecFromCompiledSpec(sourceTemplateVersion.compiledSpec as RangeTemplateCompiledSpec | null | undefined) ??
+      sourceTemplateVersion.topologySpec
+    );
+  }
+
+  private readTopologySpecFromCompiledProvisionSpec(
+    value: Record<string, unknown> | null | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!value) {
+      return null;
+    }
+
+    const topology = this.readRecord(value.topology);
+    const networkZones = this.readArray(value.networkZones);
+    const hosts = this.readArray(value.hosts);
+    const publicEntryHostKey = typeof topology?.entryHostKey === 'string' ? topology.entryHostKey : null;
+    const vpcCidr = typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : null;
+
+    if (!publicEntryHostKey || !vpcCidr || networkZones.length === 0 || hosts.length === 0) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: networkZones.flatMap((zoneValue) => {
+        const zone = this.readRecord(zoneValue);
+
+        if (!zone || typeof zone.key !== 'string' || typeof zone.name !== 'string' || typeof zone.cidr !== 'string') {
+          return [];
+        }
+
+        return [
+          {
+            key: zone.key,
+            name: zone.name,
+            purpose: typeof zone.purpose === 'string' ? zone.purpose : zone.key,
+            cidr: zone.cidr,
+            ...(zone.isPublicEntry === true ? { isPublicEntry: true } : {}),
+          },
+        ];
+      }),
+      hosts: hosts.flatMap((hostValue) => {
+        const host = this.readRecord(hostValue);
+
+        if (
+          !host ||
+          typeof host.key !== 'string' ||
+          typeof host.name !== 'string' ||
+          typeof host.zoneKey !== 'string' ||
+          typeof host.role !== 'string'
+        ) {
+          return [];
+        }
+
+        const privateIp = this.readCompiledProvisionHostPrivateIp(host);
+
+        if (!privateIp) {
+          return [];
+        }
+
+        return [
+          {
+            key: host.key,
+            name: host.name,
+            zoneKey: host.zoneKey,
+            role: host.role,
+            privateIp,
+            ...(host.exposePublic === true ? { exposePublic: true } : {}),
+          },
+        ];
+      }),
+      publicEntry: {
+        hostKey: publicEntryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
+  }
+
+  private readTopologySpecFromCompiledSpec(
+    compiledSpec: RangeTemplateCompiledSpec | null | undefined,
+  ): RangeTemplateTopologySpec | null {
+    if (!compiledSpec) {
+      return null;
+    }
+
+    if (compiledSpec.topologySpec) {
+      return compiledSpec.topologySpec;
+    }
+
+    const switchResources = compiledSpec.resources.filter((resource) => resource.type === 'switch');
+    const hostResources = compiledSpec.resources.filter((resource) => resource.type === 'host');
+    const vpcCidr = compiledSpec.topology?.vpcCidr;
+
+    if (!vpcCidr || switchResources.length === 0 || hostResources.length === 0) {
+      return null;
+    }
+
+    const publicEntryHostKey =
+      compiledSpec.topology?.publicEntryHostKey ??
+      hostResources.find((resource) => resource.config.exposePublic === true)?.id ??
+      hostResources.find((resource) => resource.config.role === 'entry')?.id;
+
+    if (!publicEntryHostKey) {
+      return null;
+    }
+
+    const publicEntryHost = hostResources.find((resource) => resource.id === publicEntryHostKey);
+
+    if (!publicEntryHost?.config.zoneKey) {
+      return null;
+    }
+
+    return {
+      vpcCidr,
+      networkZones: switchResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const name = typeof resource.config.label === 'string' ? resource.config.label : null;
+        const cidr = typeof resource.config.cidr === 'string' ? resource.config.cidr : null;
+
+        if (!zoneKey || !name || !cidr) {
+          return [];
+        }
+
+        return [
+          {
+            key: zoneKey,
+            name,
+            purpose: typeof resource.config.purpose === 'string' ? resource.config.purpose : zoneKey,
+            cidr,
+            ...(zoneKey === publicEntryHost.config.zoneKey ? { isPublicEntry: true } : {}),
+          },
+        ];
+      }),
+      hosts: hostResources.flatMap((resource) => {
+        const zoneKey = typeof resource.config.zoneKey === 'string' ? resource.config.zoneKey : null;
+        const role = typeof resource.config.role === 'string' ? resource.config.role : null;
+        const privateIp = typeof resource.config.privateIp === 'string' ? resource.config.privateIp : null;
+
+        if (!zoneKey || !role || !privateIp) {
+          return [];
+        }
+
+        return [
+          {
+            key: resource.id,
+            name: typeof resource.config.label === 'string' ? resource.config.label : resource.id,
+            zoneKey,
+            role,
+            privateIp,
+            ...(typeof resource.config.exposePublic === 'boolean'
+              ? { exposePublic: resource.config.exposePublic }
+              : {}),
+          },
+        ];
+      }),
+      publicEntry: {
+        hostKey: publicEntryHostKey,
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    };
+  }
+
+  private readCompiledProvisionHostPrivateIp(host: Record<string, unknown>) {
+    if (typeof host.primaryPrivateIp === 'string') {
+      return host.primaryPrivateIp;
+    }
+
+    const primaryInterface = this.readRecord(this.readArray(host.networkInterfaces)[0]);
+
+    if (typeof primaryInterface?.privateIp === 'string') {
+      return primaryInterface.privateIp;
+    }
+
+    return null;
   }
 }

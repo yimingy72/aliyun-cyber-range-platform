@@ -32,12 +32,19 @@ const navigationItems = [
     label: '编排实例',
     shortLabel: '实例',
   },
-  {
-    href: '/admin/settings/cloud',
-    label: '基础配置',
-    shortLabel: '配置',
-  },
 ];
+
+const userManagementNavigationItem = {
+  href: '/admin/users',
+  label: '用户管理',
+  shortLabel: '用户',
+};
+
+const cloudSettingsNavigationItem = {
+  href: '/admin/settings/cloud',
+  label: '基础配置',
+  shortLabel: '配置',
+};
 
 function isNavigationItemActive(pathname: string, href: string) {
   if (href === '/admin') {
@@ -52,6 +59,9 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const router = useRouter();
   const session = useAdminSession();
   const isLoginRoute = pathname === '/admin/login';
+  const visibleNavigationItems = session.isAdmin
+    ? [...navigationItems, userManagementNavigationItem, cloudSettingsNavigationItem]
+    : [...navigationItems, cloudSettingsNavigationItem];
 
   useEffect(() => {
     if (!isLoginRoute && session.isReady && !session.token) {
@@ -81,7 +91,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         </div>
 
         <nav className="admin-nav">
-          {navigationItems.map((item) => (
+          {visibleNavigationItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -97,6 +107,13 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
       <div className="admin-main-shell">
         <header className="admin-topbar admin-topbar-compact">
           <div className="admin-topbar-meta">
+            {session.profile ? (
+              <div className="admin-topbar-badge-group" aria-label="当前登录用户">
+                <span className="admin-topbar-badge">
+                  {session.profile.username} / {session.profile.role}
+                </span>
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={() => {

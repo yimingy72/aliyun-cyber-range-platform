@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { hashPassword } from '../src/admin/admin-user-auth';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
 import { AppModule } from '../src/app.module';
@@ -33,6 +34,15 @@ function createSystemConfigServiceStub() {
   };
 }
 
+async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
+  const response = await request(app.getHttpServer())
+    .post('/admin/session')
+    .send({ username, password })
+    .expect(200);
+
+  return response.body.token as string;
+}
+
 describe('single instances', () => {
   let app: INestApplication;
   let repository: AdminRepository;
@@ -40,6 +50,7 @@ describe('single instances', () => {
   let bootstrapServiceStub: {
     bootstrapDefaultProfile: jest.Mock;
   };
+  let adminToken: string;
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -108,6 +119,7 @@ describe('single instances', () => {
     await repository.collectPlatformImageAsset({
       snapshotId: snapshot.id,
       displayName: 'Ubuntu 24.04',
+      visibility: 'platform',
     });
 
     const [asset] = await repository.listPlatformImageAssets({
@@ -118,6 +130,7 @@ describe('single instances', () => {
     });
 
     expect(asset?.id).toBe('memory-2');
+    adminToken = await loginAs(app);
   });
 
   beforeEach(() => {
@@ -134,7 +147,7 @@ describe('single instances', () => {
   it('creates a single-instance record with mode single and generated names for quantity > 1', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'web-lab',
         hostName: 'web-host',
@@ -146,7 +159,6 @@ describe('single instances', () => {
         quantity: 2,
         password: '',
         remark: 'single instance',
-        triggeredBy: 'admin',
       });
 
     expect(response.status).toBe(201);
@@ -181,6 +193,131 @@ describe('single instances', () => {
       securityGroupId: 'sg-bootstrap-real',
       vswitchIds: ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'],
     });
+  });
+
+  it('allows launching from a caller-owned private image asset', async () => {
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-image-owner',
+          sourceImageName: 'Ubuntu 24.04 Private',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T00:00:01.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-private-image-owner',
+      })
+    )[0];
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Ubuntu 24.04 Private',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'private-owner-lab',
+        hostName: 'private-owner-host',
+        platformImageAssetId: privateAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'private owner launch',
+      })
+      .expect(201);
+
+    expect(response.body.instances).toHaveLength(1);
+    expect(response.body.instances[0]).toMatchObject({
+      createdBy: 'admin',
+      instanceMode: 'single',
+      singleInstanceConfig: expect.objectContaining({
+        platformImageAssetId: privateAsset.id,
+        imageId: 'm-private-image-owner',
+        imageDisplayName: 'Ubuntu 24.04 Private',
+      }),
+    });
+  });
+
+  it("rejects launching from another admin's private image asset", async () => {
+    await repository.createPlatformUser({
+      id: 'other-admin',
+      username: 'other-admin',
+      passwordHash: hashPassword('other-password'),
+      role: 'admin',
+      status: 'active',
+    });
+
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-image-foreign',
+          sourceImageName: 'Ubuntu 24.04 Foreign Private',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T00:00:02.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-private-image-foreign',
+      })
+    )[0];
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Ubuntu 24.04 Foreign Private',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    const otherAdminToken = await loginAs(app, 'other-admin', 'other-password');
+
+    await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${otherAdminToken}`)
+      .send({
+        name: 'private-foreign-lab',
+        hostName: 'private-foreign-host',
+        platformImageAssetId: privateAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'private foreign launch',
+      })
+      .expect(404);
   });
 
   it('offsets vSwitch round-robin by current active single-instance count', async () => {
@@ -229,7 +366,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'offset-lab',
         hostName: 'offset-host',
@@ -241,7 +378,6 @@ describe('single instances', () => {
         quantity: 2,
         password: '',
         remark: 'round robin offset',
-        triggeredBy: 'admin',
       });
 
     expect(response.status).toBe(201);
@@ -305,7 +441,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .get('/admin/instances')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
 
     expect(response.body).toEqual(
@@ -385,8 +521,8 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-      .set('Authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' });
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({});
 
     expect(response.status).toBe(201);
     expect(response.body).toEqual(
@@ -414,7 +550,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post('/admin/instances/launch')
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'dispatch-order-lab',
           hostName: 'dispatch-order-host',
@@ -426,7 +562,6 @@ describe('single instances', () => {
           quantity: 2,
           password: '',
           remark: 'dispatch order',
-          triggeredBy: 'admin',
         })
         .expect(201);
     } finally {
@@ -521,8 +656,8 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-        .set('Authorization', 'Bearer dev-admin-token')
-        .send({ triggeredBy: 'admin' })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({})
         .expect(201);
     } finally {
       updateSpy.mockRestore();
@@ -551,7 +686,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post('/admin/instances/launch')
-        .set('Authorization', 'Bearer dev-admin-token')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'dispatch-failure-lab',
           hostName: 'dispatch-failure-host',
@@ -563,7 +698,6 @@ describe('single instances', () => {
           quantity: 2,
           password: '',
           remark: 'dispatch failure fallback',
-          triggeredBy: 'admin',
         })
         .expect(500);
       expect(dispatchSpy).toHaveBeenCalledTimes(2);
@@ -655,8 +789,8 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-        .set('Authorization', 'Bearer dev-admin-token')
-        .send({ triggeredBy: 'admin' })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({})
         .expect(500);
       expect(dispatchSpy).toHaveBeenCalledTimes(2);
     } finally {
@@ -728,7 +862,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'web-lab',
         hostName: 'web-host',
@@ -740,7 +874,6 @@ describe('single instances', () => {
         quantity: 2,
         password: '',
         remark: 'single instance',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -799,7 +932,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
-      .set('Authorization', 'Bearer dev-admin-token')
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'public-ip-lab',
         hostName: 'public-ip-host',
@@ -811,7 +944,6 @@ describe('single instances', () => {
         quantity: 1,
         password: '',
         remark: 'public ip readiness',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -908,8 +1040,8 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-      .set('Authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' })
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({})
       .expect(201);
 
     expect(response.body.jobCount).toBe(2);
@@ -1020,8 +1152,8 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
-        .set('Authorization', 'Bearer dev-admin-token')
-        .send({ triggeredBy: 'admin' })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({})
         .expect(201);
 
       await waitForAsync(async () => {
@@ -1069,8 +1201,8 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/${instance.id}/actions/stop`)
-      .set('Authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' });
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({});
 
     expect(response.status).toBe(404);
     expect(response.body.message).toBe('Unsupported single instance action');

@@ -183,7 +183,7 @@ function getDurationLabel(start?: string | null, end?: string | null) {
 }
 
 export function RangeInstancesScreen({
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
 }: RangeInstancesScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
@@ -360,7 +360,7 @@ export function RangeInstancesScreen({
 
     try {
       const trigger = getActionTrigger(instance, 'destroy');
-      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger, 'admin')) as ExtendedProvisionJob;
+      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger)) as ExtendedProvisionJob;
 
       upsertInstanceInSnapshot({
         ...instance,

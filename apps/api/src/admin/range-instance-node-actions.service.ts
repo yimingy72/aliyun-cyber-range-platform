@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import {
   BadGatewayException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 
 import { ADMIN_REPOSITORY, AdminRepository, RangeInstanceRecord } from './admin.repository';
+import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
@@ -18,6 +20,7 @@ const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
+type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
 
 @Injectable()
 export class RangeInstanceNodeActionsService {
@@ -26,11 +29,21 @@ export class RangeInstanceNodeActionsService {
     private readonly systemConfigService: SystemConfigService,
   ) {}
 
-  async run(rangeInstanceId: string, nodeId: string, action: string, payload: Record<string, string>) {
+  async run(
+    rangeInstanceId: string,
+    nodeId: string,
+    action: string,
+    payload: Record<string, string>,
+    currentUser?: AuthenticatedUser,
+  ) {
     const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
 
     if (!instance) {
       throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser && currentUser.role !== 'admin' && instance.ownerUserId !== currentUser.id) {
+      throw new ForbiddenException('Range instance access denied');
     }
 
     if (!isNodeActionName(action)) {
@@ -115,6 +128,7 @@ export class RangeInstanceNodeActionsService {
     const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
     const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
     const description = payload.description?.trim() || null;
+    const ownerUserId = payload.ownerUserId?.trim() || null;
     const createImageResponse = await this.performAliyunRpcRequest<{
       ImageId?: string;
     }>({
@@ -170,6 +184,8 @@ export class RangeInstanceNodeActionsService {
       defaultHostName,
       defaultPassword,
       description,
+      ownerUserId,
+      visibility: 'private',
     });
 
     return {

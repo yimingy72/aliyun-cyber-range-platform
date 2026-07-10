@@ -2,10 +2,16 @@
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
-import { clearAdminToken, readAdminToken, subscribeAdminToken, writeAdminToken } from '../../lib/admin-auth-storage';
+import type { AdminSessionPayload } from '../../lib/admin-types';
+import {
+  clearAdminSession,
+  readAdminSession,
+  subscribeAdminSession,
+  writeAdminSession,
+} from '../../lib/admin-auth-storage';
 
 export function useAdminSession() {
-  const token = useSyncExternalStore(subscribeAdminToken, readAdminToken, () => null);
+  const session = useSyncExternalStore(subscribeAdminSession, readAdminSession, () => null);
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
@@ -13,13 +19,15 @@ export function useAdminSession() {
   }, []);
 
   return {
-    token,
+    token: session?.token ?? null,
+    profile: session?.profile ?? null,
+    isAdmin: session?.profile?.role === 'admin',
     isReady,
-    login(nextToken: string) {
-      return writeAdminToken(nextToken);
+    login(nextSession: AdminSessionPayload) {
+      return writeAdminSession(nextSession);
     },
     logout() {
-      clearAdminToken();
+      clearAdminSession();
     },
   };
 }

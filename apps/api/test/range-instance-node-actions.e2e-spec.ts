@@ -29,6 +29,15 @@ function createSystemConfigServiceStub() {
   };
 }
 
+async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
+  const response = await request(app.getHttpServer())
+    .post('/admin/session')
+    .send({ username, password })
+    .expect(200);
+
+  return response.body.token as string;
+}
+
 describe('Range instance node actions API', () => {
   let app: INestApplication;
   let repository: AdminRepository;
@@ -36,6 +45,7 @@ describe('Range instance node actions API', () => {
   let singleInstanceId: string;
   let singlePlatformImageAssetId: string;
   let fetchMock: jest.SpiedFunction<typeof fetch>;
+  let adminToken: string;
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -136,6 +146,7 @@ describe('Range instance node actions API', () => {
           })
         )[0].id,
       displayName: 'Ubuntu',
+      visibility: 'platform',
     });
 
     singlePlatformImageAssetId = singlePlatformImageAsset.id;
@@ -166,6 +177,7 @@ describe('Range instance node actions API', () => {
     });
 
     singleInstanceId = singleInstance.id;
+    adminToken = await loginAs(app);
   });
 
   afterAll(async () => {
@@ -176,7 +188,7 @@ describe('Range instance node actions API', () => {
   it('reboots a host node through the node action route', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/reboot`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 
@@ -186,7 +198,7 @@ describe('Range instance node actions API', () => {
   it('opens a VNC URL for the selected host node', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/open-vnc`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 
@@ -198,7 +210,7 @@ describe('Range instance node actions API', () => {
   it('creates a custom image and platform asset from the selected host node', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/pack-image`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({
         displayName: 'checker-snapshot',
         defaultHostName: 'checker-host',
@@ -220,6 +232,8 @@ describe('Range instance node actions API', () => {
         defaultHostName: 'checker-host',
         defaultPassword: 'DefaultPass123!',
         description: 'snapshot note',
+        ownerUserId: 'admin',
+        visibility: 'private',
       }),
     );
   });
@@ -227,12 +241,65 @@ describe('Range instance node actions API', () => {
   it('opens a VNC URL for a single instance row action', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/${singleInstanceId}/actions/open-vnc`)
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', `Bearer ${adminToken}`)
       .send({ triggeredBy: 'admin' })
       .expect(201);
 
     expect(response.body.vncUrl).toBe('wss://vnc.example.test');
     expect(response.body.webTerminalUrl).toContain('instanceId=i-instance-single-123');
     expect(response.body.webTerminalUrl).toContain('isWindows=false');
+  });
+
+  it('creates a custom image from a single instance row action preserving caller metadata', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('CreateImage')) {
+        return new Response(JSON.stringify({ ImageId: 'm-image-single-456' }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/instances/${singleInstanceId}/actions/pack-image`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: 'single-snapshot',
+        defaultHostName: 'single-host',
+        defaultPassword: 'SinglePass123!',
+        description: 'single snapshot note',
+        triggeredBy: 'admin',
+      })
+      .expect(201);
+
+    expect(response.body.imageId).toBe('m-image-single-456');
+    expect(response.body.defaultHostName).toBe('single-host');
+    expect(response.body.defaultPassword).toBe('SinglePass123!');
+    expect(response.body.description).toBe('single snapshot note');
+    expect(response.body.imageReady).toBe(false);
+    expect(response.body.platformImageAsset).toEqual(
+      expect.objectContaining({
+        imageId: 'm-image-single-456',
+        displayName: 'single-snapshot',
+        defaultHostName: 'single-host',
+        defaultPassword: 'SinglePass123!',
+        description: 'single snapshot note',
+        ownerUserId: 'admin',
+        visibility: 'private',
+      }),
+    );
+  });
+
+  it('rejects malformed metadata on a single instance row action with 400', async () => {
+    await request(app.getHttpServer())
+      .post(`/admin/instances/${singleInstanceId}/actions/pack-image`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: {
+          bad: true,
+        },
+      })
+      .expect(400);
   });
 });

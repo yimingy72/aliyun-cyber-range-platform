@@ -6,6 +6,7 @@ import {
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreatePlatformUserInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
   CreateSingleInstanceBatchInput,
@@ -15,6 +16,7 @@ import {
   ListImageCatalogItemsFilter,
   ListImageSnapshotsFilter,
   ListPlatformImageAssetsFilter,
+  PlatformUserRecord,
   PlatformImageAssetRecord,
   ProvisionJobRecord,
   ProvisionJobStepLogRecord,
@@ -24,6 +26,7 @@ import {
   SingleInstanceBatchWithInstancesRecord,
   RangeTemplateRecord,
   UpsertImageSnapshotsInput,
+  UpdatePlatformUserInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
   UpdateRangeInstanceInput,
@@ -32,19 +35,62 @@ import {
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
 
-function shouldAutoUnpublishTemplate(input: UpdateRangeTemplateInput) {
-  return (
-    input.topologySpec !== undefined ||
-    input.topologyGraph !== undefined ||
-    input.scenarioTemplateSpec !== undefined ||
-    input.compiledProvisionSpec !== undefined ||
-    input.compiledSpec !== undefined
-  );
-}
-
 @Injectable()
 export class PrismaAdminRepository implements AdminRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  async createPlatformUser(input: CreatePlatformUserInput): Promise<PlatformUserRecord> {
+    return this.prisma.platformUser.create({
+      data: {
+        id: input.id,
+        username: input.username,
+        passwordHash: input.passwordHash,
+        role: input.role,
+        status: input.status ?? 'active',
+      },
+    }) as Promise<PlatformUserRecord>;
+  }
+
+  async listPlatformUsers(): Promise<PlatformUserRecord[]> {
+    return this.prisma.platformUser.findMany({
+      orderBy: {
+        createdAt: 'desc',
+      },
+    }) as Promise<PlatformUserRecord[]>;
+  }
+
+  async getPlatformUserById(id: string): Promise<PlatformUserRecord | null> {
+    return this.prisma.platformUser.findUnique({
+      where: { id },
+    }) as Promise<PlatformUserRecord | null>;
+  }
+
+  async getPlatformUserByUsername(username: string): Promise<PlatformUserRecord | null> {
+    return this.prisma.platformUser.findUnique({
+      where: { username },
+    }) as Promise<PlatformUserRecord | null>;
+  }
+
+  async updatePlatformUser(id: string, input: UpdatePlatformUserInput): Promise<PlatformUserRecord> {
+    return this.prisma.platformUser.update({
+      where: { id },
+      data: {
+        ...(input.username !== undefined ? { username: input.username } : {}),
+        ...(input.passwordHash !== undefined ? { passwordHash: input.passwordHash } : {}),
+        ...(input.role !== undefined ? { role: input.role } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+      },
+    }) as Promise<PlatformUserRecord>;
+  }
+
+  async countActiveAdmins(): Promise<number> {
+    return this.prisma.platformUser.count({
+      where: {
+        role: 'admin',
+        status: 'active',
+      },
+    });
+  }
 
   async listRangeTemplates(): Promise<RangeTemplateRecord[]> {
     return this.prisma.rangeTemplate.findMany({
@@ -84,6 +130,7 @@ export class PrismaAdminRepository implements AdminRepository {
         data: {
           name: input.name,
           createdBy: input.createdBy ?? 'admin',
+          ownerUserId: input.ownerUserId ?? null,
           description: input.description ?? null,
           slug: input.slug,
           version: input.version,
@@ -101,6 +148,7 @@ export class PrismaAdminRepository implements AdminRepository {
           compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
           variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
           outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
+          visibility: input.visibility ?? 'private',
           ...(input.defaultNetworkPolicy
             ? {
                 defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
@@ -158,8 +206,6 @@ export class PrismaAdminRepository implements AdminRepository {
         where: { id },
         include: { currentDraftVersion: true, currentPublishedVersion: true },
       });
-      const autoUnpublish = Boolean(existing.currentPublishedVersionId) && shouldAutoUnpublishTemplate(input);
-
       if (existing.currentDraftVersionId) {
         await tx.rangeTemplateVersion.update({
           where: { id: existing.currentDraftVersionId },
@@ -206,13 +252,6 @@ export class PrismaAdminRepository implements AdminRepository {
         });
       }
 
-      if (autoUnpublish && existing.currentPublishedVersionId) {
-        await tx.rangeTemplateVersion.update({
-          where: { id: existing.currentPublishedVersionId },
-          data: { status: 'archived' },
-        });
-      }
-
       await tx.rangeTemplate.update({
         where: { id },
         data: {
@@ -220,6 +259,8 @@ export class PrismaAdminRepository implements AdminRepository {
           ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.slug !== undefined ? { slug: input.slug } : {}),
           ...(input.version !== undefined ? { version: input.version } : {}),
+          ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+          ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
           ...(input.cloudProvider !== undefined ? { cloudProvider: input.cloudProvider } : {}),
           ...(input.iacType !== undefined ? { iacType: input.iacType } : {}),
           ...(input.modulePathOrRef !== undefined ? { modulePathOrRef: input.modulePathOrRef } : {}),
@@ -257,7 +298,6 @@ export class PrismaAdminRepository implements AdminRepository {
           ...(input.defaultNetworkPolicy !== undefined
             ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
             : {}),
-          ...(autoUnpublish ? { currentPublishedVersionId: null } : {}),
         },
       });
 
@@ -407,6 +447,7 @@ export class PrismaAdminRepository implements AdminRepository {
         quantity: input.quantity,
         remark: input.remark ?? null,
         createdBy: input.createdBy ?? null,
+        ownerUserId: input.ownerUserId ?? null,
         expiresAt: input.expiresAt ?? null,
       },
     }) as Promise<SingleInstanceBatchRecord>;
@@ -478,6 +519,7 @@ export class PrismaAdminRepository implements AdminRepository {
       data: {
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
+        ownerUserId: input.ownerUserId ?? null,
         templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
         runtimeTopologyGraph: (input.runtimeTopologyGraph ?? null) as
@@ -537,6 +579,7 @@ export class PrismaAdminRepository implements AdminRepository {
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
+        ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
         ...(input.instanceMode !== undefined ? { instanceMode: input.instanceMode } : {}),
         ...(input.singleInstanceBatchId !== undefined
           ? { singleInstanceBatchId: input.singleInstanceBatchId }
@@ -860,6 +903,8 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(filter.enabled !== undefined ? { enabled: filter.enabled } : {}),
         ...(filter.imageId !== undefined ? { imageId: filter.imageId } : {}),
         ...(filter.sourceSnapshotId !== undefined ? { sourceSnapshotId: filter.sourceSnapshotId } : {}),
+        ...(filter.ownerUserId !== undefined ? { ownerUserId: filter.ownerUserId } : {}),
+        ...(filter.visibility !== undefined ? { visibility: filter.visibility } : {}),
         ...(filter.onlyAvailableSourceSnapshots
           ? {
               OR: [
@@ -908,6 +953,8 @@ export class PrismaAdminRepository implements AdminRepository {
         sourceScope: snapshot.scope,
         sourceSnapshotId: snapshot.id,
         accountUid: snapshot.accountUid,
+        ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+        ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
       },
       create: {
         provider: snapshot.provider,
@@ -921,6 +968,8 @@ export class PrismaAdminRepository implements AdminRepository {
         defaultHostName: input.defaultHostName ?? null,
         defaultPassword: input.defaultPassword ?? null,
         description: input.description ?? null,
+        ownerUserId: input.ownerUserId ?? null,
+        visibility: input.visibility ?? 'private',
         enabled: true,
       },
     }) as Promise<PlatformImageAssetRecord>;

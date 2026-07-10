@@ -319,7 +319,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(1);
   });
 
-  it('saves and discards instance draft changes from the property panel', async () => {
+  it('saves and applies instance draft changes without client actor fields', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -380,17 +380,31 @@ describe('RangeInstanceDetailScreen', () => {
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
 
-    await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(saveRangeInstanceDraftMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'range-1',
+        expect.not.objectContaining({
+          draftUpdatedBy: expect.anything(),
+        }),
+      ),
+    );
     expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '应用变更' }));
 
     await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalled());
-    await waitFor(() => expect(applyRangeInstanceDraftMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(applyRangeInstanceDraftMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'range-1',
+      ),
+    );
   });
 
-  it('syncs the current instance draft back into the template only when clicking 更新编排拓扑', async () => {
+  it('syncs the current instance draft back into the template without client actor fields', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
@@ -438,12 +452,13 @@ describe('RangeInstanceDetailScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '更新编排拓扑' }));
 
     await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalled());
-    await waitFor(() => expect(syncRangeInstanceTemplateMock).toHaveBeenCalledWith(
-      'http://localhost:3001',
-      'dev-admin-token',
-      'range-1',
-      'admin',
-    ));
+    await waitFor(() =>
+      expect(syncRangeInstanceTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'range-1',
+      ),
+    );
     expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
   });
 
@@ -475,7 +490,16 @@ describe('RangeInstanceDetailScreen', () => {
     const button = await screen.findByRole('button', { name: '打开VNC' });
     fireEvent.click(button);
 
-    await waitFor(() => expect(runRangeInstanceNodeActionMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(runRangeInstanceNodeActionMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'range-1',
+        'host-1',
+        'open-vnc',
+        {},
+      ),
+    );
     expect(openSpy).toHaveBeenCalledWith('https://example.test/vnc', '_blank', 'noopener,noreferrer');
   });
 

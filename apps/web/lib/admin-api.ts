@@ -1,7 +1,9 @@
 import type {
+  AdminUser,
   AdminBootstrapData,
   CollectImageCatalogItemInput,
   CloudConfigSnapshot,
+  CreateAdminUserInput,
   ImageCatalogItem,
   ImageCatalogScopePayload,
   InstanceTypeAvailabilitySnapshot,
@@ -12,8 +14,10 @@ import type {
   ProvisionJobStep,
   RangeInstanceCreateInput,
   RangeInstanceLaunchInput,
+  RangeTemplateView,
   RangeInstance,
   RangeInstanceDetail,
+  ResetAdminUserPasswordInput,
   Scenario,
   ScenarioCreateInput,
   ScenarioUpdateInput,
@@ -21,7 +25,12 @@ import type {
   SingleInstanceListPayload,
   SingleInstanceLaunchInput,
   SingleInstanceLaunchResult,
+  PlatformImageView,
+  UpdateAdminUserRoleInput,
+  UpdateAdminUserStatusInput,
 } from './admin-types';
+
+export type { AdminProfile, AdminSessionPayload } from './admin-types';
 
 export class AdminApiError extends Error {
   constructor(
@@ -65,10 +74,20 @@ async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function fetchAdminBootstrap(apiBaseUrl: string, token: string): Promise<AdminBootstrapData> {
+export async function fetchAdminBootstrap(
+  apiBaseUrl: string,
+  token: string,
+  options?: { templateView?: RangeTemplateView },
+): Promise<AdminBootstrapData> {
   const headers = createAdminHeaders(token);
+  const scenarioUrl = new URL(`${apiBaseUrl}/admin/scenarios`);
+
+  if (options?.templateView) {
+    scenarioUrl.searchParams.set('view', options.templateView);
+  }
+
   const [templatesResponse, instancesResponse, jobsResponse] = await Promise.all([
-    fetch(`${apiBaseUrl}/admin/scenarios`, { headers }),
+    fetch(scenarioUrl, { headers }),
     fetch(`${apiBaseUrl}/admin/ranges`, { headers }),
     fetch(`${apiBaseUrl}/admin/provision-jobs`, { headers }),
   ]);
@@ -81,6 +100,21 @@ export async function fetchAdminBootstrap(apiBaseUrl: string, token: string): Pr
     rangeInstances: await readJson<RangeInstance[]>(instancesResponse),
     provisionJobs: await readJson<ProvisionJob[]>(jobsResponse),
   };
+}
+
+export async function fetchRangeTemplates(
+  apiBaseUrl: string,
+  token: string,
+  view: RangeTemplateView,
+) {
+  const url = new URL(`${apiBaseUrl}/admin/scenarios`);
+  url.searchParams.set('view', view);
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<Scenario[]>(response);
 }
 
 export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string, id: string) {
@@ -145,12 +179,10 @@ export async function destroySingleInstanceBatch(
   apiBaseUrl: string,
   token: string,
   id: string,
-  triggeredBy: string,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/instances/batches/${id}/destroy-all`, {
     method: 'POST',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ triggeredBy }),
   });
 
   return readJson<{ batchId: string; jobCount: number }>(response);
@@ -164,7 +196,6 @@ export async function saveRangeInstanceDraft(
     draftTopologyGraph: Record<string, unknown>;
     draftScenarioTemplateSpec: Record<string, unknown>;
     draftCompiledProvisionSpec: Record<string, unknown>;
-    draftUpdatedBy: string;
   },
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/draft`, {
@@ -185,21 +216,19 @@ export async function discardRangeInstanceDraft(apiBaseUrl: string, token: strin
   return readJson<RangeInstanceDetail>(response);
 }
 
-export async function applyRangeInstanceDraft(apiBaseUrl: string, token: string, id: string, triggeredBy: string) {
+export async function applyRangeInstanceDraft(apiBaseUrl: string, token: string, id: string) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/apply`, {
     method: 'POST',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ triggeredBy }),
   });
 
   return readJson<ProvisionJob>(response);
 }
 
-export async function syncRangeInstanceTemplate(apiBaseUrl: string, token: string, id: string, triggeredBy: string) {
+export async function syncRangeInstanceTemplate(apiBaseUrl: string, token: string, id: string) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/sync-template`, {
     method: 'POST',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ triggeredBy }),
   });
 
   return readJson<Scenario>(response);
@@ -295,12 +324,10 @@ export async function triggerRangeAction(
   token: string,
   id: string,
   action: 'create' | 'destroy' | 'retry',
-  triggeredBy: string,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/${action}`, {
     method: 'POST',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ triggeredBy }),
   });
 
   return readJson<ProvisionJob>(response);
@@ -329,6 +356,69 @@ export async function saveCloudConfig(
   });
 
   return readJson<CloudConfigSnapshot>(response);
+}
+
+export async function fetchAdminUsers(apiBaseUrl: string, token: string): Promise<AdminUser[]> {
+  const response = await fetch(`${apiBaseUrl}/admin/users`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<AdminUser[]>(response);
+}
+
+export async function createAdminUser(apiBaseUrl: string, token: string, payload: CreateAdminUserInput): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
+}
+
+export async function updateAdminUserRole(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: UpdateAdminUserRoleInput,
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users/${id}/role`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
+}
+
+export async function updateAdminUserStatus(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: UpdateAdminUserStatusInput,
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users/${id}/status`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
+}
+
+export async function resetAdminUserPassword(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: ResetAdminUserPasswordInput,
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users/${id}/reset-password`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
 }
 
 export async function fetchInstanceTypeAvailability(
@@ -395,6 +485,15 @@ export async function publishRangeTemplate(apiBaseUrl: string, token: string, id
   return readJson<Scenario>(response);
 }
 
+export async function shareRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/share`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<Scenario>(response);
+}
+
 export async function validateRangeTemplate(apiBaseUrl: string, token: string, id: string) {
   const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/validate`, {
     method: 'POST',
@@ -406,6 +505,15 @@ export async function validateRangeTemplate(apiBaseUrl: string, token: string, i
 
 export async function unpublishRangeTemplate(apiBaseUrl: string, token: string, id: string) {
   const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/unpublish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<Scenario>(response);
+}
+
+export async function unshareRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/unshare`, {
     method: 'POST',
     headers: createAdminHeaders(token),
   });
@@ -488,8 +596,11 @@ export async function collectImageCatalogItem(
   return readJson<ImageCatalogItem>(response);
 }
 
-export async function fetchPlatformImages(apiBaseUrl: string, token: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/platform-images`, {
+export async function fetchPlatformImages(apiBaseUrl: string, token: string, view: PlatformImageView = 'platform') {
+  const url = new URL(`${apiBaseUrl}/admin/platform-images`);
+  url.searchParams.set('view', view);
+
+  const response = await fetch(url, {
     headers: createAdminHeaders(token),
   });
 
@@ -510,11 +621,38 @@ export async function collectPlatformImage(
   return readJson<PlatformImageAsset>(response);
 }
 
-export async function renamePlatformImage(apiBaseUrl: string, token: string, id: string, displayName: string) {
+async function updatePlatformImage(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: { displayName?: string },
+) {
   const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}`, {
     method: 'PATCH',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function renamePlatformImage(apiBaseUrl: string, token: string, id: string, displayName: string) {
+  return updatePlatformImage(apiBaseUrl, token, id, { displayName });
+}
+
+export async function publishPlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/publish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function unpublishPlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/unpublish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
   });
 
   return readJson<PlatformImageAsset>(response);

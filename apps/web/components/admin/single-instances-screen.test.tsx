@@ -9,6 +9,7 @@ const {
   fetchInstanceTypeAvailabilityMock,
   launchSingleInstancesMock,
   deleteRangeInstanceMock,
+  destroySingleInstanceBatchMock,
   triggerSingleInstanceActionMock,
 } = vi.hoisted(() => ({
   fetchSingleInstancesMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   fetchInstanceTypeAvailabilityMock: vi.fn(),
   launchSingleInstancesMock: vi.fn(),
   deleteRangeInstanceMock: vi.fn(),
+  destroySingleInstanceBatchMock: vi.fn(),
   triggerSingleInstanceActionMock: vi.fn(),
 }));
 
@@ -58,12 +60,21 @@ vi.mock('./use-admin-session', () => ({
 }));
 
 vi.mock('../../lib/admin-api', () => ({
+  AdminApiError: class AdminApiError extends Error {
+    constructor(
+      readonly status: number,
+      message = `Admin API request failed with status ${status}`,
+    ) {
+      super(message);
+    }
+  },
   fetchSingleInstances: fetchSingleInstancesMock,
   fetchProvisionJobs: fetchProvisionJobsMock,
   fetchPlatformImages: fetchPlatformImagesMock,
   fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   launchSingleInstances: launchSingleInstancesMock,
   deleteRangeInstance: deleteRangeInstanceMock,
+  destroySingleInstanceBatch: destroySingleInstanceBatchMock,
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
 }));
 
@@ -91,6 +102,7 @@ describe('SingleInstancesScreen', () => {
     fetchInstanceTypeAvailabilityMock.mockReset();
     launchSingleInstancesMock.mockReset();
     deleteRangeInstanceMock.mockReset();
+    destroySingleInstanceBatchMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
     searchParamsState.value = '';
@@ -112,7 +124,7 @@ describe('SingleInstancesScreen', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders list/history, opens create dialog, and submits the launch payload when the spec is saleable', async () => {
+  it('renders list/history, opens create dialog, and submits the launch payload without triggeredBy', async () => {
     fetchSingleInstancesMock.mockResolvedValue([
       {
         id: 'single-1',
@@ -192,7 +204,6 @@ describe('SingleInstancesScreen', () => {
           cpu: 2,
           memory: 2,
           quantity: 2,
-          triggeredBy: 'admin',
         }),
       ),
     );
@@ -742,7 +753,7 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
   });
 
-  it('reloads current list and jobs after a successful row action', async () => {
+  it('reloads current list and jobs after a successful row action without triggeredBy', async () => {
     let currentStatus = 'running';
 
     fetchSingleInstancesMock.mockImplementation(async () => [
@@ -795,11 +806,67 @@ describe('SingleInstancesScreen', () => {
         'dev-admin-token',
         'single-running',
         'destroy',
-        expect.objectContaining({ triggeredBy: 'admin' }),
+        {},
       ),
     );
     await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
     expect(await screen.findByText('销毁中')).toBeTruthy();
+  });
+
+  it('submits batch destroy without client actor fields', async () => {
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [
+        {
+          batch: {
+            id: 'batch-1',
+            name: 'web-lab-batch',
+            imageDisplayName: 'Ubuntu 24.04 LTS',
+            imageId: 'm-123',
+            platformImageAssetId: 'platform-image-1',
+            cpu: 2,
+            memory: 2,
+            systemDiskSize: 40,
+            quantity: 2,
+            createdBy: 'admin',
+          },
+          instances: [
+            {
+              id: 'single-1',
+              name: 'web-lab-01',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'running',
+              singleInstanceConfig: {
+                hostKey: 'single-ecs-1',
+                imageDisplayName: 'Ubuntu 24.04 LTS',
+                cpu: 2,
+                memory: 2,
+              },
+            },
+          ],
+        },
+      ],
+      standaloneInstances: [],
+    });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+    destroySingleInstanceBatchMock.mockResolvedValue({ batchId: 'batch-1', jobCount: 2 });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('web-lab-batch')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
+    fireEvent.click(screen.getByRole('button', { name: '一键关闭' }));
+
+    await waitFor(() => {
+      expect(destroySingleInstanceBatchMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'batch-1',
+      );
+    });
   });
 
   it('opens returned vnc url for open-vnc actions', async () => {
