@@ -85,7 +85,7 @@ function replaceUser(users: AdminUser[], updatedUser: AdminUser) {
 }
 
 export function UsersScreen({
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
 }: UsersScreenProps) {
   const router = useRouter();
   const session = useAdminSession();

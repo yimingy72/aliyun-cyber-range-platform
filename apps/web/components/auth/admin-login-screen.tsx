@@ -11,7 +11,7 @@ type AdminLoginScreenProps = {
 };
 
 export function AdminLoginScreen({
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
 }: AdminLoginScreenProps) {
   const router = useRouter();
   const { login } = useAdminSession();

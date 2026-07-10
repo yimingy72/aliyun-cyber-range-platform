@@ -32,17 +32,18 @@ const navigationItems = [
     label: '编排实例',
     shortLabel: '实例',
   },
-  {
-    href: '/admin/settings/cloud',
-    label: '基础配置',
-    shortLabel: '配置',
-  },
 ];
 
 const userManagementNavigationItem = {
   href: '/admin/users',
   label: '用户管理',
   shortLabel: '用户',
+};
+
+const cloudSettingsNavigationItem = {
+  href: '/admin/settings/cloud',
+  label: '基础配置',
+  shortLabel: '配置',
 };
 
 function isNavigationItemActive(pathname: string, href: string) {
@@ -59,8 +60,8 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const session = useAdminSession();
   const isLoginRoute = pathname === '/admin/login';
   const visibleNavigationItems = session.isAdmin
-    ? [...navigationItems, userManagementNavigationItem]
-    : navigationItems;
+    ? [...navigationItems, userManagementNavigationItem, cloudSettingsNavigationItem]
+    : [...navigationItems, cloudSettingsNavigationItem];
 
   useEffect(() => {
     if (!isLoginRoute && session.isReady && !session.token) {

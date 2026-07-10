@@ -140,14 +140,23 @@ describe('AdminWorkspaceShell', () => {
     await screen.findByText('workspace content');
 
     const navigation = screen.getByRole('navigation');
+    const navigationLinks = within(navigation).getAllByRole('link').map((link) => link.getAttribute('href'));
 
     expect(screen.getByText('综合靶场平台')).toBeTruthy();
     expect(within(navigation).getByRole('link', { name: /镜像中心/i }).getAttribute('href')).toBe('/admin/image-center');
     expect(within(navigation).getByRole('link', { name: /实例管理/i }).getAttribute('href')).toBe('/admin/instances');
     expect(within(navigation).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe('/admin/scenarios');
     expect(within(navigation).getByRole('link', { name: /编排实例/i }).getAttribute('href')).toBe('/admin/ranges');
-    expect(within(navigation).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe('/admin/settings/cloud');
     expect(within(navigation).getByRole('link', { name: /用户管理/i }).getAttribute('href')).toBe('/admin/users');
+    expect(within(navigation).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe('/admin/settings/cloud');
+    expect(navigationLinks).toEqual([
+      '/admin/image-center',
+      '/admin/instances',
+      '/admin/scenarios',
+      '/admin/ranges',
+      '/admin/users',
+      '/admin/settings/cloud',
+    ]);
     expect(screen.getByText('admin / admin')).toBeTruthy();
     expect(screen.queryByText('运营后台')).toBeNull();
   });

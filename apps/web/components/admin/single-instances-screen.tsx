@@ -369,7 +369,7 @@ function SingleInstanceDialog({
 }
 
 export function SingleInstancesScreen({
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
   pollIntervalMs = 5000,
 }: SingleInstancesScreenProps) {
   const router = useRouter();

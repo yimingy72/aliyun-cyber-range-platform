@@ -514,7 +514,7 @@ function readWorkbenchNodesFromGraph(
 
 export function RangeInstanceDetailScreen({
   rangeId,
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
 }: RangeInstanceDetailScreenProps) {
   const router = useRouter();
   const session = useAdminSession();

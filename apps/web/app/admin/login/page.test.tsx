@@ -13,6 +13,7 @@ const ADMIN_PROFILE = {
   username: 'admin',
   role: 'admin' as const,
 };
+const ORIGINAL_NEXT_PUBLIC_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -47,6 +48,11 @@ describe('AdminLoginPage', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    if (typeof ORIGINAL_NEXT_PUBLIC_API_BASE_URL === 'string') {
+      process.env.NEXT_PUBLIC_API_BASE_URL = ORIGINAL_NEXT_PUBLIC_API_BASE_URL;
+    } else {
+      delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    }
   });
 
   it('stores the admin token and redirects to /admin/scenarios after a successful login', async () => {
@@ -75,6 +81,35 @@ describe('AdminLoginPage', () => {
         profile: ADMIN_PROFILE,
       });
       expect(replace).toHaveBeenCalledWith('/admin/scenarios');
+    });
+  });
+
+  it('uses the runtime API base URL from the page instead of the client build default', async () => {
+    process.env.NEXT_PUBLIC_API_BASE_URL = 'http://localhost:3101';
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          token: 'dev-admin-token',
+          profile: ADMIN_PROFILE,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<AdminLoginPage />);
+
+    fireEvent.change(screen.getByLabelText('管理员账号'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'change-me' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3101/admin/session',
+        expect.objectContaining({
+          method: 'POST',
+        }),
+      );
     });
   });
 

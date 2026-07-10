@@ -902,7 +902,7 @@ function readEdgesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
 
 export function TemplateEditorScreen({
   templateId,
-  apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  apiBaseUrl = 'http://localhost:3001',
   template: providedTemplate,
 }: TemplateEditorScreenProps) {
   const session = useAdminSession();
