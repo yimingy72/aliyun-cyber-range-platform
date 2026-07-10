@@ -1,7 +1,9 @@
 import type {
+  AdminUser,
   AdminBootstrapData,
   CollectImageCatalogItemInput,
   CloudConfigSnapshot,
+  CreateAdminUserInput,
   ImageCatalogItem,
   ImageCatalogScopePayload,
   InstanceTypeAvailabilitySnapshot,
@@ -14,6 +16,7 @@ import type {
   RangeInstanceLaunchInput,
   RangeInstance,
   RangeInstanceDetail,
+  ResetAdminUserPasswordInput,
   Scenario,
   ScenarioCreateInput,
   ScenarioUpdateInput,
@@ -21,6 +24,8 @@ import type {
   SingleInstanceListPayload,
   SingleInstanceLaunchInput,
   SingleInstanceLaunchResult,
+  UpdateAdminUserRoleInput,
+  UpdateAdminUserStatusInput,
 } from './admin-types';
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
@@ -331,6 +336,69 @@ export async function saveCloudConfig(
   });
 
   return readJson<CloudConfigSnapshot>(response);
+}
+
+export async function fetchAdminUsers(apiBaseUrl: string, token: string): Promise<AdminUser[]> {
+  const response = await fetch(`${apiBaseUrl}/admin/users`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<AdminUser[]>(response);
+}
+
+export async function createAdminUser(apiBaseUrl: string, token: string, payload: CreateAdminUserInput): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
+}
+
+export async function updateAdminUserRole(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: UpdateAdminUserRoleInput,
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users/${id}/role`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
+}
+
+export async function updateAdminUserStatus(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: UpdateAdminUserStatusInput,
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users/${id}/status`, {
+    method: 'PATCH',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
+}
+
+export async function resetAdminUserPassword(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: ResetAdminUserPasswordInput,
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/admin/users/${id}/reset-password`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AdminUser>(response);
 }
 
 export async function fetchInstanceTypeAvailability(

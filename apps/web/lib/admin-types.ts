@@ -12,6 +12,37 @@ export type AdminSessionPayload = {
   profile: AdminProfile;
 };
 
+export type AdminUserRole = AdminProfile['role'];
+
+export type AdminUserStatus = 'active' | 'disabled';
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  role: AdminUserRole;
+  status: AdminUserStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateAdminUserInput = {
+  username: string;
+  password: string;
+  role: AdminUserRole;
+};
+
+export type UpdateAdminUserRoleInput = {
+  role: AdminUserRole;
+};
+
+export type UpdateAdminUserStatusInput = {
+  status: AdminUserStatus;
+};
+
+export type ResetAdminUserPasswordInput = {
+  password: string;
+};
+
 export type RangeTemplate = {
   id: string;
   name?: string | null;

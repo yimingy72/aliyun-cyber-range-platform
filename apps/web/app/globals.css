@@ -3111,6 +3111,108 @@ body {
   color: #1e56a2;
 }
 
+.users-workbench-panel {
+  gap: 0;
+}
+
+.users-workbench-header {
+  align-items: flex-start;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.users-workbench-header-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.users-workbench-header-copy p {
+  margin: 0;
+  color: #65758d;
+  font-size: var(--ui-font-row-body);
+  line-height: 1.6;
+}
+
+.users-workbench-controls {
+  padding-top: 0;
+}
+
+.users-workbench-column-head,
+.users-workbench-row {
+  display: grid;
+  grid-template-columns:
+    minmax(176px, 1.16fr)
+    minmax(108px, 0.62fr)
+    minmax(108px, 0.62fr)
+    minmax(176px, 0.92fr)
+    minmax(176px, 0.92fr)
+    minmax(148px, 0.8fr);
+  gap: 16px;
+}
+
+.users-workbench-column-head {
+  align-items: stretch;
+  min-height: 46px;
+  padding: 0 18px;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e8edf3;
+}
+
+.users-workbench-column-head strong {
+  color: #52627b;
+}
+
+.users-workbench-rows {
+  display: grid;
+}
+
+.users-workbench-row {
+  align-items: center;
+  min-height: 72px;
+  padding: 0 18px;
+  background: #ffffff;
+  border-bottom: 1px solid #edf1f6;
+  position: relative;
+}
+
+.users-workbench-row.is-menu-open {
+  z-index: 40;
+}
+
+.users-workbench-main,
+.users-workbench-role,
+.users-workbench-status,
+.users-workbench-time,
+.users-workbench-actions {
+  display: grid;
+  gap: 6px;
+  align-items: center;
+}
+
+.users-workbench-main strong {
+  color: #21314c;
+  font-size: var(--ui-font-row-title);
+  line-height: var(--ui-line-row-title);
+  font-weight: 500;
+}
+
+.users-workbench-role,
+.users-workbench-status {
+  justify-items: start;
+}
+
+.users-workbench-time span {
+  color: #617089;
+  font-size: var(--ui-font-row-body);
+  line-height: var(--ui-line-row-body);
+}
+
+.users-workbench-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .settings-workbench-panel {
   gap: 0;
 }
@@ -3360,7 +3462,8 @@ body {
 
   .image-center-column-head,
   .range-workbench-column-head,
-  .range-history-column-head {
+  .range-history-column-head,
+  .users-workbench-column-head {
     display: none;
   }
 
@@ -3390,7 +3493,8 @@ body {
   .range-workbench-row,
   .range-history-row,
   .single-instance-workbench-row,
-  .single-instance-history-row {
+  .single-instance-history-row,
+  .users-workbench-row {
     grid-template-columns: 1fr;
     gap: 10px;
     align-items: start;
@@ -3399,6 +3503,10 @@ body {
   }
 
   .template-workbench-actions {
+    justify-content: flex-start;
+  }
+
+  .users-workbench-actions {
     justify-content: flex-start;
   }
 }
