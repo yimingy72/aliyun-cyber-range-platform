@@ -162,4 +162,37 @@ describe('Range instance draft API', () => {
     expect(response.body.draftCompiledProvisionSpec).toBeNull();
     expect(response.body.draftUpdatedBy).toBeNull();
   });
+
+  it('rejects client-sent draftUpdatedBy on draft save requests', async () => {
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${instanceId}/draft`)
+      .set('authorization', `Bearer ${userToken}`)
+      .send({
+        draftTopologyGraph: {
+          schemaVersion: '1',
+          nodes: [{ id: 'host-checker', kind: 'ecs', data: { label: 'checker-updated' } }],
+          edges: [],
+        },
+        draftScenarioTemplateSpec: {
+          metadata: { name: 'checker' },
+          hosts: [
+            {
+              key: 'host-checker',
+              name: 'checker-updated',
+              zoneKey: 'switch-1',
+              role: 'ecs',
+              privateIp: '10.0.0.10',
+            },
+          ],
+        },
+        draftCompiledProvisionSpec: {
+          topology: { vpcCidr: '10.77.0.0/16' },
+        },
+        draftUpdatedBy: 'malicious-client',
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toEqual(expect.arrayContaining(['property draftUpdatedBy should not exist']));
+      });
+  });
 });

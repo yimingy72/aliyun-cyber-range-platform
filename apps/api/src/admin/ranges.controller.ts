@@ -87,9 +87,15 @@ export class RangesController {
     @Param('action') action: string,
     @Body() body: Record<string, string>,
   ) {
-    return this.rangeInstanceNodeActionsService.run(id, nodeId, action, {
-      ...body,
-      ownerUserId: request.adminUser.id,
-    });
+    return this.rangeInstanceNodeActionsService.run(
+      id,
+      nodeId,
+      action,
+      {
+        ...body,
+        ownerUserId: request.adminUser.id,
+      },
+      request.adminUser,
+    );
   }
 }

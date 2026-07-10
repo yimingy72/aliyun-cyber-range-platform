@@ -4,7 +4,6 @@ import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
 import {
   LaunchSingleInstanceDto,
-  TriggerSingleInstanceActionDto,
   TriggerSingleInstanceBatchDestroyDto,
   TriggerSingleInstanceDestroyDto,
 } from './dto/single-instance.dto';
@@ -26,13 +25,7 @@ export class SingleInstancesController {
 
   @Post('launch')
   launch(@Req() request: AuthenticatedAdminRequest, @Body() body: LaunchSingleInstanceDto) {
-    return this.singleInstancesService.launch(
-      {
-        ...body,
-        triggeredBy: request.adminUser.id,
-      },
-      request.adminUser.id,
-    );
+    return this.singleInstancesService.launch(body, request.adminUser.id);
   }
 
   @Post(':id/destroy')
@@ -59,10 +52,9 @@ export class SingleInstancesController {
     @Req() request: AuthenticatedAdminRequest,
     @Param('id') id: string,
     @Param('action') action: 'reboot' | 'open-vnc' | 'pack-image',
-    @Body() body: TriggerSingleInstanceActionDto,
+    @Body() body: Record<string, string>,
   ) {
     return this.singleInstancesService.runAction(id, action, {
-      triggeredBy: request.adminUser.id,
       ownerUserId: request.adminUser.id,
       ...(body.displayName ? { displayName: body.displayName } : {}),
       ...(body.defaultHostName ? { defaultHostName: body.defaultHostName } : {}),

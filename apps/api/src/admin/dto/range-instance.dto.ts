@@ -25,16 +25,6 @@ export class LaunchRangeInstanceDto {
 
   @IsISO8601()
   expiresAt!: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  triggeredBy?: string;
 }
 
-export class TriggerProvisionJobDto {
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  triggeredBy?: string;
-}
+export class TriggerProvisionJobDto {}

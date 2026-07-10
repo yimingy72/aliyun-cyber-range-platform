@@ -125,7 +125,7 @@ export class RangeInstancesService {
     const runtimeScenarioTemplateSpec =
       sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null;
     const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
-    const actorId = currentUser?.id ?? input.triggeredBy ?? 'admin';
+    const actorId = currentUser?.id ?? 'admin';
 
     const instance = await this.adminRepository.createRangeInstance({
       name: input.name,
@@ -185,7 +185,7 @@ export class RangeInstancesService {
       draftTopologyGraph: input.draftTopologyGraph,
       draftScenarioTemplateSpec: input.draftScenarioTemplateSpec,
       draftCompiledProvisionSpec: input.draftCompiledProvisionSpec,
-      draftUpdatedBy: currentUser?.id ?? input.draftUpdatedBy ?? null,
+      draftUpdatedBy: currentUser?.id ?? null,
       draftUpdatedAt: new Date(),
     });
 

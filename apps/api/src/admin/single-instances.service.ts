@@ -66,7 +66,7 @@ export class SingleInstancesService {
       systemDiskSize: input.systemDiskSize ?? 40,
       quantity,
       remark: input.remark?.trim() || null,
-      createdBy: input.triggeredBy,
+      createdBy: currentUserId,
       expiresAt: new Date(input.expiresAt),
     });
 
@@ -95,7 +95,7 @@ export class SingleInstancesService {
 
         const instance = await this.adminRepository.createRangeInstance({
           name,
-          createdBy: input.triggeredBy,
+          createdBy: currentUserId,
           instanceMode: 'single',
           singleInstanceBatchId: batch.id,
           status: 'pending_create',
@@ -127,7 +127,7 @@ export class SingleInstancesService {
         const job = await this.adminRepository.createProvisionJob({
           rangeInstanceId: instance.id,
           jobType: 'create',
-          triggeredBy: input.triggeredBy,
+          triggeredBy: currentUserId,
         });
         jobIds.push(job.id);
         const updated = await this.adminRepository.updateRangeInstance(instance.id, {

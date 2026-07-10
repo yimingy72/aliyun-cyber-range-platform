@@ -368,4 +368,20 @@ describe('Range instance launch API', () => {
       }),
     );
   });
+
+  it('rejects client-sent triggeredBy on range launch requests', async () => {
+    await request(app.getHttpServer())
+      .post('/admin/ranges/launch')
+      .set('authorization', `Bearer ${userToken}`)
+      .send({
+        templateId,
+        name: '攻防实例-三号',
+        expiresAt: '2026-07-11T12:00:00.000Z',
+        triggeredBy: 'malicious-client',
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toEqual(expect.arrayContaining(['property triggeredBy should not exist']));
+      });
+  });
 });

@@ -159,7 +159,6 @@ describe('single instances', () => {
         quantity: 2,
         password: '',
         remark: 'single instance',
-        triggeredBy: 'admin',
       });
 
     expect(response.status).toBe(201);
@@ -244,7 +243,6 @@ describe('single instances', () => {
         quantity: 1,
         password: '',
         remark: 'private owner launch',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -318,7 +316,6 @@ describe('single instances', () => {
         quantity: 1,
         password: '',
         remark: 'private foreign launch',
-        triggeredBy: 'other-admin',
       })
       .expect(404);
   });
@@ -381,7 +378,6 @@ describe('single instances', () => {
         quantity: 2,
         password: '',
         remark: 'round robin offset',
-        triggeredBy: 'admin',
       });
 
     expect(response.status).toBe(201);
@@ -526,7 +522,7 @@ describe('single instances', () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ triggeredBy: 'admin' });
+      .send({});
 
     expect(response.status).toBe(201);
     expect(response.body).toEqual(
@@ -566,7 +562,6 @@ describe('single instances', () => {
           quantity: 2,
           password: '',
           remark: 'dispatch order',
-          triggeredBy: 'admin',
         })
         .expect(201);
     } finally {
@@ -662,7 +657,7 @@ describe('single instances', () => {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ triggeredBy: 'admin' })
+        .send({})
         .expect(201);
     } finally {
       updateSpy.mockRestore();
@@ -703,7 +698,6 @@ describe('single instances', () => {
           quantity: 2,
           password: '',
           remark: 'dispatch failure fallback',
-          triggeredBy: 'admin',
         })
         .expect(500);
       expect(dispatchSpy).toHaveBeenCalledTimes(2);
@@ -796,7 +790,7 @@ describe('single instances', () => {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ triggeredBy: 'admin' })
+        .send({})
         .expect(500);
       expect(dispatchSpy).toHaveBeenCalledTimes(2);
     } finally {
@@ -880,7 +874,6 @@ describe('single instances', () => {
         quantity: 2,
         password: '',
         remark: 'single instance',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -951,7 +944,6 @@ describe('single instances', () => {
         quantity: 1,
         password: '',
         remark: 'public ip readiness',
-        triggeredBy: 'admin',
       })
       .expect(201);
 
@@ -1049,7 +1041,7 @@ describe('single instances', () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ triggeredBy: 'admin' })
+      .send({})
       .expect(201);
 
     expect(response.body.jobCount).toBe(2);
@@ -1161,7 +1153,7 @@ describe('single instances', () => {
       await request(app.getHttpServer())
         .post(`/admin/instances/batches/${batch.id}/destroy-all`)
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ triggeredBy: 'admin' })
+        .send({})
         .expect(201);
 
       await waitForAsync(async () => {
@@ -1210,7 +1202,7 @@ describe('single instances', () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/${instance.id}/actions/stop`)
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ triggeredBy: 'admin' });
+      .send({});
 
     expect(response.status).toBe(404);
     expect(response.body.message).toBe('Unsupported single instance action');
