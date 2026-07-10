@@ -381,6 +381,7 @@ export function SingleInstancesScreen({
   const [batchGroups, setBatchGroups] = useState<SingleInstanceBatchGroup[]>([]);
   const [jobs, setJobs] = useState<ProvisionJob[]>([]);
   const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
+  const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -418,6 +419,8 @@ export function SingleInstancesScreen({
 
     let isActive = true;
 
+    setHasLoadedPlatformImages(false);
+
     void Promise.all([
       reloadSingleInstanceRows(session.token),
       fetchPlatformImages(apiBaseUrl, session.token),
@@ -427,6 +430,7 @@ export function SingleInstancesScreen({
           return;
         }
         setPlatformImages(nextImages.items);
+        setHasLoadedPlatformImages(true);
         setCreateForm((current) =>
           current.platformImageQuery ? current : buildDefaultDialogState(nextImages.items.filter((item) => item.enabled)),
         );
@@ -443,6 +447,7 @@ export function SingleInstancesScreen({
         }
 
         setErrorMessage('实例管理数据加载失败，请稍后重试。');
+        setHasLoadedPlatformImages(true);
       });
 
     return () => {
@@ -903,7 +908,7 @@ export function SingleInstancesScreen({
               </button>
             </div>
           </div>
-          {!enabledPlatformImages.length ? (
+          {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
             <p className="admin-empty">请先前往镜像中心收录或启用至少一个平台镜像。</p>
           ) : null}
 

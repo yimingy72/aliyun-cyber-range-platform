@@ -953,4 +953,28 @@ describe('SingleInstancesScreen', () => {
     expect((screen.getByRole('button', { name: '创建实例' }) as HTMLButtonElement).disabled).toBe(true);
     expect(fetchInstanceTypeAvailabilityMock).not.toHaveBeenCalled();
   });
+
+  it('does not show the no-platform-image warning before platform images finish loading', async () => {
+    let resolveImages!: (value: { items: Array<{ id: string; imageId: string; displayName: string; enabled: boolean }> }) => void;
+
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveImages = resolve;
+        }),
+    );
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
+    expect(screen.queryByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeNull();
+
+    resolveImages({
+      items: [],
+    });
+
+    expect(await screen.findByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeTruthy();
+  });
 });
