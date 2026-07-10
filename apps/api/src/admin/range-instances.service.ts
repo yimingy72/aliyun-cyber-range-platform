@@ -87,11 +87,8 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
-    if (currentUser) {
-      this.assertTemplateReadable(template, currentUser);
-    }
-
-    const sourceTemplateVersionId = template.currentDraftVersionId ?? template.currentPublishedVersionId;
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
+    const sourceTemplateVersionId = sourceTemplateVersion?.id ?? null;
 
     if (!sourceTemplateVersionId) {
       throw new ConflictException('Range template does not have an active template version');
@@ -112,11 +109,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
-    if (currentUser) {
-      this.assertTemplateReadable(template, currentUser);
-    }
-
-    const sourceTemplateVersion = template.currentDraftVersion ?? template.currentPublishedVersion;
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
 
     if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
@@ -517,21 +510,6 @@ export class RangeInstancesService {
     }
 
     throw new ForbiddenException('Range instance access denied');
-  }
-
-  private assertTemplateReadable(
-    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
-    currentUser: AuthenticatedUser,
-  ) {
-    if (currentUser.role === 'admin') {
-      return;
-    }
-
-    if (template.ownerUserId === currentUser.id || template.visibility === 'platform') {
-      return;
-    }
-
-    throw new ForbiddenException('Template access denied');
   }
 
   private async attachRecoverySummary(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {

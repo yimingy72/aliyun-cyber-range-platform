@@ -33,16 +33,6 @@ import {
 } from '../../src/admin/admin.repository';
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
 
-function shouldAutoUnpublishTemplate(input: UpdateRangeTemplateInput) {
-  return (
-    input.topologySpec !== undefined ||
-    input.topologyGraph !== undefined ||
-    input.scenarioTemplateSpec !== undefined ||
-    input.compiledProvisionSpec !== undefined ||
-    input.compiledSpec !== undefined
-  );
-}
-
 export function createMemoryAdminRepository(): AdminRepository {
   const platformUsers: PlatformUserRecord[] = [];
   const rangeTemplates: RangeTemplateRecord[] = [];
@@ -285,7 +275,6 @@ export function createMemoryAdminRepository(): AdminRepository {
     async updateRangeTemplate(id: string, input: UpdateRangeTemplateInput) {
       const record = rangeTemplates.find((template) => template.id === id)!;
       const draftVersion = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
-      const autoUnpublish = Boolean(record.currentPublishedVersionId) && shouldAutoUnpublishTemplate(input);
 
       assignIfDefined(record, 'name', input.name);
       assignIfDefined(record, 'description', input.description);
@@ -317,18 +306,6 @@ export function createMemoryAdminRepository(): AdminRepository {
       assignClonedIfDefined(draftVersion, 'outputSchema', input.outputSchema);
       assignClonedIfDefined(draftVersion, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
       draftVersion.updatedAt = now();
-
-      if (autoUnpublish && record.currentPublishedVersionId) {
-        const currentPublished = rangeTemplateVersions.find((item) => item.id === record.currentPublishedVersionId) ?? null;
-
-        if (currentPublished) {
-          currentPublished.status = 'archived';
-          currentPublished.updatedAt = now();
-        }
-
-        record.currentPublishedVersionId = null;
-        record.currentPublishedVersion = null;
-      }
 
       record.currentDraftVersion = clone(draftVersion);
       record.versions = cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id));

@@ -5,6 +5,7 @@ import {
   AdminRepository,
   CreateRangeTemplateInput,
   RangeTemplateCompiledSpec,
+  RangeTemplateVersionRecord,
   RangeTemplateTopologySpec,
   UpdateRangeTemplateInput,
 } from './admin.repository';
@@ -55,13 +56,10 @@ export class RangeTemplatesService {
       throw new NotFoundException('Range template not found');
     }
 
-    if (currentUser) {
-      this.assertTemplateReadable(existingTemplate, currentUser);
-    }
+    const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
 
     const topologySpec =
-      existingTemplate.currentDraftVersion?.topologySpec ??
-      existingTemplate.currentPublishedVersion?.topologySpec ??
+      sourceVersion?.topologySpec ??
       existingTemplate.topologySpec;
 
     if (!topologySpec) {
@@ -78,34 +76,19 @@ export class RangeTemplatesService {
       description: existingTemplate.description ?? undefined,
       slug: this.buildClonedSlug(existingTemplate.slug, rangeTemplates.map((item) => item.slug)),
       visibility: 'private',
-      version: existingTemplate.version,
+      version: sourceVersion?.version ?? existingTemplate.version,
       cloudProvider: existingTemplate.cloudProvider,
       iacType: existingTemplate.iacType,
-      modulePathOrRef: existingTemplate.modulePathOrRef,
+      modulePathOrRef: sourceVersion?.modulePathOrRef ?? existingTemplate.modulePathOrRef,
       topologySpec,
-      topologyGraph:
-        existingTemplate.currentDraftVersion?.topologyGraph ??
-        existingTemplate.currentPublishedVersion?.topologyGraph ??
-        existingTemplate.topologyGraph ??
-        undefined,
-      scenarioTemplateSpec:
-        existingTemplate.currentDraftVersion?.scenarioTemplateSpec ??
-        existingTemplate.currentPublishedVersion?.scenarioTemplateSpec ??
-        existingTemplate.scenarioTemplateSpec ??
-        undefined,
+      topologyGraph: sourceVersion?.topologyGraph ?? existingTemplate.topologyGraph ?? undefined,
+      scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec ?? existingTemplate.scenarioTemplateSpec ?? undefined,
       compiledProvisionSpec:
-        existingTemplate.currentDraftVersion?.compiledProvisionSpec ??
-        existingTemplate.currentPublishedVersion?.compiledProvisionSpec ??
-        existingTemplate.compiledProvisionSpec ??
-        undefined,
-      compiledSpec:
-        existingTemplate.currentDraftVersion?.compiledSpec ??
-        existingTemplate.currentPublishedVersion?.compiledSpec ??
-        existingTemplate.compiledSpec ??
-        undefined,
-      variableSchema: existingTemplate.variableSchema,
-      outputSchema: existingTemplate.outputSchema,
-      defaultNetworkPolicy: existingTemplate.defaultNetworkPolicy ?? undefined,
+        sourceVersion?.compiledProvisionSpec ?? existingTemplate.compiledProvisionSpec ?? undefined,
+      compiledSpec: sourceVersion?.compiledSpec ?? existingTemplate.compiledSpec ?? undefined,
+      variableSchema: sourceVersion?.variableSchema ?? existingTemplate.variableSchema,
+      outputSchema: sourceVersion?.outputSchema ?? existingTemplate.outputSchema,
+      defaultNetworkPolicy: sourceVersion?.defaultNetworkPolicy ?? existingTemplate.defaultNetworkPolicy ?? undefined,
     });
   }
 
@@ -250,6 +233,38 @@ export class RangeTemplatesService {
     }
   }
 
+  async resolveTemplateConsumptionVersion(
+    template: ExistingRangeTemplate,
+    currentUser?: AuthenticatedUser,
+  ): Promise<RangeTemplateVersionRecord | null> {
+    if (!currentUser || this.isTemplateOwnerOrAdmin(template, currentUser)) {
+      return (
+        template.currentDraftVersion ??
+        (template.currentDraftVersionId
+          ? await this.adminRepository.getRangeTemplateVersionById(template.currentDraftVersionId)
+          : null) ??
+        template.currentPublishedVersion ??
+        (template.currentPublishedVersionId
+          ? await this.adminRepository.getRangeTemplateVersionById(template.currentPublishedVersionId)
+          : null)
+      );
+    }
+
+    this.assertTemplateReadable(template, currentUser);
+
+    const publishedVersion =
+      template.currentPublishedVersion ??
+      (template.currentPublishedVersionId
+        ? await this.adminRepository.getRangeTemplateVersionById(template.currentPublishedVersionId)
+        : null);
+
+    if (!publishedVersion) {
+      throw new ConflictException('Shared template must be published before other users can consume it');
+    }
+
+    return publishedVersion;
+  }
+
   private normalizeView(viewText?: string): RangeTemplateView {
     if (!viewText || viewText === 'mine') {
       return 'mine';
@@ -263,11 +278,11 @@ export class RangeTemplatesService {
   }
 
   private assertTemplateReadable(template: ExistingRangeTemplate, currentUser: AuthenticatedUser) {
-    if (currentUser.role === 'admin') {
+    if (this.isTemplateOwnerOrAdmin(template, currentUser)) {
       return;
     }
 
-    if (template.ownerUserId === currentUser.id || template.visibility === 'platform') {
+    if (template.visibility === 'platform') {
       return;
     }
 
@@ -275,15 +290,15 @@ export class RangeTemplatesService {
   }
 
   private assertTemplateOwnerOrAdmin(template: ExistingRangeTemplate, currentUser: AuthenticatedUser) {
-    if (currentUser.role === 'admin') {
-      return;
-    }
-
-    if (template.ownerUserId === currentUser.id) {
+    if (this.isTemplateOwnerOrAdmin(template, currentUser)) {
       return;
     }
 
     throw new ForbiddenException('Template access denied');
+  }
+
+  private isTemplateOwnerOrAdmin(template: ExistingRangeTemplate, currentUser: AuthenticatedUser) {
+    return currentUser.role === 'admin' || template.ownerUserId === currentUser.id;
   }
 
   private buildClonedSlug(sourceSlug: string, existingSlugs: string[]) {

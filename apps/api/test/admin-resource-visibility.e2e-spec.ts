@@ -27,6 +27,116 @@ function createTemplatePayload(name: string, slug: string) {
   };
 }
 
+function createConsumableTemplatePayload(input: {
+  name: string;
+  slug: string;
+  version: string;
+  scenarioName: string;
+  hostName: string;
+  vpcCidr: string;
+}) {
+  return {
+    name: input.name,
+    slug: input.slug,
+    version: input.version,
+    modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+    topologySpec: {
+      vpcCidr: input.vpcCidr,
+      networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true }],
+      hosts: [{ key: 'entry', name: input.hostName, zoneKey: 'dmz', role: 'entry', privateIp: '10.66.10.10', exposePublic: true }],
+      publicEntry: {
+        hostKey: 'entry',
+        protocols: [{ protocol: 'ssh', port: 22 }],
+      },
+    },
+    topologyGraph: {
+      schemaVersion: '1',
+      nodes: [{ id: 'entry', kind: 'ecs', data: { label: input.hostName } }],
+      edges: [],
+    },
+    scenarioTemplateSpec: {
+      schemaVersion: '1.0.0',
+      metadata: {
+        name: input.scenarioName,
+        slug: input.slug,
+        version: input.version,
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topology: {
+        vpcCidr: input.vpcCidr,
+        entryHostKey: 'entry',
+      },
+      networkZones: [
+        {
+          key: 'dmz',
+          name: 'DMZ',
+          cidr: '10.66.10.0/24',
+          purpose: 'public-entry',
+          isPublicEntry: true,
+          routeRole: 'entry',
+        },
+      ],
+      hosts: [
+        {
+          key: 'entry',
+          name: input.hostName,
+          role: 'entry',
+          zoneKey: 'dmz',
+          primaryPrivateIp: '10.66.10.10',
+          exposePublic: true,
+        },
+      ],
+      nat: { natGateways: [], eips: [] },
+      access: { portGroups: [] },
+      bootstrap: { scripts: [] },
+      runtimePreferences: { imagePolicies: [], instanceTypePolicies: [] },
+    },
+    compiledProvisionSpec: {
+      schemaVersion: '1.0.0',
+      identity: {
+        templateSlug: input.slug,
+        templateVersion: input.version,
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topology: {
+        vpcCidr: input.vpcCidr,
+        entryHostKey: 'entry',
+      },
+      networkZones: [
+        {
+          key: 'dmz',
+          name: 'DMZ',
+          cidr: '10.66.10.0/24',
+          purpose: 'public-entry',
+          isPublicEntry: true,
+          routeRole: 'entry',
+        },
+      ],
+      hosts: [
+        {
+          key: 'entry',
+          name: input.hostName,
+          role: 'entry',
+          zoneKey: 'dmz',
+          primaryPrivateIp: '10.66.10.10',
+          exposePublic: true,
+          networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.66.10.10' }],
+        },
+      ],
+      natGateways: [],
+      eips: [],
+      snatEntries: [],
+      dnatEntries: [],
+      securityGroupRules: [],
+      aclRules: [],
+      bootstrapScripts: [],
+      runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+    },
+  };
+}
+
 async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
   const response = await request(app.getHttpServer())
     .post('/admin/session')
@@ -211,6 +321,294 @@ describe('Admin resource visibility', () => {
     ]);
   });
 
+  it('lets users see shared unpublished templates but blocks clone/create/launch consumption', async () => {
+    const aliceToken = await loginAs(app, alice.username, alice.password);
+    const bobToken = await loginAs(app, bob.username, bob.password);
+
+    const sharedTemplate = await request(app.getHttpServer())
+      .post('/admin/scenarios')
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send(
+        createConsumableTemplatePayload({
+          name: 'Alice Shared Draft Only',
+          slug: 'alice-shared-draft-only',
+          version: 'v1',
+          scenarioName: 'Alice Shared Draft Only',
+          hostName: 'draft-only-entry',
+          vpcCidr: '10.81.0.0/16',
+        }),
+      )
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${sharedTemplate.body.id}/share`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    const platformView = await request(app.getHttpServer())
+      .get('/admin/scenarios?view=platform')
+      .set('authorization', `Bearer ${bobToken}`)
+      .expect(200);
+
+    expect(platformView.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: sharedTemplate.body.id,
+          visibility: 'platform',
+          currentPublishedVersionId: null,
+        }),
+      ]),
+    );
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${sharedTemplate.body.id}/clone`)
+      .set('authorization', `Bearer ${bobToken}`)
+      .expect(409)
+      .expect(({ body }) => {
+        expect(body.message).toBe('Shared template must be published before other users can consume it');
+      });
+
+    await request(app.getHttpServer())
+      .post('/admin/ranges')
+      .set('authorization', `Bearer ${bobToken}`)
+      .send({
+        name: 'bob-shared-draft-create',
+        templateId: sharedTemplate.body.id,
+      })
+      .expect(409)
+      .expect(({ body }) => {
+        expect(body.message).toBe('Shared template must be published before other users can consume it');
+      });
+
+    await request(app.getHttpServer())
+      .post('/admin/ranges/launch')
+      .set('authorization', `Bearer ${bobToken}`)
+      .send({
+        name: 'bob-shared-draft-launch',
+        templateId: sharedTemplate.body.id,
+        expiresAt: '2026-07-12T12:00:00.000Z',
+      })
+      .expect(409)
+      .expect(({ body }) => {
+        expect(body.message).toBe('Shared template must be published before other users can consume it');
+      });
+  });
+
+  it('makes non-owners clone and launch the published snapshot instead of the owner draft', async () => {
+    const aliceToken = await loginAs(app, alice.username, alice.password);
+    const bobToken = await loginAs(app, bob.username, bob.password);
+
+    const createResponse = await request(app.getHttpServer())
+      .post('/admin/scenarios')
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send(
+        createConsumableTemplatePayload({
+          name: 'Alice Shared Published',
+          slug: 'alice-shared-published',
+          version: 'v1',
+          scenarioName: 'Published Scenario V1',
+          hostName: 'published-entry-v1',
+          vpcCidr: '10.82.0.0/16',
+        }),
+      )
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/share`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    const publishResponse = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/publish`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    const publishedVersionId = publishResponse.body.currentPublishedVersionId as string;
+
+    const updateResponse = await request(app.getHttpServer())
+      .patch(`/admin/scenarios/${createResponse.body.id}`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send({
+        version: 'v2',
+        topologySpec: {
+          vpcCidr: '10.83.0.0/16',
+          networkZones: [
+            { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true },
+          ],
+          hosts: [
+            {
+              key: 'entry',
+              name: 'draft-entry-v2',
+              zoneKey: 'dmz',
+              role: 'entry',
+              privateIp: '10.66.10.10',
+              exposePublic: true,
+            },
+          ],
+          publicEntry: {
+            hostKey: 'entry',
+            protocols: [{ protocol: 'ssh', port: 22 }],
+          },
+        },
+        topologyGraph: {
+          schemaVersion: '1',
+          nodes: [{ id: 'entry', kind: 'ecs', data: { label: 'draft-entry-v2' } }],
+          edges: [],
+        },
+        scenarioTemplateSpec: {
+          schemaVersion: '1.0.0',
+          metadata: {
+            name: 'Draft Scenario V2',
+            slug: 'alice-shared-published',
+            version: 'v2',
+            cloudProvider: 'alibaba_cloud',
+            iacType: 'opentofu',
+          },
+          topology: {
+            vpcCidr: '10.83.0.0/16',
+            entryHostKey: 'entry',
+          },
+          networkZones: [
+            {
+              key: 'dmz',
+              name: 'DMZ',
+              cidr: '10.66.10.0/24',
+              purpose: 'public-entry',
+              isPublicEntry: true,
+              routeRole: 'entry',
+            },
+          ],
+          hosts: [
+            {
+              key: 'entry',
+              name: 'draft-entry-v2',
+              role: 'entry',
+              zoneKey: 'dmz',
+              primaryPrivateIp: '10.66.10.10',
+              exposePublic: true,
+            },
+          ],
+          nat: { natGateways: [], eips: [] },
+          access: { portGroups: [] },
+          bootstrap: { scripts: [] },
+          runtimePreferences: { imagePolicies: [], instanceTypePolicies: [] },
+        },
+        compiledProvisionSpec: {
+          schemaVersion: '1.0.0',
+          identity: {
+            templateSlug: 'alice-shared-published',
+            templateVersion: 'v2',
+            cloudProvider: 'alibaba_cloud',
+            iacType: 'opentofu',
+          },
+          topology: {
+            vpcCidr: '10.83.0.0/16',
+            entryHostKey: 'entry',
+          },
+          networkZones: [
+            {
+              key: 'dmz',
+              name: 'DMZ',
+              cidr: '10.66.10.0/24',
+              purpose: 'public-entry',
+              isPublicEntry: true,
+              routeRole: 'entry',
+            },
+          ],
+          hosts: [
+            {
+              key: 'entry',
+              name: 'draft-entry-v2',
+              role: 'entry',
+              zoneKey: 'dmz',
+              primaryPrivateIp: '10.66.10.10',
+              exposePublic: true,
+              networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.66.10.10' }],
+            },
+          ],
+          natGateways: [],
+          eips: [],
+          snatEntries: [],
+          dnatEntries: [],
+          securityGroupRules: [],
+          aclRules: [],
+          bootstrapScripts: [],
+          runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+        },
+      })
+      .expect(200);
+
+    expect(updateResponse.body.currentPublishedVersionId).toBe(publishedVersionId);
+    expect(updateResponse.body.currentPublishedVersion.version).toBe('v1');
+    expect(updateResponse.body.currentDraftVersion.version).toBe('v2');
+
+    const cloneResponse = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/clone`)
+      .set('authorization', `Bearer ${bobToken}`)
+      .expect(201);
+
+    expect(cloneResponse.body).toEqual(
+      expect.objectContaining({
+        version: 'v1',
+        scenarioTemplateSpec: expect.objectContaining({
+          metadata: expect.objectContaining({
+            name: 'Published Scenario V1',
+            version: 'v1',
+          }),
+        }),
+        compiledProvisionSpec: expect.objectContaining({
+          topology: expect.objectContaining({
+            vpcCidr: '10.82.0.0/16',
+          }),
+        }),
+      }),
+    );
+
+    const createInstanceResponse = await request(app.getHttpServer())
+      .post('/admin/ranges')
+      .set('authorization', `Bearer ${bobToken}`)
+      .send({
+        name: 'bob-published-create',
+        templateId: createResponse.body.id,
+      })
+      .expect(201);
+
+    expect(createInstanceResponse.body).toEqual(
+      expect.objectContaining({
+        ownerUserId: bob.id,
+        sourceTemplateVersionId: publishedVersionId,
+      }),
+    );
+
+    const launchResponse = await request(app.getHttpServer())
+      .post('/admin/ranges/launch')
+      .set('authorization', `Bearer ${bobToken}`)
+      .send({
+        name: 'bob-published-launch',
+        templateId: createResponse.body.id,
+        expiresAt: '2026-07-13T12:00:00.000Z',
+      })
+      .expect(201);
+
+    expect(launchResponse.body).toEqual(
+      expect.objectContaining({
+        ownerUserId: bob.id,
+        sourceTemplateVersionId: publishedVersionId,
+        runtimeScenarioTemplateSpec: expect.objectContaining({
+          metadata: expect.objectContaining({
+            name: 'Published Scenario V1',
+            version: 'v1',
+          }),
+        }),
+        runtimeCompiledProvisionSpec: expect.objectContaining({
+          topology: expect.objectContaining({
+            vpcCidr: '10.82.0.0/16',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('shows regular users only their own range instances', async () => {
     const aliceTemplate = await repository.createRangeTemplate({
       ...createTemplatePayload('Alice Range Template', 'alice-range-template'),
@@ -250,13 +648,23 @@ describe('Admin resource visibility', () => {
       .set('authorization', `Bearer ${bobToken}`)
       .expect(200);
 
-    expect(response.body).toEqual([
-      expect.objectContaining({
-        id: bobInstance.id,
-        name: 'bob-range-instance',
-        ownerUserId: bob.id,
-      }),
-    ]);
+    expect(response.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: bobInstance.id,
+          name: 'bob-range-instance',
+          ownerUserId: bob.id,
+        }),
+      ]),
+    );
+    expect(response.body).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'alice-range-instance',
+          ownerUserId: alice.id,
+        }),
+      ]),
+    );
   });
 
   it('blocks non-owner users from editing, sharing, or deleting another user private template', async () => {
@@ -316,6 +724,45 @@ describe('Admin resource visibility', () => {
       .set('authorization', `Bearer ${bobToken}`)
       .send({})
       .expect(403);
+  });
+
+  it('rejects malformed node-action metadata with 400 instead of 500', async () => {
+    const aliceToken = await loginAs(app, alice.username, alice.password);
+
+    const template = await repository.createRangeTemplate({
+      ...createTemplatePayload('Alice Action Validation Template', 'alice-action-validation-template'),
+      createdBy: alice.id,
+      ownerUserId: alice.id,
+      visibility: 'private',
+    });
+
+    const instance = await repository.createRangeInstance({
+      name: 'alice-action-validation-range',
+      createdBy: alice.id,
+      ownerUserId: alice.id,
+      templateId: template.id,
+      instanceMode: 'range',
+      status: 'running',
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: {
+          entry: 'i-alice-pack-image',
+        },
+      },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${instance.id}/nodes/entry/actions/pack-image`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send({
+        displayName: {
+          bad: true,
+        },
+      })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(String(body.message)).toContain('displayName must be a string');
+      });
   });
 
   it('rejects client-sent triggeredBy on range provision job routes', async () => {

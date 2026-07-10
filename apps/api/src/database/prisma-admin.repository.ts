@@ -35,16 +35,6 @@ import {
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
 
-function shouldAutoUnpublishTemplate(input: UpdateRangeTemplateInput) {
-  return (
-    input.topologySpec !== undefined ||
-    input.topologyGraph !== undefined ||
-    input.scenarioTemplateSpec !== undefined ||
-    input.compiledProvisionSpec !== undefined ||
-    input.compiledSpec !== undefined
-  );
-}
-
 @Injectable()
 export class PrismaAdminRepository implements AdminRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -216,8 +206,6 @@ export class PrismaAdminRepository implements AdminRepository {
         where: { id },
         include: { currentDraftVersion: true, currentPublishedVersion: true },
       });
-      const autoUnpublish = Boolean(existing.currentPublishedVersionId) && shouldAutoUnpublishTemplate(input);
-
       if (existing.currentDraftVersionId) {
         await tx.rangeTemplateVersion.update({
           where: { id: existing.currentDraftVersionId },
@@ -261,13 +249,6 @@ export class PrismaAdminRepository implements AdminRepository {
               ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
               : {}),
           },
-        });
-      }
-
-      if (autoUnpublish && existing.currentPublishedVersionId) {
-        await tx.rangeTemplateVersion.update({
-          where: { id: existing.currentPublishedVersionId },
-          data: { status: 'archived' },
         });
       }
 
@@ -317,7 +298,6 @@ export class PrismaAdminRepository implements AdminRepository {
           ...(input.defaultNetworkPolicy !== undefined
             ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
             : {}),
-          ...(autoUnpublish ? { currentPublishedVersionId: null } : {}),
         },
       });
 
