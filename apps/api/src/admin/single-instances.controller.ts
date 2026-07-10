@@ -25,8 +25,8 @@ export class SingleInstancesController {
   }
 
   @Post('launch')
-  launch(@Body() body: LaunchSingleInstanceDto) {
-    return this.singleInstancesService.launch(body);
+  launch(@Req() request: AuthenticatedAdminRequest, @Body() body: LaunchSingleInstanceDto) {
+    return this.singleInstancesService.launch(body, request.adminUser.id);
   }
 
   @Post(':id/destroy')

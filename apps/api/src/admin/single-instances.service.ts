@@ -13,6 +13,7 @@ import {
 } from './admin.repository';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { SingleInstanceNetworkService } from './single-instance-network.service';
+import { SystemConfigService } from './system-config.service';
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
@@ -23,6 +24,7 @@ const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-im
 export class SingleInstancesService {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
+    private readonly systemConfigService: SystemConfigService,
     private readonly singleInstanceNetworkService: SingleInstanceNetworkService,
     private readonly provisioningWorkerService: ProvisioningWorkerService,
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
@@ -44,9 +46,9 @@ export class SingleInstancesService {
     };
   }
 
-  async launch(input: LaunchSingleInstanceDto) {
+  async launch(input: LaunchSingleInstanceDto, currentUserId: string) {
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile();
-    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId);
+    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
     const password = input.password?.trim() || generateAliyunEcsPassword();
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
@@ -251,14 +253,35 @@ export class SingleInstancesService {
     return instance;
   }
 
-  private async requireEnabledPlatformImage(id: string): Promise<PlatformImageAssetRecord> {
+  private async requireEnabledPlatformImage(id: string, currentUserId: string): Promise<PlatformImageAssetRecord> {
     const image = await this.adminRepository.getPlatformImageAssetById(id);
+    const accountContext = await this.systemConfigService.getAccountContext();
 
-    if (!image || !image.enabled) {
+    if (
+      !image ||
+      !image.enabled ||
+      !this.isPlatformImageInScope(image, accountContext) ||
+      (image.visibility !== 'platform' && image.ownerUserId !== currentUserId)
+    ) {
       throw new NotFoundException('Platform image asset not found');
     }
 
     return image;
+  }
+
+  private isPlatformImageInScope(
+    image: PlatformImageAssetRecord,
+    accountContext: {
+      provider: string;
+      accountUid: string | null;
+      defaultRegion: string;
+    },
+  ) {
+    return (
+      image.provider === accountContext.provider &&
+      image.accountUid === accountContext.accountUid &&
+      image.regionId === accountContext.defaultRegion
+    );
   }
 
   private resolveIndexedValue(value: string, quantityIndex: number, quantity: number) {

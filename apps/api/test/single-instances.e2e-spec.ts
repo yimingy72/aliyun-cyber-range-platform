@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { hashPassword } from '../src/admin/admin-user-auth';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
 import { AppModule } from '../src/app.module';
@@ -193,6 +194,133 @@ describe('single instances', () => {
       securityGroupId: 'sg-bootstrap-real',
       vswitchIds: ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'],
     });
+  });
+
+  it('allows launching from a caller-owned private image asset', async () => {
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-image-owner',
+          sourceImageName: 'Ubuntu 24.04 Private',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T00:00:01.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-private-image-owner',
+      })
+    )[0];
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Ubuntu 24.04 Private',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'private-owner-lab',
+        hostName: 'private-owner-host',
+        platformImageAssetId: privateAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'private owner launch',
+        triggeredBy: 'admin',
+      })
+      .expect(201);
+
+    expect(response.body.instances).toHaveLength(1);
+    expect(response.body.instances[0]).toMatchObject({
+      createdBy: 'admin',
+      instanceMode: 'single',
+      singleInstanceConfig: expect.objectContaining({
+        platformImageAssetId: privateAsset.id,
+        imageId: 'm-private-image-owner',
+        imageDisplayName: 'Ubuntu 24.04 Private',
+      }),
+    });
+  });
+
+  it("rejects launching from another admin's private image asset", async () => {
+    await repository.createPlatformUser({
+      id: 'other-admin',
+      username: 'other-admin',
+      passwordHash: hashPassword('other-password'),
+      role: 'admin',
+      status: 'active',
+    });
+
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-image-foreign',
+          sourceImageName: 'Ubuntu 24.04 Foreign Private',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T00:00:02.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-private-image-foreign',
+      })
+    )[0];
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Ubuntu 24.04 Foreign Private',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    const otherAdminToken = await loginAs(app, 'other-admin', 'other-password');
+
+    await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${otherAdminToken}`)
+      .send({
+        name: 'private-foreign-lab',
+        hostName: 'private-foreign-host',
+        platformImageAssetId: privateAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'private foreign launch',
+        triggeredBy: 'other-admin',
+      })
+      .expect(404);
   });
 
   it('offsets vSwitch round-robin by current active single-instance count', async () => {
