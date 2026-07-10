@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { useAdminSession } from '../admin/use-admin-session';
+import type { AdminSessionPayload } from '../../lib/admin-types';
 
 type AdminLoginScreenProps = {
   apiBaseUrl?: string;
@@ -38,15 +39,13 @@ export function AdminLoginScreen({
         return;
       }
 
-      const payload = (await response.json()) as { token?: unknown };
-      const nextToken = typeof payload.token === 'string' ? payload.token : null;
+      const payload = (await response.json()) as AdminSessionPayload;
 
-      if (!nextToken?.trim()) {
+      if (!login(payload)) {
         setErrorMessage('管理员登录失败，服务返回了无效会话。');
         return;
       }
 
-      login(nextToken);
       router.replace('/admin/scenarios');
     } catch {
       setErrorMessage('管理员登录失败，请稍后重试。');

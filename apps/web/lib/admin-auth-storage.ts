@@ -1,86 +1,175 @@
-export const ADMIN_TOKEN_STORAGE_KEY = 'aliyun-cyber-range-admin-token';
-const ADMIN_TOKEN_STORAGE_EVENT = 'aliyun-cyber-range-admin-token-change';
+import type { AdminProfile, AdminSessionPayload } from './admin-types';
 
-function normalizeAdminToken(token: string | null | undefined) {
-  if (typeof token !== 'string') {
+export const ADMIN_SESSION_STORAGE_KEY = 'aliyun-cyber-range-admin-session';
+const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'aliyun-cyber-range-admin-token';
+const ADMIN_SESSION_STORAGE_EVENT = 'aliyun-cyber-range-admin-session-change';
+let cachedSerializedSession: string | null = null;
+let cachedSession: AdminSessionPayload | null = null;
+
+function normalizeAdminText(value: unknown) {
+  if (typeof value !== 'string') {
     return null;
   }
 
-  const normalizedToken = token.trim();
+  const normalizedValue = value.trim();
 
-  return normalizedToken ? normalizedToken : null;
+  return normalizedValue ? normalizedValue : null;
 }
 
-function emitAdminTokenChanged() {
+function normalizeAdminProfile(profile: unknown): AdminProfile | null {
+  if (!profile || typeof profile !== 'object') {
+    return null;
+  }
+
+  const nextProfile = profile as Record<string, unknown>;
+  const id = normalizeAdminText(nextProfile.id);
+  const username = normalizeAdminText(nextProfile.username);
+  const role = nextProfile.role;
+
+  if (!id || !username || (role !== 'admin' && role !== 'user')) {
+    return null;
+  }
+
+  return {
+    id,
+    username,
+    role,
+  };
+}
+
+function normalizeAdminSession(session: unknown): AdminSessionPayload | null {
+  if (!session || typeof session !== 'object') {
+    return null;
+  }
+
+  const nextSession = session as Record<string, unknown>;
+  const token = normalizeAdminText(nextSession.token);
+  const profile = normalizeAdminProfile(nextSession.profile);
+
+  if (!token || !profile) {
+    return null;
+  }
+
+  return {
+    token,
+    profile,
+  };
+}
+
+function clearAdminStorageKeys() {
+  window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY);
+}
+
+function updateCachedSession(serializedSession: string | null, session: AdminSessionPayload | null) {
+  cachedSerializedSession = serializedSession;
+  cachedSession = session;
+}
+
+function emitAdminSessionChanged() {
   if (typeof window === 'undefined') {
     return;
   }
 
-  window.dispatchEvent(new Event(ADMIN_TOKEN_STORAGE_EVENT));
+  window.dispatchEvent(new Event(ADMIN_SESSION_STORAGE_EVENT));
 }
 
-export function readAdminToken() {
+export function readAdminSession() {
   if (typeof window === 'undefined') {
     return null;
   }
 
-  const storedToken = window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
-  const normalizedToken = normalizeAdminToken(storedToken);
+  const storedSession = window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
 
-  if (!normalizedToken) {
-    window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  if (!storedSession) {
+    updateCachedSession(null, null);
     return null;
   }
 
-  if (normalizedToken !== storedToken) {
-    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, normalizedToken);
+  if (storedSession === cachedSerializedSession) {
+    return cachedSession;
   }
 
-  return normalizedToken;
+  try {
+    const normalizedSession = normalizeAdminSession(JSON.parse(storedSession));
+
+    if (!normalizedSession) {
+      clearAdminStorageKeys();
+      updateCachedSession(null, null);
+      return null;
+    }
+
+    const serializedSession = JSON.stringify(normalizedSession);
+
+    if (serializedSession !== storedSession) {
+      window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
+    }
+
+    updateCachedSession(serializedSession, normalizedSession);
+
+    return normalizedSession;
+  } catch {
+    clearAdminStorageKeys();
+    updateCachedSession(null, null);
+    return null;
+  }
 }
 
-export function subscribeAdminToken(onChange: () => void) {
+export function subscribeAdminSession(onChange: () => void) {
   if (typeof window === 'undefined') {
     return () => undefined;
   }
 
-  const handleTokenChange = () => {
+  const handleSessionChange = () => {
     onChange();
   };
   const handleStorageChange = (event: StorageEvent) => {
-    if (event.key === null || event.key === ADMIN_TOKEN_STORAGE_KEY) {
+    if (
+      event.key === null ||
+      event.key === ADMIN_SESSION_STORAGE_KEY ||
+      event.key === LEGACY_ADMIN_TOKEN_STORAGE_KEY
+    ) {
       onChange();
     }
   };
 
-  window.addEventListener(ADMIN_TOKEN_STORAGE_EVENT, handleTokenChange);
+  window.addEventListener(ADMIN_SESSION_STORAGE_EVENT, handleSessionChange);
   window.addEventListener('storage', handleStorageChange);
 
   return () => {
-    window.removeEventListener(ADMIN_TOKEN_STORAGE_EVENT, handleTokenChange);
+    window.removeEventListener(ADMIN_SESSION_STORAGE_EVENT, handleSessionChange);
     window.removeEventListener('storage', handleStorageChange);
   };
 }
 
-export function writeAdminToken(token: string) {
-  const normalizedToken = normalizeAdminToken(token);
-
-  if (!normalizedToken) {
-    clearAdminToken();
+export function writeAdminSession(session: AdminSessionPayload) {
+  if (typeof window === 'undefined') {
     return null;
   }
 
-  window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, normalizedToken);
-  emitAdminTokenChanged();
+  const normalizedSession = normalizeAdminSession(session);
 
-  return normalizedToken;
+  if (!normalizedSession) {
+    clearAdminSession();
+    return null;
+  }
+
+  const serializedSession = JSON.stringify(normalizedSession);
+
+  clearAdminStorageKeys();
+  window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
+  updateCachedSession(serializedSession, normalizedSession);
+  emitAdminSessionChanged();
+
+  return normalizedSession;
 }
 
-export function clearAdminToken() {
+export function clearAdminSession() {
   if (typeof window === 'undefined') {
     return;
   }
 
-  window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-  emitAdminTokenChanged();
+  clearAdminStorageKeys();
+  updateCachedSession(null, null);
+  emitAdminSessionChanged();
 }

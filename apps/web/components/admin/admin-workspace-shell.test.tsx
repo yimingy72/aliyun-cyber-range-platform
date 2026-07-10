@@ -8,6 +8,12 @@ const { replaceMock, pathnameState, sessionState } = vi.hoisted(() => ({
   sessionState: {
     value: {
       token: 'dev-admin-token' as string | null,
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      } as { id: string; username: string; role: 'admin' | 'user' } | null,
+      isAdmin: true as boolean,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -34,6 +40,12 @@ describe('AdminWorkspaceShell', () => {
     pathnameState.value = '/admin/scenarios';
     sessionState.value = {
       token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -60,18 +72,20 @@ describe('AdminWorkspaceShell', () => {
     expect(screen.getByText('镜像中心')).toBeTruthy();
     expect(screen.getByRole('link', { name: /镜像中心/i }).getAttribute('href')).toBe('/admin/image-center');
     expect(screen.getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe('/admin/settings/cloud');
+    expect(screen.getByRole('link', { name: /用户管理/i }).getAttribute('href')).toBe('/admin/users');
     expect(screen.getAllByRole('link').map((item) => item.textContent?.trim())).toEqual([
       '镜像镜像中心',
       '实例实例管理',
       '编排靶场编排',
       '实例编排实例',
       '配置基础配置',
+      '用户用户管理',
     ]);
     expect(screen.queryByText('靶场总览')).toBeNull();
     expect(screen.queryByText('编排任务')).toBeNull();
   });
 
-  it('keeps non-scenario pages on the same compact topbar without the old product eyebrow', () => {
+  it('shows the current username and role in the compact topbar', () => {
     pathnameState.value = '/admin/ranges';
 
     render(
@@ -82,13 +96,40 @@ describe('AdminWorkspaceShell', () => {
 
     expect(screen.queryByText('云上综合靶场平台')).toBeNull();
     expect(screen.getByRole('button', { name: '退出登录' })).toBeTruthy();
+    expect(screen.getByText('admin / admin')).toBeTruthy();
     expect(screen.queryByTestId('admin-scroll-rail')).toBeNull();
+  });
+
+  it('hides the 用户管理 nav entry for regular users', () => {
+    sessionState.value = {
+      token: 'user-token',
+      profile: {
+        id: 'user-alice',
+        username: 'alice',
+        role: 'user',
+      },
+      isAdmin: false,
+      isReady: true,
+      login: vi.fn(),
+      logout: vi.fn(),
+    };
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    expect(screen.getByText('alice / user')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /用户管理/i })).toBeNull();
   });
 
   it('keeps the login route outside the workspace shell', () => {
     pathnameState.value = '/admin/login';
     sessionState.value = {
       token: null,
+      profile: null,
+      isAdmin: false,
       isReady: false,
       login: vi.fn(),
       logout: vi.fn(),
@@ -108,6 +149,8 @@ describe('AdminWorkspaceShell', () => {
   it('redirects unauthenticated users on non-login routes', async () => {
     sessionState.value = {
       token: null,
+      profile: null,
+      isAdmin: false,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -127,6 +170,8 @@ describe('AdminWorkspaceShell', () => {
   it('does not redirect while the admin session is still restoring on a protected route', async () => {
     sessionState.value = {
       token: null,
+      profile: null,
+      isAdmin: false,
       isReady: false,
       login: vi.fn(),
       logout: vi.fn(),
@@ -143,6 +188,12 @@ describe('AdminWorkspaceShell', () => {
 
     sessionState.value = {
       token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),

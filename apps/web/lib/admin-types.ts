@@ -1,6 +1,17 @@
 import type { CompiledProvisionSpec } from './compiled-provision-spec';
 import type { ScenarioTemplateSpec } from './scenario-template-spec';
 
+export type AdminProfile = {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+};
+
+export type AdminSessionPayload = {
+  token: string;
+  profile: AdminProfile;
+};
+
 export type RangeTemplate = {
   id: string;
   name?: string | null;

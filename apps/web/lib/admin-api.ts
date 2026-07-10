@@ -23,6 +23,8 @@ import type {
   SingleInstanceLaunchResult,
 } from './admin-types';
 
+export type { AdminProfile, AdminSessionPayload } from './admin-types';
+
 export class AdminApiError extends Error {
   constructor(
     readonly status: number,
