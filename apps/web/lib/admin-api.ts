@@ -621,11 +621,38 @@ export async function collectPlatformImage(
   return readJson<PlatformImageAsset>(response);
 }
 
-export async function renamePlatformImage(apiBaseUrl: string, token: string, id: string, displayName: string) {
+async function updatePlatformImage(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: { displayName?: string },
+) {
   const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}`, {
     method: 'PATCH',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function renamePlatformImage(apiBaseUrl: string, token: string, id: string, displayName: string) {
+  return updatePlatformImage(apiBaseUrl, token, id, { displayName });
+}
+
+export async function publishPlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/publish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<PlatformImageAsset>(response);
+}
+
+export async function unpublishPlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/unpublish`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
   });
 
   return readJson<PlatformImageAsset>(response);

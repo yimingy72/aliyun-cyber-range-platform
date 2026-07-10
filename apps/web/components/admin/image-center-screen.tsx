@@ -11,10 +11,12 @@ import {
   fetchCustomImageCatalogScope,
   fetchPlatformImages,
   fetchPublicImageCatalogScope,
+  publishPlatformImage,
   removePlatformImage,
   renamePlatformImage,
   syncCustomImages,
   syncPublicImages,
+  unpublishPlatformImage,
 } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -188,13 +190,15 @@ export function ImageCenterScreen({
   }
 
   function syncAssetAcrossViews(nextAsset: PlatformImageAsset) {
-    setPlatformAssets((previous) =>
-      previous.some((item) => item.id === nextAsset.id)
+    setPlatformAssets((previous) => {
+      if (nextAsset.visibility === 'private') {
+        return previous.filter((item) => item.id !== nextAsset.id);
+      }
+
+      return previous.some((item) => item.id === nextAsset.id)
         ? replacePlatformAsset(previous, nextAsset)
-        : nextAsset.visibility !== 'private'
-          ? upsertPlatformAsset(previous, nextAsset)
-          : previous,
-    );
+        : upsertPlatformAsset(previous, nextAsset);
+    });
     setMyAssets((previous) =>
       previous.some((item) => item.id === nextAsset.id)
         ? replacePlatformAsset(previous, nextAsset)
@@ -468,6 +472,54 @@ export function ImageCenterScreen({
     }
   }
 
+  async function handlePublishPlatformAsset(asset: PlatformImageAsset) {
+    if (!session.token) {
+      return;
+    }
+
+    const actionKey = `publish:platform:${asset.id}`;
+
+    try {
+      setErrorMessage('');
+      beginAction(actionKey);
+      const nextAsset = await publishPlatformImage(apiBaseUrl, session.token, asset.id);
+      syncAssetAcrossViews(nextAsset);
+    } catch (error) {
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        return;
+      }
+
+      setErrorMessage(error instanceof Error ? error.message : '镜像发布失败');
+    } finally {
+      endAction(actionKey);
+    }
+  }
+
+  async function handleUnpublishPlatformAsset(asset: PlatformImageAsset) {
+    if (!session.token) {
+      return;
+    }
+
+    const actionKey = `unpublish:platform:${asset.id}`;
+
+    try {
+      setErrorMessage('');
+      beginAction(actionKey);
+      const nextAsset = await unpublishPlatformImage(apiBaseUrl, session.token, asset.id);
+      syncAssetAcrossViews(nextAsset);
+    } catch (error) {
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        return;
+      }
+
+      setErrorMessage(error instanceof Error ? error.message : '镜像已回退为私有失败');
+    } finally {
+      endAction(actionKey);
+    }
+  }
+
   async function handleRemovePlatformAsset(asset: PlatformImageAsset) {
     if (!session.token) {
       return;
@@ -591,7 +643,11 @@ export function ImageCenterScreen({
 
   function renderAssetRows(
     items: PlatformImageAsset[],
-    options: { emptyMessage: string; allowManagement: boolean | ((asset: PlatformImageAsset) => boolean) },
+    options: {
+      emptyMessage: string;
+      allowManagement: boolean | ((asset: PlatformImageAsset) => boolean);
+      allowVisibilityToggle?: boolean | ((asset: PlatformImageAsset) => boolean);
+    },
   ) {
     if (items.length === 0) {
       return <div className="template-workbench-empty image-center-empty-state">{options.emptyMessage}</div>;
@@ -600,10 +656,17 @@ export function ImageCenterScreen({
     return items.map((asset) => {
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
+      const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
       const removeActionKey = `remove:platform:${asset.id}`;
-      const isPending = [renameActionKey, toggleActionKey, removeActionKey].some((key) => pendingActionKeys.includes(key));
+      const isPending = [renameActionKey, toggleActionKey, visibilityActionKey, removeActionKey].some((key) =>
+        pendingActionKeys.includes(key),
+      );
       const canManageAsset =
         typeof options.allowManagement === 'function' ? options.allowManagement(asset) : options.allowManagement;
+      const canToggleVisibility =
+        typeof options.allowVisibilityToggle === 'function'
+          ? options.allowVisibilityToggle(asset)
+          : options.allowVisibilityToggle ?? false;
 
       return (
         <article
@@ -626,6 +689,20 @@ export function ImageCenterScreen({
           <div className="range-workbench-actions image-center-actions-cell">
             {canManageAsset ? (
               <>
+                {canToggleVisibility ? (
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    aria-label={`${asset.visibility === 'platform' ? '回退为私有' : '发布到平台'} ${asset.displayName}`}
+                    onClick={() =>
+                      void (asset.visibility === 'platform'
+                        ? handleUnpublishPlatformAsset(asset)
+                        : handlePublishPlatformAsset(asset))
+                    }
+                  >
+                    {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
+                  </button>
+                ) : null}
                 <button type="button" disabled={isPending} aria-label={`重命名 ${asset.displayName}`} onClick={() => openRenameDialog(asset)}>
                   重命名
                 </button>
@@ -817,11 +894,13 @@ export function ImageCenterScreen({
               renderAssetRows(pagedPlatformAssets, {
                 emptyMessage: '当前没有平台镜像。',
                 allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
+                allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
               })
             ) : activeTab === 'mine' ? (
               renderAssetRows(pagedMyAssets, {
                 emptyMessage: '当前没有我的镜像。',
                 allowManagement: true,
+                allowVisibilityToggle: true,
               })
             ) : activeTab === 'custom' ? (
               renderScopeRows('custom', pagedCustomSnapshots)

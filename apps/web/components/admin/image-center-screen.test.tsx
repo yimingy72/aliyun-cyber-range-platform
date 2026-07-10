@@ -19,6 +19,8 @@ const {
   syncCustomImagesMock,
   collectPlatformImageMock,
   renamePlatformImageMock,
+  publishPlatformImageMock,
+  unpublishPlatformImageMock,
   enablePlatformImageMock,
   disablePlatformImageMock,
   removePlatformImageMock,
@@ -33,6 +35,8 @@ const {
   syncCustomImagesMock: vi.fn(),
   collectPlatformImageMock: vi.fn(),
   renamePlatformImageMock: vi.fn(),
+  publishPlatformImageMock: vi.fn(),
+  unpublishPlatformImageMock: vi.fn(),
   enablePlatformImageMock: vi.fn(),
   disablePlatformImageMock: vi.fn(),
   removePlatformImageMock: vi.fn(),
@@ -59,6 +63,8 @@ vi.mock('../../lib/admin-api', async () => {
     syncCustomImages: syncCustomImagesMock,
     collectPlatformImage: collectPlatformImageMock,
     renamePlatformImage: renamePlatformImageMock,
+    publishPlatformImage: publishPlatformImageMock,
+    unpublishPlatformImage: unpublishPlatformImageMock,
     enablePlatformImage: enablePlatformImageMock,
     disablePlatformImage: disablePlatformImageMock,
     removePlatformImage: removePlatformImageMock,
@@ -197,6 +203,8 @@ beforeEach(() => {
   syncCustomImagesMock.mockReset();
   collectPlatformImageMock.mockReset();
   renamePlatformImageMock.mockReset();
+  publishPlatformImageMock.mockReset();
+  unpublishPlatformImageMock.mockReset();
   enablePlatformImageMock.mockReset();
   disablePlatformImageMock.mockReset();
   removePlatformImageMock.mockReset();
@@ -232,6 +240,30 @@ beforeEach(() => {
       displayName: 'Blue Team Ubuntu 22.04 Renamed',
       sourceSnapshotId: 'custom-snapshot-1',
       sourceScope: 'custom',
+      enabled: true,
+    }),
+  );
+  publishPlatformImageMock.mockResolvedValue(
+    createPlatformImageAsset({
+      id: 'my-image-1',
+      imageId: 'm-owned-001',
+      displayName: 'My Ubuntu 22.04',
+      sourceSnapshotId: 'custom-snapshot-1',
+      sourceScope: 'custom',
+      ownerUserId: 'admin-user',
+      visibility: 'platform',
+      enabled: true,
+    }),
+  );
+  unpublishPlatformImageMock.mockResolvedValue(
+    createPlatformImageAsset({
+      id: 'my-image-2',
+      imageId: 'm-owned-002',
+      displayName: 'My Published Ubuntu 22.04',
+      sourceSnapshotId: 'custom-snapshot-2',
+      sourceScope: 'custom',
+      ownerUserId: 'admin-user',
+      visibility: 'private',
       enabled: true,
     }),
   );
@@ -445,6 +477,132 @@ describe('ImageCenterScreen', () => {
     });
 
     expect(screen.queryByText('Disabled Platform Image')).toBeNull();
+  });
+
+  it('shows 发布到平台 and 回退为私有 actions inside 我的镜像 and calls the matching helpers', async () => {
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine'
+        ? ({
+            items: [
+              createPlatformImageAsset({
+                id: 'my-image-1',
+                imageId: 'm-owned-001',
+                displayName: 'My Ubuntu 22.04',
+                sourceSnapshotId: 'custom-snapshot-1',
+                sourceScope: 'custom',
+                ownerUserId: 'admin-user',
+                visibility: 'private',
+                enabled: true,
+              }),
+              createPlatformImageAsset({
+                id: 'my-image-2',
+                imageId: 'm-owned-002',
+                displayName: 'My Published Ubuntu 22.04',
+                sourceSnapshotId: 'custom-snapshot-2',
+                sourceScope: 'custom',
+                ownerUserId: 'admin-user',
+                visibility: 'platform',
+                enabled: true,
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload)
+        : ({
+            items: [
+              createPlatformImageAsset({
+                id: 'my-image-2',
+                imageId: 'm-owned-002',
+                displayName: 'My Published Ubuntu 22.04',
+                sourceSnapshotId: 'custom-snapshot-2',
+                sourceScope: 'custom',
+                ownerUserId: 'admin-user',
+                visibility: 'platform',
+                enabled: true,
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    expect(await screen.findByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '回退为私有 My Published Ubuntu 22.04' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台 My Ubuntu 22.04' }));
+    await waitFor(() => {
+      expect(publishPlatformImageMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'my-image-1',
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '回退为私有 My Published Ubuntu 22.04' }));
+    await waitFor(() => {
+      expect(unpublishPlatformImageMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'my-image-2',
+      );
+    });
+  });
+
+  it('shows 回退为私有 for the owner on the 平台镜像 view', async () => {
+    sessionState.profile = {
+      id: 'owner-user',
+      username: 'owner-user',
+      role: 'user',
+    };
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine'
+        ? ({
+            items: [
+              createPlatformImageAsset({
+                id: 'owned-platform-image',
+                imageId: 'm-owned-platform',
+                displayName: 'Owned Platform Image',
+                sourceSnapshotId: 'custom-snapshot-owner',
+                sourceScope: 'custom',
+                ownerUserId: 'owner-user',
+                visibility: 'platform',
+                enabled: true,
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload)
+        : ({
+            items: [
+              createPlatformImageAsset({
+                id: 'owned-platform-image',
+                imageId: 'm-owned-platform',
+                displayName: 'Owned Platform Image',
+                sourceSnapshotId: 'custom-snapshot-owner',
+                sourceScope: 'custom',
+                ownerUserId: 'owner-user',
+                visibility: 'platform',
+                enabled: true,
+              }),
+              createPlatformImageAsset({
+                id: 'other-platform-image',
+                imageId: 'm-other-platform',
+                displayName: 'Other Platform Image',
+                sourceSnapshotId: 'custom-snapshot-other',
+                sourceScope: 'custom',
+                ownerUserId: 'other-user',
+                visibility: 'platform',
+                enabled: true,
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    const ownedRow = (await screen.findByText('Owned Platform Image')).closest('article') as HTMLElement;
+    expect(within(ownedRow).getByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeTruthy();
+
+    const otherRow = screen.getByText('Other Platform Image').closest('article') as HTMLElement;
+    expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Platform Image' })).toBeNull();
   });
 
   it('deletes a custom image from the cloud tab', async () => {

@@ -9,10 +9,11 @@ import {
   type CloudImageSnapshotRecord,
   type ImageCatalogItemRecord,
   type PlatformImageAssetRecord,
+  type ResourceVisibility,
   type UpsertImageSnapshotInput,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
-import type { PlatformImageView } from './dto/platform-image.dto';
+import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-image.dto';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
@@ -109,10 +110,28 @@ export class ImageCatalogService {
     });
   }
 
-  async renamePlatformAsset(id: string, displayName: string, currentUser: SessionUserProfile) {
-    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+  async updatePlatformAsset(id: string, input: UpdatePlatformImageDto, currentUser: SessionUserProfile) {
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    const nextDisplayName = input.displayName ?? asset.displayName;
+    const nextVisibility = input.visibility;
 
-    return this.adminRepository.updatePlatformImageAsset(id, { displayName });
+    if (input.displayName === undefined && nextVisibility === undefined) {
+      throw new BadRequestException('At least one platform image update field is required');
+    }
+
+    if (nextVisibility === undefined) {
+      return this.adminRepository.updatePlatformImageAsset(id, { displayName: nextDisplayName });
+    }
+
+    if (nextVisibility === asset.visibility && nextDisplayName === asset.displayName) {
+      return asset;
+    }
+
+    if (!asset.ownerUserId) {
+      throw new BadRequestException('Only owner-backed image assets can change visibility');
+    }
+
+    return this.recollectPlatformAssetWithVisibility(asset, nextDisplayName, nextVisibility);
   }
 
   async setPlatformAssetEnabled(id: string, enabled: boolean, currentUser: SessionUserProfile) {
@@ -234,6 +253,54 @@ export class ImageCatalogService {
     }
 
     return asset;
+  }
+
+  private async recollectPlatformAssetWithVisibility(
+    asset: PlatformImageAssetRecord,
+    displayName: string,
+    visibility: ResourceVisibility,
+  ) {
+    const snapshot = await this.resolvePlatformAssetSnapshot(asset);
+
+    if (!snapshot) {
+      throw new BadRequestException('Platform image asset source snapshot is unavailable');
+    }
+
+    const updatedAsset = await this.adminRepository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName,
+      defaultHostName: asset.defaultHostName,
+      defaultPassword: asset.defaultPassword,
+      description: asset.description,
+      ownerUserId: asset.ownerUserId,
+      visibility,
+    });
+
+    if (asset.enabled) {
+      return updatedAsset;
+    }
+
+    return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
+  }
+
+  private async resolvePlatformAssetSnapshot(asset: PlatformImageAssetRecord): Promise<CloudImageSnapshotRecord | null> {
+    if (asset.sourceSnapshotId) {
+      const sourceSnapshot = await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId);
+
+      if (sourceSnapshot) {
+        return sourceSnapshot;
+      }
+    }
+
+    const [matchingSnapshot] = await this.adminRepository.listImageSnapshots({
+      provider: asset.provider,
+      accountUid: asset.accountUid,
+      regionId: asset.regionId,
+      scope: asset.sourceScope,
+      imageId: asset.imageId,
+    });
+
+    return matchingSnapshot ?? null;
   }
 
   private isSnapshotInScope(

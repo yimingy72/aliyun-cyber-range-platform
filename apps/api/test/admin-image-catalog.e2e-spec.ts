@@ -434,6 +434,246 @@ describe('Admin image catalog APIs', () => {
     expect(listResponse.body).toEqual({ items: [] });
   });
 
+  it('allows an owner to publish their own private image asset', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'image-owner-1',
+      username: 'image-owner',
+      passwordHash: hashPassword('owner-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-owner-private-image',
+          sourceImageName: 'Owner Private Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+    });
+
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Owner Private Image',
+      ownerUserId: 'image-owner-1',
+      visibility: 'private',
+    });
+
+    app = await createApp(repository);
+    const ownerToken = await loginAs(app, 'image-owner', 'owner-password');
+
+    await request(app.getHttpServer())
+      .post(`/admin/platform-images/${asset.id}/publish`)
+      .set('authorization', `Bearer ${ownerToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual(
+          expect.objectContaining({
+            id: asset.id,
+            displayName: 'Owner Private Image',
+            ownerUserId: 'image-owner-1',
+            visibility: 'platform',
+          }),
+        );
+      });
+
+    const platformResponse = await request(app.getHttpServer())
+      .get('/admin/platform-images?view=platform')
+      .set('authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    expect(platformResponse.body).toEqual({
+      items: [
+        expect.objectContaining({
+          id: asset.id,
+          ownerUserId: 'image-owner-1',
+          visibility: 'platform',
+        }),
+      ],
+    });
+  });
+
+  it('allows an owner to unpublish their own platform image asset back to private', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'image-owner-2',
+      username: 'image-owner-two',
+      passwordHash: hashPassword('owner-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-owner-platform-image',
+          sourceImageName: 'Owner Platform Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+    });
+
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Owner Platform Image',
+      ownerUserId: 'image-owner-2',
+      visibility: 'platform',
+    });
+
+    app = await createApp(repository);
+    const ownerToken = await loginAs(app, 'image-owner-two', 'owner-password');
+
+    await request(app.getHttpServer())
+      .post(`/admin/platform-images/${asset.id}/unpublish`)
+      .set('authorization', `Bearer ${ownerToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual(
+          expect.objectContaining({
+            id: asset.id,
+            ownerUserId: 'image-owner-2',
+            visibility: 'private',
+          }),
+        );
+      });
+
+    const platformResponse = await request(app.getHttpServer())
+      .get('/admin/platform-images?view=platform')
+      .set('authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    expect(platformResponse.body).toEqual({ items: [] });
+  });
+
+  it('prevents a non-owner user from publishing or unpublishing another user image asset', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'image-owner-3',
+      username: 'image-owner-three',
+      passwordHash: hashPassword('owner-password'),
+      role: 'user',
+      status: 'active',
+    });
+    await repository.createPlatformUser({
+      id: 'image-viewer-1',
+      username: 'image-viewer',
+      passwordHash: hashPassword('viewer-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-other-private-image',
+          sourceImageName: 'Other Private Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+        {
+          imageId: 'm-other-platform-image',
+          sourceImageName: 'Other Platform Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:01.000Z'),
+        },
+      ],
+    });
+
+    const snapshots = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+    });
+    const privateSnapshot = snapshots.find((item) => item.imageId === 'm-other-private-image');
+    const platformSnapshot = snapshots.find((item) => item.imageId === 'm-other-platform-image');
+
+    expect(privateSnapshot).toBeDefined();
+    expect(platformSnapshot).toBeDefined();
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: privateSnapshot!.id,
+      displayName: 'Other Private Image',
+      ownerUserId: 'image-owner-3',
+      visibility: 'private',
+    });
+    const platformAsset = await repository.collectPlatformImageAsset({
+      snapshotId: platformSnapshot!.id,
+      displayName: 'Other Platform Image',
+      ownerUserId: 'image-owner-3',
+      visibility: 'platform',
+    });
+
+    app = await createApp(repository);
+    const viewerToken = await loginAs(app, 'image-viewer', 'viewer-password');
+
+    await request(app.getHttpServer())
+      .post(`/admin/platform-images/${privateAsset.id}/publish`)
+      .set('authorization', `Bearer ${viewerToken}`)
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post(`/admin/platform-images/${platformAsset.id}/unpublish`)
+      .set('authorization', `Bearer ${viewerToken}`)
+      .expect(404);
+
+    const assets = await repository.listPlatformImageAssets({
+      accountScopeKey: toAccountScopeKey('1234567890'),
+      regionId: 'cn-hangzhou',
+      ownerUserId: 'image-owner-3',
+    });
+
+    expect(assets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: privateAsset.id,
+          visibility: 'private',
+        }),
+        expect.objectContaining({
+          id: platformAsset.id,
+          visibility: 'platform',
+        }),
+      ]),
+    );
+  });
+
   it('rejects collecting a platform image asset from a snapshot outside the current account and region scope', async () => {
     repository = createMemoryAdminRepository();
 
