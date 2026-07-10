@@ -7,6 +7,7 @@ import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repos
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
+import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 function createTemplatePayload(name: string, slug: string) {
@@ -392,6 +393,14 @@ describe('Admin resource visibility', () => {
       .expect(({ body }) => {
         expect(body.message).toBe('Shared template must be published before other users can consume it');
       });
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${sharedTemplate.body.id}/validate`)
+      .set('authorization', `Bearer ${bobToken}`)
+      .expect(409)
+      .expect(({ body }) => {
+        expect(body.message).toBe('Shared template must be published before other users can consume it');
+      });
   });
 
   it('makes non-owners clone and launch the published snapshot instead of the owner draft', async () => {
@@ -430,31 +439,6 @@ describe('Admin resource visibility', () => {
       .set('authorization', `Bearer ${aliceToken}`)
       .send({
         version: 'v2',
-        topologySpec: {
-          vpcCidr: '10.83.0.0/16',
-          networkZones: [
-            { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true },
-          ],
-          hosts: [
-            {
-              key: 'entry',
-              name: 'draft-entry-v2',
-              zoneKey: 'dmz',
-              role: 'entry',
-              privateIp: '10.66.10.10',
-              exposePublic: true,
-            },
-          ],
-          publicEntry: {
-            hostKey: 'entry',
-            protocols: [{ protocol: 'ssh', port: 22 }],
-          },
-        },
-        topologyGraph: {
-          schemaVersion: '1',
-          nodes: [{ id: 'entry', kind: 'ecs', data: { label: 'draft-entry-v2' } }],
-          edges: [],
-        },
         scenarioTemplateSpec: {
           schemaVersion: '1.0.0',
           metadata: {
@@ -483,7 +467,7 @@ describe('Admin resource visibility', () => {
               key: 'entry',
               name: 'draft-entry-v2',
               role: 'entry',
-              zoneKey: 'dmz',
+              zoneKey: 'draft-only-zone',
               primaryPrivateIp: '10.66.10.10',
               exposePublic: true,
             },
@@ -493,54 +477,28 @@ describe('Admin resource visibility', () => {
           bootstrap: { scripts: [] },
           runtimePreferences: { imagePolicies: [], instanceTypePolicies: [] },
         },
-        compiledProvisionSpec: {
-          schemaVersion: '1.0.0',
-          identity: {
-            templateSlug: 'alice-shared-published',
-            templateVersion: 'v2',
-            cloudProvider: 'alibaba_cloud',
-            iacType: 'opentofu',
-          },
-          topology: {
-            vpcCidr: '10.83.0.0/16',
-            entryHostKey: 'entry',
-          },
-          networkZones: [
-            {
-              key: 'dmz',
-              name: 'DMZ',
-              cidr: '10.66.10.0/24',
-              purpose: 'public-entry',
-              isPublicEntry: true,
-              routeRole: 'entry',
-            },
-          ],
-          hosts: [
-            {
-              key: 'entry',
-              name: 'draft-entry-v2',
-              role: 'entry',
-              zoneKey: 'dmz',
-              primaryPrivateIp: '10.66.10.10',
-              exposePublic: true,
-              networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.66.10.10' }],
-            },
-          ],
-          natGateways: [],
-          eips: [],
-          snatEntries: [],
-          dnatEntries: [],
-          securityGroupRules: [],
-          aclRules: [],
-          bootstrapScripts: [],
-          runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
-        },
       })
       .expect(200);
 
     expect(updateResponse.body.currentPublishedVersionId).toBe(publishedVersionId);
     expect(updateResponse.body.currentPublishedVersion.version).toBe('v1');
     expect(updateResponse.body.currentDraftVersion.version).toBe('v2');
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/validate`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(400)
+      .expect(({ body }) => {
+        expect(String(body.message)).toContain('draft-only-zone');
+      });
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/validate`)
+      .set('authorization', `Bearer ${bobToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual({ valid: true });
+      });
 
     const cloneResponse = await request(app.getHttpServer())
       .post(`/admin/scenarios/${createResponse.body.id}/clone`)
@@ -604,6 +562,105 @@ describe('Admin resource visibility', () => {
           topology: expect.objectContaining({
             vpcCidr: '10.82.0.0/16',
           }),
+        }),
+      }),
+    );
+  });
+
+  it('does not fall back to draft-only fields when a shared published snapshot lacks them', async () => {
+    const aliceToken = await loginAs(app, alice.username, alice.password);
+    const bobToken = await loginAs(app, bob.username, bob.password);
+    const provisioningWorker = app.get(ProvisioningWorkerService);
+    const draftOnlyGraph = {
+      schemaVersion: '1',
+      nodes: [{ id: 'entry', kind: 'ecs', data: { label: 'draft-only-entry-graph' } }],
+      edges: [],
+    };
+
+    const { topologyGraph: _unusedGraph, ...publishableTemplate } = createConsumableTemplatePayload({
+      name: 'Alice Shared No Graph Published',
+      slug: 'alice-shared-no-graph-published',
+      version: 'v1',
+      scenarioName: 'Published Without Graph',
+      hostName: 'published-no-graph-entry',
+      vpcCidr: '10.84.0.0/16',
+    });
+
+    const createResponse = await request(app.getHttpServer())
+      .post('/admin/scenarios')
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send(publishableTemplate)
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/share`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    const publishResponse = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/publish`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    const publishedVersionId = publishResponse.body.currentPublishedVersionId as string;
+
+    const updateResponse = await request(app.getHttpServer())
+      .patch(`/admin/scenarios/${createResponse.body.id}`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send({
+        version: 'v2',
+        topologyGraph: draftOnlyGraph,
+      })
+      .expect(200);
+
+    expect(updateResponse.body.currentPublishedVersionId).toBe(publishedVersionId);
+    expect(updateResponse.body.currentPublishedVersion.topologyGraph).toBeUndefined();
+    expect(updateResponse.body.currentDraftVersion.topologyGraph).toEqual(draftOnlyGraph);
+
+    const cloneResponse = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${createResponse.body.id}/clone`)
+      .set('authorization', `Bearer ${bobToken}`)
+      .expect(201);
+
+    expect(cloneResponse.body.currentPublishedVersionId).toBeNull();
+    expect(cloneResponse.body.topologyGraph).toBeUndefined();
+    expect(cloneResponse.body.scenarioTemplateSpec).toEqual(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          name: 'Published Without Graph',
+          version: 'v1',
+        }),
+      }),
+    );
+
+    const createInstanceResponse = await request(app.getHttpServer())
+      .post('/admin/ranges')
+      .set('authorization', `Bearer ${bobToken}`)
+      .send({
+        name: 'bob-worker-published-create',
+        templateId: createResponse.body.id,
+      })
+      .expect(201);
+
+    expect(createInstanceResponse.body.sourceTemplateVersionId).toBe(publishedVersionId);
+
+    const createJobResponse = await request(app.getHttpServer())
+      .post(`/admin/ranges/${createInstanceResponse.body.id}/create`)
+      .set('authorization', `Bearer ${bobToken}`)
+      .send({})
+      .expect(201);
+
+    await provisioningWorker.process(createJobResponse.body.id as string);
+
+    const persisted = await repository.getRangeInstanceById(createInstanceResponse.body.id);
+
+    expect(persisted?.sourceTemplateVersionId).toBe(publishedVersionId);
+    expect(persisted?.runtimeTopologyGraph).toBeNull();
+    expect(persisted?.runtimeScenarioTemplateSpec).toEqual(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          name: 'Published Without Graph',
+          version: 'v1',
         }),
       }),
     );

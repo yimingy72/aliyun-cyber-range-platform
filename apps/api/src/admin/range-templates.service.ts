@@ -57,13 +57,21 @@ export class RangeTemplatesService {
     }
 
     const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
+    const allowTemplateFallback = !this.isSharedTemplateConsumer(existingTemplate, currentUser);
 
     const topologySpec =
       sourceVersion?.topologySpec ??
-      existingTemplate.topologySpec;
+      (allowTemplateFallback ? existingTemplate.topologySpec : null);
+    const modulePathOrRef =
+      sourceVersion?.modulePathOrRef ??
+      (allowTemplateFallback ? existingTemplate.modulePathOrRef : null);
 
     if (!topologySpec) {
       throw new BadRequestException('Template topology spec not found');
+    }
+
+    if (!modulePathOrRef) {
+      throw new BadRequestException('Template module path not found');
     }
 
     const rangeTemplates = await this.adminRepository.listRangeTemplates();
@@ -76,19 +84,29 @@ export class RangeTemplatesService {
       description: existingTemplate.description ?? undefined,
       slug: this.buildClonedSlug(existingTemplate.slug, rangeTemplates.map((item) => item.slug)),
       visibility: 'private',
-      version: sourceVersion?.version ?? existingTemplate.version,
+      version: sourceVersion?.version ?? (allowTemplateFallback ? existingTemplate.version : existingTemplate.version),
       cloudProvider: existingTemplate.cloudProvider,
       iacType: existingTemplate.iacType,
-      modulePathOrRef: sourceVersion?.modulePathOrRef ?? existingTemplate.modulePathOrRef,
+      modulePathOrRef,
       topologySpec,
-      topologyGraph: sourceVersion?.topologyGraph ?? existingTemplate.topologyGraph ?? undefined,
-      scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec ?? existingTemplate.scenarioTemplateSpec ?? undefined,
+      topologyGraph:
+        sourceVersion?.topologyGraph ?? (allowTemplateFallback ? existingTemplate.topologyGraph : undefined) ?? undefined,
+      scenarioTemplateSpec:
+        sourceVersion?.scenarioTemplateSpec ??
+        (allowTemplateFallback ? existingTemplate.scenarioTemplateSpec : undefined) ??
+        undefined,
       compiledProvisionSpec:
-        sourceVersion?.compiledProvisionSpec ?? existingTemplate.compiledProvisionSpec ?? undefined,
-      compiledSpec: sourceVersion?.compiledSpec ?? existingTemplate.compiledSpec ?? undefined,
-      variableSchema: sourceVersion?.variableSchema ?? existingTemplate.variableSchema,
-      outputSchema: sourceVersion?.outputSchema ?? existingTemplate.outputSchema,
-      defaultNetworkPolicy: sourceVersion?.defaultNetworkPolicy ?? existingTemplate.defaultNetworkPolicy ?? undefined,
+        sourceVersion?.compiledProvisionSpec ??
+        (allowTemplateFallback ? existingTemplate.compiledProvisionSpec : undefined) ??
+        undefined,
+      compiledSpec:
+        sourceVersion?.compiledSpec ?? (allowTemplateFallback ? existingTemplate.compiledSpec : undefined) ?? undefined,
+      variableSchema: sourceVersion?.variableSchema ?? (allowTemplateFallback ? existingTemplate.variableSchema : {}),
+      outputSchema: sourceVersion?.outputSchema ?? (allowTemplateFallback ? existingTemplate.outputSchema : {}),
+      defaultNetworkPolicy:
+        sourceVersion?.defaultNetworkPolicy ??
+        (allowTemplateFallback ? existingTemplate.defaultNetworkPolicy : undefined) ??
+        undefined,
     });
   }
 
@@ -138,6 +156,19 @@ export class RangeTemplatesService {
 
     if (!existingTemplate) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (this.isSharedTemplateConsumer(existingTemplate, currentUser)) {
+      const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
+
+      this.assertTemplateStateReadyForPublish({
+        scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec,
+        compiledProvisionSpec: sourceVersion?.compiledProvisionSpec,
+        topologySpec: sourceVersion?.topologySpec,
+        compiledSpec: sourceVersion?.compiledSpec as RangeTemplateCompiledSpec | null | undefined,
+      });
+
+      return { valid: true as const };
     }
 
     if (currentUser) {
@@ -301,6 +332,14 @@ export class RangeTemplatesService {
     return currentUser.role === 'admin' || template.ownerUserId === currentUser.id;
   }
 
+  private isSharedTemplateConsumer(template: ExistingRangeTemplate, currentUser?: AuthenticatedUser) {
+    if (!currentUser) {
+      return false;
+    }
+
+    return !this.isTemplateOwnerOrAdmin(template, currentUser) && template.visibility === 'platform';
+  }
+
   private buildClonedSlug(sourceSlug: string, existingSlugs: string[]) {
     const normalizedSlug = `${sourceSlug}-copy`;
     const slugSet = new Set(existingSlugs);
@@ -413,6 +452,22 @@ export class RangeTemplatesService {
     }
 
     const compiledSpec = existingTemplate.currentDraftVersion?.compiledSpec as RangeTemplateCompiledSpec | null | undefined;
+
+    this.assertTemplateStateReadyForPublish({
+      scenarioTemplateSpec,
+      compiledProvisionSpec,
+      topologySpec,
+      compiledSpec,
+    });
+  }
+
+  private assertTemplateStateReadyForPublish(input: {
+    scenarioTemplateSpec?: Record<string, unknown> | null;
+    compiledProvisionSpec?: Record<string, unknown> | null;
+    topologySpec?: RangeTemplateTopologySpec | null;
+    compiledSpec?: RangeTemplateCompiledSpec | null;
+  }) {
+    const { scenarioTemplateSpec, compiledProvisionSpec, topologySpec, compiledSpec } = input;
 
     if (scenarioTemplateSpec) {
       this.validateScenarioTemplateSpec(scenarioTemplateSpec);

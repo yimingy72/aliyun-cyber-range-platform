@@ -290,4 +290,16 @@ describe('Range instance node actions API', () => {
       }),
     );
   });
+
+  it('rejects malformed metadata on a single instance row action with 400', async () => {
+    await request(app.getHttpServer())
+      .post(`/admin/instances/${singleInstanceId}/actions/pack-image`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: {
+          bad: true,
+        },
+      })
+      .expect(400);
+  });
 });

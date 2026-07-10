@@ -110,13 +110,16 @@ export class RangeInstancesService {
     }
 
     const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
+    const allowTemplateFallback = !this.isSharedTemplateConsumer(template, currentUser);
 
     if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
     }
 
     const runtimeScenarioTemplateSpec =
-      sourceTemplateVersion.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null;
+      sourceTemplateVersion.scenarioTemplateSpec ??
+      (allowTemplateFallback ? template.scenarioTemplateSpec : null) ??
+      null;
     const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
     const actorId = currentUser?.id ?? 'admin';
 
@@ -127,10 +130,15 @@ export class RangeInstancesService {
       instanceMode: 'range',
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
-      runtimeTopologyGraph: sourceTemplateVersion.topologyGraph ?? template.topologyGraph ?? null,
+      runtimeTopologyGraph:
+        sourceTemplateVersion.topologyGraph ??
+        (allowTemplateFallback ? template.topologyGraph : null) ??
+        null,
       runtimeScenarioTemplateSpec,
       runtimeCompiledProvisionSpec:
-        sourceTemplateVersion.compiledProvisionSpec ?? template.compiledProvisionSpec ?? null,
+        sourceTemplateVersion.compiledProvisionSpec ??
+        (allowTemplateFallback ? template.compiledProvisionSpec : null) ??
+        null,
       runtimeCredentials,
       status: 'pending_create',
       expiresAt: input.expiresAt,
@@ -510,6 +518,13 @@ export class RangeInstancesService {
     }
 
     throw new ForbiddenException('Range instance access denied');
+  }
+
+  private isSharedTemplateConsumer(
+    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
+    currentUser?: AuthenticatedUser,
+  ) {
+    return Boolean(currentUser) && currentUser!.role !== 'admin' && template.ownerUserId !== currentUser!.id;
   }
 
   private async attachRecoverySummary(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {

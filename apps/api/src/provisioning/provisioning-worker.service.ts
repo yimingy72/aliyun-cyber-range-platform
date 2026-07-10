@@ -150,17 +150,27 @@ export class ProvisioningWorkerService {
         return;
       }
 
-      const templateModulePath = sourceVersion?.modulePathOrRef ?? template.modulePathOrRef;
+      const allowTemplateFallback = await this.shouldAllowTemplateFallback(instance, template, job.triggeredBy);
+      const templateModulePath =
+        sourceVersion?.modulePathOrRef ??
+        (allowTemplateFallback ? template.modulePathOrRef : null);
       const baseCompiledProvisionSpec =
         this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
-        this.getCompiledProvisionSpec(template.compiledProvisionSpec);
+        (allowTemplateFallback ? this.getCompiledProvisionSpec(template.compiledProvisionSpec) : null) ??
+        this.getCompiledProvisionSpec(instance.runtimeCompiledProvisionSpec);
       const baseCompiledSpec =
-        this.getCompiledSpec(sourceVersion?.compiledSpec) ?? this.getCompiledSpec(template.compiledSpec);
+        this.getCompiledSpec(sourceVersion?.compiledSpec) ??
+        (allowTemplateFallback ? this.getCompiledSpec(template.compiledSpec) : null);
       const baseTopologySpec =
         this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
         this.getCompiledTopologySpec(baseCompiledSpec) ??
         sourceVersion?.topologySpec ??
-        template.topologySpec;
+        (allowTemplateFallback ? template.topologySpec : null);
+
+      if (!templateModulePath) {
+        await this.failJob(job, instance, 'Template module path not found');
+        return;
+      }
 
       if (!baseTopologySpec && !baseCompiledSpec && !baseCompiledProvisionSpec) {
         await this.failJob(job, instance, 'Template provisioning blueprint not found');
@@ -202,12 +212,12 @@ export class ProvisioningWorkerService {
             status: 'running',
             runtimeTopologyGraph:
               sourceVersion?.topologyGraph ??
-              template.topologyGraph ??
+              (allowTemplateFallback ? template.topologyGraph : null) ??
               instance.runtimeTopologyGraph ??
               null,
             runtimeScenarioTemplateSpec:
               sourceVersion?.scenarioTemplateSpec ??
-              template.scenarioTemplateSpec ??
+              (allowTemplateFallback ? template.scenarioTemplateSpec : null) ??
               instance.runtimeScenarioTemplateSpec ??
               null,
             runtimeCompiledProvisionSpec:
@@ -345,6 +355,24 @@ export class ProvisioningWorkerService {
     }
 
     return started;
+  }
+
+  private async shouldAllowTemplateFallback(
+    instance: RangeInstanceRecord,
+    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
+    triggeredBy: string,
+  ) {
+    const actor = await this.adminRepository.getPlatformUserById(triggeredBy);
+
+    if (!actor) {
+      return true;
+    }
+
+    if (actor.role === 'admin') {
+      return true;
+    }
+
+    return template.ownerUserId === actor.id || instance.ownerUserId === template.ownerUserId;
   }
 
   private trackTask(task: Promise<void>) {

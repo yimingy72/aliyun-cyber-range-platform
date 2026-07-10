@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -52,14 +52,32 @@ export class SingleInstancesController {
     @Req() request: AuthenticatedAdminRequest,
     @Param('id') id: string,
     @Param('action') action: 'reboot' | 'open-vnc' | 'pack-image',
-    @Body() body: Record<string, string>,
+    @Body() body: Record<string, unknown>,
   ) {
     return this.singleInstancesService.runAction(id, action, {
       ownerUserId: request.adminUser.id,
-      ...(body.displayName ? { displayName: body.displayName } : {}),
-      ...(body.defaultHostName ? { defaultHostName: body.defaultHostName } : {}),
-      ...(body.defaultPassword ? { defaultPassword: body.defaultPassword } : {}),
-      ...(body.description ? { description: body.description } : {}),
+      ...this.sanitizeActionPayload(body),
     });
+  }
+
+  private sanitizeActionPayload(body: Record<string, unknown>) {
+    const keys = ['displayName', 'defaultHostName', 'defaultPassword', 'description'] as const;
+    const payload: Record<string, string> = {};
+
+    for (const key of keys) {
+      const value = body[key];
+
+      if (value === undefined) {
+        continue;
+      }
+
+      if (typeof value !== 'string') {
+        throw new BadRequestException(`${key} must be a string`);
+      }
+
+      payload[key] = value;
+    }
+
+    return payload;
   }
 }
