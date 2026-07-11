@@ -204,6 +204,7 @@ export class RangeInstanceNodeActionsService {
     rangeInstanceId: string,
     action: 'reboot' | 'open-vnc' | 'pack-image',
     payload: Record<string, string>,
+    currentUser?: AuthenticatedUser,
   ) {
     const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
 
@@ -223,7 +224,7 @@ export class RangeInstanceNodeActionsService {
       throw new NotFoundException('Range instance host node not found');
     }
 
-    return this.run(rangeInstanceId, hostKey, action, payload);
+    return this.run(rangeInstanceId, hostKey, action, payload, currentUser);
   }
 
   private resolveHostInstanceId(instance: RangeInstanceRecord, nodeId: string) {

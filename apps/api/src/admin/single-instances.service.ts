@@ -1,10 +1,12 @@
 import {
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 
+import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import {
   ADMIN_REPOSITORY,
@@ -30,18 +32,33 @@ export class SingleInstancesService {
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
   ) {}
 
-  async list() {
+  async list(currentUser: SessionUserProfile) {
     const instances = await this.adminRepository.listRangeInstances();
+    const visibleInstances =
+      currentUser.role === 'admin'
+        ? instances
+        : instances.filter((instance) => this.isOwnedBy(instance.ownerUserId, instance.createdBy, currentUser.id));
     const batches = await this.adminRepository.listSingleInstanceBatchesWithInstances();
     const batchIds = new Set(batches.map((entry) => entry.batch.id));
-    const standaloneInstances = instances.filter(
+    const standaloneInstances = visibleInstances.filter(
       (instance) =>
         instance.instanceMode === 'single' &&
         (!instance.singleInstanceBatchId || !batchIds.has(instance.singleInstanceBatchId)),
     );
+    const visibleBatches =
+      currentUser.role === 'admin'
+        ? batches
+        : batches
+            .filter((entry) => this.isOwnedBy(entry.batch.ownerUserId, entry.batch.createdBy, currentUser.id))
+            .map((entry) => ({
+              ...entry,
+              instances: entry.instances.filter((instance) =>
+                this.isOwnedBy(instance.ownerUserId, instance.createdBy, currentUser.id),
+              ),
+            }));
 
     return {
-      batches,
+      batches: visibleBatches,
       standaloneInstances,
     };
   }
@@ -67,6 +84,7 @@ export class SingleInstancesService {
       quantity,
       remark: input.remark?.trim() || null,
       createdBy: currentUserId,
+      ownerUserId: currentUserId,
       expiresAt: new Date(input.expiresAt),
     });
 
@@ -96,6 +114,7 @@ export class SingleInstancesService {
         const instance = await this.adminRepository.createRangeInstance({
           name,
           createdBy: currentUserId,
+          ownerUserId: currentUserId,
           instanceMode: 'single',
           singleInstanceBatchId: batch.id,
           status: 'pending_create',
@@ -145,13 +164,15 @@ export class SingleInstancesService {
     return { batch, instances: created };
   }
 
-  async destroyBatch(batchId: string, triggeredBy: string) {
+  async destroyBatch(batchId: string, currentUser: SessionUserProfile) {
     const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
     const group = groups.find((entry) => entry.batch.id === batchId);
 
     if (!group) {
       throw new NotFoundException('Single instance batch not found');
     }
+
+    this.assertBatchAccess(group.batch.ownerUserId, group.batch.createdBy, currentUser);
 
     const targetInstances = group.instances.filter((instance) => instance.status !== 'destroyed');
     const jobIds: string[] = [];
@@ -161,7 +182,7 @@ export class SingleInstancesService {
         const job = await this.adminRepository.createProvisionJob({
           rangeInstanceId: instance.id,
           jobType: 'destroy',
-          triggeredBy,
+          triggeredBy: currentUser.id,
         });
         jobIds.push(job.id);
 
@@ -182,8 +203,8 @@ export class SingleInstancesService {
     };
   }
 
-  async destroy(id: string, triggeredBy: string) {
-    const instance = await this.requireSingleInstance(id);
+  async destroy(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
 
     if (!['running', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Single instance cannot start a destroy job from the current status');
@@ -192,7 +213,7 @@ export class SingleInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: id,
       jobType: 'destroy',
-      triggeredBy,
+      triggeredBy: currentUser.id,
     });
 
     await this.adminRepository.updateRangeInstance(id, {
@@ -204,8 +225,8 @@ export class SingleInstancesService {
     return job;
   }
 
-  async retry(id: string, triggeredBy: string) {
-    const instance = await this.requireSingleInstance(id);
+  async retry(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
 
     if (!['create_failed', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Single instance cannot start a retry job from the current status');
@@ -217,7 +238,7 @@ export class SingleInstancesService {
     const job = await this.adminRepository.createProvisionJob({
       rangeInstanceId: id,
       jobType: 'retry',
-      triggeredBy,
+      triggeredBy: currentUser.id,
       retryCount: (previousJob?.retryCount ?? 0) + 1,
     });
 
@@ -231,15 +252,20 @@ export class SingleInstancesService {
     return job;
   }
 
-  runAction(id: string, action: 'reboot' | 'open-vnc' | 'pack-image', payload: Record<string, string>) {
+  runAction(
+    id: string,
+    action: 'reboot' | 'open-vnc' | 'pack-image',
+    currentUser: SessionUserProfile,
+    payload: Record<string, string>,
+  ) {
     if (!SINGLE_INSTANCE_ACTION_ALLOWLIST.has(action)) {
       throw new NotFoundException('Unsupported single instance action');
     }
 
-    return this.rangeInstanceNodeActionsService.runSingleInstanceAction(id, action, payload);
+    return this.rangeInstanceNodeActionsService.runSingleInstanceAction(id, action, payload, currentUser);
   }
 
-  private async requireSingleInstance(id: string) {
+  private async requireSingleInstance(id: string, currentUser?: SessionUserProfile) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -248,6 +274,10 @@ export class SingleInstancesService {
 
     if (instance.instanceMode !== 'single') {
       throw new ConflictException('Range instance is not a single instance');
+    }
+
+    if (currentUser && currentUser.role !== 'admin' && !this.isOwnedBy(instance.ownerUserId, instance.createdBy, currentUser.id)) {
+      throw new ForbiddenException('Single instance access denied');
     }
 
     return instance;
@@ -290,5 +320,19 @@ export class SingleInstancesService {
     }
 
     return `${value}-${String(quantityIndex).padStart(2, '0')}`;
+  }
+
+  private assertBatchAccess(ownerUserId: string | null, createdBy: string | null, currentUser: SessionUserProfile) {
+    if (currentUser.role === 'admin') {
+      return;
+    }
+
+    if (!this.isOwnedBy(ownerUserId, createdBy, currentUser.id)) {
+      throw new ForbiddenException('Single instance batch access denied');
+    }
+  }
+
+  private isOwnedBy(ownerUserId: string | null, createdBy: string | null, currentUserId: string) {
+    return ownerUserId === currentUserId || createdBy === currentUserId;
   }
 }

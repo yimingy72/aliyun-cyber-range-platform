@@ -465,6 +465,115 @@ describe('single instances', () => {
     );
   });
 
+  it('allows regular users to load their own single instances and jobs while blocking other users resources', async () => {
+    await repository.createPlatformUser({
+      id: 'test-user',
+      username: 'test',
+      passwordHash: hashPassword('test-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    const userBatch = await repository.createSingleInstanceBatch({
+      name: 'user-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 1,
+      createdBy: 'test-user',
+      ownerUserId: 'test-user',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const userInstance = await repository.createRangeInstance({
+      name: 'user-single-01',
+      createdBy: 'test-user',
+      ownerUserId: 'test-user',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: userBatch.id,
+      singleInstanceConfig: {
+        baseName: 'user-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-user-1',
+        hostName: 'user-single-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const adminInstance = await repository.createRangeInstance({
+      name: 'admin-single-01',
+      createdBy: 'admin',
+      ownerUserId: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'admin-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-admin-1',
+        hostName: 'admin-single-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const userJob = await repository.createProvisionJob({
+      rangeInstanceId: userInstance.id,
+      jobType: 'create',
+      triggeredBy: 'test-user',
+    });
+    await repository.createProvisionJob({
+      rangeInstanceId: adminInstance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    const userToken = await loginAs(app, 'test', 'test-password');
+
+    const listResponse = await request(app.getHttpServer())
+      .get('/admin/instances')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200);
+
+    expect(listResponse.body).toEqual(
+      expect.objectContaining({
+        batches: expect.arrayContaining([
+          expect.objectContaining({
+            batch: expect.objectContaining({ id: userBatch.id, createdBy: 'test-user', ownerUserId: 'test-user' }),
+            instances: expect.arrayContaining([expect.objectContaining({ id: userInstance.id, createdBy: 'test-user' })]),
+          }),
+        ]),
+      }),
+    );
+    expect(JSON.stringify(listResponse.body)).toContain(userInstance.id);
+    expect(JSON.stringify(listResponse.body)).not.toContain(adminInstance.id);
+
+    const jobsResponse = await request(app.getHttpServer())
+      .get('/admin/provision-jobs')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200);
+
+    expect(jobsResponse.body).toEqual([expect.objectContaining({ id: userJob.id, rangeInstanceId: userInstance.id })]);
+
+    await request(app.getHttpServer())
+      .post(`/admin/instances/${adminInstance.id}/destroy`)
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({})
+      .expect(403);
+  });
+
   it('bulk-destroys all active child instances in a batch', async () => {
     const batch = await repository.createSingleInstanceBatch({
       name: 'destroy-batch',

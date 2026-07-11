@@ -6,7 +6,12 @@ import { AdminSessionService } from './admin-session.service';
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
-  private static readonly AUTHENTICATED_USER_PREFIXES = ['/admin/scenarios', '/admin/ranges'] as const;
+  private static readonly AUTHENTICATED_USER_PREFIXES = [
+    '/admin/scenarios',
+    '/admin/ranges',
+    '/admin/instances',
+    '/admin/provision-jobs',
+  ] as const;
 
   constructor(
     private readonly adminSessionService: AdminSessionService,
