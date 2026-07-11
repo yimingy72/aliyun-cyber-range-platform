@@ -61,7 +61,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const isLoginRoute = pathname === '/admin/login';
   const visibleNavigationItems = session.isAdmin
     ? [...navigationItems, userManagementNavigationItem, cloudSettingsNavigationItem]
-    : [...navigationItems, cloudSettingsNavigationItem];
+    : navigationItems;
 
   useEffect(() => {
     if (!isLoginRoute && session.isReady && !session.token) {

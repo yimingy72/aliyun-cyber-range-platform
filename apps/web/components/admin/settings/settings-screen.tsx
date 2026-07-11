@@ -26,7 +26,7 @@ export function SettingsScreen({
 }: SettingsScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
-  const { isReady, logout, token } = session;
+  const { isAdmin, isReady, logout, token } = session;
   const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot>(emptyCloudConfig);
   const [cloudConfigErrorMessage, setCloudConfigErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveErrorMessage, setCloudConfigSaveErrorMessage] = useState<string | null>(null);
@@ -46,6 +46,17 @@ export function SettingsScreen({
       setCloudConfigSaveSuccessMessage(null);
       setIsLoadingCloudConfig(false);
       setIsSavingCloudConfig(false);
+      return;
+    }
+
+    if (!isAdmin) {
+      setCloudConfig(emptyCloudConfig);
+      setCloudConfigErrorMessage(null);
+      setCloudConfigSaveErrorMessage(null);
+      setCloudConfigSaveSuccessMessage(null);
+      setIsLoadingCloudConfig(false);
+      setIsSavingCloudConfig(false);
+      router.replace('/admin/scenarios');
       return;
     }
 
@@ -88,7 +99,7 @@ export function SettingsScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isReady, router, token]);
+  }, [apiBaseUrl, isAdmin, isReady, router, token]);
 
   const handleFieldChange = (field: keyof CloudConfigSnapshot, value: string) => {
     setCloudConfig((currentValue) => ({
@@ -135,6 +146,17 @@ export function SettingsScreen({
         <section className="admin-panel admin-login-panel">
           <h2>正在跳转到管理员登录页...</h2>
           <p className="admin-empty">检测到当前没有有效的管理员会话。</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <main className="admin-shell">
+        <section className="admin-panel admin-login-panel">
+          <h2>正在返回主工作台...</h2>
+          <p className="admin-empty">当前账号无权访问基础配置。</p>
         </section>
       </main>
     );

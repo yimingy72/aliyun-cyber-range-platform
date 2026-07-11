@@ -183,6 +183,7 @@ describe('AdminWorkspaceShell', () => {
 
     expect(screen.getByText('alice / user')).toBeTruthy();
     expect(screen.queryByRole('link', { name: /用户管理/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /基础配置/i })).toBeNull();
   });
 
   it('keeps the login route outside the workspace shell', () => {
