@@ -330,6 +330,10 @@ function getActionLabel(action: MenuAction, status: string) {
   return '打包为镜像';
 }
 
+function isPrimaryInlineAction(action: MenuAction) {
+  return action === 'destroy' || action === 'open-vnc';
+}
+
 function buildPlatformImageOptionLabel(image: PlatformImageAsset) {
   return `${image.displayName} (${image.imageId})`;
 }
@@ -1105,6 +1109,8 @@ export function SingleInstancesScreen({
                               const actions = getAvailableActions(instance.status).filter(
                                 (action) => action !== 'pack-image' || group.batch.quantity <= 1,
                               );
+                              const inlineActions = actions.filter(isPrimaryInlineAction);
+                              const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
                               const isActionPending = pendingActionInstanceId === instance.id;
 
                               return (
@@ -1132,11 +1138,31 @@ export function SingleInstancesScreen({
                                   </div>
                                   {!isHistoryGroup ? (
                                     <div className="single-instance-batch-child-actions">
-                                      {actions.map((action) => (
+                                      {inlineActions.map((action) => (
                                         <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
                                           {getActionLabel(action, instance.status)}
                                         </button>
                                       ))}
+                                      {menuActions.length ? (
+                                        <div className="template-workbench-row-menu">
+                                          <button
+                                            type="button"
+                                            disabled={isActionPending}
+                                            onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
+                                          >
+                                            更多操作
+                                          </button>
+                                          {menuInstanceId === instance.id ? (
+                                            <div className="template-workbench-action-menu">
+                                              {menuActions.map((action) => (
+                                                <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                                  {getActionLabel(action, instance.status)}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
                                     </div>
                                   ) : null}
                                 </div>
@@ -1189,6 +1215,8 @@ export function SingleInstancesScreen({
                   readJobTimestamp(lifecycle?.destroyJob, 'end') ??
                   null;
                 const actions = getAvailableActions(instance.status);
+                const inlineActions = actions.filter(isPrimaryInlineAction);
+                const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
                 const isActionPending = pendingActionInstanceId === instance.id;
                 return (
                   <article
@@ -1257,21 +1285,30 @@ export function SingleInstancesScreen({
                       <div className="template-workbench-row-menu range-workbench-actions workbench-action-cell">
                         {actions.length ? (
                           <>
-                            <button
-                              type="button"
-                              disabled={isActionPending}
-                              onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
-                            >
-                              更多操作
-                            </button>
-                            {menuInstanceId === instance.id ? (
-                              <div className="template-workbench-action-menu">
-                                {actions.map((action) => (
-                                  <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                    {getActionLabel(action, instance.status)}
-                                  </button>
-                                ))}
-                              </div>
+                            {inlineActions.map((action) => (
+                              <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                {getActionLabel(action, instance.status)}
+                              </button>
+                            ))}
+                            {menuActions.length ? (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={isActionPending}
+                                  onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
+                                >
+                                  更多操作
+                                </button>
+                                {menuInstanceId === instance.id ? (
+                                  <div className="template-workbench-action-menu">
+                                    {menuActions.map((action) => (
+                                      <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                        {getActionLabel(action, instance.status)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </>
                             ) : null}
                           </>
                         ) : null}

@@ -270,8 +270,9 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByText('实例名')).toBeTruthy();
     expect(screen.getByRole('button', { name: '一键关闭' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
   });
 
@@ -329,6 +330,7 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('single-child-batch')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 single-child-batch' }));
     expect(await screen.findByText('single-child-01')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '打包为镜像' })).toBeTruthy();
   });
 
@@ -465,8 +467,9 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
 
-    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(
       screen
         .getAllByRole('button')
@@ -474,7 +477,7 @@ describe('SingleInstancesScreen', () => {
           ['关闭实例', '重启实例', '打开 VNC', '打包为镜像'].includes(button.textContent ?? ''),
         )
         .map((button) => button.textContent),
-    ).toEqual(['关闭实例', '重启实例', '打开 VNC', '打包为镜像']);
+    ).toEqual(['关闭实例', '打开 VNC', '重启实例', '打包为镜像']);
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();
@@ -483,7 +486,7 @@ describe('SingleInstancesScreen', () => {
     fireEvent.click(within(createFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除记录' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '关闭实例' })).toBeNull();
+    expect(within(createFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '删除记录' }));
     await waitFor(() =>
@@ -497,8 +500,8 @@ describe('SingleInstancesScreen', () => {
     const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('article');
     fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试关闭' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '关闭实例' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '删除记录' })).toBeNull();
+    expect(within(destroyFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
+    expect(within(destroyFailedRow!).queryByRole('button', { name: '删除记录' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
 
@@ -898,7 +901,6 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     fireEvent.click(screen.getByRole('button', { name: '打开 VNC' }));
 
     await waitFor(() =>
@@ -1052,9 +1054,6 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
-    const actionTrigger = screen.getByRole('button', { name: '更多操作' }) as HTMLButtonElement;
-    fireEvent.click(actionTrigger);
-
     const closeButton = screen.getByRole('button', { name: '关闭实例' }) as HTMLButtonElement;
     fireEvent.click(closeButton);
     fireEvent.click(closeButton);
