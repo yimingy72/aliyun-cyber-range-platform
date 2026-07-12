@@ -54,6 +54,14 @@ type InstanceCredential = {
   password: string;
 };
 
+type PackImageDialogState = {
+  instanceId: string;
+  displayName: string;
+  defaultHostName: string;
+  defaultPassword: string;
+  description: string;
+};
+
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
 }
@@ -207,6 +215,16 @@ function formatFullCredential(instance: RangeInstance) {
   }
 
   return `${credential.username} / ${credential.password}`;
+}
+
+function readDefaultPackImageName(instance: RangeInstance) {
+  const displayName =
+    instance.name?.trim() ||
+    instance.singleInstanceConfig?.hostName?.trim() ||
+    instance.singleInstanceConfig?.imageDisplayName?.trim() ||
+    instance.id;
+
+  return `${displayName}-snapshot`;
 }
 
 function normalizeSingleInstanceListPayload(payload: RangeInstance[] | SingleInstanceListPayload) {
@@ -396,6 +414,7 @@ export function SingleInstancesScreen({
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
+  const [packImageDialog, setPackImageDialog] = useState<PackImageDialogState | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const consumedPrefillRef = useRef<string | null>(null);
@@ -749,8 +768,69 @@ export function SingleInstancesScreen({
     }
   }
 
+  function openPackImageDialog(instance: RangeInstance) {
+    setMenuInstanceId(null);
+    setPackImageDialog({
+      instanceId: instance.id,
+      displayName: readDefaultPackImageName(instance),
+      defaultHostName: instance.singleInstanceConfig?.hostName?.trim() || '',
+      defaultPassword: '',
+      description: '',
+    });
+  }
+
+  async function handleConfirmPackImage() {
+    if (!session.token || !packImageDialog) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setPendingActionInstanceId(packImageDialog.instanceId);
+
+    try {
+      const result = await triggerSingleInstanceAction(
+        apiBaseUrl,
+        session.token,
+        packImageDialog.instanceId,
+        'pack-image',
+        {
+          displayName: packImageDialog.displayName,
+          defaultHostName: packImageDialog.defaultHostName,
+          defaultPassword: packImageDialog.defaultPassword,
+          description: packImageDialog.description,
+        },
+      );
+
+      setPackImageDialog(null);
+      setErrorMessage(
+        result &&
+          typeof result === 'object' &&
+          'imageReady' in result &&
+          (result as { imageReady?: unknown }).imageReady === true
+          ? `镜像打包完成，已保存到我的镜像：${packImageDialog.displayName}`
+          : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
+      );
+      await reloadSingleInstanceRows(session.token);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('镜像打包失败，请稍后重试。');
+    } finally {
+      setPendingActionInstanceId(null);
+    }
+  }
+
   async function handleAction(instance: RangeInstance, action: MenuAction) {
     if (!session.token) {
+      return;
+    }
+
+    if (action === 'pack-image') {
+      openPackImageDialog(instance);
       return;
     }
 
@@ -783,9 +863,7 @@ export function SingleInstancesScreen({
         return;
       }
 
-      const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
-        ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
-      });
+      const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {});
 
       if (action === 'open-vnc') {
         if (!vncWindow) {
@@ -1362,6 +1440,121 @@ export function SingleInstancesScreen({
               </button>
             </div>
           </form>
+        </SingleInstanceDialog>
+      ) : null}
+
+      {packImageDialog ? (
+        <SingleInstanceDialog title="打包为镜像" onClose={() => setPackImageDialog(null)}>
+          <div className="single-instance-dialog-body">
+            <div className="single-instance-dialog-grid">
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-name">
+                  镜像名
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-name"
+                    aria-label="镜像名"
+                    value={packImageDialog.displayName}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              displayName: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-hostname">
+                  默认主机名
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-hostname"
+                    aria-label="默认主机名"
+                    placeholder="留空则使用当前主机名"
+                    value={packImageDialog.defaultHostName}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              defaultHostName: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-password">
+                  默认密码
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-password"
+                    aria-label="默认密码"
+                    placeholder="留空则随机生成"
+                    value={packImageDialog.defaultPassword}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              defaultPassword: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-description">
+                  镜像备注
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-description"
+                    aria-label="镜像备注"
+                    placeholder="选填"
+                    value={packImageDialog.description}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              description: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="template-workbench-dialog-actions single-instance-dialog-actions">
+            <button type="button" onClick={() => setPackImageDialog(null)}>
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={pendingActionInstanceId === packImageDialog.instanceId || packImageDialog.displayName.trim().length === 0}
+              onClick={() => void handleConfirmPackImage()}
+            >
+              {pendingActionInstanceId === packImageDialog.instanceId ? '处理中...' : '确认打包'}
+            </button>
+          </div>
         </SingleInstanceDialog>
       ) : null}
     </div>

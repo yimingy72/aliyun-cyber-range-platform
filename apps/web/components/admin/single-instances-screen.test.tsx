@@ -915,6 +915,66 @@ describe('SingleInstancesScreen', () => {
     );
   });
 
+  it('opens a pack image dialog before submitting pack-image actions', async () => {
+    triggerSingleInstanceActionMock.mockResolvedValue({
+      status: 'accepted',
+      action: 'pack-image',
+      imageReady: false,
+    });
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        singleInstanceConfig: {
+          hostName: 'running-host',
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('running-lab')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '打包为镜像' }));
+
+    const dialog = screen.getByRole('dialog', { name: '打包为镜像' });
+    expect((within(dialog).getByLabelText('镜像名') as HTMLInputElement).value).toBe('running-lab-snapshot');
+    expect((within(dialog).getByLabelText('默认主机名') as HTMLInputElement).value).toBe('running-host');
+
+    fireEvent.change(within(dialog).getByLabelText('镜像名'), { target: { value: 'custom-pack-image' } });
+    fireEvent.change(within(dialog).getByLabelText('默认主机名'), { target: { value: 'custom-host' } });
+    fireEvent.change(within(dialog).getByLabelText('默认密码'), { target: { value: 'Secret123!' } });
+    fireEvent.change(within(dialog).getByLabelText('镜像备注'), { target: { value: 'snapshot note' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认打包' }));
+
+    await waitFor(() =>
+      expect(triggerSingleInstanceActionMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'single-running',
+        'pack-image',
+        {
+          displayName: 'custom-pack-image',
+          defaultHostName: 'custom-host',
+          defaultPassword: 'Secret123!',
+          description: 'snapshot note',
+        },
+      ),
+    );
+  });
+
   it('shows masked credentials and copies only the password', async () => {
     fetchSingleInstancesMock.mockResolvedValue([
       {
