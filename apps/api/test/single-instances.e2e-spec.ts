@@ -551,8 +551,8 @@ describe('single instances', () => {
       expect.objectContaining({
         batches: expect.arrayContaining([
           expect.objectContaining({
-            batch: expect.objectContaining({ id: userBatch.id, createdBy: 'test-user', ownerUserId: 'test-user' }),
-            instances: expect.arrayContaining([expect.objectContaining({ id: userInstance.id, createdBy: 'test-user' })]),
+            batch: expect.objectContaining({ id: userBatch.id, createdBy: 'test', ownerUserId: 'test-user' }),
+            instances: expect.arrayContaining([expect.objectContaining({ id: userInstance.id, createdBy: 'test' })]),
           }),
         ]),
       }),

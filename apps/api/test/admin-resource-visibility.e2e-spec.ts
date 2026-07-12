@@ -242,7 +242,7 @@ describe('Admin resource visibility', () => {
 
     expect(createResponse.body).toEqual(
       expect.objectContaining({
-        createdBy: alice.id,
+        createdBy: alice.username,
         ownerUserId: alice.id,
         visibility: 'private',
         currentPublishedVersionId: null,
@@ -311,6 +311,7 @@ describe('Admin resource visibility', () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: alicePublished.body.id,
+          createdBy: alice.username,
           ownerUserId: alice.id,
           visibility: 'platform',
         }),
@@ -338,6 +339,7 @@ describe('Admin resource visibility', () => {
 
     expect(mineResponse.body).toEqual([
       expect.objectContaining({
+        createdBy: bob.username,
         ownerUserId: bob.id,
         visibility: 'private',
         slug: 'bob-private-template',

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import type { SessionUserProfile } from './admin-user-auth';
+import { attachCreatedByUsernames } from './creator-display';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import {
   ADMIN_REPOSITORY,
@@ -57,9 +58,22 @@ export class SingleInstancesService {
               ),
             }));
 
+    const normalizedBatches = await Promise.all(
+      visibleBatches.map(async (entry) => {
+        const [batch] = await attachCreatedByUsernames(this.adminRepository, [entry.batch]);
+        const instances = await attachCreatedByUsernames(this.adminRepository, entry.instances);
+
+        return {
+          ...entry,
+          batch,
+          instances,
+        };
+      }),
+    );
+
     return {
-      batches: visibleBatches,
-      standaloneInstances,
+      batches: normalizedBatches,
+      standaloneInstances: await attachCreatedByUsernames(this.adminRepository, standaloneInstances),
     };
   }
 
@@ -161,7 +175,12 @@ export class SingleInstancesService {
       }
     }
 
-    return { batch, instances: created };
+    const [normalizedBatch] = await attachCreatedByUsernames(this.adminRepository, [batch]);
+
+    return {
+      batch: normalizedBatch,
+      instances: await attachCreatedByUsernames(this.adminRepository, created),
+    };
   }
 
   async destroyBatch(batchId: string, currentUser: SessionUserProfile) {

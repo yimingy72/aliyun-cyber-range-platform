@@ -303,7 +303,7 @@ describe('Range instance launch API', () => {
         id: expect.any(String),
         name: '攻防实例-一号',
         status: 'pending_create',
-        createdBy: launchUser.id,
+        createdBy: launchUser.username,
         ownerUserId: launchUser.id,
         expiresAt: '2026-07-09T12:00:00.000Z',
         lastJobId: expect.any(String),

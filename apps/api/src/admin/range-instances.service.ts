@@ -11,6 +11,7 @@ import {
   RangeRuntimeCredentials,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
+import { attachCreatedByUsernames } from './creator-display';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
@@ -45,10 +46,15 @@ export class RangeInstancesService {
         ? instances.filter((instance) => instance.ownerUserId === currentUser.id)
         : instances;
 
-    return Promise.all(
+    const hydratedInstances = await Promise.all(
       scopedInstances
         .filter((instance) => instance.instanceMode === 'range')
         .map((instance) => this.attachRecoverySummary(instance)),
+    );
+
+    return attachCreatedByUsernames(
+      this.adminRepository,
+      hydratedInstances.filter((instance): instance is NonNullable<typeof instance> => Boolean(instance)),
     );
   }
 
@@ -95,12 +101,14 @@ export class RangeInstancesService {
       throw new ConflictException('Range template does not have an active template version');
     }
 
-    return this.adminRepository.createRangeInstance({
+    const instance = await this.adminRepository.createRangeInstance({
       ...input,
       createdBy: currentUser?.id ?? input.createdBy,
       ownerUserId: currentUser?.id ?? input.ownerUserId,
       sourceTemplateVersionId,
     });
+
+    return this.withCreatorUsername(instance);
   }
 
   async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
@@ -163,7 +171,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
   }
 
   async saveDraft(id: string, input: SaveRangeInstanceDraftDto, currentUser?: AuthenticatedUser) {
@@ -197,7 +205,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
   }
 
   async discardDraft(id: string, currentUser?: AuthenticatedUser) {
@@ -225,7 +233,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
   }
 
   async applyDraft(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
@@ -558,6 +566,11 @@ export class RangeInstancesService {
       ...payload,
       defaultInstancePassword: password,
     };
+  }
+
+  private async withCreatorUsername<T extends { createdBy: string | null; ownerUserId: string | null }>(instance: T) {
+    const [normalizedInstance] = await attachCreatedByUsernames(this.adminRepository, [instance]);
+    return normalizedInstance;
   }
 
   private async resolveNodeStatuses(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
