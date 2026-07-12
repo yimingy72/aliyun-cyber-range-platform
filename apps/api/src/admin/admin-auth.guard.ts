@@ -90,6 +90,10 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
+    if (pathname === '/admin/system-config/instance-type-availability' && method === 'GET') {
+      return true;
+    }
+
     return false;
   }
 
