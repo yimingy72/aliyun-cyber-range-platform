@@ -62,6 +62,10 @@ function readListMode(value: string | null): ListMode {
   return value === 'history' ? 'history' : 'active';
 }
 
+function readCreateImageId(value: string | null) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) {
     return '暂无';
@@ -394,6 +398,7 @@ export function SingleInstancesScreen({
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const copiedPasswordTimerRef = useRef<number | null>(null);
+  const consumedPrefillRef = useRef<string | null>(null);
 
   async function reloadSingleInstanceRows(token: string) {
     const [nextPayload, nextJobs] = await Promise.all([
@@ -552,6 +557,39 @@ export function SingleInstancesScreen({
     () => platformImages.filter((item) => item.enabled),
     [platformImages],
   );
+
+  useEffect(() => {
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    const platformImageAssetId = readCreateImageId(searchParams.get('platformImageAssetId'));
+    const shouldOpenCreate = searchParams.get('create') === '1';
+
+    if (!shouldOpenCreate || !platformImageAssetId || consumedPrefillRef.current === platformImageAssetId) {
+      return;
+    }
+
+    const selectedImage = enabledPlatformImages.find((item) => item.id === platformImageAssetId);
+
+    if (!selectedImage) {
+      return;
+    }
+
+    consumedPrefillRef.current = platformImageAssetId;
+    setCreateForm({
+      ...buildDefaultDialogState(enabledPlatformImages),
+      platformImageQuery: buildPlatformImageOptionLabel(selectedImage),
+    });
+    setCreateFormError(null);
+    setIsCreateOpen(true);
+
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    nextSearchParams.delete('create');
+    nextSearchParams.delete('platformImageAssetId');
+    const nextQuery = nextSearchParams.toString();
+    window.history.replaceState(null, '', nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname);
+  }, [enabledPlatformImages, searchParams, session.isReady, session.token]);
   const activeBatchGroups = useMemo(
     () => batchGroups.filter((group) => !isHistoryBatch(group)),
     [batchGroups],

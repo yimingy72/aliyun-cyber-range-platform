@@ -450,6 +450,7 @@ export type PlatformImageAsset = {
   provider: 'alibaba_cloud';
   accountUid?: string | null;
   ownerUserId?: string | null;
+  createdBy?: string | null;
   visibility?: ResourceVisibility;
   accountScopeKey: string;
   regionId: string;

@@ -26,6 +26,7 @@ const {
   removePlatformImageMock,
   deleteCustomImageSnapshotMock,
   logoutMock,
+  pushMock,
   sessionState,
 } = vi.hoisted(() => ({
   fetchPublicImageCatalogScopeMock: vi.fn(),
@@ -42,6 +43,7 @@ const {
   removePlatformImageMock: vi.fn(),
   deleteCustomImageSnapshotMock: vi.fn(),
   logoutMock: vi.fn(),
+  pushMock: vi.fn(),
   sessionState: {
     profile: {
       id: 'admin-user',
@@ -71,6 +73,12 @@ vi.mock('../../lib/admin-api', async () => {
     deleteCustomImageSnapshot: deleteCustomImageSnapshotMock,
   };
 });
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushMock,
+  }),
+}));
 
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
@@ -175,6 +183,7 @@ const platformImagesPayload: PlatformImageAssetListPayload = {
       id: 'platform-image-1',
       imageId: 'aliyun-linux-3',
       displayName: 'Alibaba Cloud Linux 3',
+      createdBy: 'admin',
       sourceSnapshotId: 'public-snapshot-1',
       sourceScope: 'public',
       enabled: true,
@@ -188,6 +197,7 @@ const myImagesPayload: PlatformImageAssetListPayload = {
       id: 'my-image-1',
       imageId: 'm-owned-001',
       displayName: 'My Ubuntu 22.04',
+      createdBy: 'test',
       sourceSnapshotId: 'custom-snapshot-1',
       sourceScope: 'custom',
       enabled: true,
@@ -210,6 +220,7 @@ beforeEach(() => {
   removePlatformImageMock.mockReset();
   deleteCustomImageSnapshotMock.mockReset();
   logoutMock.mockReset();
+  pushMock.mockReset();
   sessionState.profile = {
     id: 'admin-user',
     username: 'admin',
@@ -304,9 +315,12 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByRole('button', { name: '我的镜像' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '云上镜像来源' })).toBeTruthy();
     expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
+    expect(screen.getByText('创建人')).toBeTruthy();
+    expect(screen.getByText('admin')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
+    expect(screen.getByText('test')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
     expect(await screen.findByRole('button', { name: '阿里云自定义镜像' })).toBeTruthy();
@@ -316,6 +330,14 @@ describe('ImageCenterScreen', () => {
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
     expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token');
     expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token');
+  });
+
+  it('routes 创建实例 from image rows into the single instance screen with a preselected image', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例 Alibaba Cloud Linux 3' }));
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/instances?create=1&platformImageAssetId=platform-image-1');
   });
 
   it('collects a custom snapshot and then shows it as already collected on the source tab', async () => {

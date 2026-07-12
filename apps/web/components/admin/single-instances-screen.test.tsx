@@ -1021,6 +1021,32 @@ describe('SingleInstancesScreen', () => {
     expect(fetchInstanceTypeAvailabilityMock).not.toHaveBeenCalled();
   });
 
+  it('opens the create dialog with a preselected platform image from the query string', async () => {
+    searchParamsState.value = 'create=1&platformImageAssetId=platform-image-2';
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [
+        { id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true },
+        { id: 'platform-image-2', imageId: 'm-456', displayName: 'Debian 12', enabled: true },
+      ],
+    });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, family: 'c6', generation: '6', architecture: 'x86' }],
+      warning: null,
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('dialog', { name: '创建实例' })).toBeTruthy();
+    expect((screen.getByLabelText('镜像') as HTMLInputElement).value).toBe('Debian 12 (m-456)');
+  });
+
   it('does not show the no-platform-image warning before platform images finish loading', async () => {
     let resolveImages!: (value: { items: Array<{ id: string; imageId: string; displayName: string; enabled: boolean }> }) => void;
 

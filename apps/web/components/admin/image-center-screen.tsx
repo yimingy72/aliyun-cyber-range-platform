@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import {
   collectPlatformImage,
@@ -152,6 +153,7 @@ function ImageCenterDialog({
 export function ImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
+  const router = useRouter();
   const session = useAdminSession();
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const [searchName, setSearchName] = useState('');
@@ -211,6 +213,14 @@ export function ImageCenterScreen({
   function removeAssetFromViews(assetId: string) {
     setPlatformAssets((previous) => previous.filter((item) => item.id !== assetId));
     setMyAssets((previous) => previous.filter((item) => item.id !== assetId));
+  }
+
+  function handleCreateInstance(asset: PlatformImageAsset) {
+    const nextSearchParams = new URLSearchParams({
+      create: '1',
+      platformImageAssetId: asset.id,
+    });
+    router.push(`/admin/instances?${nextSearchParams.toString()}`);
   }
 
   function setActiveMainView(nextView: 'platform' | 'mine' | 'cloud') {
@@ -681,12 +691,24 @@ export function ImageCenterScreen({
           <div className="range-workbench-created-at image-center-secondary-cell">
             <span>{asset.imageId}</span>
           </div>
+          <div className="range-workbench-created-at image-center-secondary-cell">
+            <span>{asset.createdBy?.trim() || 'admin'}</span>
+          </div>
           <div className="range-workbench-status-cell image-center-status-cell">
             <span className={`template-workbench-status-pill ${asset.enabled ? 'is-published' : 'is-draft'}`}>
               {asset.enabled ? '已启用' : '已禁用'}
             </span>
           </div>
           <div className="range-workbench-actions image-center-actions-cell">
+            {asset.enabled ? (
+              <button
+                type="button"
+                aria-label={`创建实例 ${asset.displayName}`}
+                onClick={() => handleCreateInstance(asset)}
+              >
+                创建实例
+              </button>
+            ) : null}
             {canManageAsset ? (
               <>
                 {canToggleVisibility ? (
@@ -879,6 +901,11 @@ export function ImageCenterScreen({
             <div className="template-workbench-column-cell">
               <strong>镜像 ID</strong>
             </div>
+            {activeTab === 'platform' || activeTab === 'mine' ? (
+              <div className="template-workbench-column-cell">
+                <strong>创建人</strong>
+              </div>
+            ) : null}
             <div className="template-workbench-column-cell">
               <strong>状态</strong>
             </div>

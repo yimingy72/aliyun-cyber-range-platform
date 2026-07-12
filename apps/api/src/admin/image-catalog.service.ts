@@ -13,6 +13,7 @@ import {
   type UpsertImageSnapshotInput,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
+import { attachOwnerUsernamesAsCreatedBy } from './creator-display';
 import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-image.dto';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
@@ -23,7 +24,7 @@ type ImageCatalogScopePayload = {
 };
 
 type PlatformImageAssetsPayload = {
-  items: PlatformImageAssetRecord[];
+  items: Array<PlatformImageAssetRecord & { createdBy: string }>;
 };
 
 type AliyunDescribeImagesResponse = {
@@ -86,7 +87,9 @@ export class ImageCatalogService {
       ...(view === 'platform' ? { visibility: 'platform' } : { ownerUserId: currentUserId }),
     });
 
-    return { items };
+    return {
+      items: await attachOwnerUsernamesAsCreatedBy(this.adminRepository, items),
+    };
   }
 
   async collectPlatformAsset(snapshotId: string, displayName: string) {
@@ -102,12 +105,14 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
-    return this.adminRepository.collectPlatformImageAsset({
+    const asset = await this.adminRepository.collectPlatformImageAsset({
       snapshotId,
       displayName,
       ownerUserId: null,
       visibility: 'platform',
     });
+
+    return this.withCreatorUsername(asset);
   }
 
   async updatePlatformAsset(id: string, input: UpdatePlatformImageDto, currentUser: SessionUserProfile) {
@@ -120,7 +125,8 @@ export class ImageCatalogService {
     }
 
     if (nextVisibility === undefined) {
-      return this.adminRepository.updatePlatformImageAsset(id, { displayName: nextDisplayName });
+      const updatedAsset = await this.adminRepository.updatePlatformImageAsset(id, { displayName: nextDisplayName });
+      return this.withCreatorUsername(updatedAsset);
     }
 
     if (nextVisibility === asset.visibility && nextDisplayName === asset.displayName) {
@@ -131,13 +137,15 @@ export class ImageCatalogService {
       throw new BadRequestException('Only owner-backed image assets can change visibility');
     }
 
-    return this.recollectPlatformAssetWithVisibility(asset, nextDisplayName, nextVisibility);
+    const updatedAsset = await this.recollectPlatformAssetWithVisibility(asset, nextDisplayName, nextVisibility);
+    return this.withCreatorUsername(updatedAsset);
   }
 
   async setPlatformAssetEnabled(id: string, enabled: boolean, currentUser: SessionUserProfile) {
     await this.getScopedPlatformAssetOrThrow(id, currentUser);
 
-    return this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
+    const updatedAsset = await this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
+    return this.withCreatorUsername(updatedAsset);
   }
 
   async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
@@ -281,6 +289,11 @@ export class ImageCatalogService {
     }
 
     return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
+  }
+
+  private async withCreatorUsername<T extends PlatformImageAssetRecord>(asset: T) {
+    const [normalizedAsset] = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, [asset]);
+    return normalizedAsset;
   }
 
   private async resolvePlatformAssetSnapshot(asset: PlatformImageAssetRecord): Promise<CloudImageSnapshotRecord | null> {

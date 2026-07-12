@@ -1462,12 +1462,12 @@ body {
 }
 
 .image-center-row {
-  grid-template-columns: minmax(220px, 1.05fr) minmax(320px, 1.35fr) minmax(140px, 0.52fr) minmax(220px, 0.88fr);
+  grid-template-columns: minmax(220px, 1.02fr) minmax(280px, 1.08fr) minmax(132px, 0.5fr) minmax(136px, 0.5fr) minmax(260px, 0.9fr);
 }
 
 .image-center-list--platform .image-center-column-head,
 .image-center-list--platform .image-center-row {
-  grid-template-columns: minmax(220px, 1.08fr) minmax(330px, 1.34fr) minmax(136px, 0.52fr) minmax(164px, 0.38fr);
+  grid-template-columns: minmax(220px, 1.02fr) minmax(280px, 1.08fr) minmax(132px, 0.5fr) minmax(136px, 0.5fr) minmax(260px, 0.9fr);
 }
 
 .image-center-list--custom .image-center-column-head,
