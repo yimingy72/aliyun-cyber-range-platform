@@ -354,7 +354,7 @@ describe('TemplatesScreen', () => {
     expect(await screen.findByText('办公网横向移动靶场')).toBeTruthy();
   });
 
-  it('hides clone and launch actions for ordinary users on shared but unpublished platform templates', async () => {
+  it('hides the action menu for ordinary users on shared but unpublished platform templates', async () => {
     sessionState.profile = {
       id: 'user-bob',
       username: 'bob',
@@ -380,11 +380,7 @@ describe('TemplatesScreen', () => {
     expect(row).toBeTruthy();
 
     expect((within(row!).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(true);
-
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    expect(screen.queryByRole('button', { name: '复制模板' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '生成实例' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '编辑信息' })).toBeNull();
+    expect(within(row!).queryByRole('button', { name: '更多操作' })).toBeNull();
   });
 
   it('creates a template from minimal metadata and jumps directly into the topology editor', async () => {

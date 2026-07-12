@@ -781,6 +781,7 @@ export function TemplatesScreen({
                 const isShared = template.visibility === 'platform';
                 const canManageCurrentTemplate = canManageTemplate(template);
                 const canConsumeTemplate = canManageCurrentTemplate || isPublished;
+                const canOpenActionMenu = canConsumeTemplate;
 
                 return (
                   <article key={template.id} className={`template-workbench-row${menuOpen ? ' is-menu-open' : ''}`}>
@@ -822,62 +823,64 @@ export function TemplatesScreen({
                         进入编排
                       </button>
 
-                      <div className="template-workbench-row-menu">
-                        <button
-                          type="button"
-                          className="template-workbench-secondary-action"
-                          aria-expanded={menuOpen}
-                          disabled={isSubmitting}
-                          onClick={() => setMenuTemplateId((previous) => (previous === template.id ? null : template.id))}
-                        >
-                          更多操作
-                        </button>
+                      {canOpenActionMenu ? (
+                        <div className="template-workbench-row-menu">
+                          <button
+                            type="button"
+                            className="template-workbench-secondary-action"
+                            aria-expanded={menuOpen}
+                            disabled={isSubmitting}
+                            onClick={() => setMenuTemplateId((previous) => (previous === template.id ? null : template.id))}
+                          >
+                            更多操作
+                          </button>
 
-                        {menuOpen ? (
-                          <div className="template-workbench-action-menu">
-                            {canConsumeTemplate ? (
-                              <button type="button" onClick={() => void handleCloneTemplate(template)}>
-                                复制模板
-                              </button>
-                            ) : null}
-                            {canManageCurrentTemplate ? (
-                              <>
-                                <button type="button" onClick={() => openEditDialog(template)}>
-                                  编辑信息
+                          {menuOpen ? (
+                            <div className="template-workbench-action-menu">
+                              {canConsumeTemplate ? (
+                                <button type="button" onClick={() => void handleCloneTemplate(template)}>
+                                  复制模板
                                 </button>
-                                {isPublished ? (
-                                  <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
-                                    取消发布
+                              ) : null}
+                              {canManageCurrentTemplate ? (
+                                <>
+                                  <button type="button" onClick={() => openEditDialog(template)}>
+                                    编辑信息
                                   </button>
-                                ) : (
-                                  <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
-                                    发布版本
-                                  </button>
-                                )}
-                                {isShared ? (
-                                  <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
-                                    回退为私有
-                                  </button>
-                                ) : (
-                                  <button type="button" onClick={() => void handleShareTemplate(template.id)}>
-                                    发布到平台
-                                  </button>
-                                )}
-                              </>
-                            ) : null}
-                            {canConsumeTemplate ? (
-                              <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
-                                生成实例
-                              </button>
-                            ) : null}
-                            {canManageCurrentTemplate ? (
-                              <button type="button" onClick={() => openConfirmDialog('delete', template)}>
-                                删除模板
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
+                                  {isPublished ? (
+                                    <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
+                                      取消发布
+                                    </button>
+                                  ) : (
+                                    <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
+                                      发布版本
+                                    </button>
+                                  )}
+                                  {isShared ? (
+                                    <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
+                                      回退为私有
+                                    </button>
+                                  ) : (
+                                    <button type="button" onClick={() => void handleShareTemplate(template.id)}>
+                                      发布到平台
+                                    </button>
+                                  )}
+                                </>
+                              ) : null}
+                              {canConsumeTemplate ? (
+                                <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
+                                  生成实例
+                                </button>
+                              ) : null}
+                              {canManageCurrentTemplate ? (
+                                <button type="button" onClick={() => openConfirmDialog('delete', template)}>
+                                  删除模板
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   </article>
                 );
