@@ -27,9 +27,21 @@ export class RangeTemplatesService {
     const view = this.normalizeView(viewText);
     const templates = await this.adminRepository.listRangeTemplates();
 
-    return templates.filter((template) =>
-      view === 'platform' ? template.visibility === 'platform' : template.ownerUserId === currentUser.id,
-    );
+    return templates.filter((template) => {
+      if (view === 'mine') {
+        return template.ownerUserId === currentUser.id;
+      }
+
+      if (template.visibility !== 'platform') {
+        return false;
+      }
+
+      if (currentUser.role === 'admin' || template.ownerUserId === currentUser.id) {
+        return true;
+      }
+
+      return Boolean(template.currentPublishedVersionId);
+    });
   }
 
   create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {

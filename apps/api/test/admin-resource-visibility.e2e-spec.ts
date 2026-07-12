@@ -265,7 +265,7 @@ describe('Admin resource visibility', () => {
     );
   });
 
-  it('shows shared templates in view=platform and only owned templates in view=mine', async () => {
+  it("shows only published shared templates from other users in view=platform and keeps view=mine owner-scoped", async () => {
     const aliceToken = await loginAs(app, alice.username, alice.password);
     const bobToken = await loginAs(app, bob.username, bob.password);
 
@@ -277,6 +277,22 @@ describe('Admin resource visibility', () => {
 
     await request(app.getHttpServer())
       .post(`/admin/scenarios/${aliceShared.body.id}/share`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    const alicePublished = await request(app.getHttpServer())
+      .post('/admin/scenarios')
+      .set('authorization', `Bearer ${aliceToken}`)
+      .send(createTemplatePayload('Alice Published Template', 'alice-published-template'))
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${alicePublished.body.id}/share`)
+      .set('authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${alicePublished.body.id}/publish`)
       .set('authorization', `Bearer ${aliceToken}`)
       .expect(200);
 
@@ -294,9 +310,16 @@ describe('Admin resource visibility', () => {
     expect(platformResponse.body).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: aliceShared.body.id,
+          id: alicePublished.body.id,
           ownerUserId: alice.id,
           visibility: 'platform',
+        }),
+      ]),
+    );
+    expect(platformResponse.body).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: aliceShared.body.id,
         }),
       ]),
     );
@@ -322,7 +345,7 @@ describe('Admin resource visibility', () => {
     ]);
   });
 
-  it('lets users see shared unpublished templates but blocks clone/create/launch consumption', async () => {
+  it("hides shared unpublished templates from other users in platform view and still blocks direct clone/create/launch/validate consumption", async () => {
     const aliceToken = await loginAs(app, alice.username, alice.password);
     const bobToken = await loginAs(app, bob.username, bob.password);
 
@@ -351,12 +374,10 @@ describe('Admin resource visibility', () => {
       .set('authorization', `Bearer ${bobToken}`)
       .expect(200);
 
-    expect(platformView.body).toEqual(
+    expect(platformView.body).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: sharedTemplate.body.id,
-          visibility: 'platform',
-          currentPublishedVersionId: null,
         }),
       ]),
     );

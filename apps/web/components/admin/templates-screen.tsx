@@ -591,7 +591,7 @@ export function TemplatesScreen({
     }
   }
 
-  async function handleCloneTemplate(scenario: Scenario) {
+  async function cloneTemplateToOwnedScenario(scenario: Scenario) {
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -604,16 +604,27 @@ export function TemplatesScreen({
       const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id);
       syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
-      setActionSuccessMessage('靶场模板副本已创建。');
+      return savedTemplate;
     } catch (error: unknown) {
-      handleProtectedActionError(error, '编排复制失败，请稍后重试。');
+      return handleProtectedActionError(error, '编排复制失败，请稍后重试。');
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  function handleOpenTemplateEditor(id: string) {
-    router.push(`/admin/scenarios/${id}`);
+  async function handleCloneTemplate(scenario: Scenario) {
+    await cloneTemplateToOwnedScenario(scenario);
+    setActionSuccessMessage('靶场模板副本已创建。');
+  }
+
+  async function handleOpenTemplateEditor(template: Scenario) {
+    if (canManageTemplate(template)) {
+      router.push(`/admin/scenarios/${template.id}`);
+      return;
+    }
+
+    const savedTemplate = await cloneTemplateToOwnedScenario(template);
+    router.push(`/admin/scenarios/${savedTemplate.id}`);
   }
 
   async function handleOpenGenerateInstance(template: Scenario) {
@@ -782,6 +793,7 @@ export function TemplatesScreen({
                 const canManageCurrentTemplate = canManageTemplate(template);
                 const canConsumeTemplate = canManageCurrentTemplate || isPublished;
                 const canOpenActionMenu = canConsumeTemplate;
+                const canEnterTemplate = canManageCurrentTemplate || isShared;
 
                 return (
                   <article key={template.id} className={`template-workbench-row${menuOpen ? ' is-menu-open' : ''}`}>
@@ -817,8 +829,8 @@ export function TemplatesScreen({
                       <button
                         type="button"
                         className="template-workbench-primary-action"
-                        disabled={isSubmitting || !canManageCurrentTemplate}
-                        onClick={() => handleOpenTemplateEditor(template.id)}
+                        disabled={isSubmitting || !canEnterTemplate}
+                        onClick={() => void handleOpenTemplateEditor(template)}
                       >
                         进入编排
                       </button>
