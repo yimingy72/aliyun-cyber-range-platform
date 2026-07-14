@@ -30,6 +30,16 @@
 
 **Tech Stack:** Next.js App Router, React 19, Vitest, NestJS 11, Prisma, Jest, Docker Compose.
 
+## Post-implementation update (2026-07-14)
+
+在原始平台镜像资产方案完成后，镜像中心又补充落地了以下收口：
+
+- 平台镜像和我的镜像都已支持创建人展示与单实例创建入口
+- 个人镜像支持发布到平台，平台镜像支持回退为私有
+- 平台镜像和我的镜像的行内动作都已经收敛成“主动作 + 更多操作”布局
+- 云上镜像来源已改成按 tab 惰性加载，公共镜像接口也已改成轻量字段返回
+- `GET /admin/image-catalog/public` 的实际响应体积已从约 `170 KB` 降到约 `90 KB`
+
 ---
 
 ## File Structure
