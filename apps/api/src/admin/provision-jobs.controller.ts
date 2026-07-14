@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -14,8 +14,8 @@ export class ProvisionJobsController {
   constructor(private readonly provisionJobsService: ProvisionJobsService) {}
 
   @Get()
-  list(@Req() request: AuthenticatedAdminRequest) {
-    return this.provisionJobsService.list(request.adminUser);
+  list(@Req() request: AuthenticatedAdminRequest, @Query('instanceMode') instanceMode?: 'single' | 'range') {
+    return this.provisionJobsService.list(request.adminUser, instanceMode);
   }
 
   @Get(':id')

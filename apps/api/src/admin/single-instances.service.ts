@@ -12,6 +12,7 @@ import { generateAliyunEcsPassword } from './ecs-password-generator';
 import {
   ADMIN_REPOSITORY,
   type AdminRepository,
+  type RangeInstanceRecord,
   type PlatformImageAssetRecord,
 } from './admin.repository';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
@@ -33,7 +34,7 @@ export class SingleInstancesService {
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
   ) {}
 
-  async list(currentUser: SessionUserProfile) {
+  async list(currentUser: SessionUserProfile, view: 'active' | 'history' = 'active') {
     const instances = await this.adminRepository.listRangeInstances();
     const visibleInstances =
       currentUser.role === 'admin'
@@ -61,7 +62,10 @@ export class SingleInstancesService {
     const normalizedBatches = await Promise.all(
       visibleBatches.map(async (entry) => {
         const [batch] = await attachCreatedByUsernames(this.adminRepository, [entry.batch]);
-        const instances = await attachCreatedByUsernames(this.adminRepository, entry.instances);
+        const instances = await attachCreatedByUsernames(
+          this.adminRepository,
+          entry.instances.map((instance) => toSingleInstanceListItem(instance)),
+        );
 
         return {
           ...entry,
@@ -71,9 +75,20 @@ export class SingleInstancesService {
       }),
     );
 
+    const standaloneItems = await attachCreatedByUsernames(
+        this.adminRepository,
+        standaloneInstances.map((instance) => toSingleInstanceListItem(instance)),
+      );
+    const batchesForView = normalizedBatches.filter((entry) =>
+      view === 'history' ? isHistoryOnlyBatch(entry.instances) : !isHistoryOnlyBatch(entry.instances),
+    );
+    const standaloneForView = standaloneItems.filter((instance) =>
+      view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed',
+    );
+
     return {
-      batches: normalizedBatches,
-      standaloneInstances: await attachCreatedByUsernames(this.adminRepository, standaloneInstances),
+      batches: batchesForView,
+      standaloneInstances: standaloneForView,
     };
   }
 
@@ -107,12 +122,16 @@ export class SingleInstancesService {
         const quantityIndex = index + 1;
         const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
         const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
-        const hostName = this.resolveIndexedValue(input.hostName?.trim() || input.name, quantityIndex, quantity);
+        const requestedHostBaseName =
+          normalizeOptionalValue(input.hostName) ?? normalizeOptionalValue(image.defaultHostName) ?? null;
+        const hostName = requestedHostBaseName
+          ? this.resolveIndexedValue(requestedHostBaseName, quantityIndex, quantity)
+          : null;
         const hostKey = `single-ecs-${quantityIndex}`;
         const blueprint = buildSingleInstanceBlueprint({
           name,
           hostKey,
-          hostName,
+          hostName: hostName ?? name,
           privateIp: network.privateIp,
           password,
           cpu: input.cpu,
@@ -315,6 +334,14 @@ export class SingleInstancesService {
       throw new NotFoundException('Platform image asset not found');
     }
 
+    if (image.sourceSnapshotId) {
+      const sourceSnapshot = await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId);
+
+      if (sourceSnapshot && !sourceSnapshot.isAvailable) {
+        throw new ConflictException('Platform image asset source snapshot is still exporting');
+      }
+    }
+
     return image;
   }
 
@@ -354,4 +381,66 @@ export class SingleInstancesService {
   private isOwnedBy(ownerUserId: string | null, createdBy: string | null, currentUserId: string) {
     return ownerUserId === currentUserId || createdBy === currentUserId;
   }
+}
+
+function normalizeOptionalValue(value: string | null | undefined) {
+  const normalized = value?.trim() ?? '';
+  return normalized || null;
+}
+
+function isHistoryOnlyBatch(
+  instances: Array<{
+    status: string;
+  }>,
+) {
+  return instances.length > 0 && instances.every((instance) => instance.status === 'destroyed');
+}
+
+function toSingleInstanceListItem(instance: RangeInstanceRecord) {
+  return {
+    id: instance.id,
+    name: instance.name,
+    createdBy: instance.createdBy,
+    ownerUserId: instance.ownerUserId,
+    instanceMode: instance.instanceMode,
+    singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
+    singleInstanceConfig: instance.singleInstanceConfig
+      ? {
+          hostKey: instance.singleInstanceConfig.hostKey,
+          hostName: instance.singleInstanceConfig.hostName ?? null,
+          imageDisplayName: instance.singleInstanceConfig.imageDisplayName,
+          platformImageAssetId: instance.singleInstanceConfig.platformImageAssetId,
+          imageId: instance.singleInstanceConfig.imageId,
+          cpu: instance.singleInstanceConfig.cpu,
+          memory: instance.singleInstanceConfig.memory,
+          systemDiskSize: instance.singleInstanceConfig.systemDiskSize,
+          quantityIndex: instance.singleInstanceConfig.quantityIndex,
+          baseName: instance.singleInstanceConfig.baseName,
+        }
+      : null,
+    runtimeCredentials: instance.runtimeCredentials,
+    status: instance.status,
+    createdAt: instance.createdAt,
+    expiresAt: instance.expiresAt,
+    accessEntry: instance.accessEntry
+      ? {
+          hostRole: instance.accessEntry.hostRole,
+          publicIp: instance.accessEntry.publicIp,
+          privateIp: instance.accessEntry.privateIp,
+          ssh: instance.accessEntry.ssh,
+        }
+      : null,
+    resourceSummary: instance.resourceSummary
+      ? {
+          mode: instance.resourceSummary.mode,
+          vpcId: instance.resourceSummary.vpcId ?? null,
+          subnetIds: instance.resourceSummary.subnetIds ?? null,
+          hostIds: instance.resourceSummary.hostIds ?? null,
+          resolvedImageId: instance.resourceSummary.resolvedImageId ?? null,
+          resolvedInstanceType: instance.resourceSummary.resolvedInstanceType ?? null,
+        }
+      : null,
+    lastJobId: instance.lastJobId ?? null,
+    errorSummary: instance.errorSummary ?? null,
+  };
 }

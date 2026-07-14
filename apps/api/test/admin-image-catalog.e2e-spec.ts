@@ -332,6 +332,115 @@ describe('Admin image catalog APIs', () => {
     });
   });
 
+  it('GET /admin/platform-images?view=mine includes owned private assets even while the source snapshot is still exporting', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-pending-image',
+          sourceImageName: 'Ubuntu Pending',
+          status: 'Creating',
+          isAvailable: false,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [pendingSnapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-private-pending-image',
+    });
+
+    expect(pendingSnapshot).toBeDefined();
+
+    await repository.collectPlatformImageAsset({
+      snapshotId: pendingSnapshot!.id,
+      displayName: 'Ubuntu Pending',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+
+    const mineResponse = await request(app.getHttpServer())
+      .get('/admin/platform-images?view=mine')
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(mineResponse.body).toEqual({
+      items: [
+        expect.objectContaining({
+          imageId: 'm-private-pending-image',
+          displayName: 'Ubuntu Pending',
+          ownerUserId: 'admin',
+          visibility: 'private',
+          enabled: true,
+          sourceSnapshotStatus: 'Creating',
+          sourceSnapshotAvailable: false,
+        }),
+      ],
+    });
+  });
+
+  it('GET /admin/image-catalog/custom auto-syncs latest image status and progress before returning rows', async () => {
+    repository = createMemoryAdminRepository();
+    global.fetch = jest.fn().mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('Action=DescribeImages') && url.includes('ImageOwnerAlias=self')) {
+        return createJsonResponse({
+          Images: {
+            Image: [
+              {
+                ImageId: 'm-private-progress-image',
+                ImageName: 'Ubuntu Exporting',
+                Status: 'Creating',
+                Progress: '65%',
+                OSType: 'linux',
+                Platform: 'Ubuntu',
+                Architecture: 'x86_64',
+              },
+            ],
+          },
+          TotalCount: 1,
+          PageNumber: 1,
+          PageSize: 100,
+        });
+      }
+
+      return createJsonResponse({ RequestId: 'ok' });
+    }) as typeof fetch;
+
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+
+    const response = await request(app.getHttpServer())
+      .get('/admin/image-catalog/custom')
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      snapshots: [
+        expect.objectContaining({
+          imageId: 'm-private-progress-image',
+          sourceImageName: 'Ubuntu Exporting',
+          status: 'Creating 65%',
+          isAvailable: false,
+        }),
+      ],
+      catalogItems: [],
+    });
+  });
+
   it('supports collect rename enable disable and delete for platform image assets', async () => {
     repository = createMemoryAdminRepository();
 
@@ -673,6 +782,150 @@ describe('Admin image catalog APIs', () => {
           visibility: 'platform',
         }),
       ]),
+    );
+  });
+
+  it('allows an owner to delete their own custom image asset and removes the cloud image too', async () => {
+    repository = createMemoryAdminRepository();
+    global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
+
+    await repository.createPlatformUser({
+      id: 'image-owner-delete-1',
+      username: 'image-owner-delete',
+      passwordHash: hashPassword('owner-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-owner-delete-image',
+          sourceImageName: 'Owner Delete Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-owner-delete-image',
+    });
+
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Owner Delete Image',
+      ownerUserId: 'image-owner-delete-1',
+      visibility: 'private',
+    });
+
+    app = await createApp(repository);
+    const ownerToken = await loginAs(app, 'image-owner-delete', 'owner-password');
+
+    await request(app.getHttpServer())
+      .delete(`/admin/platform-images/${asset.id}`)
+      .set('authorization', `Bearer ${ownerToken}`)
+      .expect(204)
+      .expect('');
+
+    const [remainingSnapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-owner-delete-image',
+    });
+    const remainingAssets = await repository.listPlatformImageAssets({
+      accountScopeKey: toAccountScopeKey('1234567890'),
+      regionId: 'cn-hangzhou',
+      ownerUserId: 'image-owner-delete-1',
+    });
+
+    expect(remainingSnapshot).toBeUndefined();
+    expect(remainingAssets).toEqual([]);
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('Action=DeleteImage'),
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('prevents a non-owner user from deleting another user custom image asset', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'image-owner-delete-2',
+      username: 'image-owner-delete-two',
+      passwordHash: hashPassword('owner-password'),
+      role: 'user',
+      status: 'active',
+    });
+    await repository.createPlatformUser({
+      id: 'image-viewer-delete-1',
+      username: 'image-viewer-delete',
+      passwordHash: hashPassword('viewer-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-other-delete-image',
+          sourceImageName: 'Other Delete Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-other-delete-image',
+    });
+
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Other Delete Image',
+      ownerUserId: 'image-owner-delete-2',
+      visibility: 'private',
+    });
+
+    app = await createApp(repository);
+    const viewerToken = await loginAs(app, 'image-viewer-delete', 'viewer-password');
+
+    await request(app.getHttpServer())
+      .delete(`/admin/platform-images/${asset.id}`)
+      .set('authorization', `Bearer ${viewerToken}`)
+      .expect(404);
+
+    const [remainingAsset] = await repository.listPlatformImageAssets({
+      accountScopeKey: toAccountScopeKey('1234567890'),
+      regionId: 'cn-hangzhou',
+      ownerUserId: 'image-owner-delete-2',
+    });
+
+    expect(remainingAsset).toEqual(
+      expect.objectContaining({
+        id: asset.id,
+        displayName: 'Other Delete Image',
+      }),
     );
   });
 

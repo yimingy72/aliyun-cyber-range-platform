@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -19,8 +19,8 @@ export class SingleInstancesController {
   constructor(private readonly singleInstancesService: SingleInstancesService) {}
 
   @Get()
-  list(@Req() request: AuthenticatedAdminRequest) {
-    return this.singleInstancesService.list(request.adminUser);
+  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history') {
+    return this.singleInstancesService.list(request.adminUser, view);
   }
 
   @Post('launch')

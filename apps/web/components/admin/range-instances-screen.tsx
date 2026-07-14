@@ -6,12 +6,12 @@ import { useRouter } from 'next/navigation';
 
 import {
   deleteRangeInstance,
-  fetchAdminBootstrap,
+  fetchProvisionJobs,
+  fetchRangeInstances,
   triggerRangeAction,
 } from '../../lib/admin-api';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
-  AdminBootstrapData,
   ProvisionJob,
   RangeInstance,
 } from '../../lib/admin-types';
@@ -86,9 +86,8 @@ function getStatusLabel(status: string) {
 
 function getInstanceTemplateLabel(
   instance: ExtendedRangeInstance,
-  template: AdminBootstrapData['rangeTemplates'][number] | undefined,
 ) {
-  return template?.name?.trim() || instance.templateNameSnapshot?.trim() || '未知靶场';
+  return instance.templateNameSnapshot?.trim() || '未知靶场';
 }
 
 function getStatusTone(status: string) {
@@ -187,7 +186,8 @@ export function RangeInstancesScreen({
 }: RangeInstancesScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
-  const [snapshot, setSnapshot] = useState<AdminBootstrapData | null>(null);
+  const [instances, setInstances] = useState<ExtendedRangeInstance[]>([]);
+  const [jobs, setJobs] = useState<ExtendedProvisionJob[]>([]);
   const [listMode, setListMode] = useState<RangeListMode>('active');
   const [searchName, setSearchName] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -195,13 +195,28 @@ export function RangeInstancesScreen({
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
   const [removedInstanceIds, setRemovedInstanceIds] = useState<string[]>([]);
 
+  async function reloadRangeInstanceRows(token: string, nextListMode: RangeListMode) {
+    const [nextInstances, nextJobs] = await Promise.all([
+      fetchRangeInstances(apiBaseUrl, token, {
+        view: nextListMode === 'history' ? 'history' : 'active',
+      }),
+      nextListMode === 'history'
+        ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'range' })
+        : Promise.resolve([] as ProvisionJob[]),
+    ]);
+
+    setInstances(nextInstances as ExtendedRangeInstance[]);
+    setJobs(nextJobs as ExtendedProvisionJob[]);
+  }
+
   useEffect(() => {
     if (!session.isReady) {
       return;
     }
 
     if (!session.token) {
-      setSnapshot(null);
+      setInstances([]);
+      setJobs([]);
       setErrorMessage(null);
       setIsLoading(false);
       return;
@@ -212,16 +227,15 @@ export function RangeInstancesScreen({
 
     setErrorMessage(null);
     setIsLoading(true);
+    setInstances([]);
+    setJobs([]);
 
     void (async () => {
       try {
-        const payload = await fetchAdminBootstrap(apiBaseUrl, token);
-
         if (!isActive) {
           return;
         }
-
-        setSnapshot(payload);
+        await reloadRangeInstanceRows(token, listMode);
       } catch (error: unknown) {
         if (!isActive) {
           return;
@@ -246,31 +260,25 @@ export function RangeInstancesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, router, session.isReady, session.token]);
-
-  const rangeTemplates = snapshot?.rangeTemplates ?? [];
-
-  const templatesById = useMemo(() => {
-    return new Map(rangeTemplates.map((item) => [item.id, item]));
-  }, [rangeTemplates]);
+  }, [apiBaseUrl, listMode, router, session.isReady, session.token]);
 
   const jobsByInstanceId = useMemo(() => {
     const map = new Map<string, ExtendedProvisionJob>();
 
-    for (const job of snapshot?.provisionJobs ?? []) {
+    for (const job of jobs) {
       if (!map.has(job.rangeInstanceId)) {
         map.set(job.rangeInstanceId, job as ExtendedProvisionJob);
       }
     }
 
     return map;
-  }, [snapshot]);
+  }, [jobs]);
 
   const visibleInstances = useMemo(() => {
-    return ((snapshot?.rangeInstances ?? []) as ExtendedRangeInstance[]).filter(
+    return instances.filter(
       (instance) => !removedInstanceIds.includes(instance.id),
     );
-  }, [removedInstanceIds, snapshot]);
+  }, [instances, removedInstanceIds]);
 
   const activeInstances = useMemo(() => {
     return visibleInstances.filter((instance) => instance.status !== 'destroyed');
@@ -303,47 +311,20 @@ export function RangeInstancesScreen({
   const visibleListInstances = listMode === 'history' ? filteredHistoryInstances : filteredActiveInstances;
 
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstance) {
-    setSnapshot((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const hasExisting = current.rangeInstances.some((item) => item.id === instance.id);
-
-      return {
-        ...current,
-        rangeInstances: hasExisting
-          ? current.rangeInstances.map((item) => (item.id === instance.id ? { ...item, ...instance } : item))
-          : [instance, ...current.rangeInstances],
-      };
-    });
+    setInstances((current) =>
+      current.some((item) => item.id === instance.id)
+        ? current.map((item) => (item.id === instance.id ? { ...item, ...instance } : item))
+        : [instance, ...current],
+    );
   }
 
   function upsertJobInSnapshot(job: ExtendedProvisionJob) {
-    setSnapshot((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return {
-        ...current,
-        provisionJobs: [job, ...current.provisionJobs.filter((item) => item.id !== job.id)],
-      };
-    });
+    setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
   }
 
   function removeInstanceFromSnapshot(instanceId: string) {
-    setSnapshot((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return {
-        ...current,
-        rangeInstances: current.rangeInstances.filter((item) => item.id !== instanceId),
-        provisionJobs: current.provisionJobs.filter((item) => item.rangeInstanceId !== instanceId),
-      };
-    });
+    setInstances((current) => current.filter((item) => item.id !== instanceId));
+    setJobs((current) => current.filter((item) => item.rangeInstanceId !== instanceId));
   }
 
   function handleViewDetail(instanceId: string) {
@@ -421,7 +402,7 @@ export function RangeInstancesScreen({
     );
   }
 
-  const isBootstrapLoading = isLoading && !snapshot;
+  const isBootstrapLoading = isLoading && instances.length === 0;
 
   return (
     <div className="admin-screen admin-workbench-screen">
@@ -485,7 +466,6 @@ export function RangeInstancesScreen({
             listMode === 'history' ? (
               <div className="range-history-rows">
                 {filteredHistoryInstances.map((instance) => {
-                  const template = templatesById.get(instance.templateId ?? '');
                   const recentJob = jobsByInstanceId.get(instance.id);
                   const endedAt = recentJob?.finishedAt ?? recentJob?.startedAt ?? null;
 
@@ -500,7 +480,7 @@ export function RangeInstancesScreen({
                       </div>
 
                       <div className="range-workbench-scenario">
-                        <strong>{getInstanceTemplateLabel(instance, template)}</strong>
+                        <strong>{getInstanceTemplateLabel(instance)}</strong>
                       </div>
 
                       <div className="range-history-time">
@@ -527,8 +507,6 @@ export function RangeInstancesScreen({
             ) : (
               <div className="range-workbench-rows">
                 {filteredActiveInstances.map((instance) => {
-                  const template = templatesById.get(instance.templateId ?? '');
-                  const recentJob = jobsByInstanceId.get(instance.id);
                   const actionLabel = getInstanceActionLabel(instance);
 
                   return (
@@ -542,7 +520,7 @@ export function RangeInstancesScreen({
                       </div>
 
                       <div className="range-workbench-scenario">
-                        <strong>{getInstanceTemplateLabel(instance, template)}</strong>
+                        <strong>{getInstanceTemplateLabel(instance)}</strong>
                       </div>
 
                       <div className="range-workbench-status-cell">
@@ -550,7 +528,7 @@ export function RangeInstancesScreen({
                       </div>
 
                       <div className="range-workbench-created-at">
-                        <span>{getInstanceCreatedAt(instance, recentJob)}</span>
+                        <span>{getInstanceCreatedAt(instance, null)}</span>
                       </div>
 
                       <div className="range-workbench-actions workbench-action-cell">

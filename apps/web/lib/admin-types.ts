@@ -83,6 +83,9 @@ export type RangeTemplate = {
     compiledProvisionSpec?: CompiledProvisionSpec | null;
     compiledSpec?: RangeTemplateCompiledSpec | null;
   } | null;
+  nodeCount?: number;
+  zoneCount?: number;
+  hostCount?: number;
 };
 
 export type RangeTemplateCompiledResource = {
@@ -204,7 +207,7 @@ export type SingleInstanceConfig = {
   baseName: string;
   quantityIndex: number;
   hostKey: string;
-  hostName: string;
+  hostName: string | null;
   platformImageAssetId: string;
   imageId: string;
   imageDisplayName: string;
@@ -458,6 +461,8 @@ export type PlatformImageAsset = {
   sourceSnapshotId?: string | null;
   imageId: string;
   displayName: string;
+  sourceSnapshotStatus?: string | null;
+  sourceSnapshotAvailable?: boolean | null;
   defaultHostName?: string | null;
   defaultPassword?: string | null;
   description?: string | null;

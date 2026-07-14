@@ -7,16 +7,21 @@ import type { SessionUserProfile } from './admin-user-auth';
 export class ProvisionJobsService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
-  async list(currentUser: SessionUserProfile) {
+  async list(currentUser: SessionUserProfile, instanceMode?: 'single' | 'range') {
     const jobs = await this.adminRepository.listProvisionJobs();
+    const instanceIdsByMode = instanceMode ? await this.listInstanceIdsByMode(instanceMode) : null;
 
     if (currentUser.role === 'admin') {
-      return jobs;
+      return instanceIdsByMode ? jobs.filter((job) => instanceIdsByMode.has(job.rangeInstanceId)) : jobs;
     }
 
     const ownedInstanceIds = await this.listOwnedInstanceIds(currentUser.id);
 
-    return jobs.filter((job) => ownedInstanceIds.has(job.rangeInstanceId));
+    return jobs.filter(
+      (job) =>
+        ownedInstanceIds.has(job.rangeInstanceId) &&
+        (!instanceIdsByMode || instanceIdsByMode.has(job.rangeInstanceId)),
+    );
   }
 
   async getById(id: string, currentUser: SessionUserProfile) {
@@ -61,6 +66,16 @@ export class ProvisionJobsService {
     return new Set(
       instances
         .filter((instance) => this.isOwnedBy(instance.ownerUserId, instance.createdBy, currentUserId))
+        .map((instance) => instance.id),
+    );
+  }
+
+  private async listInstanceIdsByMode(instanceMode: 'single' | 'range') {
+    const instances = await this.adminRepository.listRangeInstances();
+
+    return new Set(
+      instances
+        .filter((instance) => instance.instanceMode === instanceMode)
         .map((instance) => instance.id),
     );
   }

@@ -35,4 +35,11 @@ describe('admin page scroll ownership', () => {
     expect(adminMainShell).toContain('height: 100%');
     expect(adminMainShell).toContain('overflow: hidden');
   });
+
+  it('anchors single-instance credential tooltips above the row to avoid pagination overlap', () => {
+    const credentialTooltip = getRuleBlock(stylesheet, '.single-instance-credential-tooltip');
+
+    expect(credentialTooltip).toContain('bottom: calc(100% + 8px)');
+    expect(credentialTooltip).not.toContain('top: calc(100% + 8px)');
+  });
 });

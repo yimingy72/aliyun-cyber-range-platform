@@ -86,10 +86,6 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
-    if ((pathname === '/admin/image-catalog/public' || pathname === '/admin/image-catalog/custom') && method === 'GET') {
-      return true;
-    }
-
     if (pathname === '/admin/system-config/instance-type-availability' && method === 'GET') {
       return true;
     }

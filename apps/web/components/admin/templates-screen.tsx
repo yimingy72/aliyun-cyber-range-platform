@@ -82,6 +82,10 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
 };
 
 function readNodeCount(scenario: Scenario) {
+  if (typeof scenario.nodeCount === 'number') {
+    return scenario.nodeCount;
+  }
+
   const graph = scenario.currentDraftVersion?.topologyGraph;
 
   if (!graph || typeof graph !== 'object') {
@@ -93,11 +97,19 @@ function readNodeCount(scenario: Scenario) {
 }
 
 function readZoneCount(scenario: Scenario) {
+  if (typeof scenario.zoneCount === 'number') {
+    return scenario.zoneCount;
+  }
+
   const zones = scenario.currentDraftVersion?.topologySpec?.networkZones;
   return Array.isArray(zones) ? zones.length : 0;
 }
 
 function readHostCount(scenario: Scenario) {
+  if (typeof scenario.hostCount === 'number') {
+    return scenario.hostCount;
+  }
+
   const hosts = scenario.currentDraftVersion?.topologySpec?.hosts;
   return Array.isArray(hosts) ? hosts.length : 0;
 }
@@ -220,6 +232,10 @@ export function TemplatesScreen({
   const [activeView, setActiveView] = useState<RangeTemplateView>('mine');
   const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>([]);
   const [myTemplates, setMyTemplates] = useState<Scenario[]>([]);
+  const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>({
+    platform: false,
+    mine: false,
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
@@ -243,33 +259,47 @@ export function TemplatesScreen({
     if (!session.token) {
       setPlatformTemplates([]);
       setMyTemplates([]);
+      setLoadedViews({ platform: false, mine: false });
       setErrorMessage(null);
       setActionErrorMessage(null);
       setActionSuccessMessage(null);
       setIsLoading(false);
       return;
     }
+  }, [apiBaseUrl, session.isReady, session.token]);
+
+  useEffect(() => {
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    if (loadedViews[activeView]) {
+      setIsLoading(false);
+      return;
+    }
 
     let isActive = true;
 
-    setPlatformTemplates([]);
-    setMyTemplates([]);
     setErrorMessage(null);
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
     setIsLoading(true);
 
-    Promise.all([
-      fetchRangeTemplates(apiBaseUrl, session.token, 'platform'),
-      fetchRangeTemplates(apiBaseUrl, session.token, 'mine'),
-    ])
-      .then(([nextPlatformTemplates, nextMyTemplates]) => {
+    fetchRangeTemplates(apiBaseUrl, session.token, activeView)
+      .then((nextTemplates) => {
         if (!isActive) {
           return;
         }
 
-        setPlatformTemplates(nextPlatformTemplates);
-        setMyTemplates(nextMyTemplates);
+        if (activeView === 'platform') {
+          setPlatformTemplates(nextTemplates);
+        } else {
+          setMyTemplates(nextTemplates);
+        }
+        setLoadedViews((current) => ({
+          ...current,
+          [activeView]: true,
+        }));
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -295,7 +325,7 @@ export function TemplatesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [activeView, apiBaseUrl, loadedViews.mine, loadedViews.platform, router, session.isReady, session.token]);
 
   const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
   const publishedCount = useMemo(

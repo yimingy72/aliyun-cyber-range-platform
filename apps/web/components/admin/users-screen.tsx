@@ -24,12 +24,15 @@ type ResetPasswordState = {
   username: string;
   password: string;
 } | null;
+type ActionMenuPlacement = 'down' | 'up';
 
 const EMPTY_CREATE_USER_DRAFT: CreateAdminUserInput = {
   username: '',
   password: '',
   role: 'user',
 };
+const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
+const ACTION_MENU_ESTIMATED_HEIGHT_PX = 88;
 
 function UsersDialog({
   title,
@@ -84,6 +87,16 @@ function replaceUser(users: AdminUser[], updatedUser: AdminUser) {
   return users.map((user) => (user.id === updatedUser.id ? updatedUser : user));
 }
 
+function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
+  const triggerRect = triggerElement.getBoundingClientRect();
+  const containerRect =
+    triggerElement.closest('.admin-workbench-panel')?.getBoundingClientRect() ??
+    triggerElement.closest('.admin-main-content')?.getBoundingClientRect();
+  const availableBelow = (containerRect?.bottom ?? window.innerHeight) - triggerRect.bottom;
+
+  return availableBelow < ACTION_MENU_ESTIMATED_HEIGHT_PX + ACTION_MENU_VERTICAL_OFFSET_PX ? 'up' : 'down';
+}
+
 export function UsersScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: UsersScreenProps) {
@@ -97,6 +110,7 @@ export function UsersScreen({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [menuUserId, setMenuUserId] = useState<string | null>(null);
+  const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [createDraft, setCreateDraft] = useState<CreateAdminUserInput>(EMPTY_CREATE_USER_DRAFT);
   const [resetPasswordState, setResetPasswordState] = useState<ResetPasswordState>(null);
 
@@ -203,6 +217,7 @@ export function UsersScreen({
     }
 
     setMenuUserId(null);
+    setMenuPlacement('down');
   };
 
   const handleCreateUser = async () => {
@@ -413,7 +428,7 @@ export function UsersScreen({
 
             <button
               type="button"
-              className="template-workbench-create-button"
+              className="template-workbench-primary-action"
               disabled={isSubmitting}
               onClick={() => setIsCreateDialogOpen(true)}
             >
@@ -472,30 +487,41 @@ export function UsersScreen({
                     </div>
 
                     <div className="users-workbench-actions workbench-action-cell">
+                      <button
+                        type="button"
+                        className="template-workbench-secondary-action"
+                        disabled={isSubmitting}
+                        onClick={() => void handleUpdateUserStatus(user, user.status === 'active' ? 'disabled' : 'active')}
+                      >
+                        {user.status === 'active' ? '禁用用户' : '启用用户'}
+                      </button>
                       <div className="template-workbench-row-menu users-workbench-row-menu">
                         <button
                           type="button"
                           className="template-workbench-secondary-action"
                           aria-expanded={menuOpen}
                           disabled={isSubmitting}
-                          onClick={() => setMenuUserId((currentValue) => (currentValue === user.id ? null : user.id))}
+                          onClick={(event) => {
+                            if (menuUserId === user.id) {
+                              setMenuUserId(null);
+                              setMenuPlacement('down');
+                              return;
+                            }
+
+                            setMenuUserId(user.id);
+                            setMenuPlacement(resolveActionMenuPlacement(event.currentTarget));
+                          }}
                         >
                           更多操作
                         </button>
 
                         {menuOpen ? (
-                          <div className="template-workbench-action-menu">
+                          <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
                             <button
                               type="button"
                               onClick={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
                             >
                               {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleUpdateUserStatus(user, user.status === 'active' ? 'disabled' : 'active')}
-                            >
-                              {user.status === 'active' ? '禁用用户' : '启用用户'}
                             </button>
                             <button
                               type="button"

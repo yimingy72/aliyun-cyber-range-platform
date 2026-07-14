@@ -39,12 +39,16 @@ export class RangeInstancesService {
     private readonly provisioningWorkerService: ProvisioningWorkerService,
   ) {}
 
-  async list(currentUser?: AuthenticatedUser) {
+  async list(currentUser?: AuthenticatedUser, view: 'active' | 'history' = 'active') {
     const instances = await this.adminRepository.listRangeInstances();
     const scopedInstances =
       currentUser && currentUser.role !== 'admin'
         ? instances.filter((instance) => instance.ownerUserId === currentUser.id)
         : instances;
+    const templates = await this.adminRepository.listRangeTemplates();
+    const templateNameById = new Map(
+      templates.map((template) => [template.id, template.name?.trim() || template.slug]),
+    );
 
     const hydratedInstances = await Promise.all(
       scopedInstances
@@ -52,9 +56,14 @@ export class RangeInstancesService {
         .map((instance) => this.attachRecoverySummary(instance)),
     );
 
+    const listItems = hydratedInstances
+      .filter((instance): instance is NonNullable<typeof instance> => Boolean(instance))
+      .map((instance) => toRangeInstanceListItem(instance, templateNameById))
+      .filter((instance) => (view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed'));
+
     return attachCreatedByUsernames(
       this.adminRepository,
-      hydratedInstances.filter((instance): instance is NonNullable<typeof instance> => Boolean(instance)),
+      listItems,
     );
   }
 
@@ -1006,4 +1015,35 @@ export class RangeInstancesService {
 
     return null;
   }
+}
+
+function toRangeInstanceListItem(
+  instance: {
+    id: string;
+    name: string;
+    createdBy: string | null;
+    ownerUserId: string | null;
+    status: string;
+    templateId: string | null;
+    templateNameSnapshot?: string | null;
+    createdAt: Date;
+    lastJobId: string | null;
+    errorSummary?: string | null;
+  },
+  templateNameById: Map<string, string>,
+) {
+  return {
+    id: instance.id,
+    name: instance.name,
+    createdBy: instance.createdBy,
+    ownerUserId: instance.ownerUserId,
+    status: instance.status,
+    templateId: instance.templateId,
+    templateNameSnapshot:
+      instance.templateNameSnapshot?.trim() ||
+      (instance.templateId ? templateNameById.get(instance.templateId) ?? null : null),
+    createdAt: instance.createdAt,
+    lastJobId: instance.lastJobId,
+    errorSummary: instance.errorSummary ?? null,
+  };
 }

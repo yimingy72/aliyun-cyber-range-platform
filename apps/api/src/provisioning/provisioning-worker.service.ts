@@ -289,8 +289,6 @@ export class ProvisioningWorkerService {
 
         await this.adminRepository.updateRangeInstance(instance.id, {
           status: 'destroyed',
-          accessEntry: null,
-          resourceSummary: null,
           errorSummary: null,
         });
       }
@@ -396,7 +394,10 @@ export class ProvisioningWorkerService {
       return;
     }
 
-    const batchLockId = instance.singleInstanceBatchId ?? instance.id;
+    const batchLockId =
+      job.jobType === 'refresh_status'
+        ? `${instance.id}:refresh_status`
+        : instance.singleInstanceBatchId ?? instance.id;
 
     if (this.activeSingleBatchIds.has(batchLockId)) {
       return;
@@ -451,6 +452,18 @@ export class ProvisioningWorkerService {
       });
 
       await this.singleInstanceBatchExecutionService.refreshSingleInstanceAccessEntry(item);
+
+      const refreshedInstance = await this.adminRepository.getRangeInstanceById(item.instance.id);
+
+      if (needsSingleInstancePublicIpRefresh(refreshedInstance)) {
+        const refreshJob = await this.adminRepository.createProvisionJob({
+          rangeInstanceId: item.instance.id,
+          jobType: 'refresh_status',
+          triggeredBy: item.job.triggeredBy,
+        });
+        this.dispatch(refreshJob.id);
+      }
+
       return;
     }
 
@@ -1257,7 +1270,7 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
   return Boolean(
     instance &&
       instance.instanceMode === 'single' &&
-      instance.status === 'running' &&
+      (instance.status === 'creating' || instance.status === 'running') &&
       instance.resourceSummary?.mode === 'ecs-native' &&
       instance.resourceSummary?.hostIds &&
       !instance.accessEntry?.publicIp,

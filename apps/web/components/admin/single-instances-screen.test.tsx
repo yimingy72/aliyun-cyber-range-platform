@@ -274,6 +274,7 @@ describe('SingleInstancesScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
+    expect(screen.getByText('web-lab-01').closest('.single-instance-batch-child-row')?.className).toContain('is-menu-open');
   });
 
   it('keeps pack image available for a quantity-1 batch child row', async () => {
@@ -332,6 +333,90 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('single-child-01')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '打包为镜像' })).toBeTruthy();
+  });
+
+  it('opens the action menu upward when the trigger is near the viewport bottom', async () => {
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [
+        {
+          batch: {
+            id: 'batch-1',
+            name: 'single-child-batch',
+            imageDisplayName: 'Ubuntu 24.04 LTS',
+            imageId: 'm-123',
+            platformImageAssetId: 'platform-image-1',
+            cpu: 2,
+            memory: 2,
+            systemDiskSize: 40,
+            quantity: 1,
+            createdBy: 'admin',
+            createdAt: '2026-07-08T09:00:00.000Z',
+            expiresAt: '2026-07-10T12:00:00.000Z',
+          },
+          instances: [
+            {
+              id: 'single-1',
+              name: 'single-child-01',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'running',
+              accessEntry: { publicIp: '47.1.2.3' },
+              runtimeCredentials: {
+                'single-ecs-1': {
+                  username: 'root',
+                  password: 'super-secret-password',
+                },
+              },
+              singleInstanceConfig: {
+                hostKey: 'single-ecs-1',
+                imageDisplayName: 'Ubuntu 24.04 LTS',
+                cpu: 2,
+                memory: 2,
+              },
+            },
+          ],
+        },
+      ],
+      standaloneInstances: [],
+    });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '展开批次 single-child-batch' }));
+    const moreActionsButton = await screen.findByRole('button', { name: '更多操作' });
+    const originalInnerHeight = window.innerHeight;
+    try {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: 800,
+      });
+      vi.spyOn(moreActionsButton, 'getBoundingClientRect').mockReturnValue({
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 32,
+        top: 740,
+        right: 80,
+        bottom: 772,
+        left: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      fireEvent.click(moreActionsButton);
+
+      expect(screen.getByRole('button', { name: '重启实例' }).closest('.template-workbench-action-menu')?.className).toContain(
+        'is-upward',
+      );
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
   });
 
   it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
@@ -750,7 +835,7 @@ describe('SingleInstancesScreen', () => {
 
     await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
-    await waitFor(() => expect(fetchProvisionJobsMock.mock.calls.length).toBeGreaterThan(1));
+    expect(fetchProvisionJobsMock.mock.calls.length).toBe(0);
     expect(await screen.findByText('创建中')).toBeTruthy();
     expect(screen.getByText('web-lab')).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
@@ -1087,7 +1172,13 @@ describe('SingleInstancesScreen', () => {
     fetchPlatformImagesMock.mockResolvedValue({
       items: [
         { id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true },
-        { id: 'platform-image-2', imageId: 'm-456', displayName: 'Debian 12', enabled: true },
+        {
+          id: 'platform-image-2',
+          imageId: 'm-456',
+          displayName: 'Debian 12',
+          enabled: true,
+          defaultHostName: 'packed-default-host',
+        },
       ],
     });
     fetchInstanceTypeAvailabilityMock.mockResolvedValue({
@@ -1104,6 +1195,7 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByRole('dialog', { name: '创建实例' })).toBeTruthy();
     expect((screen.getByLabelText('镜像') as HTMLInputElement).value).toBe('Debian 12 (m-456)');
+    expect((screen.getByLabelText('主机名') as HTMLInputElement).value).toBe('packed-default-host');
   });
 
   it('does not show the no-platform-image warning before platform images finish loading', async () => {
@@ -1128,5 +1220,31 @@ describe('SingleInstancesScreen', () => {
     });
 
     expect(await screen.findByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeTruthy();
+  });
+
+  it('does not flash 暂无实例 before the first instance payload resolves', async () => {
+    let resolveInstances!: (value: []) => void;
+
+    fetchSingleInstancesMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInstances = resolve;
+        }),
+    );
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
+    expect(document.querySelector('.admin-workbench-empty[aria-hidden="true"]')).toBeTruthy();
+    expect(screen.queryByText('正在加载实例...')).toBeNull();
+    expect(screen.queryByText('暂无实例')).toBeNull();
+
+    resolveInstances([]);
+
+    expect(await screen.findByText('暂无实例')).toBeTruthy();
   });
 });

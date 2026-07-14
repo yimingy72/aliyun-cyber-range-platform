@@ -21,13 +21,13 @@ export class RangeTemplatesService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
   async list(currentUser?: AuthenticatedUser, viewText?: string) {
+    const templates = await this.adminRepository.listRangeTemplates();
+
     if (!currentUser) {
-      return this.adminRepository.listRangeTemplates();
+      return this.withCreatorUsernames(templates.map((template) => toRangeTemplateListItem(template)));
     }
 
     const view = this.normalizeView(viewText);
-    const templates = await this.adminRepository.listRangeTemplates();
-
     const visibleTemplates = templates.filter((template) => {
       if (view === 'mine') {
         return template.ownerUserId === currentUser.id;
@@ -44,7 +44,7 @@ export class RangeTemplatesService {
       return Boolean(template.currentPublishedVersionId);
     });
 
-    return this.withCreatorUsernames(visibleTemplates);
+    return this.withCreatorUsernames(visibleTemplates.map((template) => toRangeTemplateListItem(template)));
   }
 
   async create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {
@@ -878,7 +878,43 @@ export class RangeTemplatesService {
     return normalizedTemplate;
   }
 
-  private withCreatorUsernames<T extends ExistingRangeTemplate>(templates: T[]) {
+  private withCreatorUsernames<T extends { createdBy: string; ownerUserId: string | null }>(templates: T[]) {
     return attachCreatedByUsernames(this.adminRepository, templates);
   }
+}
+
+function toRangeTemplateListItem(template: ExistingRangeTemplate) {
+  const topologyGraph =
+    template.currentDraftVersion?.topologyGraph ??
+    template.currentPublishedVersion?.topologyGraph ??
+    template.topologyGraph ??
+    null;
+  const topologySpec =
+    template.currentDraftVersion?.topologySpec ??
+    template.currentPublishedVersion?.topologySpec ??
+    template.topologySpec ??
+    null;
+
+  return {
+    id: template.id,
+    name: template.name,
+    createdBy: template.createdBy,
+    ownerUserId: template.ownerUserId,
+    description: template.description,
+    slug: template.slug,
+    version: template.version,
+    cloudProvider: template.cloudProvider,
+    iacType: template.iacType,
+    modulePathOrRef: template.modulePathOrRef,
+    visibility: template.visibility,
+    currentDraftVersionId: template.currentDraftVersionId,
+    currentPublishedVersionId: template.currentPublishedVersionId,
+    createdAt: template.createdAt,
+    updatedAt: template.updatedAt,
+    nodeCount: topologyGraph && typeof topologyGraph === 'object' && Array.isArray(topologyGraph.nodes)
+      ? topologyGraph.nodes.length
+      : 0,
+    zoneCount: Array.isArray(topologySpec?.networkZones) ? topologySpec.networkZones.length : 0,
+    hostCount: Array.isArray(topologySpec?.hosts) ? topologySpec.hosts.length : 0,
+  };
 }

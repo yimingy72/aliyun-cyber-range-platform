@@ -11,4 +11,22 @@ describe('AdminAuthGuard', () => {
       ),
     ).toBe(true);
   });
+
+  it('does not treat cloud image source routes as authenticated-user routes', () => {
+    const guard = new AdminAuthGuard({} as never, {} as never);
+
+    expect(
+      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(
+        '/admin/image-catalog/public',
+        'GET',
+      ),
+    ).toBe(false);
+
+    expect(
+      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(
+        '/admin/image-catalog/custom',
+        'GET',
+      ),
+    ).toBe(false);
+  });
 });

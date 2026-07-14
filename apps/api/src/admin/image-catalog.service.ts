@@ -19,12 +19,25 @@ import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
 type ImageCatalogScopePayload = {
-  snapshots: CloudImageSnapshotRecord[];
-  catalogItems: ImageCatalogItemRecord[];
+  snapshots: Array<
+    Pick<
+      CloudImageSnapshotRecord,
+      'id' | 'provider' | 'scope' | 'imageId' | 'sourceImageName' | 'platform' | 'status' | 'isAvailable'
+    >
+  >;
+  catalogItems: Array<
+    Pick<ImageCatalogItemRecord, 'id' | 'displayName' | 'imageId' | 'scope' | 'enabled' | 'sourceSnapshotId'>
+  >;
 };
 
 type PlatformImageAssetsPayload = {
-  items: Array<PlatformImageAssetRecord & { createdBy: string }>;
+  items: Array<
+    PlatformImageAssetRecord & {
+      createdBy: string;
+      sourceSnapshotStatus: string | null;
+      sourceSnapshotAvailable: boolean | null;
+    }
+  >;
 };
 
 type AliyunDescribeImagesResponse = {
@@ -43,6 +56,7 @@ type AliyunImage = {
   Platform?: string;
   Architecture?: string;
   Status?: string;
+  Progress?: string;
 };
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -58,11 +72,11 @@ export class ImageCatalogService {
   ) {}
 
   listPublic() {
-    return this.listScope('public');
+    return this.syncScope('public', 'system');
   }
 
   listCustom() {
-    return this.listScope('custom');
+    return this.syncScope('custom', 'self');
   }
 
   syncPublicImages() {
@@ -78,17 +92,36 @@ export class ImageCatalogService {
     view: PlatformImageView = 'platform',
   ): Promise<PlatformImageAssetsPayload> {
     const accountContext = await this.systemConfigService.getAccountContext();
-
-    const items = await this.adminRepository.listPlatformImageAssets({
+    const baseFilter = {
       provider: accountContext.provider,
       accountUid: accountContext.accountUid,
       regionId: accountContext.defaultRegion,
-      onlyAvailableSourceSnapshots: true,
-      ...(view === 'platform' ? { visibility: 'platform' } : { ownerUserId: currentUserId }),
+      ...(view === 'platform' ? { visibility: 'platform' as const } : { ownerUserId: currentUserId }),
+    };
+
+    const items = await this.adminRepository.listPlatformImageAssets({
+      ...baseFilter,
+      ...(view === 'platform' ? { onlyAvailableSourceSnapshots: true } : {}),
     });
 
+    const itemsWithCreatedBy = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, items);
+    const sourceSnapshots = await Promise.all(
+      [...new Set(items.map((item) => item.sourceSnapshotId).filter((value): value is string => Boolean(value)))].map(
+        async (snapshotId) => [snapshotId, await this.adminRepository.getImageSnapshotById(snapshotId)] as const,
+      ),
+    );
+    const sourceSnapshotsById = new Map(sourceSnapshots);
+
     return {
-      items: await attachOwnerUsernamesAsCreatedBy(this.adminRepository, items),
+      items: itemsWithCreatedBy.map((item) => {
+        const snapshot = item.sourceSnapshotId ? sourceSnapshotsById.get(item.sourceSnapshotId) ?? null : null;
+
+        return {
+          ...item,
+          sourceSnapshotStatus: snapshot?.status ?? null,
+          sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
+        };
+      }),
     };
   }
 
@@ -149,7 +182,16 @@ export class ImageCatalogService {
   }
 
   async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
-    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
+
+    if (asset.ownerUserId && asset.sourceScope === 'custom') {
+      const snapshot = await this.resolvePlatformAssetSnapshot(asset);
+
+      if (snapshot) {
+        await this.deleteCustomSnapshot(snapshot.id);
+        return;
+      }
+    }
 
     await this.adminRepository.deletePlatformImageAsset(id);
   }
@@ -242,7 +284,26 @@ export class ImageCatalogService {
       }),
     ]);
 
-    return { snapshots, catalogItems };
+    return {
+      snapshots: snapshots.map((snapshot) => ({
+        id: snapshot.id,
+        provider: snapshot.provider,
+        scope: snapshot.scope,
+        imageId: snapshot.imageId,
+        sourceImageName: snapshot.sourceImageName,
+        platform: snapshot.platform,
+        status: snapshot.status,
+        isAvailable: snapshot.isAvailable,
+      })),
+      catalogItems: catalogItems.map((item) => ({
+        id: item.id,
+        displayName: item.displayName,
+        imageId: item.imageId,
+        scope: item.scope,
+        enabled: item.enabled,
+        sourceSnapshotId: item.sourceSnapshotId,
+      })),
+    };
   }
 
   private async getScopedPlatformAssetOrThrow(
@@ -373,7 +434,7 @@ export class ImageCatalogService {
           osType: image.OSType ?? null,
           platform: image.Platform ?? null,
           architecture: image.Architecture ?? null,
-          status: image.Status ?? null,
+          status: this.buildSnapshotStatus(image),
           isAvailable: image.Status === 'Available',
           lastSyncedAt,
         })),
@@ -473,6 +534,21 @@ export class ImageCatalogService {
     }
 
     return Array.isArray(images) ? images : [images];
+  }
+
+  private buildSnapshotStatus(image: AliyunImage) {
+    const status = image.Status?.trim();
+    const progress = image.Progress?.trim();
+
+    if (!status) {
+      return null;
+    }
+
+    if (progress && progress !== '100%' && status !== 'Available') {
+      return `${status} ${progress}`;
+    }
+
+    return status;
   }
 
   private toNumber(value: number | string | undefined) {
