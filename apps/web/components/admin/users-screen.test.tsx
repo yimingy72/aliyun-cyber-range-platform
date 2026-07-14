@@ -185,7 +185,6 @@ describe('UsersScreen', () => {
     const row = (await screen.findByText('operator')).closest('.users-workbench-row');
     expect(row).toBeTruthy();
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
     fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
 
     await waitFor(() => {
@@ -238,7 +237,6 @@ describe('UsersScreen', () => {
     const row = (await screen.findByText('admin')).closest('.users-workbench-row');
     expect(row).toBeTruthy();
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
     fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
 
     await waitFor(() => {
@@ -331,5 +329,33 @@ describe('UsersScreen', () => {
       expect(logoutMock).toHaveBeenCalled();
       expect(replaceMock).toHaveBeenCalledWith('/admin/login');
     });
+  });
+
+  it('keeps status toggle inline and reserves 更多操作 for role and password actions', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockResolvedValue(adminUsersPayload);
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('operator')).closest('.users-workbench-row');
+    expect(row).toBeTruthy();
+    expect(within(row!).getByRole('button', { name: '禁用用户' })).toBeTruthy();
+
+    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+
+    expect(within(row!).queryByRole('button', { name: '禁用用户' })).toBeTruthy();
+    expect(within(row!).getByRole('button', { name: '设为管理员' })).toBeTruthy();
+    expect(within(row!).getByRole('button', { name: '重置密码' })).toBeTruthy();
   });
 });

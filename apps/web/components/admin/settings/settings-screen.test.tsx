@@ -51,6 +51,8 @@ describe('SettingsScreen', () => {
   it('shows only provider, region, zone, access key id and access key secret fields', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: 'dev-admin-token',
+      profile: { id: 'admin', username: 'admin', role: 'admin' },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -78,6 +80,8 @@ describe('SettingsScreen', () => {
   it('submits only the cloud config fields used by the new page', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: 'dev-admin-token',
+      profile: { id: 'admin', username: 'admin', role: 'admin' },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -106,6 +110,8 @@ describe('SettingsScreen', () => {
   it('renders nothing before the admin session is ready', () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: null,
+      profile: null,
+      isAdmin: false,
       isReady: false,
       login: vi.fn(),
       logout: vi.fn(),
@@ -122,6 +128,8 @@ describe('SettingsScreen', () => {
 
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: 'dev-admin-token',
+      profile: { id: 'admin', username: 'admin', role: 'admin' },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: logoutMock,
@@ -139,6 +147,8 @@ describe('SettingsScreen', () => {
   it('shows an error message when cloud config loading fails', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: 'dev-admin-token',
+      profile: { id: 'admin', username: 'admin', role: 'admin' },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -153,6 +163,8 @@ describe('SettingsScreen', () => {
   it('keeps the page shell visible while cloud config is still loading', () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: 'dev-admin-token',
+      profile: { id: 'admin', username: 'admin', role: 'admin' },
+      isAdmin: true,
       isReady: true,
       login: vi.fn(),
       logout: vi.fn(),
@@ -163,5 +175,25 @@ describe('SettingsScreen', () => {
 
     expect(screen.getAllByRole('heading', { name: '云配置' }).length).toBeGreaterThan(0);
     expect(screen.queryByText('正在加载云配置...')).toBeNull();
+  });
+
+  it('redirects regular users away from the cloud settings page without loading config', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'user-token',
+      profile: { id: 'user-1', username: 'alice', role: 'user' },
+      isAdmin: false,
+      isReady: true,
+      login: vi.fn(),
+      logout: vi.fn(),
+    });
+
+    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
+
+    await waitFor(() => {
+      expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios');
+    });
+
+    expect(fetchCloudConfigMock).not.toHaveBeenCalled();
+    expect(screen.getByText('当前账号无权访问基础配置。')).toBeTruthy();
   });
 });

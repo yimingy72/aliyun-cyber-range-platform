@@ -10,6 +10,7 @@ import {
   UpdateRangeTemplateInput,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
+import { attachCreatedByUsernames } from './creator-display';
 
 type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
@@ -20,19 +21,33 @@ export class RangeTemplatesService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
   async list(currentUser?: AuthenticatedUser, viewText?: string) {
+    const templates = await this.adminRepository.listRangeTemplates();
+
     if (!currentUser) {
-      return this.adminRepository.listRangeTemplates();
+      return this.withCreatorUsernames(templates.map((template) => toRangeTemplateListItem(template)));
     }
 
     const view = this.normalizeView(viewText);
-    const templates = await this.adminRepository.listRangeTemplates();
+    const visibleTemplates = templates.filter((template) => {
+      if (view === 'mine') {
+        return template.ownerUserId === currentUser.id;
+      }
 
-    return templates.filter((template) =>
-      view === 'platform' ? template.visibility === 'platform' : template.ownerUserId === currentUser.id,
-    );
+      if (template.visibility !== 'platform') {
+        return false;
+      }
+
+      if (currentUser.role === 'admin' || template.ownerUserId === currentUser.id) {
+        return true;
+      }
+
+      return Boolean(template.currentPublishedVersionId);
+    });
+
+    return this.withCreatorUsernames(visibleTemplates.map((template) => toRangeTemplateListItem(template)));
   }
 
-  create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {
+  async create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {
     const actorId = currentUser?.id ?? input.createdBy ?? 'admin';
 
     this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
@@ -41,12 +56,14 @@ export class RangeTemplatesService {
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
     this.validateTopologySpec(input.topologySpec);
 
-    return this.adminRepository.createRangeTemplate({
+    const template = await this.adminRepository.createRangeTemplate({
       ...input,
       createdBy: actorId,
       ownerUserId: currentUser?.id ?? input.ownerUserId ?? null,
       visibility: currentUser ? 'private' : input.visibility ?? 'private',
     });
+
+    return this.withCreatorUsername(template);
   }
 
   async clone(id: string, currentUser?: AuthenticatedUser) {
@@ -77,7 +94,7 @@ export class RangeTemplatesService {
     const rangeTemplates = await this.adminRepository.listRangeTemplates();
     const actorId = currentUser?.id ?? existingTemplate.createdBy;
 
-    return this.adminRepository.createRangeTemplate({
+    const template = await this.adminRepository.createRangeTemplate({
       name: `${existingTemplate.name} 副本`,
       createdBy: actorId,
       ownerUserId: currentUser?.id ?? existingTemplate.ownerUserId,
@@ -108,6 +125,8 @@ export class RangeTemplatesService {
         (allowTemplateFallback ? existingTemplate.defaultNetworkPolicy : undefined) ??
         undefined,
     });
+
+    return this.withCreatorUsername(template);
   }
 
   async update(id: string, input: UpdateRangeTemplateInput, currentUser?: AuthenticatedUser) {
@@ -132,7 +151,8 @@ export class RangeTemplatesService {
     this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
 
-    return this.adminRepository.updateRangeTemplate(id, input);
+    const template = await this.adminRepository.updateRangeTemplate(id, input);
+    return this.withCreatorUsername(template);
   }
 
   async publish(id: string, currentUser?: AuthenticatedUser) {
@@ -148,7 +168,8 @@ export class RangeTemplatesService {
 
     this.assertTemplateReadyForPublish(existingTemplate);
 
-    return this.adminRepository.publishRangeTemplate(id);
+    const template = await this.adminRepository.publishRangeTemplate(id);
+    return this.withCreatorUsername(template);
   }
 
   async validate(id: string, currentUser?: AuthenticatedUser) {
@@ -195,7 +216,8 @@ export class RangeTemplatesService {
       throw new BadRequestException('Range template is not published');
     }
 
-    return this.adminRepository.unpublishRangeTemplate(id);
+    const template = await this.adminRepository.unpublishRangeTemplate(id);
+    return this.withCreatorUsername(template);
   }
 
   async share(id: string, currentUser?: AuthenticatedUser) {
@@ -209,7 +231,8 @@ export class RangeTemplatesService {
       this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
-    return this.adminRepository.updateRangeTemplate(id, { visibility: 'platform' });
+    const template = await this.adminRepository.updateRangeTemplate(id, { visibility: 'platform' });
+    return this.withCreatorUsername(template);
   }
 
   async unshare(id: string, currentUser?: AuthenticatedUser) {
@@ -223,7 +246,8 @@ export class RangeTemplatesService {
       this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
-    return this.adminRepository.updateRangeTemplate(id, { visibility: 'private' });
+    const template = await this.adminRepository.updateRangeTemplate(id, { visibility: 'private' });
+    return this.withCreatorUsername(template);
   }
 
   async delete(id: string, currentUser?: AuthenticatedUser) {
@@ -848,4 +872,49 @@ export class RangeTemplatesService {
   private sameOrderedValues(left: string[], right: string[]) {
     return left.length === right.length && left.every((value, index) => value === right[index]);
   }
+
+  private async withCreatorUsername<T extends ExistingRangeTemplate>(template: T) {
+    const [normalizedTemplate] = await attachCreatedByUsernames(this.adminRepository, [template]);
+    return normalizedTemplate;
+  }
+
+  private withCreatorUsernames<T extends { createdBy: string; ownerUserId: string | null }>(templates: T[]) {
+    return attachCreatedByUsernames(this.adminRepository, templates);
+  }
+}
+
+function toRangeTemplateListItem(template: ExistingRangeTemplate) {
+  const topologyGraph =
+    template.currentDraftVersion?.topologyGraph ??
+    template.currentPublishedVersion?.topologyGraph ??
+    template.topologyGraph ??
+    null;
+  const topologySpec =
+    template.currentDraftVersion?.topologySpec ??
+    template.currentPublishedVersion?.topologySpec ??
+    template.topologySpec ??
+    null;
+
+  return {
+    id: template.id,
+    name: template.name,
+    createdBy: template.createdBy,
+    ownerUserId: template.ownerUserId,
+    description: template.description,
+    slug: template.slug,
+    version: template.version,
+    cloudProvider: template.cloudProvider,
+    iacType: template.iacType,
+    modulePathOrRef: template.modulePathOrRef,
+    visibility: template.visibility,
+    currentDraftVersionId: template.currentDraftVersionId,
+    currentPublishedVersionId: template.currentPublishedVersionId,
+    createdAt: template.createdAt,
+    updatedAt: template.updatedAt,
+    nodeCount: topologyGraph && typeof topologyGraph === 'object' && Array.isArray(topologyGraph.nodes)
+      ? topologyGraph.nodes.length
+      : 0,
+    zoneCount: Array.isArray(topologySpec?.networkZones) ? topologySpec.networkZones.length : 0,
+    hostCount: Array.isArray(topologySpec?.hosts) ? topologySpec.hosts.length : 0,
+  };
 }

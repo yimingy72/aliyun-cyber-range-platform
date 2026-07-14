@@ -7,9 +7,7 @@ import {
   ADMIN_REPOSITORY,
   type AdminRepository,
   type ProvisionJobRecord,
-  type RangeAccessEntry,
   type RangeInstanceRecord,
-  type RangeResourceSummary,
 } from './admin.repository';
 import { SystemConfigService } from './system-config.service';
 
@@ -18,9 +16,15 @@ const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const DEFAULT_SYSTEM_DISK_CATEGORY = 'cloud_essd';
 const DEFAULT_INTERNET_MAX_BANDWIDTH_OUT = 10;
-const DESCRIBE_INSTANCE_ATTEMPTS = 10;
+const DESCRIBE_INSTANCE_ATTEMPTS = 30;
 const DESCRIBE_INSTANCE_INTERVAL_MS = 2_000;
+const CREATE_ITEM_CONCURRENCY = 10;
+const AUTO_RELEASE_MIN_DELAY_MS = 30 * 60 * 1_000;
 const DESTROY_RETRYABLE_ERROR_CODE = 'IncorrectInstanceStatus.Initializing';
+const DESTROY_ALREADY_GONE_ERROR_CODES = [
+  'InvalidInstanceId.NotFound',
+  'InvalidInstanceIds.NotFound',
+];
 const DEFAULT_DESTROY_RETRY_INTERVAL_MS = 5_000;
 const DESTROY_RETRY_ATTEMPTS = 12;
 
@@ -58,7 +62,8 @@ type AliyunInstanceDetail = {
 
 @Injectable()
 export class SingleInstanceBatchExecutionService {
-  private readonly maxConcurrency = 3;
+  // ponytail: one shared slot pool for create/destroy/refresh; split pools only if ECS throttling shows up.
+  private readonly maxConcurrency = 10;
   private inFlight = 0;
   private queue: Array<() => void> = [];
 
@@ -115,10 +120,12 @@ export class SingleInstanceBatchExecutionService {
         return;
       }
 
-      const itemsByVswitch = groupItemsByVswitch(items);
+      const orderedItems = items.slice().sort(compareByQuantityIndex);
 
-      for (const group of itemsByVswitch) {
+      await processWithConcurrency(orderedItems, CREATE_ITEM_CONCURRENCY, async (item) => {
         try {
+          const autoReleaseTime = resolveAliyunAutoReleaseTime(item.instance.expiresAt);
+          const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim() || null;
           const runResponse = await this.performAliyunRpcRequest<AliyunRunInstancesResponse>({
             accessKeyId: snapshot.accessKeyId,
             accessKeySecret: snapshot.accessKeySecret,
@@ -126,76 +133,40 @@ export class SingleInstanceBatchExecutionService {
             action: 'RunInstances',
             method: 'POST',
             parameters: {
-              ImageId: group[0].instance.singleInstanceConfig!.imageId,
+              ImageId: item.instance.singleInstanceConfig!.imageId,
               InstanceType: resolvedInstanceType,
               SecurityGroupId: profile.securityGroupId,
-              VSwitchId: group[0].instance.singleInstanceConfig!.assignedVswitchId ?? profile.vswitchIds[0],
-              Amount: String(group.length),
-              Password: readRuntimePassword(group[0].instance),
+              VSwitchId: item.instance.singleInstanceConfig!.assignedVswitchId ?? profile.vswitchIds[0],
+              Amount: '1',
+              ClientToken: item.instance.id,
+              Password: readRuntimePassword(item.instance),
               InstanceChargeType: 'PostPaid',
               InternetMaxBandwidthOut: String(readInternetMaxBandwidthOut()),
               'SystemDisk.Category': readSystemDiskCategory(),
-              'SystemDisk.Size': String(group[0].instance.singleInstanceConfig!.systemDiskSize),
-              InstanceName: buildAliyunIndexedPattern(
-                group[0].instance.singleInstanceConfig!.baseName,
-                group[0].instance.singleInstanceConfig!.quantityIndex,
-                group.length,
-              ),
-              HostName: buildAliyunIndexedPattern(
-                deriveHostBaseName(group[0].instance),
-                group[0].instance.singleInstanceConfig!.quantityIndex,
-                group.length,
-              ),
+              'SystemDisk.Size': String(item.instance.singleInstanceConfig!.systemDiskSize),
+              InstanceName: item.instance.name,
+              ...(expectedHostName ? { HostName: expectedHostName } : {}),
+              ...(autoReleaseTime ? { AutoReleaseTime: autoReleaseTime } : {}),
             },
           });
 
           const instanceIds = normalizeStringArray(runResponse.InstanceIdSets?.InstanceIdSet);
 
-          if (instanceIds.length !== group.length) {
-            throw new Error(`RunInstances returned ${instanceIds.length} instance ids for ${group.length} requested instances.`);
+          if (instanceIds.length !== 1) {
+            throw new Error(`RunInstances returned ${instanceIds.length} instance ids for a single-instance request.`);
           }
 
-          const details = await this.waitForInstancesVisible({
-            regionId: snapshot.defaultRegion,
-            instanceIds,
-            requirePublicIp: true,
+          await this.markCreateSubmitted({
+            item,
+            instanceId: instanceIds[0],
+            profile,
+            resolvedInstanceType,
           });
-          const orderedDetails = orderDetailsByInstanceName(details, group);
-
-          for (let index = 0; index < group.length; index += 1) {
-            const detail = orderedDetails[index];
-
-            if (!detail?.instanceId) {
-              throw new Error('RunInstances did not return enough describable ECS instances.');
-            }
-
-            if (detail.instanceName !== group[index].instance.name || detail.hostName !== group[index].instance.singleInstanceConfig?.hostName) {
-              await this.performAliyunRpcRequest({
-                accessKeyId: snapshot.accessKeyId,
-                accessKeySecret: snapshot.accessKeySecret,
-                regionId: snapshot.defaultRegion,
-                action: 'ModifyInstanceAttribute',
-                method: 'POST',
-                parameters: {
-                  InstanceId: detail.instanceId,
-                  InstanceName: group[index].instance.name,
-                  HostName: group[index].instance.singleInstanceConfig?.hostName ?? group[index].instance.name,
-                },
-              });
-            }
-
-            await this.markCreateSuccess({
-              item: group[index],
-              detail,
-              profile,
-              resolvedInstanceType,
-            });
-          }
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown single-instance batch create error';
-          await this.markCreateFailure(group, message);
+          await this.markCreateFailure([item], message);
         }
-      }
+      });
     });
   }
 
@@ -226,8 +197,6 @@ export class SingleInstanceBatchExecutionService {
         for (const item of items) {
           await this.adminRepository.updateRangeInstance(item.instance.id, {
             status: 'destroyed',
-            accessEntry: null,
-            resourceSummary: null,
             errorSummary: null,
           });
           await this.adminRepository.updateProvisionJob(item.job.id, {
@@ -264,19 +233,29 @@ export class SingleInstanceBatchExecutionService {
           requirePublicIp: true,
         });
 
-        if (!detail?.instanceId || !detail.publicIp) {
-          throw new Error('Timed out waiting for the single-instance public IP to become available.');
+        if (!detail?.instanceId) {
+          throw new Error('Timed out waiting for the single-instance to become visible.');
         }
 
         const hostKey = item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
         const currentAccessEntry = item.instance.accessEntry;
+        const currentResourceSummary = item.instance.resourceSummary;
 
         await this.adminRepository.updateRangeInstance(item.instance.id, {
+          status: detail.publicIp ? 'running' : 'creating',
           accessEntry: {
             hostRole: currentAccessEntry?.hostRole ?? hostKey,
             publicIp: detail.publicIp,
             privateIp: detail.privateIp,
-            ssh: `ssh root@${detail.publicIp}`,
+            ssh: detail.publicIp ? `ssh root@${detail.publicIp}` : null,
+          },
+          resourceSummary: {
+            ...(currentResourceSummary ?? {}),
+            mode: 'ecs-native',
+            hostIds: {
+              ...(currentResourceSummary?.hostIds ?? {}),
+              [hostKey]: detail.instanceId,
+            },
           },
           runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
           runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(
@@ -313,9 +292,14 @@ export class SingleInstanceBatchExecutionService {
     regionId: string;
     instanceIds: string[];
   }) {
+    let pendingInstanceIds = input.instanceIds.slice();
     let lastError: unknown;
 
     for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt += 1) {
+      if (!pendingInstanceIds.length) {
+        return;
+      }
+
       try {
         await this.performAliyunRpcRequest({
           accessKeyId: input.accessKeyId,
@@ -325,13 +309,26 @@ export class SingleInstanceBatchExecutionService {
           method: 'POST',
           parameters: {
             Force: 'true',
-            ...buildAliyunArrayParameters('InstanceId', input.instanceIds),
+            ...buildAliyunArrayParameters('InstanceId', pendingInstanceIds),
           },
         });
         return;
       } catch (error) {
         lastError = error;
         const message = error instanceof Error ? error.message : 'Unknown single-instance batch destroy error';
+
+        if (isAlreadyGoneDestroyError(message)) {
+          pendingInstanceIds = await this.listExistingInstanceIds({
+            regionId: input.regionId,
+            instanceIds: pendingInstanceIds,
+          });
+
+          if (!pendingInstanceIds.length) {
+            return;
+          }
+
+          continue;
+        }
 
         if (!isRetryableDestroyError(message) || attempt >= DESTROY_RETRY_ATTEMPTS - 1) {
           throw error;
@@ -390,41 +387,43 @@ export class SingleInstanceBatchExecutionService {
     return normalizeInstanceDetails(response);
   }
 
-  private async markCreateSuccess(input: {
+  private async listExistingInstanceIds(input: { regionId: string; instanceIds: string[] }) {
+    const details = await this.describeInstances(input);
+    const expectedIds = new Set(input.instanceIds);
+
+    return details
+      .map((detail) => detail.instanceId)
+      .filter((instanceId) => expectedIds.has(instanceId));
+  }
+
+  private async markCreateSubmitted(input: {
     item: SingleInstanceExecutionItem;
-    detail: NormalizedInstanceDetail;
+    instanceId: string;
     profile: Awaited<ReturnType<AdminRepository['getSingleInstanceNetworkProfile']>>;
     resolvedInstanceType: string;
   }) {
     const hostKey = input.item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
-    const resourceSummary: RangeResourceSummary = {
-      mode: 'ecs-native',
-      vpcId: input.profile?.vpcId ?? null,
-      subnetIds: input.item.instance.singleInstanceConfig?.assignedVswitchId
-        ? { [hostKey]: input.item.instance.singleInstanceConfig.assignedVswitchId }
-        : null,
-      hostIds: { [hostKey]: input.detail.instanceId },
-      resolvedInstanceType: input.resolvedInstanceType,
-      resolvedImageId: input.item.instance.singleInstanceConfig?.imageId ?? null,
-    };
-    const accessEntry: RangeAccessEntry = {
-      hostRole: hostKey,
-      publicIp: input.detail.publicIp,
-      privateIp: input.detail.privateIp,
-      ssh: input.detail.publicIp ? `ssh root@${input.detail.publicIp}` : null,
-    };
 
     await this.adminRepository.updateRangeInstance(input.item.instance.id, {
-      status: 'running',
-      accessEntry,
-      resourceSummary,
-      runtimeTopologyGraph: patchRuntimeTopologyGraph(input.item.instance.runtimeTopologyGraph, hostKey, input.detail),
-      runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(input.item.instance.runtimeScenarioTemplateSpec, hostKey, input.detail),
-      runtimeCompiledProvisionSpec: patchRuntimeCompiledProvisionSpec(
-        input.item.instance.runtimeCompiledProvisionSpec,
-        hostKey,
-        input.detail,
-      ),
+      status: 'creating',
+      accessEntry: {
+        hostRole: hostKey,
+        publicIp: null,
+        privateIp: null,
+        ssh: null,
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        vpcId: input.profile?.vpcId ?? null,
+        subnetIds: input.item.instance.singleInstanceConfig?.assignedVswitchId
+          ? { [hostKey]: input.item.instance.singleInstanceConfig.assignedVswitchId }
+          : null,
+        hostIds: {
+          [hostKey]: input.instanceId,
+        },
+        resolvedInstanceType: input.resolvedInstanceType,
+        resolvedImageId: input.item.instance.singleInstanceConfig?.imageId ?? null,
+      },
       errorSummary: null,
     });
     await this.adminRepository.updateProvisionJob(input.item.job.id, {
@@ -559,40 +558,11 @@ function readRuntimePassword(instance: RangeInstanceRecord) {
   return password;
 }
 
-function groupItemsByVswitch(items: SingleInstanceExecutionItem[]) {
-  const groups = new Map<string, SingleInstanceExecutionItem[]>();
-
-  for (const item of items.slice().sort(compareByQuantityIndex)) {
-    const vswitchId = item.instance.singleInstanceConfig?.assignedVswitchId?.trim() || 'default-vswitch';
-    const group = groups.get(vswitchId) ?? [];
-    group.push(item);
-    groups.set(vswitchId, group);
-  }
-
-  return Array.from(groups.values());
-}
-
 function compareByQuantityIndex(left: SingleInstanceExecutionItem, right: SingleInstanceExecutionItem) {
   return (
     (left.instance.singleInstanceConfig?.quantityIndex ?? 0) -
     (right.instance.singleInstanceConfig?.quantityIndex ?? 0)
   );
-}
-
-function buildAliyunIndexedPattern(base: string, startIndex: number, amount: number) {
-  if (amount <= 1) {
-    return `${base}-${String(startIndex).padStart(2, '0')}`;
-  }
-
-  return `${base}-[${startIndex},2]`;
-}
-
-function deriveHostBaseName(instance: RangeInstanceRecord) {
-  const hostName = instance.singleInstanceConfig?.hostName?.trim() || instance.name;
-  const quantityIndex = instance.singleInstanceConfig?.quantityIndex ?? 1;
-  const suffix = `-${String(quantityIndex).padStart(2, '0')}`;
-
-  return hostName.endsWith(suffix) ? hostName.slice(0, -suffix.length) : hostName;
 }
 
 function normalizeStringArray(value: string[] | string | null | undefined) {
@@ -631,18 +601,25 @@ function normalizeInstanceDetails(response: AliyunDescribeInstancesResponse): No
   });
 }
 
-function orderDetailsByInstanceName(details: NormalizedInstanceDetail[], group: SingleInstanceExecutionItem[]) {
-  const sortedDetails = details
-    .slice()
-    .sort((left, right) => left.instanceName.localeCompare(right.instanceName));
-  const sortedItems = group.slice().sort(compareByQuantityIndex);
-
-  return sortedItems.map((_, index) => sortedDetails[index] ?? null);
-}
-
 function resolveHostInstanceId(instance: RangeInstanceRecord) {
   const hostKey = instance.singleInstanceConfig?.hostKey ?? '';
   return hostKey ? instance.resourceSummary?.hostIds?.[hostKey] ?? null : null;
+}
+
+function resolveAliyunAutoReleaseTime(expiresAt: Date | null) {
+  if (!expiresAt) {
+    return null;
+  }
+
+  if (expiresAt.getTime() - Date.now() < AUTO_RELEASE_MIN_DELAY_MS) {
+    return null;
+  }
+
+  return formatAliyunTimestamp(expiresAt);
+}
+
+function formatAliyunTimestamp(date: Date) {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function patchRuntimeTopologyGraph(
@@ -756,7 +733,30 @@ function isRetryableDestroyError(message: string) {
   return message.includes(DESTROY_RETRYABLE_ERROR_CODE);
 }
 
+function isAlreadyGoneDestroyError(message: string) {
+  return DESTROY_ALREADY_GONE_ERROR_CODES.some((errorCode) => message.includes(errorCode));
+}
+
 function readDestroyRetryIntervalMs() {
   const value = Number(process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS ?? DEFAULT_DESTROY_RETRY_INTERVAL_MS);
   return Number.isFinite(value) && value >= 0 ? value : DEFAULT_DESTROY_RETRY_INTERVAL_MS;
+}
+
+async function processWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+) {
+  const runnerCount = Math.max(1, Math.min(concurrency, items.length));
+  let index = 0;
+
+  await Promise.all(
+    Array.from({ length: runnerCount }, async () => {
+      while (index < items.length) {
+        const item = items[index];
+        index += 1;
+        await worker(item);
+      }
+    }),
+  );
 }

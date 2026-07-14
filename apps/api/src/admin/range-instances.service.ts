@@ -11,6 +11,7 @@ import {
   RangeRuntimeCredentials,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
+import { attachCreatedByUsernames } from './creator-display';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
@@ -38,17 +39,31 @@ export class RangeInstancesService {
     private readonly provisioningWorkerService: ProvisioningWorkerService,
   ) {}
 
-  async list(currentUser?: AuthenticatedUser) {
+  async list(currentUser?: AuthenticatedUser, view: 'active' | 'history' = 'active') {
     const instances = await this.adminRepository.listRangeInstances();
     const scopedInstances =
       currentUser && currentUser.role !== 'admin'
         ? instances.filter((instance) => instance.ownerUserId === currentUser.id)
         : instances;
+    const templates = await this.adminRepository.listRangeTemplates();
+    const templateNameById = new Map(
+      templates.map((template) => [template.id, template.name?.trim() || template.slug]),
+    );
 
-    return Promise.all(
+    const hydratedInstances = await Promise.all(
       scopedInstances
         .filter((instance) => instance.instanceMode === 'range')
         .map((instance) => this.attachRecoverySummary(instance)),
+    );
+
+    const listItems = hydratedInstances
+      .filter((instance): instance is NonNullable<typeof instance> => Boolean(instance))
+      .map((instance) => toRangeInstanceListItem(instance, templateNameById))
+      .filter((instance) => (view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed'));
+
+    return attachCreatedByUsernames(
+      this.adminRepository,
+      listItems,
     );
   }
 
@@ -95,12 +110,14 @@ export class RangeInstancesService {
       throw new ConflictException('Range template does not have an active template version');
     }
 
-    return this.adminRepository.createRangeInstance({
+    const instance = await this.adminRepository.createRangeInstance({
       ...input,
       createdBy: currentUser?.id ?? input.createdBy,
       ownerUserId: currentUser?.id ?? input.ownerUserId,
       sourceTemplateVersionId,
     });
+
+    return this.withCreatorUsername(instance);
   }
 
   async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
@@ -163,7 +180,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
   }
 
   async saveDraft(id: string, input: SaveRangeInstanceDraftDto, currentUser?: AuthenticatedUser) {
@@ -197,7 +214,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
   }
 
   async discardDraft(id: string, currentUser?: AuthenticatedUser) {
@@ -225,7 +242,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(hydrated);
+    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
   }
 
   async applyDraft(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
@@ -558,6 +575,11 @@ export class RangeInstancesService {
       ...payload,
       defaultInstancePassword: password,
     };
+  }
+
+  private async withCreatorUsername<T extends { createdBy: string | null; ownerUserId: string | null }>(instance: T) {
+    const [normalizedInstance] = await attachCreatedByUsernames(this.adminRepository, [instance]);
+    return normalizedInstance;
   }
 
   private async resolveNodeStatuses(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
@@ -993,4 +1015,35 @@ export class RangeInstancesService {
 
     return null;
   }
+}
+
+function toRangeInstanceListItem(
+  instance: {
+    id: string;
+    name: string;
+    createdBy: string | null;
+    ownerUserId: string | null;
+    status: string;
+    templateId: string | null;
+    templateNameSnapshot?: string | null;
+    createdAt: Date;
+    lastJobId: string | null;
+    errorSummary?: string | null;
+  },
+  templateNameById: Map<string, string>,
+) {
+  return {
+    id: instance.id,
+    name: instance.name,
+    createdBy: instance.createdBy,
+    ownerUserId: instance.ownerUserId,
+    status: instance.status,
+    templateId: instance.templateId,
+    templateNameSnapshot:
+      instance.templateNameSnapshot?.trim() ||
+      (instance.templateId ? templateNameById.get(instance.templateId) ?? null : null),
+    createdAt: instance.createdAt,
+    lastJobId: instance.lastJobId,
+    errorSummary: instance.errorSummary ?? null,
+  };
 }

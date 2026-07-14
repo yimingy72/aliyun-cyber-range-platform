@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -20,8 +20,8 @@ export class RangesController {
   ) {}
 
   @Get()
-  list(@Req() request: AuthenticatedAdminRequest) {
-    return this.rangeInstancesService.list(request.adminUser);
+  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history') {
+    return this.rangeInstancesService.list(request.adminUser, view);
   }
 
   @Get(':id')

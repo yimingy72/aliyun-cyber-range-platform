@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import {
   collectPlatformImage,
@@ -36,12 +37,15 @@ type ImageCenterConfirmState =
   | { type: 'remove-platform'; asset: PlatformImageAsset }
   | { type: 'delete-custom'; snapshot: ImageSnapshot }
   | null;
+type ActionMenuPlacement = 'down' | 'up';
 
 const PAGE_SIZE_AUTO = 'auto';
 const MANUAL_PAGE_SIZE_OPTIONS = [50, 100, 200];
 const ROWS_BASED_PAGE_SIZE_FALLBACK = 8;
 const ROW_HEIGHT = 72;
 const PAGE_SIZE_RESERVED_HEIGHT = 470;
+const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
+const ACTION_MENU_ESTIMATED_HEIGHT_PX = 132;
 
 function getAutoPageSize(viewportHeight?: number) {
   if (!viewportHeight || Number.isNaN(viewportHeight)) {
@@ -51,12 +55,65 @@ function getAutoPageSize(viewportHeight?: number) {
   return Math.max(1, Math.floor((viewportHeight - PAGE_SIZE_RESERVED_HEIGHT) / ROW_HEIGHT));
 }
 
-function formatImageStatus(snapshot: ImageSnapshot) {
-  if (snapshot.status?.trim()) {
-    return snapshot.status;
+function formatCloudImageStatusText(status?: string | null, isAvailable?: boolean | null) {
+  const normalizedStatus = status?.trim();
+
+  if (!normalizedStatus) {
+    return isAvailable ? '可用' : '不可用';
   }
 
-  return snapshot.isAvailable ? 'Available' : 'Unavailable';
+  if (normalizedStatus === 'Available') {
+    return '可用';
+  }
+
+  const creatingMatch = normalizedStatus.match(/^Creating(?:\s+(\d+%))?$/i);
+  if (creatingMatch) {
+    return creatingMatch[1] ? `导出中 ${creatingMatch[1]}` : '导出中';
+  }
+
+  if (/CreateFailed/i.test(normalizedStatus)) {
+    return '导出失败';
+  }
+
+  if (/Unavailable/i.test(normalizedStatus)) {
+    return '不可用';
+  }
+
+  return normalizedStatus;
+}
+
+function formatImageStatus(snapshot: ImageSnapshot) {
+  return formatCloudImageStatusText(snapshot.status, snapshot.isAvailable);
+}
+
+function formatAssetStatus(asset: PlatformImageAsset) {
+  if (asset.sourceSnapshotAvailable === false) {
+    return formatCloudImageStatusText(asset.sourceSnapshotStatus, asset.sourceSnapshotAvailable);
+  }
+
+  return asset.enabled ? '已启用' : '已禁用';
+}
+
+function getAssetStatusTone(asset: PlatformImageAsset) {
+  if (asset.sourceSnapshotAvailable === false) {
+    return 'is-draft';
+  }
+
+  return asset.enabled ? 'is-published' : 'is-draft';
+}
+
+function canCreateInstanceFromAsset(asset: PlatformImageAsset) {
+  return asset.enabled && asset.sourceSnapshotAvailable !== false;
+}
+
+function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
+  const triggerRect = triggerElement.getBoundingClientRect();
+  const containerRect =
+    triggerElement.closest('.image-center-list')?.getBoundingClientRect() ??
+    triggerElement.closest('.admin-main-content')?.getBoundingClientRect();
+  const availableBelow = (containerRect?.bottom ?? window.innerHeight) - triggerRect.bottom;
+
+  return availableBelow < ACTION_MENU_ESTIMATED_HEIGHT_PX + ACTION_MENU_VERTICAL_OFFSET_PX ? 'up' : 'down';
 }
 
 function normalizeKeyword(keyword: string) {
@@ -152,6 +209,7 @@ function ImageCenterDialog({
 export function ImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
+  const router = useRouter();
   const session = useAdminSession();
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const [searchName, setSearchName] = useState('');
@@ -159,6 +217,12 @@ export function ImageCenterScreen({
   const [myAssets, setMyAssets] = useState<PlatformImageAsset[]>([]);
   const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(null);
   const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
+  const [loadedTabs, setLoadedTabs] = useState<Record<ActiveTab, boolean>>({
+    platform: false,
+    mine: false,
+    custom: false,
+    public: false,
+  });
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
@@ -169,6 +233,8 @@ export function ImageCenterScreen({
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
+  const [menuAssetId, setMenuAssetId] = useState<string | null>(null);
+  const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const platformRequestVersionRef = useRef(0);
   const mineRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
@@ -213,7 +279,20 @@ export function ImageCenterScreen({
     setMyAssets((previous) => previous.filter((item) => item.id !== assetId));
   }
 
+  function handleCreateInstance(asset: PlatformImageAsset) {
+    const nextSearchParams = new URLSearchParams({
+      create: '1',
+      platformImageAssetId: asset.id,
+    });
+    router.push(`/admin/instances?${nextSearchParams.toString()}`);
+  }
+
   function setActiveMainView(nextView: 'platform' | 'mine' | 'cloud') {
+    if (nextView === 'cloud' && !session.isAdmin) {
+      setActiveTab('platform');
+      return;
+    }
+
     if (nextView === 'cloud') {
       setActiveTab((previous) => (previous === 'platform' || previous === 'mine' ? 'custom' : previous));
       return;
@@ -247,6 +326,14 @@ export function ImageCenterScreen({
     if (!session.token) {
       setPlatformAssets([]);
       setMyAssets([]);
+      setPublicScope(null);
+      setCustomScope(null);
+      setLoadedTabs({ platform: false, mine: false, custom: false, public: false });
+      setIsLoading(false);
+      return;
+    }
+
+    if (loadedTabs[activeTab]) {
       setIsLoading(false);
       return;
     }
@@ -259,36 +346,54 @@ export function ImageCenterScreen({
     mineRequestVersionRef.current = mineRequestVersion;
     publicScopeRequestVersionRef.current = publicRequestVersion;
     customScopeRequestVersionRef.current = customRequestVersion;
+    const token = session.token;
     let isActive = true;
     setIsLoading(true);
     setErrorMessage('');
 
-    Promise.all([
-      fetchPlatformImages(apiBaseUrl, session.token, 'platform'),
-      fetchPlatformImages(apiBaseUrl, session.token, 'mine'),
-      fetchPublicImageCatalogScope(apiBaseUrl, session.token),
-      fetchCustomImageCatalogScope(apiBaseUrl, session.token),
-    ])
-      .then(([platformPayload, minePayload, nextPublicScope, nextCustomScope]) => {
+    const request =
+      activeTab === 'platform'
+        ? fetchPlatformImages(apiBaseUrl, token, 'platform').then((payload) => {
+            if (!isActive || platformRequestVersionRef.current !== platformRequestVersion) {
+              return;
+            }
+
+            setPlatformAssets(payload.items);
+          })
+        : activeTab === 'mine'
+          ? fetchPlatformImages(apiBaseUrl, token, 'mine').then((payload) => {
+              if (!isActive || mineRequestVersionRef.current !== mineRequestVersion) {
+                return;
+              }
+
+              setMyAssets(payload.items);
+            })
+          : activeTab === 'custom'
+            ? fetchCustomImageCatalogScope(apiBaseUrl, token).then((scope) => {
+                if (!isActive || customScopeRequestVersionRef.current !== customRequestVersion) {
+                  return;
+                }
+
+                setCustomScope(scope);
+              })
+            : fetchPublicImageCatalogScope(apiBaseUrl, token).then((scope) => {
+                if (!isActive || publicScopeRequestVersionRef.current !== publicRequestVersion) {
+                  return;
+                }
+
+                setPublicScope(scope);
+              });
+
+    request
+      .then(() => {
         if (!isActive) {
           return;
         }
 
-        if (platformRequestVersionRef.current === platformRequestVersion) {
-          setPlatformAssets(platformPayload.items);
-        }
-
-        if (mineRequestVersionRef.current === mineRequestVersion) {
-          setMyAssets(minePayload.items);
-        }
-
-        if (publicScopeRequestVersionRef.current === publicRequestVersion) {
-          setPublicScope(nextPublicScope);
-        }
-
-        if (customScopeRequestVersionRef.current === customRequestVersion) {
-          setCustomScope(nextCustomScope);
-        }
+        setLoadedTabs((current) => ({
+          ...current,
+          [activeTab]: true,
+        }));
       })
       .catch((error) => {
         if (!isActive) {
@@ -313,7 +418,7 @@ export function ImageCenterScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [activeTab, apiBaseUrl, loadedTabs[activeTab], session.isReady, session.token]);
 
   async function handleSyncPublicImages() {
     if (!session.token) {
@@ -402,6 +507,8 @@ export function ImageCenterScreen({
   }
 
   function openRenameDialog(asset: PlatformImageAsset) {
+    setMenuAssetId(null);
+    setMenuPlacement('down');
     setRenamingAsset(asset);
     setRenameDraft(asset.displayName);
   }
@@ -413,6 +520,17 @@ export function ImageCenterScreen({
 
   function closeConfirmDialog() {
     setConfirmState(null);
+  }
+
+  function toggleActionMenu(assetId: string, triggerElement: HTMLElement) {
+    if (menuAssetId === assetId) {
+      setMenuAssetId(null);
+      setMenuPlacement('down');
+      return;
+    }
+
+    setMenuAssetId(assetId);
+    setMenuPlacement(resolveActionMenuPlacement(triggerElement));
   }
 
   async function handleRenamePlatformAsset() {
@@ -647,6 +765,7 @@ export function ImageCenterScreen({
       emptyMessage: string;
       allowManagement: boolean | ((asset: PlatformImageAsset) => boolean);
       allowVisibilityToggle?: boolean | ((asset: PlatformImageAsset) => boolean);
+      compactActions?: boolean;
     },
   ) {
     if (items.length === 0) {
@@ -654,6 +773,7 @@ export function ImageCenterScreen({
     }
 
     return items.map((asset) => {
+      const menuOpen = menuAssetId === asset.id;
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
@@ -667,12 +787,14 @@ export function ImageCenterScreen({
         typeof options.allowVisibilityToggle === 'function'
           ? options.allowVisibilityToggle(asset)
           : options.allowVisibilityToggle ?? false;
+      const canCreate = canCreateInstanceFromAsset(asset);
+      const showCompactActions = options.compactActions && canManageAsset;
 
       return (
         <article
           key={asset.id}
           aria-label={`${asset.displayName} ${asset.imageId}`}
-          className="range-workbench-row image-center-row"
+          className={`range-workbench-row image-center-row${menuOpen ? ' is-menu-open' : ''}`}
         >
           <div className="range-workbench-main image-center-main-cell">
             <strong>{asset.displayName}</strong>
@@ -681,18 +803,30 @@ export function ImageCenterScreen({
           <div className="range-workbench-created-at image-center-secondary-cell">
             <span>{asset.imageId}</span>
           </div>
+          <div className="range-workbench-created-at image-center-secondary-cell">
+            <span>{asset.createdBy?.trim() || 'admin'}</span>
+          </div>
           <div className="range-workbench-status-cell image-center-status-cell">
-            <span className={`template-workbench-status-pill ${asset.enabled ? 'is-published' : 'is-draft'}`}>
-              {asset.enabled ? '已启用' : '已禁用'}
+            <span className={`template-workbench-status-pill ${getAssetStatusTone(asset)}`}>
+              {formatAssetStatus(asset)}
             </span>
           </div>
-          <div className="range-workbench-actions image-center-actions-cell">
+          <div className={`range-workbench-actions image-center-actions-cell${showCompactActions ? ' image-center-actions-cell-compact' : ''}`}>
+            {canCreate ? (
+              <button
+                type="button"
+                aria-label={`创建实例 ${asset.displayName}`}
+                onClick={() => handleCreateInstance(asset)}
+              >
+                创建实例
+              </button>
+            ) : null}
             {canManageAsset ? (
               <>
                 {canToggleVisibility ? (
                   <button
                     type="button"
-                    disabled={isPending}
+                    disabled={isPending || asset.sourceSnapshotAvailable === false}
                     aria-label={`${asset.visibility === 'platform' ? '回退为私有' : '发布到平台'} ${asset.displayName}`}
                     onClick={() =>
                       void (asset.visibility === 'platform'
@@ -703,25 +837,71 @@ export function ImageCenterScreen({
                     {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
                   </button>
                 ) : null}
-                <button type="button" disabled={isPending} aria-label={`重命名 ${asset.displayName}`} onClick={() => openRenameDialog(asset)}>
-                  重命名
-                </button>
-                <button
-                  type="button"
-                  disabled={isPending}
-                  aria-label={`${asset.enabled ? '禁用' : '启用'} ${asset.displayName}`}
-                  onClick={() => void handleTogglePlatformAsset(asset)}
-                >
-                  {asset.enabled ? '禁用' : '启用'}
-                </button>
-                <button
-                  type="button"
-                  disabled={isPending}
-                  aria-label={`删除 ${asset.displayName}`}
-                  onClick={() => setConfirmState({ type: 'remove-platform', asset })}
-                >
-                  删除
-                </button>
+                {showCompactActions ? (
+                  <div className="template-workbench-row-menu">
+                    <button
+                      type="button"
+                      className="template-workbench-secondary-action"
+                      aria-expanded={menuOpen}
+                      disabled={isPending}
+                      onClick={(event) => toggleActionMenu(asset.id, event.currentTarget)}
+                    >
+                      更多操作
+                    </button>
+
+                    {menuOpen ? (
+                      <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
+                        <button type="button" disabled={isPending} onClick={() => openRenameDialog(asset)}>
+                          重命名
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => {
+                            setMenuAssetId(null);
+                            setMenuPlacement('down');
+                            void handleTogglePlatformAsset(asset);
+                          }}
+                        >
+                          {asset.enabled ? '禁用' : '启用'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => {
+                            setMenuAssetId(null);
+                            setMenuPlacement('down');
+                            setConfirmState({ type: 'remove-platform', asset });
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    <button type="button" disabled={isPending} aria-label={`重命名 ${asset.displayName}`} onClick={() => openRenameDialog(asset)}>
+                      重命名
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      aria-label={`${asset.enabled ? '禁用' : '启用'} ${asset.displayName}`}
+                      onClick={() => void handleTogglePlatformAsset(asset)}
+                    >
+                      {asset.enabled ? '禁用' : '启用'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      aria-label={`删除 ${asset.displayName}`}
+                      onClick={() => setConfirmState({ type: 'remove-platform', asset })}
+                    >
+                      删除
+                    </button>
+                  </>
+                )}
               </>
             ) : null}
           </div>
@@ -785,7 +965,13 @@ export function ImageCenterScreen({
     });
   }
 
-  const activeMainView = activeTab === 'platform' || activeTab === 'mine' ? activeTab : 'cloud';
+  const activeMainView = !session.isAdmin
+    ? activeTab === 'mine'
+      ? 'mine'
+      : 'platform'
+    : activeTab === 'platform' || activeTab === 'mine'
+      ? activeTab
+      : 'cloud';
   const activeTabTitle =
     activeTab === 'platform'
       ? '平台镜像'
@@ -801,7 +987,7 @@ export function ImageCenterScreen({
     return null;
   }
 
-  const isBootstrapLoading = isLoading && platformAssets.length === 0 && myAssets.length === 0 && !publicScope && !customScope;
+  const isBootstrapLoading = isLoading && !loadedTabs[activeTab];
 
   return (
     <div className="admin-screen admin-workbench-screen image-center-screen">
@@ -835,9 +1021,11 @@ export function ImageCenterScreen({
               <button type="button" aria-pressed={activeMainView === 'mine'} onClick={() => setActiveMainView('mine')}>
                 我的镜像
               </button>
-              <button type="button" aria-pressed={activeMainView === 'cloud'} onClick={() => setActiveMainView('cloud')}>
-                云上镜像来源
-              </button>
+              {session.isAdmin ? (
+                <button type="button" aria-pressed={activeMainView === 'cloud'} onClick={() => setActiveMainView('cloud')}>
+                  云上镜像来源
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -879,6 +1067,11 @@ export function ImageCenterScreen({
             <div className="template-workbench-column-cell">
               <strong>镜像 ID</strong>
             </div>
+            {activeTab === 'platform' || activeTab === 'mine' ? (
+              <div className="template-workbench-column-cell">
+                <strong>创建人</strong>
+              </div>
+            ) : null}
             <div className="template-workbench-column-cell">
               <strong>状态</strong>
             </div>
@@ -895,12 +1088,14 @@ export function ImageCenterScreen({
                 emptyMessage: '当前没有平台镜像。',
                 allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
                 allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
+                compactActions: true,
               })
             ) : activeTab === 'mine' ? (
               renderAssetRows(pagedMyAssets, {
                 emptyMessage: '当前没有我的镜像。',
                 allowManagement: true,
                 allowVisibilityToggle: true,
+                compactActions: true,
               })
             ) : activeTab === 'custom' ? (
               renderScopeRows('custom', pagedCustomSnapshots)

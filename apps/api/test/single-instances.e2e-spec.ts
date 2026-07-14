@@ -258,6 +258,228 @@ describe('single instances', () => {
     });
   });
 
+  it('rejects launching from a caller-owned private image asset while the source snapshot is still exporting', async () => {
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-image-pending',
+          sourceImageName: 'Ubuntu 24.04 Pending',
+          status: 'Creating 65%',
+          isAvailable: false,
+          lastSyncedAt: new Date('2026-07-08T00:00:02.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-private-image-pending',
+      })
+    )[0];
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Ubuntu 24.04 Pending',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'private-pending-lab',
+        hostName: 'private-pending-host',
+        platformImageAssetId: privateAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'private pending launch',
+      })
+      .expect(409);
+  });
+
+  it('does not submit HostName to aliyun when neither the request nor the image provides one', async () => {
+    const runInstancesBodies: string[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=RunInstances')) {
+        runInstancesBodies.push(body);
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-random-host-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances') && url.includes('i-random-host-01')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-random-host-01',
+                  InstanceName: 'random-host-lab',
+                  HostName: 'iZbp1randomhost',
+                  Status: 'Running',
+                  VpcAttributes: { PrivateIpAddress: { IpAddress: ['10.200.1.66'] } },
+                  PublicIpAddress: { IpAddress: ['47.100.66.10'] },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'random-host-lab',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'no host name',
+      })
+      .expect(201);
+
+    await waitForAsync(async () => {
+      const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
+      expect(instance?.status).toBe('running');
+      expect(instance?.accessEntry?.publicIp).toBe('47.100.66.10');
+    });
+
+    expect(runInstancesBodies).toHaveLength(1);
+    expect(runInstancesBodies[0]).not.toContain('HostName=');
+    expect(response.body.instances[0].singleInstanceConfig.hostName).toBeNull();
+  });
+
+  it('uses the image defaultHostName when launch request leaves hostName empty', async () => {
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-private-image-default-host',
+          sourceImageName: 'Ubuntu 24.04 Default Host',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T00:00:03.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-private-image-default-host',
+      })
+    )[0];
+
+    const privateAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Ubuntu 24.04 Default Host',
+      ownerUserId: 'admin',
+      visibility: 'private',
+      defaultHostName: 'packed-default-host',
+    });
+
+    const runInstancesBodies: string[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=RunInstances')) {
+        runInstancesBodies.push(body);
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-default-host-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances') && url.includes('i-default-host-01')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-default-host-01',
+                  InstanceName: 'default-host-lab',
+                  HostName: 'packed-default-host',
+                  Status: 'Running',
+                  VpcAttributes: { PrivateIpAddress: { IpAddress: ['10.200.1.88'] } },
+                  PublicIpAddress: { IpAddress: ['47.100.88.10'] },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'default-host-lab',
+        platformImageAssetId: privateAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'image default host name',
+      })
+      .expect(201);
+
+    await waitForAsync(async () => {
+      const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
+      expect(instance?.status).toBe('running');
+      expect(instance?.accessEntry?.publicIp).toBe('47.100.88.10');
+    });
+
+    expect(runInstancesBodies).toHaveLength(1);
+    expect(runInstancesBodies[0]).toContain('HostName=packed-default-host');
+    expect(response.body.instances[0].singleInstanceConfig.hostName).toBe('packed-default-host');
+  });
+
   it("rejects launching from another admin's private image asset", async () => {
     await repository.createPlatformUser({
       id: 'other-admin',
@@ -463,6 +685,119 @@ describe('single instances', () => {
         ]),
       }),
     );
+    expect(response.body.batches[0].instances[0]).not.toHaveProperty('runtimeTopologyGraph');
+    expect(response.body.batches[0].instances[0]).not.toHaveProperty('runtimeScenarioTemplateSpec');
+    expect(response.body.batches[0].instances[0]).not.toHaveProperty('runtimeCompiledProvisionSpec');
+    expect(response.body.batches[0].instances[0]).not.toHaveProperty('draftTopologyGraph');
+  });
+
+  it('allows regular users to load their own single instances and jobs while blocking other users resources', async () => {
+    await repository.createPlatformUser({
+      id: 'test-user',
+      username: 'test',
+      passwordHash: hashPassword('test-password'),
+      role: 'user',
+      status: 'active',
+    });
+
+    const userBatch = await repository.createSingleInstanceBatch({
+      name: 'user-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 1,
+      createdBy: 'test-user',
+      ownerUserId: 'test-user',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const userInstance = await repository.createRangeInstance({
+      name: 'user-single-01',
+      createdBy: 'test-user',
+      ownerUserId: 'test-user',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: userBatch.id,
+      singleInstanceConfig: {
+        baseName: 'user-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-user-1',
+        hostName: 'user-single-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const adminInstance = await repository.createRangeInstance({
+      name: 'admin-single-01',
+      createdBy: 'admin',
+      ownerUserId: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'admin-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-admin-1',
+        hostName: 'admin-single-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+
+    const userJob = await repository.createProvisionJob({
+      rangeInstanceId: userInstance.id,
+      jobType: 'create',
+      triggeredBy: 'test-user',
+    });
+    await repository.createProvisionJob({
+      rangeInstanceId: adminInstance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+
+    const userToken = await loginAs(app, 'test', 'test-password');
+
+    const listResponse = await request(app.getHttpServer())
+      .get('/admin/instances')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200);
+
+    expect(listResponse.body).toEqual(
+      expect.objectContaining({
+        batches: expect.arrayContaining([
+          expect.objectContaining({
+            batch: expect.objectContaining({ id: userBatch.id, createdBy: 'test', ownerUserId: 'test-user' }),
+            instances: expect.arrayContaining([expect.objectContaining({ id: userInstance.id, createdBy: 'test' })]),
+          }),
+        ]),
+      }),
+    );
+    expect(JSON.stringify(listResponse.body)).toContain(userInstance.id);
+    expect(JSON.stringify(listResponse.body)).not.toContain(adminInstance.id);
+
+    const jobsResponse = await request(app.getHttpServer())
+      .get('/admin/provision-jobs')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200);
+
+    expect(jobsResponse.body).toEqual([expect.objectContaining({ id: userJob.id, rangeInstanceId: userInstance.id })]);
+
+    await request(app.getHttpServer())
+      .post(`/admin/instances/${adminInstance.id}/destroy`)
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({})
+      .expect(403);
   });
 
   it('bulk-destroys all active child instances in a batch', async () => {
@@ -801,12 +1136,16 @@ describe('single instances', () => {
 
   it('executes launched batch create jobs through ECS-native APIs and marks child instances running', async () => {
     let runInstancesCallCount = 0;
+    const runInstancesBodies: string[] = [];
+    const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
+    const encodedAutoReleaseTime = encodeURIComponent(expiresAt.replace(/\.\d{3}Z$/, 'Z'));
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
 
       if (body.includes('Action=RunInstances')) {
         runInstancesCallCount += 1;
+        runInstancesBodies.push(body);
         return new Response(
           JSON.stringify({
             InstanceIdSets: {
@@ -870,7 +1209,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt,
         quantity: 2,
         password: '',
         remark: 'single instance',
@@ -886,6 +1225,30 @@ describe('single instances', () => {
       expect(first?.accessEntry?.publicIp).toBe('47.100.10.10');
       expect(second?.accessEntry?.publicIp).toBe('47.100.10.11');
     });
+
+    expect(runInstancesBodies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('InstanceName=web-lab-01'),
+        expect.stringContaining('InstanceName=web-lab-02'),
+      ]),
+    );
+    expect(runInstancesBodies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('HostName=web-host-01'),
+        expect.stringContaining('HostName=web-host-02'),
+      ]),
+    );
+    expect(runInstancesBodies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`ClientToken=${response.body.instances[0].id}`),
+        expect.stringContaining(`ClientToken=${response.body.instances[1].id}`),
+      ]),
+    );
+    expect(runInstancesBodies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`AutoReleaseTime=${encodedAutoReleaseTime}`),
+      ]),
+    );
   });
 
   it('waits for public ip readiness before persisting the created single-instance access entry', async () => {
@@ -960,6 +1323,74 @@ describe('single instances', () => {
     expect(describeCalls).toBeGreaterThanOrEqual(2);
   });
 
+  it('skips aliyun auto-release when the requested destroy time is too close and falls back to platform expiry', async () => {
+    const runInstancesBodies: string[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=RunInstances')) {
+        runInstancesBodies.push(body);
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-short-expire-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances') && url.includes('i-short-expire-01')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-short-expire-01',
+                  InstanceName: 'short-expire-lab',
+                  HostName: 'short-expire-host',
+                  Status: 'Running',
+                  VpcAttributes: { PrivateIpAddress: { IpAddress: ['10.200.1.30'] } },
+                  PublicIpAddress: { IpAddress: ['47.100.20.30'] },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'short-expire-lab',
+        hostName: 'short-expire-host',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1_000).toISOString(),
+        quantity: 1,
+        password: '',
+        remark: 'short expire fallback',
+      })
+      .expect(201);
+
+    await waitForAsync(async () => {
+      const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
+      expect(instance?.status).toBe('running');
+      expect(runInstancesBodies).toHaveLength(1);
+    });
+
+    expect(runInstancesBodies[0]).not.toContain('AutoReleaseTime=');
+    expect(runInstancesBodies[0]).toContain(`ClientToken=${response.body.instances[0].id}`);
+  });
+
   it('executes batch destroy-all through ECS-native APIs and marks child instances destroyed', async () => {
     fetchMock.mockImplementation(async (_input, init) => {
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -990,6 +1421,12 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'running',
       singleInstanceBatchId: batch.id,
+      accessEntry: {
+        hostRole: 'single-ecs-1',
+        publicIp: '47.100.30.10',
+        privateIp: '10.0.0.10',
+        ssh: 'ssh root@47.100.30.10',
+      },
       singleInstanceConfig: {
         baseName: 'destroy-native',
         quantityIndex: 1,
@@ -1017,6 +1454,12 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'running',
       singleInstanceBatchId: batch.id,
+      accessEntry: {
+        hostRole: 'single-ecs-2',
+        publicIp: '47.100.30.11',
+        privateIp: '10.0.0.11',
+        ssh: 'ssh root@47.100.30.11',
+      },
       singleInstanceConfig: {
         baseName: 'destroy-native',
         quantityIndex: 2,
@@ -1052,6 +1495,97 @@ describe('single instances', () => {
 
       expect(refreshedFirst?.status).toBe('destroyed');
       expect(refreshedSecond?.status).toBe('destroyed');
+      expect(refreshedFirst?.accessEntry?.publicIp).toBe('47.100.30.10');
+      expect(refreshedSecond?.accessEntry?.publicIp).toBe('47.100.30.11');
+    });
+  });
+
+  it('treats ecs instances already auto-released in aliyun as a successful destroy', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=DeleteInstances')) {
+        return new Response(
+          JSON.stringify({
+            RequestId: 'delete-gone',
+            Code: 'InvalidInstanceId.NotFound',
+            Message: 'The specified InstanceId does not exist.',
+          }),
+          { status: 404 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances') && url.includes('i-auto-release-01')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const batch = await repository.createSingleInstanceBatch({
+      name: 'auto-release-batch',
+      platformImageAssetId: 'memory-2',
+      imageId: 'm-platform-image-1',
+      imageDisplayName: 'Ubuntu 24.04',
+      cpu: 2,
+      memory: 2,
+      systemDiskSize: 40,
+      quantity: 1,
+      createdBy: 'admin',
+      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const instance = await repository.createRangeInstance({
+      name: 'auto-release-01',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceBatchId: batch.id,
+      accessEntry: {
+        hostRole: 'single-ecs-1',
+        publicIp: '47.100.40.10',
+        privateIp: '10.0.0.40',
+        ssh: 'ssh root@47.100.40.10',
+      },
+      singleInstanceConfig: {
+        baseName: 'auto-release',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-1',
+        hostName: 'auto-release-01',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        assignedVswitchId: 'vsw-bootstrap-1',
+      },
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          'single-ecs-1': 'i-auto-release-01',
+        },
+      },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/admin/instances/batches/${batch.id}/destroy-all`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({})
+      .expect(201);
+
+    await waitForAsync(async () => {
+      const refreshed = await repository.getRangeInstanceById(instance.id);
+      expect(refreshed?.status).toBe('destroyed');
+      expect(refreshed?.accessEntry?.publicIp).toBe('47.100.40.10');
     });
   });
 

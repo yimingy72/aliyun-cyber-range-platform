@@ -54,12 +54,29 @@ type InstanceCredential = {
   password: string;
 };
 
+type PackImageDialogState = {
+  instanceId: string;
+  displayName: string;
+  defaultHostName: string;
+  defaultPassword: string;
+  description: string;
+};
+
+type ActionMenuPlacement = 'down' | 'up';
+
+const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
+const ACTION_MENU_ESTIMATED_HEIGHT_PX = 88;
+
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
 }
 
 function readListMode(value: string | null): ListMode {
   return value === 'history' ? 'history' : 'active';
+}
+
+function readCreateImageId(value: string | null) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 function formatDateTime(value?: string | null) {
@@ -205,6 +222,16 @@ function formatFullCredential(instance: RangeInstance) {
   return `${credential.username} / ${credential.password}`;
 }
 
+function readDefaultPackImageName(instance: RangeInstance) {
+  const displayName =
+    instance.name?.trim() ||
+    instance.singleInstanceConfig?.hostName?.trim() ||
+    instance.singleInstanceConfig?.imageDisplayName?.trim() ||
+    instance.id;
+
+  return `${displayName}-snapshot`;
+}
+
 function normalizeSingleInstanceListPayload(payload: RangeInstance[] | SingleInstanceListPayload) {
   if (Array.isArray(payload)) {
     return {
@@ -308,6 +335,20 @@ function getActionLabel(action: MenuAction, status: string) {
   return '打包为镜像';
 }
 
+function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
+  const triggerRect = triggerElement.getBoundingClientRect();
+  const containerRect =
+    triggerElement.closest('.admin-workbench-panel')?.getBoundingClientRect() ??
+    triggerElement.closest('.admin-main-content')?.getBoundingClientRect();
+  const availableBelow = (containerRect?.bottom ?? window.innerHeight) - triggerRect.bottom;
+
+  return availableBelow < ACTION_MENU_ESTIMATED_HEIGHT_PX + ACTION_MENU_VERTICAL_OFFSET_PX ? 'up' : 'down';
+}
+
+function isPrimaryInlineAction(action: MenuAction) {
+  return action === 'destroy' || action === 'open-vnc';
+}
+
 function buildPlatformImageOptionLabel(image: PlatformImageAsset) {
   return `${image.displayName} (${image.imageId})`;
 }
@@ -332,7 +373,7 @@ function buildDefaultDialogState(platformImages: PlatformImageAsset[]): CreateDi
 
   return {
     name: '',
-    hostName: '',
+    hostName: defaultImage?.defaultHostName?.trim() || '',
     platformImageQuery: defaultImage ? buildPlatformImageOptionLabel(defaultImage) : '',
     cpu: '2',
     memory: '2',
@@ -382,23 +423,31 @@ export function SingleInstancesScreen({
   const [jobs, setJobs] = useState<ProvisionJob[]>([]);
   const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
   const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
+  const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
   const [copiedPasswordInstanceId, setCopiedPasswordInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
+  const [packImageDialog, setPackImageDialog] = useState<PackImageDialogState | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const copiedPasswordTimerRef = useRef<number | null>(null);
+  const consumedPrefillRef = useRef<string | null>(null);
 
-  async function reloadSingleInstanceRows(token: string) {
+  async function reloadSingleInstanceRows(token: string, nextListMode: ListMode) {
     const [nextPayload, nextJobs] = await Promise.all([
-      fetchSingleInstances(apiBaseUrl, token),
-      fetchProvisionJobs(apiBaseUrl, token),
+      fetchSingleInstances(apiBaseUrl, token, {
+        view: nextListMode === 'history' ? 'history' : 'active',
+      }),
+      nextListMode === 'history'
+        ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'single' })
+        : Promise.resolve([] as ProvisionJob[]),
     ]);
     const normalizedPayload = normalizeSingleInstanceListPayload(nextPayload);
     const singleInstances = normalizedPayload.standaloneInstances.filter((instance) => instance.instanceMode === 'single');
@@ -414,21 +463,77 @@ export function SingleInstancesScreen({
 
   useEffect(() => {
     if (!session.isReady || !session.token) {
+      setBatchGroups([]);
+      setInstances([]);
+      setJobs([]);
+      setErrorMessage(null);
+      setIsLoading(false);
       return;
     }
 
     let isActive = true;
 
-    setHasLoadedPlatformImages(false);
+    setBatchGroups([]);
+    setInstances([]);
+    setJobs([]);
+    setErrorMessage(null);
+    setIsLoading(true);
 
-    void Promise.all([
-      reloadSingleInstanceRows(session.token),
-      fetchPlatformImages(apiBaseUrl, session.token),
-    ])
-      .then(([, nextImages]) => {
+    void reloadSingleInstanceRows(session.token, listMode)
+      .then(() => {
         if (!isActive) {
           return;
         }
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+
+        setErrorMessage('实例管理数据加载失败，请稍后重试。');
+        setHasLoadedPlatformImages(true);
+      })
+      .finally(() => {
+        if (!isActive) {
+          return;
+        }
+
+        setIsLoading(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [apiBaseUrl, listMode, session.isReady, session.token]);
+
+  useEffect(() => {
+    if (!session.isReady) {
+      return;
+    }
+
+    if (!session.token) {
+      setPlatformImages([]);
+      setHasLoadedPlatformImages(false);
+      return;
+    }
+
+    let isActive = true;
+
+    setPlatformImages([]);
+    setHasLoadedPlatformImages(false);
+
+    void fetchPlatformImages(apiBaseUrl, session.token)
+      .then((nextImages) => {
+        if (!isActive) {
+          return;
+        }
+
         setPlatformImages(nextImages.items);
         setHasLoadedPlatformImages(true);
         setCreateForm((current) =>
@@ -446,23 +551,22 @@ export function SingleInstancesScreen({
           return;
         }
 
-        setErrorMessage('实例管理数据加载失败，请稍后重试。');
         setHasLoadedPlatformImages(true);
       });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [apiBaseUrl, router, session.isReady, session.token]);
 
   useEffect(() => {
-    if (!session.isReady || !session.token || pollIntervalMs <= 0) {
+    if (!session.isReady || !session.token || pollIntervalMs <= 0 || listMode === 'history') {
       return;
     }
 
     const token = session.token;
     const timer = window.setInterval(() => {
-      void reloadSingleInstanceRows(token).catch((error: unknown) => {
+      void reloadSingleInstanceRows(token, listMode).catch((error: unknown) => {
         if (isUnauthorizedError(error)) {
           session.logout();
           router.replace('/admin/login');
@@ -473,7 +577,7 @@ export function SingleInstancesScreen({
     return () => {
       window.clearInterval(timer);
     };
-  }, [pollIntervalMs, router, session, session.isReady, session.token]);
+  }, [listMode, pollIntervalMs, router, session, session.isReady, session.token]);
 
   useEffect(() => {
     return () => {
@@ -552,6 +656,40 @@ export function SingleInstancesScreen({
     () => platformImages.filter((item) => item.enabled),
     [platformImages],
   );
+
+  useEffect(() => {
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    const platformImageAssetId = readCreateImageId(searchParams.get('platformImageAssetId'));
+    const shouldOpenCreate = searchParams.get('create') === '1';
+
+    if (!shouldOpenCreate || !platformImageAssetId || consumedPrefillRef.current === platformImageAssetId) {
+      return;
+    }
+
+    const selectedImage = enabledPlatformImages.find((item) => item.id === platformImageAssetId);
+
+    if (!selectedImage) {
+      return;
+    }
+
+    consumedPrefillRef.current = platformImageAssetId;
+    setCreateForm({
+      ...buildDefaultDialogState(enabledPlatformImages),
+      hostName: selectedImage.defaultHostName?.trim() || '',
+      platformImageQuery: buildPlatformImageOptionLabel(selectedImage),
+    });
+    setCreateFormError(null);
+    setIsCreateOpen(true);
+
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    nextSearchParams.delete('create');
+    nextSearchParams.delete('platformImageAssetId');
+    const nextQuery = nextSearchParams.toString();
+    window.history.replaceState(null, '', nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname);
+  }, [enabledPlatformImages, searchParams, session.isReady, session.token]);
   const activeBatchGroups = useMemo(
     () => batchGroups.filter((group) => !isHistoryBatch(group)),
     [batchGroups],
@@ -592,6 +730,17 @@ export function SingleInstancesScreen({
       '',
       nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname,
     );
+  }
+
+  function toggleActionMenu(instanceId: string, triggerElement: HTMLElement) {
+    if (menuInstanceId === instanceId) {
+      setMenuInstanceId(null);
+      setMenuPlacement('down');
+      return;
+    }
+
+    setMenuInstanceId(instanceId);
+    setMenuPlacement(resolveActionMenuPlacement(triggerElement));
   }
 
   useEffect(() => {
@@ -696,7 +845,7 @@ export function SingleInstancesScreen({
 
     try {
       await launchSingleInstances(apiBaseUrl, session.token, payload);
-      await reloadSingleInstanceRows(session.token);
+      await reloadSingleInstanceRows(session.token, listMode);
       setIsCreateOpen(false);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
@@ -711,8 +860,70 @@ export function SingleInstancesScreen({
     }
   }
 
+  function openPackImageDialog(instance: RangeInstance) {
+    setMenuInstanceId(null);
+    setMenuPlacement('down');
+    setPackImageDialog({
+      instanceId: instance.id,
+      displayName: readDefaultPackImageName(instance),
+      defaultHostName: instance.singleInstanceConfig?.hostName?.trim() || '',
+      defaultPassword: '',
+      description: '',
+    });
+  }
+
+  async function handleConfirmPackImage() {
+    if (!session.token || !packImageDialog) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setPendingActionInstanceId(packImageDialog.instanceId);
+
+    try {
+      const result = await triggerSingleInstanceAction(
+        apiBaseUrl,
+        session.token,
+        packImageDialog.instanceId,
+        'pack-image',
+        {
+          displayName: packImageDialog.displayName,
+          defaultHostName: packImageDialog.defaultHostName,
+          defaultPassword: packImageDialog.defaultPassword,
+          description: packImageDialog.description,
+        },
+      );
+
+      setPackImageDialog(null);
+      setErrorMessage(
+        result &&
+          typeof result === 'object' &&
+          'imageReady' in result &&
+          (result as { imageReady?: unknown }).imageReady === true
+          ? `镜像打包完成，已保存到我的镜像：${packImageDialog.displayName}`
+          : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
+      );
+      await reloadSingleInstanceRows(session.token, listMode);
+    } catch (error: unknown) {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+
+      setErrorMessage('镜像打包失败，请稍后重试。');
+    } finally {
+      setPendingActionInstanceId(null);
+    }
+  }
+
   async function handleAction(instance: RangeInstance, action: MenuAction) {
     if (!session.token) {
+      return;
+    }
+
+    if (action === 'pack-image') {
+      openPackImageDialog(instance);
       return;
     }
 
@@ -721,6 +932,7 @@ export function SingleInstancesScreen({
     }
 
     setMenuInstanceId(null);
+    setMenuPlacement('down');
     setErrorMessage(null);
     setPendingActionInstanceId(instance.id);
     const openedWindow =
@@ -741,13 +953,11 @@ export function SingleInstancesScreen({
 
       if (action === 'delete-record') {
         await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
-        await reloadSingleInstanceRows(session.token);
+        await reloadSingleInstanceRows(session.token, listMode);
         return;
       }
 
-      const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {
-        ...(action === 'pack-image' ? { displayName: `${instance.name ?? instance.id}-snapshot` } : {}),
-      });
+      const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {});
 
       if (action === 'open-vnc') {
         if (!vncWindow) {
@@ -778,7 +988,7 @@ export function SingleInstancesScreen({
         return;
       }
 
-      await reloadSingleInstanceRows(session.token);
+      await reloadSingleInstanceRows(session.token, listMode);
     } catch (error: unknown) {
       openedWindow?.close();
       if (isUnauthorizedError(error)) {
@@ -821,11 +1031,13 @@ export function SingleInstancesScreen({
       return;
     }
 
+    setMenuInstanceId(null);
+    setMenuPlacement('down');
     setErrorMessage(null);
 
     try {
       await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId);
-      await reloadSingleInstanceRows(session.token);
+      await reloadSingleInstanceRows(session.token, listMode);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -860,6 +1072,7 @@ export function SingleInstancesScreen({
     normalizedSearchName ? group.batch.name.trim().toLowerCase().includes(normalizedSearchName) : true,
   );
   const hasVisibleContent = visibleBatchGroups.length > 0 || visibleInstances.length > 0;
+  const isBootstrapLoading = isLoading && batchGroups.length === 0 && instances.length === 0;
 
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen">
@@ -910,9 +1123,28 @@ export function SingleInstancesScreen({
             <p className="admin-empty">请先前往镜像中心收录或启用至少一个平台镜像。</p>
           ) : null}
 
-          {hasVisibleContent ? (
+          {isBootstrapLoading ? (
+            listMode === 'active' ? (
+              <div className="single-instance-batch-section">
+                <div className="single-instance-batch-header">
+                  <div></div>
+                  <div>批次名</div>
+                  <div>镜像</div>
+                  <div>数量</div>
+                  <div>状态汇总</div>
+                  <div>创建时间</div>
+                  <div>到期时间</div>
+                  <div>创建人</div>
+                  <div>批量操作</div>
+                </div>
+                <div className="admin-workbench-empty" aria-hidden="true" />
+              </div>
+            ) : (
+              <div className="admin-workbench-empty" aria-hidden="true" />
+            )
+          ) : hasVisibleContent ? (
             <>
-              {visibleBatchGroups.length ? (
+              {visibleBatchGroups.length > 0 ? (
                 <div className="single-instance-batch-section">
                   <div className={`single-instance-batch-header${listMode === 'history' ? ' is-history' : ''}`}>
                     <div></div>
@@ -989,10 +1221,15 @@ export function SingleInstancesScreen({
                               const actions = getAvailableActions(instance.status).filter(
                                 (action) => action !== 'pack-image' || group.batch.quantity <= 1,
                               );
+                              const inlineActions = actions.filter(isPrimaryInlineAction);
+                              const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
                               const isActionPending = pendingActionInstanceId === instance.id;
 
                               return (
-                                <div key={instance.id} className={`single-instance-batch-child-row${isHistoryGroup ? ' is-history' : ''}`}>
+                                <div
+                                  key={instance.id}
+                                  className={`single-instance-batch-child-row${isHistoryGroup ? ' is-history' : ''}${menuInstanceId === instance.id ? ' is-menu-open' : ''}`}
+                                >
                                   <div className="range-workbench-main">
                                     <strong>{instance.name?.trim() || instance.id}</strong>
                                   </div>
@@ -1016,11 +1253,31 @@ export function SingleInstancesScreen({
                                   </div>
                                   {!isHistoryGroup ? (
                                     <div className="single-instance-batch-child-actions">
-                                      {actions.map((action) => (
+                                      {inlineActions.map((action) => (
                                         <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
                                           {getActionLabel(action, instance.status)}
                                         </button>
                                       ))}
+                                      {menuActions.length ? (
+                                        <div className="template-workbench-row-menu">
+                                          <button
+                                            type="button"
+                                            disabled={isActionPending}
+                                            onClick={(event) => toggleActionMenu(instance.id, event.currentTarget)}
+                                          >
+                                            更多操作
+                                          </button>
+                                          {menuInstanceId === instance.id ? (
+                                            <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
+                                              {menuActions.map((action) => (
+                                                <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                                  {getActionLabel(action, instance.status)}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
                                     </div>
                                   ) : null}
                                 </div>
@@ -1034,7 +1291,7 @@ export function SingleInstancesScreen({
                 </div>
               ) : null}
 
-              {visibleInstances.length ? (
+              {visibleInstances.length > 0 ? (
                 <>
                 {listMode === 'history' ? (
                   <div className="single-instance-history-column-head">
@@ -1073,6 +1330,8 @@ export function SingleInstancesScreen({
                   readJobTimestamp(lifecycle?.destroyJob, 'end') ??
                   null;
                 const actions = getAvailableActions(instance.status);
+                const inlineActions = actions.filter(isPrimaryInlineAction);
+                const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
                 const isActionPending = pendingActionInstanceId === instance.id;
                 return (
                   <article
@@ -1141,21 +1400,30 @@ export function SingleInstancesScreen({
                       <div className="template-workbench-row-menu range-workbench-actions workbench-action-cell">
                         {actions.length ? (
                           <>
-                            <button
-                              type="button"
-                              disabled={isActionPending}
-                              onClick={() => setMenuInstanceId((current) => (current === instance.id ? null : instance.id))}
-                            >
-                              更多操作
-                            </button>
-                            {menuInstanceId === instance.id ? (
-                              <div className="template-workbench-action-menu">
-                                {actions.map((action) => (
-                                  <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                    {getActionLabel(action, instance.status)}
-                                  </button>
-                                ))}
-                              </div>
+                            {inlineActions.map((action) => (
+                              <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                {getActionLabel(action, instance.status)}
+                              </button>
+                            ))}
+                            {menuActions.length ? (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={isActionPending}
+                                  onClick={(event) => toggleActionMenu(instance.id, event.currentTarget)}
+                                >
+                                  更多操作
+                                </button>
+                                {menuInstanceId === instance.id ? (
+                                  <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
+                                    {menuActions.map((action) => (
+                                      <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
+                                        {getActionLabel(action, instance.status)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </>
                             ) : null}
                           </>
                         ) : null}
@@ -1324,6 +1592,121 @@ export function SingleInstancesScreen({
               </button>
             </div>
           </form>
+        </SingleInstanceDialog>
+      ) : null}
+
+      {packImageDialog ? (
+        <SingleInstanceDialog title="打包为镜像" onClose={() => setPackImageDialog(null)}>
+          <div className="single-instance-dialog-body">
+            <div className="single-instance-dialog-grid">
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-name">
+                  镜像名
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-name"
+                    aria-label="镜像名"
+                    value={packImageDialog.displayName}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              displayName: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-hostname">
+                  默认主机名
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-hostname"
+                    aria-label="默认主机名"
+                    placeholder="留空则使用当前主机名"
+                    value={packImageDialog.defaultHostName}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              defaultHostName: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-password">
+                  默认密码
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-password"
+                    aria-label="默认密码"
+                    placeholder="留空则随机生成"
+                    value={packImageDialog.defaultPassword}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              defaultPassword: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="single-instance-form-row single-instance-form-row-full">
+                <label className="single-instance-form-label" htmlFor="single-instance-pack-image-description">
+                  镜像备注
+                </label>
+                <div className="single-instance-form-control">
+                  <input
+                    id="single-instance-pack-image-description"
+                    aria-label="镜像备注"
+                    placeholder="选填"
+                    value={packImageDialog.description}
+                    onChange={(event) =>
+                      setPackImageDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              description: event.target.value,
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="template-workbench-dialog-actions single-instance-dialog-actions">
+            <button type="button" onClick={() => setPackImageDialog(null)}>
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={pendingActionInstanceId === packImageDialog.instanceId || packImageDialog.displayName.trim().length === 0}
+              onClick={() => void handleConfirmPackImage()}
+            >
+              {pendingActionInstanceId === packImageDialog.instanceId ? '处理中...' : '确认打包'}
+            </button>
+          </div>
         </SingleInstanceDialog>
       ) : null}
     </div>

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -19,8 +19,8 @@ export class SingleInstancesController {
   constructor(private readonly singleInstancesService: SingleInstancesService) {}
 
   @Get()
-  list() {
-    return this.singleInstancesService.list();
+  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history') {
+    return this.singleInstancesService.list(request.adminUser, view);
   }
 
   @Post('launch')
@@ -30,7 +30,7 @@ export class SingleInstancesController {
 
   @Post(':id/destroy')
   destroy(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerSingleInstanceDestroyDto) {
-    return this.singleInstancesService.destroy(id, request.adminUser.id);
+    return this.singleInstancesService.destroy(id, request.adminUser);
   }
 
   @Post('batches/:id/destroy-all')
@@ -39,12 +39,12 @@ export class SingleInstancesController {
     @Param('id') id: string,
     @Body() _body: TriggerSingleInstanceBatchDestroyDto,
   ) {
-    return this.singleInstancesService.destroyBatch(id, request.adminUser.id);
+    return this.singleInstancesService.destroyBatch(id, request.adminUser);
   }
 
   @Post(':id/retry')
   retry(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerSingleInstanceDestroyDto) {
-    return this.singleInstancesService.retry(id, request.adminUser.id);
+    return this.singleInstancesService.retry(id, request.adminUser);
   }
 
   @Post(':id/actions/:action')
@@ -54,7 +54,7 @@ export class SingleInstancesController {
     @Param('action') action: 'reboot' | 'open-vnc' | 'pack-image',
     @Body() body: Record<string, unknown>,
   ) {
-    return this.singleInstancesService.runAction(id, action, {
+    return this.singleInstancesService.runAction(id, action, request.adminUser, {
       ownerUserId: request.adminUser.id,
       ...this.sanitizeActionPayload(body),
     });

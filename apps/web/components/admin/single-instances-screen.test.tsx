@@ -270,9 +270,11 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByText('实例名')).toBeTruthy();
     expect(screen.getByRole('button', { name: '一键关闭' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
+    expect(screen.getByText('web-lab-01').closest('.single-instance-batch-child-row')?.className).toContain('is-menu-open');
   });
 
   it('keeps pack image available for a quantity-1 batch child row', async () => {
@@ -329,7 +331,92 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('single-child-batch')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 single-child-batch' }));
     expect(await screen.findByText('single-child-01')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '打包为镜像' })).toBeTruthy();
+  });
+
+  it('opens the action menu upward when the trigger is near the viewport bottom', async () => {
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [
+        {
+          batch: {
+            id: 'batch-1',
+            name: 'single-child-batch',
+            imageDisplayName: 'Ubuntu 24.04 LTS',
+            imageId: 'm-123',
+            platformImageAssetId: 'platform-image-1',
+            cpu: 2,
+            memory: 2,
+            systemDiskSize: 40,
+            quantity: 1,
+            createdBy: 'admin',
+            createdAt: '2026-07-08T09:00:00.000Z',
+            expiresAt: '2026-07-10T12:00:00.000Z',
+          },
+          instances: [
+            {
+              id: 'single-1',
+              name: 'single-child-01',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'running',
+              accessEntry: { publicIp: '47.1.2.3' },
+              runtimeCredentials: {
+                'single-ecs-1': {
+                  username: 'root',
+                  password: 'super-secret-password',
+                },
+              },
+              singleInstanceConfig: {
+                hostKey: 'single-ecs-1',
+                imageDisplayName: 'Ubuntu 24.04 LTS',
+                cpu: 2,
+                memory: 2,
+              },
+            },
+          ],
+        },
+      ],
+      standaloneInstances: [],
+    });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '展开批次 single-child-batch' }));
+    const moreActionsButton = await screen.findByRole('button', { name: '更多操作' });
+    const originalInnerHeight = window.innerHeight;
+    try {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: 800,
+      });
+      vi.spyOn(moreActionsButton, 'getBoundingClientRect').mockReturnValue({
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 32,
+        top: 740,
+        right: 80,
+        bottom: 772,
+        left: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      fireEvent.click(moreActionsButton);
+
+      expect(screen.getByRole('button', { name: '重启实例' }).closest('.template-workbench-action-menu')?.className).toContain(
+        'is-upward',
+      );
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
   });
 
   it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
@@ -465,8 +552,9 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
 
-    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(
       screen
         .getAllByRole('button')
@@ -474,7 +562,7 @@ describe('SingleInstancesScreen', () => {
           ['关闭实例', '重启实例', '打开 VNC', '打包为镜像'].includes(button.textContent ?? ''),
         )
         .map((button) => button.textContent),
-    ).toEqual(['关闭实例', '重启实例', '打开 VNC', '打包为镜像']);
+    ).toEqual(['关闭实例', '打开 VNC', '重启实例', '打包为镜像']);
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();
@@ -483,7 +571,7 @@ describe('SingleInstancesScreen', () => {
     fireEvent.click(within(createFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除记录' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '关闭实例' })).toBeNull();
+    expect(within(createFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '删除记录' }));
     await waitFor(() =>
@@ -497,8 +585,8 @@ describe('SingleInstancesScreen', () => {
     const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('article');
     fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试关闭' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '关闭实例' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '删除记录' })).toBeNull();
+    expect(within(destroyFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
+    expect(within(destroyFailedRow!).queryByRole('button', { name: '删除记录' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
 
@@ -747,7 +835,7 @@ describe('SingleInstancesScreen', () => {
 
     await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
-    await waitFor(() => expect(fetchProvisionJobsMock.mock.calls.length).toBeGreaterThan(1));
+    expect(fetchProvisionJobsMock.mock.calls.length).toBe(0);
     expect(await screen.findByText('创建中')).toBeTruthy();
     expect(screen.getByText('web-lab')).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
@@ -898,7 +986,6 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     fireEvent.click(screen.getByRole('button', { name: '打开 VNC' }));
 
     await waitFor(() =>
@@ -911,6 +998,66 @@ describe('SingleInstancesScreen', () => {
     await waitFor(() =>
       expect(openedWindowState.location.href).toBe(
         'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html?vncUrl=wss%3A%2F%2Fvnc.example.test&instanceId=i-instance-1&isWindows=false',
+      ),
+    );
+  });
+
+  it('opens a pack image dialog before submitting pack-image actions', async () => {
+    triggerSingleInstanceActionMock.mockResolvedValue({
+      status: 'accepted',
+      action: 'pack-image',
+      imageReady: false,
+    });
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'single-running',
+        name: 'running-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        singleInstanceConfig: {
+          hostName: 'running-host',
+          imageDisplayName: 'Ubuntu 24.04 LTS',
+          cpu: 2,
+          memory: 2,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('running-lab')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '打包为镜像' }));
+
+    const dialog = screen.getByRole('dialog', { name: '打包为镜像' });
+    expect((within(dialog).getByLabelText('镜像名') as HTMLInputElement).value).toBe('running-lab-snapshot');
+    expect((within(dialog).getByLabelText('默认主机名') as HTMLInputElement).value).toBe('running-host');
+
+    fireEvent.change(within(dialog).getByLabelText('镜像名'), { target: { value: 'custom-pack-image' } });
+    fireEvent.change(within(dialog).getByLabelText('默认主机名'), { target: { value: 'custom-host' } });
+    fireEvent.change(within(dialog).getByLabelText('默认密码'), { target: { value: 'Secret123!' } });
+    fireEvent.change(within(dialog).getByLabelText('镜像备注'), { target: { value: 'snapshot note' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认打包' }));
+
+    await waitFor(() =>
+      expect(triggerSingleInstanceActionMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'single-running',
+        'pack-image',
+        {
+          displayName: 'custom-pack-image',
+          defaultHostName: 'custom-host',
+          defaultPassword: 'Secret123!',
+          description: 'snapshot note',
+        },
       ),
     );
   });
@@ -992,9 +1139,6 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
-    const actionTrigger = screen.getByRole('button', { name: '更多操作' }) as HTMLButtonElement;
-    fireEvent.click(actionTrigger);
-
     const closeButton = screen.getByRole('button', { name: '关闭实例' }) as HTMLButtonElement;
     fireEvent.click(closeButton);
     fireEvent.click(closeButton);
@@ -1021,6 +1165,39 @@ describe('SingleInstancesScreen', () => {
     expect(fetchInstanceTypeAvailabilityMock).not.toHaveBeenCalled();
   });
 
+  it('opens the create dialog with a preselected platform image from the query string', async () => {
+    searchParamsState.value = 'create=1&platformImageAssetId=platform-image-2';
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [
+        { id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true },
+        {
+          id: 'platform-image-2',
+          imageId: 'm-456',
+          displayName: 'Debian 12',
+          enabled: true,
+          defaultHostName: 'packed-default-host',
+        },
+      ],
+    });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, family: 'c6', generation: '6', architecture: 'x86' }],
+      warning: null,
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('dialog', { name: '创建实例' })).toBeTruthy();
+    expect((screen.getByLabelText('镜像') as HTMLInputElement).value).toBe('Debian 12 (m-456)');
+    expect((screen.getByLabelText('主机名') as HTMLInputElement).value).toBe('packed-default-host');
+  });
+
   it('does not show the no-platform-image warning before platform images finish loading', async () => {
     let resolveImages!: (value: { items: Array<{ id: string; imageId: string; displayName: string; enabled: boolean }> }) => void;
 
@@ -1043,5 +1220,31 @@ describe('SingleInstancesScreen', () => {
     });
 
     expect(await screen.findByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeTruthy();
+  });
+
+  it('does not flash 暂无实例 before the first instance payload resolves', async () => {
+    let resolveInstances!: (value: []) => void;
+
+    fetchSingleInstancesMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInstances = resolve;
+        }),
+    );
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
+    expect(document.querySelector('.admin-workbench-empty[aria-hidden="true"]')).toBeTruthy();
+    expect(screen.queryByText('正在加载实例...')).toBeNull();
+    expect(screen.queryByText('暂无实例')).toBeNull();
+
+    resolveInstances([]);
+
+    expect(await screen.findByText('暂无实例')).toBeTruthy();
   });
 });

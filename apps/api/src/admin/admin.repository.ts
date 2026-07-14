@@ -165,7 +165,7 @@ export type SingleInstanceConfig = {
   baseName: string;
   quantityIndex: number;
   hostKey: string;
-  hostName: string;
+  hostName: string | null;
   platformImageAssetId: string;
   imageId: string;
   imageDisplayName: string;

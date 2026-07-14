@@ -308,6 +308,38 @@ describe('TemplatesScreen', () => {
     expect(screen.getByRole('button', { name: '删除模板' })).toBeTruthy();
   });
 
+  it('clones published platform templates into 我的拓扑 when ordinary users click 进入编排', async () => {
+    sessionState.profile = {
+      id: 'user-bob',
+      username: 'bob',
+      role: 'user',
+    };
+    cloneRangeTemplateMock.mockResolvedValue({
+      ...bootstrapPayload.rangeTemplates[0],
+      id: 'template-clone-1',
+      ownerUserId: 'user-bob',
+      createdBy: 'user-bob',
+      visibility: 'private',
+    });
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : [],
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '平台拓扑' }));
+    const row = (await screen.findByText('企业攻防靶场')).closest('.template-workbench-row');
+    expect(row).toBeTruthy();
+    expect((within(row!).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(within(row!).getByRole('button', { name: '进入编排' }));
+
+    await waitFor(() => {
+      expect(cloneRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1');
+      expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-clone-1');
+    });
+  });
+
   it('lets admins edit a platform template they do not own without moving it into 我的拓扑', async () => {
     const sharedPlatformTemplate = {
       ...bootstrapPayload.rangeTemplates[0],
@@ -354,37 +386,20 @@ describe('TemplatesScreen', () => {
     expect(await screen.findByText('办公网横向移动靶场')).toBeTruthy();
   });
 
-  it('hides clone and launch actions for ordinary users on shared but unpublished platform templates', async () => {
+  it("does not render another user's unpublished platform template in 平台拓扑 for ordinary users", async () => {
     sessionState.profile = {
       id: 'user-bob',
       username: 'bob',
       role: 'user',
     };
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
-      view === 'platform'
-        ? [
-            {
-              ...bootstrapPayload.rangeTemplates[1],
-              ownerUserId: 'user-alice',
-              createdBy: 'alice',
-              visibility: 'platform',
-            },
-          ]
-        : [],
+      view === 'platform' ? [] : [],
     );
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.click(await screen.findByRole('button', { name: '平台拓扑' }));
-    const row = (await screen.findByText('办公网横向移动靶场')).closest('.template-workbench-row');
-    expect(row).toBeTruthy();
-
-    expect((within(row!).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(true);
-
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    expect(screen.queryByRole('button', { name: '复制模板' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '生成实例' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '编辑信息' })).toBeNull();
+    expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
   });
 
   it('creates a template from minimal metadata and jumps directly into the topology editor', async () => {

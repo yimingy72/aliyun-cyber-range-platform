@@ -82,6 +82,10 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
 };
 
 function readNodeCount(scenario: Scenario) {
+  if (typeof scenario.nodeCount === 'number') {
+    return scenario.nodeCount;
+  }
+
   const graph = scenario.currentDraftVersion?.topologyGraph;
 
   if (!graph || typeof graph !== 'object') {
@@ -93,11 +97,19 @@ function readNodeCount(scenario: Scenario) {
 }
 
 function readZoneCount(scenario: Scenario) {
+  if (typeof scenario.zoneCount === 'number') {
+    return scenario.zoneCount;
+  }
+
   const zones = scenario.currentDraftVersion?.topologySpec?.networkZones;
   return Array.isArray(zones) ? zones.length : 0;
 }
 
 function readHostCount(scenario: Scenario) {
+  if (typeof scenario.hostCount === 'number') {
+    return scenario.hostCount;
+  }
+
   const hosts = scenario.currentDraftVersion?.topologySpec?.hosts;
   return Array.isArray(hosts) ? hosts.length : 0;
 }
@@ -220,6 +232,10 @@ export function TemplatesScreen({
   const [activeView, setActiveView] = useState<RangeTemplateView>('mine');
   const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>([]);
   const [myTemplates, setMyTemplates] = useState<Scenario[]>([]);
+  const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>({
+    platform: false,
+    mine: false,
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
@@ -243,33 +259,47 @@ export function TemplatesScreen({
     if (!session.token) {
       setPlatformTemplates([]);
       setMyTemplates([]);
+      setLoadedViews({ platform: false, mine: false });
       setErrorMessage(null);
       setActionErrorMessage(null);
       setActionSuccessMessage(null);
       setIsLoading(false);
       return;
     }
+  }, [apiBaseUrl, session.isReady, session.token]);
+
+  useEffect(() => {
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    if (loadedViews[activeView]) {
+      setIsLoading(false);
+      return;
+    }
 
     let isActive = true;
 
-    setPlatformTemplates([]);
-    setMyTemplates([]);
     setErrorMessage(null);
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
     setIsLoading(true);
 
-    Promise.all([
-      fetchRangeTemplates(apiBaseUrl, session.token, 'platform'),
-      fetchRangeTemplates(apiBaseUrl, session.token, 'mine'),
-    ])
-      .then(([nextPlatformTemplates, nextMyTemplates]) => {
+    fetchRangeTemplates(apiBaseUrl, session.token, activeView)
+      .then((nextTemplates) => {
         if (!isActive) {
           return;
         }
 
-        setPlatformTemplates(nextPlatformTemplates);
-        setMyTemplates(nextMyTemplates);
+        if (activeView === 'platform') {
+          setPlatformTemplates(nextTemplates);
+        } else {
+          setMyTemplates(nextTemplates);
+        }
+        setLoadedViews((current) => ({
+          ...current,
+          [activeView]: true,
+        }));
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -295,7 +325,7 @@ export function TemplatesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [activeView, apiBaseUrl, loadedViews.mine, loadedViews.platform, router, session.isReady, session.token]);
 
   const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
   const publishedCount = useMemo(
@@ -591,7 +621,7 @@ export function TemplatesScreen({
     }
   }
 
-  async function handleCloneTemplate(scenario: Scenario) {
+  async function cloneTemplateToOwnedScenario(scenario: Scenario) {
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -604,16 +634,27 @@ export function TemplatesScreen({
       const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id);
       syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
-      setActionSuccessMessage('靶场模板副本已创建。');
+      return savedTemplate;
     } catch (error: unknown) {
-      handleProtectedActionError(error, '编排复制失败，请稍后重试。');
+      return handleProtectedActionError(error, '编排复制失败，请稍后重试。');
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  function handleOpenTemplateEditor(id: string) {
-    router.push(`/admin/scenarios/${id}`);
+  async function handleCloneTemplate(scenario: Scenario) {
+    await cloneTemplateToOwnedScenario(scenario);
+    setActionSuccessMessage('靶场模板副本已创建。');
+  }
+
+  async function handleOpenTemplateEditor(template: Scenario) {
+    if (canManageTemplate(template)) {
+      router.push(`/admin/scenarios/${template.id}`);
+      return;
+    }
+
+    const savedTemplate = await cloneTemplateToOwnedScenario(template);
+    router.push(`/admin/scenarios/${savedTemplate.id}`);
   }
 
   async function handleOpenGenerateInstance(template: Scenario) {
@@ -781,6 +822,8 @@ export function TemplatesScreen({
                 const isShared = template.visibility === 'platform';
                 const canManageCurrentTemplate = canManageTemplate(template);
                 const canConsumeTemplate = canManageCurrentTemplate || isPublished;
+                const canOpenActionMenu = canConsumeTemplate;
+                const canEnterTemplate = canManageCurrentTemplate || isShared;
 
                 return (
                   <article key={template.id} className={`template-workbench-row${menuOpen ? ' is-menu-open' : ''}`}>
@@ -816,68 +859,70 @@ export function TemplatesScreen({
                       <button
                         type="button"
                         className="template-workbench-primary-action"
-                        disabled={isSubmitting || !canManageCurrentTemplate}
-                        onClick={() => handleOpenTemplateEditor(template.id)}
+                        disabled={isSubmitting || !canEnterTemplate}
+                        onClick={() => void handleOpenTemplateEditor(template)}
                       >
                         进入编排
                       </button>
 
-                      <div className="template-workbench-row-menu">
-                        <button
-                          type="button"
-                          className="template-workbench-secondary-action"
-                          aria-expanded={menuOpen}
-                          disabled={isSubmitting}
-                          onClick={() => setMenuTemplateId((previous) => (previous === template.id ? null : template.id))}
-                        >
-                          更多操作
-                        </button>
+                      {canOpenActionMenu ? (
+                        <div className="template-workbench-row-menu">
+                          <button
+                            type="button"
+                            className="template-workbench-secondary-action"
+                            aria-expanded={menuOpen}
+                            disabled={isSubmitting}
+                            onClick={() => setMenuTemplateId((previous) => (previous === template.id ? null : template.id))}
+                          >
+                            更多操作
+                          </button>
 
-                        {menuOpen ? (
-                          <div className="template-workbench-action-menu">
-                            {canConsumeTemplate ? (
-                              <button type="button" onClick={() => void handleCloneTemplate(template)}>
-                                复制模板
-                              </button>
-                            ) : null}
-                            {canManageCurrentTemplate ? (
-                              <>
-                                <button type="button" onClick={() => openEditDialog(template)}>
-                                  编辑信息
+                          {menuOpen ? (
+                            <div className="template-workbench-action-menu">
+                              {canConsumeTemplate ? (
+                                <button type="button" onClick={() => void handleCloneTemplate(template)}>
+                                  复制模板
                                 </button>
-                                {isPublished ? (
-                                  <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
-                                    取消发布
+                              ) : null}
+                              {canManageCurrentTemplate ? (
+                                <>
+                                  <button type="button" onClick={() => openEditDialog(template)}>
+                                    编辑信息
                                   </button>
-                                ) : (
-                                  <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
-                                    发布版本
-                                  </button>
-                                )}
-                                {isShared ? (
-                                  <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
-                                    回退为私有
-                                  </button>
-                                ) : (
-                                  <button type="button" onClick={() => void handleShareTemplate(template.id)}>
-                                    发布到平台
-                                  </button>
-                                )}
-                              </>
-                            ) : null}
-                            {canConsumeTemplate ? (
-                              <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
-                                生成实例
-                              </button>
-                            ) : null}
-                            {canManageCurrentTemplate ? (
-                              <button type="button" onClick={() => openConfirmDialog('delete', template)}>
-                                删除模板
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
+                                  {isPublished ? (
+                                    <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
+                                      取消发布
+                                    </button>
+                                  ) : (
+                                    <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
+                                      发布版本
+                                    </button>
+                                  )}
+                                  {isShared ? (
+                                    <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
+                                      回退为私有
+                                    </button>
+                                  ) : (
+                                    <button type="button" onClick={() => void handleShareTemplate(template.id)}>
+                                      发布到平台
+                                    </button>
+                                  )}
+                                </>
+                              ) : null}
+                              {canConsumeTemplate ? (
+                                <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
+                                  生成实例
+                                </button>
+                              ) : null}
+                              {canManageCurrentTemplate ? (
+                                <button type="button" onClick={() => openConfirmDialog('delete', template)}>
+                                  删除模板
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   </article>
                 );

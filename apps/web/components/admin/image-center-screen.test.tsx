@@ -26,6 +26,7 @@ const {
   removePlatformImageMock,
   deleteCustomImageSnapshotMock,
   logoutMock,
+  pushMock,
   sessionState,
 } = vi.hoisted(() => ({
   fetchPublicImageCatalogScopeMock: vi.fn(),
@@ -42,6 +43,7 @@ const {
   removePlatformImageMock: vi.fn(),
   deleteCustomImageSnapshotMock: vi.fn(),
   logoutMock: vi.fn(),
+  pushMock: vi.fn(),
   sessionState: {
     profile: {
       id: 'admin-user',
@@ -71,6 +73,12 @@ vi.mock('../../lib/admin-api', async () => {
     deleteCustomImageSnapshot: deleteCustomImageSnapshotMock,
   };
 });
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushMock,
+  }),
+}));
 
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
@@ -175,6 +183,7 @@ const platformImagesPayload: PlatformImageAssetListPayload = {
       id: 'platform-image-1',
       imageId: 'aliyun-linux-3',
       displayName: 'Alibaba Cloud Linux 3',
+      createdBy: 'admin',
       sourceSnapshotId: 'public-snapshot-1',
       sourceScope: 'public',
       enabled: true,
@@ -188,8 +197,25 @@ const myImagesPayload: PlatformImageAssetListPayload = {
       id: 'my-image-1',
       imageId: 'm-owned-001',
       displayName: 'My Ubuntu 22.04',
+      createdBy: 'test',
       sourceSnapshotId: 'custom-snapshot-1',
       sourceScope: 'custom',
+      enabled: true,
+    }),
+  ],
+};
+
+const exportingMyImagesPayload: PlatformImageAssetListPayload = {
+  items: [
+    createPlatformImageAsset({
+      id: 'my-image-exporting-1',
+      imageId: 'm-exporting-001',
+      displayName: 'Exporting Ubuntu 22.04',
+      createdBy: 'test',
+      sourceSnapshotId: 'custom-snapshot-1',
+      sourceScope: 'custom',
+      sourceSnapshotStatus: 'Creating 65%',
+      sourceSnapshotAvailable: false,
       enabled: true,
     }),
   ],
@@ -210,6 +236,7 @@ beforeEach(() => {
   removePlatformImageMock.mockReset();
   deleteCustomImageSnapshotMock.mockReset();
   logoutMock.mockReset();
+  pushMock.mockReset();
   sessionState.profile = {
     id: 'admin-user',
     username: 'admin',
@@ -304,9 +331,12 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByRole('button', { name: '我的镜像' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '云上镜像来源' })).toBeTruthy();
     expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
+    expect(screen.getByText('创建人')).toBeTruthy();
+    expect(screen.getByText('admin')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
+    expect(screen.getByText('test')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
     expect(await screen.findByRole('button', { name: '阿里云自定义镜像' })).toBeTruthy();
@@ -315,7 +345,104 @@ describe('ImageCenterScreen', () => {
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'platform');
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
     expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token');
-    expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token');
+    expect(fetchPublicImageCatalogScopeMock).not.toHaveBeenCalled();
+  });
+
+  it('lazy-loads cloud image source tabs only when they are opened', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('Alibaba Cloud Linux 3')).toBeTruthy();
+    expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledTimes(0);
+    expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledTimes(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
+
+    await waitFor(() => {
+      expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    await waitFor(() => {
+      expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('shows exporting private images in 我的镜像 with progress and without create-instance action', async () => {
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine' ? exportingMyImagesPayload : platformImagesPayload,
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    expect(await screen.findByText('Exporting Ubuntu 22.04')).toBeTruthy();
+    expect(screen.getByText('导出中 65%')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '创建实例 Exporting Ubuntu 22.04' })).toBeNull();
+    expect((screen.getByRole('button', { name: '发布到平台 Exporting Ubuntu 22.04' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps 我的镜像 rows compact by moving rename enable and delete into 更多操作', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '创建实例 My Ubuntu 22.04' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '重命名 My Ubuntu 22.04' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+
+    expect(screen.getByRole('button', { name: '重命名' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '禁用' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
+  });
+
+  it('keeps 平台镜像 rows compact for owner-backed assets', async () => {
+    sessionState.profile = {
+      id: 'owner-user',
+      username: 'owner-user',
+      role: 'user',
+    };
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine'
+        ? ({ items: [] } satisfies PlatformImageAssetListPayload)
+        : ({
+            items: [
+              createPlatformImageAsset({
+                id: 'owned-platform-image',
+                imageId: 'm-owned-platform',
+                displayName: 'Owned Platform Image',
+                sourceSnapshotId: 'custom-snapshot-owner',
+                sourceScope: 'custom',
+                ownerUserId: 'owner-user',
+                visibility: 'platform',
+                enabled: true,
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('Owned Platform Image')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '创建实例 Owned Platform Image' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '重命名 Owned Platform Image' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+
+    expect(screen.getByRole('button', { name: '重命名' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '禁用' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
+  });
+
+  it('routes 创建实例 from image rows into the single instance screen with a preselected image', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例 Alibaba Cloud Linux 3' }));
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/instances?create=1&platformImageAssetId=platform-image-1');
   });
 
   it('collects a custom snapshot and then shows it as already collected on the source tab', async () => {
@@ -429,7 +556,8 @@ describe('ImageCenterScreen', () => {
     fireEvent.click(platformTab);
 
     const enabledRow = (await screen.findByText('Blue Team Ubuntu 22.04')).closest('article') as HTMLElement;
-    fireEvent.click(within(enabledRow).getByRole('button', { name: '重命名 Blue Team Ubuntu 22.04' }));
+    fireEvent.click(within(enabledRow).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '重命名' }));
     const renameDialog = screen.getByRole('dialog', { name: '编辑镜像名称' });
     fireEvent.change(within(renameDialog).getByLabelText('镜像名'), {
       target: { value: 'Blue Team Ubuntu 22.04 Renamed' },
@@ -447,7 +575,9 @@ describe('ImageCenterScreen', () => {
 
     expect(await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '禁用 Blue Team Ubuntu 22.04 Renamed' }));
+    const renamedRow = (await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).closest('article') as HTMLElement;
+    fireEvent.click(within(renamedRow).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '禁用' }));
 
     await waitFor(() => {
       expect(disablePlatformImageMock).toHaveBeenCalledWith(
@@ -458,7 +588,8 @@ describe('ImageCenterScreen', () => {
     });
 
     const disabledRow = (await screen.findByText('Disabled Platform Image')).closest('article') as HTMLElement;
-    fireEvent.click(within(disabledRow).getByRole('button', { name: '启用 Disabled Platform Image' }));
+    fireEvent.click(within(disabledRow).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '启用' }));
 
     await waitFor(() => {
       expect(enablePlatformImageMock).toHaveBeenCalledWith(
@@ -468,7 +599,9 @@ describe('ImageCenterScreen', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '删除 Disabled Platform Image' }));
+    const enabledRowAgain = (await screen.findByText('Disabled Platform Image')).closest('article') as HTMLElement;
+    fireEvent.click(within(enabledRowAgain).getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
     const removeDialog = screen.getByRole('dialog', { name: '确认删除镜像' });
     fireEvent.click(within(removeDialog).getByRole('button', { name: '确认删除' }));
 
@@ -787,8 +920,6 @@ describe('ImageCenterScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
     fireEvent.click(screen.getByRole('button', { name: '同步公共镜像' }));
 
-    expect(await screen.findByText('Ubuntu 24.04 LTS')).toBeTruthy();
-
     resolvePublicScope?.(publicScopePayload);
 
     await waitFor(() => {
@@ -853,23 +984,16 @@ describe('ImageCenterScreen', () => {
 
     expect(await screen.findByRole('button', { name: '平台镜像' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '我的镜像' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '云上镜像来源' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '云上镜像来源' })).toBeNull();
+    expect(fetchCustomImageCatalogScopeMock).not.toHaveBeenCalled();
+    expect(fetchPublicImageCatalogScopeMock).not.toHaveBeenCalled();
 
     expect(screen.queryByRole('button', { name: /重命名 Shared Ubuntu 22\.04/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /禁用 Shared Ubuntu 22\.04/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /删除 Shared Ubuntu 22\.04/ })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '我的镜像' }));
-    expect(await screen.findByRole('button', { name: '重命名 My Ubuntu 22.04' })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
-    expect(screen.queryByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '同步自定义镜像' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '删除 Blue Team Ubuntu 22.04' })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
-    expect(screen.queryByRole('button', { name: '同步公共镜像' })).toBeNull();
+    expect(await screen.findByRole('button', { name: '更多操作' })).toBeTruthy();
   });
 
   it('still lets ordinary owners manage their own published image from 平台镜像', async () => {
@@ -921,12 +1045,14 @@ describe('ImageCenterScreen', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '平台镜像' }));
 
-    expect(await screen.findByRole('button', { name: '重命名 Alice Shared Ubuntu' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '禁用 Alice Shared Ubuntu' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除 Alice Shared Ubuntu' })).toBeTruthy();
+    const ownedRow = (await screen.findByText('Alice Shared Ubuntu')).closest('article') as HTMLElement;
+    expect(within(ownedRow).queryByRole('button', { name: '重命名 Alice Shared Ubuntu' })).toBeNull();
+    fireEvent.click(within(ownedRow).getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '重命名' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '禁用' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
 
-    expect(screen.queryByRole('button', { name: '重命名 Other Shared Ubuntu' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '禁用 Other Shared Ubuntu' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '删除 Other Shared Ubuntu' })).toBeNull();
+    const otherRow = screen.getByText('Other Shared Ubuntu').closest('article') as HTMLElement;
+    expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Shared Ubuntu' })).toBeNull();
   });
 });

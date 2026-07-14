@@ -117,6 +117,24 @@ export async function fetchRangeTemplates(
   return readJson<Scenario[]>(response);
 }
 
+export async function fetchRangeInstances(
+  apiBaseUrl: string,
+  token: string,
+  options?: { view?: 'active' | 'history' },
+) {
+  const url = new URL(`${apiBaseUrl}/admin/ranges`);
+
+  if (options?.view) {
+    url.searchParams.set('view', options.view);
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<RangeInstance[]>(response);
+}
+
 export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string, id: string) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}`, {
     headers: createAdminHeaders(token),
@@ -125,16 +143,36 @@ export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string
   return readJson<RangeInstanceDetail>(response);
 }
 
-export async function fetchSingleInstances(apiBaseUrl: string, token: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/instances`, {
+export async function fetchSingleInstances(
+  apiBaseUrl: string,
+  token: string,
+  options?: { view?: 'active' | 'history' },
+) {
+  const url = new URL(`${apiBaseUrl}/admin/instances`);
+
+  if (options?.view) {
+    url.searchParams.set('view', options.view);
+  }
+
+  const response = await fetch(url, {
     headers: createAdminHeaders(token),
   });
 
   return readJson<RangeInstance[] | SingleInstanceListPayload>(response);
 }
 
-export async function fetchProvisionJobs(apiBaseUrl: string, token: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/provision-jobs`, {
+export async function fetchProvisionJobs(
+  apiBaseUrl: string,
+  token: string,
+  options?: { instanceMode?: 'single' | 'range' },
+) {
+  const url = new URL(`${apiBaseUrl}/admin/provision-jobs`);
+
+  if (options?.instanceMode) {
+    url.searchParams.set('instanceMode', options.instanceMode);
+  }
+
+  const response = await fetch(url, {
     headers: createAdminHeaders(token),
   });
 

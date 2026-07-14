@@ -6,7 +6,12 @@ import { AdminSessionService } from './admin-session.service';
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
-  private static readonly AUTHENTICATED_USER_PREFIXES = ['/admin/scenarios', '/admin/ranges'] as const;
+  private static readonly AUTHENTICATED_USER_PREFIXES = [
+    '/admin/scenarios',
+    '/admin/ranges',
+    '/admin/instances',
+    '/admin/provision-jobs',
+  ] as const;
 
   constructor(
     private readonly adminSessionService: AdminSessionService,
@@ -81,7 +86,7 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
-    if ((pathname === '/admin/image-catalog/public' || pathname === '/admin/image-catalog/custom') && method === 'GET') {
+    if (pathname === '/admin/system-config/instance-type-availability' && method === 'GET') {
       return true;
     }
 
