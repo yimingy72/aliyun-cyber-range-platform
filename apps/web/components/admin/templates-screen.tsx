@@ -25,6 +25,13 @@ import type {
   ScenarioCreateInput,
   ScenarioUpdateInput,
 } from '../../lib/admin-types';
+import {
+  AdminPaginationControls,
+  buildVisiblePages,
+  getPagination,
+  PAGE_SIZE_AUTO,
+  useAdminPageSize,
+} from './admin-pagination';
 import { useAdminSession } from './use-admin-session';
 
 type TemplatesScreenProps = {
@@ -250,6 +257,9 @@ export function TemplatesScreen({
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
   const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
+  const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1 });
+  const [jumpPageValue, setJumpPageValue] = useState('1');
+  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   useEffect(() => {
     if (!session.isReady) {
@@ -345,6 +355,48 @@ export function TemplatesScreen({
       return matchesName && matchesStatus;
     });
   }, [searchName, statusFilter, scenarios]);
+  const activePagination = getPagination(filteredTemplates.length, viewPages[activeView], pageSize);
+  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
+  const pagedTemplates = filteredTemplates.slice(activePagination.startIndex, activePagination.endIndex);
+
+  useEffect(() => {
+    if (viewPages[activeView] !== activePagination.page) {
+      setViewPages((current) => ({
+        ...current,
+        [activeView]: activePagination.page,
+      }));
+    }
+  }, [activePagination.page, activeView, viewPages]);
+
+  useEffect(() => {
+    setJumpPageValue(String(activePagination.page));
+  }, [activePagination.page, activeView]);
+
+  function handlePageSizeChange(nextValue: string) {
+    if (nextValue === PAGE_SIZE_AUTO) {
+      setPageSizeMode(PAGE_SIZE_AUTO);
+      setViewPages({ platform: 1, mine: 1 });
+      return;
+    }
+
+    setPageSizeMode(nextValue);
+    setPageSize(Number(nextValue));
+    setViewPages({ platform: 1, mine: 1 });
+  }
+
+  function handleJumpToPage() {
+    const parsedPage = Number.parseInt(jumpPageValue, 10);
+
+    if (Number.isNaN(parsedPage)) {
+      setJumpPageValue(String(activePagination.page));
+      return;
+    }
+
+    setViewPages((current) => ({
+      ...current,
+      [activeView]: parsedPage,
+    }));
+  }
 
   const editingTemplate = useMemo(() => {
     if (!editingTemplateId) {
@@ -816,7 +868,7 @@ export function TemplatesScreen({
             <div className="template-workbench-empty" aria-hidden="true" />
           ) : filteredTemplates.length ? (
             <div className="template-workbench-rows">
-              {filteredTemplates.map((template) => {
+              {pagedTemplates.map((template) => {
                 const menuOpen = menuTemplateId === template.id;
                 const isPublished = isPublishedScenario(template);
                 const isShared = template.visibility === 'platform';
@@ -934,6 +986,36 @@ export function TemplatesScreen({
               <p>{canCreateTemplates ? '你可以调整筛选条件，或者直接新建靶场进入拓扑编排页。' : '你可以切换到我的拓扑继续维护自有编排。'}</p>
             </div>
           )}
+          {filteredTemplates.length ? (
+            <AdminPaginationControls
+              label="靶场列表分页"
+              pageSizeMode={pageSizeMode}
+              pagination={activePagination}
+              visiblePages={visiblePages}
+              jumpPageValue={jumpPageValue}
+              onPageSizeChange={handlePageSizeChange}
+              onPreviousPage={() =>
+                setViewPages((current) => ({
+                  ...current,
+                  [activeView]: activePagination.page - 1,
+                }))
+              }
+              onNextPage={() =>
+                setViewPages((current) => ({
+                  ...current,
+                  [activeView]: activePagination.page + 1,
+                }))
+              }
+              onPageSelect={(pageNumber) =>
+                setViewPages((current) => ({
+                  ...current,
+                  [activeView]: pageNumber,
+                }))
+              }
+              onJumpPageValueChange={setJumpPageValue}
+              onJumpPage={handleJumpToPage}
+            />
+          ) : null}
         </div>
       </section>
 

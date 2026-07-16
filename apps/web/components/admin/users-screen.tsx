@@ -13,6 +13,13 @@ import {
 } from '../../lib/admin-api';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type { AdminUser, CreateAdminUserInput } from '../../lib/admin-types';
+import {
+  AdminPaginationControls,
+  buildVisiblePages,
+  getPagination,
+  PAGE_SIZE_AUTO,
+  useAdminPageSize,
+} from './admin-pagination';
 import { useAdminSession } from './use-admin-session';
 
 type UsersScreenProps = {
@@ -113,6 +120,9 @@ export function UsersScreen({
   const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [createDraft, setCreateDraft] = useState<CreateAdminUserInput>(EMPTY_CREATE_USER_DRAFT);
   const [resetPasswordState, setResetPasswordState] = useState<ResetPasswordState>(null);
+  const [page, setPage] = useState(1);
+  const [jumpPageValue, setJumpPageValue] = useState('1');
+  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   useEffect(() => {
     if (!session.isReady) {
@@ -189,6 +199,42 @@ export function UsersScreen({
       disabledCount,
     };
   }, [users]);
+  const pagination = getPagination(users.length, page, pageSize);
+  const visiblePages = buildVisiblePages(pagination.totalPages, pagination.page);
+  const pagedUsers = users.slice(pagination.startIndex, pagination.endIndex);
+
+  useEffect(() => {
+    if (page !== pagination.page) {
+      setPage(pagination.page);
+    }
+  }, [page, pagination.page]);
+
+  useEffect(() => {
+    setJumpPageValue(String(pagination.page));
+  }, [pagination.page]);
+
+  function handlePageSizeChange(nextValue: string) {
+    if (nextValue === PAGE_SIZE_AUTO) {
+      setPageSizeMode(PAGE_SIZE_AUTO);
+      setPage(1);
+      return;
+    }
+
+    setPageSizeMode(nextValue);
+    setPageSize(Number(nextValue));
+    setPage(1);
+  }
+
+  function handleJumpToPage() {
+    const parsedPage = Number.parseInt(jumpPageValue, 10);
+
+    if (Number.isNaN(parsedPage)) {
+      setJumpPageValue(String(pagination.page));
+      return;
+    }
+
+    setPage(parsedPage);
+  }
 
   const closeCreateDialog = () => {
     setIsCreateDialogOpen(false);
@@ -461,7 +507,7 @@ export function UsersScreen({
             <div className="admin-workbench-empty" aria-hidden="true" />
           ) : users.length ? (
             <div className="users-workbench-rows">
-              {users.map((user) => {
+              {pagedUsers.map((user) => {
                 const menuOpen = menuUserId === user.id;
 
                 return (
@@ -550,6 +596,21 @@ export function UsersScreen({
               <p>你可以先创建一个普通用户或新的管理员账号。</p>
             </div>
           )}
+          {users.length ? (
+            <AdminPaginationControls
+              label="用户列表分页"
+              pageSizeMode={pageSizeMode}
+              pagination={pagination}
+              visiblePages={visiblePages}
+              jumpPageValue={jumpPageValue}
+              onPageSizeChange={handlePageSizeChange}
+              onPreviousPage={() => setPage(pagination.page - 1)}
+              onNextPage={() => setPage(pagination.page + 1)}
+              onPageSelect={setPage}
+              onJumpPageValueChange={setJumpPageValue}
+              onJumpPage={handleJumpToPage}
+            />
+          ) : null}
         </article>
       </section>
 

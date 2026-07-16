@@ -18,7 +18,13 @@ until /opt/keycloak/bin/kcadm.sh config credentials \
   sleep 2
 done
 
-/opt/keycloak/bin/kcadm.sh update "realms/$REALM" -s sslRequired=NONE
+/opt/keycloak/bin/kcadm.sh update "realms/$REALM" \
+  -s sslRequired=NONE \
+  -s loginTheme=cyber-range \
+  -s registrationAllowed=false \
+  -s accessTokenLifespan=600 \
+  -s ssoSessionIdleTimeout=604800 \
+  -s ssoSessionMaxLifespan=604800
 
 ADMIN_REALM_USER_ID=$(/opt/keycloak/bin/kcadm.sh get users -r "$REALM" -q username="$ADMIN_USERNAME" | json_first_id)
 

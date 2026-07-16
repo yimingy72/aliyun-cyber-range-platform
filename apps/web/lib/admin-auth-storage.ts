@@ -44,6 +44,7 @@ export function parseAdminSessionPayload(session: unknown): AdminSessionPayload 
 
   const nextSession = session as Record<string, unknown>;
   const token = normalizeAdminText(nextSession.token);
+  const refreshToken = nextSession.refreshToken === undefined ? undefined : normalizeAdminText(nextSession.refreshToken);
   const profile = normalizeAdminProfile(nextSession.profile);
 
   if (!token || !profile) {
@@ -52,6 +53,7 @@ export function parseAdminSessionPayload(session: unknown): AdminSessionPayload 
 
   return {
     token,
+    refreshToken,
     profile,
   };
 }

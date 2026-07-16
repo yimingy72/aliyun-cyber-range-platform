@@ -24,6 +24,11 @@ import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
+function detectDefaultRuntimeUsername(imageDisplayName: string | null | undefined) {
+  const normalizedImageName = imageDisplayName?.trim().toLowerCase() ?? '';
+  return normalizedImageName.includes('windows') ? 'Administrator' : 'root';
+}
+
 @Injectable()
 export class SingleInstancesService {
   constructor(
@@ -95,7 +100,7 @@ export class SingleInstancesService {
   async launch(input: LaunchSingleInstanceDto, currentUserId: string) {
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile();
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
-    const password = input.password?.trim() || generateAliyunEcsPassword();
+    const sharedPassword = input.password?.trim() || null;
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
       (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
@@ -120,6 +125,7 @@ export class SingleInstancesService {
     try {
       for (let index = 0; index < quantity; index += 1) {
         const quantityIndex = index + 1;
+        const password = sharedPassword ?? generateAliyunEcsPassword();
         const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
         const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
         const requestedHostBaseName =
@@ -157,7 +163,7 @@ export class SingleInstancesService {
           runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as Record<string, unknown>,
           runtimeCredentials: {
             [hostKey]: {
-              username: 'root',
+              username: detectDefaultRuntimeUsername(image.displayName),
               password,
             },
           },
