@@ -27,9 +27,9 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
           { key: 'server', name: 'Server', cidr: '10.90.30.0/24', purpose: 'application-servers', isPublicEntry: false },
         ],
         hostDefinitions: [
-          { key: 'dmz-entry', name: 'DMZ Entry', zoneKey: 'dmz', privateIp: '10.90.10.10', role: 'entry', exposePublic: true },
-          { key: 'office-client', name: 'Office Client', zoneKey: 'office', privateIp: '10.90.20.10', role: 'workstation', exposePublic: false },
-          { key: 'server-app', name: 'Server App', zoneKey: 'server', privateIp: '10.90.30.10', role: 'app', exposePublic: false },
+          { key: 'dmz-entry', name: 'DMZ Entry', hostName: 'dmz-host-01', zoneKey: 'dmz', privateIp: '10.90.10.10', role: 'entry', exposePublic: true },
+          { key: 'office-client', name: 'Office Client', hostName: null, zoneKey: 'office', privateIp: '10.90.20.10', role: 'workstation', exposePublic: false },
+          { key: 'server-app', name: 'Server App', hostName: 'server-app-01', zoneKey: 'server', privateIp: '10.90.30.10', role: 'app', exposePublic: false },
         ],
         natGateways: [{ key: 'nat-office', name: 'Office NAT', zoneKey: 'office', snatEnabled: true }],
         eipDefinitions: [{ key: 'eip-entry', name: 'Entry EIP', bindTargetType: 'host', bindTargetKey: 'dmz-entry', bandwidthMbps: 30 }],
@@ -125,8 +125,9 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
           }),
         ],
         hosts: expect.arrayContaining([
-          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.e-c1m1.large' }),
-          expect.objectContaining({ key: 'server-app', instance_type: 'ecs.c7.large' }),
+          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.e-c1m1.large', host_name: 'dmz-host-01' }),
+          expect.objectContaining({ key: 'server-app', instance_type: 'ecs.c7.large', host_name: 'server-app-01' }),
+          expect.not.objectContaining({ key: 'office-client', host_name: expect.anything() }),
         ]),
         bootstrap_scripts: [
           expect.objectContaining({ key: 'server-bootstrap', target_host_keys: ['server-app'] }),

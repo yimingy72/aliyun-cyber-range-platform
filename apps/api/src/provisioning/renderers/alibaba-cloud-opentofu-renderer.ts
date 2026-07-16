@@ -16,6 +16,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   hosts: Array<{
     key: string;
     name: string;
+    host_name?: string;
     zone_key: string;
     private_ip: string;
     role: string;
@@ -166,6 +167,7 @@ export class AlibabaCloudOpenTofuRenderer {
         return {
           key: host.key,
           name: host.name,
+          ...(host.hostName?.trim() ? { host_name: host.hostName.trim() } : {}),
           zone_key: host.zoneKey,
           private_ip: host.privateIp,
           role: host.role,

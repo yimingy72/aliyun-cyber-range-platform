@@ -41,6 +41,7 @@ variable "hosts" {
   type = list(object({
     key           = string
     name          = string
+    host_name     = optional(string)
     zone_key      = string
     private_ip    = string
     role          = string

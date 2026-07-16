@@ -156,4 +156,71 @@ describe('syncTopologySpecFromNodes', () => {
       }),
     );
   });
+
+  it('omits an empty hostName from topologySpec so cloud host naming can be omitted later', () => {
+    const topologySpec = syncTopologySpecFromNodes({
+      nodes: [
+        {
+          id: 'switch-core',
+          kind: 'switch',
+          label: '核心交换机',
+          zoneKey: 'core',
+          cidr: '10.0.0.0/24',
+          purpose: 'business-zone',
+          description: '',
+          aclRules: [],
+          nat: {
+            snatEnabled: false,
+            dnatMappings: [],
+          },
+        },
+        {
+          id: 'ecs-1',
+          kind: 'ecs',
+          label: '业务 ECS',
+          zoneKey: 'core',
+          role: 'entry',
+          privateIp: '10.0.0.10',
+          exposePublic: true,
+          image: 'aliyun_linux_3_x64_20G_alibase',
+          instanceName: '业务 ECS',
+          hostName: '',
+          imageName: 'aliyun_linux_3_x64_20G_alibase',
+          imageId: 'aliyun_linux_3_x64_20G_alibase',
+          cpu: 2,
+          memory: 4,
+          description: '',
+          bootPriority: 1,
+          bootWaitSeconds: 0,
+          dnatMappings: [],
+          networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.10' }],
+          portGroups: [],
+          nics: [
+            {
+              id: 'ecs-1-nic-1',
+              switchId: 'switch-core',
+              privateIp: '10.0.0.10',
+              secondaryIps: [],
+              securityGroupRules: [],
+            },
+          ],
+          initScript: '',
+          imageStrategy: {
+            mode: 'fixed',
+            imageId: 'aliyun_linux_3_x64_20G_alibase',
+          },
+          instanceTypeStrategy: {
+            mode: 'auto',
+            preferredInstanceTypes: [],
+          },
+        },
+      ] as any,
+    });
+
+    expect(topologySpec.hosts).toEqual([
+      expect.not.objectContaining({
+        hostName: expect.anything(),
+      }),
+    ]);
+  });
 });

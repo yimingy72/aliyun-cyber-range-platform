@@ -552,7 +552,7 @@ describe('TemplateEditorScreen', () => {
     const privateIpInput = screen.getByLabelText('私网 IP 1') as HTMLInputElement;
     expect(privateIpInput.value).toBe('');
 
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(privateIpInput, { target: { value: '192.168.1.10' } });
     expect(privateIpInput.value).toBe('192.168.1.10');
     expect(screen.getByText('私网 IP 不在 10.0.0.0/24 网段内')).toBeTruthy();
@@ -1956,6 +1956,113 @@ describe('TemplateEditorScreen', () => {
 
     expect(updateRangeTemplateMock).not.toHaveBeenCalled();
     expect(screen.getByText('请先点击“检测拓扑”并通过后，再保存草稿。')).toBeTruthy();
+  });
+
+  it('allows topology detection when an ecs hostName is left blank', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: {
+              schemaVersion: '2.0.0',
+              nodes: [
+                {
+                  id: 'switch-1',
+                  kind: 'switch',
+                  label: '交换机 1',
+                  position: { x: 360, y: 180 },
+                  zoneKey: 'zone-1',
+                  cidr: '10.0.0.0/24',
+                  purpose: 'business-zone',
+                  description: '',
+                  aclRules: [],
+                  nat: {
+                    snatEnabled: false,
+                    dnatMappings: [],
+                  },
+                },
+                {
+                  id: 'ecs-1',
+                  kind: 'ecs',
+                  label: 'ECS 1',
+                  position: { x: 620, y: 180 },
+                  instanceName: 'ECS 1',
+                  hostName: 'ecs-1',
+                  zoneKey: 'zone-1',
+                  role: 'entry',
+                  privateIp: '10.0.0.10',
+                  exposePublic: true,
+                  image: 'ubuntu_22_04_x64_20G_alibase',
+                  imageName: 'ubuntu_22_04_x64_20G_alibase',
+                  imageId: 'ubuntu_22_04_x64_20G_alibase',
+                  cpu: 1,
+                  memory: 2,
+                  description: '',
+                  bootPriority: 1,
+                  bootWaitSeconds: 0,
+                  dnatMappings: [],
+                  networkInterfaces: [{ zoneKey: 'zone-1', privateIp: '10.0.0.10' }],
+                  portGroups: [],
+                  nics: [
+                    {
+                      id: 'ecs-1-nic-1',
+                      switchId: 'switch-1',
+                      privateIp: '10.0.0.10',
+                      secondaryIps: [],
+                      securityGroupRules: [],
+                    },
+                  ],
+                  initScript: '',
+                  imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+                  instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+                },
+              ],
+              edges: [
+                {
+                  id: 'edge-switch-1-ecs-1',
+                  fromNodeId: 'switch-1',
+                  toNodeId: 'ecs-1',
+                  relationType: 'manual',
+                },
+              ],
+            },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(screen.getByLabelText('主机名'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+
+    await waitFor(() => {
+      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+    });
+
+    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    expect(latestPayload?.topologyGraph?.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'ecs-1',
+          hostName: '',
+        }),
+      ]),
+    );
   });
 
   it('restores stored switch and ecs positions from the saved draft graph after refresh', () => {

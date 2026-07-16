@@ -120,6 +120,7 @@ export type RangeTemplateNetworkZone = {
 export type RangeTemplateHost = {
   key: string;
   name: string;
+  hostName?: string | null;
   zoneKey: string;
   role: string;
   privateIp: string;

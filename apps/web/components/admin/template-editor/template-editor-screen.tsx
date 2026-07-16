@@ -1011,10 +1011,6 @@ function buildDraftUpdatePayload(
     }
 
     for (const hostNode of hostNodes) {
-      if (!hostNode.hostName?.trim()) {
-        validationErrors.push(`${hostNode.label} 未填写主机名`);
-      }
-
       if (typeof hostNode.customPassword === 'string' && hostNode.customPassword.length > 0) {
         const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword);
 

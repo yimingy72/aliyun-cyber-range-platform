@@ -11,6 +11,7 @@ type CompiledHostResource = CompiledResource & {
   type: 'host';
   config: {
     label?: string;
+    hostName?: string | null;
     zoneKey?: string;
     role?: string;
     privateIp?: string;
@@ -124,6 +125,7 @@ export type EnterpriseProvisionPlan = {
   hostDefinitions: Array<{
     key: string;
     name: string;
+    hostName: string | null;
     zoneKey: string;
     privateIp: string;
     role: string;
@@ -288,6 +290,7 @@ export function buildEnterpriseProvisionPlan(input: {
     hostDefinitions: topologySpec.hosts.map((host) => ({
       key: host.key,
       name: host.name,
+      hostName: host.hostName?.trim() ?? null,
       zoneKey: host.zoneKey,
       privateIp: host.privateIp,
       role: host.role,
@@ -351,6 +354,9 @@ function buildTopologySpecFromCompiledSpec(
   const hosts: RangeTemplateHost[] = hostResources.map((resource) => ({
     key: resource.id,
     name: resource.config.label ?? resource.id,
+    ...(typeof resource.config.hostName === 'string' && resource.config.hostName.trim()
+      ? { hostName: resource.config.hostName.trim() }
+      : {}),
     zoneKey: requireValue(resource.config.zoneKey, `compiledSpec.resources[${resource.id}].config.zoneKey`),
     role: requireValue(resource.config.role, `compiledSpec.resources[${resource.id}].config.role`),
     privateIp: requireValue(
@@ -422,6 +428,9 @@ function buildTopologySpecFromCompiledProvisionSpec(
       return [{
         key: host.key,
         name: host.name,
+        ...(typeof host.hostName === 'string' && host.hostName.trim()
+          ? { hostName: host.hostName.trim() }
+          : {}),
         zoneKey: host.zoneKey,
         role: host.role,
         privateIp: host.primaryPrivateIp,

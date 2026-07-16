@@ -51,6 +51,11 @@ class RangeTemplateHostDto {
   @IsNotEmpty()
   name!: string;
 
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  hostName?: string;
+
   @IsString()
   @IsNotEmpty()
   zoneKey!: string;

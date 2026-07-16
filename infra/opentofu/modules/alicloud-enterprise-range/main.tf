@@ -423,7 +423,7 @@ resource "alicloud_instance" "hosts" {
   for_each = local.host_map
 
   instance_name        = substr(replace(replace("${var.resource_name_prefix}-${each.key}", " ", "-"), "_", "-"), 0, 128)
-  host_name            = substr(replace(replace("${var.resource_name_prefix}-${each.key}", " ", "-"), "_", "-"), 0, 63)
+  host_name            = try(each.value.host_name, null)
   instance_type        = try(each.value.instance_type, var.instance_type)
   image_id             = var.image_id
   password             = lookup(var.host_passwords, each.key, var.instance_password)

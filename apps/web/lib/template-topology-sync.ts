@@ -48,6 +48,7 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
       return {
         key: node.id,
         name: node.label,
+        ...(node.hostName?.trim() ? { hostName: node.hostName.trim() } : {}),
         zoneKey: resolvedSwitch?.zoneKey ?? primaryNic?.zoneKey ?? node.zoneKey,
         role: node.role,
         privateIp: primaryNic?.privateIp ?? node.privateIp,
