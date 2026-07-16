@@ -6,7 +6,7 @@ import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime'
 
 import {
   AdminApiError,
-  fetchRangeTemplates,
+  fetchRangeTemplateById,
   fetchInstanceTypeAvailability,
   fetchPlatformImages,
   publishRangeTemplate,
@@ -1182,20 +1182,27 @@ function buildDraftUpdatePayload(
 
     let isActive = true;
 
-    Promise.all([
-      fetchRangeTemplates(apiBaseUrl, session.token, 'mine'),
-      fetchRangeTemplates(apiBaseUrl, session.token, 'platform'),
-    ]).then(([myTemplates, platformTemplates]) => {
-      if (!isActive) {
-        return;
-      }
+    fetchRangeTemplateById(apiBaseUrl, session.token, templateId)
+      .then((nextTemplate) => {
+        if (!isActive) {
+          return;
+        }
 
-      const nextTemplate =
-        myTemplates.find((item) => item.id === templateId) ??
-        platformTemplates.find((item) => item.id === templateId) ??
-        null;
-      applyTemplateState(nextTemplate);
-    });
+        applyTemplateState(nextTemplate);
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (error instanceof AdminApiError && error.status === 401) {
+          session.logout();
+          return;
+        }
+
+        applyTemplateState(null);
+        setStatusMessage(error instanceof Error ? error.message : '编排模板加载失败');
+      });
 
     return () => {
       isActive = false;

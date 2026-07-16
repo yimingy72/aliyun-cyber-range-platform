@@ -10,6 +10,11 @@ json_first_id() {
   sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p'
 }
 
+find_exact_user_id() {
+  username=$1
+  /opt/keycloak/bin/kcadm.sh get users -r "$REALM" -q exact=true -q username="$username" | json_first_id
+}
+
 until /opt/keycloak/bin/kcadm.sh config credentials \
   --server "$SERVER_URL" \
   --realm master \
@@ -26,7 +31,7 @@ done
   -s ssoSessionIdleTimeout=604800 \
   -s ssoSessionMaxLifespan=604800
 
-ADMIN_REALM_USER_ID=$(/opt/keycloak/bin/kcadm.sh get users -r "$REALM" -q username="$ADMIN_USERNAME" | json_first_id)
+ADMIN_REALM_USER_ID=$(find_exact_user_id "$ADMIN_USERNAME")
 
 if [ -z "$ADMIN_REALM_USER_ID" ]; then
   ADMIN_REALM_USER_ID=$(
@@ -63,15 +68,6 @@ fi
 
 PLATFORM_WEB_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=platform-web | json_first_id)
 SMOKE_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=smoke-conf | json_first_id)
-SUB_SCOPE_ID=$(/opt/keycloak/bin/kcadm.sh get client-scopes -r "$REALM" -q name=sub | json_first_id)
-
-ensure_client_default_scope() {
-  client_id=$1
-  scope_id=$2
-  scope_ids=$(/opt/keycloak/bin/kcadm.sh get "clients/$client_id/default-client-scopes" -r "$REALM" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  echo "$scope_ids" | grep -qx "$scope_id" || \
-    /opt/keycloak/bin/kcadm.sh update "clients/$client_id/default-client-scopes/$scope_id" -r "$REALM" >/dev/null
-}
 
 ensure_audience_mapper() {
   client_id=$1
@@ -108,17 +104,54 @@ ensure_subject_mapper() {
     -s 'config."introspection.token.claim"=true' >/dev/null
 }
 
-ensure_client_default_scope "$PLATFORM_WEB_CLIENT_ID" "$SUB_SCOPE_ID"
+ensure_preferred_username_mapper() {
+  client_id=$1
+  mapper_id=$(/opt/keycloak/bin/kcadm.sh get "clients/$client_id/protocol-mappers/models" -r "$REALM" | sed -n '/"name"[[:space:]]*:[[:space:]]*"preferred-username-direct"/{x;p;d;}; h' | json_first_id)
+
+  [ -n "$mapper_id" ] || /opt/keycloak/bin/kcadm.sh create "clients/$client_id/protocol-mappers/models" -r "$REALM" \
+    -s name=preferred-username-direct \
+    -s protocol=openid-connect \
+    -s protocolMapper=oidc-usermodel-property-mapper \
+    -s consentRequired=false \
+    -s 'config."user.attribute"=username' \
+    -s 'config."claim.name"=preferred_username' \
+    -s 'config."jsonType.label"=String' \
+    -s 'config."id.token.claim"=true' \
+    -s 'config."access.token.claim"=true' \
+    -s 'config."userinfo.token.claim"=true' \
+    -s 'config."introspection.token.claim"=true' >/dev/null
+}
+
+ensure_realm_roles_mapper() {
+  client_id=$1
+  mapper_id=$(/opt/keycloak/bin/kcadm.sh get "clients/$client_id/protocol-mappers/models" -r "$REALM" | sed -n '/"name"[[:space:]]*:[[:space:]]*"realm-roles-direct"/{x;p;d;}; h' | json_first_id)
+
+  [ -n "$mapper_id" ] || /opt/keycloak/bin/kcadm.sh create "clients/$client_id/protocol-mappers/models" -r "$REALM" \
+    -s name=realm-roles-direct \
+    -s protocol=openid-connect \
+    -s protocolMapper=oidc-usermodel-realm-role-mapper \
+    -s consentRequired=false \
+    -s 'config."claim.name"=realm_access.roles' \
+    -s 'config."jsonType.label"=String' \
+    -s 'config."multivalued"=true' \
+    -s 'config."id.token.claim"=true' \
+    -s 'config."access.token.claim"=true' \
+    -s 'config."userinfo.token.claim"=true' >/dev/null
+}
+
  /opt/keycloak/bin/kcadm.sh update "clients/$PLATFORM_WEB_CLIENT_ID" -r "$REALM" \
   -s 'redirectUris=["http://localhost:3000/*","http://127.0.0.1:3000/*"]' \
   -s 'webOrigins=["http://localhost:3000","http://127.0.0.1:3000"]' >/dev/null
 ensure_subject_mapper "$PLATFORM_WEB_CLIENT_ID"
+ensure_preferred_username_mapper "$PLATFORM_WEB_CLIENT_ID"
+ensure_realm_roles_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_audience_mapper "$PLATFORM_WEB_CLIENT_ID" aud-mcp-gateway-direct mcp-gateway
 ensure_audience_mapper "$PLATFORM_WEB_CLIENT_ID" aud-platform-api-direct platform-api
 
 if [ -n "$SMOKE_CLIENT_ID" ]; then
-  ensure_client_default_scope "$SMOKE_CLIENT_ID" "$SUB_SCOPE_ID"
   ensure_subject_mapper "$SMOKE_CLIENT_ID"
+  ensure_preferred_username_mapper "$SMOKE_CLIENT_ID"
+  ensure_realm_roles_mapper "$SMOKE_CLIENT_ID"
   ensure_audience_mapper "$SMOKE_CLIENT_ID" aud-mcp-gateway-direct mcp-gateway
   ensure_audience_mapper "$SMOKE_CLIENT_ID" aud-platform-api-direct platform-api
 fi

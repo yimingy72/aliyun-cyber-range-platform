@@ -99,7 +99,7 @@ describe('AdminLoginPage', () => {
     );
     expect(authorizeUrl.searchParams.get('client_id')).toBe('platform-web');
     expect(authorizeUrl.searchParams.get('response_type')).toBe('code');
-    expect(authorizeUrl.searchParams.get('scope')).toBe('openid profile email');
+    expect(authorizeUrl.searchParams.get('scope')).toBe('openid');
     expect(authorizeUrl.searchParams.get('redirect_uri')).toBe('http://localhost:3000/admin/callback');
     expect(authorizeUrl.searchParams.get('code_challenge_method')).toBe('S256');
     expect(authorizeUrl.searchParams.get('state')).toBeTruthy();

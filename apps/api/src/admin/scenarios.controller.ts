@@ -19,6 +19,11 @@ export class ScenariosController {
     return this.rangeTemplatesService.list(request.adminUser, view);
   }
 
+  @Get(':id')
+  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    return this.rangeTemplatesService.getById(id, request.adminUser);
+  }
+
   @Post()
   create(@Req() request: AuthenticatedAdminRequest, @Body() body: CreateRangeTemplateDto) {
     return this.rangeTemplatesService.create(body, request.adminUser);

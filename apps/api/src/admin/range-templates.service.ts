@@ -47,6 +47,46 @@ export class RangeTemplatesService {
     return this.withCreatorUsernames(visibleTemplates.map((template) => toRangeTemplateListItem(template)));
   }
 
+  async getById(id: string, currentUser?: AuthenticatedUser) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (!currentUser) {
+      return this.withCreatorUsername(existingTemplate);
+    }
+
+    this.assertTemplateReadable(existingTemplate, currentUser);
+
+    if (!this.isSharedTemplateConsumer(existingTemplate, currentUser)) {
+      return this.withCreatorUsername(existingTemplate);
+    }
+
+    const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
+
+    if (!sourceVersion) {
+      throw new ConflictException('Shared template must be published before other users can consume it');
+    }
+
+    return this.withCreatorUsername({
+      ...existingTemplate,
+      version: sourceVersion.version,
+      modulePathOrRef: sourceVersion.modulePathOrRef,
+      topologySpec: sourceVersion.topologySpec,
+      topologyGraph: sourceVersion.topologyGraph,
+      scenarioTemplateSpec: sourceVersion.scenarioTemplateSpec,
+      compiledProvisionSpec: sourceVersion.compiledProvisionSpec,
+      compiledSpec: sourceVersion.compiledSpec,
+      variableSchema: sourceVersion.variableSchema,
+      outputSchema: sourceVersion.outputSchema,
+      defaultNetworkPolicy: sourceVersion.defaultNetworkPolicy,
+      currentDraftVersionId: sourceVersion.id,
+      currentDraftVersion: sourceVersion,
+    });
+  }
+
   async create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {
     const actorId = currentUser?.id ?? input.createdBy ?? 'admin';
 

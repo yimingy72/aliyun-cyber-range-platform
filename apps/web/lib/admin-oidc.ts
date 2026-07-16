@@ -28,7 +28,7 @@ export async function buildAdminOidcAuthorizeUrl(input: AdminOidcAuthorizeInput)
   url.searchParams.set('client_id', input.clientId);
   url.searchParams.set('redirect_uri', input.redirectUri);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', 'openid profile email');
+  url.searchParams.set('scope', 'openid');
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', codeChallenge);
   url.searchParams.set('code_challenge_method', 'S256');

@@ -117,6 +117,14 @@ export async function fetchRangeTemplates(
   return readJson<Scenario[]>(response);
 }
 
+export async function fetchRangeTemplateById(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<Scenario>(response);
+}
+
 export async function fetchRangeInstances(
   apiBaseUrl: string,
   token: string,

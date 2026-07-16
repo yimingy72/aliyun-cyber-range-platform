@@ -78,6 +78,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak-bootstrap:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       API_PORT: 3001

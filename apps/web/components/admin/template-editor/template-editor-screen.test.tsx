@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
+  fetchRangeTemplatesMock,
+  fetchRangeTemplateByIdMock,
   updateRangeTemplateMock,
   publishRangeTemplateMock,
   validateRangeTemplateMock,
@@ -12,6 +14,8 @@ const {
   fetchCustomImageCatalogScopeMock,
   fetchInstanceTypeAvailabilityMock,
 } = vi.hoisted(() => ({
+  fetchRangeTemplatesMock: vi.fn(),
+  fetchRangeTemplateByIdMock: vi.fn(),
   updateRangeTemplateMock: vi.fn(),
   publishRangeTemplateMock: vi.fn(),
   validateRangeTemplateMock: vi.fn(),
@@ -26,6 +30,8 @@ vi.mock('../../../lib/admin-api', async () => {
 
   return {
     ...actual,
+    fetchRangeTemplates: fetchRangeTemplatesMock,
+    fetchRangeTemplateById: fetchRangeTemplateByIdMock,
     updateRangeTemplate: updateRangeTemplateMock,
     publishRangeTemplate: publishRangeTemplateMock,
     validateRangeTemplate: validateRangeTemplateMock,
@@ -103,6 +109,8 @@ beforeEach(() => {
     async (_apiBaseUrl: string, _token: string, _id: string, payload: Record<string, unknown>) =>
       buildUpdatedTemplateResponse(payload),
   );
+  fetchRangeTemplatesMock.mockResolvedValue([]);
+  fetchRangeTemplateByIdMock.mockResolvedValue(null);
   validateRangeTemplateMock.mockResolvedValue({ valid: true });
   fetchPlatformImagesMock.mockResolvedValue({
     items: [
@@ -168,6 +176,8 @@ afterEach(() => {
   cleanup();
   window.localStorage?.clear?.();
   updateRangeTemplateMock.mockReset();
+  fetchRangeTemplatesMock.mockReset();
+  fetchRangeTemplateByIdMock.mockReset();
   publishRangeTemplateMock.mockReset();
   validateRangeTemplateMock.mockReset();
   fetchPlatformImagesMock.mockReset();
@@ -2115,6 +2125,102 @@ describe('TemplateEditorScreen', () => {
     );
 
     expect(screen.getByRole('button', { name: /ECS 1/ })).toBeTruthy();
+  });
+
+  it('reloads full draft topology by template id instead of replacing it with list summary data', async () => {
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'mine'
+        ? [
+            {
+              id: 'template-1',
+              name: '企业攻防靶场',
+              createdBy: 'test',
+              ownerUserId: 'user-1',
+              description: 'summary only',
+              slug: 'enterprise-range',
+              version: 'v1.1.0',
+              visibility: 'private',
+              currentDraftVersionId: 'draft-1',
+              currentPublishedVersionId: null,
+              createdAt: '2026-07-16T00:00:00.000Z',
+              updatedAt: '2026-07-16T00:00:00.000Z',
+              nodeCount: 1,
+              zoneCount: 1,
+              hostCount: 1,
+            },
+          ]
+        : [],
+    );
+    fetchRangeTemplateByIdMock.mockResolvedValue({
+      id: 'template-1',
+      name: '企业攻防靶场',
+      createdBy: 'test',
+      ownerUserId: 'user-1',
+      description: 'full draft',
+      slug: 'enterprise-range',
+      version: 'v1.1.0',
+      visibility: 'private',
+      currentDraftVersionId: 'draft-1',
+      currentPublishedVersionId: null,
+      createdAt: '2026-07-16T00:00:00.000Z',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      currentDraftVersion: {
+        id: 'draft-1',
+        status: 'draft',
+        version: 'v1.1.0',
+        topologyGraph: {
+          schemaVersion: '2.0.0',
+          nodes: [
+            {
+              id: 'ecs-1',
+              kind: 'ecs',
+              label: 'ECS 1',
+              position: { x: 620, y: 180 },
+              instanceName: 'ECS 1',
+              hostName: 'ecs-1',
+              zoneKey: 'core',
+              role: 'host',
+              privateIp: '',
+              exposePublic: false,
+              image: 'ubuntu_22_04_x64_20G_alibase',
+              imageName: 'ubuntu_22_04_x64_20G_alibase',
+              imageId: 'ubuntu_22_04_x64_20G_alibase',
+              cpu: 1,
+              memory: 2,
+              description: '',
+              bootPriority: 1,
+              bootWaitSeconds: 0,
+              dnatMappings: [],
+              networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+              portGroups: [],
+              nics: [
+                {
+                  id: 'ecs-1-nic-1',
+                  switchId: '',
+                  privateIp: '',
+                  secondaryIps: [],
+                  securityGroupRules: [],
+                },
+              ],
+              initScript: '',
+              imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+              instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+            },
+          ],
+          edges: [],
+        },
+      },
+      currentPublishedVersion: null,
+    });
+
+    render(<TemplateEditorScreen templateId="template-1" />);
+
+    expect(await screen.findByRole('button', { name: /ECS 1/ })).toBeTruthy();
+    expect(fetchRangeTemplateByIdMock).toHaveBeenCalledWith(
+      'http://localhost:3001',
+      'dev-admin-token',
+      'template-1',
+    );
   });
 
   it('ignores stale local cache when the server draft topology has changed', () => {

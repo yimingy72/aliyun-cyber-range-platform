@@ -15,7 +15,7 @@ describe('admin OIDC helpers', () => {
     expect(url.searchParams.get('client_id')).toBe('platform-web');
     expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:3000/admin/callback');
     expect(url.searchParams.get('response_type')).toBe('code');
-    expect(url.searchParams.get('scope')).toBe('openid profile email');
+    expect(url.searchParams.get('scope')).toBe('openid');
     expect(url.searchParams.get('state')).toBe(authorization.state);
     expect(url.searchParams.get('code_challenge')).toBeTruthy();
     expect(authorization.codeVerifier).toBeTruthy();
