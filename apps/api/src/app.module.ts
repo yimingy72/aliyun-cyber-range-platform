@@ -7,10 +7,11 @@ import { AdminAuthGuard } from './admin/admin-auth.guard';
 import { ImageCatalogController } from './admin/image-catalog.controller';
 import { ImageCatalogService } from './admin/image-catalog.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
-import { AdminSessionController } from './admin/admin-session.controller';
-import { AdminSessionService } from './admin/admin-session.service';
 import { AdminUsersController } from './admin/admin-users.controller';
 import { AdminUsersService } from './admin/admin-users.service';
+import { KeycloakAdminService } from './admin/keycloak-admin.service';
+import { OidcJwtVerifier } from './admin/oidc-jwt-verifier';
+import { OidcPrincipalResolver } from './admin/oidc-principal-resolver';
 import { RangeInstancesService } from './admin/range-instances.service';
 import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
 import { RangesController } from './admin/ranges.controller';
@@ -27,6 +28,7 @@ import { SingleInstancesService } from './admin/single-instances.service';
 import { AppController } from './app.controller';
 import { PrismaAdminRepository } from './database/prisma-admin.repository';
 import { PrismaService } from './database/prisma.service';
+import { OidcAdminBootstrapService } from './oidc-admin-bootstrap.service';
 import { CidrPoolService } from './provisioning/cidr-pool.service';
 import { DryRunRangeProvisioner } from './provisioning/dry-run-range-provisioner';
 import { createRangeProvisionerFromEnv } from './provisioning/open-tofu-range-provisioner';
@@ -55,7 +57,6 @@ function resolveProjectRootDir() {
 @Module({
   controllers: [
     AppController,
-    AdminSessionController,
     AdminUsersController,
     ScenariosController,
     RangesController,
@@ -68,8 +69,10 @@ function resolveProjectRootDir() {
   providers: [
     AdminAuthGuard,
     ImageCatalogService,
-    AdminSessionService,
     AdminUsersService,
+    KeycloakAdminService,
+    OidcJwtVerifier,
+    OidcPrincipalResolver,
     RangeTemplatesService,
     RangeInstancesService,
     RangeInstanceNodeActionsService,
@@ -81,6 +84,7 @@ function resolveProjectRootDir() {
     CidrPoolService,
     SingleInstanceNetworkBootstrapService,
     ProvisioningWorkerService,
+    OidcAdminBootstrapService,
     PrismaService,
     PrismaAdminRepository,
     DryRunRangeProvisioner,

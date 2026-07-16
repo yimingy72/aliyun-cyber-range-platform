@@ -12,6 +12,9 @@ import { CidrPoolService } from '../src/provisioning/cidr-pool.service';
 import { SingleInstanceNetworkBootstrapService } from '../src/provisioning/single-instance-network-bootstrap';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
+
+let repositoryForLogin: AdminRepository;
 
 function createSystemConfigServiceStub() {
   return {
@@ -34,13 +37,8 @@ function createSystemConfigServiceStub() {
   };
 }
 
-async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
-  const response = await request(app.getHttpServer())
-    .post('/admin/session')
-    .send({ username, password })
-    .expect(200);
-
-  return response.body.token as string;
+async function loginAs(_app: INestApplication, username = 'admin', _password = 'change-me') {
+  return loginAsRepositoryUser(repositoryForLogin, username);
 }
 
 describe('single instances', () => {
@@ -73,9 +71,9 @@ describe('single instances', () => {
       }),
     };
 
-    const moduleRef = await Test.createTestingModule({
+    const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
-    })
+    }))
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(createMemoryAdminRepository())
       .overrideProvider(SystemConfigService)
@@ -89,6 +87,7 @@ describe('single instances', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
+    repositoryForLogin = repository;
 
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',

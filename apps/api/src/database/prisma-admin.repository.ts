@@ -45,6 +45,8 @@ export class PrismaAdminRepository implements AdminRepository {
         id: input.id,
         username: input.username,
         passwordHash: input.passwordHash,
+        oidcIssuer: input.oidcIssuer ?? null,
+        oidcSubject: input.oidcSubject ?? null,
         role: input.role,
         status: input.status ?? 'active',
       },
@@ -71,12 +73,25 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<PlatformUserRecord | null>;
   }
 
+  async getPlatformUserByOidcIdentity(issuer: string, subject: string): Promise<PlatformUserRecord | null> {
+    return this.prisma.platformUser.findUnique({
+      where: {
+        oidcIssuer_oidcSubject: {
+          oidcIssuer: issuer,
+          oidcSubject: subject,
+        },
+      },
+    }) as Promise<PlatformUserRecord | null>;
+  }
+
   async updatePlatformUser(id: string, input: UpdatePlatformUserInput): Promise<PlatformUserRecord> {
     return this.prisma.platformUser.update({
       where: { id },
       data: {
         ...(input.username !== undefined ? { username: input.username } : {}),
         ...(input.passwordHash !== undefined ? { passwordHash: input.passwordHash } : {}),
+        ...(input.oidcIssuer !== undefined ? { oidcIssuer: input.oidcIssuer } : {}),
+        ...(input.oidcSubject !== undefined ? { oidcSubject: input.oidcSubject } : {}),
         ...(input.role !== undefined ? { role: input.role } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
       },

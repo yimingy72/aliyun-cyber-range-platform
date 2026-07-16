@@ -1,6 +1,6 @@
 import { AdminLoginScreen } from '../../../components/auth/admin-login-screen';
-import { resolveAdminApiBaseUrl } from '../../../lib/admin-api-base-url';
+import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../../lib/admin-oidc-config';
 
 export default function AdminLoginPage() {
-  return <AdminLoginScreen apiBaseUrl={resolveAdminApiBaseUrl()} />;
+  return <AdminLoginScreen oidcIssuer={resolveAdminOidcIssuer()} oidcClientId={resolveAdminOidcClientId()} />;
 }

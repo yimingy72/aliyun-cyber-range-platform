@@ -5,11 +5,14 @@
 ## 当前项目状态
 
 - 已完成后台核心模块收敛：`靶场编排`、`靶场实例`、`镜像中心`、`基础配置`
+- 已完成多账号后台主链路：`admin / user` 登录、用户管理、资源 owner 归属、平台可见 / 个人可见
 - 已完成三栏式在线编排器主框架：资源面板、拓扑画布、属性面板
 - 已完成镜像中心三层语义拆分：`平台收录镜像`、`阿里云自定义镜像`、`阿里云公共镜像`
 - 已完成 API / worker 拆分：实例创建与销毁任务由独立 `provisioner-worker` 轮询执行
 - 已完成 Docker 化 OpenTofu 运行链路，workspace / provider mirror 挂载到持久卷
 - 已完成平台镜像资产接入，编排页 ECS 镜像选择只消费平台收录镜像
+- 已完成单实例 ECS 原生链路：批量创建、异步公网 IP 刷新、导出镜像、镜像再创建、自动到期销毁
+- 已完成列表页首屏减载：`实例管理`、`靶场编排`、`编排实例`、`镜像中心` 首屏已改为按视图懒加载与轻量 DTO
 
 当前仍在持续收尾的方向：
 
@@ -22,6 +25,10 @@
 - 模板页 `生成实例` 已切换为 `实例名 + 到期时间` 弹窗
 - `靶场实例 -> 查看详情` 已切到独立路由页
 - 实例 draft / apply / auto-expire / node actions 主链路已接通
+- `实例管理` 已拆成单实例专属入口，支持 `实例列表 / 实例历史` 与批次视图
+- `镜像中心` 已支持从平台镜像直接创建实例、显示创建人、个人镜像发布到平台 / 回退为私有
+- 单实例创建时默认规则已收口为：`显式主机名 > 镜像默认主机名 > 阿里云随机主机名`
+- 小于 30 分钟的单实例到期时间走平台 `auto-expire`，大于等于 30 分钟会同时下发阿里云 `AutoReleaseTime`
 
 ## 系统架构
 
@@ -77,6 +84,26 @@
 3. `provisioner-worker` 在 Docker 容器内渲染 OpenTofu wrapper workspace
 4. Worker 调用 OpenTofu 与阿里云 provider 创建/销毁资源，并把结果写回数据库
 
+### 4. 单实例批量链路
+
+1. 管理员或普通用户在 `实例管理` 里选择平台镜像并创建单实例批次
+2. API 为每台实例生成独立记录、归属用户、运行时凭据与单实例蓝图
+3. Worker 走 ECS 原生 `RunInstances` 下发实例，创建请求带稳定 `ClientToken`
+4. 创建提交流程只等待阿里云受理并回写 `instanceId`，公网 IP 与运行中状态通过异步刷新任务补齐
+5. 到期销毁优先依赖平台 `expiresAt -> system:auto-expire`；满足阿里云限制时再附加 `AutoReleaseTime` 作为云上兜底
+
+## 最近一轮能力更新（2026-07-14）
+
+- 多用户资源归属规则已经贯通到：模板、编排实例、单实例、平台镜像、个人镜像
+- 普通用户默认可查看所有平台镜像与平台拓扑，但只能维护自己拥有的私有/已发布资源
+- 用户管理页已改成管理员专属，并支持创建、禁用、角色切换与密码重置
+- `平台镜像` / `我的镜像` / `用户管理` 的操作区已统一为紧凑按钮布局，主操作保留行内，次级动作放入 `更多操作`
+- 核心列表接口的真实响应体积已显著缩小：
+  - `GET /admin/instances?view=active`：约 `1.29 MB -> 291 KB`
+  - `GET /admin/ranges?view=history`：约 `92 KB -> 8.7 KB`
+  - `GET /admin/scenarios?view=mine`：约 `156 KB -> 1.5 KB`
+  - `GET /admin/image-catalog/public`：约 `170 KB -> 90 KB`
+
 ## 目录速览
 
 - [apps/web](/Users/yym/Documents/阿里云For综合靶场竞赛平台/apps/web)
@@ -118,6 +145,7 @@ pnpm compose:up
 - `api`：`http://localhost:3001`
 - `provisioner-worker`
 - `web`：`http://localhost:3000`
+- `mcp`：`http://localhost:8787/mcp`
 
 ### 3. 登录后台
 
@@ -128,8 +156,51 @@ pnpm compose:up
 
 ```bash
 pnpm compose:logs
+pnpm compose:smoke:mcp
 pnpm compose:down
 docker compose config
+```
+
+### 5. MCP 联调
+
+完整对外接入手册见：`/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/product/2026-07-15-MCP客户端接入示例.md:1`
+
+该文档现在已经包含：
+
+- Codex / Claude Code / 通用 MCP client 配置示例
+- MCP 全部 tool list
+- 每个 tool 的用途说明
+- agent 调用提示词
+- 当前权限模型
+- 已完成的黑盒权限验证结论
+- 审计 / 日志说明
+
+`mcp` 服务现在要求入站为 OIDC access token，并在服务端做 token exchange 换取下游 `platform-api` token。
+
+如果你想从宿主机直接验证：
+
+```bash
+TOKEN=$(curl -sS http://127.0.0.1:8080/realms/cyber-range/protocol/openid-connect/token \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=client_credentials' \
+  --data-urlencode 'client_id=mcp-smoke-sa' \
+  --data-urlencode 'client_secret=mcp-smoke-secret' | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).access_token||''))")
+
+MCP_URL=http://127.0.0.1:8787/mcp \
+MCP_BEARER_TOKEN="$TOKEN" \
+pnpm --filter @aliyun-cyber-range/mcp smoke:http
+```
+
+或直接跑 compose 级 smoke：
+
+```bash
+pnpm compose:smoke:mcp
+```
+
+如果 `api` / `mcp` 已经在跑，想跳过重建：
+
+```bash
+MCP_SMOKE_SKIP_UP=1 pnpm compose:smoke:mcp
 ```
 
 ### 5. 端口冲突时

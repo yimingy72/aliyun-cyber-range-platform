@@ -93,6 +93,8 @@ model PlatformUser {
   id                        String                @id
   username                  String                @unique
   passwordHash              String
+  oidcIssuer                String?
+  oidcSubject               String?
   role                      UserRole              @default(user)
   status                    UserStatus            @default(active)
   createdAt                 DateTime              @default(now())
@@ -101,6 +103,8 @@ model PlatformUser {
   rangeTemplates            RangeTemplate[]
   rangeInstances            RangeInstance[]
   singleInstanceBatches     SingleInstanceBatch[]
+
+  @@unique([oidcIssuer, oidcSubject])
 }
 
 model CloudImageSnapshot {

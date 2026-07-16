@@ -8,6 +8,14 @@
 - `images/*.tar.gz` 这类离线镜像包属于本地导出产物，默认不纳入 Git
 - 如果需要离线部署，请在当前机器重新执行导出，或把导出的镜像包单独随交付物传输
 
+当前部署快照对应的系统能力已经包含：
+
+- 多账号登录与用户管理
+- 平台镜像 / 我的镜像 / 云上镜像来源三层镜像视角
+- 平台拓扑 / 我的拓扑双视角
+- 单实例专属 `实例管理` 页与批量创建 / 历史 / 自动到期销毁
+- 独立 `provisioner-worker` 容器执行创建、销毁、状态刷新和 auto-expire
+
 ## 目录内容
 
 - [docker-compose.yml](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/docker-compose.yml)
@@ -121,6 +129,15 @@ docker compose -f docker-compose.images.yml up -d
   - 负责 OpenTofu 执行与资源任务处理
 - `postgres`
   - 默认端口：`5432`
+
+## 当前前端加载策略
+
+为了缩短后台首屏时间，当前运行包已经采用按视图惰性加载：
+
+- `实例管理`：默认只拉 active 单实例数据，不再首屏拉历史与 jobs
+- `靶场编排`：默认只拉当前 tab 模板列表
+- `编排实例`：不再走整包 bootstrap，按视图拉轻量实例列表
+- `镜像中心`：按 tab 加载平台镜像、我的镜像和云上镜像来源
 
 ## 持久化卷
 

@@ -59,17 +59,18 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const router = useRouter();
   const session = useAdminSession();
   const isLoginRoute = pathname === '/admin/login';
+  const isCallbackRoute = pathname === '/admin/callback';
   const visibleNavigationItems = session.isAdmin
     ? [...navigationItems, userManagementNavigationItem, cloudSettingsNavigationItem]
     : navigationItems;
 
   useEffect(() => {
-    if (!isLoginRoute && session.isReady && !session.token) {
+    if (!isLoginRoute && !isCallbackRoute && session.isReady && !session.token) {
       router.replace('/admin/login');
     }
-  }, [isLoginRoute, router, session.isReady, session.token]);
+  }, [isCallbackRoute, isLoginRoute, router, session.isReady, session.token]);
 
-  if (isLoginRoute) {
+  if (isLoginRoute || isCallbackRoute) {
     return <>{children}</>;
   }
 

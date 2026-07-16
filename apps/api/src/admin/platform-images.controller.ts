@@ -1,9 +1,7 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
-import { ADMIN_REPOSITORY, type AdminRepository } from './admin.repository';
-import { hasValidSessionFingerprint, type SessionUserProfile, verifySessionToken } from './admin-user-auth';
-import { AdminSessionService } from './admin-session.service';
+import type { SessionUserProfile } from './admin-user-auth';
 import { CollectPlatformImageDto, ListPlatformImagesDto, UpdatePlatformImageDto } from './dto/platform-image.dto';
 import { ImageCatalogService } from './image-catalog.service';
 
@@ -14,11 +12,7 @@ type AuthenticatedAdminRequest = {
 
 @Controller('admin/platform-images')
 export class PlatformImagesController {
-  constructor(
-    private readonly imageCatalogService: ImageCatalogService,
-    private readonly adminSessionService: AdminSessionService,
-    @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
-  ) {}
+  constructor(private readonly imageCatalogService: ImageCatalogService) {}
 
   @Get()
   @UseGuards(AdminAuthGuard)
@@ -52,18 +46,16 @@ export class PlatformImagesController {
 
   @Post(':id/publish')
   @HttpCode(200)
+  @UseGuards(AdminAuthGuard)
   async publish(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    const currentUser = await this.authenticateUser(request);
-
-    return this.imageCatalogService.updatePlatformAsset(id, { visibility: 'platform' }, currentUser);
+    return this.imageCatalogService.updatePlatformAsset(id, { visibility: 'platform' }, request.adminUser);
   }
 
   @Post(':id/unpublish')
   @HttpCode(200)
+  @UseGuards(AdminAuthGuard)
   async unpublish(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    const currentUser = await this.authenticateUser(request);
-
-    return this.imageCatalogService.updatePlatformAsset(id, { visibility: 'private' }, currentUser);
+    return this.imageCatalogService.updatePlatformAsset(id, { visibility: 'private' }, request.adminUser);
   }
 
   @Delete(':id')
@@ -71,32 +63,5 @@ export class PlatformImagesController {
   @UseGuards(AdminAuthGuard)
   remove(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
     return this.imageCatalogService.removePlatformAsset(id, request.adminUser);
-  }
-
-  private async authenticateUser(request: Pick<AuthenticatedAdminRequest, 'headers'>): Promise<SessionUserProfile> {
-    const authorizationHeader = request.headers.authorization ?? '';
-    const [scheme, token] = authorizationHeader.split(' ');
-
-    if (scheme !== 'Bearer' || !token) {
-      throw new UnauthorizedException('Missing or invalid admin token');
-    }
-
-    const payload = verifySessionToken(token, this.adminSessionService.getSessionSecret());
-
-    if (!payload) {
-      throw new UnauthorizedException('Missing or invalid admin token');
-    }
-
-    const user = await this.adminRepository.getPlatformUserById(payload.sub);
-
-    if (!user || user.status !== 'active' || !hasValidSessionFingerprint(payload, user)) {
-      throw new UnauthorizedException('Missing or invalid admin token');
-    }
-
-    return {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-    };
   }
 }

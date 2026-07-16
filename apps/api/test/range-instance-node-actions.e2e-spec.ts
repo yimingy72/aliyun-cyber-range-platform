@@ -7,6 +7,9 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
+
+let repositoryForLogin: AdminRepository;
 
 function createSystemConfigServiceStub() {
   return {
@@ -29,13 +32,8 @@ function createSystemConfigServiceStub() {
   };
 }
 
-async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
-  const response = await request(app.getHttpServer())
-    .post('/admin/session')
-    .send({ username, password })
-    .expect(200);
-
-  return response.body.token as string;
+async function loginAs(_app: INestApplication, username = 'admin', _password = 'change-me') {
+  return loginAsRepositoryUser(repositoryForLogin, username);
 }
 
 describe('Range instance node actions API', () => {
@@ -66,9 +64,9 @@ describe('Range instance node actions API', () => {
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
-    const moduleRef = await Test.createTestingModule({
+    const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
-    })
+    }))
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(createMemoryAdminRepository())
       .overrideProvider(SystemConfigService)
@@ -80,6 +78,7 @@ describe('Range instance node actions API', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
+    repositoryForLogin = repository;
 
     const template = await repository.createRangeTemplate({
       name: 'Node Action Template',

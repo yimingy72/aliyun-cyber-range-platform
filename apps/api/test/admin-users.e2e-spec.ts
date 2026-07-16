@@ -5,14 +5,17 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
+import { KeycloakAdminService } from '../src/admin/keycloak-admin.service';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { PrismaService } from '../src/database/prisma.service';
+import { loginAsPrismaUser, overrideTestOidc } from './support/test-oidc';
 
 const DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
 
 describe('Admin users', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let keycloakSequence = 0;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = DATABASE_URL;
@@ -20,9 +23,17 @@ describe('Admin users', () => {
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
 
-    const moduleRef = await Test.createTestingModule({
+    const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    }))
+      .overrideProvider(KeycloakAdminService)
+      .useValue({
+        createUser: jest.fn(async () => `kc-subject-${++keycloakSequence}`),
+        updateUserRole: jest.fn(async () => undefined),
+        updateUserStatus: jest.fn(async () => undefined),
+        resetUserPassword: jest.fn(async () => undefined),
+      })
+      .compile();
 
     app = moduleRef.createNestApplication();
     configureApp(app);
@@ -33,6 +44,8 @@ describe('Admin users', () => {
   });
 
   beforeEach(async () => {
+    keycloakSequence = 0;
+
     await prisma.platformUser.deleteMany({
       where: {
         id: {
@@ -49,6 +62,8 @@ describe('Admin users', () => {
         username: 'admin',
         role: 'admin',
         status: 'active',
+        oidcIssuer: null,
+        oidcSubject: null,
       },
     });
   });
@@ -70,13 +85,15 @@ describe('Admin users', () => {
         username: 'admin',
         role: 'admin',
         status: 'active',
+        oidcIssuer: null,
+        oidcSubject: null,
       },
     });
 
     await app.close();
   });
 
-  it('lets an admin create and disable a regular user, and blocks that user from logging in afterward', async () => {
+  it('lets an admin create and disable a regular user, and blocks that user from using the API afterward', async () => {
     const adminToken = await login('admin', 'change-me');
     const username = `user-${randomUUID()}`;
     const password = 'Password123!';
@@ -118,29 +135,12 @@ describe('Admin users', () => {
       ]),
     );
 
-    const userLoginResponse = await request(app.getHttpServer())
-      .post('/admin/session')
-      .send({
-        username,
-        password,
-      })
-      .expect(200);
-
-    expect(userLoginResponse.body).toEqual({
-      token: expect.any(String),
-      profile: {
-        id: createdUserId,
-        username,
-        role: 'user',
-      },
-    });
-
-    const userToken = userLoginResponse.body.token as string;
+    const userToken = await login(username, password);
 
     await request(app.getHttpServer())
       .get('/admin/scenarios')
       .set('authorization', `Bearer ${userToken}`)
-      .expect(403);
+      .expect(200);
 
     await request(app.getHttpServer())
       .get('/admin/users')
@@ -165,11 +165,8 @@ describe('Admin users', () => {
     });
 
     await request(app.getHttpServer())
-      .post('/admin/session')
-      .send({
-        username,
-        password,
-      })
+      .get('/admin/scenarios')
+      .set('authorization', `Bearer ${userToken}`)
       .expect(401);
   });
 
@@ -238,12 +235,11 @@ describe('Admin users', () => {
       }),
     );
 
+    const disabledAdminToken = await login('admin', 'change-me');
+
     await request(app.getHttpServer())
-      .post('/admin/session')
-      .send({
-        username: 'admin',
-        password: 'change-me',
-      })
+      .get('/admin/scenarios')
+      .set('authorization', `Bearer ${disabledAdminToken}`)
       .expect(401);
   });
 
@@ -278,29 +274,12 @@ describe('Admin users', () => {
       }),
     );
 
-    const demotedAdminLogin = await request(app.getHttpServer())
-      .post('/admin/session')
-      .send({
-        username: 'admin',
-        password: 'change-me',
-      })
-      .expect(200);
-
-    expect(demotedAdminLogin.body).toEqual({
-      token: expect.any(String),
-      profile: {
-        id: 'admin',
-        username: 'admin',
-        role: 'user',
-      },
-    });
-
-    const demotedAdminToken = demotedAdminLogin.body.token as string;
+    const demotedAdminToken = await login('admin', 'change-me');
 
     await request(app.getHttpServer())
       .get('/admin/scenarios')
       .set('authorization', `Bearer ${demotedAdminToken}`)
-      .expect(403);
+      .expect(200);
 
     await request(app.getHttpServer())
       .get('/admin/users')
@@ -308,7 +287,7 @@ describe('Admin users', () => {
       .expect(403);
   });
 
-  it('revokes an already-issued token when an admin password is reset', async () => {
+  it('keeps OIDC access valid after an admin password reset', async () => {
     const adminToken = await login('admin', 'change-me');
     const adminUser = await createUser(adminToken, {
       username: `admin-${randomUUID()}`,
@@ -328,7 +307,7 @@ describe('Admin users', () => {
     await request(app.getHttpServer())
       .get('/admin/users')
       .set('authorization', `Bearer ${issuedToken}`)
-      .expect(401);
+      .expect(200);
 
     const refreshedToken = await login(adminUser.username, 'ResetNew123!');
 
@@ -339,15 +318,8 @@ describe('Admin users', () => {
   });
 
   async function login(username: string, password: string) {
-    const response = await request(app.getHttpServer())
-      .post('/admin/session')
-      .send({
-        username,
-        password,
-      })
-      .expect(200);
-
-    return response.body.token as string;
+    void password;
+    return loginAsPrismaUser(app, username);
   }
 
   async function createUser(

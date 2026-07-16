@@ -8,6 +8,16 @@
 
 **Tech Stack:** Next.js App Router, React 19, Vitest, NestJS 11, Prisma/PostgreSQL, OpenTofu worker, Docker Compose, Alibaba Cloud RPC APIs, `@aliyun-cyber-range/scenario-runtime`.
 
+## Post-implementation update (2026-07-14)
+
+在原始实施计划完成后，又补充落地了几项关键优化：
+
+- 单实例创建提交与公网 IP 刷新已解耦，批量创建不再等待每台实例 ready 后才继续
+- 单实例列表接口改成轻量 DTO，并支持 `active / history` 视图分流
+- 单实例创建请求已接入镜像默认主机名和阿里云随机主机名回退语义
+- 单实例自动销毁链路已经通过真实云上 smoke test 验证
+- `实例管理` 的首屏请求体积已从约 `1.29 MB` 收缩到约 `291 KB`
+
 ---
 
 ## File Structure

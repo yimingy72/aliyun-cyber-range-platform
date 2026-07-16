@@ -1,6 +1,12 @@
 {
   "name": "@aliyun-cyber-range/database",
   "private": true,
+  "main": "generated/client/index.js",
+  "types": "generated/client/index.d.ts",
+  "exports": {
+    ".": "./generated/client/index.js",
+    "./generated/client": "./generated/client/index.js"
+  },
   "scripts": {
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",

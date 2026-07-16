@@ -9,6 +9,9 @@ import { generateAliyunEcsPassword } from '../src/admin/ecs-password-generator';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
+
+let repositoryForLogin: AdminRepository;
 
 function countPasswordCharacterClasses(value: string) {
   return [/[A-Z]/.test(value), /[a-z]/.test(value), /[0-9]/.test(value), /[^A-Za-z0-9\s]/.test(value)].filter(
@@ -28,13 +31,8 @@ function createSystemConfigServiceStub() {
   };
 }
 
-async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
-  const response = await request(app.getHttpServer())
-    .post('/admin/session')
-    .send({ username, password })
-    .expect(200);
-
-  return response.body.token as string;
+async function loginAs(_app: INestApplication, username = 'admin', _password = 'change-me') {
+  return loginAsRepositoryUser(repositoryForLogin, username);
 }
 
 describe('Range instance runtime snapshot persistence', () => {
@@ -207,9 +205,9 @@ describe('Range instance launch API', () => {
     process.env.ADMIN_TOKEN = 'dev-admin-token';
     process.env.OPENTOFU_INSTANCE_PASSWORD = 'ChangeMe123!';
 
-    const moduleRef = await Test.createTestingModule({
+    const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
-    })
+    }))
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(createMemoryAdminRepository())
       .overrideProvider(SystemConfigService)
@@ -221,6 +219,7 @@ describe('Range instance launch API', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
+    repositoryForLogin = repository;
 
     await repository.createPlatformUser({
       id: launchUser.id,

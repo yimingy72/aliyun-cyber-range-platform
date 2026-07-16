@@ -5,23 +5,23 @@ import { useAdminSession } from '../../../components/admin/use-admin-session';
 import { ADMIN_SESSION_STORAGE_KEY, writeAdminSession } from '../../../lib/admin-auth-storage';
 
 const replace = vi.fn();
-const fetchMock = vi.fn();
+const assign = vi.fn();
 const storage = new Map<string, string>();
+const sessionStorageState = new Map<string, string>();
 const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'aliyun-cyber-range-admin-token';
 const ADMIN_PROFILE = {
   id: 'admin',
   username: 'admin',
   role: 'admin' as const,
 };
-const ORIGINAL_NEXT_PUBLIC_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+const ORIGINAL_NEXT_PUBLIC_OIDC_ISSUER = process.env.NEXT_PUBLIC_OIDC_ISSUER;
+const ORIGINAL_NEXT_PUBLIC_OIDC_CLIENT_ID = process.env.NEXT_PUBLIC_OIDC_CLIENT_ID;
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     replace,
   }),
 }));
-
-vi.stubGlobal('fetch', fetchMock);
 
 Object.defineProperty(window, 'localStorage', {
   configurable: true,
@@ -36,81 +36,76 @@ Object.defineProperty(window, 'localStorage', {
   },
 });
 
+Object.defineProperty(window, 'sessionStorage', {
+  configurable: true,
+  value: {
+    getItem: (key: string) => sessionStorageState.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      sessionStorageState.set(key, value);
+    },
+    removeItem: (key: string) => {
+      sessionStorageState.delete(key);
+    },
+  },
+});
+
+Object.defineProperty(window, 'location', {
+  configurable: true,
+  value: {
+    origin: 'http://localhost:3000',
+    assign,
+  },
+});
+
 import AdminLoginPage from './page';
 
 describe('AdminLoginPage', () => {
   beforeEach(() => {
-    fetchMock.mockReset();
     replace.mockReset();
+    assign.mockReset();
     storage.clear();
+    sessionStorageState.clear();
+    process.env.NEXT_PUBLIC_OIDC_ISSUER = 'http://localhost:8080/realms/cyber-range';
+    process.env.NEXT_PUBLIC_OIDC_CLIENT_ID = 'platform-web';
   });
 
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
-    if (typeof ORIGINAL_NEXT_PUBLIC_API_BASE_URL === 'string') {
-      process.env.NEXT_PUBLIC_API_BASE_URL = ORIGINAL_NEXT_PUBLIC_API_BASE_URL;
+    if (typeof ORIGINAL_NEXT_PUBLIC_OIDC_ISSUER === 'string') {
+      process.env.NEXT_PUBLIC_OIDC_ISSUER = ORIGINAL_NEXT_PUBLIC_OIDC_ISSUER;
     } else {
-      delete process.env.NEXT_PUBLIC_API_BASE_URL;
+      delete process.env.NEXT_PUBLIC_OIDC_ISSUER;
+    }
+    if (typeof ORIGINAL_NEXT_PUBLIC_OIDC_CLIENT_ID === 'string') {
+      process.env.NEXT_PUBLIC_OIDC_CLIENT_ID = ORIGINAL_NEXT_PUBLIC_OIDC_CLIENT_ID;
+    } else {
+      delete process.env.NEXT_PUBLIC_OIDC_CLIENT_ID;
     }
   });
 
-  it('stores the admin token and redirects to /admin/scenarios after a successful login', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          token: '  dev-admin-token  ',
-          profile: ADMIN_PROFILE,
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
+  it('redirects to the Keycloak authorization endpoint with PKCE after clicking login', async () => {
     render(<AdminLoginPage />);
 
-    expect(screen.queryByDisplayValue('change-me')).toBeNull();
-    expect(screen.queryByText('选手入口')).toBeNull();
-
-    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
+    fireEvent.click(screen.getByRole('button', { name: '使用平台账号登录' }));
 
     await waitFor(() => {
-      expect(JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ?? 'null')).toEqual({
-        token: 'dev-admin-token',
-        profile: ADMIN_PROFILE,
-      });
-      expect(replace).toHaveBeenCalledWith('/admin/scenarios');
+      expect(assign).toHaveBeenCalledTimes(1);
     });
-  });
 
-  it('uses the runtime API base URL from the page instead of the client build default', async () => {
-    process.env.NEXT_PUBLIC_API_BASE_URL = 'http://localhost:3101';
-
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          token: 'dev-admin-token',
-          profile: ADMIN_PROFILE,
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
+    const authorizeUrl = new URL(String(assign.mock.calls[0][0]));
+    expect(authorizeUrl.origin + authorizeUrl.pathname).toBe(
+      'http://localhost:8080/realms/cyber-range/protocol/openid-connect/auth',
     );
-
-    render(<AdminLoginPage />);
-
-    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:3101/admin/session',
-        expect.objectContaining({
-          method: 'POST',
-        }),
-      );
-    });
+    expect(authorizeUrl.searchParams.get('client_id')).toBe('platform-web');
+    expect(authorizeUrl.searchParams.get('response_type')).toBe('code');
+    expect(authorizeUrl.searchParams.get('scope')).toBe('openid profile email');
+    expect(authorizeUrl.searchParams.get('redirect_uri')).toBe('http://localhost:3000/admin/callback');
+    expect(authorizeUrl.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(authorizeUrl.searchParams.get('state')).toBeTruthy();
+    expect(authorizeUrl.searchParams.get('code_challenge')).toBeTruthy();
+    expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-state')).toBeTruthy();
+    expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-code-verifier')).toBeTruthy();
   });
 
   it('renders a single admin-only login experience without player entry copy', () => {
@@ -122,8 +117,9 @@ describe('AdminLoginPage', () => {
     expect(screen.queryByText('阿里云企业网络型靶场编排与实例管理工作台')).toBeNull();
     expect(screen.queryByText('工作台 / 靶场编排')).toBeNull();
     expect(screen.queryByText('管理员登录')).toBeNull();
-    expect(screen.getByText('账号')).toBeTruthy();
-    expect(screen.getByText('密码')).toBeTruthy();
+    expect(screen.queryByText('账号')).toBeNull();
+    expect(screen.queryByText('密码')).toBeNull();
+    expect(screen.getByRole('button', { name: '使用平台账号登录' })).toBeTruthy();
   });
 
   it('normalizes shared admin sessions before persisting them', async () => {
@@ -243,87 +239,5 @@ describe('AdminLoginPage', () => {
     expect(result.current.token).toBe('persisted-admin-token');
     expect(result.current.profile).toEqual(ADMIN_PROFILE);
     expect(result.current.isAdmin).toBe(true);
-  });
-
-  it('keeps the current session when a 200 login response payload is invalid', async () => {
-    writeAdminSession({
-      token: 'persisted-admin-token',
-      profile: ADMIN_PROFILE,
-    });
-
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          token: 'next-admin-token',
-          profile: { username: 'admin' },
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
-    render(<AdminLoginPage />);
-
-    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('管理员登录失败，服务返回了无效会话。')).toBeTruthy();
-    });
-
-    expect(JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ?? 'null')).toEqual({
-      token: 'persisted-admin-token',
-      profile: ADMIN_PROFILE,
-    });
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it('shows an error and does not redirect when the response token is missing', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          profile: ADMIN_PROFILE,
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
-    render(<AdminLoginPage />);
-
-    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('管理员登录失败，服务返回了无效会话。')).toBeTruthy();
-    });
-
-    expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it('shows an error and does not redirect when the response token is blank', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          token: '   ',
-          profile: ADMIN_PROFILE,
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
-    render(<AdminLoginPage />);
-
-    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'change-me' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录管理后台' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('管理员登录失败，服务返回了无效会话。')).toBeTruthy();
-    });
-
-    expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
-    expect(replace).not.toHaveBeenCalled();
   });
 });

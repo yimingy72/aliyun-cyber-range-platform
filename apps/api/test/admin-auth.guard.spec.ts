@@ -29,4 +29,20 @@ describe('AdminAuthGuard', () => {
       ),
     ).toBe(false);
   });
+
+  it('rejects legacy non-jwt bearer tokens', async () => {
+    const guard = new AdminAuthGuard({} as never, {} as never);
+
+    await expect(
+      guard.canActivate({
+        switchToHttp: () => ({
+          getRequest: () => ({
+            headers: { authorization: 'Bearer legacy-session-token' },
+            originalUrl: '/admin/scenarios',
+            method: 'GET',
+          }),
+        }),
+      } as never),
+    ).rejects.toThrow('Missing or invalid admin token');
+  });
 });

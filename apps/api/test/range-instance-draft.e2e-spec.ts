@@ -7,14 +7,12 @@ import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repos
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
 
-async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
-  const response = await request(app.getHttpServer())
-    .post('/admin/session')
-    .send({ username, password })
-    .expect(200);
+let repositoryForLogin: AdminRepository;
 
-  return response.body.token as string;
+async function loginAs(_app: INestApplication, username = 'admin', _password = 'change-me') {
+  return loginAsRepositoryUser(repositoryForLogin, username);
 }
 
 describe('Range instance draft API', () => {
@@ -34,9 +32,9 @@ describe('Range instance draft API', () => {
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
 
-    const moduleRef = await Test.createTestingModule({
+    const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
-    })
+    }))
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(createMemoryAdminRepository())
       .compile();
@@ -46,6 +44,7 @@ describe('Range instance draft API', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
+    repositoryForLogin = repository;
 
     await repository.createPlatformUser({
       id: draftUser.id,

@@ -296,6 +296,8 @@ export type PlatformUserRecord = {
   id: string;
   username: string;
   passwordHash: string;
+  oidcIssuer: string | null;
+  oidcSubject: string | null;
   role: UserRole;
   status: UserStatus;
   createdAt: Date;
@@ -456,6 +458,8 @@ export type CreatePlatformUserInput = {
   id: string;
   username: string;
   passwordHash: string;
+  oidcIssuer?: string | null;
+  oidcSubject?: string | null;
   role: UserRole;
   status?: UserStatus;
 };
@@ -463,6 +467,8 @@ export type CreatePlatformUserInput = {
 export type UpdatePlatformUserInput = Partial<{
   username: string;
   passwordHash: string;
+  oidcIssuer: string | null;
+  oidcSubject: string | null;
   role: UserRole;
   status: UserStatus;
 }>;
@@ -599,6 +605,7 @@ export interface AdminRepository {
   listPlatformUsers(): Promise<PlatformUserRecord[]>;
   getPlatformUserById(id: string): Promise<PlatformUserRecord | null>;
   getPlatformUserByUsername(username: string): Promise<PlatformUserRecord | null>;
+  getPlatformUserByOidcIdentity(issuer: string, subject: string): Promise<PlatformUserRecord | null>;
   updatePlatformUser(id: string, input: UpdatePlatformUserInput): Promise<PlatformUserRecord>;
   countActiveAdmins(): Promise<number>;
   listRangeTemplates(): Promise<RangeTemplateRecord[]>;

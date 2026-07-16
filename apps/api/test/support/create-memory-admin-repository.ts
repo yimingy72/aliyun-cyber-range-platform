@@ -119,7 +119,10 @@ export function createMemoryAdminRepository(): AdminRepository {
     return record;
   };
 
-  const assertPlatformUserUnique = (input: { id?: string; username?: string }, ignoreId?: string) => {
+  const assertPlatformUserUnique = (
+    input: { id?: string; username?: string; oidcIssuer?: string | null; oidcSubject?: string | null },
+    ignoreId?: string,
+  ) => {
     if (
       input.id !== undefined &&
       platformUsers.some((user) => user.id === input.id && user.id !== ignoreId)
@@ -132,6 +135,19 @@ export function createMemoryAdminRepository(): AdminRepository {
       platformUsers.some((user) => user.username === input.username && user.id !== ignoreId)
     ) {
       throw new Error(`Platform user unique constraint failed: username (${input.username})`);
+    }
+
+    if (
+      input.oidcIssuer != null &&
+      input.oidcSubject != null &&
+      platformUsers.some(
+        (user) =>
+          user.oidcIssuer === input.oidcIssuer &&
+          user.oidcSubject === input.oidcSubject &&
+          user.id !== ignoreId,
+      )
+    ) {
+      throw new Error(`Platform user unique constraint failed: oidc identity (${input.oidcIssuer}, ${input.oidcSubject})`);
     }
   };
 
@@ -156,6 +172,8 @@ export function createMemoryAdminRepository(): AdminRepository {
         id: input.id,
         username: input.username,
         passwordHash: input.passwordHash,
+        oidcIssuer: input.oidcIssuer ?? null,
+        oidcSubject: input.oidcSubject ?? null,
         role: input.role,
         status: input.status ?? 'active',
         createdAt: now(),
@@ -179,12 +197,22 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return record ? clone(record) : null;
     },
+    async getPlatformUserByOidcIdentity(issuer: string, subject: string) {
+      const record = platformUsers.find((user) => user.oidcIssuer === issuer && user.oidcSubject === subject);
+
+      return record ? clone(record) : null;
+    },
     async updatePlatformUser(id: string, input: UpdatePlatformUserInput) {
       const record = findPlatformUserOrThrow(id);
+
+      const oidcIssuer = input.oidcIssuer !== undefined ? input.oidcIssuer : record.oidcIssuer;
+      const oidcSubject = input.oidcSubject !== undefined ? input.oidcSubject : record.oidcSubject;
 
       assertPlatformUserUnique(
         {
           username: input.username,
+          oidcIssuer,
+          oidcSubject,
         },
         id,
       );
@@ -192,6 +220,8 @@ export function createMemoryAdminRepository(): AdminRepository {
       Object.assign(record, {
         username: input.username ?? record.username,
         passwordHash: input.passwordHash ?? record.passwordHash,
+        oidcIssuer,
+        oidcSubject,
         role: input.role ?? record.role,
         status: input.status ?? record.status,
         updatedAt: now(),
