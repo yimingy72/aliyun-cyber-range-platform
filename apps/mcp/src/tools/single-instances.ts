@@ -5,6 +5,27 @@ const operation = (args: { idempotencyKey?: string; confirmationId?: string }) =
   confirmationId: args.confirmationId,
 });
 
+function escapeCsvCell(value: string) {
+  const normalizedValue = value.replaceAll('"', '""');
+  return /[",\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
+}
+
+function readSingleInstanceCredential(instance: Record<string, unknown>) {
+  const config = (instance.singleInstanceConfig ?? null) as Record<string, unknown> | null;
+  const runtimeCredentials = (instance.runtimeCredentials ?? null) as Record<string, Record<string, unknown>> | null;
+  const hostKey = typeof config?.hostKey === 'string' && config.hostKey.trim() ? config.hostKey.trim() : Object.keys(runtimeCredentials ?? {})[0] ?? '';
+  const credential = hostKey ? runtimeCredentials?.[hostKey] : null;
+  const username = typeof credential?.username === 'string' ? credential.username.trim() : '';
+  const password = typeof credential?.password === 'string' ? credential.password.trim() : '';
+  const imageName = String(config?.imageDisplayName ?? config?.imageId ?? '').toLowerCase();
+  const normalizedUsername = username === 'root' && imageName.includes('windows') ? 'Administrator' : username;
+
+  return {
+    username: normalizedUsername || '暂无',
+    password: password || '暂无',
+  };
+}
+
 export const singleInstanceTools: ToolDefinition[] = [
   {
     name: 'single_instance_list',
@@ -166,6 +187,43 @@ export const singleInstanceTools: ToolDefinition[] = [
         },
         operation(input),
       );
+    },
+  },
+  {
+    name: 'single_instance_batch_export_csv',
+    description: 'Export a batch of single instances as CSV.',
+    requiredScopes: ['instances:read', 'instances:credentials:read'],
+    readOnlyHint: true,
+    async call(context, args) {
+      const input = args as { batchId: string; view?: 'active' | 'history' };
+      const lists = input.view ? [await context.client.listSingleInstances(input.view)] : await Promise.all([
+        context.client.listSingleInstances('active'),
+        context.client.listSingleInstances('history'),
+      ]);
+      const group = lists.flatMap((list) => list.batches).find((entry) => entry.batch.id === input.batchId);
+
+      if (!group) {
+        throw new Error('Single instance batch not found');
+      }
+
+      const rows = group.instances.map((instance) => {
+        const credential = readSingleInstanceCredential(instance as Record<string, unknown>);
+        const accessEntry = (instance.accessEntry ?? null) as Record<string, unknown> | null;
+        const publicIp = typeof accessEntry?.publicIp === 'string' && accessEntry.publicIp.trim() ? accessEntry.publicIp.trim() : '暂无';
+        const name = typeof instance.name === 'string' && instance.name.trim() ? instance.name.trim() : instance.id;
+
+        return [name, publicIp, credential.username, credential.password].map(escapeCsvCell).join(',');
+      });
+      const csv = [['实例名', '公网 IP', '账号', '密码'].join(','), ...rows].join('\n');
+      const batchName = typeof group.batch.name === 'string' && group.batch.name.trim() ? group.batch.name.trim() : group.batch.id;
+
+      return {
+        batchId: group.batch.id,
+        batchName,
+        fileName: `${batchName}-instances.csv`,
+        rowCount: group.instances.length,
+        csv,
+      };
     },
   },
 ];

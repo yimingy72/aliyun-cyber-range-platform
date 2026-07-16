@@ -1,14 +1,16 @@
 import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
+import { adminUserTools } from './tools/admin-users';
 import { imageTools } from './tools/images';
 import { jobTools } from './tools/jobs';
 import { rangeTools } from './tools/ranges';
+import { settingsTools } from './tools/settings';
 import { singleInstanceTools } from './tools/single-instances';
 import { templateTools } from './tools/templates';
 import type { ToolContext, ToolDefinition } from './tools/tool-context';
 import { toToolResult } from './tools/tool-result';
 
-const tools = [...templateTools, ...imageTools, ...rangeTools, ...singleInstanceTools, ...jobTools];
+const tools = [...templateTools, ...imageTools, ...rangeTools, ...singleInstanceTools, ...jobTools, ...adminUserTools, ...settingsTools];
 
 export function createToolRegistry(client: PlatformApiClientLike) {
   return {

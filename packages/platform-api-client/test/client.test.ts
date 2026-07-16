@@ -30,7 +30,7 @@ describe('PlatformApiClient', () => {
 
       return new Response(
         JSON.stringify({
-          batches: [{ batch: { id: 'batch-1' }, instances: [{ id: 'ins-1', defaultInstancePassword: 'p' }] }],
+          batches: [{ batch: { id: 'batch-1' }, instances: [{ id: 'ins-1', defaultInstancePassword: 'p', accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' } }] }],
           standaloneInstances: [],
         }),
         { status: 200 },
@@ -38,10 +38,18 @@ describe('PlatformApiClient', () => {
     });
     const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
 
-    await expect(client.getSingleInstance('ins-1')).resolves.toEqual({ id: 'ins-1', defaultInstancePassword: 'p' });
-    await expect(client.getSingleInstanceAccess('ins-1')).resolves.toEqual({
+    await expect(client.getSingleInstance('ins-1')).resolves.toEqual({
+      id: 'ins-1',
       defaultInstancePassword: 'p',
-      accessEntry: null,
+      accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' },
+    });
+    await expect(client.getSingleInstanceAccess('ins-1')).resolves.toEqual({
+      ip: '47.1.2.3',
+      publicIp: '47.1.2.3',
+      privateIp: '10.0.0.8',
+      ssh: 'ssh root@47.1.2.3',
+      defaultInstancePassword: 'p',
+      accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' },
       runtimeCredentials: null,
     });
   });
@@ -51,5 +59,12 @@ describe('PlatformApiClient', () => {
     const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
 
     await expect(client.listRangeInstances()).rejects.toBeInstanceOf(PlatformApiError);
+  });
+
+  it('handles no-content delete responses', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
+
+    await expect(client.removePlatformImage('img-1')).resolves.toBeUndefined();
   });
 });

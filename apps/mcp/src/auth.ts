@@ -12,6 +12,7 @@ let oidcJwtVerifier: OidcJwtVerifier | null = null;
 export const END_USER_SCOPES = [
   'templates:read',
   'images:read',
+  'images:write',
   'ranges:read',
   'ranges:create',
   'ranges:destroy',
@@ -25,6 +26,10 @@ export const END_USER_SCOPES = [
 
 export const ADMIN_SCOPES = [
   ...END_USER_SCOPES,
+  'users:read',
+  'users:write',
+  'settings:read',
+  'settings:write',
 ];
 
 export async function authenticateRequest(request: IncomingMessage): Promise<AuthInfo | null> {
