@@ -16,6 +16,13 @@
 - `range_template_list`
 - `range_template_get`
 - `platform_image_list`
+- `platform_image_collect`
+- `platform_image_rename`
+- `platform_image_enable`
+- `platform_image_disable`
+- `platform_image_publish`
+- `platform_image_unpublish`
+- `platform_image_remove`
 - `range_instance_list`
 - `range_instance_get`
 - `range_instance_get_access`
@@ -31,7 +38,15 @@
 - `single_instance_reboot`
 - `single_instance_open_vnc`
 - `single_instance_pack_image`
+- `single_instance_batch_export_csv`
 - `provision_job_get`
+- `admin_user_list`
+- `admin_user_create`
+- `admin_user_update_role`
+- `admin_user_update_status`
+- `admin_user_reset_password`
+- `cloud_config_get`
+- `cloud_config_update`
 
 ## Required env
 

@@ -8,6 +8,7 @@ import { createToolRegistry } from './server';
 const allScopes = [
   'templates:read',
   'images:read',
+  'images:write',
   'ranges:read',
   'ranges:create',
   'ranges:destroy',
@@ -17,6 +18,10 @@ const allScopes = [
   'instances:control',
   'instances:credentials:read',
   'jobs:read',
+  'users:read',
+  'users:write',
+  'settings:read',
+  'settings:write',
 ] as const;
 
 export function createSdkServer(client: PlatformApiClientLike, scopes: string[] = [...allScopes]) {

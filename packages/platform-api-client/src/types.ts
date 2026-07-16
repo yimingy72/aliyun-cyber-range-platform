@@ -15,6 +15,10 @@ export type PlatformApiClientOptions = {
 };
 
 export type RangeAccessPayload = {
+  ip?: string | null;
+  publicIp?: string | null;
+  privateIp?: string | null;
+  ssh?: string | null;
   defaultInstancePassword?: string | null;
   accessEntry?: Record<string, unknown> | null;
   runtimeCredentials?: Record<string, unknown> | null;
@@ -24,6 +28,8 @@ export type RangeTemplate = Record<string, unknown> & { id: string };
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
 export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
 export type ProvisionJob = Record<string, unknown> & { id: string };
+export type CloudConfigSnapshot = Record<string, unknown>;
+export type AdminUser = Record<string, unknown> & { id: string; username: string };
 export type SingleInstanceListPayload = {
   batches: Array<{
     batch: Record<string, unknown> & { id: string };
@@ -58,10 +64,40 @@ export type SingleInstanceActionPayload = {
   description?: string;
 };
 
+export type CollectPlatformImageInput = {
+  snapshotId: string;
+  displayName: string;
+};
+
+export type CreateAdminUserInput = {
+  username: string;
+  password: string;
+  role: 'admin' | 'user';
+};
+
+export type UpdateAdminUserRoleInput = {
+  role: 'admin' | 'user';
+};
+
+export type UpdateAdminUserStatusInput = {
+  status: 'active' | 'disabled';
+};
+
+export type ResetAdminUserPasswordInput = {
+  password: string;
+};
+
 export type PlatformApiClientLike = {
   listRangeTemplates(view?: RangeTemplateView): Promise<RangeTemplate[]>;
   getRangeTemplate(id: string): Promise<RangeTemplate | null>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
+  collectPlatformImage(payload: CollectPlatformImageInput): Promise<PlatformImageAsset>;
+  renamePlatformImage(id: string, displayName: string): Promise<PlatformImageAsset>;
+  publishPlatformImage(id: string): Promise<PlatformImageAsset>;
+  unpublishPlatformImage(id: string): Promise<PlatformImageAsset>;
+  enablePlatformImage(id: string): Promise<PlatformImageAsset>;
+  disablePlatformImage(id: string): Promise<PlatformImageAsset>;
+  removePlatformImage(id: string): Promise<void>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
   getRangeInstance(id: string): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
@@ -70,6 +106,13 @@ export type PlatformApiClientLike = {
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;
   listProvisionJobs(instanceMode?: InstanceMode): Promise<ProvisionJob[]>;
   getProvisionJob(id: string): Promise<ProvisionJob>;
+  fetchCloudConfig(): Promise<CloudConfigSnapshot>;
+  saveCloudConfig(payload: CloudConfigSnapshot): Promise<CloudConfigSnapshot>;
+  listAdminUsers(): Promise<AdminUser[]>;
+  createAdminUser(payload: CreateAdminUserInput): Promise<AdminUser>;
+  updateAdminUserRole(id: string, payload: UpdateAdminUserRoleInput): Promise<AdminUser>;
+  updateAdminUserStatus(id: string, payload: UpdateAdminUserStatusInput): Promise<AdminUser>;
+  resetAdminUserPassword(id: string, payload: ResetAdminUserPasswordInput): Promise<AdminUser>;
   launchRange(payload: LaunchRangeInput, operation?: OperationRequest): Promise<RangeInstance>;
   destroyRange(rangeInstanceId: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
   launchSingleInstances(payload: LaunchSingleInstancesInput, operation?: OperationRequest): Promise<Record<string, unknown>>;

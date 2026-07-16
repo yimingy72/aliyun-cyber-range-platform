@@ -3,6 +3,7 @@ import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-cli
 export type PlatformScope =
   | 'templates:read'
   | 'images:read'
+  | 'images:write'
   | 'ranges:read'
   | 'ranges:create'
   | 'ranges:destroy'
@@ -11,7 +12,11 @@ export type PlatformScope =
   | 'instances:destroy'
   | 'instances:control'
   | 'instances:credentials:read'
-  | 'jobs:read';
+  | 'jobs:read'
+  | 'users:read'
+  | 'users:write'
+  | 'settings:read'
+  | 'settings:write';
 
 export type ToolContext = {
   client: PlatformApiClientLike;
