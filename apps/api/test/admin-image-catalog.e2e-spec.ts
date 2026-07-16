@@ -9,6 +9,9 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { toAccountScopeKey } from '../src/admin/image-account-scope';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
+
+let repositoryForLogin: AdminRepository;
 
 function createSystemConfigServiceStub() {
   return {
@@ -37,9 +40,11 @@ async function createApp(repository: AdminRepository) {
   process.env.ADMIN_PASSWORD = 'change-me';
   process.env.ADMIN_TOKEN = 'dev-admin-token';
 
-  const moduleRef = await Test.createTestingModule({
+  repositoryForLogin = repository;
+
+  const moduleRef = await overrideTestOidc(Test.createTestingModule({
     imports: [AppModule],
-  })
+  }))
     .overrideProvider(ADMIN_REPOSITORY)
     .useValue(repository)
     .overrideProvider(SystemConfigService)
@@ -53,13 +58,8 @@ async function createApp(repository: AdminRepository) {
   return app;
 }
 
-async function loginAs(app: INestApplication, username = 'admin', password = 'change-me') {
-  const response = await request(app.getHttpServer())
-    .post('/admin/session')
-    .send({ username, password })
-    .expect(200);
-
-  return response.body.token as string;
+async function loginAs(_app: INestApplication, username = 'admin', _password = 'change-me') {
+  return loginAsRepositoryUser(repositoryForLogin, username);
 }
 
 describe('Admin image catalog platform asset persistence baseline', () => {
@@ -545,7 +545,7 @@ describe('Admin image catalog APIs', () => {
     expect(listResponse.body).toEqual({ items: [] });
   });
 
-  it('allows an owner to publish their own private image asset', async () => {
+  it('requires admin privileges to publish a private image asset', async () => {
     repository = createMemoryAdminRepository();
 
     await repository.createPlatformUser({
@@ -592,17 +592,7 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${asset.id}/publish`)
       .set('authorization', `Bearer ${ownerToken}`)
-      .expect(200)
-      .expect(({ body }) => {
-        expect(body).toEqual(
-          expect.objectContaining({
-            id: asset.id,
-            displayName: 'Owner Private Image',
-            ownerUserId: 'image-owner-1',
-            visibility: 'platform',
-          }),
-        );
-      });
+      .expect(403);
 
     const platformResponse = await request(app.getHttpServer())
       .get('/admin/platform-images?view=platform')
@@ -610,17 +600,11 @@ describe('Admin image catalog APIs', () => {
       .expect(200);
 
     expect(platformResponse.body).toEqual({
-      items: [
-        expect.objectContaining({
-          id: asset.id,
-          ownerUserId: 'image-owner-1',
-          visibility: 'platform',
-        }),
-      ],
+      items: [],
     });
   });
 
-  it('allows an owner to unpublish their own platform image asset back to private', async () => {
+  it('requires admin privileges to unpublish a platform image asset back to private', async () => {
     repository = createMemoryAdminRepository();
 
     await repository.createPlatformUser({
@@ -667,23 +651,22 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${asset.id}/unpublish`)
       .set('authorization', `Bearer ${ownerToken}`)
-      .expect(200)
-      .expect(({ body }) => {
-        expect(body).toEqual(
-          expect.objectContaining({
-            id: asset.id,
-            ownerUserId: 'image-owner-2',
-            visibility: 'private',
-          }),
-        );
-      });
+      .expect(403);
 
     const platformResponse = await request(app.getHttpServer())
       .get('/admin/platform-images?view=platform')
       .set('authorization', `Bearer ${ownerToken}`)
       .expect(200);
 
-    expect(platformResponse.body).toEqual({ items: [] });
+    expect(platformResponse.body).toEqual({
+      items: [
+        expect.objectContaining({
+          id: asset.id,
+          ownerUserId: 'image-owner-2',
+          visibility: 'platform',
+        }),
+      ],
+    });
   });
 
   it('prevents a non-owner user from publishing or unpublishing another user image asset', async () => {
@@ -758,12 +741,12 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${privateAsset.id}/publish`)
       .set('authorization', `Bearer ${viewerToken}`)
-      .expect(404);
+      .expect(403);
 
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${platformAsset.id}/unpublish`)
       .set('authorization', `Bearer ${viewerToken}`)
-      .expect(404);
+      .expect(403);
 
     const assets = await repository.listPlatformImageAssets({
       accountScopeKey: toAccountScopeKey('1234567890'),

@@ -145,6 +145,7 @@ pnpm compose:up
 - `api`：`http://localhost:3001`
 - `provisioner-worker`
 - `web`：`http://localhost:3000`
+- `mcp`：`http://localhost:8787/mcp`
 
 ### 3. 登录后台
 
@@ -155,8 +156,51 @@ pnpm compose:up
 
 ```bash
 pnpm compose:logs
+pnpm compose:smoke:mcp
 pnpm compose:down
 docker compose config
+```
+
+### 5. MCP 联调
+
+完整对外接入手册见：`/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/product/2026-07-15-MCP客户端接入示例.md:1`
+
+该文档现在已经包含：
+
+- Codex / Claude Code / 通用 MCP client 配置示例
+- MCP 全部 tool list
+- 每个 tool 的用途说明
+- agent 调用提示词
+- 当前权限模型
+- 已完成的黑盒权限验证结论
+- 审计 / 日志说明
+
+`mcp` 服务现在要求入站为 OIDC access token，并在服务端做 token exchange 换取下游 `platform-api` token。
+
+如果你想从宿主机直接验证：
+
+```bash
+TOKEN=$(curl -sS http://127.0.0.1:8080/realms/cyber-range/protocol/openid-connect/token \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=client_credentials' \
+  --data-urlencode 'client_id=mcp-smoke-sa' \
+  --data-urlencode 'client_secret=mcp-smoke-secret' | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).access_token||''))")
+
+MCP_URL=http://127.0.0.1:8787/mcp \
+MCP_BEARER_TOKEN="$TOKEN" \
+pnpm --filter @aliyun-cyber-range/mcp smoke:http
+```
+
+或直接跑 compose 级 smoke：
+
+```bash
+pnpm compose:smoke:mcp
+```
+
+如果 `api` / `mcp` 已经在跑，想跳过重建：
+
+```bash
+MCP_SMOKE_SKIP_UP=1 pnpm compose:smoke:mcp
 ```
 
 ### 5. 端口冲突时

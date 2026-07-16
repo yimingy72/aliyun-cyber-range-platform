@@ -14,6 +14,7 @@
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
     "compose:up": "COMPOSE_BAKE=false docker compose up -d --build",
+    "compose:smoke:mcp": "bash scripts/dev/smoke-mcp-compose.sh",
     "compose:down": "docker compose down",
     "compose:logs": "docker compose logs -f web api postgres",
     "db:local:start": "bash scripts/dev/start-postgres.sh",

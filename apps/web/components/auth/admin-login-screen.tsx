@@ -1,60 +1,36 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 
-import { parseAdminSessionPayload } from '../../lib/admin-auth-storage';
-import { useAdminSession } from '../admin/use-admin-session';
+import { buildAdminOidcAuthorizeUrl, writePendingAdminOidcLogin } from '../../lib/admin-oidc';
 
 type AdminLoginScreenProps = {
-  apiBaseUrl?: string;
+  oidcIssuer: string;
+  oidcClientId: string;
 };
 
-export function AdminLoginScreen({
-  apiBaseUrl = 'http://localhost:3001',
-}: AdminLoginScreenProps) {
-  const router = useRouter();
-  const { login } = useAdminSession();
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('');
+export function AdminLoginScreen({ oidcIssuer, oidcClientId }: AdminLoginScreenProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleLogin() {
     setIsSubmitting(true);
     setErrorMessage(null);
 
     try {
-      const response = await fetch(`${apiBaseUrl}/admin/session`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ username, password }),
+      const authorization = await buildAdminOidcAuthorizeUrl({
+        issuer: oidcIssuer,
+        clientId: oidcClientId,
+        redirectUri: `${window.location.origin}/admin/callback`,
       });
 
-      if (!response.ok) {
-        setErrorMessage('管理员登录失败，请检查账号或密码。');
-        return;
-      }
-
-      const payload = parseAdminSessionPayload(await response.json());
-
-      if (!payload) {
-        setErrorMessage('管理员登录失败，服务返回了无效会话。');
-        return;
-      }
-
-      if (!login(payload)) {
-        setErrorMessage('管理员登录失败，请稍后重试。');
-        return;
-      }
-
-      router.replace('/admin/scenarios');
+      writePendingAdminOidcLogin({
+        state: authorization.state,
+        codeVerifier: authorization.codeVerifier,
+      });
+      window.location.assign(authorization.url);
     } catch {
       setErrorMessage('管理员登录失败，请稍后重试。');
-    } finally {
       setIsSubmitting(false);
     }
   }
@@ -66,28 +42,15 @@ export function AdminLoginScreen({
           <strong>综合靶场平台</strong>
         </div>
 
-        <form aria-label="管理员登录表单" className="admin-form admin-login-form" method="post" onSubmit={handleSubmit}>
-          <label>
-            <span>账号</span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} />
-          </label>
-
-          <label>
-            <span>密码</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="请输入管理员密码"
-            />
-          </label>
+        <div aria-label="管理员登录表单" className="admin-form admin-login-form">
+          <p>使用平台统一账号登录管理后台。</p>
 
           {errorMessage ? <p className="form-error">{errorMessage}</p> : null}
 
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? '正在登录...' : '登录管理后台'}
+          <button type="button" disabled={isSubmitting} onClick={() => void handleLogin()}>
+            {isSubmitting ? '正在跳转...' : '使用平台账号登录'}
           </button>
-        </form>
+        </div>
       </section>
     </main>
   );

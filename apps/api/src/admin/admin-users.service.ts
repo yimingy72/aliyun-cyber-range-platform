@@ -12,14 +12,18 @@ import { ADMIN_REPOSITORY, AdminRepository, PlatformUserRecord, UserRole, UserSt
 import { hashPassword } from './admin-user-auth';
 import { AdminUserDto, CreateAdminUserDto } from './dto/admin-user.dto';
 import { PrismaService } from '../database/prisma.service';
+import { KeycloakAdminService } from './keycloak-admin.service';
 
 const SERIALIZABLE_RETRY_LIMIT = 3;
+
+type AdminUserLike = Pick<PlatformUserRecord, 'id' | 'username' | 'role' | 'status' | 'createdAt' | 'updatedAt'>;
 
 @Injectable()
 export class AdminUsersService {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository,
     private readonly prisma: PrismaService,
+    private readonly keycloakAdminService: KeycloakAdminService,
   ) {}
 
   async listUsers(): Promise<AdminUserDto[]> {
@@ -32,10 +36,18 @@ export class AdminUsersService {
     const username = this.normalizeUsername(input.username);
 
     try {
+      const oidcSubject = await this.keycloakAdminService.createUser({
+        username,
+        password: input.password,
+        role: input.role,
+        status: 'active',
+      });
       const user = await this.repository.createPlatformUser({
         id: randomUUID(),
         username,
         passwordHash: hashPassword(input.password),
+        oidcIssuer: process.env.OIDC_ISSUER?.trim() || 'http://localhost:8080/realms/cyber-range',
+        oidcSubject,
         role: input.role,
         status: 'active',
       });
@@ -56,6 +68,13 @@ export class AdminUsersService {
 
       if (user.role === 'admin' && user.status === 'active' && role !== 'admin') {
         await this.assertAnotherActiveAdminExists(tx, 'Cannot demote the last active admin');
+      }
+
+      if (user.oidcSubject) {
+        await this.keycloakAdminService.updateUserRole({
+          subject: user.oidcSubject,
+          role,
+        });
       }
 
       const updatedUser = await tx.platformUser.update({
@@ -79,6 +98,13 @@ export class AdminUsersService {
         await this.assertAnotherActiveAdminExists(tx, 'Cannot disable the last active admin');
       }
 
+      if (user.oidcSubject) {
+        await this.keycloakAdminService.updateUserStatus({
+          subject: user.oidcSubject,
+          status,
+        });
+      }
+
       const updatedUser = await tx.platformUser.update({
         where: { id: userId },
         data: { status },
@@ -89,7 +115,14 @@ export class AdminUsersService {
   }
 
   async resetUserPassword(userId: string, password: string): Promise<AdminUserDto> {
-    await this.getUserOrThrow(userId);
+    const user = await this.getUserOrThrow(userId);
+
+    if (user.oidcSubject) {
+      await this.keycloakAdminService.resetUserPassword({
+        subject: user.oidcSubject,
+        password,
+      });
+    }
 
     const updatedUser = await this.repository.updatePlatformUser(userId, {
       passwordHash: hashPassword(password),
@@ -132,7 +165,7 @@ export class AdminUsersService {
     return normalizedUsername;
   }
 
-  private toAdminUserDto(user: PlatformUserRecord): AdminUserDto {
+  private toAdminUserDto(user: AdminUserLike): AdminUserDto {
     return {
       id: user.id,
       username: user.username,
@@ -148,6 +181,10 @@ export class AdminUsersService {
       const code = (error as { code?: string }).code;
 
       if (code === 'P2002' || error.message.includes('unique constraint')) {
+        throw new ConflictException('Username already exists');
+      }
+
+      if (error.message === 'Username already exists') {
         throw new ConflictException('Username already exists');
       }
     }

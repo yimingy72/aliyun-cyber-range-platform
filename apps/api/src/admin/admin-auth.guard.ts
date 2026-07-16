@@ -1,8 +1,8 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 
-import { ADMIN_REPOSITORY, AdminRepository } from './admin.repository';
-import { hasValidSessionFingerprint, SessionUserProfile, verifySessionToken } from './admin-user-auth';
-import { AdminSessionService } from './admin-session.service';
+import { SessionUserProfile } from './admin-user-auth';
+import { OidcJwtVerifier } from './oidc-jwt-verifier';
+import { OidcPrincipalResolver } from './oidc-principal-resolver';
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
@@ -14,8 +14,8 @@ export class AdminAuthGuard implements CanActivate {
   ] as const;
 
   constructor(
-    private readonly adminSessionService: AdminSessionService,
-    @Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository,
+    private readonly oidcJwtVerifier?: OidcJwtVerifier,
+    private readonly oidcPrincipalResolver?: OidcPrincipalResolver,
   ) {}
 
   async canActivate(context: ExecutionContext) {
@@ -33,17 +33,32 @@ export class AdminAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing or invalid admin token');
     }
 
-    const payload = verifySessionToken(token, this.adminSessionService.getSessionSecret());
-
-    if (!payload) {
+    if (!this.looksLikeJwt(token)) {
       throw new UnauthorizedException('Missing or invalid admin token');
     }
 
-    const user = await this.repository.getPlatformUserById(payload.sub);
+    return this.authenticateOidc(request, token);
+  }
 
-    if (!user || user.status !== 'active' || !hasValidSessionFingerprint(payload, user)) {
-      throw new UnauthorizedException('Missing or invalid admin token');
+  private async authenticateOidc(
+    request: {
+      headers: Record<string, string | undefined>;
+      originalUrl?: string;
+      url?: string;
+      method?: string;
+      adminUser?: SessionUserProfile;
+    },
+    token: string,
+  ) {
+    if (!this.oidcJwtVerifier || !this.oidcPrincipalResolver) {
+      throw new UnauthorizedException('OIDC authentication is not configured');
     }
+
+    const claims = await this.oidcJwtVerifier.verifyAccessToken(token);
+    const user = await this.oidcPrincipalResolver.resolve({
+      issuer: claims.issuer,
+      subject: claims.subject,
+    });
 
     request.adminUser = {
       id: user.id,
@@ -101,5 +116,9 @@ export class AdminAuthGuard implements CanActivate {
     }
 
     return token;
+  }
+
+  private looksLikeJwt(token: string) {
+    return token.split('.').length === 3;
   }
 }

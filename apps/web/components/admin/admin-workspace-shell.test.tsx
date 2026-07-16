@@ -200,6 +200,20 @@ describe('AdminWorkspaceShell', () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it('keeps the oidc callback route outside the workspace shell', () => {
+    pathnameState.value = '/admin/callback';
+
+    render(
+      <AdminWorkspaceShell>
+        <div>callback screen</div>
+      </AdminWorkspaceShell>,
+    );
+
+    expect(screen.getByText('callback screen')).toBeTruthy();
+    expect(screen.queryByText('综合靶场平台')).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it('redirects unauthenticated users on non-login routes', async () => {
     render(
       <AdminWorkspaceShell>
