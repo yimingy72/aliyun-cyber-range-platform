@@ -606,6 +606,109 @@ describe('single instances', () => {
     expect(response.body.instances[1].singleInstanceConfig.assignedVswitchId).toBe(expectedVswitchIds[(activeCount + 1) % 3]);
   });
 
+  it('uses Administrator as the runtime username for windows single instances', async () => {
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-windows-image-1',
+          sourceImageName: 'Windows Server 2022',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-08T00:00:03.000Z'),
+        },
+      ],
+    });
+
+    const snapshot = (
+      await repository.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: null,
+        regionId: 'cn-hangzhou',
+        scope: 'custom',
+        imageId: 'm-windows-image-1',
+      })
+    )[0];
+
+    const windowsAsset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Windows Server 2022',
+      visibility: 'platform',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'windows-lab',
+        hostName: 'windows-host',
+        platformImageAssetId: windowsAsset.id,
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'windows launch',
+      })
+      .expect(201);
+
+    expect(response.body.instances[0].runtimeCredentials['single-ecs-1']).toMatchObject({
+      username: 'Administrator',
+    });
+  });
+
+  it('generates different passwords for batch single instances when password is omitted', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'batch-random-passwords',
+        hostName: 'batch-random-host',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 2,
+        password: '',
+        remark: 'random passwords',
+      })
+      .expect(201);
+
+    const firstPassword = response.body.instances[0].runtimeCredentials['single-ecs-1'].password;
+    const secondPassword = response.body.instances[1].runtimeCredentials['single-ecs-2'].password;
+
+    expect(typeof firstPassword).toBe('string');
+    expect(typeof secondPassword).toBe('string');
+    expect(firstPassword).not.toBe(secondPassword);
+  });
+
+  it('reuses the same password for batch single instances when password is provided', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'batch-shared-password',
+        hostName: 'batch-shared-host',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-10T12:00:00.000Z',
+        quantity: 2,
+        password: 'SharedPassword123!',
+        remark: 'shared password',
+      })
+      .expect(201);
+
+    expect(response.body.instances[0].runtimeCredentials['single-ecs-1'].password).toBe('SharedPassword123!');
+    expect(response.body.instances[1].runtimeCredentials['single-ecs-2'].password).toBe('SharedPassword123!');
+  });
+
   it('returns grouped batch payloads and leaves legacy single rows standalone', async () => {
     const batch = await repository.createSingleInstanceBatch({
       name: 'web-lab-batch',

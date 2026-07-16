@@ -25,6 +25,13 @@ import type {
   ImageSnapshot,
   PlatformImageAsset,
 } from '../../lib/admin-types';
+import {
+  AdminPaginationControls,
+  buildVisiblePages,
+  getPagination,
+  PAGE_SIZE_AUTO,
+  useAdminPageSize,
+} from './admin-pagination';
 import { useAdminSession } from './use-admin-session';
 
 type ImageCenterScreenProps = {
@@ -39,21 +46,8 @@ type ImageCenterConfirmState =
   | null;
 type ActionMenuPlacement = 'down' | 'up';
 
-const PAGE_SIZE_AUTO = 'auto';
-const MANUAL_PAGE_SIZE_OPTIONS = [50, 100, 200];
-const ROWS_BASED_PAGE_SIZE_FALLBACK = 8;
-const ROW_HEIGHT = 72;
-const PAGE_SIZE_RESERVED_HEIGHT = 470;
 const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
 const ACTION_MENU_ESTIMATED_HEIGHT_PX = 132;
-
-function getAutoPageSize(viewportHeight?: number) {
-  if (!viewportHeight || Number.isNaN(viewportHeight)) {
-    return ROWS_BASED_PAGE_SIZE_FALLBACK;
-  }
-
-  return Math.max(1, Math.floor((viewportHeight - PAGE_SIZE_RESERVED_HEIGHT) / ROW_HEIGHT));
-}
 
 function formatCloudImageStatusText(status?: string | null, isAvailable?: boolean | null) {
   const normalizedStatus = status?.trim();
@@ -164,27 +158,6 @@ function removeSnapshot(scopePayload: ImageCatalogScopePayload | null, snapshotI
   } satisfies ImageCatalogScopePayload;
 }
 
-function getPagination(totalItems: number, currentPage: number, pageSize: number) {
-  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
-  const page = Math.min(Math.max(currentPage, 1), totalPages);
-  const startIndex = (page - 1) * pageSize;
-
-  return {
-    page,
-    totalPages,
-    startIndex,
-    endIndex: startIndex + pageSize,
-  };
-}
-
-function buildVisiblePages(totalPages: number, currentPage: number) {
-  const startPage = Math.max(1, currentPage - 1);
-  const endPage = Math.min(totalPages, startPage + 2);
-  const adjustedStartPage = Math.max(1, endPage - 2);
-
-  return Array.from({ length: endPage - adjustedStartPage + 1 }, (_, index) => adjustedStartPage + index);
-}
-
 function ImageCenterDialog({
   title,
   children,
@@ -226,8 +199,6 @@ export function ImageCenterScreen({
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
-  const [pageSizeMode, setPageSizeMode] = useState<string>(PAGE_SIZE_AUTO);
-  const [pageSize, setPageSize] = useState(() => getAutoPageSize(typeof window === 'undefined' ? undefined : window.innerHeight));
   const [tabPages, setTabPages] = useState<TabPageMap>({ platform: 1, mine: 1, custom: 1, public: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
@@ -239,6 +210,7 @@ export function ImageCenterScreen({
   const mineRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
+  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   function beginAction(actionKey: string) {
     setPendingActionKeys((previous) => (previous.includes(actionKey) ? previous : [...previous, actionKey]));
@@ -300,23 +272,6 @@ export function ImageCenterScreen({
 
     setActiveTab(nextView);
   }
-
-  useEffect(() => {
-    if (pageSizeMode !== PAGE_SIZE_AUTO) {
-      return;
-    }
-
-    function syncAutoPageSize() {
-      setPageSize(getAutoPageSize(window.innerHeight));
-    }
-
-    syncAutoPageSize();
-    window.addEventListener('resize', syncAutoPageSize);
-
-    return () => {
-      window.removeEventListener('resize', syncAutoPageSize);
-    };
-  }, [pageSizeMode]);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -731,7 +686,6 @@ export function ImageCenterScreen({
   function handlePageSizeChange(nextValue: string) {
     if (nextValue === PAGE_SIZE_AUTO) {
       setPageSizeMode(PAGE_SIZE_AUTO);
-      setPageSize(getAutoPageSize(typeof window === 'undefined' ? undefined : window.innerHeight));
       setTabPages({ platform: 1, mine: 1, custom: 1, public: 1 });
       return;
     }
@@ -1104,60 +1058,19 @@ export function ImageCenterScreen({
             )}
           </div>
 
-          <div className="image-center-pagination" aria-label={`${activeTabTitle} 分页`}>
-            <label className="image-center-pagination-size">
-              <span>每页条数</span>
-              <select aria-label="每页条数" value={pageSizeMode} onChange={(event) => handlePageSizeChange(event.target.value)}>
-                <option value={PAGE_SIZE_AUTO}>自动</option>
-                {MANUAL_PAGE_SIZE_OPTIONS.map((option) => (
-                  <option key={option} value={String(option)}>
-                    {option} 条
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" aria-label="上一页" disabled={activePagination.page <= 1} onClick={goToPreviousPage}>
-              上一页
-            </button>
-            <div className="image-center-pagination-pages" aria-label="页码">
-              {visiblePages.map((pageNumber) => (
-                <button
-                  key={pageNumber}
-                  type="button"
-                  aria-label={`第 ${pageNumber} 页`}
-                  aria-pressed={pageNumber === activePagination.page}
-                  onClick={() => setPage(activeTab, pageNumber)}
-                >
-                  {pageNumber}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              aria-label="下一页"
-              disabled={activePagination.page >= activePagination.totalPages}
-              onClick={goToNextPage}
-            >
-              下一页
-            </button>
-            <label className="image-center-pagination-jump">
-              <span>跳转到</span>
-              <input
-                aria-label="跳转到页码"
-                type="number"
-                min={1}
-                max={activePagination.totalPages}
-                value={jumpPageValue}
-                onChange={(event) => setJumpPageValue(event.target.value)}
-              />
-            </label>
-            <button type="button" aria-label="跳转" onClick={handleJumpToPage}>
-              跳转
-            </button>
-            <span className="image-center-pagination-summary">
-              第 {activePagination.page} / {activePagination.totalPages} 页
-            </span>
-          </div>
+          <AdminPaginationControls
+            label={`${activeTabTitle} 分页`}
+            pageSizeMode={pageSizeMode}
+            pagination={activePagination}
+            visiblePages={visiblePages}
+            jumpPageValue={jumpPageValue}
+            onPageSizeChange={handlePageSizeChange}
+            onPreviousPage={goToPreviousPage}
+            onNextPage={goToNextPage}
+            onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
+            onJumpPageValueChange={setJumpPageValue}
+            onJumpPage={handleJumpToPage}
+          />
           </div>
 
           {renamingAsset ? (

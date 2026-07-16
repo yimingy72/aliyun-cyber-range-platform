@@ -16,6 +16,7 @@ export type AdminOidcPendingLogin = {
 
 export type AdminOidcTokenResponse = {
   access_token?: string;
+  refresh_token?: string;
 };
 
 export async function buildAdminOidcAuthorizeUrl(input: AdminOidcAuthorizeInput) {
@@ -97,8 +98,33 @@ export async function exchangeAdminOidcCode(input: {
   return (await response.json()) as AdminOidcTokenResponse;
 }
 
+export async function refreshAdminOidcToken(input: {
+  issuer: string;
+  clientId: string;
+  refreshToken: string;
+}) {
+  const response = await fetch(`${trimTrailingSlash(input.issuer)}/protocol/openid-connect/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: input.clientId,
+      refresh_token: input.refreshToken,
+    }),
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return (await response.json()) as AdminOidcTokenResponse;
+}
+
 export function parseAdminOidcSessionPayload(tokenResponse: AdminOidcTokenResponse): AdminSessionPayload | null {
   const accessToken = normalizeText(tokenResponse.access_token);
+  const refreshToken = normalizeText(tokenResponse.refresh_token);
 
   if (!accessToken) {
     return null;
@@ -116,12 +142,18 @@ export function parseAdminOidcSessionPayload(tokenResponse: AdminOidcTokenRespon
 
   return {
     token: accessToken,
+    ...(refreshToken ? { refreshToken } : {}),
     profile: {
       id: subject,
       username,
       role,
     },
   };
+}
+
+export function readAdminOidcTokenExpiresAt(token: string) {
+  const payload = decodeJwtPayload(token) as { exp?: number } | null;
+  return typeof payload?.exp === 'number' ? payload.exp * 1000 : null;
 }
 
 function decodeJwtPayload(token: string) {

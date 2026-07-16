@@ -15,6 +15,13 @@ import type {
   ProvisionJob,
   RangeInstance,
 } from '../../lib/admin-types';
+import {
+  AdminPaginationControls,
+  buildVisiblePages,
+  getPagination,
+  PAGE_SIZE_AUTO,
+  useAdminPageSize,
+} from './admin-pagination';
 import { useAdminSession } from './use-admin-session';
 
 type RangeInstancesScreenProps = {
@@ -194,6 +201,9 @@ export function RangeInstancesScreen({
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
   const [removedInstanceIds, setRemovedInstanceIds] = useState<string[]>([]);
+  const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
+  const [jumpPageValue, setJumpPageValue] = useState('1');
+  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   async function reloadRangeInstanceRows(token: string, nextListMode: RangeListMode) {
     const [nextInstances, nextJobs] = await Promise.all([
@@ -309,6 +319,48 @@ export function RangeInstancesScreen({
   }, [historyInstances, searchName]);
 
   const visibleListInstances = listMode === 'history' ? filteredHistoryInstances : filteredActiveInstances;
+  const activePagination = getPagination(visibleListInstances.length, listPages[listMode], pageSize);
+  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
+  const pagedVisibleListInstances = visibleListInstances.slice(activePagination.startIndex, activePagination.endIndex);
+
+  useEffect(() => {
+    if (listPages[listMode] !== activePagination.page) {
+      setListPages((current) => ({
+        ...current,
+        [listMode]: activePagination.page,
+      }));
+    }
+  }, [activePagination.page, listMode, listPages]);
+
+  useEffect(() => {
+    setJumpPageValue(String(activePagination.page));
+  }, [activePagination.page, listMode]);
+
+  function handlePageSizeChange(nextValue: string) {
+    if (nextValue === PAGE_SIZE_AUTO) {
+      setPageSizeMode(PAGE_SIZE_AUTO);
+      setListPages({ active: 1, history: 1 });
+      return;
+    }
+
+    setPageSizeMode(nextValue);
+    setPageSize(Number(nextValue));
+    setListPages({ active: 1, history: 1 });
+  }
+
+  function handleJumpToPage() {
+    const parsedPage = Number.parseInt(jumpPageValue, 10);
+
+    if (Number.isNaN(parsedPage)) {
+      setJumpPageValue(String(activePagination.page));
+      return;
+    }
+
+    setListPages((current) => ({
+      ...current,
+      [listMode]: parsedPage,
+    }));
+  }
 
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstance) {
     setInstances((current) =>
@@ -465,7 +517,7 @@ export function RangeInstancesScreen({
           ) : visibleListInstances.length ? (
             listMode === 'history' ? (
               <div className="range-history-rows">
-                {filteredHistoryInstances.map((instance) => {
+                {pagedVisibleListInstances.map((instance) => {
                   const recentJob = jobsByInstanceId.get(instance.id);
                   const endedAt = recentJob?.finishedAt ?? recentJob?.startedAt ?? null;
 
@@ -506,7 +558,7 @@ export function RangeInstancesScreen({
               </div>
             ) : (
               <div className="range-workbench-rows">
-                {filteredActiveInstances.map((instance) => {
+                {pagedVisibleListInstances.map((instance) => {
                   const actionLabel = getInstanceActionLabel(instance);
 
                   return (
@@ -560,6 +612,36 @@ export function RangeInstancesScreen({
               <p>{listMode === 'history' ? '实例完成销毁后，会自动沉淀到这里。' : '实例会在靶场编排页生成后进入这里。'}</p>
             </div>
           )}
+          {visibleListInstances.length ? (
+            <AdminPaginationControls
+              label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
+              pageSizeMode={pageSizeMode}
+              pagination={activePagination}
+              visiblePages={visiblePages}
+              jumpPageValue={jumpPageValue}
+              onPageSizeChange={handlePageSizeChange}
+              onPreviousPage={() =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: activePagination.page - 1,
+                }))
+              }
+              onNextPage={() =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: activePagination.page + 1,
+                }))
+              }
+              onPageSelect={(pageNumber) =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: pageNumber,
+                }))
+              }
+              onJumpPageValueChange={setJumpPageValue}
+              onJumpPage={handleJumpToPage}
+            />
+          ) : null}
         </article>
       </section>
     </div>

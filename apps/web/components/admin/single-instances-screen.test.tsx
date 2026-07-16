@@ -35,6 +35,11 @@ const { writeTextMock } = vi.hoisted(() => ({
   writeTextMock: vi.fn(),
 }));
 
+const { createObjectUrlMock, revokeObjectUrlMock } = vi.hoisted(() => ({
+  createObjectUrlMock: vi.fn(),
+  revokeObjectUrlMock: vi.fn(),
+}));
+
 const { openedWindowState } = vi.hoisted(() => ({
   openedWindowState: {
     location: { href: '' },
@@ -108,10 +113,20 @@ describe('SingleInstancesScreen', () => {
     searchParamsState.value = '';
     openWindowMock.mockReset();
     writeTextMock.mockReset();
+    createObjectUrlMock.mockReset();
+    revokeObjectUrlMock.mockReset();
     openedWindowState.location.href = '';
     openedWindowState.opener = 'not-null' as unknown;
     openedWindowState.close.mockReset();
     vi.stubGlobal('open', openWindowMock);
+    Object.defineProperty(URL, 'createObjectURL', {
+      writable: true,
+      value: createObjectUrlMock.mockReturnValue('blob:batch-export'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      writable: true,
+      value: revokeObjectUrlMock,
+    });
     Object.assign(navigator, {
       clipboard: {
         writeText: writeTextMock,
@@ -1002,6 +1017,95 @@ describe('SingleInstancesScreen', () => {
     );
   });
 
+  it('exports batch instances as csv', async () => {
+    const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [
+        {
+          batch: {
+            id: 'batch-1',
+            name: 'windows-batch',
+            imageDisplayName: 'Windows Server 2022',
+            imageId: 'm-win-1',
+            platformImageAssetId: 'platform-image-1',
+            cpu: 2,
+            memory: 4,
+            systemDiskSize: 40,
+            quantity: 2,
+            createdBy: 'admin',
+            createdAt: '2026-07-08T09:00:00.000Z',
+            expiresAt: '2026-07-10T12:00:00.000Z',
+          },
+          instances: [
+            {
+              id: 'single-1',
+              name: 'windows-lab-01',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'running',
+              accessEntry: { publicIp: '47.1.2.3' },
+              runtimeCredentials: {
+                'single-ecs-1': {
+                  username: 'root',
+                  password: 'secret-1',
+                },
+              },
+              singleInstanceConfig: {
+                hostKey: 'single-ecs-1',
+                imageDisplayName: 'Windows Server 2022',
+                cpu: 2,
+                memory: 4,
+              },
+            },
+            {
+              id: 'single-2',
+              name: 'linux-lab-02',
+              createdBy: 'admin',
+              instanceMode: 'single',
+              status: 'running',
+              accessEntry: { publicIp: '47.1.2.4' },
+              runtimeCredentials: {
+                'single-ecs-1': {
+                  username: 'root',
+                  password: 'secret-2',
+                },
+              },
+              singleInstanceConfig: {
+                hostKey: 'single-ecs-1',
+                imageDisplayName: 'Ubuntu 24.04 LTS',
+                cpu: 2,
+                memory: 4,
+              },
+            },
+          ],
+        },
+      ],
+      standaloneInstances: [],
+    });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-win-1', displayName: 'Windows Server 2022', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('windows-batch')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '一键导出' }));
+
+    await waitFor(() => expect(createObjectUrlMock).toHaveBeenCalledTimes(1));
+
+    const blob = createObjectUrlMock.mock.calls[0]?.[0] as Blob;
+    expect(blob).toBeInstanceOf(Blob);
+    expect(await blob.text()).toBe(
+      '\uFEFF实例名,公网 IP,账号,密码\nwindows-lab-01,47.1.2.3,Administrator,secret-1\nlinux-lab-02,47.1.2.4,root,secret-2',
+    );
+    expect(anchorClickSpy).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrlMock).toHaveBeenCalledWith('blob:batch-export');
+
+    anchorClickSpy.mockRestore();
+  });
+
   it('opens a pack image dialog before submitting pack-image actions', async () => {
     triggerSingleInstanceActionMock.mockResolvedValue({
       status: 'accepted',
@@ -1104,6 +1208,44 @@ describe('SingleInstancesScreen', () => {
 
     await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('super-secret-password'));
     await waitFor(() => expect(within(row!).getByRole('button', { name: '复制密码' }).textContent).toBe('已复制'));
+  });
+
+
+  it('renders Administrator for windows credentials even when legacy runtime username is root', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([
+      {
+        id: 'windows-running',
+        name: 'windows-lab',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'running',
+        createdAt: '2026-07-08T09:00:00.000Z',
+        accessEntry: { publicIp: '47.1.2.3' },
+        runtimeCredentials: {
+          'single-ecs-1': {
+            username: 'root',
+            password: 'super-secret-password',
+          },
+        },
+        singleInstanceConfig: {
+          hostKey: 'single-ecs-1',
+          imageDisplayName: 'Windows Server 2022',
+          cpu: 2,
+          memory: 4,
+        },
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({
+      items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Windows Server 2022', enabled: true }],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('windows-lab')).closest('article');
+    expect(row).toBeTruthy();
+    expect(within(row!).getByText('Administrator / ******')).toBeTruthy();
+    expect(within(row!).getByText('Administrator / super-secret-password')).toBeTruthy();
   });
 
   it('blocks duplicate row action clicks while a request is in flight', async () => {

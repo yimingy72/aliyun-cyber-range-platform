@@ -11,6 +11,22 @@ const { replaceMock, pathnameState, storageEventState } = vi.hoisted(() => ({
 }));
 
 const storage = new Map<string, string>();
+const fetchMock = vi.fn();
+
+function createJwt(options?: { exp?: number; sub?: string; username?: string; role?: 'admin' | 'user' }) {
+  return [
+    Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url'),
+    Buffer.from(
+      JSON.stringify({
+        exp: options?.exp ?? Math.floor(Date.now() / 1000) + 3600,
+        sub: options?.sub ?? 'admin',
+        preferred_username: options?.username ?? 'admin',
+        realm_access: { roles: [options?.role ?? 'admin'] },
+      }),
+    ).toString('base64url'),
+    'signature',
+  ].join('.');
+}
 
 function emitStorageEvent(key: string, oldValue: string | null, newValue: string | null) {
   window.dispatchEvent(
@@ -90,6 +106,8 @@ Object.defineProperty(window, 'localStorage', {
   },
 });
 
+vi.stubGlobal('fetch', fetchMock);
+
 vi.mock('next/navigation', () => ({
   usePathname: () => pathnameState.value,
   useRouter: () => ({
@@ -102,7 +120,8 @@ import { AdminWorkspaceShell } from './admin-workspace-shell';
 
 function createSession(overrides?: Partial<AdminSessionPayload>): AdminSessionPayload {
   return {
-    token: overrides?.token ?? 'dev-admin-token',
+    token: overrides?.token ?? createJwt(),
+    refreshToken: overrides?.refreshToken,
     profile: {
       id: overrides?.profile?.id ?? 'admin',
       username: overrides?.profile?.username ?? 'admin',
@@ -119,6 +138,7 @@ describe('AdminWorkspaceShell', () => {
     storageEventState.queue = [];
     storageEventState.scheduled = false;
     storage.clear();
+    fetchMock.mockReset();
     clearAdminSession();
     storage.clear();
   });
@@ -256,6 +276,43 @@ describe('AdminWorkspaceShell', () => {
     });
 
     expect(screen.queryByRole('link', { name: /用户管理/i })).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes expiring sessions before rendering the workspace', async () => {
+    writeAdminSession(
+      createSession({
+        token: createJwt({ exp: Math.floor(Date.now() / 1000) + 30 }),
+        refreshToken: 'refresh-token-1',
+      }),
+    );
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: createJwt({
+            exp: Math.floor(Date.now() / 1000) + 3600,
+            sub: 'renewed-user',
+            username: 'renewed',
+            role: 'user',
+          }),
+          refresh_token: 'refresh-token-2',
+        }),
+        { status: 200 },
+      ),
+    );
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+    await screen.findByText('workspace content');
+
+    expect(screen.getByText('renewed / user')).toBeTruthy();
     expect(replaceMock).not.toHaveBeenCalled();
   });
 });

@@ -25,6 +25,13 @@ import type {
   SingleInstanceAction,
   SingleInstanceLaunchInput,
 } from '../../lib/admin-types';
+import {
+  AdminPaginationControls,
+  buildVisiblePages,
+  getPagination,
+  PAGE_SIZE_AUTO,
+  useAdminPageSize,
+} from './admin-pagination';
 import { useAdminSession } from './use-admin-session';
 
 type SingleInstancesScreenProps = {
@@ -53,6 +60,18 @@ type InstanceCredential = {
   username: string;
   password: string;
 };
+
+type CsvExportRow = {
+  name: string;
+  publicIp: string;
+  username: string;
+  password: string;
+};
+
+function detectDefaultAccount(instance: RangeInstance) {
+  const imageName = String(instance.singleInstanceConfig?.imageDisplayName ?? instance.singleInstanceConfig?.imageId ?? '').toLowerCase();
+  return imageName.includes('windows') ? 'Administrator' : 'root';
+}
 
 type PackImageDialogState = {
   instanceId: string;
@@ -186,6 +205,11 @@ function getPublicIp(instance: RangeInstance) {
   return instance.accessEntry?.publicIp?.trim() || '暂无';
 }
 
+function escapeCsvCell(value: string) {
+  const normalizedValue = value.replaceAll('"', '""');
+  return /[",\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
+}
+
 function readPrimaryCredential(instance: RangeInstance): InstanceCredential | null {
   const hostKey =
     instance.singleInstanceConfig?.hostKey?.trim() ||
@@ -199,7 +223,11 @@ function readPrimaryCredential(instance: RangeInstance): InstanceCredential | nu
     return null;
   }
 
-  return { username, password };
+  const normalizedUsername = username === 'root' && detectDefaultAccount(instance) === 'Administrator'
+    ? 'Administrator'
+    : username;
+
+  return { username: normalizedUsername, password };
 }
 
 function formatMaskedCredential(instance: RangeInstance) {
@@ -220,6 +248,27 @@ function formatFullCredential(instance: RangeInstance) {
   }
 
   return `${credential.username} / ${credential.password}`;
+}
+
+function exportBatchInstancesCsv(batchName: string, rows: CsvExportRow[]) {
+  const header = ['实例名', '公网 IP', '账号', '密码'];
+  const csv = [
+    header.join(','),
+    ...rows.map((row) =>
+      [row.name, row.publicIp, row.username, row.password].map((value) => escapeCsvCell(value)).join(','),
+    ),
+  ].join('\n');
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const safeBatchName = batchName.trim() || 'single-instance-batch';
+
+  link.href = downloadUrl;
+  link.download = `${safeBatchName}-instances.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(downloadUrl);
 }
 
 function readDefaultPackImageName(instance: RangeInstance) {
@@ -436,9 +485,12 @@ export function SingleInstancesScreen({
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogState | null>(null);
+  const [listPages, setListPages] = useState<Record<ListMode, number>>({ active: 1, history: 1 });
+  const [jumpPageValue, setJumpPageValue] = useState('1');
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const consumedPrefillRef = useRef<string | null>(null);
+  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   async function reloadSingleInstanceRows(token: string, nextListMode: ListMode) {
     const [nextPayload, nextJobs] = await Promise.all([
@@ -1049,6 +1101,80 @@ export function SingleInstancesScreen({
     }
   }
 
+  function handleBatchExport(group: SingleInstanceBatchGroup) {
+    exportBatchInstancesCsv(
+      group.batch.name,
+      group.instances.map((instance) => {
+        const credential = readPrimaryCredential(instance);
+
+        return {
+          name: instance.name?.trim() || instance.id,
+          publicIp: getPublicIp(instance),
+          username: credential?.username || '暂无',
+          password: credential?.password || '暂无',
+        };
+      }),
+    );
+  }
+
+  const visibleInstances = (listMode === 'history' ? historyInstances : activeInstances).filter((instance) =>
+    normalizedSearchName
+      ? (instance.name?.trim().toLowerCase() || '').includes(normalizedSearchName)
+      : true,
+  );
+  const visibleBatchGroups = (listMode === 'history' ? historyBatchGroups : activeBatchGroups).filter((group) =>
+    normalizedSearchName ? group.batch.name.trim().toLowerCase().includes(normalizedSearchName) : true,
+  );
+  const currentItemsCount = visibleBatchGroups.length + visibleInstances.length;
+  const activePagination = getPagination(currentItemsCount, listPages[listMode], pageSize);
+  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
+  const pagedBatchGroups = visibleBatchGroups.slice(activePagination.startIndex, activePagination.endIndex);
+  const pagedInstances = visibleInstances.slice(
+    Math.max(0, activePagination.startIndex - visibleBatchGroups.length),
+    Math.max(0, activePagination.endIndex - visibleBatchGroups.length),
+  );
+  const hasVisibleContent = visibleBatchGroups.length > 0 || visibleInstances.length > 0;
+  const isBootstrapLoading = isLoading && batchGroups.length === 0 && instances.length === 0;
+
+  useEffect(() => {
+    if (listPages[listMode] !== activePagination.page) {
+      setListPages((current) => ({
+        ...current,
+        [listMode]: activePagination.page,
+      }));
+    }
+  }, [activePagination.page, listMode, listPages]);
+
+  useEffect(() => {
+    setJumpPageValue(String(activePagination.page));
+  }, [activePagination.page, listMode]);
+
+  function handlePageSizeChange(nextValue: string) {
+    if (nextValue === PAGE_SIZE_AUTO) {
+      setPageSizeMode(PAGE_SIZE_AUTO);
+      setListPages({ active: 1, history: 1 });
+      return;
+    }
+
+    setPageSizeMode(nextValue);
+    setPageSize(Number(nextValue));
+    setListPages({ active: 1, history: 1 });
+  }
+
+  function handleJumpToPage() {
+    const parsedPage = Number.parseInt(jumpPageValue, 10);
+
+    if (Number.isNaN(parsedPage)) {
+      setJumpPageValue(String(activePagination.page));
+      return;
+    }
+
+    setListPages((current) => ({
+      ...current,
+      [listMode]: parsedPage,
+    }));
+  }
+
   if (!session.isReady) {
     return null;
   }
@@ -1062,17 +1188,6 @@ export function SingleInstancesScreen({
       </main>
     );
   }
-
-  const visibleInstances = (listMode === 'history' ? historyInstances : activeInstances).filter((instance) =>
-    normalizedSearchName
-      ? (instance.name?.trim().toLowerCase() || '').includes(normalizedSearchName)
-      : true,
-  );
-  const visibleBatchGroups = (listMode === 'history' ? historyBatchGroups : activeBatchGroups).filter((group) =>
-    normalizedSearchName ? group.batch.name.trim().toLowerCase().includes(normalizedSearchName) : true,
-  );
-  const hasVisibleContent = visibleBatchGroups.length > 0 || visibleInstances.length > 0;
-  const isBootstrapLoading = isLoading && batchGroups.length === 0 && instances.length === 0;
 
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen">
@@ -1144,7 +1259,7 @@ export function SingleInstancesScreen({
             )
           ) : hasVisibleContent ? (
             <>
-              {visibleBatchGroups.length > 0 ? (
+              {pagedBatchGroups.length > 0 ? (
                 <div className="single-instance-batch-section">
                   <div className={`single-instance-batch-header${listMode === 'history' ? ' is-history' : ''}`}>
                     <div></div>
@@ -1157,7 +1272,7 @@ export function SingleInstancesScreen({
                     <div>创建人</div>
                     {listMode === 'history' ? null : <div>批量操作</div>}
                   </div>
-                  {visibleBatchGroups.map((group) => {
+                  {pagedBatchGroups.map((group) => {
                     const isExpanded = expandedBatchIds.includes(group.batch.id);
                     const isHistoryGroup = isHistoryBatch(group);
 
@@ -1201,6 +1316,9 @@ export function SingleInstancesScreen({
                           </div>
                           {!isHistoryGroup ? (
                             <div className="single-instance-batch-actions">
+                              <button type="button" onClick={() => handleBatchExport(group)}>
+                                一键导出
+                              </button>
                               <button type="button" onClick={() => void handleBatchDestroy(group.batch.id)}>
                                 一键关闭
                               </button>
@@ -1291,7 +1409,7 @@ export function SingleInstancesScreen({
                 </div>
               ) : null}
 
-              {visibleInstances.length > 0 ? (
+              {pagedInstances.length > 0 ? (
                 <>
                 {listMode === 'history' ? (
                   <div className="single-instance-history-column-head">
@@ -1319,7 +1437,7 @@ export function SingleInstancesScreen({
                   </div>
                 )}
                 <div className="range-workbench-rows">
-              {visibleInstances.map((instance) => {
+              {pagedInstances.map((instance) => {
                 const isHistory = listMode === 'history';
                 const lifecycle = lifecycleByInstanceId.get(instance.id);
                 const startedAt =
@@ -1441,6 +1559,36 @@ export function SingleInstancesScreen({
               <strong>{listMode === 'history' ? '暂无实例历史' : '暂无实例'}</strong>
             </div>
           )}
+          {hasVisibleContent ? (
+            <AdminPaginationControls
+              label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
+              pageSizeMode={pageSizeMode}
+              pagination={activePagination}
+              visiblePages={visiblePages}
+              jumpPageValue={jumpPageValue}
+              onPageSizeChange={handlePageSizeChange}
+              onPreviousPage={() =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: activePagination.page - 1,
+                }))
+              }
+              onNextPage={() =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: activePagination.page + 1,
+                }))
+              }
+              onPageSelect={(pageNumber) =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: pageNumber,
+                }))
+              }
+              onJumpPageValueChange={setJumpPageValue}
+              onJumpPage={handleJumpToPage}
+            />
+          ) : null}
         </article>
       </section>
 

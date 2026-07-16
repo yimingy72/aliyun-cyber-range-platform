@@ -20,6 +20,7 @@ export function useAdminSession() {
 
   return {
     token: session?.token ?? null,
+    refreshToken: session?.refreshToken ?? null,
     profile: session?.profile ?? null,
     isAdmin: session?.profile?.role === 'admin',
     isReady,
