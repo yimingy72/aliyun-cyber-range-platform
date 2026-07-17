@@ -47,6 +47,12 @@ const userManagementNavigationItem = {
   shortLabel: '用户',
 };
 
+const billingNavigationItem = {
+  href: '/admin/billing',
+  label: '账单费用',
+  shortLabel: '账单',
+};
+
 const cloudSettingsNavigationItem = {
   href: '/admin/settings/cloud',
   label: '基础配置',
@@ -75,7 +81,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const renewalTimeoutRef = useRef<number | null>(null);
   const renewingRef = useRef(false);
   const visibleNavigationItems = session.isAdmin
-    ? [...navigationItems, userManagementNavigationItem, cloudSettingsNavigationItem]
+    ? [...navigationItems, userManagementNavigationItem, billingNavigationItem, cloudSettingsNavigationItem]
     : navigationItems;
   const tokenExpiresAt = session.token ? readAdminOidcTokenExpiresAt(session.token) : null;
   const shouldRenewNow = Boolean(

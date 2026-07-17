@@ -78,6 +78,24 @@ enum ProvisionJobStepStatus {
   failed
 }
 
+enum BillingScope {
+  user
+  platform
+}
+
+enum BillingLedgerResourceType {
+  ecs
+  disk
+  eip
+  nat_gateway
+  snat_entry
+  dnat_entry
+  image
+  snapshot
+  snapshot_region
+  unknown
+}
+
 model SystemCloudConfig {
   id              String   @id
   provider        String
@@ -363,4 +381,75 @@ model ProvisionJobStepLog {
 
   @@index([jobId])
   @@index([status])
+}
+
+model BillingLedgerResource {
+  id                  String                    @id @default(cuid())
+  cloudProvider       CloudProvider             @default(alibaba_cloud)
+  cloudAccountUid     String?
+  regionId            String
+  cloudResourceId     String
+  cloudResourceType   BillingLedgerResourceType
+  billingScope        BillingScope
+  ownerUserId         String?
+  rangeInstanceId     String?
+  singleInstanceBatchId String?
+  platformImageAssetId String?
+  sourceProvisionJobId String?
+  billingStartAt      DateTime
+  releasedAt          DateTime?
+  tagsSnapshot        Json                     @default("{}")
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  @@unique([cloudProvider, regionId, cloudResourceId, cloudResourceType])
+  @@index([ownerUserId, billingScope, billingStartAt])
+  @@index([rangeInstanceId])
+  @@index([singleInstanceBatchId])
+  @@index([platformImageAssetId])
+}
+
+model BillingLineItem {
+  id                String                    @id @default(cuid())
+  syncBatchId       String
+  sourceFingerprint String                    @unique
+  billCycle         String
+  billingDate       DateTime
+  productCode       String
+  productDetail     String?
+  billItem          String
+  cloudResourceId   String
+  cloudResourceType BillingLedgerResourceType
+  pretaxAmount      Decimal                   @db.Decimal(20, 9)
+  currency          String
+  billingScope      BillingScope
+  ownerUserId       String?
+  matchedLedgerId   String?
+  rawPayload        Json                      @default("{}")
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  @@index([billingDate, billingScope])
+  @@index([ownerUserId, billingDate])
+  @@index([matchedLedgerId])
+  @@index([cloudResourceId, cloudResourceType])
+}
+
+model BillingAnomaly {
+  id                String                    @id @default(cuid())
+  syncBatchId       String
+  sourceFingerprint String                    @unique
+  billCycle         String
+  billingDate       DateTime
+  cloudResourceId   String
+  cloudResourceType BillingLedgerResourceType
+  pretaxAmount      Decimal                   @db.Decimal(20, 9)
+  currency          String
+  reason            String
+  rawPayload        Json                      @default("{}")
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  @@index([billingDate])
+  @@index([cloudResourceId, cloudResourceType])
 }

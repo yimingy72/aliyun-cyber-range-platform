@@ -240,4 +240,20 @@ describe('AdminLoginPage', () => {
     expect(result.current.profile).toEqual(ADMIN_PROFILE);
     expect(result.current.isAdmin).toBe(true);
   });
+
+  it('keeps login and logout callbacks stable across rerenders', async () => {
+    const { result, rerender } = renderHook(() => useAdminSession());
+
+    await waitFor(() => {
+      expect(result.current.isReady).toBe(true);
+    });
+
+    const firstLogin = result.current.login;
+    const firstLogout = result.current.logout;
+
+    rerender();
+
+    expect(result.current.login).toBe(firstLogin);
+    expect(result.current.logout).toBe(firstLogout);
+  });
 });

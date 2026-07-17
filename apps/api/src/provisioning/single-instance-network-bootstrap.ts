@@ -12,6 +12,7 @@ import {
 } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
 
+import { buildBillingTags } from '../admin/billing-tagging';
 import type { UpsertSingleInstanceNetworkProfileInput } from '../admin/admin.repository';
 import { CidrPoolService } from './cidr-pool.service';
 import type { ResolvedProvisioningRuntimeConfig } from './provisioning.types';
@@ -110,6 +111,10 @@ export class SingleInstanceNetworkBootstrapService {
       zoneId: input.zoneId,
       vpcCidr,
       vswitchCidrs,
+      tags: buildBillingTags({
+        billingScope: 'platform',
+        billingStartAt: new Date(),
+      }),
     });
 
     await Promise.all(
@@ -221,6 +226,7 @@ function buildBootstrapWorkspaceFiles(
     zoneId: string;
     vpcCidr: string;
     vswitchCidrs: string[];
+    tags: Record<string, string>;
   },
 ) {
   return {
@@ -234,6 +240,7 @@ function buildBootstrapWorkspaceFiles(
       '  zone_id              = var.zone_id',
       '  vpc_cidr             = var.vpc_cidr',
       '  vswitch_cidrs        = var.vswitch_cidrs',
+      '  tags                 = var.tags',
       '}',
       '',
     ].join('\n'),
@@ -251,6 +258,11 @@ variable "vpc_cidr" {
 
 variable "vswitch_cidrs" {
   type = list(string)
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {}
 }
 `,
     'outputs.tf': `output "vpc_id" {
@@ -285,6 +297,7 @@ output "security_group_name" {
       zone_id: input.zoneId,
       vpc_cidr: input.vpcCidr,
       vswitch_cidrs: input.vswitchCidrs,
+      tags: input.tags,
     })}\n`,
   };
 }

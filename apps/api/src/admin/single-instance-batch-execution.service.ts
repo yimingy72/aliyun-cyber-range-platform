@@ -9,6 +9,8 @@ import {
   type ProvisionJobRecord,
   type RangeInstanceRecord,
 } from './admin.repository';
+import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
+import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from './billing-ledger-sync';
 import { SystemConfigService } from './system-config.service';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -63,7 +65,7 @@ type AliyunInstanceDetail = {
 @Injectable()
 export class SingleInstanceBatchExecutionService {
   // ponytail: one shared slot pool for create/destroy/refresh; split pools only if ECS throttling shows up.
-  private readonly maxConcurrency = 10;
+  private readonly maxConcurrency = 3;
   private inFlight = 0;
   private queue: Array<() => void> = [];
 
@@ -95,7 +97,7 @@ export class SingleInstanceBatchExecutionService {
         return;
       }
 
-      const snapshot = await this.systemConfigService.getSnapshot();
+      const accountContext = await this.resolveAccountContext();
       const firstInstance = items[0].instance;
       const firstConfig = firstInstance.singleInstanceConfig;
 
@@ -105,8 +107,8 @@ export class SingleInstanceBatchExecutionService {
 
       const profile = await this.adminRepository.getSingleInstanceNetworkProfile({
         provider: firstInstance.cloudProvider,
-        regionId: snapshot.defaultRegion,
-        zoneId: snapshot.defaultZoneId,
+        regionId: accountContext.defaultRegion,
+        zoneId: accountContext.defaultZoneId,
       });
 
       if (!profile) {
@@ -127,9 +129,9 @@ export class SingleInstanceBatchExecutionService {
           const autoReleaseTime = resolveAliyunAutoReleaseTime(item.instance.expiresAt);
           const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim() || null;
           const runResponse = await this.performAliyunRpcRequest<AliyunRunInstancesResponse>({
-            accessKeyId: snapshot.accessKeyId,
-            accessKeySecret: snapshot.accessKeySecret,
-            regionId: snapshot.defaultRegion,
+            accessKeyId: accountContext.accessKeyId,
+            accessKeySecret: accountContext.accessKeySecret,
+            regionId: accountContext.defaultRegion,
             action: 'RunInstances',
             method: 'POST',
             parameters: {
@@ -147,6 +149,15 @@ export class SingleInstanceBatchExecutionService {
               InstanceName: item.instance.name,
               ...(expectedHostName ? { HostName: expectedHostName } : {}),
               ...(autoReleaseTime ? { AutoReleaseTime: autoReleaseTime } : {}),
+              ...buildAliyunTagParameters(
+                buildBillingTags({
+                  billingScope: item.instance.ownerUserId ? 'user' : 'platform',
+                  ownerUserId: item.instance.ownerUserId,
+                  rangeInstanceId: item.instance.id,
+                  singleInstanceBatchId: item.instance.singleInstanceBatchId ?? null,
+                  billingStartAt: new Date(),
+                }),
+              ),
             },
           });
 
@@ -161,6 +172,7 @@ export class SingleInstanceBatchExecutionService {
             instanceId: instanceIds[0],
             profile,
             resolvedInstanceType,
+            accountContext,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown single-instance batch create error';
@@ -176,7 +188,7 @@ export class SingleInstanceBatchExecutionService {
         return;
       }
 
-      const snapshot = await this.systemConfigService.getSnapshot();
+      const accountContext = await this.resolveAccountContext();
       const instanceIds = items
         .map((item) => resolveHostInstanceId(item.instance))
         .filter((value): value is string => Boolean(value));
@@ -188,9 +200,9 @@ export class SingleInstanceBatchExecutionService {
 
       try {
         await this.deleteInstancesWithRetry({
-          accessKeyId: snapshot.accessKeyId,
-          accessKeySecret: snapshot.accessKeySecret,
-          regionId: snapshot.defaultRegion,
+          accessKeyId: accountContext.accessKeyId,
+          accessKeySecret: accountContext.accessKeySecret,
+          regionId: accountContext.defaultRegion,
           instanceIds,
         });
 
@@ -199,6 +211,7 @@ export class SingleInstanceBatchExecutionService {
             status: 'destroyed',
             errorSummary: null,
           });
+          await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
           await this.adminRepository.updateProvisionJob(item.job.id, {
             status: 'succeeded',
             finishedAt: new Date(),
@@ -401,8 +414,21 @@ export class SingleInstanceBatchExecutionService {
     instanceId: string;
     profile: Awaited<ReturnType<AdminRepository['getSingleInstanceNetworkProfile']>>;
     resolvedInstanceType: string;
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
   }) {
     const hostKey = input.item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
+    const resourceSummary = {
+      mode: 'ecs-native' as const,
+      vpcId: input.profile?.vpcId ?? null,
+      subnetIds: input.item.instance.singleInstanceConfig?.assignedVswitchId
+        ? { [hostKey]: input.item.instance.singleInstanceConfig.assignedVswitchId }
+        : null,
+      hostIds: {
+        [hostKey]: input.instanceId,
+      },
+      resolvedInstanceType: input.resolvedInstanceType,
+      resolvedImageId: input.item.instance.singleInstanceConfig?.imageId ?? null,
+    };
 
     await this.adminRepository.updateRangeInstance(input.item.instance.id, {
       status: 'creating',
@@ -412,19 +438,17 @@ export class SingleInstanceBatchExecutionService {
         privateIp: null,
         ssh: null,
       },
-      resourceSummary: {
-        mode: 'ecs-native',
-        vpcId: input.profile?.vpcId ?? null,
-        subnetIds: input.item.instance.singleInstanceConfig?.assignedVswitchId
-          ? { [hostKey]: input.item.instance.singleInstanceConfig.assignedVswitchId }
-          : null,
-        hostIds: {
-          [hostKey]: input.instanceId,
-        },
-        resolvedInstanceType: input.resolvedInstanceType,
-        resolvedImageId: input.item.instance.singleInstanceConfig?.imageId ?? null,
-      },
+      resourceSummary,
       errorSummary: null,
+    });
+    await syncRangeInstanceBillingLedger({
+      repository: this.adminRepository,
+      instance: input.item.instance,
+      regionId: input.accountContext.defaultRegion,
+      cloudAccountUid: input.accountContext.accountUid,
+      resourceSummary,
+      sourceProvisionJobId: input.item.job.id,
+      billingStartAt: new Date(),
     });
     await this.adminRepository.updateProvisionJob(input.item.job.id, {
       status: 'succeeded',
@@ -459,6 +483,32 @@ export class SingleInstanceBatchExecutionService {
         errorSummary: message,
       });
     }
+  }
+
+  private async resolveAccountContext() {
+    const service = this.systemConfigService as SystemConfigService & {
+      getAccountContext?: () => Promise<{
+        provider: 'alibaba_cloud';
+        defaultRegion: string;
+        defaultZoneId: string;
+        accessKeyId: string;
+        accessKeySecret: string;
+        accountUid: string | null;
+        accountUidResolved: boolean;
+      }>;
+    };
+
+    if (typeof service.getAccountContext === 'function') {
+      return service.getAccountContext();
+    }
+
+    const snapshot = await this.systemConfigService.getSnapshot();
+
+    return {
+      ...snapshot,
+      accountUid: null,
+      accountUidResolved: false,
+    };
   }
 
   private async performAliyunRpcRequest<ResponsePayload>(input: {

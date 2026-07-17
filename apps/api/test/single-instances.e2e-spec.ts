@@ -377,6 +377,72 @@ describe('single instances', () => {
     expect(response.body.instances[0].singleInstanceConfig.hostName).toBeNull();
   });
 
+  it('submits billing tags to aliyun when launching a single instance', async () => {
+    const runInstancesBodies: string[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=RunInstances')) {
+        runInstancesBodies.push(body);
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-billing-tags-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances') && url.includes('i-billing-tags-01')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-billing-tags-01',
+                  InstanceName: 'billing-tags-lab',
+                  HostName: 'billing-tags-lab',
+                  Status: 'Running',
+                  VpcAttributes: { PrivateIpAddress: { IpAddress: ['10.200.1.77'] } },
+                  PublicIpAddress: { IpAddress: ['47.100.77.10'] },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'billing-tags-lab',
+        hostName: 'billing-tags-lab',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-20T12:00:00.000Z',
+        quantity: 1,
+        password: '',
+        remark: 'billing tag launch',
+      })
+      .expect(201);
+
+    expect(runInstancesBodies).toHaveLength(1);
+    expect(runInstancesBodies[0]).toContain('Tag.');
+    expect(runInstancesBodies[0]).toContain('CreatedBy');
+    expect(runInstancesBodies[0]).toContain('PlatformScope');
+    expect(runInstancesBodies[0]).toContain('RangeInstanceId');
+    expect(runInstancesBodies[0]).toContain('BillingStartAt');
+  });
+
   it('uses the image defaultHostName when launch request leaves hostName empty', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',

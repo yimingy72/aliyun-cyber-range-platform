@@ -1,18 +1,27 @@
 import { Injectable } from '@nestjs/common';
 
-import { Prisma } from '../../../../packages/database/generated/client';
+import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import {
   AdminRepository,
+  BillingAnomalyRecord,
+  BillingLedgerResourceRecord,
+  BillingLineItemRecord,
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreateBillingAnomalyInput,
+  CreateBillingLedgerResourceInput,
+  CreateBillingLineItemInput,
   CreatePlatformUserInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
   CreateSingleInstanceBatchInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
+  FindBillingLedgerResourceInput,
   ImageCatalogItemRecord,
+  ListBillingAnomaliesFilter,
+  ListBillingLineItemsFilter,
   ListImageCatalogItemsFilter,
   ListImageSnapshotsFilter,
   ListPlatformImageAssetsFilter,
@@ -26,6 +35,7 @@ import {
   SingleInstanceBatchWithInstancesRecord,
   RangeTemplateRecord,
   UpsertImageSnapshotsInput,
+  UpdateBillingLedgerResourceInput,
   UpdatePlatformUserInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
@@ -34,6 +44,59 @@ import {
 } from '../admin/admin.repository';
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
+
+function toBillingLineItemRecord(
+  record: {
+    id: string;
+    syncBatchId: string;
+    sourceFingerprint: string;
+    billCycle: string;
+    billingDate: Date;
+    productCode: string;
+    productDetail: string | null;
+    billItem: string;
+    cloudResourceId: string;
+    cloudResourceType: BillingLineItemRecord['cloudResourceType'];
+    pretaxAmount: Prisma.Decimal;
+    currency: string;
+    billingScope: BillingLineItemRecord['billingScope'];
+    ownerUserId: string | null;
+    matchedLedgerId: string | null;
+    rawPayload: Prisma.JsonValue;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+): BillingLineItemRecord {
+  return {
+    ...record,
+    pretaxAmount: Number(record.pretaxAmount),
+    rawPayload: (record.rawPayload ?? {}) as Record<string, unknown>,
+  };
+}
+
+function toBillingAnomalyRecord(
+  record: {
+    id: string;
+    syncBatchId: string;
+    sourceFingerprint: string;
+    billCycle: string;
+    billingDate: Date;
+    cloudResourceId: string;
+    cloudResourceType: BillingAnomalyRecord['cloudResourceType'];
+    pretaxAmount: Prisma.Decimal;
+    currency: string;
+    reason: string;
+    rawPayload: Prisma.JsonValue;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+): BillingAnomalyRecord {
+  return {
+    ...record,
+    pretaxAmount: Number(record.pretaxAmount),
+    rawPayload: (record.rawPayload ?? {}) as Record<string, unknown>,
+  };
+}
 
 @Injectable()
 export class PrismaAdminRepository implements AdminRepository {
@@ -1069,5 +1132,228 @@ export class PrismaAdminRepository implements AdminRepository {
         securityGroupName: input.securityGroupName,
       },
     }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord>;
+  }
+
+  async createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord> {
+    return this.prisma.billingLedgerResource.create({
+      data: {
+        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudAccountUid: input.cloudAccountUid ?? null,
+        regionId: input.regionId,
+        cloudResourceId: input.cloudResourceId,
+        cloudResourceType: input.cloudResourceType,
+        billingScope: input.billingScope,
+        ownerUserId: input.ownerUserId ?? null,
+        rangeInstanceId: input.rangeInstanceId ?? null,
+        singleInstanceBatchId: input.singleInstanceBatchId ?? null,
+        platformImageAssetId: input.platformImageAssetId ?? null,
+        sourceProvisionJobId: input.sourceProvisionJobId ?? null,
+        billingStartAt: input.billingStartAt,
+        releasedAt: input.releasedAt ?? null,
+        tagsSnapshot: (input.tagsSnapshot ?? {}) as Prisma.InputJsonValue,
+      },
+    }) as Promise<BillingLedgerResourceRecord>;
+  }
+
+  async findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null> {
+    return this.prisma.billingLedgerResource.findUnique({
+      where: {
+        cloudProvider_regionId_cloudResourceId_cloudResourceType: {
+          cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+          regionId: input.regionId,
+          cloudResourceId: input.cloudResourceId,
+          cloudResourceType: input.cloudResourceType,
+        },
+      },
+    }) as Promise<BillingLedgerResourceRecord | null>;
+  }
+
+  async updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord> {
+    return this.prisma.billingLedgerResource.update({
+      where: { id },
+      data: {
+        ...(input.billingScope !== undefined ? { billingScope: input.billingScope } : {}),
+        ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+        ...(input.rangeInstanceId !== undefined ? { rangeInstanceId: input.rangeInstanceId } : {}),
+        ...(input.singleInstanceBatchId !== undefined ? { singleInstanceBatchId: input.singleInstanceBatchId } : {}),
+        ...(input.platformImageAssetId !== undefined ? { platformImageAssetId: input.platformImageAssetId } : {}),
+        ...(input.sourceProvisionJobId !== undefined ? { sourceProvisionJobId: input.sourceProvisionJobId } : {}),
+        ...(input.billingStartAt !== undefined ? { billingStartAt: input.billingStartAt } : {}),
+        ...(input.releasedAt !== undefined ? { releasedAt: input.releasedAt } : {}),
+        ...(input.tagsSnapshot !== undefined ? { tagsSnapshot: input.tagsSnapshot as Prisma.InputJsonValue } : {}),
+      },
+    }) as Promise<BillingLedgerResourceRecord>;
+  }
+
+  async listBillingLedgerResources(): Promise<BillingLedgerResourceRecord[]> {
+    return this.prisma.billingLedgerResource.findMany({
+      orderBy: {
+        createdAt: 'desc',
+      },
+    }) as Promise<BillingLedgerResourceRecord[]>;
+  }
+
+  async deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void> {
+    await this.prisma.billingLineItem.deleteMany({
+      where: {
+        syncBatchId,
+      },
+    });
+  }
+
+  async upsertBillingLineItems(input: CreateBillingLineItemInput[]): Promise<BillingLineItemRecord[]> {
+    const records = await this.prisma.$transaction(
+      input.map((item) =>
+        this.prisma.billingLineItem.upsert({
+          where: {
+            sourceFingerprint: item.sourceFingerprint,
+          },
+          update: {
+            syncBatchId: item.syncBatchId,
+            billCycle: item.billCycle,
+            billingDate: item.billingDate instanceof Date ? item.billingDate : new Date(item.billingDate),
+            productCode: item.productCode,
+            productDetail: item.productDetail ?? null,
+            billItem: item.billItem,
+            cloudResourceId: item.cloudResourceId,
+            cloudResourceType: item.cloudResourceType,
+            pretaxAmount: new Prisma.Decimal(item.pretaxAmount),
+            currency: item.currency,
+            billingScope: item.billingScope,
+            ownerUserId: item.ownerUserId ?? null,
+            matchedLedgerId: item.matchedLedgerId ?? null,
+            rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue,
+          },
+          create: {
+            syncBatchId: item.syncBatchId,
+            sourceFingerprint: item.sourceFingerprint,
+            billCycle: item.billCycle,
+            billingDate: item.billingDate instanceof Date ? item.billingDate : new Date(item.billingDate),
+            productCode: item.productCode,
+            productDetail: item.productDetail ?? null,
+            billItem: item.billItem,
+            cloudResourceId: item.cloudResourceId,
+            cloudResourceType: item.cloudResourceType,
+            pretaxAmount: new Prisma.Decimal(item.pretaxAmount),
+            currency: item.currency,
+            billingScope: item.billingScope,
+            ownerUserId: item.ownerUserId ?? null,
+            matchedLedgerId: item.matchedLedgerId ?? null,
+            rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue,
+          },
+        }),
+      ),
+    );
+
+    return records.map(toBillingLineItemRecord);
+  }
+
+  async listBillingLineItems(filter: ListBillingLineItemsFilter = {}): Promise<BillingLineItemRecord[]> {
+    const startAt = filter.startAt
+      ? filter.startAt instanceof Date
+        ? filter.startAt
+        : new Date(filter.startAt)
+      : null;
+    const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
+    const where: Prisma.BillingLineItemWhereInput = {
+      ...(startAt || endAt
+        ? {
+            billingDate: {
+              ...(startAt ? { gte: startAt } : {}),
+              ...(endAt
+                ? {
+                    lt: new Date(
+                      new Date(endAt).setDate(new Date(endAt).getDate() + 1),
+                    ),
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(filter.ownerUserId !== undefined ? { ownerUserId: filter.ownerUserId } : {}),
+      ...(filter.billingScope !== undefined ? { billingScope: filter.billingScope } : {}),
+      ...(filter.matchedLedgerId !== undefined ? { matchedLedgerId: filter.matchedLedgerId } : {}),
+    };
+
+    const records = await this.prisma.billingLineItem.findMany({
+      where,
+      orderBy: {
+        billingDate: 'desc',
+      },
+    });
+
+    return records.map(toBillingLineItemRecord);
+  }
+
+  async createBillingAnomaly(input: CreateBillingAnomalyInput): Promise<BillingAnomalyRecord> {
+    const record = await this.prisma.billingAnomaly.upsert({
+      where: {
+        sourceFingerprint: input.sourceFingerprint,
+      },
+      update: {
+        syncBatchId: input.syncBatchId,
+        billCycle: input.billCycle,
+        billingDate: input.billingDate instanceof Date ? input.billingDate : new Date(input.billingDate),
+        cloudResourceId: input.cloudResourceId,
+        cloudResourceType: input.cloudResourceType,
+        pretaxAmount: new Prisma.Decimal(input.pretaxAmount),
+        currency: input.currency,
+        reason: input.reason,
+        rawPayload: (input.rawPayload ?? {}) as Prisma.InputJsonValue,
+      },
+      create: {
+        syncBatchId: input.syncBatchId,
+        sourceFingerprint: input.sourceFingerprint,
+        billCycle: input.billCycle,
+        billingDate: input.billingDate instanceof Date ? input.billingDate : new Date(input.billingDate),
+        cloudResourceId: input.cloudResourceId,
+        cloudResourceType: input.cloudResourceType,
+        pretaxAmount: new Prisma.Decimal(input.pretaxAmount),
+        currency: input.currency,
+        reason: input.reason,
+        rawPayload: (input.rawPayload ?? {}) as Prisma.InputJsonValue,
+      },
+    });
+
+    return toBillingAnomalyRecord(record);
+  }
+
+  async deleteBillingAnomaliesBySyncBatchId(syncBatchId: string): Promise<void> {
+    await this.prisma.billingAnomaly.deleteMany({
+      where: {
+        syncBatchId,
+      },
+    });
+  }
+
+  async listBillingAnomalies(filter: ListBillingAnomaliesFilter = {}): Promise<BillingAnomalyRecord[]> {
+    const startAt = filter.startAt
+      ? filter.startAt instanceof Date
+        ? filter.startAt
+        : new Date(filter.startAt)
+      : null;
+    const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
+    const records = await this.prisma.billingAnomaly.findMany({
+      where:
+        startAt || endAt
+          ? {
+              billingDate: {
+                ...(startAt ? { gte: startAt } : {}),
+                ...(endAt
+                  ? {
+                      lt: new Date(
+                        new Date(endAt).setDate(new Date(endAt).getDate() + 1),
+                      ),
+                    }
+                  : {}),
+              },
+            }
+          : undefined,
+      orderBy: {
+        billingDate: 'desc',
+      },
+    });
+
+    return records.map(toBillingAnomalyRecord);
   }
 }

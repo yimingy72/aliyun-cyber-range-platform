@@ -398,6 +398,64 @@ export type CloudConfigSnapshot = {
   accessKeySecret: string;
 };
 
+export type BillingResourceTypeTotal = {
+  resourceType: string;
+  pretaxAmount: number;
+};
+
+export type BillingDailyTotal = {
+  billingDate: string;
+  pretaxAmount: number;
+};
+
+export type BillingSummary = {
+  startAt: string;
+  endAt: string;
+  totalPretaxAmount: number;
+  platformPretaxAmount: number;
+  anomalyCount: number;
+  resourceTypeTotals: BillingResourceTypeTotal[];
+  dailyTotals: BillingDailyTotal[];
+};
+
+export type BillingUserSummary = {
+  userId: string;
+  username: string;
+  pretaxAmount: number;
+  itemCount: number;
+};
+
+export type BillingLineItem = {
+  id: string;
+  syncBatchId: string;
+  sourceFingerprint: string;
+  billCycle: string;
+  billingDate: string;
+  productCode: string;
+  productDetail?: string | null;
+  billItem: string;
+  cloudResourceId: string;
+  cloudResourceType: string;
+  pretaxAmount: number;
+  currency: string;
+  billingScope: 'user' | 'platform';
+  ownerUserId?: string | null;
+  matchedLedgerId?: string | null;
+};
+
+export type BillingAnomaly = {
+  id: string;
+  syncBatchId: string;
+  sourceFingerprint: string;
+  billCycle: string;
+  billingDate: string;
+  cloudResourceId: string;
+  cloudResourceType: string;
+  pretaxAmount: number;
+  currency: string;
+  reason: string;
+};
+
 export type InstanceTypeAvailabilityMatch = {
   instanceTypeId: string;
   cpu: number;

@@ -246,6 +246,23 @@ export class ImageCatalogService {
       },
     });
 
+    // ponytail: O(n) ledger scan is fine for now; add a dedicated repository query once image billing volume grows.
+    const ledgerResources = await this.adminRepository.listBillingLedgerResources();
+    await Promise.all(
+      ledgerResources
+        .filter(
+          (item) =>
+            item.cloudResourceId === snapshot.imageId &&
+            (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot') &&
+            item.releasedAt === null,
+        )
+        .map((item) =>
+          this.adminRepository.updateBillingLedgerResource(item.id, {
+            releasedAt: new Date(),
+          }),
+        ),
+    );
+
     await this.adminRepository.deletePlatformImageAssetsBySnapshotId(snapshot.id);
 
     const remainingSnapshots = await this.adminRepository.listImageSnapshots({

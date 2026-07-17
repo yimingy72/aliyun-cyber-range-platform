@@ -148,7 +148,7 @@ describe('AdminWorkspaceShell', () => {
     vi.clearAllMocks();
   });
 
-  it('shows the admin navigation, including 用户管理, for admin sessions', async () => {
+  it('shows the admin navigation, including 用户管理 and 账单费用, for admin sessions', async () => {
     writeAdminSession(createSession());
 
     render(
@@ -168,6 +168,7 @@ describe('AdminWorkspaceShell', () => {
     expect(within(navigation).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe('/admin/scenarios');
     expect(within(navigation).getByRole('link', { name: /编排实例/i }).getAttribute('href')).toBe('/admin/ranges');
     expect(within(navigation).getByRole('link', { name: /用户管理/i }).getAttribute('href')).toBe('/admin/users');
+    expect(within(navigation).getByRole('link', { name: /账单费用/i }).getAttribute('href')).toBe('/admin/billing');
     expect(within(navigation).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe('/admin/settings/cloud');
     expect(navigationLinks).toEqual([
       '/admin/image-center',
@@ -175,6 +176,7 @@ describe('AdminWorkspaceShell', () => {
       '/admin/scenarios',
       '/admin/ranges',
       '/admin/users',
+      '/admin/billing',
       '/admin/settings/cloud',
     ]);
     expect(screen.getByText('admin / admin')).toBeTruthy();
@@ -203,6 +205,7 @@ describe('AdminWorkspaceShell', () => {
 
     expect(screen.getByText('alice / user')).toBeTruthy();
     expect(screen.queryByRole('link', { name: /用户管理/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /账单费用/i })).toBeNull();
     expect(screen.queryByRole('link', { name: /基础配置/i })).toBeNull();
   });
 

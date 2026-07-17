@@ -1,8 +1,14 @@
 import {
   AdminRepository,
+  BillingAnomalyRecord,
+  BillingLedgerResourceRecord,
+  BillingLineItemRecord,
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreateBillingAnomalyInput,
+  CreateBillingLedgerResourceInput,
+  CreateBillingLineItemInput,
   CreatePlatformUserInput,
   CreateSingleInstanceBatchInput,
   CreateProvisionJobInput,
@@ -21,10 +27,14 @@ import {
   RangeInstanceRecord,
   RangeTemplateRecord,
   RangeTemplateVersionRecord,
+  FindBillingLedgerResourceInput,
+  ListBillingAnomaliesFilter,
+  ListBillingLineItemsFilter,
   SingleInstanceNetworkProfileRecord,
   SingleInstanceBatchRecord,
   UpsertImageSnapshotsInput,
   UpsertSingleInstanceNetworkProfileInput,
+  UpdateBillingLedgerResourceInput,
   UpdatePlatformUserInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
@@ -45,6 +55,9 @@ export function createMemoryAdminRepository(): AdminRepository {
   const imageCatalogItems: ImageCatalogItemRecord[] = [];
   const platformImageAssets: PlatformImageAssetRecord[] = [];
   const singleInstanceNetworkProfiles: SingleInstanceNetworkProfileRecord[] = [];
+  const billingLedgerResources: BillingLedgerResourceRecord[] = [];
+  const billingLineItems: BillingLineItemRecord[] = [];
+  const billingAnomalies: BillingAnomalyRecord[] = [];
 
   let idCounter = 1;
 
@@ -70,6 +83,26 @@ export function createMemoryAdminRepository(): AdminRepository {
     if (value !== undefined) {
       target[key] = cloneIfDefined(value);
     }
+  };
+  const parseDateValue = (value: string | Date) => (value instanceof Date ? new Date(value) : new Date(value));
+  const inDateRange = (value: Date, startAt?: string | Date, endAt?: string | Date) => {
+    const start = startAt ? parseDateValue(startAt) : null;
+    const end = endAt ? parseDateValue(endAt) : null;
+
+    if (start && value < start) {
+      return false;
+    }
+
+    if (end) {
+      const exclusiveEnd = new Date(end);
+      exclusiveEnd.setDate(exclusiveEnd.getDate() + 1);
+
+      if (value >= exclusiveEnd) {
+        return false;
+      }
+    }
+
+    return true;
   };
 
   const matchesImageSnapshotFilter = (
@@ -966,6 +999,184 @@ export function createMemoryAdminRepository(): AdminRepository {
       singleInstanceNetworkProfiles.unshift(record);
 
       return clone(record);
+    },
+    async createBillingLedgerResource(input: CreateBillingLedgerResourceInput) {
+      const timestamp = now();
+      const record: BillingLedgerResourceRecord = {
+        id: nextId(),
+        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudAccountUid: input.cloudAccountUid ?? null,
+        regionId: input.regionId,
+        cloudResourceId: input.cloudResourceId,
+        cloudResourceType: input.cloudResourceType,
+        billingScope: input.billingScope,
+        ownerUserId: input.ownerUserId ?? null,
+        rangeInstanceId: input.rangeInstanceId ?? null,
+        singleInstanceBatchId: input.singleInstanceBatchId ?? null,
+        platformImageAssetId: input.platformImageAssetId ?? null,
+        sourceProvisionJobId: input.sourceProvisionJobId ?? null,
+        billingStartAt: clone(input.billingStartAt),
+        releasedAt: input.releasedAt ?? null,
+        tagsSnapshot: clone(input.tagsSnapshot ?? {}),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+
+      billingLedgerResources.unshift(record);
+
+      return clone(record);
+    },
+    async findBillingLedgerResource(input: FindBillingLedgerResourceInput) {
+      const record = billingLedgerResources.find(
+        (item) =>
+          item.cloudProvider === (input.cloudProvider ?? 'alibaba_cloud') &&
+          item.regionId === input.regionId &&
+          item.cloudResourceId === input.cloudResourceId &&
+          item.cloudResourceType === input.cloudResourceType,
+      );
+
+      return record ? clone(record) : null;
+    },
+    async updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput) {
+      const record = billingLedgerResources.find((item) => item.id === id);
+
+      if (!record) {
+        throw new Error(`Billing ledger resource not found: ${id}`);
+      }
+
+      assignIfDefined(record, 'billingScope', input.billingScope);
+      assignIfDefined(record, 'ownerUserId', input.ownerUserId);
+      assignIfDefined(record, 'rangeInstanceId', input.rangeInstanceId);
+      assignIfDefined(record, 'singleInstanceBatchId', input.singleInstanceBatchId);
+      assignIfDefined(record, 'platformImageAssetId', input.platformImageAssetId);
+      assignIfDefined(record, 'sourceProvisionJobId', input.sourceProvisionJobId);
+      assignClonedIfDefined(record, 'billingStartAt', input.billingStartAt);
+      assignClonedIfDefined(record, 'releasedAt', input.releasedAt);
+      assignClonedIfDefined(record, 'tagsSnapshot', input.tagsSnapshot);
+      record.updatedAt = now();
+
+      return clone(record);
+    },
+    async listBillingLedgerResources() {
+      return cloneList(billingLedgerResources);
+    },
+    async deleteBillingLineItemsBySyncBatchId(syncBatchId: string) {
+      for (let index = billingLineItems.length - 1; index >= 0; index -= 1) {
+        if (billingLineItems[index]?.syncBatchId === syncBatchId) {
+          billingLineItems.splice(index, 1);
+        }
+      }
+    },
+    async upsertBillingLineItems(input: CreateBillingLineItemInput[]) {
+      const timestamp = now();
+
+      return input.map((item) => {
+        const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint);
+
+        if (existing) {
+          existing.syncBatchId = item.syncBatchId;
+          existing.billCycle = item.billCycle;
+          existing.billingDate = parseDateValue(item.billingDate);
+          existing.productCode = item.productCode;
+          existing.productDetail = item.productDetail ?? null;
+          existing.billItem = item.billItem;
+          existing.cloudResourceId = item.cloudResourceId;
+          existing.cloudResourceType = item.cloudResourceType;
+          existing.pretaxAmount = item.pretaxAmount;
+          existing.currency = item.currency;
+          existing.billingScope = item.billingScope;
+          existing.ownerUserId = item.ownerUserId ?? null;
+          existing.matchedLedgerId = item.matchedLedgerId ?? null;
+          existing.rawPayload = clone(item.rawPayload ?? {});
+          existing.updatedAt = timestamp;
+
+          return clone(existing);
+        }
+
+        const created: BillingLineItemRecord = {
+          id: nextId(),
+          syncBatchId: item.syncBatchId,
+          sourceFingerprint: item.sourceFingerprint,
+          billCycle: item.billCycle,
+          billingDate: parseDateValue(item.billingDate),
+          productCode: item.productCode,
+          productDetail: item.productDetail ?? null,
+          billItem: item.billItem,
+          cloudResourceId: item.cloudResourceId,
+          cloudResourceType: item.cloudResourceType,
+          pretaxAmount: item.pretaxAmount,
+          currency: item.currency,
+          billingScope: item.billingScope,
+          ownerUserId: item.ownerUserId ?? null,
+          matchedLedgerId: item.matchedLedgerId ?? null,
+          rawPayload: clone(item.rawPayload ?? {}),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+
+        billingLineItems.unshift(created);
+        return clone(created);
+      });
+    },
+    async listBillingLineItems(filter: ListBillingLineItemsFilter = {}) {
+      return cloneList(
+        billingLineItems.filter(
+          (item) =>
+            inDateRange(item.billingDate, filter.startAt, filter.endAt) &&
+            (filter.ownerUserId === undefined || item.ownerUserId === filter.ownerUserId) &&
+            (filter.billingScope === undefined || item.billingScope === filter.billingScope) &&
+            (filter.matchedLedgerId === undefined || item.matchedLedgerId === filter.matchedLedgerId),
+        ),
+      );
+    },
+    async createBillingAnomaly(input: CreateBillingAnomalyInput) {
+      const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint);
+
+      if (existing) {
+        existing.syncBatchId = input.syncBatchId;
+        existing.billCycle = input.billCycle;
+        existing.billingDate = parseDateValue(input.billingDate);
+        existing.cloudResourceId = input.cloudResourceId;
+        existing.cloudResourceType = input.cloudResourceType;
+        existing.pretaxAmount = input.pretaxAmount;
+        existing.currency = input.currency;
+        existing.reason = input.reason;
+        existing.rawPayload = clone(input.rawPayload ?? {});
+        existing.updatedAt = now();
+
+        return clone(existing);
+      }
+
+      const timestamp = now();
+      const record: BillingAnomalyRecord = {
+        id: nextId(),
+        syncBatchId: input.syncBatchId,
+        sourceFingerprint: input.sourceFingerprint,
+        billCycle: input.billCycle,
+        billingDate: parseDateValue(input.billingDate),
+        cloudResourceId: input.cloudResourceId,
+        cloudResourceType: input.cloudResourceType,
+        pretaxAmount: input.pretaxAmount,
+        currency: input.currency,
+        reason: input.reason,
+        rawPayload: clone(input.rawPayload ?? {}),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+
+      billingAnomalies.unshift(record);
+
+      return clone(record);
+    },
+    async deleteBillingAnomaliesBySyncBatchId(syncBatchId: string) {
+      for (let index = billingAnomalies.length - 1; index >= 0; index -= 1) {
+        if (billingAnomalies[index]?.syncBatchId === syncBatchId) {
+          billingAnomalies.splice(index, 1);
+        }
+      }
+    },
+    async listBillingAnomalies(filter: ListBillingAnomaliesFilter = {}) {
+      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt)));
     },
   };
 }

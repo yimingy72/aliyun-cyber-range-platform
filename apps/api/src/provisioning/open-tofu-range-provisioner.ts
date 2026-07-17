@@ -273,6 +273,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     runtimeCredentials?: RangeRuntimeCredentials;
     singleInstanceConfig: SingleInstanceConfig;
     singleNetworkProfile: SingleInstanceNetworkProfileRecord;
+    billingTags?: Record<string, string>;
   }) {
     return {
       files: await this.buildSingleInstanceWorkspaceFiles({
@@ -672,6 +673,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostImageIds,
       hostPasswords,
       instancePassword,
+      tags: {
+        range_instance_id: input.rangeInstanceId,
+        ...(input.billingTags ?? {}),
+      },
       allowedIngressCidr: this.env.OPENTOFU_ALLOWED_INGRESS_CIDR ?? '0.0.0.0/0',
       ...(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT
         ? {
@@ -698,6 +703,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     runtimeCredentials?: RangeRuntimeCredentials;
     singleInstanceConfig: SingleInstanceConfig;
     singleNetworkProfile: SingleInstanceNetworkProfileRecord;
+    billingTags?: Record<string, string>;
   }) {
     const assignedVswitchId =
       input.singleInstanceConfig.assignedVswitchId?.trim() || input.singleNetworkProfile.vswitchIds[0];
@@ -767,6 +773,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
           instance_mode: 'single',
           host_key: input.singleInstanceConfig.hostKey,
           base_name: input.singleInstanceConfig.baseName,
+          ...(input.billingTags ?? {}),
         },
       }),
     };

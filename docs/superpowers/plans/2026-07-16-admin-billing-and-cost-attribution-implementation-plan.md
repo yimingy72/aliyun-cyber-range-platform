@@ -16,9 +16,9 @@ The current account's read-only bill inspection already shows these real charge 
 - `eip`: `公网IP保有费`, `公网流出流量`
 - `nat_gw`: `网关类型（实例费）`
 - `snapshot`: `快照链容量`
-- `oss`: `标准存储（同城冗余）容量`, `外网流出流量`
+- `oss`: `标准存储（同城冗余）容量`, `外网流出流量` (observed in the shared account, but excluded from v1 until the platform has an isolated OSS ownership boundary)
 
-This means v1 cannot stop at ECS + disk + EIP + NAT; it must also plan for snapshot-chain storage and OSS-backed storage/egress when the platform uses OSS.
+This means v1 cannot stop at ECS + disk + EIP + NAT; it must also plan for snapshot-chain storage. OSS is not in the v1 must-have path right now because the current platform does not clearly own a dedicated OSS bucket/prefix boundary.
 
 ---
 
@@ -320,7 +320,7 @@ Create a unit test that proves:
 
 - `ecs` instance config lines match a direct ledger row
 - `snapshot` `快照链容量` lines with only region-level identifiers fall into aggregation handling
-- `oss` capacity/egress lines either match a configured OSS ledger boundary or become anomalies
+- if OSS is later brought into scope, `oss` capacity/egress lines either match a configured OSS ledger boundary or become anomalies
 
 Example shape:
 
@@ -380,7 +380,7 @@ The service should:
 
 - fetch recent bill lines
 - match direct resource IDs to ledger rows
-- apply aggregation rules for snapshot-region and OSS-style charges
+- apply aggregation rules for snapshot-region charges and keep OSS explicitly out of v1 attribution unless a dedicated boundary is introduced
 - write normalized bill lines
 - write anomalies for unmatched lines
 - support:
@@ -495,7 +495,7 @@ No charting library is needed if the repo does not already use one; a compact ta
 
 ---
 
-## Task 6: Support aggregation rules for snapshot-region and OSS charges
+## Task 6: Support aggregation rules for snapshot-region charges, with OSS explicitly deferred
 
 **Files:**
 - Modify: `apps/api/src/admin/billing-classifier.ts`
@@ -508,8 +508,7 @@ No charting library is needed if the repo does not already use one; a compact ta
 Scenarios:
 
 - region-scoped snapshot chain line maps to a platform storage ledger boundary
-- OSS egress line maps to a dedicated platform bucket/prefix boundary
-- shared OSS line with no isolated boundary becomes an anomaly or platform-public cost, never a guessed user split
+- if OSS is ever pulled back in, its egress lines must map to a dedicated platform bucket/prefix boundary or stay outside user attribution
 
 - [ ] **Step 2: Run the tests and verify they fail**
 
@@ -519,7 +518,7 @@ Rules:
 
 - Direct `cloudResourceId` match always wins
 - Snapshot-region lines may map to one platform-level storage boundary if the platform owns the entire chain scope
-- OSS lines only map to user costs when the platform can isolate them via bucket/prefix/ledger boundary
+- OSS remains out of v1 user-cost attribution; if reintroduced later, its lines only map to user costs when the platform can isolate them via bucket/prefix/ledger boundary
 - Otherwise:
   - route to `billingScope=platform`, or
   - create an anomaly if even platform attribution is unsafe
@@ -597,7 +596,7 @@ Examples:
 
 - Repository coverage for billing ledger / bill lines / anomalies
 - Sync classification and anomaly handling
-- Aggregation rules for snapshot-region and OSS charges
+- Aggregation rules for snapshot-region charges
 - Admin auth on all billing routes
 - Navigation visibility by role
 - Billing screen rendering and export actions

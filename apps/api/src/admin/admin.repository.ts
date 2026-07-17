@@ -21,6 +21,18 @@ export type ProvisionJobType = 'create' | 'update' | 'destroy' | 'retry' | 'refr
 export type ProvisionJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type ProvisionJobStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 export type CloudImageScope = 'public' | 'custom';
+export type BillingScope = 'user' | 'platform';
+export type BillingLedgerResourceType =
+  | 'ecs'
+  | 'disk'
+  | 'eip'
+  | 'nat_gateway'
+  | 'snat_entry'
+  | 'dnat_entry'
+  | 'image'
+  | 'snapshot'
+  | 'snapshot_region'
+  | 'unknown';
 
 export type RangeTemplateNetworkZone = {
   key: string;
@@ -371,6 +383,63 @@ export type SingleInstanceNetworkProfileRecord = {
   updatedAt: Date;
 };
 
+export type BillingLedgerResourceRecord = {
+  id: string;
+  cloudProvider: CloudProvider;
+  cloudAccountUid: string | null;
+  regionId: string;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+  billingScope: BillingScope;
+  ownerUserId: string | null;
+  rangeInstanceId: string | null;
+  singleInstanceBatchId: string | null;
+  platformImageAssetId: string | null;
+  sourceProvisionJobId: string | null;
+  billingStartAt: Date;
+  releasedAt: Date | null;
+  tagsSnapshot: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type BillingLineItemRecord = {
+  id: string;
+  syncBatchId: string;
+  sourceFingerprint: string;
+  billCycle: string;
+  billingDate: Date;
+  productCode: string;
+  productDetail: string | null;
+  billItem: string;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+  pretaxAmount: number;
+  currency: string;
+  billingScope: BillingScope;
+  ownerUserId: string | null;
+  matchedLedgerId: string | null;
+  rawPayload: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type BillingAnomalyRecord = {
+  id: string;
+  syncBatchId: string;
+  sourceFingerprint: string;
+  billCycle: string;
+  billingDate: Date;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+  pretaxAmount: number;
+  currency: string;
+  reason: string;
+  rawPayload: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type UpsertSingleInstanceNetworkProfileInput = {
   provider: CloudProvider;
   regionId: string;
@@ -382,6 +451,86 @@ export type UpsertSingleInstanceNetworkProfileInput = {
   securityGroupId: string;
   securityGroupName: string;
 };
+
+export type CreateBillingLedgerResourceInput = {
+  cloudProvider?: CloudProvider;
+  cloudAccountUid?: string | null;
+  regionId: string;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+  billingScope: BillingScope;
+  ownerUserId?: string | null;
+  rangeInstanceId?: string | null;
+  singleInstanceBatchId?: string | null;
+  platformImageAssetId?: string | null;
+  sourceProvisionJobId?: string | null;
+  billingStartAt: Date;
+  releasedAt?: Date | null;
+  tagsSnapshot?: Record<string, unknown>;
+};
+
+export type FindBillingLedgerResourceInput = {
+  cloudProvider?: CloudProvider;
+  regionId: string;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+};
+
+export type UpdateBillingLedgerResourceInput = Partial<{
+  billingScope: BillingScope;
+  ownerUserId: string | null;
+  rangeInstanceId: string | null;
+  singleInstanceBatchId: string | null;
+  platformImageAssetId: string | null;
+  sourceProvisionJobId: string | null;
+  billingStartAt: Date;
+  releasedAt: Date | null;
+  tagsSnapshot: Record<string, unknown>;
+}>;
+
+export type CreateBillingLineItemInput = {
+  syncBatchId: string;
+  sourceFingerprint: string;
+  billCycle: string;
+  billingDate: string | Date;
+  productCode: string;
+  productDetail?: string | null;
+  billItem: string;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+  pretaxAmount: number;
+  currency: string;
+  billingScope: BillingScope;
+  ownerUserId?: string | null;
+  matchedLedgerId?: string | null;
+  rawPayload?: Record<string, unknown>;
+};
+
+export type ListBillingLineItemsFilter = Partial<{
+  startAt: string | Date;
+  endAt: string | Date;
+  ownerUserId: string | null;
+  billingScope: BillingScope;
+  matchedLedgerId: string | null;
+}>;
+
+export type CreateBillingAnomalyInput = {
+  syncBatchId: string;
+  sourceFingerprint: string;
+  billCycle: string;
+  billingDate: string | Date;
+  cloudResourceId: string;
+  cloudResourceType: BillingLedgerResourceType;
+  pretaxAmount: number;
+  currency: string;
+  reason: string;
+  rawPayload?: Record<string, unknown>;
+};
+
+export type ListBillingAnomaliesFilter = Partial<{
+  startAt: string | Date;
+  endAt: string | Date;
+}>;
 
 export type ListImageSnapshotsFilter = Partial<{
   provider: CloudProvider;
@@ -654,4 +803,14 @@ export interface AdminRepository {
   upsertSingleInstanceNetworkProfile(
     input: UpsertSingleInstanceNetworkProfileInput,
   ): Promise<SingleInstanceNetworkProfileRecord>;
+  createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
+  findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
+  updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
+  listBillingLedgerResources(): Promise<BillingLedgerResourceRecord[]>;
+  deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void>;
+  upsertBillingLineItems(input: CreateBillingLineItemInput[]): Promise<BillingLineItemRecord[]>;
+  listBillingLineItems(filter?: ListBillingLineItemsFilter): Promise<BillingLineItemRecord[]>;
+  deleteBillingAnomaliesBySyncBatchId(syncBatchId: string): Promise<void>;
+  createBillingAnomaly(input: CreateBillingAnomalyInput): Promise<BillingAnomalyRecord>;
+  listBillingAnomalies(filter?: ListBillingAnomaliesFilter): Promise<BillingAnomalyRecord[]>;
 }
