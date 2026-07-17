@@ -1,4 +1,4 @@
-import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
 import { adminUserTools } from './tools/admin-users';
 import { imageTools } from './tools/images';
@@ -32,9 +32,21 @@ export function createToolRegistry(client: PlatformApiClientLike) {
         throw new Error(`Forbidden tool: ${name}`);
       }
 
-      const result = await tool.call({ client, scopes: scopeSet } satisfies ToolContext, args);
+      try {
+        const result = await tool.call({ client, scopes: scopeSet } satisfies ToolContext, args);
+        return toToolResult(result);
+      } catch (error) {
+        if (error instanceof PlatformApiError) {
+          return toToolResult(
+            {
+              error: error.details ?? { status: error.status, message: error.message },
+            },
+            true,
+          );
+        }
 
-      return toToolResult(result);
+        throw error;
+      }
     },
   };
 }

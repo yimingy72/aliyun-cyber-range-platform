@@ -1,5 +1,10 @@
 import type { ToolDefinition } from './tool-context';
 
+const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
+  idempotencyKey: args.idempotencyKey,
+  confirmationId: args.confirmationId,
+});
+
 export const settingsTools: ToolDefinition[] = [
   {
     name: 'cloud_config_get',
@@ -15,7 +20,7 @@ export const settingsTools: ToolDefinition[] = [
     description: 'Update cloud config snapshot.',
     requiredScopes: ['settings:write'],
     call(context, args) {
-      return context.client.saveCloudConfig(args as Record<string, unknown>);
+      return context.client.saveCloudConfig(args as Record<string, unknown>, operation(args as { idempotencyKey?: string; confirmationId?: string }));
     },
   },
 ];

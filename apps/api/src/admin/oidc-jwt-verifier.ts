@@ -15,6 +15,7 @@ type OidcJwtPayload = {
   exp?: number;
   iat?: number;
   nbf?: number;
+  azp?: string;
 };
 
 type OidcJwk = NodeJsonWebKey & {
@@ -31,6 +32,7 @@ export type VerifiedOidcJwtClaims = {
   issuer: string;
   subject: string;
   audience: string[];
+  authorizedParty: string | null;
 };
 
 @Injectable()
@@ -101,6 +103,7 @@ export class OidcJwtVerifier {
       issuer: payload.iss,
       subject: payload.sub,
       audience,
+      authorizedParty: typeof payload.azp === 'string' && payload.azp.trim() ? payload.azp : null,
     };
   }
 

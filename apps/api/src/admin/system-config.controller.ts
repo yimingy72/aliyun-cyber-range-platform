@@ -1,16 +1,21 @@
-import { BadRequestException, Body, Controller, Get, Patch, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
+import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import {
   maskSystemCloudConfig,
   SystemConfigService,
   type SystemCloudConfig,
 } from './system-config.service';
+import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 @Controller('admin/system-config')
 @UseGuards(AdminAuthGuard)
 export class SystemConfigController {
-  constructor(private readonly systemConfigService: SystemConfigService) {}
+  constructor(
+    private readonly systemConfigService: SystemConfigService,
+    private readonly operationControlService: OperationControlService,
+  ) {}
 
   @Get()
   async getSnapshot() {
@@ -33,7 +38,24 @@ export class SystemConfigController {
   }
 
   @Patch()
-  async updateSnapshot(@Body() payload: Partial<SystemCloudConfig>) {
-    return maskSystemCloudConfig(await this.systemConfigService.updateSnapshot(payload));
+  async updateSnapshot(@Req() request: AuthenticatedPlatformRequest, @Body() payload: Partial<SystemCloudConfig>) {
+    if (request.authContext.source !== 'mcp') {
+      return maskSystemCloudConfig(await this.systemConfigService.updateSnapshot(payload));
+    }
+    const metadata = readOperationRequestMetadata(request);
+    return this.operationControlService.executeConfirmed({
+      context: request.authContext,
+      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? 'cloud-config-update' },
+      toolName: 'cloud_config_update',
+      arguments: payload as Record<string, unknown>,
+      targetType: 'system_cloud_config',
+      targetId: 'default',
+      resolveConfirmation: async () => ({
+        targetId: 'default',
+        targetSnapshot: { id: 'default' },
+        summary: { targetName: 'cloud-config', destructive: false },
+      }),
+      execute: async () => ({ result: maskSystemCloudConfig(await this.systemConfigService.updateSnapshot(payload)) }),
+    });
   }
 }

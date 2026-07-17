@@ -92,6 +92,63 @@ export class RangeInstancesService {
     });
   }
 
+  async getAccessById(id: string, currentUser?: AuthenticatedUser) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+
+    if (!instance) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
+    }
+
+    return this.withDefaultInstancePassword({
+      id: instance.id,
+      runtimeCredentials: instance.runtimeCredentials ?? null,
+      accessEntry: instance.accessEntry ?? null,
+    });
+  }
+
+  async prepareLaunchConfirmation(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
+    const template = await this.adminRepository.getRangeTemplateById(input.templateId);
+
+    if (!template) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
+
+    if (!sourceTemplateVersion) {
+      throw new ConflictException('Range template does not have an active template version');
+    }
+
+    const templateName = template.name?.trim() || template.slug;
+    return {
+      targetId: template.id,
+      targetSnapshot: { templateId: template.id, templateName, rangeName: input.name, expiresAt: input.expiresAt },
+      summary: { targetName: input.name, templateName, destructive: false },
+    };
+  }
+
+  async prepareDestroyConfirmation(id: string, currentUser?: AuthenticatedUser) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+
+    if (!instance) {
+      throw new NotFoundException('Range instance not found');
+    }
+
+    if (currentUser) {
+      this.assertInstanceOwnerOrAdmin(instance, currentUser);
+    }
+
+    return {
+      targetId: instance.id,
+      targetSnapshot: { status: instance.status, name: instance.name },
+      summary: { targetName: instance.name || instance.id, destructive: true },
+    };
+  }
+
   async create(input: CreateRangeInstanceInput, currentUser?: AuthenticatedUser) {
     if (!input.templateId) {
       throw new ConflictException('Range instance requires a template id');

@@ -33,6 +33,7 @@ import { AppController } from './app.controller';
 import { PrismaAdminRepository } from './database/prisma-admin.repository';
 import { PrismaService } from './database/prisma.service';
 import { OidcAdminBootstrapService } from './oidc-admin-bootstrap.service';
+import { OperationControlService } from './operations/operation-control.service';
 import { CidrPoolService } from './provisioning/cidr-pool.service';
 import { DryRunRangeProvisioner } from './provisioning/dry-run-range-provisioner';
 import { createRangeProvisionerFromEnv } from './provisioning/open-tofu-range-provisioner';
@@ -93,6 +94,7 @@ function resolveProjectRootDir() {
     SingleInstanceNetworkBootstrapService,
     ProvisioningWorkerService,
     OidcAdminBootstrapService,
+    OperationControlService,
     PrismaService,
     PrismaAdminRepository,
     DryRunRangeProvisioner,

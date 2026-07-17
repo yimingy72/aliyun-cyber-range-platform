@@ -1,5 +1,10 @@
 import type { ToolDefinition } from './tool-context';
 
+const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
+  idempotencyKey: args.idempotencyKey,
+  confirmationId: args.confirmationId,
+});
+
 export const adminUserTools: ToolDefinition[] = [
   {
     name: 'admin_user_list',
@@ -15,8 +20,8 @@ export const adminUserTools: ToolDefinition[] = [
     description: 'Create a platform user.',
     requiredScopes: ['users:write'],
     call(context, args) {
-      const input = args as { username: string; password: string; role: 'admin' | 'user' };
-      return context.client.createAdminUser(input);
+      const input = args as { username: string; password: string; role: 'admin' | 'user'; idempotencyKey?: string; confirmationId?: string };
+      return context.client.createAdminUser(input, operation(input));
     },
   },
   {
@@ -24,8 +29,8 @@ export const adminUserTools: ToolDefinition[] = [
     description: 'Update a platform user role.',
     requiredScopes: ['users:write'],
     call(context, args) {
-      const input = args as { userId: string; role: 'admin' | 'user' };
-      return context.client.updateAdminUserRole(input.userId, { role: input.role });
+      const input = args as { userId: string; role: 'admin' | 'user'; idempotencyKey?: string; confirmationId?: string };
+      return context.client.updateAdminUserRole(input.userId, { role: input.role }, operation(input));
     },
   },
   {
@@ -33,8 +38,8 @@ export const adminUserTools: ToolDefinition[] = [
     description: 'Update a platform user status.',
     requiredScopes: ['users:write'],
     call(context, args) {
-      const input = args as { userId: string; status: 'active' | 'disabled' };
-      return context.client.updateAdminUserStatus(input.userId, { status: input.status });
+      const input = args as { userId: string; status: 'active' | 'disabled'; idempotencyKey?: string; confirmationId?: string };
+      return context.client.updateAdminUserStatus(input.userId, { status: input.status }, operation(input));
     },
   },
   {
@@ -42,8 +47,8 @@ export const adminUserTools: ToolDefinition[] = [
     description: 'Reset a platform user password.',
     requiredScopes: ['users:write'],
     call(context, args) {
-      const input = args as { userId: string; password: string };
-      return context.client.resetAdminUserPassword(input.userId, { password: input.password });
+      const input = args as { userId: string; password: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.resetAdminUserPassword(input.userId, { password: input.password }, operation(input));
     },
   },
 ];

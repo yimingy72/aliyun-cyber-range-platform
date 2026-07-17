@@ -336,6 +336,7 @@ export class ProvisioningWorkerService {
         finishedAt: new Date(),
         errorSummary: null,
       });
+      await this.finalizeDispatchedOperation(job, 'succeeded');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown provisioning error';
 
@@ -1222,6 +1223,41 @@ export class ProvisioningWorkerService {
     await this.adminRepository.updateRangeInstance(instance.id, {
       status: failedInstanceStatus,
       errorSummary: message,
+    });
+    await this.finalizeDispatchedOperation(job, 'failed', 'PROVISIONING_FAILED');
+  }
+
+  private async finalizeDispatchedOperation(
+    job: ProvisionJobRecord,
+    status: 'succeeded' | 'failed',
+    errorCode: string | null = null,
+  ) {
+    const event = await this.adminRepository.getDispatchedOperationByJobId(job.id);
+    if (!event) {
+      return;
+    }
+
+    const operation = await this.adminRepository.getIdempotentOperationByOperationId(event.operationId);
+    if (operation) {
+      await this.adminRepository.updateIdempotentOperation(operation.id, {
+        status,
+        errorCode,
+        ...(status === 'succeeded' ? { result: { jobId: job.id, rangeInstanceId: job.rangeInstanceId } } : {}),
+      });
+    }
+
+    await this.adminRepository.appendOperationAuditEvent({
+      operationId: event.operationId,
+      requestId: event.requestId,
+      actorUserId: event.actorUserId,
+      source: event.source,
+      oauthClientId: event.oauthClientId,
+      toolName: event.toolName,
+      phase: status,
+      targetType: event.targetType,
+      targetId: event.targetId,
+      jobId: job.id,
+      errorCode,
     });
   }
 

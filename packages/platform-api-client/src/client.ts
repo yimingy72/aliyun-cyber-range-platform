@@ -60,51 +60,58 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return result.items;
   }
 
-  collectPlatformImage(payload: CollectPlatformImageInput) {
+  collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>('/admin/platform-images', {
       method: 'POST',
       body: JSON.stringify(payload),
+      operation,
     });
   }
 
-  renamePlatformImage(id: string, displayName: string) {
+  renamePlatformImage(id: string, displayName: string, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify({ displayName }),
+      operation,
     });
   }
 
-  publishPlatformImage(id: string) {
+  publishPlatformImage(id: string, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/publish`, {
       method: 'POST',
       body: '{}',
+      operation,
     });
   }
 
-  unpublishPlatformImage(id: string) {
+  unpublishPlatformImage(id: string, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/unpublish`, {
       method: 'POST',
       body: '{}',
+      operation,
     });
   }
 
-  enablePlatformImage(id: string) {
+  enablePlatformImage(id: string, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/enable`, {
       method: 'POST',
       body: '{}',
+      operation,
     });
   }
 
-  disablePlatformImage(id: string) {
+  disablePlatformImage(id: string, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/disable`, {
       method: 'POST',
       body: '{}',
+      operation,
     });
   }
 
-  async removePlatformImage(id: string) {
+  async removePlatformImage(id: string, operation?: OperationRequest) {
     await this.request<void>(`/admin/platform-images/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+      operation,
     });
   }
 
@@ -117,7 +124,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   }
 
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {
-    return this.pickAccess(await this.getRangeInstance(id));
+    return this.request<RangeAccessPayload>(`/admin/ranges/${encodeURIComponent(id)}/access`);
   }
 
   listSingleInstances(view: InstanceView = 'active') {
@@ -138,13 +145,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   }
 
   async getSingleInstanceAccess(id: string): Promise<RangeAccessPayload> {
-    const instance = await this.getSingleInstance(id);
-
-    if (!instance) {
-      throw new PlatformApiError(404, 'Single instance not found');
-    }
-
-    return this.pickAccess(instance);
+    return this.request<RangeAccessPayload>(`/admin/instances/${encodeURIComponent(id)}/access`);
   }
 
   listProvisionJobs(instanceMode?: InstanceMode) {
@@ -160,10 +161,11 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<CloudConfigSnapshot>('/admin/system-config');
   }
 
-  saveCloudConfig(payload: CloudConfigSnapshot) {
+  saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest) {
     return this.request<CloudConfigSnapshot>('/admin/system-config', {
       method: 'PATCH',
       body: JSON.stringify(payload),
+      operation,
     });
   }
 
@@ -171,31 +173,35 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<AdminUser[]>('/admin/users');
   }
 
-  createAdminUser(payload: CreateAdminUserInput) {
+  createAdminUser(payload: CreateAdminUserInput, operation?: OperationRequest) {
     return this.request<AdminUser>('/admin/users', {
       method: 'POST',
       body: JSON.stringify(payload),
+      operation,
     });
   }
 
-  updateAdminUserRole(id: string, payload: UpdateAdminUserRoleInput) {
+  updateAdminUserRole(id: string, payload: UpdateAdminUserRoleInput, operation?: OperationRequest) {
     return this.request<AdminUser>(`/admin/users/${encodeURIComponent(id)}/role`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
+      operation,
     });
   }
 
-  updateAdminUserStatus(id: string, payload: UpdateAdminUserStatusInput) {
+  updateAdminUserStatus(id: string, payload: UpdateAdminUserStatusInput, operation?: OperationRequest) {
     return this.request<AdminUser>(`/admin/users/${encodeURIComponent(id)}/status`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
+      operation,
     });
   }
 
-  resetAdminUserPassword(id: string, payload: ResetAdminUserPasswordInput) {
+  resetAdminUserPassword(id: string, payload: ResetAdminUserPasswordInput, operation?: OperationRequest) {
     return this.request<AdminUser>(`/admin/users/${encodeURIComponent(id)}/reset-password`, {
       method: 'POST',
       body: JSON.stringify(payload),
+      operation,
     });
   }
 
@@ -313,20 +319,4 @@ export class PlatformApiClient implements PlatformApiClientLike {
     };
   }
 
-  private pickAccess(instance: RangeInstance): RangeAccessPayload {
-    const accessEntry = (instance.accessEntry as Record<string, unknown> | null | undefined) ?? null;
-    const publicIp = typeof accessEntry?.publicIp === 'string' && accessEntry.publicIp.trim() ? accessEntry.publicIp.trim() : null;
-    const privateIp = typeof accessEntry?.privateIp === 'string' && accessEntry.privateIp.trim() ? accessEntry.privateIp.trim() : null;
-    const ssh = typeof accessEntry?.ssh === 'string' && accessEntry.ssh.trim() ? accessEntry.ssh.trim() : null;
-
-    return {
-      ip: publicIp,
-      publicIp,
-      privateIp,
-      ssh,
-      defaultInstancePassword: (instance.defaultInstancePassword as string | null | undefined) ?? null,
-      accessEntry,
-      runtimeCredentials: (instance.runtimeCredentials as Record<string, unknown> | null | undefined) ?? null,
-    };
-  }
 }

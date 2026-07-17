@@ -28,6 +28,21 @@ describe('PlatformApiClient', () => {
         return new Response(JSON.stringify({ batches: [], standaloneInstances: [] }), { status: 200 });
       }
 
+      if (input.endsWith('/admin/instances/ins-1/access')) {
+        return new Response(
+          JSON.stringify({
+            ip: '47.1.2.3',
+            publicIp: '47.1.2.3',
+            privateIp: '10.0.0.8',
+            ssh: 'ssh root@47.1.2.3',
+            defaultInstancePassword: 'p',
+            accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' },
+            runtimeCredentials: null,
+          }),
+          { status: 200 },
+        );
+      }
+
       return new Response(
         JSON.stringify({
           batches: [{ batch: { id: 'batch-1' }, instances: [{ id: 'ins-1', defaultInstancePassword: 'p', accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' } }] }],

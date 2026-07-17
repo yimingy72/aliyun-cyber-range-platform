@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
 import { createToolRegistry } from '../src/server';
 
@@ -69,6 +69,30 @@ describe('tool registry', () => {
       { templateId: 'tpl-1', name: 'range-a', expiresAt: '2026-07-20T00:00:00.000Z' },
       { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' },
     );
+  });
+
+  it('returns a structured confirmation requirement', async () => {
+    const client = createClientStub();
+    (client.launchRange as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new PlatformApiError(409, 'confirmation required', {
+        message: { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1' },
+      }),
+    );
+    const registry = createToolRegistry(client);
+
+    await expect(
+      registry.callTool('range_instance_launch', ['ranges:create'], {
+        templateId: 'tpl-1',
+        name: 'range-a',
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        idempotencyKey: 'idem-1',
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { message: { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1' } },
+      },
+    });
   });
 
   it('opens vnc without confirmation fields', async () => {

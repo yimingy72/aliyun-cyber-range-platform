@@ -3,6 +3,16 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Unauthor
 import { SessionUserProfile } from './admin-user-auth';
 import { OidcJwtVerifier } from './oidc-jwt-verifier';
 import { OidcPrincipalResolver } from './oidc-principal-resolver';
+import type { RequestAuthContext } from '../auth/request-auth-context';
+
+type GuardRequest = {
+  headers: Record<string, string | undefined>;
+  originalUrl?: string;
+  url?: string;
+  method?: string;
+  adminUser?: SessionUserProfile;
+  authContext?: RequestAuthContext;
+};
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
@@ -19,13 +29,7 @@ export class AdminAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext) {
-    const request = context.switchToHttp().getRequest<{
-      headers: Record<string, string | undefined>;
-      originalUrl?: string;
-      url?: string;
-      method?: string;
-      adminUser?: SessionUserProfile;
-    }>();
+    const request = context.switchToHttp().getRequest<GuardRequest>();
     const authorizationHeader = request.headers.authorization ?? '';
     const token = this.readBearerToken(authorizationHeader);
 
@@ -41,13 +45,7 @@ export class AdminAuthGuard implements CanActivate {
   }
 
   private async authenticateOidc(
-    request: {
-      headers: Record<string, string | undefined>;
-      originalUrl?: string;
-      url?: string;
-      method?: string;
-      adminUser?: SessionUserProfile;
-    },
+    request: GuardRequest,
     token: string,
   ) {
     if (!this.oidcJwtVerifier || !this.oidcPrincipalResolver) {
@@ -60,10 +58,16 @@ export class AdminAuthGuard implements CanActivate {
       subject: claims.subject,
     });
 
-    request.adminUser = {
+    const profile = {
       id: user.id,
       username: user.username,
       role: user.role,
+    };
+    request.adminUser = profile;
+    request.authContext = {
+      user: profile,
+      source: claims.authorizedParty === (process.env.MCP_GATEWAY_CLIENT_ID?.trim() || 'mcp-gateway') ? 'mcp' : 'web',
+      oauthClientId: claims.authorizedParty,
     };
 
     if (this.requiresAdmin(request) && user.role !== 'admin') {

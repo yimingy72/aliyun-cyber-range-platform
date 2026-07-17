@@ -1,5 +1,10 @@
 import type { ToolDefinition } from './tool-context';
 
+const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
+  idempotencyKey: args.idempotencyKey,
+  confirmationId: args.confirmationId,
+});
+
 export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_list',
@@ -15,8 +20,8 @@ export const imageTools: ToolDefinition[] = [
     description: 'Collect a platform image from a snapshot.',
     requiredScopes: ['images:write'],
     call(context, args) {
-      const input = args as { snapshotId: string; displayName: string };
-      return context.client.collectPlatformImage({ snapshotId: input.snapshotId, displayName: input.displayName });
+      const input = args as { snapshotId: string; displayName: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.collectPlatformImage({ snapshotId: input.snapshotId, displayName: input.displayName }, operation(input));
     },
   },
   {
@@ -24,8 +29,8 @@ export const imageTools: ToolDefinition[] = [
     description: 'Rename a platform image asset.',
     requiredScopes: ['images:write'],
     call(context, args) {
-      const input = args as { platformImageAssetId: string; displayName: string };
-      return context.client.renamePlatformImage(input.platformImageAssetId, input.displayName);
+      const input = args as { platformImageAssetId: string; displayName: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.renamePlatformImage(input.platformImageAssetId, input.displayName, operation(input));
     },
   },
   {
@@ -33,7 +38,8 @@ export const imageTools: ToolDefinition[] = [
     description: 'Enable a platform image asset.',
     requiredScopes: ['images:write'],
     call(context, args) {
-      return context.client.enablePlatformImage((args as { platformImageAssetId: string }).platformImageAssetId);
+      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.enablePlatformImage(input.platformImageAssetId, operation(input));
     },
   },
   {
@@ -41,7 +47,8 @@ export const imageTools: ToolDefinition[] = [
     description: 'Disable a platform image asset.',
     requiredScopes: ['images:write'],
     call(context, args) {
-      return context.client.disablePlatformImage((args as { platformImageAssetId: string }).platformImageAssetId);
+      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.disablePlatformImage(input.platformImageAssetId, operation(input));
     },
   },
   {
@@ -49,7 +56,8 @@ export const imageTools: ToolDefinition[] = [
     description: 'Publish an owned image asset to platform visibility.',
     requiredScopes: ['images:write'],
     call(context, args) {
-      return context.client.publishPlatformImage((args as { platformImageAssetId: string }).platformImageAssetId);
+      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.publishPlatformImage(input.platformImageAssetId, operation(input));
     },
   },
   {
@@ -57,7 +65,8 @@ export const imageTools: ToolDefinition[] = [
     description: 'Unpublish an owned image asset back to private visibility.',
     requiredScopes: ['images:write'],
     call(context, args) {
-      return context.client.unpublishPlatformImage((args as { platformImageAssetId: string }).platformImageAssetId);
+      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.unpublishPlatformImage(input.platformImageAssetId, operation(input));
     },
   },
   {
@@ -65,8 +74,9 @@ export const imageTools: ToolDefinition[] = [
     description: 'Remove a platform image asset.',
     requiredScopes: ['images:write'],
     async call(context, args) {
-      const id = (args as { platformImageAssetId: string }).platformImageAssetId;
-      await context.client.removePlatformImage(id);
+      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
+      const id = input.platformImageAssetId;
+      await context.client.removePlatformImage(id, operation(input));
       return { removed: true, platformImageAssetId: id };
     },
   },

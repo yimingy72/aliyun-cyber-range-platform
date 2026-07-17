@@ -1,15 +1,14 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
-import type { SessionUserProfile } from './admin-user-auth';
+import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { CreateRangeInstanceDto, LaunchRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { RangeInstancesService } from './range-instances.service';
+import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
-type AuthenticatedAdminRequest = {
-  adminUser: SessionUserProfile;
-};
+type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
 
 @Controller('admin/ranges')
 @UseGuards(AdminAuthGuard)
@@ -17,6 +16,7 @@ export class RangesController {
   constructor(
     private readonly rangeInstancesService: RangeInstancesService,
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
+    private readonly operationControlService: OperationControlService,
   ) {}
 
   @Get()
@@ -27,6 +27,25 @@ export class RangesController {
   @Get(':id')
   getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
     return this.rangeInstancesService.getById(id, request.adminUser);
+  }
+
+  @Get(':id/access')
+  getAccess(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    if (request.authContext.source === 'mcp') {
+      const metadata = readOperationRequestMetadata(request);
+      void this.operationControlService.audit({
+        operationId: `request:${metadata.requestId}`,
+        requestId: metadata.requestId,
+        actorUserId: request.adminUser.id,
+        source: 'mcp',
+        oauthClientId: request.authContext.oauthClientId,
+        toolName: 'range_instance_get_access',
+        phase: 'succeeded',
+        targetType: 'range_instance',
+        targetId: id,
+      });
+    }
+    return this.rangeInstancesService.getAccessById(id, request.adminUser);
   }
 
   @Patch(':id/draft')
@@ -51,6 +70,21 @@ export class RangesController {
 
   @Post('launch')
   launch(@Req() request: AuthenticatedAdminRequest, @Body() body: LaunchRangeInstanceDto) {
+    if (request.authContext.source === 'mcp') {
+      const metadata = readOperationRequestMetadata(request);
+      return this.operationControlService.executeConfirmed({
+        context: request.authContext,
+        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `launch:${body.templateId}:${body.name}` },
+        toolName: 'range_instance_launch',
+        arguments: body as unknown as Record<string, unknown>,
+        targetType: 'range_instance',
+        resolveConfirmation: () => this.rangeInstancesService.prepareLaunchConfirmation(body, request.adminUser),
+        execute: async () => {
+          const result = await this.rangeInstancesService.launch(body, request.adminUser);
+          return { rangeInstanceId: result.id, jobId: result.lastJobId };
+        },
+      });
+    }
     return this.rangeInstancesService.launch(body, request.adminUser);
   }
 
@@ -61,6 +95,22 @@ export class RangesController {
 
   @Post(':id/destroy')
   triggerDestroy(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    if (request.authContext.source === 'mcp') {
+      const metadata = readOperationRequestMetadata(request);
+      return this.operationControlService.executeConfirmed({
+        context: request.authContext,
+        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `destroy:${id}` },
+        toolName: 'range_instance_destroy',
+        arguments: { rangeInstanceId: id },
+        targetType: 'range_instance',
+        targetId: id,
+        resolveConfirmation: () => this.rangeInstancesService.prepareDestroyConfirmation(id, request.adminUser),
+        execute: async () => {
+          const job = await this.rangeInstancesService.triggerDestroy(id, request.adminUser);
+          return { rangeInstanceId: id, jobId: job.id };
+        },
+      });
+    }
     return this.rangeInstancesService.triggerDestroy(id, request.adminUser);
   }
 

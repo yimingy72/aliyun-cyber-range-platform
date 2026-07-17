@@ -97,6 +97,78 @@ export class SingleInstancesService {
     };
   }
 
+  async getById(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
+    const [detail] = await attachCreatedByUsernames(this.adminRepository, [toSingleInstanceListItem(instance)]);
+    return detail;
+  }
+
+  async getAccessById(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
+    return {
+      id: instance.id,
+      runtimeCredentials: instance.runtimeCredentials,
+      accessEntry: instance.accessEntry
+        ? {
+            hostRole: instance.accessEntry.hostRole,
+            publicIp: instance.accessEntry.publicIp,
+            privateIp: instance.accessEntry.privateIp,
+            ssh: instance.accessEntry.ssh,
+          }
+        : null,
+    };
+  }
+
+  async prepareLaunchConfirmation(input: LaunchSingleInstanceDto, currentUserId: string) {
+    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
+    return {
+      targetId: image.id,
+      targetSnapshot: { imageId: image.imageId, imageName: image.displayName, instanceName: input.name, quantity: input.quantity, expiresAt: input.expiresAt },
+      summary: { targetName: input.name, imageName: image.displayName, quantity: input.quantity, destructive: false },
+    };
+  }
+
+  async prepareDestroyConfirmation(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
+    return {
+      targetId: instance.id,
+      targetSnapshot: { status: instance.status, name: instance.name },
+      summary: { targetName: instance.name || instance.id, destructive: true },
+    };
+  }
+
+  async prepareDestroyBatchConfirmation(batchId: string, currentUser: SessionUserProfile) {
+    const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
+    const group = groups.find((entry) => entry.batch.id === batchId);
+    if (!group) {
+      throw new NotFoundException('Single instance batch not found');
+    }
+    this.assertBatchAccess(group.batch.ownerUserId, group.batch.createdBy, currentUser);
+    return {
+      targetId: group.batch.id,
+      targetSnapshot: { batchName: group.batch.name, instanceCount: group.instances.filter((instance) => instance.status !== 'destroyed').length },
+      summary: { targetName: group.batch.name, destructive: true },
+    };
+  }
+
+  async prepareRetryConfirmation(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
+    return {
+      targetId: instance.id,
+      targetSnapshot: { status: instance.status, name: instance.name },
+      summary: { targetName: instance.name || instance.id, destructive: false },
+    };
+  }
+
+  async prepareActionConfirmation(id: string, action: 'reboot' | 'pack-image', currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
+    return {
+      targetId: instance.id,
+      targetSnapshot: { status: instance.status, name: instance.name, action },
+      summary: { targetName: instance.name || instance.id, action, destructive: action === 'reboot' },
+    };
+  }
+
   async launch(input: LaunchSingleInstanceDto, currentUserId: string) {
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile();
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
