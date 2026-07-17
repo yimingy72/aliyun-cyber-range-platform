@@ -1,6 +1,10 @@
 import type {
   AdminUser,
   AdminBootstrapData,
+  BillingAnomaly,
+  BillingLineItem,
+  BillingSummary,
+  BillingUserSummary,
   CollectImageCatalogItemInput,
   CloudConfigSnapshot,
   CreateAdminUserInput,
@@ -72,6 +76,30 @@ async function readJson<T>(response: Response): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+async function readText(response: Response): Promise<string> {
+  if (!response.ok) {
+    let details: unknown;
+
+    try {
+      details = await response.json();
+    } catch {
+      details = null;
+    }
+
+    const message =
+      details &&
+      typeof details === 'object' &&
+      'message' in details &&
+      typeof (details as { message?: unknown }).message === 'string'
+        ? (details as { message: string }).message
+        : `Admin API request failed with status ${response.status}`;
+
+    throw new AdminApiError(response.status, message, details);
+  }
+
+  return response.text();
 }
 
 export async function fetchAdminBootstrap(
@@ -388,6 +416,219 @@ export async function fetchCloudConfig(
   });
 
   return readJson<CloudConfigSnapshot>(response);
+}
+
+export async function fetchBillingSummary(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string },
+): Promise<BillingSummary> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/summary`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingSummary>(response);
+}
+
+export async function fetchBillingUsers(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string; limit?: number },
+): Promise<BillingUserSummary[]> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/users`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  if (options?.limit) {
+    url.searchParams.set('limit', String(options.limit));
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingUserSummary[]>(response);
+}
+
+export async function fetchBillingUserItems(
+  apiBaseUrl: string,
+  token: string,
+  userId: string,
+  options?: { startAt?: string; endAt?: string; limit?: number },
+): Promise<BillingLineItem[]> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/users/${userId}/items`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  if (options?.limit) {
+    url.searchParams.set('limit', String(options.limit));
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingLineItem[]>(response);
+}
+
+export async function fetchPlatformBillingItems(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string; limit?: number },
+): Promise<BillingLineItem[]> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/platform/items`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  if (options?.limit) {
+    url.searchParams.set('limit', String(options.limit));
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingLineItem[]>(response);
+}
+
+export async function fetchBillingAnomalies(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string; limit?: number },
+): Promise<BillingAnomaly[]> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/anomalies`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  if (options?.limit) {
+    url.searchParams.set('limit', String(options.limit));
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingAnomaly[]>(response);
+}
+
+export async function triggerBillingSync(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string },
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/billing/sync`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(options ?? {}),
+  });
+
+  return readJson<{
+    syncedDays: number;
+    importedLineItems: number;
+    anomalyCount: number;
+    deferredCount: number;
+  }>(response);
+}
+
+export async function exportPlatformBillingCsv(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string },
+) {
+  const url = new URL(`${apiBaseUrl}/admin/billing/export/platform.csv`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readText(response);
+}
+
+export async function exportBillingUsersCsv(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string },
+) {
+  const url = new URL(`${apiBaseUrl}/admin/billing/export/users.csv`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readText(response);
+}
+
+export async function exportBillingUserItemsCsv(
+  apiBaseUrl: string,
+  token: string,
+  userId: string,
+  options?: { startAt?: string; endAt?: string },
+) {
+  const url = new URL(`${apiBaseUrl}/admin/billing/export/users/${userId}.csv`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readText(response);
 }
 
 export async function saveCloudConfig(

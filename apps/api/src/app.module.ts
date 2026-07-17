@@ -6,6 +6,10 @@ import { ADMIN_REPOSITORY } from './admin/admin.repository';
 import { AdminAuthGuard } from './admin/admin-auth.guard';
 import { ImageCatalogController } from './admin/image-catalog.controller';
 import { ImageCatalogService } from './admin/image-catalog.service';
+import { BillingBssClient } from './admin/billing-bss-client';
+import { BillingController } from './admin/billing.controller';
+import { BillingService } from './admin/billing.service';
+import { BillingSyncService } from './admin/billing-sync.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { AdminUsersController } from './admin/admin-users.controller';
 import { AdminUsersService } from './admin/admin-users.service';
@@ -63,12 +67,16 @@ function resolveProjectRootDir() {
     ProvisionJobsController,
     SystemConfigController,
     ImageCatalogController,
+    BillingController,
     PlatformImagesController,
     SingleInstancesController,
   ],
   providers: [
     AdminAuthGuard,
+    BillingBssClient,
     ImageCatalogService,
+    BillingService,
+    BillingSyncService,
     AdminUsersService,
     KeycloakAdminService,
     OidcJwtVerifier,

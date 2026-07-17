@@ -116,9 +116,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   internet_max_bandwidth_out?: number;
   system_disk_category?: string;
   system_disk_size?: number;
-  tags: {
-    range_instance_id: string;
-  };
+  tags: Record<string, string>;
 };
 
 export type AlibabaCloudOpenTofuRendererInput = {
@@ -136,6 +134,7 @@ export type AlibabaCloudOpenTofuRendererInput = {
   internetMaxBandwidthOut?: number;
   systemDiskCategory?: string;
   systemDiskSize?: number;
+  tags: Record<string, string>;
 };
 
 export class AlibabaCloudOpenTofuRenderer {
@@ -265,9 +264,7 @@ export class AlibabaCloudOpenTofuRenderer {
         : {}),
       ...(input.systemDiskCategory ? { system_disk_category: input.systemDiskCategory } : {}),
       ...(input.systemDiskSize !== undefined ? { system_disk_size: input.systemDiskSize } : {}),
-      tags: {
-        range_instance_id: input.rangeInstanceId,
-      },
+      tags: input.tags,
     };
   }
 }

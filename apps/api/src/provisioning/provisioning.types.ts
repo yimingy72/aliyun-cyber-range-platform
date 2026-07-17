@@ -56,6 +56,7 @@ export type RangeProvisionCreateInput = {
   instanceMode?: 'range' | 'single';
   singleInstanceConfig?: SingleInstanceConfig | null;
   singleNetworkProfile?: SingleInstanceNetworkProfileRecord | null;
+  billingTags?: Record<string, string>;
 };
 
 export type RangeProvisionCreateResult = {
@@ -76,6 +77,7 @@ export type RangeProvisionDestroyInput = {
   instanceMode?: 'range' | 'single';
   singleInstanceConfig?: SingleInstanceConfig | null;
   singleNetworkProfile?: SingleInstanceNetworkProfileRecord | null;
+  billingTags?: Record<string, string>;
 };
 
 export interface RangeProvisioner {

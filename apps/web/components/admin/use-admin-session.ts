@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { AdminSessionPayload } from '../../lib/admin-types';
 import {
@@ -18,17 +18,21 @@ export function useAdminSession() {
     setIsReady(true);
   }, []);
 
-  return {
-    token: session?.token ?? null,
-    refreshToken: session?.refreshToken ?? null,
-    profile: session?.profile ?? null,
-    isAdmin: session?.profile?.role === 'admin',
-    isReady,
-    login(nextSession: AdminSessionPayload) {
-      return writeAdminSession(nextSession);
-    },
-    logout() {
-      clearAdminSession();
-    },
-  };
+  const login = useCallback((nextSession: AdminSessionPayload) => writeAdminSession(nextSession), []);
+  const logout = useCallback(() => {
+    clearAdminSession();
+  }, []);
+
+  return useMemo(
+    () => ({
+      token: session?.token ?? null,
+      refreshToken: session?.refreshToken ?? null,
+      profile: session?.profile ?? null,
+      isAdmin: session?.profile?.role === 'admin',
+      isReady,
+      login,
+      logout,
+    }),
+    [isReady, login, logout, session],
+  );
 }

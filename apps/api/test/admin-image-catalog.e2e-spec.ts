@@ -1114,6 +1114,26 @@ describe('Admin image catalog APIs', () => {
       displayName: 'Delete Me Asset',
       visibility: 'platform',
     });
+    await repository.createBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud',
+      cloudAccountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      cloudResourceId: snapshot.imageId,
+      cloudResourceType: 'image',
+      billingScope: 'platform',
+      billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
+    await repository.createBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud',
+      cloudAccountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      cloudResourceId: snapshot.imageId,
+      cloudResourceType: 'snapshot',
+      billingScope: 'platform',
+      billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
 
     app = await createApp(repository);
     const adminToken = await loginAs(app);
@@ -1137,6 +1157,18 @@ describe('Admin image catalog APIs', () => {
 
     expect(remainingSnapshot).toBeUndefined();
     expect(remainingAssets).toEqual([]);
+    const ledgerResources = await repository.listBillingLedgerResources();
+    const imageLedger = ledgerResources.find((item) => item.cloudResourceType === 'image');
+    const snapshotLedger = ledgerResources.find((item) => item.cloudResourceType === 'snapshot');
+
+    expect(imageLedger?.cloudResourceId).toBe(snapshot.imageId);
+    expect(imageLedger?.cloudResourceType).toBe('image');
+    expect(imageLedger?.releasedAt).toBeTruthy();
+    expect(new Date(imageLedger!.releasedAt as Date).getTime()).toBeGreaterThan(0);
+    expect(snapshotLedger?.cloudResourceId).toBe(snapshot.imageId);
+    expect(snapshotLedger?.cloudResourceType).toBe('snapshot');
+    expect(snapshotLedger?.releasedAt).toBeTruthy();
+    expect(new Date(snapshotLedger!.releasedAt as Date).getTime()).toBeGreaterThan(0);
     expect(global.fetch).toHaveBeenCalledWith(
       expect.stringContaining('Action=DeleteImage'),
       expect.objectContaining({ method: 'GET' }),

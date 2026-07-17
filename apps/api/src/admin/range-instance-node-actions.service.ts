@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 
 import { ADMIN_REPOSITORY, AdminRepository, RangeInstanceRecord } from './admin.repository';
+import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
@@ -128,7 +129,7 @@ export class RangeInstanceNodeActionsService {
     const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
     const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
     const description = payload.description?.trim() || null;
-    const ownerUserId = payload.ownerUserId?.trim() || null;
+    const ownerUserId = payload.ownerUserId?.trim() || instance.ownerUserId || null;
     const createImageResponse = await this.performAliyunRpcRequest<{
       ImageId?: string;
     }>({
@@ -140,6 +141,14 @@ export class RangeInstanceNodeActionsService {
           InstanceId: hostInstanceId,
           ImageName: displayName,
           ...(description ? { Description: description } : {}),
+          ...buildAliyunTagParameters(
+            buildBillingTags({
+              billingScope: ownerUserId ? 'user' : 'platform',
+              ownerUserId,
+              rangeInstanceId,
+              billingStartAt: new Date(),
+            }),
+          ),
         },
       });
 
@@ -186,6 +195,15 @@ export class RangeInstanceNodeActionsService {
       description,
       ownerUserId,
       visibility: 'private',
+    });
+    await this.syncPackedImageBillingLedger({
+      imageId,
+      ownerUserId,
+      rangeInstanceId,
+      platformImageAssetId: platformImageAsset.id,
+      regionId: accountContext.defaultRegion,
+      accountUid: accountContext.accountUid,
+      billingStartAt: syncedAt,
     });
 
     return {
@@ -355,6 +373,52 @@ export class RangeInstanceNodeActionsService {
     }
 
     return (await response.json()) as ResponsePayload;
+  }
+
+  private async syncPackedImageBillingLedger(input: {
+    imageId: string;
+    ownerUserId: string | null;
+    rangeInstanceId: string;
+    platformImageAssetId: string;
+    regionId: string;
+    accountUid: string | null;
+    billingStartAt: Date;
+  }) {
+    const billingScope = input.ownerUserId ? 'user' : 'platform';
+
+    for (const cloudResourceType of ['image', 'snapshot'] as const) {
+      const existing = await this.adminRepository.findBillingLedgerResource({
+        cloudProvider: 'alibaba_cloud',
+        regionId: input.regionId,
+        cloudResourceId: input.imageId,
+        cloudResourceType,
+      });
+
+      if (existing) {
+        await this.adminRepository.updateBillingLedgerResource(existing.id, {
+          billingScope,
+          ownerUserId: input.ownerUserId,
+          rangeInstanceId: input.rangeInstanceId,
+          platformImageAssetId: input.platformImageAssetId,
+          releasedAt: null,
+        });
+        continue;
+      }
+
+      await this.adminRepository.createBillingLedgerResource({
+        cloudProvider: 'alibaba_cloud',
+        cloudAccountUid: input.accountUid,
+        regionId: input.regionId,
+        cloudResourceId: input.imageId,
+        cloudResourceType,
+        billingScope,
+        ownerUserId: input.ownerUserId,
+        rangeInstanceId: input.rangeInstanceId,
+        platformImageAssetId: input.platformImageAssetId,
+        billingStartAt: input.billingStartAt,
+        tagsSnapshot: {},
+      });
+    }
   }
 }
 

@@ -250,10 +250,13 @@ describe('Range instance node actions API', () => {
   });
 
   it('creates a custom image from a single instance row action preserving caller metadata', async () => {
+    const createImageRequests: string[] = [];
+
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
 
       if (url.includes('CreateImage')) {
+        createImageRequests.push(url);
         return new Response(JSON.stringify({ ImageId: 'm-image-single-456' }), { status: 200 });
       }
 
@@ -288,6 +291,25 @@ describe('Range instance node actions API', () => {
         visibility: 'private',
       }),
     );
+    await expect(repository.listBillingLedgerResources()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'm-image-single-456',
+          cloudResourceType: 'image',
+          platformImageAssetId: response.body.platformImageAsset.id,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'm-image-single-456',
+          cloudResourceType: 'snapshot',
+          platformImageAssetId: response.body.platformImageAsset.id,
+        }),
+      ]),
+    );
+    expect(createImageRequests).toHaveLength(1);
+    expect(createImageRequests[0]).toContain('CreatedBy');
+    expect(createImageRequests[0]).toContain('PlatformScope');
+    expect(createImageRequests[0]).toContain('RangeInstanceId');
+    expect(createImageRequests[0]).toContain('BillingStartAt');
   });
 
   it('rejects malformed metadata on a single instance row action with 400', async () => {

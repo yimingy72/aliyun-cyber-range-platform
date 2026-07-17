@@ -11,6 +11,8 @@ import {
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
+import { buildBillingTags } from '../admin/billing-tagging';
+import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
@@ -188,6 +190,7 @@ export class ProvisioningWorkerService {
           ? this.getTopologySpecFromCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ??
             baseTopologySpec
           : baseTopologySpec;
+      const accountContext = await this.resolveAccountContext();
 
       if (effectiveJobType === 'create') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
@@ -205,6 +208,13 @@ export class ProvisioningWorkerService {
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
+          billingTags: buildBillingTags({
+            billingScope: instance.ownerUserId ? 'user' : 'platform',
+            ownerUserId: instance.ownerUserId,
+            rangeInstanceId: instance.id,
+            singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
+            billingStartAt: new Date(),
+          }),
           reportStep,
         });
 
@@ -229,6 +239,15 @@ export class ProvisioningWorkerService {
             resourceSummary: result.resourceSummary,
             errorSummary: null,
           });
+          await syncRangeInstanceBillingLedger({
+            repository: this.adminRepository,
+            instance,
+            regionId: accountContext.defaultRegion,
+            cloudAccountUid: accountContext.accountUid,
+            resourceSummary: result.resourceSummary,
+            sourceProvisionJobId: job.id,
+            billingStartAt: new Date(),
+          });
         });
       } else if (effectiveJobType === 'update') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
@@ -247,6 +266,13 @@ export class ProvisioningWorkerService {
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
+          billingTags: buildBillingTags({
+            billingScope: instance.ownerUserId ? 'user' : 'platform',
+            ownerUserId: instance.ownerUserId,
+            rangeInstanceId: instance.id,
+            singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
+            billingStartAt: new Date(),
+          }),
           reportStep,
         });
 
@@ -263,6 +289,15 @@ export class ProvisioningWorkerService {
             accessEntry: result.accessEntry,
             resourceSummary: result.resourceSummary,
             errorSummary: null,
+          });
+          await syncRangeInstanceBillingLedger({
+            repository: this.adminRepository,
+            instance,
+            regionId: accountContext.defaultRegion,
+            cloudAccountUid: accountContext.accountUid,
+            resourceSummary: result.resourceSummary,
+            sourceProvisionJobId: job.id,
+            billingStartAt: new Date(),
           });
         });
       } else if (effectiveJobType === 'destroy') {
@@ -289,8 +324,11 @@ export class ProvisioningWorkerService {
 
         await this.adminRepository.updateRangeInstance(instance.id, {
           status: 'destroyed',
+          accessEntry: null,
+          resourceSummary: null,
           errorSummary: null,
         });
+        await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
       }
 
       await this.adminRepository.updateProvisionJob(job.id, {
@@ -354,6 +392,32 @@ export class ProvisioningWorkerService {
     }
 
     return started;
+  }
+
+  private async resolveAccountContext() {
+    const service = this.systemConfigService as SystemConfigService & {
+      getAccountContext?: () => Promise<{
+        provider: 'alibaba_cloud';
+        defaultRegion: string;
+        defaultZoneId: string;
+        accessKeyId: string;
+        accessKeySecret: string;
+        accountUid: string | null;
+        accountUidResolved: boolean;
+      }>;
+    };
+
+    if (typeof service.getAccountContext === 'function') {
+      return service.getAccountContext();
+    }
+
+    const snapshot = await this.systemConfigService.getSnapshot();
+
+    return {
+      ...snapshot,
+      accountUid: null,
+      accountUidResolved: false,
+    };
   }
 
   private async shouldAllowTemplateFallback(

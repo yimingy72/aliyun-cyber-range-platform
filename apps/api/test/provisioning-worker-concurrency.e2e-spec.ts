@@ -709,6 +709,12 @@ describe('ProvisioningWorkerService concurrency', () => {
 
     expect(provisioner.create).toHaveBeenCalledWith(
       expect.objectContaining({
+        billingTags: expect.objectContaining({
+          CreatedBy: 'cyber-range-platform',
+          PlatformScope: 'platform',
+          RangeInstanceId: instance.id,
+          BillingStartAt: expect.any(String),
+        }),
         runtimeCredentials: {
           'ecs-1': {
             username: 'root',
