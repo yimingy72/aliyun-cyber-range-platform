@@ -6,7 +6,7 @@
   "loginTheme": "cyber-range",
   "registrationAllowed": false,
   "resetPasswordAllowed": false,
-  "accessTokenLifespan": 600,
+  "accessTokenLifespan": 604800,
   "ssoSessionIdleTimeout": 604800,
   "ssoSessionMaxLifespan": 604800,
   "roles": {
@@ -104,7 +104,24 @@
       "bearerOnly": true,
       "publicClient": false,
       "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": false
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "sub-direct",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "id",
+            "claim.name": "sub",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     },
     {
       "clientId": "mcp-gateway",

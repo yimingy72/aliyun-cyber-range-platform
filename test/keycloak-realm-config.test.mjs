@@ -38,8 +38,21 @@ test('smoke-conf emits username and realm roles without relying on missing built
   assert.ok(getMapper(smokeClient, 'realm-roles-direct'));
 });
 
+test('platform-api emits the exchanged user subject', () => {
+  const platformApi = getClient('platform-api');
+
+  assert.ok(platformApi, 'platform-api client should exist');
+  assert.ok(getMapper(platformApi, 'sub-direct'));
+});
+
+test('realm access tokens remain valid for seven days', () => {
+  assert.equal(realmConfig.accessTokenLifespan, 604800);
+  assert.match(bootstrapScript, /accessTokenLifespan=604800/);
+});
+
 test('bootstrap script resolves the seeded admin by exact username and patches token mappers', () => {
   assert.match(bootstrapScript, /get users -r "\$REALM" -q exact=true -q username="\$username"/);
   assert.match(bootstrapScript, /ensure_preferred_username_mapper "\$PLATFORM_WEB_CLIENT_ID"/);
   assert.match(bootstrapScript, /ensure_realm_roles_mapper "\$PLATFORM_WEB_CLIENT_ID"/);
+  assert.match(bootstrapScript, /ensure_subject_mapper "\$PLATFORM_API_CLIENT_ID"/);
 });

@@ -27,7 +27,7 @@ done
   -s sslRequired=NONE \
   -s loginTheme=cyber-range \
   -s registrationAllowed=false \
-  -s accessTokenLifespan=600 \
+  -s accessTokenLifespan=604800 \
   -s ssoSessionIdleTimeout=604800 \
   -s ssoSessionMaxLifespan=604800
 
@@ -68,6 +68,8 @@ fi
 
 PLATFORM_WEB_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=platform-web | json_first_id)
 SMOKE_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=smoke-conf | json_first_id)
+MCP_GATEWAY_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=mcp-gateway | json_first_id)
+PLATFORM_API_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=platform-api | json_first_id)
 
 ensure_audience_mapper() {
   client_id=$1
@@ -156,9 +158,9 @@ if [ -n "$SMOKE_CLIENT_ID" ]; then
   ensure_audience_mapper "$SMOKE_CLIENT_ID" aud-platform-api-direct platform-api
 fi
 
+ensure_subject_mapper "$PLATFORM_API_CLIENT_ID"
+
 REALM_MANAGEMENT_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=realm-management | json_first_id)
-PLATFORM_API_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=platform-api | json_first_id)
-MCP_GATEWAY_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=mcp-gateway | json_first_id)
 
 /opt/keycloak/bin/kcadm.sh update "clients/$PLATFORM_API_CLIENT_ID/management/permissions" -r "$REALM" -s enabled=true >/dev/null
 
