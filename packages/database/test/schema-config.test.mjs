@@ -34,6 +34,9 @@ test('database bootstrap exposes postgres + prisma contract', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const env = readEnvAssignments(envExample);
   const platformUser = extractSchemaBlock(schema, 'model', 'PlatformUser');
+  const operationConfirmation = extractSchemaBlock(schema, 'model', 'OperationConfirmation');
+  const idempotentOperation = extractSchemaBlock(schema, 'model', 'IdempotentOperation');
+  const operationAuditEvent = extractSchemaBlock(schema, 'model', 'OperationAuditEvent');
   const platformImageAsset = extractSchemaBlock(schema, 'model', 'PlatformImageAsset');
   const rangeTemplate = extractSchemaBlock(schema, 'model', 'RangeTemplate');
   const rangeInstance = extractSchemaBlock(schema, 'model', 'RangeInstance');
@@ -60,6 +63,9 @@ test('database bootstrap exposes postgres + prisma contract', () => {
   assert.match(schema, /enum UserRole/);
   assert.match(schema, /enum UserStatus/);
   assert.match(schema, /enum ResourceVisibility/);
+  assert.match(schema, /enum OperationSource/);
+  assert.match(schema, /enum OperationAuditPhase/);
+  assert.match(schema, /enum IdempotentOperationStatus/);
   assert.match(schema, /model PlatformImageAsset/);
   assert.match(schema, /model RangeTemplate/);
   assert.match(schema, /topologySpec\s+Json\?/);
@@ -72,6 +78,11 @@ test('database bootstrap exposes postgres + prisma contract', () => {
   assert.match(platformUser, /username\s+String\s+@unique/);
   assert.match(platformUser, /role\s+UserRole\s+@default\(user\)/);
   assert.match(platformUser, /status\s+UserStatus\s+@default\(active\)/);
+  assert.match(operationConfirmation, /argumentsHash\s+String/);
+  assert.match(operationConfirmation, /consumedAt\s+DateTime\?/);
+  assert.match(idempotentOperation, /@@unique\(\[actorUserId,\s*toolName,\s*idempotencyKey\]\)/);
+  assert.match(operationAuditEvent, /source\s+OperationSource/);
+  assert.match(operationAuditEvent, /sanitizedInput\s+Json\?/);
   assert.match(platformImageAsset, /ownerUserId\s+String\?/);
   assert.match(platformImageAsset, /visibility\s+ResourceVisibility\s+@default\(private\)/);
   assert.match(platformImageAsset, /ownerUser\s+PlatformUser\?/);

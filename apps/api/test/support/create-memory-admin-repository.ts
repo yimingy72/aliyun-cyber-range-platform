@@ -9,6 +9,8 @@ import {
   CreateBillingAnomalyInput,
   CreateBillingLedgerResourceInput,
   CreateBillingLineItemInput,
+  CreateIdempotentOperationInput,
+  CreateOperationConfirmationInput,
   CreatePlatformUserInput,
   CreateSingleInstanceBatchInput,
   CreateProvisionJobInput,
@@ -16,9 +18,13 @@ import {
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
   ImageCatalogItemRecord,
+  IdempotentOperationRecord,
   ListImageCatalogItemsFilter,
   ListImageSnapshotsFilter,
   ListPlatformImageAssetsFilter,
+  OperationAuditEventInput,
+  OperationAuditEventRecord,
+  OperationConfirmationRecord,
   PlatformUserRecord,
   PlatformImageAssetRecord,
   ProvisionJobRecord,
@@ -35,6 +41,7 @@ import {
   UpsertImageSnapshotsInput,
   UpsertSingleInstanceNetworkProfileInput,
   UpdateBillingLedgerResourceInput,
+  UpdateIdempotentOperationInput,
   UpdatePlatformUserInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
@@ -58,6 +65,9 @@ export function createMemoryAdminRepository(): AdminRepository {
   const billingLedgerResources: BillingLedgerResourceRecord[] = [];
   const billingLineItems: BillingLineItemRecord[] = [];
   const billingAnomalies: BillingAnomalyRecord[] = [];
+  const operationConfirmations: OperationConfirmationRecord[] = [];
+  const idempotentOperations: IdempotentOperationRecord[] = [];
+  const operationAuditEvents: OperationAuditEventRecord[] = [];
 
   let idCounter = 1;
 
@@ -264,6 +274,85 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async countActiveAdmins() {
       return platformUsers.filter((user) => user.role === 'admin' && user.status === 'active').length;
+    },
+    async createOperationConfirmation(input: CreateOperationConfirmationInput) {
+      const record: OperationConfirmationRecord = {
+        id: nextId(),
+        ...clone(input),
+        consumedAt: null,
+        createdAt: now(),
+      };
+      operationConfirmations.unshift(record);
+      return clone(record);
+    },
+    async getOperationConfirmationById(id: string) {
+      const record = operationConfirmations.find((item) => item.id === id);
+      return record ? clone(record) : null;
+    },
+    async consumeOperationConfirmation(id: string, consumedAt: Date) {
+      const record = operationConfirmations.find((item) => item.id === id);
+      if (!record || record.consumedAt || record.expiresAt <= consumedAt) {
+        return null;
+      }
+      record.consumedAt = new Date(consumedAt);
+      return clone(record);
+    },
+    async createIdempotentOperation(input: CreateIdempotentOperationInput) {
+      if (idempotentOperations.some((item) => item.actorUserId === input.actorUserId && item.toolName === input.toolName && item.idempotencyKey === input.idempotencyKey)) {
+        throw new Error('Idempotent operation unique constraint failed');
+      }
+      const record: IdempotentOperationRecord = {
+        id: nextId(),
+        ...clone(input),
+        status: 'accepted',
+        result: null,
+        errorCode: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      idempotentOperations.unshift(record);
+      return clone(record);
+    },
+    async getIdempotentOperation(actorUserId: string, toolName: string, idempotencyKey: string) {
+      const record = idempotentOperations.find((item) => item.actorUserId === actorUserId && item.toolName === toolName && item.idempotencyKey === idempotencyKey);
+      return record ? clone(record) : null;
+    },
+    async getIdempotentOperationByOperationId(operationId: string) {
+      const record = idempotentOperations.find((item) => item.operationId === operationId);
+      return record ? clone(record) : null;
+    },
+    async updateIdempotentOperation(id: string, input: UpdateIdempotentOperationInput) {
+      const record = idempotentOperations.find((item) => item.id === id);
+      if (!record) {
+        throw new Error(`Idempotent operation not found: ${id}`);
+      }
+      Object.assign(record, clone(input), { updatedAt: now() });
+      return clone(record);
+    },
+    async appendOperationAuditEvent(input: OperationAuditEventInput) {
+      const record: OperationAuditEventRecord = {
+        id: nextId(),
+        operationId: input.operationId,
+        requestId: input.requestId,
+        actorUserId: input.actorUserId,
+        source: input.source,
+        oauthClientId: input.oauthClientId ?? null,
+        toolName: input.toolName,
+        phase: input.phase,
+        targetType: input.targetType ?? null,
+        targetId: input.targetId ?? null,
+        sanitizedInput: cloneIfDefined(input.sanitizedInput ?? null),
+        jobId: input.jobId ?? null,
+        errorCode: input.errorCode ?? null,
+        durationMs: input.durationMs ?? null,
+        createdAt: now(),
+      };
+      operationAuditEvents.unshift(record);
+      return clone(record);
+    },
+    async getDispatchedOperationByJobId(jobId: string) {
+      const record = operationAuditEvents.find((item) => item.jobId === jobId && item.phase === 'dispatched');
+      return record ? clone(record) : null;
     },
     async listRangeTemplates() {
       return cloneList(rangeTemplates);

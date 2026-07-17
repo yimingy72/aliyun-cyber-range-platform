@@ -4,6 +4,9 @@ export type CloudProvider = 'alibaba_cloud';
 export type IacType = 'opentofu' | 'terraform';
 export type UserRole = 'admin' | 'user';
 export type UserStatus = 'active' | 'disabled';
+export type OperationSource = 'web' | 'mcp' | 'system';
+export type OperationAuditPhase = 'requested' | 'confirmation_required' | 'confirmed' | 'dispatched' | 'succeeded' | 'failed';
+export type IdempotentOperationStatus = 'accepted' | 'succeeded' | 'failed';
 export type ResourceVisibility = 'private' | 'platform';
 export type RangeTemplateVersionStatus = 'draft' | 'published' | 'archived';
 export type RangeInstanceMode = 'range' | 'single';
@@ -317,6 +320,61 @@ export type PlatformUserRecord = {
   updatedAt: Date;
 };
 
+export type OperationConfirmationRecord = {
+  id: string;
+  actorUserId: string;
+  oauthClientId: string;
+  toolName: string;
+  argumentsHash: string;
+  targetSnapshot: Record<string, unknown> | null;
+  idempotencyKey: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+};
+
+export type IdempotentOperationRecord = {
+  id: string;
+  actorUserId: string;
+  toolName: string;
+  idempotencyKey: string;
+  argumentsHash: string;
+  operationId: string;
+  status: IdempotentOperationStatus;
+  result: Record<string, unknown> | null;
+  errorCode: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type OperationAuditEventInput = {
+  operationId: string;
+  requestId: string;
+  actorUserId: string;
+  source: OperationSource;
+  oauthClientId?: string | null;
+  toolName: string;
+  phase: OperationAuditPhase;
+  targetType?: string | null;
+  targetId?: string | null;
+  sanitizedInput?: Record<string, unknown> | null;
+  jobId?: string | null;
+  errorCode?: string | null;
+  durationMs?: number | null;
+};
+
+export type OperationAuditEventRecord = Required<Pick<OperationAuditEventInput, 'operationId' | 'requestId' | 'actorUserId' | 'source' | 'toolName' | 'phase'>> & {
+  id: string;
+  oauthClientId: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  sanitizedInput: Record<string, unknown> | null;
+  jobId: string | null;
+  errorCode: string | null;
+  durationMs: number | null;
+  createdAt: Date;
+};
+
 export type CloudImageSnapshotRecord = {
   id: string;
   provider: CloudProvider;
@@ -623,6 +681,10 @@ export type UpdatePlatformUserInput = Partial<{
   status: UserStatus;
 }>;
 
+export type CreateOperationConfirmationInput = Omit<OperationConfirmationRecord, 'id' | 'consumedAt' | 'createdAt'>;
+export type CreateIdempotentOperationInput = Omit<IdempotentOperationRecord, 'id' | 'status' | 'result' | 'errorCode' | 'createdAt' | 'updatedAt'>;
+export type UpdateIdempotentOperationInput = Partial<Pick<IdempotentOperationRecord, 'status' | 'result' | 'errorCode'>>;
+
 export type CreateRangeTemplateInput = {
   name: string;
   createdBy?: string;
@@ -758,6 +820,15 @@ export interface AdminRepository {
   getPlatformUserByOidcIdentity(issuer: string, subject: string): Promise<PlatformUserRecord | null>;
   updatePlatformUser(id: string, input: UpdatePlatformUserInput): Promise<PlatformUserRecord>;
   countActiveAdmins(): Promise<number>;
+  createOperationConfirmation(input: CreateOperationConfirmationInput): Promise<OperationConfirmationRecord>;
+  getOperationConfirmationById(id: string): Promise<OperationConfirmationRecord | null>;
+  consumeOperationConfirmation(id: string, consumedAt: Date): Promise<OperationConfirmationRecord | null>;
+  createIdempotentOperation(input: CreateIdempotentOperationInput): Promise<IdempotentOperationRecord>;
+  getIdempotentOperation(actorUserId: string, toolName: string, idempotencyKey: string): Promise<IdempotentOperationRecord | null>;
+  getIdempotentOperationByOperationId(operationId: string): Promise<IdempotentOperationRecord | null>;
+  updateIdempotentOperation(id: string, input: UpdateIdempotentOperationInput): Promise<IdempotentOperationRecord>;
+  appendOperationAuditEvent(input: OperationAuditEventInput): Promise<OperationAuditEventRecord>;
+  getDispatchedOperationByJobId(jobId: string): Promise<OperationAuditEventRecord | null>;
   listRangeTemplates(): Promise<RangeTemplateRecord[]>;
   createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord>;
   getRangeTemplateById(id: string): Promise<RangeTemplateRecord | null>;

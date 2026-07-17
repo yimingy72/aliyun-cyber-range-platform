@@ -32,6 +32,27 @@ enum ResourceVisibility {
   platform
 }
 
+enum OperationSource {
+  web
+  mcp
+  system
+}
+
+enum OperationAuditPhase {
+  requested
+  confirmation_required
+  confirmed
+  dispatched
+  succeeded
+  failed
+}
+
+enum IdempotentOperationStatus {
+  accepted
+  succeeded
+  failed
+}
+
 enum RangeTemplateVersionStatus {
   draft
   published
@@ -123,6 +144,64 @@ model PlatformUser {
   singleInstanceBatches     SingleInstanceBatch[]
 
   @@unique([oidcIssuer, oidcSubject])
+}
+
+model OperationConfirmation {
+  id             String   @id @default(cuid())
+  actorUserId    String
+  oauthClientId  String
+  toolName       String
+  argumentsHash  String
+  targetSnapshot Json?
+  idempotencyKey String
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([actorUserId, createdAt])
+  @@index([expiresAt])
+}
+
+model IdempotentOperation {
+  id             String                    @id @default(cuid())
+  actorUserId    String
+  toolName       String
+  idempotencyKey String
+  argumentsHash  String
+  operationId    String                    @unique
+  status         IdempotentOperationStatus @default(accepted)
+  result         Json?
+  errorCode      String?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@unique([actorUserId, toolName, idempotencyKey])
+  @@index([status, updatedAt])
+}
+
+model OperationAuditEvent {
+  id             String              @id @default(cuid())
+  operationId    String
+  requestId      String
+  actorUserId    String
+  source         OperationSource
+  oauthClientId  String?
+  toolName       String
+  phase          OperationAuditPhase
+  targetType     String?
+  targetId       String?
+  sanitizedInput Json?
+  jobId          String?
+  errorCode      String?
+  durationMs     Int?
+  createdAt      DateTime            @default(now())
+
+  @@index([operationId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([source, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([jobId, phase, createdAt, id])
+  @@index([createdAt, id])
 }
 
 model CloudImageSnapshot {

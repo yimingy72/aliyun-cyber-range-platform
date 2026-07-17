@@ -12,6 +12,8 @@ import {
   CreateBillingAnomalyInput,
   CreateBillingLedgerResourceInput,
   CreateBillingLineItemInput,
+  CreateIdempotentOperationInput,
+  CreateOperationConfirmationInput,
   CreatePlatformUserInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
@@ -20,11 +22,15 @@ import {
   CreateRangeTemplateInput,
   FindBillingLedgerResourceInput,
   ImageCatalogItemRecord,
+  IdempotentOperationRecord,
   ListBillingAnomaliesFilter,
   ListBillingLineItemsFilter,
   ListImageCatalogItemsFilter,
   ListImageSnapshotsFilter,
   ListPlatformImageAssetsFilter,
+  OperationAuditEventInput,
+  OperationAuditEventRecord,
+  OperationConfirmationRecord,
   PlatformUserRecord,
   PlatformImageAssetRecord,
   ProvisionJobRecord,
@@ -36,6 +42,7 @@ import {
   RangeTemplateRecord,
   UpsertImageSnapshotsInput,
   UpdateBillingLedgerResourceInput,
+  UpdateIdempotentOperationInput,
   UpdatePlatformUserInput,
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
@@ -95,6 +102,70 @@ function toBillingAnomalyRecord(
     ...record,
     pretaxAmount: Number(record.pretaxAmount),
     rawPayload: (record.rawPayload ?? {}) as Record<string, unknown>,
+  };
+}
+
+function toOperationJson(value: Record<string, unknown> | null) {
+  return value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
+}
+
+function toOperationConfirmationRecord(record: {
+  id: string;
+  actorUserId: string;
+  oauthClientId: string;
+  toolName: string;
+  argumentsHash: string;
+  targetSnapshot: Prisma.JsonValue | null;
+  idempotencyKey: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+}): OperationConfirmationRecord {
+  return {
+    ...record,
+    targetSnapshot: (record.targetSnapshot ?? null) as Record<string, unknown> | null,
+  };
+}
+
+function toIdempotentOperationRecord(record: {
+  id: string;
+  actorUserId: string;
+  toolName: string;
+  idempotencyKey: string;
+  argumentsHash: string;
+  operationId: string;
+  status: IdempotentOperationRecord['status'];
+  result: Prisma.JsonValue | null;
+  errorCode: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): IdempotentOperationRecord {
+  return {
+    ...record,
+    result: (record.result ?? null) as Record<string, unknown> | null,
+  };
+}
+
+function toOperationAuditEventRecord(record: {
+  id: string;
+  operationId: string;
+  requestId: string;
+  actorUserId: string;
+  source: OperationAuditEventRecord['source'];
+  oauthClientId: string | null;
+  toolName: string;
+  phase: OperationAuditEventRecord['phase'];
+  targetType: string | null;
+  targetId: string | null;
+  sanitizedInput: Prisma.JsonValue | null;
+  jobId: string | null;
+  errorCode: string | null;
+  durationMs: number | null;
+  createdAt: Date;
+}): OperationAuditEventRecord {
+  return {
+    ...record,
+    sanitizedInput: (record.sanitizedInput ?? null) as Record<string, unknown> | null,
   };
 }
 
@@ -168,6 +239,94 @@ export class PrismaAdminRepository implements AdminRepository {
         status: 'active',
       },
     });
+  }
+
+  async createOperationConfirmation(input: CreateOperationConfirmationInput): Promise<OperationConfirmationRecord> {
+    return toOperationConfirmationRecord(
+      await this.prisma.operationConfirmation.create({
+        data: {
+          ...input,
+          targetSnapshot: toOperationJson(input.targetSnapshot),
+        },
+      }),
+    );
+  }
+
+  async getOperationConfirmationById(id: string): Promise<OperationConfirmationRecord | null> {
+    const record = await this.prisma.operationConfirmation.findUnique({ where: { id } });
+    return record ? toOperationConfirmationRecord(record) : null;
+  }
+
+  async consumeOperationConfirmation(id: string, consumedAt: Date): Promise<OperationConfirmationRecord | null> {
+    const updated = await this.prisma.operationConfirmation.updateMany({
+      where: { id, consumedAt: null, expiresAt: { gt: consumedAt } },
+      data: { consumedAt },
+    });
+
+    if (updated.count !== 1) {
+      return null;
+    }
+
+    return this.getOperationConfirmationById(id);
+  }
+
+  async createIdempotentOperation(input: CreateIdempotentOperationInput): Promise<IdempotentOperationRecord> {
+    return toIdempotentOperationRecord(await this.prisma.idempotentOperation.create({ data: input }));
+  }
+
+  async getIdempotentOperation(actorUserId: string, toolName: string, idempotencyKey: string): Promise<IdempotentOperationRecord | null> {
+    const record = await this.prisma.idempotentOperation.findUnique({
+      where: { actorUserId_toolName_idempotencyKey: { actorUserId, toolName, idempotencyKey } },
+    });
+    return record ? toIdempotentOperationRecord(record) : null;
+  }
+
+  async getIdempotentOperationByOperationId(operationId: string): Promise<IdempotentOperationRecord | null> {
+    const record = await this.prisma.idempotentOperation.findUnique({ where: { operationId } });
+    return record ? toIdempotentOperationRecord(record) : null;
+  }
+
+  async updateIdempotentOperation(id: string, input: UpdateIdempotentOperationInput): Promise<IdempotentOperationRecord> {
+    return toIdempotentOperationRecord(
+      await this.prisma.idempotentOperation.update({
+        where: { id },
+        data: {
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.result !== undefined ? { result: toOperationJson(input.result) } : {}),
+          ...(input.errorCode !== undefined ? { errorCode: input.errorCode } : {}),
+        },
+      }),
+    );
+  }
+
+  async appendOperationAuditEvent(input: OperationAuditEventInput): Promise<OperationAuditEventRecord> {
+    return toOperationAuditEventRecord(
+      await this.prisma.operationAuditEvent.create({
+        data: {
+          operationId: input.operationId,
+          requestId: input.requestId,
+          actorUserId: input.actorUserId,
+          source: input.source,
+          oauthClientId: input.oauthClientId ?? null,
+          toolName: input.toolName,
+          phase: input.phase,
+          targetType: input.targetType ?? null,
+          targetId: input.targetId ?? null,
+          sanitizedInput: toOperationJson(input.sanitizedInput ?? null),
+          jobId: input.jobId ?? null,
+          errorCode: input.errorCode ?? null,
+          durationMs: input.durationMs ?? null,
+        },
+      }),
+    );
+  }
+
+  async getDispatchedOperationByJobId(jobId: string): Promise<OperationAuditEventRecord | null> {
+    const record = await this.prisma.operationAuditEvent.findFirst({
+      where: { jobId, phase: 'dispatched' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    return record ? toOperationAuditEventRecord(record) : null;
   }
 
   async listRangeTemplates(): Promise<RangeTemplateRecord[]> {
