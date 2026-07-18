@@ -552,7 +552,7 @@ describe('TemplateEditorScreen', () => {
     const privateIpInput = screen.getByLabelText('私网 IP 1') as HTMLInputElement;
     expect(privateIpInput.value).toBe('');
 
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
     fireEvent.change(privateIpInput, { target: { value: '192.168.1.10' } });
     expect(privateIpInput.value).toBe('192.168.1.10');
     expect(screen.getByText('私网 IP 不在 10.0.0.0/24 网段内')).toBeTruthy();
@@ -1649,7 +1649,7 @@ describe('TemplateEditorScreen', () => {
     expect((screen.getByLabelText('主机名') as HTMLInputElement).value).toBe('edge-host-1');
   });
 
-  it('recomputes fixed instance type from cpu and memory before validation payload is saved', async () => {
+  it('derives economy-first instance candidates from cpu and memory before validation payload is saved', async () => {
     updateRangeTemplateMock.mockClear();
     validateRangeTemplateMock.mockResolvedValue({ valid: true });
 
@@ -1707,8 +1707,8 @@ describe('TemplateEditorScreen', () => {
             memory: 4,
             instanceType: 'ecs.e-c1m2.large',
             instanceTypeStrategy: {
-              mode: 'fixed',
-              instanceType: 'ecs.e-c1m2.large',
+              mode: 'prefer-list',
+              preferredInstanceTypes: ['ecs.e-c1m2.large', 'ecs.u1-c1m2.large'],
             },
           }),
         ]),
@@ -1717,21 +1717,21 @@ describe('TemplateEditorScreen', () => {
     expect(latestPayload?.scenarioTemplateSpec?.runtimePreferences?.instanceTypePolicies).toEqual([
       expect.objectContaining({
         key: 'ecs-1-instance-type-policy',
-        mode: 'fixed',
-        instanceType: 'ecs.e-c1m2.large',
+        mode: 'prefer-list',
+        preferredInstanceTypes: ['ecs.e-c1m2.large', 'ecs.u1-c1m2.large'],
       }),
     ]);
     expect(latestPayload?.compiledProvisionSpec?.runtimeSelections?.instanceTypePolicies).toEqual(
       expect.objectContaining({
         'ecs-1-instance-type-policy': expect.objectContaining({
-          mode: 'fixed',
-          instanceType: 'ecs.e-c1m2.large',
+          mode: 'prefer-list',
+          preferredInstanceTypes: ['ecs.e-c1m2.large', 'ecs.u1-c1m2.large'],
         }),
       }),
     );
   });
 
-  it('keeps the stale previously fixed economy instance type when topology detection recompiles the draft', async () => {
+  it('preserves an explicitly fixed economy instance type when topology detection recompiles the draft', async () => {
     updateRangeTemplateMock.mockClear();
     validateRangeTemplateMock.mockResolvedValue({ valid: true });
 
@@ -1782,7 +1782,7 @@ describe('TemplateEditorScreen', () => {
                   imageId: 'ubuntu_22_04_x64_20G_alibase',
                   cpu: 2,
                   memory: 2,
-                  instanceType: 'ecs.u1-c1m2.large',
+                  instanceType: 'ecs.e-c1m1.large',
                   description: '',
                   bootPriority: 1,
                   bootWaitSeconds: 0,
@@ -1802,7 +1802,7 @@ describe('TemplateEditorScreen', () => {
                   imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
                   instanceTypeStrategy: {
                     mode: 'fixed',
-                    instanceType: 'ecs.u1-c1m2.large',
+                    instanceType: 'ecs.e-c1m1.large',
                   },
                 },
               ],
@@ -2567,10 +2567,10 @@ describe('TemplateEditorScreen', () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: 'ecs-1',
-          instanceType: 'ecs.e-c1m2.2xlarge',
+          instanceType: 'ecs.custom.saved',
           instanceTypeStrategy: {
             mode: 'fixed',
-            instanceType: 'ecs.e-c1m2.2xlarge',
+            instanceType: 'ecs.custom.saved',
           },
         }),
       ]),
@@ -2579,7 +2579,7 @@ describe('TemplateEditorScreen', () => {
       expect.objectContaining({
         key: 'ecs-1-instance-type-policy',
         mode: 'fixed',
-        instanceType: 'ecs.e-c1m2.2xlarge',
+        instanceType: 'ecs.custom.saved',
       }),
     ]);
     expect(latestPayload?.compiledSpec?.resources).toEqual(
@@ -2588,10 +2588,10 @@ describe('TemplateEditorScreen', () => {
           id: 'ecs-1',
           type: 'host',
           config: expect.objectContaining({
-            instanceType: 'ecs.e-c1m2.2xlarge',
+            instanceType: 'ecs.custom.saved',
             instanceTypeStrategy: {
               mode: 'fixed',
-              instanceType: 'ecs.e-c1m2.2xlarge',
+              instanceType: 'ecs.custom.saved',
             },
           }),
         }),
@@ -2655,6 +2655,10 @@ describe('TemplateEditorScreen', () => {
           imageName: 'Ubuntu 24.04 LTS',
           imageId: 'ubuntu_24_04_x64_20G_alibase',
           instanceType: 'ecs.e-c1m2.xlarge',
+          instanceTypeStrategy: {
+            mode: 'prefer-list',
+            preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.xlarge'],
+          },
         }),
       ]),
     );
@@ -2671,8 +2675,8 @@ describe('TemplateEditorScreen', () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: 'ecs-1-instance-type-policy',
-          mode: 'fixed',
-          instanceType: 'ecs.e-c1m2.xlarge',
+          mode: 'prefer-list',
+          preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.xlarge'],
         }),
       ]),
     );
@@ -2684,6 +2688,10 @@ describe('TemplateEditorScreen', () => {
           config: expect.objectContaining({
             imageId: 'ubuntu_24_04_x64_20G_alibase',
             instanceType: 'ecs.e-c1m2.xlarge',
+            instanceTypeStrategy: {
+              mode: 'prefer-list',
+              preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.xlarge'],
+            },
           }),
         }),
       ]),

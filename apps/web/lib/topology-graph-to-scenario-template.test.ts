@@ -196,8 +196,12 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
     expect(template.runtimePreferences.instanceTypePolicies).toEqual([
       expect.objectContaining({
         key: 'ecs-web-instance-type-policy',
-        mode: 'fixed',
-        instanceType: 'ecs.e-c1m1.large',
+        mode: 'prefer-list',
+        preferredInstanceTypes: [
+          'ecs.e-c1m1.large',
+          'ecs.u1-c1m1.large',
+          'ecs.t6-c1m1.large',
+        ],
       }),
     ]);
 
@@ -319,13 +323,17 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
     expect(template.runtimePreferences.instanceTypePolicies).toEqual([
       expect.objectContaining({
         key: 'ecs-persisted-instance-type-policy',
-        mode: 'fixed',
-        instanceType: 'ecs.e-c1m1.large',
+        mode: 'prefer-list',
+        preferredInstanceTypes: [
+          'ecs.e-c1m1.large',
+          'ecs.u1-c1m1.large',
+          'ecs.t6-c1m1.large',
+        ],
       }),
     ]);
   });
 
-  it('maps 2C2G, 4C8G, and 8C16G hosts to economy-first fixed instance policies', () => {
+  it('maps CPU and memory requirements to economy-first fallback instance policies', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {
         name: '综合靶场',
@@ -480,18 +488,22 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: 'ecs-small-instance-type-policy',
-          mode: 'fixed',
-          instanceType: 'ecs.e-c1m1.large',
+          mode: 'prefer-list',
+          preferredInstanceTypes: [
+            'ecs.e-c1m1.large',
+            'ecs.u1-c1m1.large',
+            'ecs.t6-c1m1.large',
+          ],
         }),
         expect.objectContaining({
           key: 'ecs-mid-instance-type-policy',
-          mode: 'fixed',
-          instanceType: 'ecs.e-c1m2.xlarge',
+          mode: 'prefer-list',
+          preferredInstanceTypes: ['ecs.e-c1m2.xlarge', 'ecs.u1-c1m2.xlarge'],
         }),
         expect.objectContaining({
           key: 'ecs-large-instance-type-policy',
-          mode: 'fixed',
-          instanceType: 'ecs.e-c1m2.2xlarge',
+          mode: 'prefer-list',
+          preferredInstanceTypes: ['ecs.e-c1m2.2xlarge', 'ecs.u1-c1m2.2xlarge'],
         }),
       ]),
     );

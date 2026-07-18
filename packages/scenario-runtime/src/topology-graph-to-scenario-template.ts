@@ -1,4 +1,4 @@
-import { resolveFixedInstanceType } from './instance-type-catalog';
+import { resolvePreferredInstanceTypes } from './instance-type-catalog';
 import type { TemplateNode } from './scenario-graph';
 import type {
   ScenarioTemplateAclRule,
@@ -97,11 +97,9 @@ function readConfiguredInstanceType(value: unknown) {
 }
 
 function readResolvedInstanceTypePolicy(node: Extract<TemplateNode, { kind: 'ecs' }>) {
-  const fixedInstanceType =
-    readConfiguredInstanceType(node.instanceTypeStrategy.instanceType) ??
-    resolveFixedInstanceType(node.cpu, node.memory);
+  const fixedInstanceType = readConfiguredInstanceType(node.instanceTypeStrategy.instanceType);
 
-  if (fixedInstanceType) {
+  if (node.instanceTypeStrategy.mode === 'fixed' && fixedInstanceType) {
     return {
       mode: 'fixed' as const,
       instanceType: fixedInstanceType,
@@ -109,9 +107,24 @@ function readResolvedInstanceTypePolicy(node: Extract<TemplateNode, { kind: 'ecs
     };
   }
 
+  const configuredPreferredInstanceTypes =
+    node.instanceTypeStrategy.preferredInstanceTypes?.filter((item) => item.trim().length > 0) ?? [];
+  const preferredInstanceTypes =
+    configuredPreferredInstanceTypes.length > 0
+      ? configuredPreferredInstanceTypes
+      : resolvePreferredInstanceTypes(node.cpu, node.memory);
+
+  if (preferredInstanceTypes.length > 0) {
+    return {
+      mode: 'prefer-list' as const,
+      instanceType: undefined,
+      preferredInstanceTypes: [...preferredInstanceTypes],
+    };
+  }
+
   return {
     mode: node.instanceTypeStrategy.mode === 'prefer-family' ? 'prefer-list' : node.instanceTypeStrategy.mode,
-    instanceType: node.instanceTypeStrategy.instanceType,
+    instanceType: fixedInstanceType,
     preferredInstanceTypes: node.instanceTypeStrategy.preferredInstanceTypes,
   };
 }

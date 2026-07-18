@@ -266,16 +266,18 @@ describe('OpenTofuRangeProvisioner', () => {
   it('renders the single ECS module with existing network ids when instanceMode is single', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-single-'));
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+    const availableInstanceTypeResolver = jest.fn().mockResolvedValue('ecs.u1-c1m1.large');
 
     const provisioner = new OpenTofuRangeProvisioner({
       projectRootDir: tempRootDir,
       workspacesRootDir,
+      availableInstanceTypeResolver,
       env: {
         ALICLOUD_REGION: 'cn-hangzhou',
         ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
         ALICLOUD_ACCESS_KEY: 'test-ak',
         ALICLOUD_SECRET_KEY: 'test-sk',
-        OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
+        OPENTOFU_INSTANCE_TYPE: 'auto',
         OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
@@ -321,6 +323,12 @@ describe('OpenTofuRangeProvisioner', () => {
     expect(result.files['terraform.tfvars.json']).toContain('"existing_vpc_id":"vpc-1"');
     expect(result.files['terraform.tfvars.json']).toContain('"existing_vswitch_id":"vsw-1"');
     expect(result.files['terraform.tfvars.json']).toContain('"existing_security_group_id":"sg-1"');
+    expect(availableInstanceTypeResolver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
+      }),
+    );
+    expect(result.files['terraform.tfvars.json']).toContain('"instance_type":"ecs.u1-c1m1.large"');
   });
 
   it('prefers an explicit fixed instance type policy over stale cpu-memory derived candidates', async () => {
@@ -1532,7 +1540,7 @@ describe('OpenTofuRangeProvisioner', () => {
     expect(renderedVariables.instance_type).toBe('ecs.u1-c1m2.large');
   });
 
-  it('resolves host instance types from compiled host cpu and memory requirements', async () => {
+  it('resolves catalog-backed host sizes through their economy-first fallback candidates', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-host-instance-type-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
@@ -1685,7 +1693,7 @@ describe('OpenTofuRangeProvisioner', () => {
               role: 'entry',
               privateIp: '10.95.10.10',
               exposePublic: true,
-              cpu: 1,
+              cpu: 2,
               memory: 2,
               instanceTypeStrategy: {
                 mode: 'auto',
@@ -1719,20 +1727,7 @@ describe('OpenTofuRangeProvisioner', () => {
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
         systemDiskCategory: 'cloud_essd',
-        preferredInstanceTypes: [
-          'ecs.u1-c1m2.large',
-          'ecs.e-c1m2.large',
-          'ecs.t6-c1m2.large',
-          'ecs.c6t.large',
-          'ecs.hfc6.large',
-          'ecs.sn1ne.large',
-          'ecs.sn1.medium',
-          'ecs.n1.medium',
-          'ecs.c7.large',
-          'ecs.g7.large',
-          'ecs.c6.large',
-          'ecs.g6.large',
-        ],
+        preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
       }),
     );
     expect(renderedVariables.hosts).toEqual(
