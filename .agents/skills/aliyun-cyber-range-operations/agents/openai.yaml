@@ -1,0 +1,4 @@
+interface:
+  display_name: "阿里云综合靶场操作"
+  short_description: "先校验实例规格，再安全操作阿里云综合靶场 MCP 资源"
+  default_prompt: "使用 $aliyun-cyber-range-operations 先校验独立靶机规格，再安全执行已授权的综合靶场 MCP 操作。"
