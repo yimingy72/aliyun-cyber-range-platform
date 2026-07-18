@@ -5,6 +5,16 @@ type HostRequest = {
   cpu?: number;
   memoryGiB?: number;
   preferredInstanceTypes: string[];
+  strictPreferredInstanceTypes?: boolean;
+  networkInterfaceCount?: number;
+};
+
+type InstanceTypeMetadata = {
+  instanceTypeId: string;
+  architecture: string;
+  cpu: number;
+  memoryGiB: number;
+  eniQuantity: number;
 };
 
 type AttemptedZone = {
@@ -36,15 +46,18 @@ export async function selectZoneAndHostInstanceTypes(input: {
   attemptedZones: AttemptedZone[];
 }> {
   const instanceTypes = await describeInstanceTypes(input);
-  const x86InstanceTypeIds = new Set(
-    instanceTypes.filter((item) => isX86Architecture(item.architecture)).map((item) => item.instanceTypeId),
+  const x86InstanceTypesById = new Map(
+    instanceTypes
+      .filter((item) => isX86Architecture(item.architecture))
+      .map((item) => [item.instanceTypeId, item]),
   );
+  const defaultZoneRequiresMultiNicPricing = input.hostRequests.some(requiresMultiNicInstanceType);
 
   const defaultZoneEvaluation = await evaluateZone({
     ...input,
     zoneId: input.defaultZoneId,
-    x86InstanceTypeIds,
-    includePrice: false,
+    x86InstanceTypesById,
+    includePrice: defaultZoneRequiresMultiNicPricing,
   });
 
   if (defaultZoneEvaluation.canCreateAllHosts) {
@@ -64,7 +77,7 @@ export async function selectZoneAndHostInstanceTypes(input: {
     const evaluation = await evaluateZone({
       ...input,
       zoneId,
-      x86InstanceTypeIds,
+      x86InstanceTypesById,
       includePrice: true,
     });
     attemptedZones.push(toAttemptedZone(evaluation));
@@ -93,7 +106,7 @@ async function evaluateZone(input: {
   systemDiskCategory?: string;
   hostRequests: HostRequest[];
   account: { accessKeyId: string; accessKeySecret: string };
-  x86InstanceTypeIds: Set<string>;
+  x86InstanceTypesById: Map<string, InstanceTypeMetadata>;
   includePrice: boolean;
 }): Promise<ZoneEvaluation> {
   const saleableInstanceTypeIds = new Set(await describeAvailableInstanceTypeIds(input));
@@ -112,18 +125,20 @@ async function evaluateZone(input: {
   let hasMissingPrice = false;
 
   for (const host of input.hostRequests) {
-    const preferredInstanceTypes = [...new Set(host.preferredInstanceTypes.map((item) => item.trim()).filter(Boolean))];
-    const candidateInstanceTypes = preferredInstanceTypes.filter(
-      (instanceTypeId) =>
-        saleableInstanceTypeIds.has(instanceTypeId) && input.x86InstanceTypeIds.has(instanceTypeId),
-    );
+    const candidateInstanceTypes = resolveSaleableHostInstanceTypeCandidates({
+      host,
+      saleableInstanceTypeIds,
+      x86InstanceTypesById: input.x86InstanceTypesById,
+    });
 
     if (candidateInstanceTypes.length === 0) {
       return {
         zoneId: input.zoneId,
         canCreateAllHosts: false,
         estimatedTotalPrice: null,
-        reason: `Host ${host.hostKey} has no saleable X86 on-demand candidate`,
+        reason: requiresMultiNicInstanceType(host)
+          ? `Host ${host.hostKey} has no saleable X86 on-demand candidate with ${requiredNetworkInterfaceCount(host)} network interfaces`
+          : `Host ${host.hostKey} has no saleable X86 on-demand candidate`,
         hostInstanceTypes: {},
       };
     }
@@ -153,6 +168,16 @@ async function evaluateZone(input: {
     }
 
     if (!selectedInstanceType) {
+      if (requiresMultiNicInstanceType(host)) {
+        return {
+          zoneId: input.zoneId,
+          canCreateAllHosts: false,
+          estimatedTotalPrice: null,
+          reason: `Host ${host.hostKey} has no priceable candidate compatible with the selected system disk`,
+          hostInstanceTypes: {},
+        };
+      }
+
       selectedInstanceType = candidateInstanceTypes[0]!;
       hasMissingPrice = true;
     }
@@ -173,6 +198,52 @@ async function evaluateZone(input: {
     ...(hasMissingPrice ? { reason: 'Missing price data for one or more host candidates' } : {}),
     hostInstanceTypes,
   };
+}
+
+function requiredNetworkInterfaceCount(host: HostRequest) {
+  return Math.max(1, host.networkInterfaceCount ?? 1);
+}
+
+function requiresMultiNicInstanceType(host: HostRequest) {
+  return requiredNetworkInterfaceCount(host) > 2;
+}
+
+function resolveSaleableHostInstanceTypeCandidates(input: {
+  host: HostRequest;
+  saleableInstanceTypeIds: Set<string>;
+  x86InstanceTypesById: Map<string, InstanceTypeMetadata>;
+}) {
+  const preferredInstanceTypeIds = new Set(
+    input.host.preferredInstanceTypes.map((item) => item.trim()).filter(Boolean),
+  );
+
+  if (requiresMultiNicInstanceType(input.host)) {
+    const minimumCpu = input.host.cpu ?? 0;
+    const minimumMemoryGiB = input.host.memoryGiB ?? 0;
+    const minimumEniQuantity = requiredNetworkInterfaceCount(input.host);
+
+    return [...input.x86InstanceTypesById.values()]
+      .filter((instanceType) => input.saleableInstanceTypeIds.has(instanceType.instanceTypeId))
+      .filter(
+        (instanceType) =>
+          !input.host.strictPreferredInstanceTypes || preferredInstanceTypeIds.has(instanceType.instanceTypeId),
+      )
+      .filter((instanceType) => instanceType.eniQuantity >= minimumEniQuantity)
+      .filter((instanceType) => instanceType.cpu >= minimumCpu && instanceType.memoryGiB >= minimumMemoryGiB)
+      .sort(
+        (left, right) =>
+          left.cpu - right.cpu ||
+          left.memoryGiB - right.memoryGiB ||
+          left.eniQuantity - right.eniQuantity ||
+          left.instanceTypeId.localeCompare(right.instanceTypeId),
+      )
+      .map((instanceType) => instanceType.instanceTypeId);
+  }
+
+  return [...preferredInstanceTypeIds].filter(
+    (instanceTypeId) =>
+      input.saleableInstanceTypeIds.has(instanceTypeId) && input.x86InstanceTypesById.has(instanceTypeId),
+  );
 }
 
 async function describeAvailableInstanceTypeIds(input: {
@@ -332,10 +403,7 @@ async function describeInstanceTypes(input: {
   regionId: string;
   account: { accessKeyId: string; accessKeySecret: string };
 }) {
-  const items: Array<{
-    instanceTypeId: string;
-    architecture: string;
-  }> = [];
+  const items: InstanceTypeMetadata[] = [];
   let pageNumber = 1;
   let totalCount = 0;
 
@@ -357,12 +425,18 @@ async function describeInstanceTypes(input: {
         InstanceTypes?: {
           InstanceType?:
             | {
-                InstanceTypeId?: string;
-                CpuArchitecture?: string;
-              }
+              InstanceTypeId?: string;
+              CpuArchitecture?: string;
+              CpuCoreCount?: number | string;
+              MemorySize?: number | string;
+              EniQuantity?: number | string;
+            }
             | Array<{
                 InstanceTypeId?: string;
                 CpuArchitecture?: string;
+                CpuCoreCount?: number | string;
+                MemorySize?: number | string;
+                EniQuantity?: number | string;
               }>;
         };
       })?.InstanceTypes?.InstanceType,
@@ -379,9 +453,12 @@ async function describeInstanceTypes(input: {
           return {
             instanceTypeId,
             architecture: item.CpuArchitecture?.trim().toUpperCase() ?? '',
+            cpu: toNumber(item.CpuCoreCount),
+            memoryGiB: toNumber(item.MemorySize),
+            eniQuantity: toNumber(item.EniQuantity),
           };
         })
-        .filter((item): item is { instanceTypeId: string; architecture: string } => item !== null),
+        .filter((item): item is InstanceTypeMetadata => item !== null),
     );
 
     totalCount = toNumber((payload as { TotalCount?: number | string }).TotalCount);
@@ -398,20 +475,26 @@ async function describeInstanceTypePrice(input: {
   systemDiskCategory?: string;
   account: { accessKeyId: string; accessKeySecret: string };
 }) {
-  const payload = await performAliyunRpcRequest({
-    accessKeyId: input.account.accessKeyId,
-    accessKeySecret: input.account.accessKeySecret,
-    regionId: input.regionId,
-    action: 'DescribePrice',
-    parameters: {
-      ZoneId: input.zoneId,
-      ResourceType: 'instance',
-      InstanceType: input.instanceTypeId,
-      InstanceChargeType: 'PostPaid',
-      PriceUnit: 'Hour',
-      ...(input.systemDiskCategory ? { SystemDiskCategory: input.systemDiskCategory } : {}),
-    },
-  });
+  let payload: unknown;
+
+  try {
+    payload = await performAliyunRpcRequest({
+      accessKeyId: input.account.accessKeyId,
+      accessKeySecret: input.account.accessKeySecret,
+      regionId: input.regionId,
+      action: 'DescribePrice',
+      parameters: {
+        ZoneId: input.zoneId,
+        ResourceType: 'instance',
+        InstanceType: input.instanceTypeId,
+        InstanceChargeType: 'PostPaid',
+        PriceUnit: 'Hour',
+        ...(input.systemDiskCategory ? { SystemDiskCategory: input.systemDiskCategory } : {}),
+      },
+    });
+  } catch {
+    return null;
+  }
 
   const priceRecord = (payload as {
     PriceInfo?: {

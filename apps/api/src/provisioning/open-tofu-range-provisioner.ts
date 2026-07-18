@@ -21,7 +21,7 @@ import type {
 import { selectZoneAndHostInstanceTypes } from './aliyun-zone-instance-scheduler';
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
 import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
-import { resolveFixedInstanceType } from './instance-type-catalog';
+import { resolvePreferredInstanceTypes } from './instance-type-catalog';
 import { AlibabaCloudOpenTofuRenderer } from './renderers/alibaba-cloud-opentofu-renderer';
 import { buildRootWrapperFiles } from './root-wrapper-template';
 import { buildSingleInstanceRootWrapperFiles } from './single-instance-root-wrapper-template';
@@ -609,19 +609,24 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
     const systemDiskCategory = this.readSystemDiskCategory();
+    const hostInstanceTypeRequests = this.buildHostInstanceTypeRequests({
+      plan,
+      hostProvisioningHints,
+    });
+    const requiresMultiNicCapacityScheduling = hostInstanceTypeRequests.some(
+      (host) => (host.networkInterfaceCount ?? 1) > 2,
+    );
 
     if (
-      this.enableZoneScheduling &&
-      (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto')
+      requiresMultiNicCapacityScheduling ||
+      (this.enableZoneScheduling &&
+        (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto'))
     ) {
       const zoneSelection = await selectZoneAndHostInstanceTypes({
         regionId: runtimeConfig.defaultRegion,
         defaultZoneId: runtimeConfig.defaultZoneId,
         ...(systemDiskCategory ? { systemDiskCategory } : {}),
-        hostRequests: this.buildHostInstanceTypeRequests({
-          plan,
-          hostProvisioningHints,
-        }),
+        hostRequests: hostInstanceTypeRequests,
         account: {
           accessKeyId: runtimeConfig.accessKeyId,
           accessKeySecret: runtimeConfig.accessKeySecret,
@@ -719,7 +724,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
-    const fixedInstanceType = resolveFixedInstanceType(
+    const preferredInstanceTypes = resolvePreferredInstanceTypes(
       input.singleInstanceConfig.cpu,
       input.singleInstanceConfig.memory,
     );
@@ -734,7 +739,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const instanceType =
       requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto'
         ? requestedInstanceType
-        : fixedInstanceType ?? (await this.resolveInstanceType(singleRuntimeConfig));
+        : await this.resolveInstanceType(singleRuntimeConfig, preferredInstanceTypes);
     const systemDiskCategory = this.readSystemDiskCategory();
 
     return {
@@ -779,7 +784,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     };
   }
 
-  private async resolveInstanceType(runtimeConfig: ResolvedProvisioningRuntimeConfig) {
+  private async resolveInstanceType(
+    runtimeConfig: ResolvedProvisioningRuntimeConfig,
+    preferredInstanceTypes?: readonly string[],
+  ) {
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
@@ -795,7 +803,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       regionId: runtimeConfig.defaultRegion,
       zoneId: runtimeConfig.defaultZoneId,
       ...(systemDiskCategory ? { systemDiskCategory } : {}),
-      preferredInstanceTypes: readInstanceTypePreferences(this.env),
+      preferredInstanceTypes:
+        preferredInstanceTypes && preferredInstanceTypes.length > 0
+          ? [...preferredInstanceTypes]
+          : readInstanceTypePreferences(this.env),
     });
   }
 
@@ -865,9 +876,16 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
     const defaultPreferences = readInstanceTypePreferences(this.env);
+    const networkInterfaceCountByHost = new Map(
+      input.plan.hostNetworkInterfaces.map((hostNetworkInterfaces) => [
+        hostNetworkInterfaces.hostKey,
+        Math.max(1, hostNetworkInterfaces.interfaces.length),
+      ]),
+    );
 
     return input.plan.hostDefinitions.map((host) => {
       const runtimeHint = input.hostProvisioningHints.get(host.key);
+      const networkInterfaceCount = networkInterfaceCountByHost.get(host.key) ?? 1;
 
       if (requestedInstanceType && requestedInstanceType.toLowerCase() !== 'auto') {
         return {
@@ -876,7 +894,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
           ...(typeof runtimeHint?.requestedMemoryGiB === 'number'
             ? { memoryGiB: runtimeHint.requestedMemoryGiB }
             : {}),
+          networkInterfaceCount,
           preferredInstanceTypes: [requestedInstanceType],
+          strictPreferredInstanceTypes: true,
         };
       }
 
@@ -890,6 +910,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         ...(typeof runtimeHint?.requestedCpu === 'number' ? { cpu: runtimeHint.requestedCpu } : {}),
         ...(typeof runtimeHint?.requestedMemoryGiB === 'number'
           ? { memoryGiB: runtimeHint.requestedMemoryGiB }
+          : {}),
+        networkInterfaceCount,
+        ...(resolutionPolicy.strictPreferredInstanceTypes
+          ? { strictPreferredInstanceTypes: true }
           : {}),
         preferredInstanceTypes: resolutionPolicy.fixedInstanceType
           ? [resolutionPolicy.fixedInstanceType]
@@ -1056,8 +1080,7 @@ function deriveInstanceTypePreferencesForResources(
   cpu: number | undefined,
   memoryGiB: number | undefined,
 ) {
-  const fixedInstanceType = resolveFixedInstanceType(cpu, memoryGiB);
-  return fixedInstanceType ? [fixedInstanceType] : [];
+  return resolvePreferredInstanceTypes(cpu, memoryGiB);
 }
 
 function buildHostInstanceResolutionHints(
@@ -1223,9 +1246,8 @@ function resolveHostInstanceTypePolicy(input: {
 
   if (derivedPreferences.length > 0) {
     return {
-      fixedInstanceType: derivedPreferences[0],
-      preferredInstanceTypes: [] as string[],
-      strictPreferredInstanceTypes: true,
+      preferredInstanceTypes: [...derivedPreferences],
+      strictPreferredInstanceTypes: false,
     };
   }
 

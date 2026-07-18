@@ -4,6 +4,7 @@ import type {
   CollectPlatformImageInput,
   CreateAdminUserInput,
   InstanceMode,
+  InstanceTypeAvailabilitySnapshot,
   InstanceView,
   LaunchRangeInput,
   LaunchSingleInstancesInput,
@@ -146,6 +147,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   async getSingleInstanceAccess(id: string): Promise<RangeAccessPayload> {
     return this.request<RangeAccessPayload>(`/admin/instances/${encodeURIComponent(id)}/access`);
+  }
+
+  getInstanceTypeAvailability(cpu: number, memory: number) {
+    return this.request<InstanceTypeAvailabilitySnapshot>(
+      `/admin/system-config/instance-type-availability?cpu=${encodeURIComponent(cpu)}&memory=${encodeURIComponent(memory)}`,
+    );
   }
 
   listProvisionJobs(instanceMode?: InstanceMode) {

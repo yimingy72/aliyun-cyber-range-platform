@@ -7,7 +7,11 @@ import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-cli
 
 import { createHttpApp } from '../src/http-app';
 
-function createClientStub(): PlatformApiClientLike {
+type ClientStub = PlatformApiClientLike & {
+  getInstanceTypeAvailability: ReturnType<typeof vi.fn>;
+};
+
+function createClientStub(): ClientStub {
   return {
     listRangeTemplates: vi.fn().mockResolvedValue([{ id: 'tpl-1' }]),
     getRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
@@ -43,7 +47,16 @@ function createClientStub(): PlatformApiClientLike {
     rebootSingleInstance: vi.fn().mockResolvedValue({ ok: true }),
     openSingleInstanceVnc: vi.fn().mockResolvedValue({ status: 'accepted', vncUrl: 'wss://vnc' }),
     packSingleInstanceImage: vi.fn().mockResolvedValue({ status: 'accepted', imageId: 'm-1' }),
-  };
+    getInstanceTypeAvailability: vi.fn().mockResolvedValue({
+      cpu: 2,
+      memory: 4,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.e-c1m2.large', cpu: 2, memoryGiB: 4, family: 'ecs.e', generation: 'c1', architecture: 'x86' }],
+      warning: null,
+    }),
+  } as ClientStub;
 }
 
 describe('mcp http e2e', () => {
@@ -110,6 +123,16 @@ describe('mcp http e2e', () => {
 
     expect(tools.tools.map((tool) => tool.name)).toContain('range_template_list');
     expect(tools.tools.map((tool) => tool.name)).toContain('single_instance_get');
+    const specTool = tools.tools.find((tool) => tool.name === 'single_instance_spec_check');
+
+    expect(specTool?.inputSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        cpu: { type: 'integer' },
+        memory: { type: 'integer' },
+      },
+      required: ['cpu', 'memory'],
+    });
     expect(tools.tools.map((tool) => tool.name)).not.toContain('single_instance_destroy');
 
     const result = await appClient.callTool({
@@ -121,6 +144,14 @@ describe('mcp http e2e', () => {
 
     expect(platformClient.getSingleInstance).toHaveBeenCalledWith('ins-1');
     expect(result.structuredContent).toEqual({ id: 'ins-1' });
+
+    const specificationResult = await appClient.callTool({
+      name: 'single_instance_spec_check',
+      arguments: { cpu: 2, memory: 4 },
+    });
+
+    expect(platformClient.getInstanceTypeAvailability).toHaveBeenCalledWith(2, 4);
+    expect(specificationResult.structuredContent).toMatchObject({ exactAvailable: true });
 
     await transport.close();
     await appClient.close();

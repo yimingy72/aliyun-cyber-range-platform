@@ -37,7 +37,7 @@ export function createSdkServer(client: PlatformApiClientLike, scopes: string[] 
       {
         title: tool.name,
         description: tool.description,
-        inputSchema: z.object({}).passthrough(),
+        inputSchema: tool.inputSchema ?? z.object({}).passthrough(),
         annotations: {
           readOnlyHint: tool.annotations.readOnlyHint,
         },

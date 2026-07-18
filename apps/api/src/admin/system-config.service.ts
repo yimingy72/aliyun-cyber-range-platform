@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Injectable } from '@nestjs/common';
 
+import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 
@@ -173,6 +174,20 @@ export class SystemConfigService {
     memory: number;
   }): Promise<InstanceTypeAvailabilitySnapshot> {
     const accountContext = await this.getAccountContext();
+    const supportedInstanceTypeIds = new Set(resolvePreferredInstanceTypes(input.cpu, input.memory));
+
+    if (supportedInstanceTypeIds.size === 0) {
+      return {
+        cpu: input.cpu,
+        memory: input.memory,
+        regionId: accountContext.defaultRegion,
+        zoneId: accountContext.defaultZoneId,
+        exactAvailable: false,
+        matches: [],
+        warning: `平台单实例执行器不支持 ${input.cpu}C${input.memory}G 规格。`,
+      };
+    }
+
     const availableInstanceTypeIds = await this.describeAvailableInstanceTypeIds(accountContext);
 
     if (availableInstanceTypeIds.length === 0) {
@@ -197,7 +212,11 @@ export class SystemConfigService {
         return false;
       }
 
-      return item.cpu === input.cpu && item.memoryGiB === input.memory;
+      return (
+        supportedInstanceTypeIds.has(item.instanceTypeId) &&
+        item.cpu === input.cpu &&
+        item.memoryGiB === input.memory
+      );
     });
 
     return {
@@ -210,7 +229,7 @@ export class SystemConfigService {
       warning:
         matches.length > 0
           ? null
-          : `当前默认可用区 ${accountContext.defaultZoneId} 没有精确匹配 ${input.cpu}C${input.memory}G 的 X86 按量付费实例规格。`,
+          : `当前默认可用区 ${accountContext.defaultZoneId} 没有可供单实例执行器使用的 ${input.cpu}C${input.memory}G X86 按量付费实例规格。`,
     };
   }
 

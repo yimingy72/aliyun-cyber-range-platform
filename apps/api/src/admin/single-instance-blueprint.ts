@@ -99,7 +99,7 @@ export function buildSingleInstanceBlueprint(input: BuildSingleInstanceBlueprint
       instanceTypePolicies: [
         {
           key: instanceTypePolicyKey,
-          mode: 'prefer-list',
+          mode: 'fixed',
           preferredInstanceTypes: [...resolvePreferredInstanceTypes(input.cpu, input.memory)],
         },
       ],

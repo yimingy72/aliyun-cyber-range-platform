@@ -1,4 +1,5 @@
 import type { ToolDefinition } from './tool-context';
+import * as z from 'zod/v4';
 
 const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
   idempotencyKey: args.idempotencyKey,
@@ -55,10 +56,26 @@ export const singleInstanceTools: ToolDefinition[] = [
     },
   },
   {
-    name: 'single_instance_batch_launch',
-    description: 'Launch one or more single instances from an image.',
-    requiredScopes: ['instances:create'],
+    name: 'single_instance_spec_check',
+    description:
+      'Validate that an exact CPU and memory specification is supported by the single-instance executor and currently available in the configured zone before launch. exactAvailable=false means launch must not be requested; a successful check does not reserve capacity.',
+    requiredScopes: ['instances:read'],
+    readOnlyHint: true,
+    inputSchema: z.object({
+      cpu: z.number().int().positive().describe('CPU cores'),
+      memory: z.number().int().positive().describe('Memory in GiB'),
+    }),
     call(context, args) {
+      const input = args as { cpu: number; memory: number };
+      return context.client.getInstanceTypeAvailability(input.cpu, input.memory);
+    },
+  },
+  {
+    name: 'single_instance_batch_launch',
+    description:
+      'Launch one or more single instances from an image. The server validates the exact CPU and memory specification again before forwarding the launch request.',
+    requiredScopes: ['instances:read', 'instances:create'],
+    async call(context, args) {
       const input = args as {
         name: string;
         hostName?: string;
@@ -73,6 +90,14 @@ export const singleInstanceTools: ToolDefinition[] = [
         idempotencyKey?: string;
         confirmationId?: string;
       };
+      const availability = await context.client.getInstanceTypeAvailability(input.cpu, input.memory);
+
+      if (availability.exactAvailable !== true) {
+        throw new Error(
+          availability.warning ?? `The requested ${input.cpu} CPU / ${input.memory} GiB specification is not currently available.`,
+        );
+      }
+
       return context.client.launchSingleInstances(
         {
           name: input.name,

@@ -95,6 +95,16 @@ locals {
     for network_interface in local.secondary_network_interface_records : network_interface.key => network_interface
   }
 
+  create_time_network_interface_by_host = {
+    for network_interface in local.secondary_network_interface_records : network_interface.host_key => network_interface
+    if network_interface.device_index == 1
+  }
+
+  hotplug_network_interface_map = {
+    for network_interface in local.secondary_network_interface_records : network_interface.key => network_interface
+    if network_interface.device_index > 1
+  }
+
   nat_gateway_map = {
     for nat_gateway in var.nat_gateways : nat_gateway.key => nat_gateway
   }
@@ -433,6 +443,19 @@ resource "alicloud_instance" "hosts" {
   user_data            = try(local.host_user_data_map[each.key], null)
   system_disk_category = var.system_disk_category
   system_disk_size     = var.system_disk_size
+
+  dynamic "network_interfaces" {
+    for_each = (
+      contains(keys(local.create_time_network_interface_by_host), each.key)
+      ? [local.create_time_network_interface_by_host[each.key]]
+      : []
+    )
+
+    content {
+      network_interface_id = alicloud_network_interface.secondary[network_interfaces.value.key].id
+    }
+  }
+
   tags = merge(local.common_tags, {
     host_key = each.key
     role     = each.value.role
@@ -460,7 +483,7 @@ resource "alicloud_network_interface" "secondary" {
 }
 
 resource "alicloud_network_interface_attachment" "secondary" {
-  for_each = local.secondary_network_interface_map
+  for_each = local.hotplug_network_interface_map
 
   instance_id          = alicloud_instance.hosts[each.value.host_key].id
   network_interface_id = alicloud_network_interface.secondary[each.key].id

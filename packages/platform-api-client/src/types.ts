@@ -38,6 +38,25 @@ export type SingleInstanceListPayload = {
   standaloneInstances: RangeInstance[];
 };
 
+export type InstanceTypeAvailabilityMatch = {
+  instanceTypeId: string;
+  cpu: number;
+  memoryGiB: number;
+  family: string;
+  generation: string;
+  architecture: string;
+};
+
+export type InstanceTypeAvailabilitySnapshot = {
+  cpu: number;
+  memory: number;
+  regionId: string;
+  zoneId: string;
+  exactAvailable: boolean;
+  matches: InstanceTypeAvailabilityMatch[];
+  warning: string | null;
+};
+
 export type LaunchRangeInput = {
   templateId: string;
   name: string;
@@ -104,6 +123,7 @@ export type PlatformApiClientLike = {
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;
+  getInstanceTypeAvailability(cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   listProvisionJobs(instanceMode?: InstanceMode): Promise<ProvisionJob[]>;
   getProvisionJob(id: string): Promise<ProvisionJob>;
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;

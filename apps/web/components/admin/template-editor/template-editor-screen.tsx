@@ -15,7 +15,7 @@ import {
 } from '../../../lib/admin-api';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset, RangeTemplate } from '../../../lib/admin-types';
 import type { ScenarioTemplateMetadata } from '../../../lib/scenario-template-spec';
-import { resolveFixedInstanceType } from '../../../lib/instance-type-catalog';
+import { resolveFixedInstanceType, resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
 import { buildScenarioTemplateSpecFromTopologyGraph } from '../../../lib/topology-graph-to-scenario-template';
 import { compileScenarioTemplateSpec } from '../../../lib/scenario-template-compiler';
 import { isPhaseOneNodeKind as isPhaseOneNodeKindTypeGuard } from '../../../lib/scenario-graph';
@@ -53,25 +53,24 @@ type DraftCachePayload = {
   persistedGraphSignature: string;
 };
 
-function applyFixedInstanceType(
+function applyEconomyInstanceType(
   node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'instanceType' | 'instanceTypeStrategy'>,
   options?: { preserveExisting?: boolean },
 ): Pick<EcsTemplateNode, 'instanceType' | 'instanceTypeStrategy'> {
-  const instanceType = resolveFixedInstanceType(node.cpu, node.memory);
+  const preferredInstanceTypes = resolvePreferredInstanceTypes(node.cpu, node.memory);
+  const instanceType = preferredInstanceTypes[0];
+  const configuredInstanceType =
+    readConfiguredInstanceType(node.instanceTypeStrategy.instanceType) ?? readConfiguredInstanceType(node.instanceType);
 
   if (!instanceType) {
-    if (options?.preserveExisting) {
-      const preservedInstanceType = readFinalInstanceType(node);
-
-      if (preservedInstanceType) {
-        return {
-          instanceType: preservedInstanceType,
-          instanceTypeStrategy: {
-            mode: 'fixed',
-            instanceType: preservedInstanceType,
-          },
-        };
-      }
+    if (options?.preserveExisting && configuredInstanceType) {
+      return {
+        instanceType: configuredInstanceType,
+        instanceTypeStrategy: {
+          mode: 'fixed',
+          instanceType: configuredInstanceType,
+        },
+      };
     }
 
     return {
@@ -83,11 +82,25 @@ function applyFixedInstanceType(
     };
   }
 
+  if (
+    options?.preserveExisting &&
+    node.instanceTypeStrategy.mode === 'fixed' &&
+    configuredInstanceType
+  ) {
+    return {
+      instanceType: configuredInstanceType,
+      instanceTypeStrategy: {
+        mode: 'fixed',
+        instanceType: configuredInstanceType,
+      },
+    };
+  }
+
   return {
     instanceType,
     instanceTypeStrategy: {
-      mode: 'fixed',
-      instanceType,
+      mode: 'prefer-list',
+      preferredInstanceTypes: [...preferredInstanceTypes],
     },
   };
 }
@@ -370,7 +383,7 @@ function createDefaultEcsNode(
       mode: 'fixed',
       imageId: 'ubuntu_22_04_x64_20G_alibase',
     },
-    ...applyFixedInstanceType({
+    ...applyEconomyInstanceType({
       cpu: 1,
       memory: 2,
       instanceTypeStrategy: {
@@ -435,28 +448,6 @@ function normalizeInstanceTypeStrategy(
 ): Pick<EcsTemplateNode, 'instanceType' | 'instanceTypeStrategy'> {
   const normalizedPersistedInstanceType = readConfiguredInstanceType(persistedInstanceType);
 
-  if (normalizedPersistedInstanceType) {
-    return {
-      instanceType: normalizedPersistedInstanceType,
-      instanceTypeStrategy: {
-        mode: 'fixed',
-        instanceType: normalizedPersistedInstanceType,
-      },
-    };
-  }
-
-  const fixedInstanceType = resolveFixedInstanceType(cpu, memory);
-
-  if (fixedInstanceType) {
-    return {
-      instanceType: fixedInstanceType,
-      instanceTypeStrategy: {
-        mode: 'fixed',
-        instanceType: fixedInstanceType,
-      },
-    };
-  }
-
   if (value && typeof value === 'object' && 'mode' in value) {
     const candidate = value as Record<string, unknown>;
 
@@ -467,22 +458,70 @@ function normalizeInstanceTypeStrategy(
       candidate.mode === 'prefer-list'
     ) {
       const strategyInstanceType = readConfiguredInstanceType(candidate.instanceType);
+      const preferredInstanceTypes = Array.isArray(candidate.preferredInstanceTypes)
+        ? candidate.preferredInstanceTypes.filter(
+            (item): item is string => typeof item === 'string' && item.trim().length > 0,
+          )
+        : [];
 
-      return {
-        ...(strategyInstanceType ? { instanceType: strategyInstanceType } : {}),
-        instanceTypeStrategy: {
-          mode: candidate.mode,
-          ...(strategyInstanceType ? { instanceType: strategyInstanceType } : {}),
-          ...(Array.isArray(candidate.preferredInstanceTypes)
-            ? {
-                preferredInstanceTypes: candidate.preferredInstanceTypes.filter(
-                  (item): item is string => typeof item === 'string',
-                ),
-              }
+      if (candidate.mode === 'fixed') {
+        const fixedInstanceType = strategyInstanceType ?? normalizedPersistedInstanceType;
+
+        if (fixedInstanceType) {
+          return {
+            instanceType: fixedInstanceType,
+            instanceTypeStrategy: {
+              mode: 'fixed',
+              instanceType: fixedInstanceType,
+            },
+          };
+        }
+      }
+
+      if (candidate.mode === 'prefer-list' && preferredInstanceTypes.length > 0) {
+        return {
+          ...(strategyInstanceType || normalizedPersistedInstanceType
+            ? { instanceType: strategyInstanceType ?? normalizedPersistedInstanceType }
             : {}),
-        },
-      };
+          instanceTypeStrategy: {
+            mode: 'prefer-list',
+            preferredInstanceTypes,
+          },
+        };
+      }
+
+      if (candidate.mode === 'prefer-family') {
+        return {
+          ...(strategyInstanceType ? { instanceType: strategyInstanceType } : {}),
+          instanceTypeStrategy: {
+            mode: 'prefer-family',
+            ...(strategyInstanceType ? { instanceType: strategyInstanceType } : {}),
+          },
+        };
+      }
     }
+  }
+
+  if (normalizedPersistedInstanceType) {
+    return {
+      instanceType: normalizedPersistedInstanceType,
+      instanceTypeStrategy: {
+        mode: 'fixed',
+        instanceType: normalizedPersistedInstanceType,
+      },
+    };
+  }
+
+  const preferredInstanceTypes = resolvePreferredInstanceTypes(cpu, memory);
+
+  if (preferredInstanceTypes.length > 0) {
+    return {
+      instanceType: preferredInstanceTypes[0],
+      instanceTypeStrategy: {
+        mode: 'prefer-list',
+        preferredInstanceTypes: [...preferredInstanceTypes],
+      },
+    };
   }
 
   return {
@@ -956,7 +995,7 @@ function buildDraftUpdatePayload(
       node.kind === 'ecs'
         ? {
             ...node,
-            ...applyFixedInstanceType(node, {
+            ...applyEconomyInstanceType(node, {
               preserveExisting: true,
             }),
           }
@@ -1393,7 +1432,7 @@ function buildDraftUpdatePayload(
 
         return {
           ...nextNode,
-          ...applyFixedInstanceType(nextNode, {
+          ...applyEconomyInstanceType(nextNode, {
             preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory,
           }),
         };
