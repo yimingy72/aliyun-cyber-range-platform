@@ -82,4 +82,33 @@ describe('PlatformApiClient', () => {
 
     await expect(client.removePlatformImage('img-1')).resolves.toBeUndefined();
   });
+
+  it('checks exact single-instance specification availability with a read-only request', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/system-config/instance-type-availability?cpu=2&memory=4');
+      expect(init?.method).toBe('GET');
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer token-1');
+
+      return new Response(
+        JSON.stringify({
+          cpu: 2,
+          memory: 4,
+          regionId: 'cn-hangzhou',
+          zoneId: 'cn-hangzhou-h',
+          exactAvailable: true,
+          matches: [{ instanceTypeId: 'ecs.e-c1m2.large', cpu: 2, memoryGiB: 4, family: 'ecs.e', generation: 'c1', architecture: 'x86' }],
+          warning: null,
+        }),
+        { status: 200 },
+      );
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
+
+    await expect(client.getInstanceTypeAvailability(2, 4)).resolves.toMatchObject({
+      cpu: 2,
+      memory: 4,
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.e-c1m2.large' }],
+    });
+  });
 });

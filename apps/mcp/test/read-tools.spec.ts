@@ -4,7 +4,11 @@ import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-rang
 
 import { createToolRegistry } from '../src/server';
 
-function createClientStub(): PlatformApiClientLike {
+type ClientStub = PlatformApiClientLike & {
+  getInstanceTypeAvailability: ReturnType<typeof vi.fn>;
+};
+
+function createClientStub(): ClientStub {
   return {
     listRangeTemplates: vi.fn().mockResolvedValue([{ id: 'tpl-1' }]),
     getRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
@@ -40,7 +44,16 @@ function createClientStub(): PlatformApiClientLike {
     rebootSingleInstance: vi.fn().mockResolvedValue({ ok: true }),
     openSingleInstanceVnc: vi.fn().mockResolvedValue({ status: 'accepted', vncUrl: 'wss://vnc' }),
     packSingleInstanceImage: vi.fn().mockResolvedValue({ status: 'accepted', imageId: 'm-1' }),
-  };
+    getInstanceTypeAvailability: vi.fn().mockResolvedValue({
+      cpu: 2,
+      memory: 4,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.e-c1m2.large', cpu: 2, memoryGiB: 4, family: 'ecs.e', generation: 'c1', architecture: 'x86' }],
+      warning: null,
+    }),
+  } as ClientStub;
 }
 
 describe('tool registry', () => {
@@ -126,5 +139,86 @@ describe('tool registry', () => {
       rowCount: 1,
       csv: '实例名,公网 IP,账号,密码\nins-1,1.1.1.1,root,secret',
     });
+  });
+
+  it('exposes a read-only single-instance specification check', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+
+    expect(registry.listTools(['instances:read']).map((tool) => tool.name)).toContain('single_instance_spec_check');
+
+    await expect(
+      registry.callTool('single_instance_spec_check', ['instances:read'], { cpu: 2, memory: 4 }),
+    ).resolves.toMatchObject({
+      structuredContent: {
+        exactAvailable: true,
+        matches: [{ instanceTypeId: 'ecs.e-c1m2.large' }],
+      },
+    });
+    expect(client.getInstanceTypeAvailability).toHaveBeenCalledWith(2, 4);
+  });
+
+  it('checks availability before forwarding a single-instance launch', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('single_instance_batch_launch', ['instances:read', 'instances:create'], {
+      name: 'training-host',
+      platformImageAssetId: 'img-1',
+      cpu: 2,
+      memory: 4,
+      expiresAt: '2026-07-20T00:00:00.000Z',
+      quantity: 1,
+    });
+
+    expect(client.getInstanceTypeAvailability).toHaveBeenCalledWith(2, 4);
+    expect(client.launchSingleInstances).toHaveBeenCalledTimes(1);
+    expect(client.getInstanceTypeAvailability.mock.invocationCallOrder[0]).toBeLessThan(
+      (client.launchSingleInstances as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not forward a single-instance launch when the specification is unavailable', async () => {
+    const client = createClientStub();
+    client.getInstanceTypeAvailability.mockResolvedValue({
+      cpu: 2,
+      memory: 4,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: false,
+      matches: [],
+      warning: '当前默认可用区没有精确匹配规格。',
+    });
+    const registry = createToolRegistry(client);
+
+    await expect(
+      registry.callTool('single_instance_batch_launch', ['instances:read', 'instances:create'], {
+        name: 'training-host',
+        platformImageAssetId: 'img-1',
+        cpu: 2,
+        memory: 4,
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        quantity: 1,
+      }),
+    ).rejects.toThrow('当前默认可用区没有精确匹配规格。');
+    expect(client.launchSingleInstances).not.toHaveBeenCalled();
+  });
+
+  it('does not forward a single-instance launch when the specification check fails', async () => {
+    const client = createClientStub();
+    client.getInstanceTypeAvailability.mockRejectedValue(new Error('规格校验服务暂不可用'));
+    const registry = createToolRegistry(client);
+
+    await expect(
+      registry.callTool('single_instance_batch_launch', ['instances:read', 'instances:create'], {
+        name: 'training-host',
+        platformImageAssetId: 'img-1',
+        cpu: 2,
+        memory: 4,
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        quantity: 1,
+      }),
+    ).rejects.toThrow('规格校验服务暂不可用');
+    expect(client.launchSingleInstances).not.toHaveBeenCalled();
   });
 });

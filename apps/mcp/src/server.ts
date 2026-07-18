@@ -63,5 +63,6 @@ function describe(tool: ToolDefinition) {
       readOnlyHint: tool.readOnlyHint === true,
     },
     requiredScopes: tool.requiredScopes,
+    inputSchema: tool.inputSchema,
   };
 }

@@ -218,7 +218,7 @@ describe('Admin system config', () => {
     });
   });
 
-  it('returns exact available x86 postpaid instance types for the configured zone', async () => {
+  it('returns only available instance types supported by the single-instance executor', async () => {
     seedAdminEnv();
     seedAliyunEnv();
     const fetchMock = jest.fn()
@@ -235,6 +235,7 @@ describe('Admin system config', () => {
                       Type: 'InstanceType',
                       SupportedResources: {
                         SupportedResource: [
+                          { Status: 'Available', Value: 'ecs.e-c1m2.large' },
                           { Status: 'Available', Value: 'ecs.c7.large' },
                           { Status: 'Available', Value: 'ecs.g7.large' },
                           { Status: 'SoldOut', Value: 'ecs.c8y.small' },
@@ -250,11 +251,19 @@ describe('Admin system config', () => {
       )
       .mockResolvedValueOnce(
         createJsonResponse({
-          TotalCount: 3,
+          TotalCount: 4,
           PageNumber: 1,
           PageSize: 100,
           InstanceTypes: {
             InstanceType: [
+              {
+                InstanceTypeId: 'ecs.e-c1m2.large',
+                CpuCoreCount: 2,
+                MemorySize: 4,
+                InstanceTypeFamily: 'ecs.e',
+                Generation: 'ecs-1',
+                CpuArchitecture: 'X86',
+              },
               {
                 InstanceTypeId: 'ecs.c7.large',
                 CpuCoreCount: 2,
@@ -299,19 +308,11 @@ describe('Admin system config', () => {
       exactAvailable: true,
       matches: [
         {
-          instanceTypeId: 'ecs.c7.large',
+          instanceTypeId: 'ecs.e-c1m2.large',
           cpu: 2,
           memoryGiB: 4,
-          family: 'ecs.c7',
-          generation: 'ecs-7',
-          architecture: 'X86',
-        },
-        {
-          instanceTypeId: 'ecs.g7.large',
-          cpu: 2,
-          memoryGiB: 4,
-          family: 'ecs.g7',
-          generation: 'ecs-7',
+          family: 'ecs.e',
+          generation: 'ecs-1',
           architecture: 'X86',
         },
       ],
