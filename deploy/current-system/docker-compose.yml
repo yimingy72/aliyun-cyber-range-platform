@@ -20,6 +20,12 @@ services:
     build:
       context: ../..
       dockerfile: deploy/current-system/apps/api/Dockerfile
+      args:
+        PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
+        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
+        PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
+        PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
+        PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -81,6 +87,12 @@ services:
     build:
       context: ../..
       dockerfile: deploy/current-system/apps/api/Dockerfile
+      args:
+        PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
+        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
+        PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
+        PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
+        PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -128,12 +140,17 @@ services:
       dockerfile: deploy/current-system/apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
+        PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
+        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
+        PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
+        PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
+        PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     environment:
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: production
       WEB_PORT: 3000
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
     ports:

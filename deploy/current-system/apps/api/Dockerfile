@@ -4,16 +4,27 @@ FROM node:22-alpine
 
 ARG ALICLOUD_PROVIDER_VERSION=1.282.0
 ARG ALICLOUD_PROVIDER_SHA256=75cd138f29602271d79b4900f83bd5def4f2c16ebe19fdd97bd0439b74901807
+ARG PNPM_REGISTRY=https://registry.npmmirror.com
+ARG PNPM_NETWORK_CONCURRENCY=2
+ARG PNPM_FETCH_RETRIES=10
+ARG PNPM_FETCH_RETRY_MIN_TIMEOUT=2000
+ARG PNPM_FETCH_RETRY_MAX_TIMEOUT=30000
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV COREPACK_NPM_REGISTRY=$PNPM_REGISTRY
+ENV npm_config_registry=$PNPM_REGISTRY
+ENV npm_config_network_concurrency=$PNPM_NETWORK_CONCURRENCY
+ENV npm_config_fetch_retries=$PNPM_FETCH_RETRIES
+ENV npm_config_fetch_retry_mintimeout=$PNPM_FETCH_RETRY_MIN_TIMEOUT
+ENV npm_config_fetch_retry_maxtimeout=$PNPM_FETCH_RETRY_MAX_TIMEOUT
 
 RUN apk add --no-cache bash curl openssl libc6-compat unzip zip \
   && corepack enable
 
 RUN mkdir -p /opt/provider-seed \
-  && curl --fail --silent --show-error --location --connect-timeout 15 --max-time 600 --retry 3 --retry-all-errors \
+  && curl --ipv4 --continue-at - --fail --silent --show-error --location --connect-timeout 15 --max-time 600 --retry 10 --retry-delay 2 --retry-all-errors \
     "https://github.com/aliyun/terraform-provider-alicloud/releases/download/v${ALICLOUD_PROVIDER_VERSION}/terraform-provider-alicloud_${ALICLOUD_PROVIDER_VERSION}_linux_amd64.zip" \
     -o "/opt/provider-seed/terraform-provider-alicloud_${ALICLOUD_PROVIDER_VERSION}_linux_amd64.zip" \
   && echo "${ALICLOUD_PROVIDER_SHA256}  /opt/provider-seed/terraform-provider-alicloud_${ALICLOUD_PROVIDER_VERSION}_linux_amd64.zip" | sha256sum -c -
