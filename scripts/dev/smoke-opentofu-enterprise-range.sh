@@ -602,7 +602,7 @@ write_smoke_tfvars() {
   secret_key="$(require_env_value ALICLOUD_SECRET_KEY)"
   region="$(require_env_value ALICLOUD_REGION)"
   zone_id="$(require_env_value ALICLOUD_ZONE_ID)"
-  instance_password="$(require_env_value OPENTOFU_INSTANCE_PASSWORD)"
+  instance_password="$(node -e 'const { randomBytes } = require("node:crypto"); process.stdout.write(`A${randomBytes(12).toString("hex")}a1!`);')"
   instance_type="$(resolve_requested_instance_type "$access_key" "$secret_key" "$region" "$zone_id")"
   image_id="$(resolve_requested_image_id "$access_key" "$secret_key" "$region")"
   resource_name_prefix="${SMOKE_RESOURCE_NAME_PREFIX:-smoke-${SMOKE_RUN_ID}}"

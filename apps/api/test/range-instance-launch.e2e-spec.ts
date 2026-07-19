@@ -203,7 +203,6 @@ describe('Range instance launch API', () => {
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
-    process.env.OPENTOFU_INSTANCE_PASSWORD = 'ChangeMe123!';
 
     const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
@@ -362,7 +361,6 @@ describe('Range instance launch API', () => {
     expect(detailResponse.body).toEqual(
       expect.objectContaining({
         id: launchResponse.body.id,
-        defaultInstancePassword: 'ChangeMe123!',
         runtimeCredentials: launchResponse.body.runtimeCredentials,
       }),
     );

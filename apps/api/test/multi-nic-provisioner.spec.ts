@@ -4,6 +4,13 @@ import path from 'node:path';
 
 import { OpenTofuRangeProvisioner } from '../src/provisioning/open-tofu-range-provisioner';
 
+const testRuntimeCredentials = new Proxy<Record<string, { username: string; password: string }>>(
+  {},
+  {
+    get: () => ({ username: 'root', password: 'RuntimePassword123!' }),
+  },
+);
+
 describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
   it('rejects a fixed environment type that cannot satisfy the requested network-interface count', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-multi-nic-capacity-override-'));
@@ -95,7 +102,6 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'ecs.e-c1m1.large',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
           OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
         },
       });
@@ -104,6 +110,7 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
         rangeInstanceId: 'range-multi-nic-capacity-override',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+        runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.90.0.0/16',
@@ -270,7 +277,6 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
           OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
         },
       });
@@ -279,6 +285,7 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
         rangeInstanceId: 'range-multi-nic',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+        runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.90.0.0/16',

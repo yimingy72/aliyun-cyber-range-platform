@@ -28,7 +28,7 @@ function createClientStub(): ClientStub {
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
-    getSingleInstanceAccess: vi.fn().mockResolvedValue({ defaultInstancePassword: 'secret' }),
+    getSingleInstanceAccess: vi.fn().mockResolvedValue({ runtimeCredentials: {} }),
     listProvisionJobs: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),
     fetchCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud' }),

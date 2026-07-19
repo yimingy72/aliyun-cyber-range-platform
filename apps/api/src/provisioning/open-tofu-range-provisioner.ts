@@ -56,7 +56,6 @@ type OpenTofuProvisionerEnv = Partial<
     | 'OPENTOFU_INSTANCE_TYPE_PREFERENCES'
     | 'OPENTOFU_IMAGE_ID'
     | 'OPENTOFU_IMAGE_ID_PREFERENCES'
-    | 'OPENTOFU_INSTANCE_PASSWORD'
     | 'OPENTOFU_ALLOWED_INGRESS_CIDR'
     | 'OPENTOFU_SYSTEM_DISK_CATEGORY'
     | 'OPENTOFU_SYSTEM_DISK_SIZE'
@@ -657,16 +656,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const imageId = finalHostImageId
       ? finalHostImageId
       : await this.resolveImageId(runtimeConfig);
-    const instancePassword = requireEnvValue(
-      this.env.OPENTOFU_INSTANCE_PASSWORD,
-      'OPENTOFU_INSTANCE_PASSWORD',
-    );
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
         host.key,
-        input.runtimeCredentials?.[host.key]?.password ?? instancePassword,
+        requireRuntimePassword(input.runtimeCredentials, host.key),
       ]),
     );
+    const instancePassword = requireRuntimePassword(input.runtimeCredentials, plan.entryHostKey);
     return this.renderer.render({
       plan,
       rangeInstanceId: input.rangeInstanceId,
@@ -718,9 +714,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       throw new Error(`Assigned single-instance vSwitch not found in persisted profile: ${assignedVswitchId}`);
     }
 
-    const instancePassword =
-      input.runtimeCredentials?.[input.singleInstanceConfig.hostKey]?.password ??
-      requireEnvValue(this.env.OPENTOFU_INSTANCE_PASSWORD, 'OPENTOFU_INSTANCE_PASSWORD');
+    const instancePassword = requireRuntimePassword(
+      input.runtimeCredentials,
+      input.singleInstanceConfig.hostKey,
+    );
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
@@ -1045,6 +1042,16 @@ function requireEnvValue(value: string | null | undefined, name: string): string
   }
 
   return trimmed;
+}
+
+function requireRuntimePassword(runtimeCredentials: RangeRuntimeCredentials | undefined, hostKey: string): string {
+  const password = normalizeOptionalEnvValue(runtimeCredentials?.[hostKey]?.password);
+
+  if (!password) {
+    throw new Error(`Missing persisted runtime password for host: ${hostKey}`);
+  }
+
+  return password;
 }
 
 function normalizeOptionalEnvValue(value: string | null | undefined) {

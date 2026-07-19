@@ -19,7 +19,6 @@ export type RangeAccessPayload = {
   publicIp?: string | null;
   privateIp?: string | null;
   ssh?: string | null;
-  defaultInstancePassword?: string | null;
   accessEntry?: Record<string, unknown> | null;
   runtimeCredentials?: Record<string, unknown> | null;
 };

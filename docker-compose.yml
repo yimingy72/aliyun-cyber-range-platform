@@ -71,6 +71,7 @@ services:
       - ./scripts/dev/bootstrap-keycloak.sh:/opt/keycloak/bootstrap-keycloak.sh:ro
 
   api:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -108,7 +109,6 @@ services:
       OPENTOFU_INSTANCE_TYPE: ${OPENTOFU_INSTANCE_TYPE:-auto}
       OPENTOFU_INSTANCE_TYPE_PREFERENCES: ${OPENTOFU_INSTANCE_TYPE_PREFERENCES:-}
       OPENTOFU_IMAGE_ID: ${OPENTOFU_IMAGE_ID:-}
-      OPENTOFU_INSTANCE_PASSWORD: ${OPENTOFU_INSTANCE_PASSWORD:-}
       OPENTOFU_ALLOWED_INGRESS_CIDR: ${OPENTOFU_ALLOWED_INGRESS_CIDR:-0.0.0.0/0}
       OPENTOFU_SYSTEM_DISK_CATEGORY: ${OPENTOFU_SYSTEM_DISK_CATEGORY:-cloud_essd}
       OPENTOFU_SYSTEM_DISK_SIZE: ${OPENTOFU_SYSTEM_DISK_SIZE:-40}
@@ -140,6 +140,7 @@ services:
       retries: 10
 
   provisioner-worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -173,7 +174,6 @@ services:
       OPENTOFU_INSTANCE_TYPE: ${OPENTOFU_INSTANCE_TYPE:-auto}
       OPENTOFU_INSTANCE_TYPE_PREFERENCES: ${OPENTOFU_INSTANCE_TYPE_PREFERENCES:-}
       OPENTOFU_IMAGE_ID: ${OPENTOFU_IMAGE_ID:-}
-      OPENTOFU_INSTANCE_PASSWORD: ${OPENTOFU_INSTANCE_PASSWORD:-}
       OPENTOFU_ALLOWED_INGRESS_CIDR: ${OPENTOFU_ALLOWED_INGRESS_CIDR:-0.0.0.0/0}
       OPENTOFU_SYSTEM_DISK_CATEGORY: ${OPENTOFU_SYSTEM_DISK_CATEGORY:-cloud_essd}
       OPENTOFU_SYSTEM_DISK_SIZE: ${OPENTOFU_SYSTEM_DISK_SIZE:-40}

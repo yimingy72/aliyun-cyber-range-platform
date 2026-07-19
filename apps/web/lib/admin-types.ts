@@ -261,7 +261,6 @@ export type RangeInstance = {
   instanceMode?: 'range' | 'single';
   singleInstanceBatchId?: string | null;
   singleInstanceConfig?: SingleInstanceConfig | null;
-  defaultInstancePassword?: string | null;
   nodeStatuses?: Record<string, string> | null;
   status: string;
   templateId?: string | null;

@@ -206,6 +206,28 @@ describe('Range instance node actions API', () => {
     expect(response.body.webTerminalUrl).toContain('instanceId=i-instance-123');
   });
 
+  it('explains why node actions are unavailable for a dry-run range', async () => {
+    fetchMock.mockClear();
+
+    const dryRunInstance = await repository.createRangeInstance({
+      name: 'dry-run-node-action-range',
+      createdBy: 'admin',
+      status: 'running',
+      resourceSummary: {
+        mode: 'dry-run',
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/ranges/${dryRunInstance.id}/nodes/ecs-1/actions/reboot`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({})
+      .expect(409);
+
+    expect(response.body.message).toContain('dry-run 模式创建');
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('RebootInstance'), expect.anything());
+  });
+
   it('creates a custom image and platform asset from the selected host node', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/nodes/ecs-1/actions/pack-image`)

@@ -10,6 +10,13 @@ import { DryRunRangeProvisioner } from '../src/provisioning/dry-run-range-provis
 import { resolvePreferredInstanceTypes } from '../src/provisioning/instance-type-catalog';
 import type { RangeProvisionStepEvent } from '../src/provisioning/provisioning.types';
 
+const testRuntimeCredentials = new Proxy<Record<string, { username: string; password: string }>>(
+  {},
+  {
+    get: () => ({ username: 'root', password: 'RuntimePassword123!' }),
+  },
+);
+
 describe('OpenTofuRangeProvisioner', () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -56,7 +63,6 @@ describe('OpenTofuRangeProvisioner', () => {
       env: {
         OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -64,6 +70,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-runtime',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       runtimeConfig: {
         accessKeyId: 'db-ak',
         accessKeySecret: 'db-sk',
@@ -118,6 +125,90 @@ describe('OpenTofuRangeProvisioner', () => {
     );
   });
 
+  it('uses persisted runtime passwords when no default instance password is configured', async () => {
+    const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-runtime-password-'));
+    const moduleDir = path.join(tempRootDir, 'infra', 'module');
+    const workspacesRootDir = path.join(tempRootDir, 'workspaces');
+
+    await fs.mkdir(moduleDir, { recursive: true });
+
+    const runner = {
+      init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
+      validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
+      plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
+      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      output: jest.fn().mockResolvedValue({
+        public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.90.10.10', ssh: null } },
+        resource_summary: { value: { vpc_id: 'vpc-runtime-password' } },
+      }),
+      destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
+    };
+
+    const provisioner = new OpenTofuRangeProvisioner({
+      runner,
+      projectRootDir: tempRootDir,
+      workspacesRootDir,
+      env: {
+        OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
+        OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+      },
+    });
+
+    await provisioner.create({
+      rangeInstanceId: 'range-instance-runtime-password',
+      templateModulePath: 'infra/module',
+      allocatedCidr: null,
+      runtimeConfig: {
+        accessKeyId: 'db-ak',
+        accessKeySecret: 'db-sk',
+        defaultRegion: 'cn-hangzhou',
+        defaultZoneId: 'cn-hangzhou-h',
+      },
+      runtimeCredentials: {
+        'dmz-entry': { username: 'root', password: 'RuntimePassword123!' },
+      },
+      topologySpec: {
+        vpcCidr: '10.90.0.0/16',
+        networkZones: [
+          {
+            key: 'dmz',
+            name: 'DMZ',
+            purpose: 'public-entry',
+            cidr: '10.90.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'dmz-entry',
+            name: 'DMZ Entry',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.90.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+
+    const varsFilePath = path.join(
+      workspacesRootDir,
+      'range-instance-runtime-password',
+      'range.auto.tfvars.json',
+    );
+
+    expect(JSON.parse(await fs.readFile(varsFilePath, 'utf8'))).toEqual(
+      expect.objectContaining({
+        host_passwords: { 'dmz-entry': 'RuntimePassword123!' },
+        instance_password: 'RuntimePassword123!',
+      }),
+    );
+  });
+
   it('does not call the aliyun image resolver when a fixed image id is configured', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-fixed-image-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
@@ -150,7 +241,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_SECRET_KEY: 'test-sk',
         OPENTOFU_INSTANCE_TYPE: 'ecs.u1-c1m2.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -158,6 +248,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-fixed-image',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       topologySpec: {
         vpcCidr: '10.91.0.0/16',
         networkZones: [
@@ -223,7 +314,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_SECRET_KEY: 'test-sk',
         OPENTOFU_INSTANCE_TYPE: 'ecs.e-c1m1.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -231,6 +321,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-update',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       preserveWorkspaceState: true,
       topologySpec: {
         vpcCidr: '10.92.0.0/16',
@@ -278,7 +369,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_ACCESS_KEY: 'test-ak',
         ALICLOUD_SECRET_KEY: 'test-sk',
         OPENTOFU_INSTANCE_TYPE: 'auto',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -361,7 +451,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
         ALICLOUD_ACCESS_KEY: 'test-ak',
         ALICLOUD_SECRET_KEY: 'test-sk',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
       },
     });
@@ -370,6 +459,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-fixed-policy',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       topologySpec: {
         vpcCidr: '10.93.0.0/16',
         networkZones: [
@@ -515,7 +605,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         OPENTOFU_ALLOWED_INGRESS_CIDR: '10.0.0.0/8',
       },
     });
@@ -525,6 +614,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-1',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async (event) => {
         stepEvents.push(event);
       },
@@ -841,7 +931,7 @@ describe('OpenTofuRangeProvisioner', () => {
         server_private_ip: '10.88.30.10',
         instance_type: 'ecs.c7.large',
         image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        instance_password: 'ChangeMe123!',
+        instance_password: 'RuntimePassword123!',
         allowed_ingress_cidr: '10.0.0.0/8',
       }),
     );
@@ -981,7 +1071,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
     const stepEvents: RangeProvisionStepEvent[] = [];
@@ -996,6 +1085,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-2',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async (event) => {
         stepEvents.push(event);
       },
@@ -1320,7 +1410,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_SECRET_KEY: 'test-sk',
         OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
     const stepEvents: RangeProvisionStepEvent[] = [];
@@ -1330,6 +1419,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-3',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async (event) => {
           stepEvents.push(event);
         },
@@ -1460,7 +1550,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'auto',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
       },
     });
@@ -1469,6 +1558,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-auto',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.91.0.0/16',
@@ -1592,7 +1682,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'auto',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
       },
     });
@@ -1601,6 +1690,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-host-instance-type',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.95.0.0/16',
@@ -1811,7 +1901,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'auto',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_essd',
       },
     });
@@ -1820,6 +1909,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-stale-host-instance-type',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.95.0.0/16',
@@ -2004,7 +2094,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'auto',
         OPENTOFU_IMAGE_ID: 'auto',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -2012,6 +2101,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-host-final-values',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.96.0.0/16',
@@ -2266,7 +2356,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'auto',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         },
       });
 
@@ -2274,6 +2363,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-legacy-fetch',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.96.0.0/16',
@@ -2430,7 +2520,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'auto',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         },
       });
 
@@ -2438,6 +2527,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-legacy-singleton',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.96.20.0/24',
@@ -2568,7 +2658,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         },
       });
 
@@ -2576,6 +2665,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-zone-fast-path',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.99.0.0/16',
@@ -2769,7 +2859,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
           OPENTOFU_SYSTEM_DISK_CATEGORY: 'cloud_ssd',
         },
       });
@@ -2778,6 +2867,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-zone-explicit',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.99.20.0/24',
@@ -2995,7 +3085,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         },
       });
 
@@ -3003,6 +3092,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-zone-fallback',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.100.0.0/16',
@@ -3324,7 +3414,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'auto',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         },
       });
 
@@ -3332,6 +3421,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-zone-ranking',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.101.0.0/16',
@@ -3469,7 +3559,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'auto',
         OPENTOFU_IMAGE_ID: 'auto',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -3478,6 +3567,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-host-image-conflict',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.97.0.0/16',
@@ -3673,7 +3763,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'ecs.g7.large',
         OPENTOFU_IMAGE_ID: 'auto',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -3681,6 +3770,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-generic-host-image',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.98.0.0/16',
@@ -3871,7 +3961,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'ecs.u1-c1m2.large',
         OPENTOFU_IMAGE_ID: 'auto',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
       },
     });
 
@@ -3879,6 +3968,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-auto-image',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.91.0.0/16',
@@ -3996,7 +4086,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
         OPENTOFU_INSTANCE_TYPE: 'ecs.u1-c1m2.large',
         OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-        OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         HTTPS_PROXY: 'http://127.0.0.1:7897',
         HTTP_PROXY: 'http://127.0.0.1:7897',
         ALL_PROXY: 'socks5://127.0.0.1:7897',
@@ -4010,6 +4099,7 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-proxy-env',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
       reportStep: async () => undefined,
       topologySpec: {
         vpcCidr: '10.92.0.0/16',
@@ -4123,7 +4213,6 @@ describe('OpenTofuRangeProvisioner', () => {
           ALICLOUD_PROVIDER_ZIP_PATH: providerZipPath,
           OPENTOFU_INSTANCE_TYPE: 'ecs.u1-c1m2.large',
           OPENTOFU_IMAGE_ID: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
-          OPENTOFU_INSTANCE_PASSWORD: 'ChangeMe123!',
         },
       });
 
@@ -4131,6 +4220,7 @@ describe('OpenTofuRangeProvisioner', () => {
         rangeInstanceId: 'range-instance-parent-env',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
+      runtimeCredentials: testRuntimeCredentials,
         reportStep: async () => undefined,
         topologySpec: {
           vpcCidr: '10.93.0.0/16',

@@ -133,7 +133,6 @@ describe('RangeInstanceDetailScreen', () => {
       createdAt: '2026-07-06T10:00:00.000Z',
       expiresAt: '2026-07-09T12:00:00.000Z',
       accessEntry: { publicIp: '47.1.1.1' },
-      defaultInstancePassword: 'ChangeMe123!',
       nodeStatuses: {
         'host-1': 'Stopped',
       },
@@ -232,7 +231,6 @@ describe('RangeInstanceDetailScreen', () => {
       createdAt: '2026-07-06T10:00:00.000Z',
       expiresAt: '2026-07-09T12:00:00.000Z',
       accessEntry: { publicIp: '47.1.1.1' },
-      defaultInstancePassword: 'FallbackPassword123!',
       runtimeCredentials: {
         'host-1': {
           username: 'root',
@@ -274,7 +272,6 @@ describe('RangeInstanceDetailScreen', () => {
       createdAt: '2026-07-06T10:00:00.000Z',
       expiresAt: '2026-07-09T12:00:00.000Z',
       accessEntry: { publicIp: '47.1.1.1' },
-      defaultInstancePassword: 'ChangeMe123!',
       nodeStatuses: {
         'host-1': 'Stopped',
       },
@@ -463,7 +460,12 @@ describe('RangeInstanceDetailScreen', () => {
   });
 
   it('opens VNC in a new tab when the node action returns a terminal URL', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const vncWindow = {
+      close: vi.fn(),
+      location: { href: '' },
+      opener: window,
+    } as unknown as Window;
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(vncWindow);
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -500,7 +502,9 @@ describe('RangeInstanceDetailScreen', () => {
         {},
       ),
     );
-    expect(openSpy).toHaveBeenCalledWith('https://example.test/vnc', '_blank', 'noopener,noreferrer');
+    expect(openSpy).toHaveBeenCalledWith('', '_blank');
+    expect(vncWindow.opener).toBeNull();
+    expect(vncWindow.location.href).toBe('https://example.test/vnc');
   });
 
   it('opens the pack image dialog instead of immediately calling the API', async () => {

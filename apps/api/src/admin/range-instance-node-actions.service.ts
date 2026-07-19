@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   BadGatewayException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -49,6 +50,12 @@ export class RangeInstanceNodeActionsService {
 
     if (!isNodeActionName(action)) {
       throw new NotFoundException('Unsupported node action');
+    }
+
+    if (instance.resourceSummary?.mode === 'dry-run') {
+      throw new ConflictException(
+        '此实例以 dry-run 模式创建，未下发阿里云 ECS 或网络资源；请切换到 opentofu 后重新创建实例再执行节点操作。',
+      );
     }
 
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);

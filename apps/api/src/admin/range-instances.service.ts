@@ -86,10 +86,10 @@ export class RangeInstancesService {
 
     const nodeStatuses = await this.resolveNodeStatuses(hydrated);
 
-    return this.withDefaultInstancePassword({
+    return {
       ...hydrated,
       nodeStatuses,
-    });
+    };
   }
 
   async getAccessById(id: string, currentUser?: AuthenticatedUser) {
@@ -103,11 +103,11 @@ export class RangeInstancesService {
       this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
-    return this.withDefaultInstancePassword({
+    return {
       id: instance.id,
       runtimeCredentials: instance.runtimeCredentials ?? null,
       accessEntry: instance.accessEntry ?? null,
-    });
+    };
   }
 
   async prepareLaunchConfirmation(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
@@ -237,7 +237,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
+    return this.withCreatorUsername(hydrated);
   }
 
   async saveDraft(id: string, input: SaveRangeInstanceDraftDto, currentUser?: AuthenticatedUser) {
@@ -271,7 +271,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
+    return this.withCreatorUsername(hydrated);
   }
 
   async discardDraft(id: string, currentUser?: AuthenticatedUser) {
@@ -299,7 +299,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withDefaultInstancePassword(await this.withCreatorUsername(hydrated));
+    return this.withCreatorUsername(hydrated);
   }
 
   async applyDraft(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
@@ -622,15 +622,6 @@ export class RangeInstancesService {
         job: lastJob,
         steps,
       }),
-    };
-  }
-
-  private withDefaultInstancePassword<T extends Record<string, unknown>>(payload: T) {
-    const password = process.env.OPENTOFU_INSTANCE_PASSWORD?.trim() || null;
-
-    return {
-      ...payload,
-      defaultInstancePassword: password,
     };
   }
 

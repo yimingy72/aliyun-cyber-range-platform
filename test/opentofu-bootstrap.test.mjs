@@ -155,5 +155,5 @@ test('workspace exposes a real-cloud smoke test entry for the enterprise range',
   assert.match(smokeScript, /ALICLOUD_SECRET_KEY/);
   assert.match(smokeScript, /ALICLOUD_IMAGE_ID/);
   assert.match(smokeScript, /OPENTOFU_IMAGE_ID/);
-  assert.match(smokeScript, /OPENTOFU_INSTANCE_PASSWORD/);
+  assert.match(smokeScript, /randomBytes/);
 });

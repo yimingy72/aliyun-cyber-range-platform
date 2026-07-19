@@ -233,10 +233,6 @@ function readNodeCredential(
     }
   }
 
-  if (typeof detail?.defaultInstancePassword === 'string' && detail.defaultInstancePassword.trim()) {
-    return detail.defaultInstancePassword.trim();
-  }
-
   return '待回填';
 }
 
@@ -890,8 +886,17 @@ export function RangeInstanceDetailScreen({
     setPendingNodeAction({ nodeId, action });
     setErrorMessage(null);
     setSuccessMessage(null);
+    const vncWindow = action === 'open-vnc' ? window.open('', '_blank') : null;
 
     try {
+      if (action === 'open-vnc') {
+        if (!vncWindow) {
+          throw new Error('浏览器阻止了新窗口，请允许弹窗后重试。');
+        }
+
+        vncWindow.opener = null;
+      }
+
       const result = await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, nodeId, action, {});
 
       if (action === 'start') {
@@ -925,7 +930,7 @@ export function RangeInstanceDetailScreen({
           throw new Error('当前未获取到可用的 VNC 访问地址。');
         }
 
-        window.open(nextUrl, '_blank', 'noopener,noreferrer');
+        vncWindow!.location.href = nextUrl;
         setSuccessMessage('VNC 页面已在新标签页打开。');
       }
 
@@ -950,6 +955,7 @@ export function RangeInstanceDetailScreen({
         return;
       }
 
+      vncWindow?.close();
       setErrorMessage(error instanceof Error ? error.message : '节点操作失败，请稍后重试。');
     } finally {
       setPendingNodeAction(null);
