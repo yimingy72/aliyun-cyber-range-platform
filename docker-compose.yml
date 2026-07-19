@@ -100,7 +100,7 @@ services:
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
-      RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-dry-run}
+      RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-opentofu}
       RANGE_CIDR_POOL: ${RANGE_CIDR_POOL:-10.80.0.0/16,10.81.0.0/16}
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
@@ -166,7 +166,7 @@ services:
       KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
-      RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-dry-run}
+      RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-opentofu}
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
       OPENTOFU_PROVIDER_MIRROR_ROOT: /var/lib/cyber-range/provider-mirror

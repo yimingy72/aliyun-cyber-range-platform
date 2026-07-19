@@ -221,7 +221,7 @@ export function createRangeProvisionerFromEnv(
   options: CreateRangeProvisionerFromEnvOptions = {},
 ): RangeProvisioner {
   const env = options.env ?? process.env;
-  const mode = env.RANGE_PROVISIONER_MODE ?? 'dry-run';
+  const mode = env.RANGE_PROVISIONER_MODE ?? 'opentofu';
 
   if (mode === 'dry-run') {
     return new DryRunRangeProvisioner();

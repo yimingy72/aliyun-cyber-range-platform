@@ -133,6 +133,8 @@ cp .env.example .env
 - `ALICLOUD_ACCESS_KEY`
 - `ALICLOUD_SECRET_KEY`
 
+`RANGE_PROVISIONER_MODE` 默认值为 `opentofu`：创建靶场实例会实际创建并计费阿里云资源。仅用于本地流程演练时，请在 `.env` 中显式设为 `dry-run`。
+
 ### 2. 启动整栈
 
 ```bash

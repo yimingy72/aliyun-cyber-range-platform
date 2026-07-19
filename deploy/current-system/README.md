@@ -54,6 +54,8 @@ cp .env.example .env
 - `ADMIN_PASSWORD`
 - `ADMIN_TOKEN`
 
+`RANGE_PROVISIONER_MODE` 默认使用 `opentofu`，会实际创建并计费阿里云资源；如仅需演练平台流程，请在 `.env` 中显式设置为 `dry-run`。
+
 5. 启动系统：
 
 ```bash

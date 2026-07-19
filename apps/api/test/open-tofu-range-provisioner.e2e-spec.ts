@@ -4180,16 +4180,16 @@ describe('OpenTofuRangeProvisioner', () => {
     }
   });
 
-  it('switches between dry-run and OpenTofu provisioners from env mode', () => {
+  it('defaults to OpenTofu and supports an explicit dry-run provisioner mode', () => {
     const dryRunProvisioner = createRangeProvisionerFromEnv({
       projectRootDir: '/tmp/project',
-      env: {},
-    });
-    const openTofuProvisioner = createRangeProvisionerFromEnv({
-      projectRootDir: '/tmp/project',
       env: {
-        RANGE_PROVISIONER_MODE: 'opentofu',
+        RANGE_PROVISIONER_MODE: 'dry-run',
       },
+    });
+    const defaultProvisioner = createRangeProvisionerFromEnv({
+      projectRootDir: '/tmp/project',
+      env: {},
       runner: {
         init: jest.fn(),
         validate: jest.fn(),
@@ -4201,6 +4201,6 @@ describe('OpenTofuRangeProvisioner', () => {
     });
 
     expect(dryRunProvisioner).toBeInstanceOf(DryRunRangeProvisioner);
-    expect(openTofuProvisioner).toBeInstanceOf(OpenTofuRangeProvisioner);
+    expect(defaultProvisioner).toBeInstanceOf(OpenTofuRangeProvisioner);
   });
 });
