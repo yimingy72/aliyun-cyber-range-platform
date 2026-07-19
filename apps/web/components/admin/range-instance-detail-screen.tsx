@@ -38,7 +38,7 @@ type WorkbenchNode = {
   kind: string;
   statusLabel: string;
   cloudStatus?: string;
-  ipAddress?: string;
+  ipAddresses?: string[];
   specLabel?: string;
   typeLabel?: string;
   account?: string;
@@ -156,6 +156,17 @@ function getTypeLabel(kind: string) {
   return kind;
 }
 
+function formatNetworkRuleSummary(detail: RangeInstanceDetail | null) {
+  if (detail?.resourceSummary?.mode !== 'opentofu') {
+    return '暂无已下发网络规则';
+  }
+
+  const dnatCount = Object.keys(detail.resourceSummary.dnatEntryIds ?? {}).length;
+  const snatCount = Object.keys(detail.resourceSummary.snatEntryIds ?? {}).length;
+
+  return `DNAT 已下发 ${dnatCount} 条 / SNAT 已下发 ${snatCount} 条`;
+}
+
 function readScenarioTemplateSpec(detail: RangeInstanceDetail | null) {
   const candidate =
     (detail?.draftScenarioTemplateSpec as Record<string, unknown> | null) ??
@@ -170,6 +181,52 @@ function readHostSpec(detail: RangeInstanceDetail | null, nodeId: string) {
   const hosts = Array.isArray(spec?.hosts) ? (spec?.hosts as Array<Record<string, unknown>>) : [];
 
   return hosts.find((host) => host.key === nodeId) ?? null;
+}
+
+function readPrivateIps(
+  node: Record<string, unknown>,
+  hostSpec: Record<string, unknown> | null,
+): string[] {
+  const privateIps: string[] = [];
+
+  function addIp(value: unknown) {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const ip = value.trim();
+
+    if (ip && !privateIps.includes(ip)) {
+      privateIps.push(ip);
+    }
+  }
+
+  function addNetworkInterfaces(value: unknown) {
+    if (!Array.isArray(value)) {
+      return;
+    }
+
+    value.forEach((networkInterface) => {
+      if (!networkInterface || typeof networkInterface !== 'object') {
+        return;
+      }
+
+      const nic = networkInterface as Record<string, unknown>;
+      addIp(nic.privateIp);
+
+      if (Array.isArray(nic.secondaryIps)) {
+        nic.secondaryIps.forEach(addIp);
+      }
+    });
+  }
+
+  addNetworkInterfaces(node.nics);
+  addNetworkInterfaces(node.networkInterfaces);
+  addNetworkInterfaces(hostSpec?.networkInterfaces);
+  addIp(hostSpec?.primaryPrivateIp);
+  addIp(node.privateIp);
+
+  return privateIps;
 }
 
 function readZoneSpec(detail: RangeInstanceDetail | null, zoneKey: string | undefined) {
@@ -233,7 +290,7 @@ function readNodeCredential(
     }
   }
 
-  return '待回填';
+  return '';
 }
 
 function readDefaultPackImageName(nodeLabel: string) {
@@ -434,15 +491,12 @@ function readWorkbenchNodesFromGraph(
       (typeof node.zoneKey === 'string' ? node.zoneKey : undefined) ??
       (hostSpec && typeof hostSpec.zoneKey === 'string' ? hostSpec.zoneKey : undefined);
     const zoneSpec = readZoneSpec(detail, zoneKey);
-    const primaryNic =
-      Array.isArray(node.nics) && node.nics[0] && typeof node.nics[0] === 'object'
-        ? (node.nics[0] as Record<string, unknown>)
-        : null;
-    const ipAddress =
-      (typeof primaryNic?.privateIp === 'string' && primaryNic.privateIp) ||
-      (hostSpec && typeof hostSpec.primaryPrivateIp === 'string' ? hostSpec.primaryPrivateIp : undefined) ||
-      (typeof node.privateIp === 'string' && node.privateIp) ||
-      (kind === 'switch' && typeof node.cidr === 'string' ? node.cidr : undefined);
+    const ipAddresses =
+      kind === 'ecs'
+        ? readPrivateIps(node, hostSpec)
+        : kind === 'switch' && typeof node.cidr === 'string'
+          ? [node.cidr]
+          : [];
     const cloudStatus = detail?.nodeStatuses?.[id] ?? undefined;
     const statusLabel = kind === 'ecs' ? getCloudStatusLabel(cloudStatus) ?? getStatusLabel(detail?.status ?? 'unknown') : getStatusLabel(detail?.status ?? 'unknown');
 
@@ -457,7 +511,7 @@ function readWorkbenchNodesFromGraph(
         kind,
         statusLabel,
         cloudStatus,
-        ipAddress,
+        ipAddresses,
         specLabel:
           kind === 'ecs'
             ? `${node.cpu ?? 0} 核 / ${node.memory ?? 0} G`
@@ -473,7 +527,7 @@ function readWorkbenchNodesFromGraph(
         memory: typeof node.memory === 'number' ? node.memory : undefined,
         subtitle:
           kind === 'ecs'
-            ? ipAddress ?? '未配置私网IP'
+            ? ipAddresses.join(', ') || '未配置私网IP'
             : kind === 'switch'
               ? (typeof node.cidr === 'string' ? node.cidr : '交换机')
               : 'VPC 根节点',
@@ -1058,6 +1112,10 @@ export function RangeInstanceDetailScreen({
                 <div className="range-instance-overview-item">
                   <span>公网IP</span>
                   <strong>{detail.accessEntry?.publicIp ?? '暂无'}</strong>
+                </div>
+                <div className="range-instance-overview-item">
+                  <span>网络规则</span>
+                  <strong>{formatNetworkRuleSummary(detail)}</strong>
                 </div>
                 {!canOperateInstance ? (
                   <div className="range-instance-overview-item is-readonly">

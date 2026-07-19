@@ -1,5 +1,5 @@
 import React from 'react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
 
@@ -9,7 +9,7 @@ type RangeInstanceWorkbenchNode = {
   kind: string;
   statusLabel?: string;
   cloudStatus?: string;
-  ipAddress?: string;
+  ipAddresses?: string[];
   specLabel?: string;
   account?: string;
   password?: string;
@@ -33,7 +33,41 @@ export function RangeInstanceNodeDirectory({
   pendingAction = null,
 }: RangeInstanceNodeDirectoryProps) {
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
+  const [copiedPasswordNodeId, setCopiedPasswordNodeId] = useState<string | null>(null);
+  const copiedPasswordTimerRef = useRef<number | null>(null);
   const hostNodes = nodes.filter((node) => node.kind === 'ecs');
+
+  useEffect(() => {
+    return () => {
+      if (copiedPasswordTimerRef.current !== null) {
+        window.clearTimeout(copiedPasswordTimerRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopyPassword(node: RangeInstanceWorkbenchNode) {
+    const password = node.password?.trim();
+
+    if (!password || !navigator.clipboard?.writeText) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(password);
+      setCopiedPasswordNodeId(node.id);
+
+      if (copiedPasswordTimerRef.current !== null) {
+        window.clearTimeout(copiedPasswordTimerRef.current);
+      }
+
+      copiedPasswordTimerRef.current = window.setTimeout(() => {
+        setCopiedPasswordNodeId((current) => (current === node.id ? null : current));
+        copiedPasswordTimerRef.current = null;
+      }, 1600);
+    } catch {
+      // Keep the visible password tooltip available when the browser denies clipboard access.
+    }
+  }
 
   return (
     <div className="range-instance-directory-table">
@@ -67,12 +101,34 @@ export function RangeInstanceNodeDirectory({
                 <span>{node.imageName ?? '暂无'}</span>
               </div>
               <div className="range-instance-directory-cell">
-                <span>{node.ipAddress ?? '暂无'}</span>
+                {node.ipAddresses?.length ? (
+                  <div className="range-instance-ip-list">
+                    {node.ipAddresses.map((ipAddress) => (
+                      <span key={ipAddress}>{ipAddress}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <span>暂无</span>
+                )}
               </div>
               <div className="range-instance-directory-cell">
-                <strong>
-                  {node.account ?? '暂无'}/{node.password ?? '暂无'}
-                </strong>
+                <div className="single-instance-credential-cell range-instance-credential-cell">
+                  <span className="single-instance-credential-mask">
+                    {node.account?.trim() || '暂无'} / {node.password?.trim() ? '******' : '暂无'}
+                  </span>
+                  <span className="single-instance-credential-tooltip">
+                    {node.account?.trim() || '暂无'} / {node.password?.trim() || '暂无'}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="复制密码"
+                    className="single-instance-copy-button"
+                    disabled={!node.password?.trim()}
+                    onClick={() => void handleCopyPassword(node)}
+                  >
+                    {copiedPasswordNodeId === node.id ? '已复制' : '复制'}
+                  </button>
+                </div>
               </div>
               <div className="range-instance-directory-cell">
                 <span>{node.expiresAt ?? '暂无'}</span>

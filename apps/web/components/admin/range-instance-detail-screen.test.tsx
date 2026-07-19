@@ -1,6 +1,6 @@
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   fetchRangeInstanceDetailMock,
@@ -9,6 +9,7 @@ const {
   applyRangeInstanceDraftMock,
   syncRangeInstanceTemplateMock,
   runRangeInstanceNodeActionMock,
+  writeTextMock,
   pushMock,
   replaceMock,
   routerMock,
@@ -23,6 +24,7 @@ const {
     applyRangeInstanceDraftMock: vi.fn(),
     syncRangeInstanceTemplateMock: vi.fn(),
     runRangeInstanceNodeActionMock: vi.fn(),
+    writeTextMock: vi.fn(),
     pushMock,
     replaceMock,
     routerMock: {
@@ -64,6 +66,16 @@ vi.mock('./use-admin-session', () => ({
 import { RangeInstanceDetailScreen } from './range-instance-detail-screen';
 
 describe('RangeInstanceDetailScreen', () => {
+  beforeEach(() => {
+    writeTextMock.mockReset();
+    writeTextMock.mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+  });
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -79,6 +91,11 @@ describe('RangeInstanceDetailScreen', () => {
       createdAt: '2026-07-06T10:00:00.000Z',
       expiresAt: '2026-07-09T12:00:00.000Z',
       accessEntry: { publicIp: '47.1.1.1' },
+      resourceSummary: {
+        mode: 'opentofu',
+        dnatEntryIds: { 'dnat-ecs-1-22': 'fwd-1' },
+        snatEntryIds: { 'snat-zone-1': 'snat-1', 'snat-zone-2': 'snat-2' },
+      },
       runtimeTopologyGraph: {
         schemaVersion: '1',
         nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'ECS 1' } }],
@@ -94,7 +111,8 @@ describe('RangeInstanceDetailScreen', () => {
     expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '更多操作' })).toBeTruthy();
-    expect(screen.getByText('root/待回填')).toBeTruthy();
+    expect(screen.getAllByText('root / 暂无')).toHaveLength(2);
+    expect(screen.getByText('DNAT 已下发 1 条 / SNAT 已下发 2 条')).toBeTruthy();
   });
 
   it('opens the node more-actions menu inline like the template workbench', async () => {
@@ -121,6 +139,45 @@ describe('RangeInstanceDetailScreen', () => {
 
     expect(screen.getByText('二次打包镜像').closest('.template-workbench-action-menu')).not.toBeNull();
     expect(screen.getByText('ECS 1').closest('.range-instance-directory-row')?.className.includes('is-menu-open')).toBe(true);
+  });
+
+  it('lists every primary and secondary private IP for an ECS node', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [
+          {
+            id: 'host-2',
+            kind: 'ecs',
+            data: { label: 'ECS 2' },
+            nics: [
+              {
+                id: 'host-2-nic-1',
+                switchId: 'switch-1',
+                privateIp: '10.0.0.20',
+                secondaryIps: ['10.0.0.21'],
+                securityGroupRules: [],
+              },
+            ],
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    const nodeRow = (await screen.findByText('ECS 2')).closest('.range-instance-directory-row');
+    expect(nodeRow).not.toBeNull();
+    expect(nodeRow?.textContent).toContain('10.0.0.20');
+    expect(nodeRow?.textContent).toContain('10.0.0.21');
   });
 
   it('renders the topology tab with the shared template canvas and property panel layout', async () => {
@@ -193,7 +250,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect((screen.getByLabelText('辅助 IP 1') as HTMLInputElement).disabled).toBe(false);
   });
 
-  it('prefers runtime credentials for the node directory rows', async () => {
+  it('masks runtime credentials, exposes the full value on hover, and copies the password', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -218,7 +275,13 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByText('root/ChangeMe123!')).toBeTruthy();
+    expect(await screen.findByText('root / ******')).toBeTruthy();
+    expect(screen.getByText('root / ChangeMe123!')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '复制密码' }));
+
+    await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('ChangeMe123!'));
+    expect(screen.getByRole('button', { name: '复制密码' }).textContent).toBe('已复制');
   });
 
   it('prefers explicit node draft credentials over runtime credentials in the node directory', async () => {
@@ -259,7 +322,8 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByText('draft-admin/DraftPass999!')).toBeTruthy();
+    expect(await screen.findByText('draft-admin / ******')).toBeTruthy();
+    expect(screen.getByText('draft-admin / DraftPass999!')).toBeTruthy();
   });
 
   it('keeps local topology edits without re-fetching the detail snapshot on every render', async () => {

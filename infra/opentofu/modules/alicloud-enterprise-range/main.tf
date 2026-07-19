@@ -188,18 +188,24 @@ locals {
     for cidr in var.secondary_vpc_cidrs : cidr if cidr != var.vpc_cidr
   ])
 
-  entry_eip_keys = [
-    for eip in local.normalized_eips : eip.key if eip.bind_target_type == "host" && eip.bind_target_key == local.resolved_entry_host_key
-  ]
-
-  resolved_entry_eip_key = length(local.entry_eip_keys) > 0 ? local.entry_eip_keys[0] : ""
-
   entry_host_candidates = [
     for host in local.normalized_hosts : host.key if host.expose_public
   ]
 
   resolved_entry_host_key = var.entry_host_key != "" ? var.entry_host_key : (
     length(local.entry_host_candidates) > 0 ? local.entry_host_candidates[0] : ""
+  )
+
+  entry_direct_eip_keys = [
+    for eip in local.normalized_eips : eip.key if eip.bind_target_type == "host" && eip.bind_target_key == local.resolved_entry_host_key
+  ]
+
+  entry_dnat_eip_keys = distinct([
+    for entry in var.dnat_entries : entry.eip_key if entry.backend_host_key == local.resolved_entry_host_key
+  ])
+
+  resolved_entry_eip_key = length(local.entry_direct_eip_keys) > 0 ? local.entry_direct_eip_keys[0] : (
+    length(local.entry_dnat_eip_keys) > 0 ? local.entry_dnat_eip_keys[0] : ""
   )
 
   entry_host = try(local.host_map[local.resolved_entry_host_key], null)

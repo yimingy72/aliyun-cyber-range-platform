@@ -3891,6 +3891,12 @@ body {
   white-space: nowrap;
 }
 
+.range-instance-ip-list {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
 .range-instance-directory-cell strong {
   color: #22314d;
   font-size: 12px;
@@ -3898,6 +3904,24 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.range-instance-directory-cell .range-instance-credential-cell {
+  width: 100%;
+  overflow: visible;
+}
+
+.range-instance-directory-cell .single-instance-credential-mask {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.range-instance-directory-cell .single-instance-credential-tooltip {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .range-instance-directory-primary strong {
