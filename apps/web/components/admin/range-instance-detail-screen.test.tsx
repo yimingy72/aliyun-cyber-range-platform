@@ -112,6 +112,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '更多操作' })).toBeTruthy();
     expect(screen.getAllByText('root / 暂无')).toHaveLength(2);
+    expect(screen.getByText('公网IP（DNAT IP）')).toBeTruthy();
     expect(screen.getByText('DNAT 已下发 1 条 / SNAT 已下发 2 条')).toBeTruthy();
   });
 
@@ -178,6 +179,63 @@ describe('RangeInstanceDetailScreen', () => {
     expect(nodeRow).not.toBeNull();
     expect(nodeRow?.textContent).toContain('10.0.0.20');
     expect(nodeRow?.textContent).toContain('10.0.0.21');
+  });
+
+  it('blocks applying an instance draft with duplicate DNAT external ports', async () => {
+    saveRangeInstanceDraftMock.mockReset();
+    applyRangeInstanceDraftMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      runtimeTopologyGraph: {
+        schemaVersion: '1',
+        nodes: [
+          {
+            id: 'switch-1',
+            kind: 'switch',
+            label: '交换机 1',
+            zoneKey: 'zone-1',
+            cidr: '10.0.0.0/24',
+            purpose: 'dmz',
+            nat: {
+              snatEnabled: true,
+              dnatMappings: [
+                { key: 'switch-1-dnat-1', targetHostId: 'ecs-1', externalPort: 22, internalPort: 22, protocol: 'tcp' },
+              ],
+            },
+          },
+          {
+            id: 'switch-2',
+            kind: 'switch',
+            label: '交换机 2',
+            zoneKey: 'zone-2',
+            cidr: '192.168.0.0/24',
+            purpose: 'internal',
+            nat: {
+              snatEnabled: false,
+              dnatMappings: [
+                { key: 'switch-2-dnat-1', targetHostId: 'ecs-2', externalPort: 22, internalPort: 22, protocol: 'tcp' },
+              ],
+            },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: '应用变更' }));
+
+    expect(await screen.findByText(/DNAT 公网端口 22 重复/)).toBeTruthy();
+    expect(saveRangeInstanceDraftMock).not.toHaveBeenCalled();
+    expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
   });
 
   it('renders the topology tab with the shared template canvas and property panel layout', async () => {

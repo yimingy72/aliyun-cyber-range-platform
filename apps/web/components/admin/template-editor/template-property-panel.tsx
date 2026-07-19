@@ -4,11 +4,13 @@ import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
 import type {
+  DnatExternalPortConflict,
   EcsTemplateNode,
   RouterTemplateNode,
   SwitchTemplateNode,
   TemplateNode,
 } from '../../../lib/scenario-graph';
+import { findDuplicateDnatExternalPorts } from '../../../lib/scenario-graph';
 export type {
   EcsTemplateNode,
   RouterTemplateNode,
@@ -890,6 +892,13 @@ function renderSwitchFields(
   const dnatMappings = selectedNode.nat?.dnatMappings ?? [];
   const hostOptions = allNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs');
   const cidrParts = parseCidrParts(selectedNode.cidr);
+  const dnatPortConflictsByMappingKey = new Map<string, DnatExternalPortConflict>();
+
+  findDuplicateDnatExternalPorts(allNodes).forEach((conflict) => {
+    conflict.usages.forEach((usage) => {
+      dnatPortConflictsByMappingKey.set(usage.mappingKey, conflict);
+    });
+  });
   function handleAddAclRule() {
     const nextIndex = aclRules.length + 1;
     onUpdateNode(selectedNode.id, {
@@ -1266,6 +1275,7 @@ function renderSwitchFields(
               <PropertyField label="公网端口">
                 <input
                   aria-label={`DNAT 公网端口 ${index + 1}`}
+                  aria-invalid={dnatPortConflictsByMappingKey.has(mapping.key)}
                   type="number"
                   value={mapping.externalPort}
                   onChange={(event) =>
@@ -1281,6 +1291,18 @@ function renderSwitchFields(
                   }
                 />
               </PropertyField>
+              {dnatPortConflictsByMappingKey.has(mapping.key) ? (
+                <p className="template-property-warning-note" role="alert">
+                  公网端口 {mapping.externalPort} 已被
+                  {' '}
+                  {dnatPortConflictsByMappingKey
+                    .get(mapping.key)!
+                    .usages.filter((usage) => usage.mappingKey !== mapping.key)
+                    .map((usage) => `${usage.switchLabel} 的 DNAT 规则 ${usage.mappingIndex + 1}`)
+                    .join('、')}
+                  使用。当前拓扑共享 DNAT IP，公网端口必须唯一。
+                </p>
+              ) : null}
               <PropertyField label="内网端口">
                 <input
                   aria-label={`DNAT 内网端口 ${index + 1}`}

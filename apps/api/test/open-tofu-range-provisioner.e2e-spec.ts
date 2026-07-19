@@ -1085,7 +1085,6 @@ describe('OpenTofuRangeProvisioner', () => {
       rangeInstanceId: 'range-instance-2',
       templateModulePath: 'infra/module',
       allocatedCidr: null,
-      runtimeCredentials: testRuntimeCredentials,
       reportStep: async (event) => {
         stepEvents.push(event);
       },

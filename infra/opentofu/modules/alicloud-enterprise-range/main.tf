@@ -300,6 +300,15 @@ check "dnat_entry_targets_exist" {
   }
 }
 
+check "dnat_external_ports_unique" {
+  assert {
+    condition = length(var.dnat_entries) == length(distinct([
+      for entry in var.dnat_entries : entry.external_port
+    ]))
+    error_message = "Each DNAT entry in a range must use a unique external port because all DNAT entries share one EIP."
+  }
+}
+
 check "secondary_network_interface_targets_exist" {
   assert {
     condition = alltrue([

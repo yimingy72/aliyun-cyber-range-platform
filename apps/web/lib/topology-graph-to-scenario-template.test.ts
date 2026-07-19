@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildScenarioTemplateSpecFromTopologyGraph } from './topology-graph-to-scenario-template';
 
 describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
-  it('builds switch ACL, switch NAT, host multi-NIC, and NIC security rules into scenario template spec', () => {
+  it('builds shared NAT EIPs for every switch SNAT and DNAT rule in a topology', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {
         name: '综合靶场',
@@ -67,8 +67,17 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
             description: '服务器区',
             aclRules: [],
             nat: {
-              snatEnabled: false,
-              dnatMappings: [],
+              snatEnabled: true,
+              dnatMappings: [
+                {
+                  key: 'dnat-admin',
+                  targetHostId: 'ecs-web',
+                  externalPort: 8443,
+                  internalPort: 443,
+                  protocol: 'tcp',
+                  description: '公网映射到管理服务',
+                },
+              ],
             },
           },
           {
@@ -145,15 +154,17 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
         routeRole: 'entry',
         snat: expect.objectContaining({
           enabled: true,
-          natGatewayKey: 'nat-switch-dmz',
-          eipKey: 'eip-switch-dmz',
+          natGatewayKey: 'nat-shared',
+          eipKey: 'eip-snat-shared',
         }),
       }),
       expect.objectContaining({
         key: 'server',
         cidr: '10.88.20.0/24',
         snat: expect.objectContaining({
-          enabled: false,
+          enabled: true,
+          natGatewayKey: 'nat-shared',
+          eipKey: 'eip-snat-shared',
         }),
       }),
     ]);
@@ -179,16 +190,22 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
         ],
         dnat: expect.objectContaining({
           enabled: true,
-          natGatewayKey: 'nat-switch-dmz',
-          eipKey: 'eip-switch-dmz',
-          mappings: [
+          natGatewayKey: 'nat-shared',
+          eipKey: 'eip-dnat-shared',
+          mappings: expect.arrayContaining([
             expect.objectContaining({
               name: 'dnat-web',
               externalPort: 8080,
               internalPort: 80,
               protocol: 'tcp',
             }),
-          ],
+            expect.objectContaining({
+              name: 'dnat-admin',
+              externalPort: 8443,
+              internalPort: 443,
+              protocol: 'tcp',
+            }),
+          ]),
         }),
       }),
     ]);
@@ -207,17 +224,24 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
 
     expect(template.nat.natGateways).toEqual([
       {
-        key: 'nat-switch-dmz',
-        name: 'DMZ 交换机 NAT',
+        key: 'nat-shared',
+        name: '共享 NAT',
         zoneKey: 'dmz',
       },
     ]);
     expect(template.nat.eips).toEqual([
       {
-        key: 'eip-switch-dmz',
-        name: 'DMZ 交换机 EIP',
+        key: 'eip-snat-shared',
+        name: '共享 SNAT EIP',
         bindTargetType: 'nat_gateway',
-        bindTargetKey: 'nat-switch-dmz',
+        bindTargetKey: 'nat-shared',
+        bandwidthMbps: 30,
+      },
+      {
+        key: 'eip-dnat-shared',
+        name: '共享 DNAT EIP',
+        bindTargetType: 'nat_gateway',
+        bindTargetKey: 'nat-shared',
         bandwidthMbps: 30,
       },
     ]);

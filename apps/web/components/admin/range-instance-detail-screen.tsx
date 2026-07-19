@@ -17,7 +17,12 @@ import {
 } from '../../lib/admin-api';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type { RangeInstanceDetail, RangeInstanceNodeActionResult } from '../../lib/admin-types';
-import { isPhaseOneNodeKind, type ScenarioGraphDraft, type TemplateNode } from '../../lib/scenario-graph';
+import {
+  findDuplicateDnatExternalPorts,
+  isPhaseOneNodeKind,
+  type ScenarioGraphDraft,
+  type TemplateNode,
+} from '../../lib/scenario-graph';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { TemplateCanvas } from './template-editor/template-canvas';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
@@ -702,6 +707,18 @@ export function RangeInstanceDetailScreen({
 
     setErrorMessage(null);
 
+    const duplicateDnatPorts = findDuplicateDnatExternalPorts(topologyDraft?.nodes ?? []);
+
+    if (duplicateDnatPorts.length > 0) {
+      const conflict = duplicateDnatPorts[0]!;
+      setErrorMessage(
+        `DNAT 公网端口 ${conflict.externalPort} 重复（${conflict.usages
+          .map((usage) => `${usage.switchLabel} 的 DNAT 规则 ${usage.mappingIndex + 1}`)
+          .join('、')}），请修改后再保存或应用。`,
+      );
+      return null;
+    }
+
     try {
       const currentSpec = readScenarioTemplateSpec(detail);
       let nextScenarioTemplateSpec =
@@ -1110,7 +1127,7 @@ export function RangeInstanceDetailScreen({
                   <strong>{formatAdminDateTime(detail.expiresAt)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
-                  <span>公网IP</span>
+                  <span>公网IP（DNAT IP）</span>
                   <strong>{detail.accessEntry?.publicIp ?? '暂无'}</strong>
                 </div>
                 <div className="range-instance-overview-item">

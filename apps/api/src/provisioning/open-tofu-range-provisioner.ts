@@ -175,6 +175,7 @@ type HostInstanceResolutionHint = {
 };
 
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
+const DESTROY_PLACEHOLDER_PASSWORD = 'DestroyOnly123!';
 const PROVIDER_MIRROR_REGISTRY_PATH = path.join(
   'registry.opentofu.org',
   'aliyun',
@@ -298,6 +299,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
       const preparedWorkspace = await this.prepareWorkspace(input, {
         preserveWorkspaceState: input.preserveWorkspaceState === true,
+        requireRuntimePasswords: true,
       });
 
       return {
@@ -439,6 +441,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
       const preparedWorkspace = await this.prepareWorkspace(input, {
         preserveWorkspaceState: true,
+        requireRuntimePasswords: false,
       });
 
       return {
@@ -494,6 +497,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
     options: {
       preserveWorkspaceState: boolean;
+      requireRuntimePasswords: boolean;
     },
   ): Promise<PreparedWorkspace> {
     if (input.instanceMode === 'single') {
@@ -520,7 +524,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       }),
     );
 
-    const variables = await this.buildVariables(input);
+    const variables = await this.buildVariables(input, {
+      requireRuntimePasswords: options.requireRuntimePasswords,
+    });
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
     const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
@@ -538,6 +544,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
     options: {
       preserveWorkspaceState: boolean;
+      requireRuntimePasswords: boolean;
     },
   ): Promise<PreparedWorkspace> {
     const singleInstanceConfig = input.singleInstanceConfig;
@@ -568,6 +575,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       rangeInstanceId: input.rangeInstanceId,
       runtimeConfig: input.runtimeConfig,
       runtimeCredentials: input.runtimeCredentials,
+      requireRuntimePasswords: options.requireRuntimePasswords,
       singleInstanceConfig,
       singleNetworkProfile,
     });
@@ -587,7 +595,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     };
   }
 
-  private async buildVariables(input: RangeProvisionCreateInput | RangeProvisionDestroyInput) {
+  private async buildVariables(
+    input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
+    options: { requireRuntimePasswords: boolean },
+  ) {
     const plan = buildEnterpriseProvisionPlan({
       rangeInstanceId: input.rangeInstanceId,
       templateModulePath: input.templateModulePath,
@@ -659,10 +670,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
         host.key,
-        requireRuntimePassword(input.runtimeCredentials, host.key),
+        options.requireRuntimePasswords
+          ? requireRuntimePassword(input.runtimeCredentials, host.key)
+          : DESTROY_PLACEHOLDER_PASSWORD,
       ]),
     );
-    const instancePassword = requireRuntimePassword(input.runtimeCredentials, plan.entryHostKey);
+    const instancePassword = options.requireRuntimePasswords
+      ? requireRuntimePassword(input.runtimeCredentials, plan.entryHostKey)
+      : DESTROY_PLACEHOLDER_PASSWORD;
     return this.renderer.render({
       plan,
       rangeInstanceId: input.rangeInstanceId,
@@ -702,6 +717,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     rangeInstanceId: string;
     runtimeConfig?: ResolvedProvisioningRuntimeConfig;
     runtimeCredentials?: RangeRuntimeCredentials;
+    requireRuntimePasswords?: boolean;
     singleInstanceConfig: SingleInstanceConfig;
     singleNetworkProfile: SingleInstanceNetworkProfileRecord;
     billingTags?: Record<string, string>;
@@ -714,10 +730,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       throw new Error(`Assigned single-instance vSwitch not found in persisted profile: ${assignedVswitchId}`);
     }
 
-    const instancePassword = requireRuntimePassword(
-      input.runtimeCredentials,
-      input.singleInstanceConfig.hostKey,
-    );
+    const instancePassword = input.requireRuntimePasswords === false
+      ? DESTROY_PLACEHOLDER_PASSWORD
+      : requireRuntimePassword(input.runtimeCredentials, input.singleInstanceConfig.hostKey);
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );

@@ -250,23 +250,34 @@ describe('compileTopologyGraph', () => {
           },
         },
         {
-          id: 'nat-switch-1',
+          id: 'nat-shared',
           type: 'nat_gateway',
           provider: 'alibaba_cloud',
           config: {
-            label: 'DMZ 子网 NAT',
+            label: '共享 NAT',
             zoneKey: 'dmz-a',
             snatEnabled: true,
           },
         },
         {
-          id: 'eip-switch-1',
+          id: 'eip-snat-shared',
           type: 'eip',
           provider: 'alibaba_cloud',
           config: {
-            label: 'DMZ 子网 EIP',
+            label: '共享 SNAT EIP',
             bindTargetType: 'nat_gateway',
-            bindTargetKey: 'nat-switch-1',
+            bindTargetKey: 'nat-shared',
+            bandwidthMbps: 30,
+          },
+        },
+        {
+          id: 'eip-dnat-shared',
+          type: 'eip',
+          provider: 'alibaba_cloud',
+          config: {
+            label: '共享 DNAT EIP',
+            bindTargetType: 'nat_gateway',
+            bindTargetKey: 'nat-shared',
             bandwidthMbps: 30,
           },
         },
@@ -276,9 +287,9 @@ describe('compileTopologyGraph', () => {
           provider: 'alibaba_cloud',
           config: {
             label: 'DMZ 子网 SNAT',
-            natGatewayKey: 'nat-switch-1',
+            natGatewayKey: 'nat-shared',
             sourceZoneKey: 'dmz-a',
-            eipKey: 'eip-switch-1',
+            eipKey: 'eip-snat-shared',
           },
         },
         {
@@ -287,8 +298,8 @@ describe('compileTopologyGraph', () => {
           provider: 'alibaba_cloud',
           config: {
             label: 'dnat-web',
-            natGatewayKey: 'nat-switch-1',
-            eipKey: 'eip-switch-1',
+            natGatewayKey: 'nat-shared',
+            eipKey: 'eip-dnat-shared',
             backendHostKey: 'host-1',
             externalPort: 8080,
             internalPort: 80,
@@ -354,10 +365,25 @@ describe('compileTopologyGraph', () => {
       'label',
     ]);
     expect(Object.keys(compileTopologyGraph({ nodes, topologySpec }).resources[5]?.config ?? {}).sort()).toEqual([
+      'bandwidthMbps',
+      'bindTargetKey',
+      'bindTargetType',
+      'label',
+    ]);
+    expect(Object.keys(compileTopologyGraph({ nodes, topologySpec }).resources[6]?.config ?? {}).sort()).toEqual([
       'eipKey',
       'label',
       'natGatewayKey',
       'sourceZoneKey',
+    ]);
+    expect(Object.keys(compileTopologyGraph({ nodes, topologySpec }).resources[7]?.config ?? {}).sort()).toEqual([
+      'backendHostKey',
+      'eipKey',
+      'externalPort',
+      'internalPort',
+      'label',
+      'natGatewayKey',
+      'protocol',
     ]);
 
     expect(

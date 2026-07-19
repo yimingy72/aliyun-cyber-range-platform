@@ -148,6 +148,50 @@ export type RouterTemplateNode = TemplateNodeBase & {
 
 export type TemplateNode = EcsTemplateNode | SwitchTemplateNode | RouterTemplateNode;
 
+export type DnatExternalPortUsage = {
+  switchId: string;
+  switchLabel: string;
+  mappingKey: string;
+  mappingIndex: number;
+  externalPort: number;
+};
+
+export type DnatExternalPortConflict = {
+  externalPort: number;
+  usages: DnatExternalPortUsage[];
+};
+
+export function findDuplicateDnatExternalPorts(nodes: TemplateNode[]): DnatExternalPortConflict[] {
+  const usagesByPort = new Map<number, DnatExternalPortUsage[]>();
+
+  nodes.forEach((node) => {
+    if (node.kind !== 'switch') {
+      return;
+    }
+
+    (node.nat?.dnatMappings ?? []).forEach((mapping, index) => {
+      if (!Number.isInteger(mapping.externalPort) || mapping.externalPort < 1 || mapping.externalPort > 65535) {
+        return;
+      }
+
+      const usage: DnatExternalPortUsage = {
+        switchId: node.id,
+        switchLabel: node.label,
+        mappingKey: mapping.key,
+        mappingIndex: index,
+        externalPort: mapping.externalPort,
+      };
+      const usages = usagesByPort.get(mapping.externalPort) ?? [];
+      usages.push(usage);
+      usagesByPort.set(mapping.externalPort, usages);
+    });
+  });
+
+  return [...usagesByPort.entries()]
+    .filter(([, usages]) => usages.length > 1)
+    .map(([externalPort, usages]) => ({ externalPort, usages }));
+}
+
 export type ScenarioGraphEdge = {
   id: string;
   fromNodeId: string;

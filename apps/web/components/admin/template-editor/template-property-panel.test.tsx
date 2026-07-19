@@ -10,6 +10,48 @@ afterEach(() => {
 });
 
 describe('TemplatePropertyPanel', () => {
+  it('marks duplicate DNAT external ports across switches as invalid', () => {
+    const nodes: TemplateNode[] = [
+      {
+        id: 'switch-1',
+        kind: 'switch',
+        label: '交换机 1',
+        zoneKey: 'zone-1',
+        cidr: '10.0.0.0/24',
+        purpose: 'dmz',
+        aclRules: [],
+        nat: {
+          snatEnabled: true,
+          dnatMappings: [{ key: 'switch-1-dnat-1', targetHostId: 'ecs-1', externalPort: 22, internalPort: 22, protocol: 'tcp' }],
+        },
+      },
+      {
+        id: 'switch-2',
+        kind: 'switch',
+        label: '交换机 2',
+        zoneKey: 'zone-2',
+        cidr: '192.168.0.0/24',
+        purpose: 'internal',
+        aclRules: [],
+        nat: {
+          snatEnabled: false,
+          dnatMappings: [{ key: 'switch-2-dnat-1', targetHostId: 'ecs-2', externalPort: 22, internalPort: 22, protocol: 'tcp' }],
+        },
+      },
+    ];
+
+    render(
+      <TemplatePropertyPanel
+        selectedNode={nodes[0] ?? null}
+        allNodes={nodes}
+        onUpdateNode={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('DNAT 公网端口 1').getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getByText(/当前拓扑共享 DNAT IP，公网端口必须唯一/)).toBeTruthy();
+  });
+
   it('renders the ECS init section with a single 初始化脚本 title', () => {
     const nodes: TemplateNode[] = [
       {

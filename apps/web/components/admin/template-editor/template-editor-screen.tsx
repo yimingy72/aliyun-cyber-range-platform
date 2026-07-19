@@ -18,7 +18,10 @@ import type { ScenarioTemplateMetadata } from '../../../lib/scenario-template-sp
 import { resolveFixedInstanceType, resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
 import { buildScenarioTemplateSpecFromTopologyGraph } from '../../../lib/topology-graph-to-scenario-template';
 import { compileScenarioTemplateSpec } from '../../../lib/scenario-template-compiler';
-import { isPhaseOneNodeKind as isPhaseOneNodeKindTypeGuard } from '../../../lib/scenario-graph';
+import {
+  findDuplicateDnatExternalPorts,
+  isPhaseOneNodeKind as isPhaseOneNodeKindTypeGuard,
+} from '../../../lib/scenario-graph';
 import { normalizeManualEdgePair, validateManualEdge } from '../../../lib/scenario-graph-linking';
 import type {
   EcsTemplateNode,
@@ -1098,6 +1101,14 @@ function buildDraftUpdatePayload(
         });
       });
     }
+
+    findDuplicateDnatExternalPorts(normalizedNodes).forEach((conflict) => {
+      validationErrors.push(
+        `DNAT 公网端口 ${conflict.externalPort} 重复（${conflict.usages
+          .map((usage) => `${usage.switchLabel} 的 DNAT 规则 ${usage.mappingIndex + 1}`)
+          .join('、')}）`,
+      );
+    });
 
     const topologySpec = syncTopologySpecFromNodes({
       nodes: normalizedNodes,

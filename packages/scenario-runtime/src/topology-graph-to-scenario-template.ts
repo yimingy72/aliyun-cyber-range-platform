@@ -175,23 +175,47 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
     const dnatMappings = Array.isArray(nat?.dnatMappings) ? nat.dnatMappings : [];
     return Boolean(nat?.snatEnabled) || dnatMappings.length > 0;
   });
+  const snatEnabled = switchNodes.some((node) => Boolean(node.nat?.snatEnabled));
+  const dnatEnabled = switchNodes.some((node) => (node.nat?.dnatMappings?.length ?? 0) > 0);
+  const sharedNatGatewayKey = 'nat-shared';
+  const sharedSnatEipKey = 'eip-snat-shared';
+  const sharedDnatEipKey = 'eip-dnat-shared';
 
   const nat: ScenarioTemplateNatConfig = {
     natGateways: [
-      ...derivedNatSwitches.map((node) => ({
-        key: `nat-${node.id}`,
-        name: `${node.label} NAT`,
-        zoneKey: node.zoneKey,
-      })),
+      ...(derivedNatSwitches[0]
+        ? [
+            {
+              key: sharedNatGatewayKey,
+              name: '共享 NAT',
+              zoneKey: derivedNatSwitches[0].zoneKey,
+            },
+          ]
+        : []),
     ],
     eips: [
-      ...derivedNatSwitches.map((node) => ({
-        key: `eip-${node.id}`,
-        name: `${node.label} EIP`,
-        bindTargetType: 'nat_gateway' as const,
-        bindTargetKey: `nat-${node.id}`,
-        bandwidthMbps: 30,
-      })),
+      ...(snatEnabled
+        ? [
+            {
+              key: sharedSnatEipKey,
+              name: '共享 SNAT EIP',
+              bindTargetType: 'nat_gateway' as const,
+              bindTargetKey: sharedNatGatewayKey,
+              bandwidthMbps: 30,
+            },
+          ]
+        : []),
+      ...(dnatEnabled
+        ? [
+            {
+              key: sharedDnatEipKey,
+              name: '共享 DNAT EIP',
+              bindTargetType: 'nat_gateway' as const,
+              bindTargetKey: sharedNatGatewayKey,
+              bandwidthMbps: 30,
+            },
+          ]
+        : []),
     ],
   };
 
@@ -290,8 +314,12 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
       snat: readRecord(node)?.nat
         ? {
             enabled: Boolean((readRecord(node)?.nat as SwitchNatDraft | null)?.snatEnabled),
-            natGatewayKey: `nat-${node.id}`,
-            eipKey: `eip-${node.id}`,
+            ...(Boolean((readRecord(node)?.nat as SwitchNatDraft | null)?.snatEnabled)
+              ? {
+                  natGatewayKey: sharedNatGatewayKey,
+                  eipKey: sharedSnatEipKey,
+                }
+              : {}),
           }
         : {
             enabled: Boolean(node.snatEnabled),
@@ -340,8 +368,8 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
           .filter((mapping) => mapping.targetHostId === node.id)
           .map((mapping, index) => ({
             name: mapping.key ?? mapping.description ?? `${node.id}-dnat-${index + 1}`,
-            natGatewayKey: `nat-${switchNode.id}`,
-            eipKey: `eip-${switchNode.id}`,
+            natGatewayKey: sharedNatGatewayKey,
+            eipKey: sharedDnatEipKey,
             externalPort: typeof mapping.externalPort === 'number' ? mapping.externalPort : 0,
             internalPort: typeof mapping.internalPort === 'number' ? mapping.internalPort : 0,
             protocol: readTransportProtocol(mapping.protocol),

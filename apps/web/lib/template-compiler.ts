@@ -122,29 +122,57 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
     return Boolean(node.nat?.snatEnabled) || (node.nat?.dnatMappings?.length ?? 0) > 0;
   });
 
-  const natInfrastructureResources = natEnabledSwitches.flatMap((node) => [
-    {
-      id: `nat-${node.id}`,
+  const snatEnabled = natEnabledSwitches.some((node) => Boolean(node.nat?.snatEnabled));
+  const dnatEnabled = natEnabledSwitches.some((node) => (node.nat?.dnatMappings?.length ?? 0) > 0);
+  const sharedNatSwitch = natEnabledSwitches[0];
+  const sharedNatGatewayKey = 'nat-shared';
+  const sharedSnatEipKey = 'eip-snat-shared';
+  const sharedDnatEipKey = 'eip-dnat-shared';
+
+  const natInfrastructureResources = sharedNatSwitch
+    ? [
+        {
+      id: sharedNatGatewayKey,
       type: 'nat_gateway' as const,
       provider: 'alibaba_cloud' as const,
       config: {
-        label: `${node.label} NAT`,
-        zoneKey: node.zoneKey,
-        snatEnabled: Boolean(node.nat?.snatEnabled),
+        label: '共享 NAT',
+        zoneKey: sharedNatSwitch.zoneKey,
+        snatEnabled,
       },
-    },
-    {
-      id: `eip-${node.id}`,
-      type: 'eip' as const,
-      provider: 'alibaba_cloud' as const,
-      config: {
-        label: `${node.label} EIP`,
-        bindTargetType: 'nat_gateway' as const,
-        bindTargetKey: `nat-${node.id}`,
-        bandwidthMbps: 30,
-      },
-    },
-  ]);
+        },
+        ...(snatEnabled
+          ? [
+              {
+                id: sharedSnatEipKey,
+                type: 'eip' as const,
+                provider: 'alibaba_cloud' as const,
+                config: {
+                  label: '共享 SNAT EIP',
+                  bindTargetType: 'nat_gateway' as const,
+                  bindTargetKey: sharedNatGatewayKey,
+                  bandwidthMbps: 30,
+                },
+              },
+            ]
+          : []),
+        ...(dnatEnabled
+          ? [
+              {
+                id: sharedDnatEipKey,
+                type: 'eip' as const,
+                provider: 'alibaba_cloud' as const,
+                config: {
+                  label: '共享 DNAT EIP',
+                  bindTargetType: 'nat_gateway' as const,
+                  bindTargetKey: sharedNatGatewayKey,
+                  bandwidthMbps: 30,
+                },
+              },
+            ]
+          : []),
+      ]
+    : [];
 
   const snatResources = nodes.flatMap((node) => {
     if (node.kind !== 'switch' || !node.nat?.snatEnabled) {
@@ -158,9 +186,9 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
         provider: 'alibaba_cloud' as const,
         config: {
           label: `${node.label} SNAT`,
-          natGatewayKey: `nat-${node.id}`,
+          natGatewayKey: sharedNatGatewayKey,
           sourceZoneKey: node.zoneKey,
-          eipKey: `eip-${node.id}`,
+          eipKey: sharedSnatEipKey,
         },
       },
     ];
@@ -177,8 +205,8 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
       provider: 'alibaba_cloud' as const,
       config: {
         label: mapping.key,
-        natGatewayKey: `nat-${node.id}`,
-        eipKey: `eip-${node.id}`,
+        natGatewayKey: sharedNatGatewayKey,
+        eipKey: sharedDnatEipKey,
         backendHostKey: mapping.targetHostId,
         externalPort: mapping.externalPort,
         internalPort: mapping.internalPort,
