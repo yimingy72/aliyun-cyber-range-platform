@@ -8,6 +8,7 @@
 .tmp
 .worktrees
 node_modules
+.pnpm-store
 apps/web/.next
 apps/api/dist
 packages/database/generated
