@@ -4,7 +4,6 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
-import type { CreateCloudAccountContextDto } from './dto/cloud-account-context.dto';
 
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
@@ -30,6 +29,13 @@ export type CloudAccountContextView = Omit<CloudAccountContextCredentials, 'acce
   lastVerifiedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+};
+
+type SaveCloudConfigInput = {
+  defaultRegion: string;
+  defaultZoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
 };
 
 @Injectable()
@@ -76,18 +82,19 @@ export class CloudAccountContextsService {
     };
   }
 
-  async create(input: CreateCloudAccountContextDto): Promise<CloudAccountContextView> {
+  async saveFromCloudConfig(input: SaveCloudConfigInput): Promise<CloudAccountContextView> {
     const normalized = {
-      displayName: input.displayName.trim(),
-      regionId: input.regionId.trim(),
-      zoneId: input.zoneId.trim(),
+      regionId: input.defaultRegion.trim(),
+      zoneId: input.defaultZoneId.trim(),
       accessKeyId: input.accessKeyId.trim(),
       accessKeySecret: input.accessKeySecret.trim(),
-      imageImportBucket: input.imageImportBucket?.trim() || '',
     };
-    const accountUid = await this.resolveAccountUid(normalized.accessKeyId, normalized.accessKeySecret);
-    const imageImportBucket = normalized.imageImportBucket || this.buildBucketName(accountUid, normalized.regionId);
 
+    if (!normalized.regionId || !normalized.zoneId || !normalized.accessKeyId || !normalized.accessKeySecret) {
+      throw new BadRequestException('保存云配置前，请填写地域、可用区和阿里云访问凭据。');
+    }
+
+    const accountUid = await this.resolveAccountUid(normalized.accessKeyId, normalized.accessKeySecret);
     const existing = await this.prisma.cloudAccountContext.findUnique({
       where: {
         provider_accountUid_regionId: {
@@ -97,30 +104,44 @@ export class CloudAccountContextsService {
         },
       },
     });
+    const displayName = `阿里云 ${accountUid} · ${normalized.regionId}`;
+    const imageImportBucket = existing?.imageImportBucket || this.buildBucketName(accountUid, normalized.regionId);
+    const context = existing
+      ? await this.prisma.cloudAccountContext.update({
+          where: { id: existing.id },
+          data: {
+            displayName,
+            zoneId: normalized.zoneId,
+            accessKeyId: normalized.accessKeyId,
+            accessKeySecret: normalized.accessKeySecret,
+            imageImportBucket,
+            status: 'provisioning',
+            bucketStatus: 'creating',
+            lastError: null,
+          },
+        })
+      : await this.prisma.cloudAccountContext.create({
+          data: {
+            displayName,
+            provider: 'alibaba_cloud',
+            accountUid,
+            regionId: normalized.regionId,
+            zoneId: normalized.zoneId,
+            accessKeyId: normalized.accessKeyId,
+            accessKeySecret: normalized.accessKeySecret,
+            imageImportBucket,
+            isActive: (await this.prisma.cloudAccountContext.count()) === 0,
+            status: 'provisioning',
+            bucketStatus: 'creating',
+          },
+        });
+    const ready = await this.ensureBucket(context.id);
 
-    if (existing) {
-      throw new BadRequestException('该阿里云账号和地域已经配置，请在已有配置上执行修复。');
+    if (ready.status !== 'ready') {
+      throw new BadRequestException(ready.lastError || '镜像导入 OSS Bucket 初始化失败。');
     }
 
-    const configuredContextCount = await this.prisma.cloudAccountContext.count();
-
-    const context = await this.prisma.cloudAccountContext.create({
-      data: {
-        displayName: normalized.displayName,
-        provider: 'alibaba_cloud',
-        accountUid,
-        regionId: normalized.regionId,
-        zoneId: normalized.zoneId,
-        accessKeyId: normalized.accessKeyId,
-        accessKeySecret: normalized.accessKeySecret,
-        imageImportBucket,
-        isActive: configuredContextCount === 0,
-        status: 'provisioning',
-        bucketStatus: 'creating',
-      },
-    });
-
-    return this.ensureBucket(context.id);
+    return ready.isActive ? ready : this.activate(ready.id);
   }
 
   async ensureBucket(id: string): Promise<CloudAccountContextView> {
@@ -216,7 +237,13 @@ export class CloudAccountContextsService {
       },
       accessKeySecret,
     );
-    const response = await fetch(`https://sts.aliyuncs.com/?${query}`);
+    let response: Response;
+
+    try {
+      response = await fetch(`https://sts.aliyuncs.com/?${query}`);
+    } catch {
+      throw new BadRequestException('阿里云账号身份校验请求失败，请检查网络和访问凭据。');
+    }
 
     if (!response.ok) {
       throw new BadRequestException(`阿里云账号身份校验失败（HTTP ${response.status}）。`);
@@ -239,18 +266,49 @@ export class CloudAccountContextsService {
     accessKeySecret: string;
   }) {
     const endpoint = this.getBucketEndpoint(input.bucket, input.regionId);
-    const createResponse = await this.ossRequest({
+    const bucketResponse = await this.ossRequest({
       url: endpoint,
-      method: 'PUT',
+      method: 'HEAD',
       bucket: input.bucket,
       resource: `/${input.bucket}/`,
+      accessKeyId: input.accessKeyId,
+      accessKeySecret: input.accessKeySecret,
+    });
+
+    const bucketExists = bucketResponse.ok;
+
+    if (!bucketExists && bucketResponse.status !== 404) {
+      throw new Error(`查询 OSS Bucket 失败（HTTP ${bucketResponse.status}）：${await bucketResponse.text()}`);
+    }
+
+    if (!bucketExists) {
+      const createResponse = await this.ossRequest({
+        url: endpoint,
+        method: 'PUT',
+        bucket: input.bucket,
+        resource: `/${input.bucket}/`,
+        accessKeyId: input.accessKeyId,
+        accessKeySecret: input.accessKeySecret,
+        headers: { 'x-oss-acl': 'private' },
+      });
+
+      if (!createResponse.ok) {
+        throw new Error(`创建 OSS Bucket 失败（HTTP ${createResponse.status}）：${await createResponse.text()}`);
+      }
+    }
+
+    const aclResponse = await this.ossRequest({
+      url: `${endpoint}?acl`,
+      method: 'PUT',
+      bucket: input.bucket,
+      resource: `/${input.bucket}/?acl`,
       accessKeyId: input.accessKeyId,
       accessKeySecret: input.accessKeySecret,
       headers: { 'x-oss-acl': 'private' },
     });
 
-    if (!createResponse.ok && createResponse.status !== 409) {
-      throw new Error(`创建 OSS Bucket 失败（HTTP ${createResponse.status}）：${await createResponse.text()}`);
+    if (!aclResponse.ok) {
+      throw new Error(`设置 OSS Bucket 私有权限失败（HTTP ${aclResponse.status}）：${await aclResponse.text()}`);
     }
 
     const importCorsRule = [
@@ -262,7 +320,7 @@ export class CloudAccountContextsService {
       '<MaxAgeSeconds>900</MaxAgeSeconds>',
       '</CORSRule>',
     ].join('');
-    const corsBody = createResponse.ok
+    const corsBody = !bucketExists
       ? this.createCorsConfiguration(importCorsRule)
       : await this.mergeImportCorsRule({
           endpoint,
@@ -428,8 +486,7 @@ export class CloudAccountContextsService {
   private buildBucketName(accountUid: string, regionId: string) {
     const accountHash = createHash('sha256').update(accountUid).digest('hex').slice(0, 10);
     const regionSlug = regionId.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
-    const randomSuffix = randomUUID().replace(/-/g, '').slice(0, 8);
-    return `cyber-range-image-${accountHash}-${regionSlug}-${randomSuffix}`.slice(0, 63);
+    return `cyber-range-image-${accountHash}-${regionSlug}`;
   }
 
   private toView(context: {

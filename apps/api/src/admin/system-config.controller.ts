@@ -53,7 +53,7 @@ export class SystemConfigController {
       resolveConfirmation: async () => ({
         targetId: 'default',
         targetSnapshot: { id: 'default' },
-        summary: { targetName: 'cloud-config', destructive: false },
+        summary: { targetName: 'cloud-config', destructive: true },
       }),
       execute: async () => ({ result: maskSystemCloudConfig(await this.systemConfigService.updateSnapshot(payload)) }),
     });

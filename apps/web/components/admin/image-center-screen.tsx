@@ -593,7 +593,7 @@ export function ImageCenterScreen({
 
   async function handleSubmitImageImport() {
     if (!session.token || !imageImportDraft || !activeCloudContext) {
-      setImageImportErrorMessage('请先选择一个已就绪的阿里云账号。');
+      setImageImportErrorMessage('请先由管理员保存云配置，完成阿里云账号验证和镜像导入 Bucket 初始化。');
       return;
     }
 
@@ -1265,7 +1265,7 @@ export function ImageCenterScreen({
                 <button
                   type="button"
                   disabled={!activeCloudContext || pendingActionKeys.includes('create:image-import')}
-                  title={activeCloudContext ? undefined : '请先由管理员在基础配置中添加并启用云账号。'}
+                  title={activeCloudContext ? undefined : '请先由管理员保存云配置，完成阿里云账号验证和镜像导入 Bucket 初始化。'}
                   onClick={openImageImportDialog}
                 >
                   上传镜像

@@ -555,15 +555,6 @@ export type CloudAccountContext = {
   updatedAt?: string | null;
 };
 
-export type CreateCloudAccountContextInput = {
-  displayName: string;
-  regionId: string;
-  zoneId: string;
-  accessKeyId: string;
-  accessKeySecret: string;
-  imageImportBucket?: string;
-};
-
 export type ImageImportJob = {
   id: string;
   cloudAccountContextId: string;

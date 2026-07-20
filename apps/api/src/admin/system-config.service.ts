@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { BadRequestException, Injectable } from '@nestjs/common';
 
+import { CloudAccountContextsService } from './cloud-account-contexts.service';
 import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
@@ -102,7 +103,10 @@ export function maskSystemCloudConfig(snapshot: SystemCloudConfig): SystemCloudC
 
 @Injectable()
 export class SystemConfigService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cloudAccountContextsService: CloudAccountContextsService,
+  ) {}
 
   async getSnapshot(): Promise<SystemCloudConfig> {
     const activeContext = await this.prisma.cloudAccountContext.findFirst({
@@ -149,15 +153,6 @@ export class SystemConfigService {
   }
 
   async updateSnapshot(payload: Partial<SystemCloudConfig>): Promise<SystemCloudConfig> {
-    const activeContext = await this.prisma.cloudAccountContext.findFirst({
-      where: { isActive: true, status: 'ready' },
-      orderBy: { updatedAt: 'desc' },
-    });
-
-    if (activeContext) {
-      throw new BadRequestException('当前正在使用云账号上下文，请在“阿里云账号与镜像存储”中管理地域和访问凭据。');
-    }
-
     const current = await this.getSnapshot();
     const snapshot: SystemCloudConfig = {
       provider: 'alibaba_cloud',
@@ -168,6 +163,8 @@ export class SystemConfigService {
       accessKeyId: payload.accessKeyId !== undefined ? normalizeValue(payload.accessKeyId) : current.accessKeyId,
       accessKeySecret: this.resolveSecretValue(payload.accessKeySecret, current.accessKeySecret),
     };
+
+    await this.cloudAccountContextsService.saveFromCloudConfig(snapshot);
 
     const saved = await this.prisma.systemCloudConfig.upsert({
       where: { id: SYSTEM_CLOUD_CONFIG_ROW_ID },

@@ -9,6 +9,8 @@ function createService() {
       findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn(),
     },
+  } as never, {
+    saveFromCloudConfig: jest.fn().mockResolvedValue({ status: 'ready' }),
   } as never);
 }
 
@@ -112,22 +114,61 @@ describe('SystemConfigService instance type availability', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('prevents legacy cloud config writes from silently diverging from the active account context', async () => {
-    const upsert = jest.fn();
+  it('initializes the active account import Bucket whenever cloud configuration is saved', async () => {
+    const upsert = jest.fn().mockResolvedValue({
+      id: 'default',
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-beijing',
+      defaultZoneId: 'cn-beijing-k',
+      accessKeyId: 'updated-ak',
+      accessKeySecret: 'updated-secret',
+    });
+    const saveFromCloudConfig = jest.fn().mockResolvedValue({ status: 'ready' });
     const service = new SystemConfigService({
       cloudAccountContext: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'context-1', isActive: true, status: 'ready' }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'context-1',
+          provider: 'alibaba_cloud',
+          accountUid: '1234567890',
+          regionId: 'cn-hangzhou',
+          zoneId: 'cn-hangzhou-h',
+          accessKeyId: 'current-ak',
+          accessKeySecret: 'current-secret',
+          isActive: true,
+          status: 'ready',
+        }),
       },
       systemCloudConfig: {
         findUnique: jest.fn(),
         upsert,
       },
+    } as never, {
+      saveFromCloudConfig,
     } as never);
 
-    await expect(service.updateSnapshot({ defaultRegion: 'cn-beijing' })).rejects.toThrow(
-      '当前正在使用云账号上下文',
-    );
-    expect(upsert).not.toHaveBeenCalled();
+    await expect(service.updateSnapshot({
+      defaultRegion: 'cn-beijing',
+      defaultZoneId: 'cn-beijing-k',
+      accessKeyId: 'updated-ak',
+      accessKeySecret: 'updated-secret',
+    })).resolves.toEqual({
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-beijing',
+      defaultZoneId: 'cn-beijing-k',
+      accessKeyId: 'updated-ak',
+      accessKeySecret: 'updated-secret',
+    });
+    expect(saveFromCloudConfig).toHaveBeenCalledWith({
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-beijing',
+      defaultZoneId: 'cn-beijing-k',
+      accessKeyId: 'updated-ak',
+      accessKeySecret: 'updated-secret',
+    });
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'default' },
+      update: expect.objectContaining({ defaultRegion: 'cn-beijing', defaultZoneId: 'cn-beijing-k' }),
+    }));
   });
 
 });

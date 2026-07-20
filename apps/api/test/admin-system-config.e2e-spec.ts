@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
 import { OidcPrincipalResolver } from '../src/admin/oidc-principal-resolver';
+import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { PrismaService } from '../src/database/prisma.service';
@@ -97,7 +98,12 @@ function createJsonResponse(payload: unknown, status = 200) {
   } as unknown as Response;
 }
 
-async function createApp(prismaOverride?: ReturnType<typeof createFakePrismaService>) {
+async function createApp(
+  prismaOverride?: ReturnType<typeof createFakePrismaService>,
+  cloudAccountContextsOverride: Pick<CloudAccountContextsService, 'saveFromCloudConfig'> = {
+    saveFromCloudConfig: jest.fn().mockResolvedValue({ status: 'ready' }),
+  },
+) {
   const moduleBuilder = overrideTestOidc(Test.createTestingModule({
     imports: [AppModule],
   }));
@@ -105,6 +111,8 @@ async function createApp(prismaOverride?: ReturnType<typeof createFakePrismaServ
   if (prismaOverride) {
     moduleBuilder.overrideProvider(PrismaService).useValue(prismaOverride);
   }
+
+  moduleBuilder.overrideProvider(CloudAccountContextsService).useValue(cloudAccountContextsOverride);
 
   moduleBuilder.overrideProvider(OidcPrincipalResolver).useValue({
     resolve: jest.fn().mockResolvedValue({ id: 'admin', username: 'admin', role: 'admin', status: 'active' }),
@@ -151,7 +159,8 @@ describe('Admin system config', () => {
   it('persists only the cloud configuration fields used by the new admin UI', async () => {
     seedAdminEnv();
     seedAliyunEnv();
-    const app = await createApp(createFakePrismaService());
+    const saveFromCloudConfig = jest.fn().mockResolvedValue({ status: 'ready' });
+    const app = await createApp(createFakePrismaService(), { saveFromCloudConfig });
 
     const response = await request(app.getHttpServer())
       .patch('/admin/system-config')
@@ -171,6 +180,13 @@ describe('Admin system config', () => {
       defaultZoneId: 'cn-beijing-k',
       accessKeyId: 'LTAI-updated',
       accessKeySecret: MASKED_SECRET,
+    });
+    expect(saveFromCloudConfig).toHaveBeenCalledWith({
+      provider: 'alibaba_cloud',
+      defaultRegion: 'cn-beijing',
+      defaultZoneId: 'cn-beijing-k',
+      accessKeyId: 'LTAI-updated',
+      accessKeySecret: 'updated-secret',
     });
 
     const snapshot = await request(app.getHttpServer())

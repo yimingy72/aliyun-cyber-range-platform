@@ -14,7 +14,6 @@ import type {
   PlatformImageAsset,
   PlatformImageAssetListPayload,
   CloudAccountContext,
-  CreateCloudAccountContextInput,
   CreateImageImportInput,
   ImageImportJob,
   ImageImportUploadSession,
@@ -905,38 +904,6 @@ export async function fetchCloudAccountContexts(apiBaseUrl: string, token: strin
   });
 
   return readJson<CloudAccountContext[]>(response);
-}
-
-export async function createCloudAccountContext(
-  apiBaseUrl: string,
-  token: string,
-  payload: CreateCloudAccountContextInput,
-) {
-  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-    body: JSON.stringify(payload),
-  });
-
-  return readJson<CloudAccountContext>(response);
-}
-
-export async function activateCloudAccountContext(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts/${encodeURIComponent(id)}/activate`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-  });
-
-  return readJson<CloudAccountContext>(response);
-}
-
-export async function ensureCloudAccountContextBucket(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts/${encodeURIComponent(id)}/ensure-bucket`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-  });
-
-  return readJson<CloudAccountContext>(response);
 }
 
 export async function fetchImageImportJobs(apiBaseUrl: string, token: string) {
