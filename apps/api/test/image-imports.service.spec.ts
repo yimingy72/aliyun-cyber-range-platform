@@ -1,0 +1,362 @@
+import type { AdminRepository, CloudImageSnapshotRecord } from '../src/admin/admin.repository';
+import {
+  type CloudAccountContextCredentials,
+  CloudAccountContextsService,
+} from '../src/admin/cloud-account-contexts.service';
+import { ImageImportsService } from '../src/admin/image-imports.service';
+import { encryptPlatformImageDefaultPassword } from '../src/admin/platform-image-password';
+import { PrismaService } from '../src/database/prisma.service';
+
+const CONTEXT: CloudAccountContextCredentials = {
+  id: 'context-1',
+  provider: 'alibaba_cloud',
+  accountUid: '1234567890',
+  regionId: 'cn-hangzhou',
+  zoneId: 'cn-hangzhou-h',
+  accessKeyId: 'test-access-key',
+  accessKeySecret: 'test-access-secret',
+  imageImportBucket: 'cyber-range-image-test',
+  status: 'ready',
+};
+
+const USER = { id: 'user-1', username: 'alice', role: 'user' as const };
+
+function createResponse(payload: unknown, status = 200, headers: Record<string, string> = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: jest.fn().mockResolvedValue(payload),
+    text: jest.fn().mockResolvedValue(JSON.stringify(payload)),
+    headers: new Headers(headers),
+  } as unknown as Response;
+}
+
+function createImportJob(overrides: Record<string, unknown> = {}) {
+  const now = new Date('2026-07-20T00:00:00.000Z');
+
+  return {
+    id: 'image-import-1',
+    cloudAccountContextId: CONTEXT.id,
+    ownerUserId: USER.id,
+    displayName: 'Ubuntu Import',
+    defaultHostName: 'ubuntu-import',
+    defaultPassword: encryptPlatformImageDefaultPassword('SecretPass123!'),
+    description: 'local image import',
+    osType: 'linux',
+    platform: 'Ubuntu',
+    architecture: 'x86_64',
+    bootMode: 'BIOS',
+    imageFormat: 'qcow2',
+    systemDiskSize: 40,
+    sourceFileName: 'ubuntu.qcow2',
+    sourceContentType: 'application/octet-stream',
+    sourceSizeBytes: '4096',
+    objectKey: 'image-imports/user-1/request-1/ubuntu.qcow2',
+    uploadExpiresAt: new Date(Date.now() + 30 * 60 * 1000),
+    uploadCompletedAt: null,
+    status: 'awaiting_upload',
+    imageId: null,
+    taskId: null,
+    sourceSnapshotId: null,
+    platformImageAssetId: null,
+    temporaryObjectDeletedAt: null,
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+describe('ImageImportsService', () => {
+  const originalFetch = global.fetch;
+  const originalImageSecret = process.env.PLATFORM_IMAGE_SECRET_KEY;
+
+  beforeEach(() => {
+    process.env.PLATFORM_IMAGE_SECRET_KEY = 'unit-test-image-encryption-key';
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+
+    if (originalImageSecret === undefined) {
+      delete process.env.PLATFORM_IMAGE_SECRET_KEY;
+    } else {
+      process.env.PLATFORM_IMAGE_SECRET_KEY = originalImageSecret;
+    }
+  });
+
+  it('creates an active-context upload session without persisting or returning a plaintext password', async () => {
+    const imageImportJob = {
+      create: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+        createImportJob({
+          ...data,
+          id: 'created-import-1',
+          status: 'awaiting_upload',
+        }),
+      ),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    const service = new ImageImportsService(
+      {} as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.createUpload(
+      {
+        cloudContextId: CONTEXT.id,
+        displayName: 'Ubuntu Import',
+        defaultHostName: 'ubuntu-import',
+        defaultPassword: 'SecretPass123!',
+        description: 'local image import',
+        osType: 'linux',
+        platform: 'Ubuntu',
+        architecture: 'x86_64',
+        bootMode: 'BIOS',
+        imageFormat: 'qcow2',
+        systemDiskSize: 40,
+        sourceFileName: 'ubuntu.qcow2',
+        sourceContentType: 'application/octet-stream',
+        sourceSizeBytes: 4096,
+      },
+      USER,
+    );
+
+    const createInput = imageImportJob.create.mock.calls[0][0].data as { defaultPassword: string; objectKey: string };
+    expect(contextService.getCredentials).toHaveBeenCalledWith(CONTEXT.id, {
+      requireReady: true,
+      requireActive: true,
+    });
+    expect(createInput.defaultPassword).toMatch(/^enc:v1:/);
+    expect(createInput.defaultPassword).not.toContain('SecretPass123!');
+    expect(result.job).not.toHaveProperty('defaultPassword');
+    expect(result.job).not.toHaveProperty('objectKey');
+    expect(result.upload.url).toContain('OSSAccessKeyId=test-access-key');
+    expect(result.upload.url).not.toContain(CONTEXT.accessKeySecret);
+  });
+
+  it('completes an upload into a disabled private asset while retaining the encrypted password', async () => {
+    const job = createImportJob();
+    const snapshot: CloudImageSnapshotRecord = {
+      id: 'snapshot-1',
+      provider: 'alibaba_cloud',
+      accountUid: CONTEXT.accountUid,
+      regionId: CONTEXT.regionId,
+      scope: 'custom',
+      imageId: 'm-imported-image',
+      sourceImageName: job.displayName,
+      osType: 'linux',
+      platform: 'Ubuntu',
+      architecture: 'x86_64',
+      status: 'Creating',
+      isAvailable: false,
+      lastSyncedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
+      collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
+      setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: false }),
+    };
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createResponse({}, 200, {
+          'content-length': '4096',
+          'content-type': 'application/octet-stream',
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({ ImageId: 'm-imported-image', TaskId: 'task-1' }, 200));
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.completeUpload(job.id, USER);
+
+    expect(adminRepositoryMock.collectPlatformImageAsset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snapshotId: snapshot.id,
+        ownerUserId: USER.id,
+        visibility: 'private',
+        defaultPassword: job.defaultPassword,
+      }),
+    );
+    expect(adminRepositoryMock.setPlatformImageAssetEnabled).toHaveBeenCalledWith('asset-1', false);
+    expect(result).not.toHaveProperty('defaultPassword');
+    expect(String((global.fetch as jest.Mock).mock.calls[1][0])).not.toContain(CONTEXT.accessKeySecret);
+  });
+
+  it('enables the private asset and deletes the temporary OSS object after ECS reports Available', async () => {
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-imported-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'asset-1',
+    });
+    const snapshot: CloudImageSnapshotRecord = {
+      id: 'snapshot-1',
+      provider: 'alibaba_cloud',
+      accountUid: CONTEXT.accountUid,
+      regionId: CONTEXT.regionId,
+      scope: 'custom',
+      imageId: job.imageId!,
+      sourceImageName: job.displayName,
+      osType: job.osType,
+      platform: job.platform,
+      architecture: job.architecture,
+      status: 'Creating',
+      isAvailable: false,
+      lastSyncedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
+      collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
+      setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: true }),
+    };
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: job.imageId,
+              ImageName: job.displayName,
+              OSType: 'linux',
+              Platform: 'Ubuntu',
+              Architecture: 'x86_64',
+              Status: 'Available',
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({}, 204));
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(expect.objectContaining({ status: 'available', imageId: job.imageId }));
+    expect(adminRepositoryMock.setPlatformImageAssetEnabled).toHaveBeenCalledWith('asset-1', true);
+    expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();
+    expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  it('keeps the import job pollable when enabling its private asset fails', async () => {
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-imported-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'asset-1',
+    });
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      setPlatformImageAssetEnabled: jest.fn().mockRejectedValue(new Error('asset update unavailable')),
+    };
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest.fn().mockResolvedValue(
+      createResponse({
+        Images: {
+          Image: {
+            ImageId: job.imageId,
+            ImageName: job.displayName,
+            OSType: 'linux',
+            Platform: 'Ubuntu',
+            Architecture: 'x86_64',
+            Status: 'Available',
+          },
+        },
+      }),
+    );
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(expect.objectContaining({ status: 'importing', errorMessage: 'asset update unavailable' }));
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  it('rejects an object whose actual OSS size does not match the requested upload size', async () => {
+    const job = createImportJob();
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ ...job, ...data })),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(createResponse({}, 200, { 'content-length': '8192' }))
+      .mockResolvedValueOnce(createResponse({}, 204));
+    const service = new ImageImportsService(
+      {} as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    await expect(service.completeUpload(job.id, USER)).rejects.toThrow('上传文件大小与提交信息不一致');
+    expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'DELETE' }));
+  });
+
+  it('keeps an importing job retryable when the initial ECS request fails before returning an ImageId', async () => {
+    const job = createImportJob();
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ ...job, ...data })),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(createResponse({}, 200, { 'content-length': '4096' }))
+      .mockResolvedValueOnce(createResponse({ Code: 'Throttling.User' }, 429));
+    const service = new ImageImportsService(
+      {} as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.completeUpload(job.id, USER);
+
+    expect(result).toEqual(expect.objectContaining({ status: 'failed', imageId: null }));
+    expect(imageImportJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'failed' }) }),
+    );
+  });
+});

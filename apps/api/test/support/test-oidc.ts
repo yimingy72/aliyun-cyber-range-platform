@@ -88,6 +88,10 @@ function signTestToken(subject: string) {
   return `${encodedHeader}.${encodedPayload}.${signature}`;
 }
 
+export function createTestAccessToken(subject: string) {
+  return signTestToken(subject);
+}
+
 function decodeTestToken(token: string): TestClaims {
   const parts = token.split('.');
 

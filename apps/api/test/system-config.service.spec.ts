@@ -1,7 +1,11 @@
+import { encryptCloudAccountCredential } from '../src/admin/cloud-account-credentials';
 import { SystemConfigService } from '../src/admin/system-config.service';
 
 function createService() {
   return new SystemConfigService({
+    cloudAccountContext: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     systemCloudConfig: {
       findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn(),
@@ -26,6 +30,7 @@ describe('SystemConfigService instance type availability', () => {
     process.env.ALICLOUD_ZONE_ID = 'cn-hangzhou-h';
     process.env.ALICLOUD_ACCESS_KEY = 'test-ak';
     process.env.ALICLOUD_SECRET_KEY = 'test-sk';
+    process.env.CLOUD_ACCOUNT_CREDENTIALS_SECRET_KEY = 'unit-test-cloud-account-credential-key';
   });
 
   afterEach(() => {
@@ -107,5 +112,49 @@ describe('SystemConfigService instance type availability', () => {
       warning: '平台单实例执行器不支持 3C6G 规格。',
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('prevents legacy cloud config writes from silently diverging from the active account context', async () => {
+    const upsert = jest.fn();
+    const service = new SystemConfigService({
+      cloudAccountContext: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'context-1', isActive: true, status: 'ready' }),
+      },
+      systemCloudConfig: {
+        findUnique: jest.fn(),
+        upsert,
+      },
+    } as never);
+
+    await expect(service.updateSnapshot({ defaultRegion: 'cn-beijing' })).rejects.toThrow(
+      '当前正在使用云账号上下文',
+    );
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('decrypts the active account context before returning runtime cloud credentials', async () => {
+    const service = new SystemConfigService({
+      cloudAccountContext: {
+        findFirst: jest.fn().mockResolvedValue({
+          provider: 'alibaba_cloud',
+          accountUid: '1234567890',
+          regionId: 'cn-hangzhou',
+          zoneId: 'cn-hangzhou-h',
+          accessKeyId: encryptCloudAccountCredential('active-access-key'),
+          accessKeySecret: encryptCloudAccountCredential('active-access-secret'),
+        }),
+      },
+      systemCloudConfig: {
+        findUnique: jest.fn(),
+        upsert: jest.fn(),
+      },
+    } as never);
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      accessKeyId: 'active-access-key',
+      accessKeySecret: 'active-access-secret',
+    });
+    expect(process.env.ALICLOUD_ACCESS_KEY).toBe('active-access-key');
+    expect(process.env.ALICLOUD_SECRET_KEY).toBe('active-access-secret');
   });
 });

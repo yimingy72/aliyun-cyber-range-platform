@@ -32,7 +32,7 @@ type ImageCatalogScopePayload = {
 
 type PlatformImageAssetsPayload = {
   items: Array<
-    PlatformImageAssetRecord & {
+    Omit<PlatformImageAssetRecord, 'defaultPassword'> & {
       createdBy: string;
       sourceSnapshotStatus: string | null;
       sourceSnapshotAvailable: boolean | null;
@@ -63,6 +63,37 @@ const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_PAGE_SIZE = 100;
+
+function containsImageReference(
+  value: unknown,
+  platformImageAssetIds: ReadonlySet<string>,
+  imageIds: ReadonlySet<string>,
+) {
+  const seen = new WeakSet<object>();
+
+  const visit = (current: unknown): boolean => {
+    if (typeof current === 'string') {
+      return platformImageAssetIds.has(current) || imageIds.has(current);
+    }
+
+    if (!current || typeof current !== 'object') {
+      return false;
+    }
+
+    if (seen.has(current)) {
+      return false;
+    }
+    seen.add(current);
+
+    if (Array.isArray(current)) {
+      return current.some((item) => visit(item));
+    }
+
+    return Object.values(current).some((item) => visit(item));
+  };
+
+  return visit(value);
+}
 
 @Injectable()
 export class ImageCatalogService {
@@ -117,7 +148,7 @@ export class ImageCatalogService {
         const snapshot = item.sourceSnapshotId ? sourceSnapshotsById.get(item.sourceSnapshotId) ?? null : null;
 
         return {
-          ...item,
+          ...this.toPlatformImageAssetView(item),
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
         };
@@ -163,7 +194,7 @@ export class ImageCatalogService {
     }
 
     if (nextVisibility === asset.visibility && nextDisplayName === asset.displayName) {
-      return asset;
+      return this.withCreatorUsername(asset);
     }
 
     if (!asset.ownerUserId) {
@@ -182,17 +213,7 @@ export class ImageCatalogService {
   }
 
   async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
-    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
-
-    if (asset.ownerUserId && asset.sourceScope === 'custom') {
-      const snapshot = await this.resolvePlatformAssetSnapshot(asset);
-
-      if (snapshot) {
-        await this.deleteCustomSnapshot(snapshot.id);
-        return;
-      }
-    }
-
+    await this.getScopedPlatformAssetOrThrow(id, currentUser);
     await this.adminRepository.deletePlatformImageAsset(id);
   }
 
@@ -235,6 +256,8 @@ export class ImageCatalogService {
     ) {
       throw new NotFoundException('Image snapshot not found');
     }
+
+    await this.assertCustomSnapshotNotInUse(snapshot);
 
     await this.performAliyunRpcRequest({
       accessKeyId: accountContext.accessKeyId,
@@ -371,7 +394,12 @@ export class ImageCatalogService {
 
   private async withCreatorUsername<T extends PlatformImageAssetRecord>(asset: T) {
     const [normalizedAsset] = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, [asset]);
-    return normalizedAsset;
+    return this.toPlatformImageAssetView(normalizedAsset);
+  }
+
+  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(asset: T) {
+    const { defaultPassword: _defaultPassword, ...view } = asset;
+    return view;
   }
 
   private async resolvePlatformAssetSnapshot(asset: PlatformImageAssetRecord): Promise<CloudImageSnapshotRecord | null> {
@@ -392,6 +420,64 @@ export class ImageCatalogService {
     });
 
     return matchingSnapshot ?? null;
+  }
+
+  private async assertCustomSnapshotNotInUse(snapshot: CloudImageSnapshotRecord) {
+    const assets = await this.adminRepository.listPlatformImageAssets({
+      provider: snapshot.provider,
+      accountUid: snapshot.accountUid,
+      regionId: snapshot.regionId,
+      sourceSnapshotId: snapshot.id,
+    });
+    const assetIds = new Set(assets.map((asset) => asset.id));
+    const imageIds = new Set([snapshot.imageId]);
+
+    const instances = await this.adminRepository.listRangeInstances();
+    const referencingInstances = instances.filter((instance) => {
+      if (instance.status === 'destroyed') {
+        return false;
+      }
+
+      const singleInstanceConfig = instance.singleInstanceConfig;
+      return (
+        (singleInstanceConfig?.platformImageAssetId ? assetIds.has(singleInstanceConfig.platformImageAssetId) : false) ||
+        (singleInstanceConfig?.imageId ? imageIds.has(singleInstanceConfig.imageId) : false) ||
+        containsImageReference(instance.runtimeScenarioTemplateSpec, assetIds, imageIds) ||
+        containsImageReference(instance.runtimeCompiledProvisionSpec, assetIds, imageIds) ||
+        containsImageReference(instance.draftScenarioTemplateSpec, assetIds, imageIds) ||
+        containsImageReference(instance.draftCompiledProvisionSpec, assetIds, imageIds) ||
+        containsImageReference(instance.resourceSummary, assetIds, imageIds)
+      );
+    });
+
+    const templates = await this.adminRepository.listRangeTemplates();
+    const referencingTemplates = templates.filter((template) =>
+      [
+        template.topologySpec,
+        template.topologyGraph,
+        template.scenarioTemplateSpec,
+        template.compiledProvisionSpec,
+        template.compiledSpec,
+        template.currentDraftVersion,
+        template.currentPublishedVersion,
+        ...(template.versions ?? []),
+      ].some((value) => containsImageReference(value, assetIds, imageIds)),
+    );
+
+    if (referencingInstances.length === 0 && referencingTemplates.length === 0) {
+      return;
+    }
+
+    const references = [
+      ...referencingInstances.slice(0, 3).map((instance) => `实例“${instance.name}”`),
+      ...referencingTemplates.slice(0, 3).map((template) => `模板“${template.name}”`),
+    ];
+    const omitted = referencingInstances.length + referencingTemplates.length - references.length;
+    const suffix = omitted > 0 ? ` 等 ${omitted + references.length} 个引用` : '';
+
+    throw new BadRequestException(
+      `镜像仍被${references.join('、')}${suffix}引用。请先替换镜像或销毁相关实例，再删除云端自定义镜像。`,
+    );
   }
 
   private isSnapshotInScope(

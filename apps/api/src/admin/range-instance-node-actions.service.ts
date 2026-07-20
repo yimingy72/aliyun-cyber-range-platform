@@ -14,6 +14,7 @@ import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { SystemConfigService } from './system-config.service';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -198,7 +199,7 @@ export class RangeInstanceNodeActionsService {
       snapshotId: snapshot.id,
       displayName,
       defaultHostName,
-      defaultPassword,
+      defaultPassword: encryptPlatformImageDefaultPassword(defaultPassword),
       description,
       ownerUserId,
       visibility: 'private',

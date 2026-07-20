@@ -523,7 +523,6 @@ export type PlatformImageAsset = {
   sourceSnapshotStatus?: string | null;
   sourceSnapshotAvailable?: boolean | null;
   defaultHostName?: string | null;
-  defaultPassword?: string | null;
   description?: string | null;
   enabled: boolean;
   createdAt?: string | null;
@@ -537,6 +536,88 @@ export type ImageCatalogScopePayload = {
 
 export type PlatformImageAssetListPayload = {
   items: PlatformImageAsset[];
+};
+
+export type CloudAccountContext = {
+  id: string;
+  displayName: string;
+  provider: 'alibaba_cloud';
+  accountUid: string;
+  regionId: string;
+  zoneId: string;
+  imageImportBucket: string;
+  isActive: boolean;
+  status: 'provisioning' | 'ready' | 'degraded' | 'disabled';
+  bucketStatus: string;
+  lastError?: string | null;
+  lastVerifiedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type CreateCloudAccountContextInput = {
+  displayName: string;
+  regionId: string;
+  zoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+  imageImportBucket?: string;
+};
+
+export type ImageImportJob = {
+  id: string;
+  cloudAccountContextId: string;
+  ownerUserId: string;
+  displayName: string;
+  defaultHostName?: string | null;
+  description?: string | null;
+  osType: 'linux' | 'windows' | string;
+  platform?: string | null;
+  architecture: 'x86_64' | 'arm64' | string;
+  bootMode: 'BIOS' | 'UEFI' | string;
+  imageFormat: 'qcow2' | 'raw' | 'vhd' | string;
+  systemDiskSize: number;
+  sourceFileName: string;
+  sourceContentType: string;
+  sourceSizeBytes: number;
+  uploadExpiresAt: string;
+  uploadCompletedAt?: string | null;
+  status: 'awaiting_upload' | 'importing' | 'available' | 'failed' | 'cancelled';
+  imageId?: string | null;
+  taskId?: string | null;
+  sourceSnapshotId?: string | null;
+  platformImageAssetId?: string | null;
+  temporaryObjectDeletedAt?: string | null;
+  errorMessage?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type CreateImageImportInput = {
+  cloudContextId: string;
+  displayName: string;
+  defaultHostName?: string;
+  defaultPassword?: string;
+  description?: string;
+  osType: 'linux' | 'windows';
+  platform?: string;
+  architecture: 'x86_64' | 'arm64';
+  bootMode: 'BIOS' | 'UEFI';
+  imageFormat: 'qcow2' | 'raw' | 'vhd';
+  systemDiskSize: number;
+  sourceFileName: string;
+  sourceContentType?: string;
+  sourceSizeBytes: number;
+};
+
+export type ImageImportUploadSession = {
+  job: ImageImportJob;
+  upload: {
+    method: 'PUT';
+    url: string;
+    headers: Record<string, string>;
+    expiresAt: string;
+  };
 };
 
 export type RangeInstanceNodeActionResult = {

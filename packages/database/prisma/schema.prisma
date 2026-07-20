@@ -117,6 +117,21 @@ enum BillingLedgerResourceType {
   unknown
 }
 
+enum CloudAccountContextStatus {
+  provisioning
+  ready
+  degraded
+  disabled
+}
+
+enum ImageImportJobStatus {
+  awaiting_upload
+  importing
+  available
+  failed
+  cancelled
+}
+
 model SystemCloudConfig {
   id              String   @id
   provider        String
@@ -126,6 +141,30 @@ model SystemCloudConfig {
   accessKeySecret String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+model CloudAccountContext {
+  id                String                    @id @default(cuid())
+  displayName       String
+  provider          CloudProvider             @default(alibaba_cloud)
+  accountUid        String
+  regionId          String
+  zoneId            String
+  accessKeyId       String
+  accessKeySecret   String
+  imageImportBucket String
+  isActive          Boolean                   @default(false)
+  status            CloudAccountContextStatus @default(provisioning)
+  bucketStatus      String                    @default("pending")
+  lastError         String?                   @db.Text
+  lastVerifiedAt    DateTime?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  imageImportJobs  ImageImportJob[]
+
+  @@unique([provider, accountUid, regionId])
+  @@index([status, provider])
+  @@index([isActive])
 }
 
 model PlatformUser {
@@ -142,6 +181,7 @@ model PlatformUser {
   rangeTemplates            RangeTemplate[]
   rangeInstances            RangeInstance[]
   singleInstanceBatches     SingleInstanceBatch[]
+  imageImportJobs           ImageImportJob[]
 
   @@unique([oidcIssuer, oidcSubject])
 }
@@ -227,6 +267,43 @@ model CloudImageSnapshot {
   @@unique([provider, accountScopeKey, regionId, scope, imageId])
   @@index([provider, regionId, scope])
   @@index([accountUid])
+}
+
+model ImageImportJob {
+  id                    String               @id @default(cuid())
+  cloudAccountContextId String
+  ownerUserId           String
+  displayName           String
+  defaultHostName       String?
+  defaultPassword       String?
+  description           String?
+  osType                String
+  platform              String?
+  architecture          String
+  bootMode              String
+  imageFormat           String
+  systemDiskSize        Int
+  sourceFileName        String
+  sourceContentType     String
+  sourceSizeBytes       String
+  objectKey             String               @unique
+  uploadExpiresAt       DateTime
+  uploadCompletedAt     DateTime?
+  status                ImageImportJobStatus @default(awaiting_upload)
+  imageId               String?              @unique
+  taskId                String?
+  sourceSnapshotId      String?
+  platformImageAssetId  String?
+  temporaryObjectDeletedAt DateTime?
+  errorMessage          String?              @db.Text
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  cloudAccountContext   CloudAccountContext  @relation(fields: [cloudAccountContextId], references: [id], onDelete: Restrict)
+  ownerUser             PlatformUser         @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+
+  @@index([cloudAccountContextId, status, updatedAt])
+  @@index([ownerUserId, createdAt])
+  @@index([status, temporaryObjectDeletedAt, updatedAt])
 }
 
 model ImageCatalogItem {

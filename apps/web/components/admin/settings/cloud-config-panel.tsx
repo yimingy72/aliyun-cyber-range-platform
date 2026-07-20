@@ -6,6 +6,7 @@ type CloudConfigPanelProps = {
   value: CloudConfigSnapshot;
   isLoading?: boolean;
   isSaving?: boolean;
+  isManagedByAccountContext?: boolean;
   saveErrorMessage?: string | null;
   saveSuccessMessage?: string | null;
   onChange: (field: keyof CloudConfigSnapshot, value: string) => void;
@@ -25,6 +26,7 @@ export function CloudConfigPanel({
   value,
   isLoading = false,
   isSaving = false,
+  isManagedByAccountContext = false,
   saveErrorMessage = null,
   saveSuccessMessage = null,
   onChange,
@@ -43,7 +45,7 @@ export function CloudConfigPanel({
           <span>5 项配置</span>
         </div>
 
-        <button type="submit" className="template-workbench-primary-action" disabled={isLoading || isSaving}>
+        <button type="submit" className="template-workbench-primary-action" disabled={isLoading || isSaving || isManagedByAccountContext}>
           {isSaving ? '正在保存...' : '保存云配置'}
         </button>
       </div>
@@ -56,7 +58,7 @@ export function CloudConfigPanel({
               aria-label="云平台"
               value={value.provider}
               onChange={handleInputChange('provider', onChange)}
-              disabled={isLoading || isSaving}
+              disabled={isLoading || isSaving || isManagedByAccountContext}
             >
               <option value="alibaba_cloud">阿里云</option>
             </select>
@@ -70,7 +72,7 @@ export function CloudConfigPanel({
               aria-label="默认地域"
               value={value.defaultRegion}
               onChange={handleInputChange('defaultRegion', onChange)}
-              disabled={isLoading || isSaving}
+              disabled={isLoading || isSaving || isManagedByAccountContext}
               placeholder="cn-hangzhou"
             />
           </div>
@@ -83,7 +85,7 @@ export function CloudConfigPanel({
               aria-label="默认可用区"
               value={value.defaultZoneId}
               onChange={handleInputChange('defaultZoneId', onChange)}
-              disabled={isLoading || isSaving}
+              disabled={isLoading || isSaving || isManagedByAccountContext}
               placeholder="cn-hangzhou-h"
             />
           </div>
@@ -96,7 +98,7 @@ export function CloudConfigPanel({
               aria-label="AccessKey ID"
               value={value.accessKeyId}
               onChange={handleInputChange('accessKeyId', onChange)}
-              disabled={isLoading || isSaving}
+              disabled={isLoading || isSaving || isManagedByAccountContext}
               autoComplete="off"
             />
           </div>
@@ -110,13 +112,14 @@ export function CloudConfigPanel({
               type="password"
               value={value.accessKeySecret}
               onChange={handleInputChange('accessKeySecret', onChange)}
-              disabled={isLoading || isSaving}
+              disabled={isLoading || isSaving || isManagedByAccountContext}
               autoComplete="new-password"
             />
           </div>
         </label>
       </div>
 
+      {isManagedByAccountContext ? <p className="settings-workbench-feedback">当前默认云账号由下方“阿里云账号与镜像存储”管理。</p> : null}
       {saveErrorMessage ? <p className="admin-error settings-workbench-feedback">{saveErrorMessage}</p> : null}
       {saveSuccessMessage ? <p className="admin-success settings-workbench-feedback">{saveSuccessMessage}</p> : null}
     </form>

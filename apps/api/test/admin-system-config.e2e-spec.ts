@@ -2,12 +2,15 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { OidcPrincipalResolver } from '../src/admin/oidc-principal-resolver';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { PrismaService } from '../src/database/prisma.service';
+import { createTestAccessToken, overrideTestOidc } from './support/test-oidc';
 
 const MASKED_SECRET = '********';
 const SYSTEM_CONFIG_ROW_ID = 'default';
+const TEST_ADMIN_AUTHORIZATION = `Bearer ${createTestAccessToken('admin-oidc')}`;
 
 type PersistedSystemCloudConfigRow = {
   id: string;
@@ -44,6 +47,9 @@ function createFakePrismaService() {
   let row: PersistedSystemCloudConfigRow | null = null;
 
   return {
+    cloudAccountContext: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     systemCloudConfig: {
       findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
         if (!row || row.id !== where.id) {
@@ -92,13 +98,17 @@ function createJsonResponse(payload: unknown, status = 200) {
 }
 
 async function createApp(prismaOverride?: ReturnType<typeof createFakePrismaService>) {
-  const moduleBuilder = Test.createTestingModule({
+  const moduleBuilder = overrideTestOidc(Test.createTestingModule({
     imports: [AppModule],
-  });
+  }));
 
   if (prismaOverride) {
     moduleBuilder.overrideProvider(PrismaService).useValue(prismaOverride);
   }
+
+  moduleBuilder.overrideProvider(OidcPrincipalResolver).useValue({
+    resolve: jest.fn().mockResolvedValue({ id: 'admin', username: 'admin', role: 'admin', status: 'active' }),
+  });
 
   const moduleRef = await moduleBuilder.compile();
   const app = moduleRef.createNestApplication();
@@ -124,7 +134,7 @@ describe('Admin system config', () => {
 
     const response = await request(app.getHttpServer())
       .get('/admin/system-config')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(200);
 
     expect(response.body).toEqual({
@@ -145,7 +155,7 @@ describe('Admin system config', () => {
 
     const response = await request(app.getHttpServer())
       .patch('/admin/system-config')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .send({
         provider: 'alibaba_cloud',
         defaultRegion: 'cn-beijing',
@@ -165,7 +175,7 @@ describe('Admin system config', () => {
 
     const snapshot = await request(app.getHttpServer())
       .get('/admin/system-config')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(200);
 
     expect(snapshot.body).toEqual(response.body);
@@ -182,7 +192,7 @@ describe('Admin system config', () => {
 
     await request(firstApp.getHttpServer())
       .patch('/admin/system-config')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .send({
         provider: 'alibaba_cloud',
         defaultRegion: 'cn-shanghai',
@@ -200,7 +210,7 @@ describe('Admin system config', () => {
 
     const response = await request(secondApp.getHttpServer())
       .get('/admin/system-config')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(200);
 
     expect(response.body).toEqual({
@@ -297,7 +307,7 @@ describe('Admin system config', () => {
 
     const response = await request(app.getHttpServer())
       .get('/admin/system-config/instance-type-availability?cpu=2&memory=4')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(200);
 
     expect(response.body).toEqual({
@@ -326,7 +336,7 @@ describe('Admin system config', () => {
     await app.close();
   });
 
-  it('excludes arm-only exact matches and returns a warning when no exact x86 postpaid spec is available', async () => {
+  it('returns the platform catalog warning for an unsupported 1C2G request', async () => {
     seedAdminEnv();
     seedAliyunEnv();
     const fetchMock = jest.fn()
@@ -387,7 +397,7 @@ describe('Admin system config', () => {
 
     const response = await request(app.getHttpServer())
       .get('/admin/system-config/instance-type-availability?cpu=1&memory=2')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(200);
 
     expect(response.body).toEqual({
@@ -397,7 +407,7 @@ describe('Admin system config', () => {
       zoneId: 'cn-hangzhou-h',
       exactAvailable: false,
       matches: [],
-      warning: '当前默认可用区 cn-hangzhou-h 没有精确匹配 1C2G 的 X86 按量付费实例规格。',
+      warning: '平台单实例执行器不支持 1C2G 规格。',
     });
 
     await app.close();
@@ -412,7 +422,7 @@ describe('Admin system config', () => {
 
     const response = await request(app.getHttpServer())
       .get('/admin/system-config/instance-type-availability?cpu=0&memory=abc')
-      .set('authorization', 'Bearer dev-admin-token')
+      .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(400);
 
     expect(response.body.message).toBe('cpu 和 memory 必须是大于 0 的整数');

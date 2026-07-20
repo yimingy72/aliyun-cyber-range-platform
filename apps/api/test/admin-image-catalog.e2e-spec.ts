@@ -768,7 +768,7 @@ describe('Admin image catalog APIs', () => {
     );
   });
 
-  it('allows an owner to delete their own custom image asset and removes the cloud image too', async () => {
+  it('allows an owner to remove their own custom image asset while keeping the cloud image', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
@@ -833,12 +833,9 @@ describe('Admin image catalog APIs', () => {
       ownerUserId: 'image-owner-delete-1',
     });
 
-    expect(remainingSnapshot).toBeUndefined();
+    expect(remainingSnapshot).toEqual(expect.objectContaining({ id: snapshot.id, imageId: snapshot.imageId }));
     expect(remainingAssets).toEqual([]);
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('Action=DeleteImage'),
-      expect.objectContaining({ method: 'GET' }),
-    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('prevents a non-owner user from deleting another user custom image asset', async () => {
@@ -1173,5 +1170,122 @@ describe('Admin image catalog APIs', () => {
       expect.stringContaining('Action=DeleteImage'),
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  it('DELETE /admin/platform-images/:id only removes the catalog asset and keeps the cloud image intact', async () => {
+    repository = createMemoryAdminRepository();
+    global.fetch = jest.fn();
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-remove-catalog-only',
+          sourceImageName: 'Keep In Alibaba Cloud',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-20T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+    });
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'My Private Image',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+
+    await request(app.getHttpServer())
+      .delete(`/admin/platform-images/${asset.id}`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(204)
+      .expect('');
+
+    const remainingSnapshots = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+    });
+    const remainingAsset = await repository.getPlatformImageAssetById(asset.id);
+
+    expect(remainingSnapshots).toEqual([expect.objectContaining({ id: snapshot.id, imageId: snapshot.imageId })]);
+    expect(remainingAsset).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a cloud image that is still referenced by a live instance', async () => {
+    repository = createMemoryAdminRepository();
+    global.fetch = jest.fn();
+
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-referenced-image',
+          sourceImageName: 'Referenced Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-20T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+    });
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Referenced Image Asset',
+      ownerUserId: 'admin',
+      visibility: 'private',
+    });
+    await repository.createRangeInstance({
+      name: 'active-single-instance',
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'active-single-instance',
+        quantityIndex: 1,
+        hostKey: 'single-ecs',
+        hostName: 'active-single-instance',
+        platformImageAssetId: asset.id,
+        imageId: snapshot.imageId,
+        imageDisplayName: asset.displayName,
+        cpu: 2,
+        memory: 4,
+        systemDiskSize: 40,
+      },
+    });
+
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+
+    const response = await request(app.getHttpServer())
+      .delete(`/admin/image-catalog/custom/${snapshot.id}`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(400);
+
+    expect(response.body.message).toContain('active-single-instance');
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(await repository.getImageSnapshotById(snapshot.id)).toEqual(expect.objectContaining({ imageId: snapshot.imageId }));
+    expect(await repository.getPlatformImageAssetById(asset.id)).toEqual(expect.objectContaining({ id: asset.id }));
   });
 });

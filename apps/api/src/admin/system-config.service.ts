@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 
+import { decryptCloudAccountCredential } from './cloud-account-credentials';
 import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
@@ -105,6 +106,23 @@ export class SystemConfigService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getSnapshot(): Promise<SystemCloudConfig> {
+    const activeContext = await this.prisma.cloudAccountContext.findFirst({
+      where: { isActive: true, status: 'ready' },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (activeContext) {
+      const snapshot = this.toSnapshot({
+        provider: activeContext.provider,
+        defaultRegion: activeContext.regionId,
+        defaultZoneId: activeContext.zoneId,
+        accessKeyId: decryptCloudAccountCredential(activeContext.accessKeyId),
+        accessKeySecret: decryptCloudAccountCredential(activeContext.accessKeySecret),
+      });
+      this.syncProcessEnv(snapshot);
+      return snapshot;
+    }
+
     const existing = await this.prisma.systemCloudConfig.findUnique({
       where: { id: SYSTEM_CLOUD_CONFIG_ROW_ID },
     });
@@ -132,6 +150,15 @@ export class SystemConfigService {
   }
 
   async updateSnapshot(payload: Partial<SystemCloudConfig>): Promise<SystemCloudConfig> {
+    const activeContext = await this.prisma.cloudAccountContext.findFirst({
+      where: { isActive: true, status: 'ready' },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (activeContext) {
+      throw new BadRequestException('当前正在使用云账号上下文，请在“阿里云账号与镜像存储”中管理地域和访问凭据。');
+    }
+
     const current = await this.getSnapshot();
     const snapshot: SystemCloudConfig = {
       provider: 'alibaba_cloud',
@@ -160,6 +187,20 @@ export class SystemConfigService {
   }
 
   async getAccountContext(): Promise<SystemCloudAccountContext> {
+    const activeContext = await this.prisma.cloudAccountContext.findFirst({
+      where: { isActive: true, status: 'ready' },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (activeContext) {
+      const snapshot = await this.getSnapshot();
+      return {
+        ...snapshot,
+        accountUid: activeContext.accountUid,
+        accountUidResolved: true,
+      };
+    }
+
     const snapshot = await this.getSnapshot();
 
     return {

@@ -15,6 +15,11 @@ const {
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
   fetchPlatformImagesMock,
+  fetchCloudAccountContextsMock,
+  fetchImageImportJobsMock,
+  createImageImportMock,
+  completeImageImportMock,
+  retryImageImportMock,
   syncPublicImagesMock,
   syncCustomImagesMock,
   collectPlatformImageMock,
@@ -32,6 +37,11 @@ const {
   fetchPublicImageCatalogScopeMock: vi.fn(),
   fetchCustomImageCatalogScopeMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
+  fetchCloudAccountContextsMock: vi.fn(),
+  fetchImageImportJobsMock: vi.fn(),
+  createImageImportMock: vi.fn(),
+  completeImageImportMock: vi.fn(),
+  retryImageImportMock: vi.fn(),
   syncPublicImagesMock: vi.fn(),
   syncCustomImagesMock: vi.fn(),
   collectPlatformImageMock: vi.fn(),
@@ -61,6 +71,11 @@ vi.mock('../../lib/admin-api', async () => {
     fetchPublicImageCatalogScope: fetchPublicImageCatalogScopeMock,
     fetchCustomImageCatalogScope: fetchCustomImageCatalogScopeMock,
     fetchPlatformImages: fetchPlatformImagesMock,
+    fetchCloudAccountContexts: fetchCloudAccountContextsMock,
+    fetchImageImportJobs: fetchImageImportJobsMock,
+    createImageImport: createImageImportMock,
+    completeImageImport: completeImageImportMock,
+    retryImageImport: retryImageImportMock,
     syncPublicImages: syncPublicImagesMock,
     syncCustomImages: syncCustomImagesMock,
     collectPlatformImage: collectPlatformImageMock,
@@ -225,6 +240,11 @@ beforeEach(() => {
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
   fetchPlatformImagesMock.mockReset();
+  fetchCloudAccountContextsMock.mockReset();
+  fetchImageImportJobsMock.mockReset();
+  createImageImportMock.mockReset();
+  completeImageImportMock.mockReset();
+  retryImageImportMock.mockReset();
   syncPublicImagesMock.mockReset();
   syncCustomImagesMock.mockReset();
   collectPlatformImageMock.mockReset();
@@ -248,6 +268,21 @@ beforeEach(() => {
   fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
     view === 'mine' ? myImagesPayload : platformImagesPayload,
   );
+  fetchCloudAccountContextsMock.mockResolvedValue([
+    {
+      id: 'cloud-context-1',
+      displayName: '测试阿里云账号',
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      imageImportBucket: 'cyber-range-image-test',
+      isActive: true,
+      status: 'ready',
+      bucketStatus: 'ready',
+    },
+  ]);
+  fetchImageImportJobsMock.mockResolvedValue({ items: [] });
   syncPublicImagesMock.mockResolvedValue(publicScopePayload);
   syncCustomImagesMock.mockResolvedValue(customScopePayload);
   collectPlatformImageMock.mockResolvedValue(
@@ -364,6 +399,143 @@ describe('ImageCenterScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
     await waitFor(() => {
       expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('opens an accessible local image upload form from 我的镜像', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+
+    expect(screen.getByRole('dialog', { name: '上传本地镜像' })).toBeTruthy();
+    expect(screen.getByLabelText('系统盘镜像文件')).toBeTruthy();
+    expect(screen.getByLabelText('上传镜像名')).toBeTruthy();
+    expect(screen.getByLabelText('上传镜像默认主机名')).toBeTruthy();
+    expect(screen.getByLabelText('上传镜像默认登录密码')).toBeTruthy();
+    expect(screen.getByLabelText('上传镜像备注')).toBeTruthy();
+    expect(screen.getByLabelText('上传镜像架构')).toBeTruthy();
+    expect(screen.getByText('文件会直接上传到当前云账号的私有 OSS Bucket，再由阿里云导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。')).toBeTruthy();
+  });
+
+  it('creates a direct-OSS upload session and completes the Alibaba Cloud import after a file upload', async () => {
+    class SuccessfulXmlHttpRequest {
+      status = 200;
+      upload: {
+        onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null;
+      } = { onprogress: null };
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      open() {}
+      setRequestHeader() {}
+      send() {
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 4, total: 4 });
+        this.onload?.();
+      }
+    }
+
+    const createdJob = {
+      id: 'image-import-job-1',
+      cloudAccountContextId: 'cloud-context-1',
+      ownerUserId: 'admin-user',
+      displayName: 'ubuntu',
+      osType: 'linux',
+      architecture: 'x86_64',
+      bootMode: 'BIOS',
+      imageFormat: 'qcow2',
+      systemDiskSize: 40,
+      sourceFileName: 'ubuntu.qcow2',
+      sourceContentType: 'application/octet-stream',
+      sourceSizeBytes: 4,
+      uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+      status: 'awaiting_upload' as const,
+    };
+    createImageImportMock.mockResolvedValue({
+      job: createdJob,
+      upload: {
+        method: 'PUT',
+        url: 'https://example.oss-cn-hangzhou.aliyuncs.com/image-imports/ubuntu.qcow2',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        expiresAt: '2026-07-20T00:30:00.000Z',
+      },
+    });
+  completeImageImportMock.mockResolvedValue({
+      ...createdJob,
+      status: 'importing',
+      imageId: 'm-importing-image',
+    });
+    vi.stubGlobal('XMLHttpRequest', SuccessfulXmlHttpRequest);
+
+    try {
+      render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+      fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+      fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+      fireEvent.change(screen.getByLabelText('系统盘镜像文件'), {
+        target: { files: [new File(['disk'], 'ubuntu.qcow2', { type: 'application/octet-stream' })] },
+      });
+      const submitButton = screen.getByRole('button', { name: '上传并导入' });
+      fireEvent.submit(submitButton.closest('form') as HTMLFormElement);
+
+      await waitFor(() => {
+        expect(createImageImportMock).toHaveBeenCalledWith(
+          'http://localhost:3001',
+          'dev-admin-token',
+          expect.objectContaining({
+            cloudContextId: 'cloud-context-1',
+            displayName: 'ubuntu',
+            imageFormat: 'qcow2',
+            sourceFileName: 'ubuntu.qcow2',
+            sourceSizeBytes: 4,
+          }),
+        );
+      });
+      await waitFor(() => {
+        expect(completeImageImportMock).toHaveBeenCalledWith(
+          'http://localhost:3001',
+          'dev-admin-token',
+          'image-import-job-1',
+        );
+      });
+      expect(await screen.findByText('镜像文件已上传，阿里云正在导入；导入完成后会自动启用“我的镜像”。')).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers a retry action when ImportImage failed before an Alibaba Cloud ImageId was returned', async () => {
+    const failedJob = {
+      id: 'image-import-job-retry',
+      cloudAccountContextId: 'cloud-context-1',
+      ownerUserId: 'admin-user',
+      displayName: 'Retry Ubuntu',
+      osType: 'linux',
+      architecture: 'x86_64',
+      bootMode: 'BIOS',
+      imageFormat: 'qcow2',
+      systemDiskSize: 40,
+      sourceFileName: 'retry.qcow2',
+      sourceContentType: 'application/octet-stream',
+      sourceSizeBytes: 4096,
+      uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+      status: 'failed' as const,
+      imageId: null,
+      errorMessage: 'Aliyun throttling',
+    };
+    fetchImageImportJobsMock.mockResolvedValue({ items: [failedJob] });
+    retryImageImportMock.mockResolvedValue({ ...failedJob, status: 'importing', errorMessage: null });
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: '重试导入' }));
+
+    await waitFor(() => {
+      expect(retryImageImportMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'image-import-job-retry',
+      );
     });
   });
 

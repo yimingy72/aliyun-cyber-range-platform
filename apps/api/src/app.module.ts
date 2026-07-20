@@ -6,6 +6,11 @@ import { ADMIN_REPOSITORY } from './admin/admin.repository';
 import { AdminAuthGuard } from './admin/admin-auth.guard';
 import { ImageCatalogController } from './admin/image-catalog.controller';
 import { ImageCatalogService } from './admin/image-catalog.service';
+import { CloudAccountContextsController } from './admin/cloud-account-contexts.controller';
+import { CloudAccountContextsService } from './admin/cloud-account-contexts.service';
+import { ImageImportsController } from './admin/image-imports.controller';
+import { ImageImportsService } from './admin/image-imports.service';
+import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
 import { BillingBssClient } from './admin/billing-bss-client';
 import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
@@ -67,7 +72,9 @@ function resolveProjectRootDir() {
     RangesController,
     ProvisionJobsController,
     SystemConfigController,
+    CloudAccountContextsController,
     ImageCatalogController,
+    ImageImportsController,
     BillingController,
     PlatformImagesController,
     SingleInstancesController,
@@ -76,6 +83,9 @@ function resolveProjectRootDir() {
     AdminAuthGuard,
     BillingBssClient,
     ImageCatalogService,
+    CloudAccountContextsService,
+    ImageImportsService,
+    ImageImportsWorkerService,
     BillingService,
     BillingSyncService,
     AdminUsersService,

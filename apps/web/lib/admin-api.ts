@@ -13,6 +13,11 @@ import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
   PlatformImageAssetListPayload,
+  CloudAccountContext,
+  CreateCloudAccountContextInput,
+  CreateImageImportInput,
+  ImageImportJob,
+  ImageImportUploadSession,
   RangeInstanceNodeActionResult,
   ProvisionJob,
   ProvisionJobStep,
@@ -892,6 +897,82 @@ export async function fetchPlatformImages(apiBaseUrl: string, token: string, vie
   });
 
   return readJson<PlatformImageAssetListPayload>(response);
+}
+
+export async function fetchCloudAccountContexts(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<CloudAccountContext[]>(response);
+}
+
+export async function createCloudAccountContext(
+  apiBaseUrl: string,
+  token: string,
+  payload: CreateCloudAccountContextInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<CloudAccountContext>(response);
+}
+
+export async function activateCloudAccountContext(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<CloudAccountContext>(response);
+}
+
+export async function ensureCloudAccountContextBucket(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts/${encodeURIComponent(id)}/ensure-bucket`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<CloudAccountContext>(response);
+}
+
+export async function fetchImageImportJobs(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-imports`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<{ items: ImageImportJob[] }>(response);
+}
+
+export async function createImageImport(apiBaseUrl: string, token: string, payload: CreateImageImportInput) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-imports`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<ImageImportUploadSession>(response);
+}
+
+export async function completeImageImport(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-imports/${encodeURIComponent(id)}/complete`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ImageImportJob>(response);
+}
+
+export async function retryImageImport(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/image-imports/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<ImageImportJob>(response);
 }
 
 export async function collectPlatformImage(

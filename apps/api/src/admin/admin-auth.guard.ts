@@ -97,6 +97,14 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
+    if (pathname === '/admin/cloud-contexts' && method === 'GET') {
+      return true;
+    }
+
+    if (pathname.startsWith('/admin/image-imports')) {
+      return true;
+    }
+
     if (/^\/admin\/platform-images\/[^/]+$/.test(pathname) && (method === 'PATCH' || method === 'DELETE')) {
       return true;
     }
