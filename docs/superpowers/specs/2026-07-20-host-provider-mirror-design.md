@@ -21,7 +21,7 @@
 ## 数据流
 
 1. 开发者运行下载脚本。
-2. 脚本在 `.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/1.282.0/linux_amd64/` 写入已校验的 ZIP。
+2. 脚本在 `.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/` 写入已校验的 `terraform-provider-alicloud_1.282.0_linux_amd64.zip`。
 3. `docker compose` 将 `.local/provider-mirror/` 只读挂载到 `/var/lib/cyber-range/provider-mirror`。
 4. API 与 worker 使用既有 `ALICLOUD_PROVIDER_ZIP_PATH` 读取缓存；其余 OpenTofu mirror 配置保持不变。
 

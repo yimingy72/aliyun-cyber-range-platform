@@ -9,7 +9,7 @@
 - 已完成三栏式在线编排器主框架：资源面板、拓扑画布、属性面板
 - 已完成镜像中心三层语义拆分：`平台收录镜像`、`阿里云自定义镜像`、`阿里云公共镜像`
 - 已完成 API / worker 拆分：实例创建与销毁任务由独立 `provisioner-worker` 轮询执行
-- 已完成 Docker 化 OpenTofu 运行链路，workspace / provider mirror 挂载到持久卷
+- 已完成 Docker 化 OpenTofu 运行链路，workspace 使用持久卷，provider mirror 使用宿主机只读缓存
 - 已完成平台镜像资产接入，编排页 ECS 镜像选择只消费平台收录镜像
 - 已完成单实例 ECS 原生链路：批量创建、异步公网 IP 刷新、导出镜像、镜像再创建、自动到期销毁
 - 已完成列表页首屏减载：`实例管理`、`靶场编排`、`编排实例`、`镜像中心` 首屏已改为按视图懒加载与轻量 DTO
@@ -134,7 +134,17 @@ cp .env.example .env
 
 `RANGE_PROVISIONER_MODE` 默认值为 `opentofu`：创建靶场实例会实际创建并计费阿里云资源。仅用于本地流程演练时，请在 `.env` 中显式设为 `dry-run`。
 
-### 2. 启动整栈
+### 2. 下载 OpenTofu provider 缓存
+
+在构建或启动容器前运行：
+
+```bash
+pnpm provider:download
+```
+
+脚本会下载并校验 Alibaba Cloud provider 到 `.local/provider-mirror/`，API 与 worker 以只读方式挂载此目录。
+
+### 3. 启动整栈
 
 ```bash
 pnpm compose:up
@@ -150,13 +160,13 @@ pnpm compose:up
 - `web`：`http://localhost:3000`
 - `mcp`：`http://localhost:8787/mcp`
 
-### 3. 登录后台
+### 4. 登录后台
 
 - 地址：`http://localhost:3000/admin/login`
 - 默认开发账号来自 `.env.example`
 - 登录成功后默认保留 `1 周` 浏览器会话；前端会在 access token 即将过期时自动续期
 
-### 4. 常用命令
+### 5. 常用命令
 
 ```bash
 pnpm compose:logs
@@ -165,7 +175,7 @@ pnpm compose:down
 docker compose config
 ```
 
-### 5. MCP 联调
+### 6. MCP 联调
 
 完整对外接入手册见：[MCP 客户端接入示例](docs/product/2026-07-15-MCP客户端接入示例.md)。
 

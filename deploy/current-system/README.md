@@ -62,11 +62,21 @@ cp .env.example .env
 
 `OIDC_ISSUER` 和 `KEYCLOAK_HOSTNAME` 必须是浏览器与 MCP 客户端可访问的外部地址；若使用非默认端口，`KEYCLOAK_HOSTNAME` 必须是完整 URL（例如 `http://localhost:18080`），并与 `OIDC_ISSUER` 完全一致。Compose 内部的 JWKS、Token Exchange 和 Keycloak Admin 调用固定使用 `keycloak:8080`，不应配置为容器内的 `localhost`。
 
-5. 启动系统：
+5. 下载并校验宿主机 OpenTofu provider 缓存：
 
 ```bash
-docker compose up -d --build
+sh ../../scripts/dev/download-alicloud-provider.sh
 ```
+
+缓存位于仓库根目录 `.local/provider-mirror/`，会以只读方式挂载到 API 和 worker。可在 `.env` 中通过 `OPENTOFU_PROVIDER_MIRROR_HOST_PATH` 覆盖其位置。
+
+6. 启动系统：
+
+```bash
+COMPOSE_BAKE=false docker compose up -d --build
+```
+
+`COMPOSE_BAKE=false` 与根目录启动脚本保持一致，用于规避部分 Docker Desktop 版本的 Bake builder 请求头兼容问题。
 
 ## 使用已导出镜像部署
 
@@ -102,7 +112,13 @@ shasum -a 256 -c images/current-system-images-2026-07-19.tar.gz.sha256
 cp .env.example .env
 ```
 
-4. 使用镜像版 compose 启动：
+4. 下载并校验宿主机 OpenTofu provider 缓存：
+
+```bash
+sh ../../scripts/dev/download-alicloud-provider.sh
+```
+
+5. 使用镜像版 compose 启动：
 
 ```bash
 docker compose -f docker-compose.images.yml up -d
@@ -163,8 +179,8 @@ docker compose -f docker-compose.images.yml up -d
   - Keycloak 身份与授权数据
 - `opentofu-workspaces`
   - OpenTofu 工作目录、plan、state、outputs
-- `provider-mirror`
-  - 阿里云 provider mirror
+
+Alibaba Cloud provider mirror 是仓库 `.local/provider-mirror/` 下经 SHA-256 校验的宿主机缓存，以只读 bind mount 提供给 API 和 worker，不属于 Docker 命名卷。
 
 ## 常用检查命令
 

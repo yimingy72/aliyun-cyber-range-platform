@@ -19,3 +19,5 @@ infra/opentofu/examples/**/.smoke
 infra/opentofu/examples/**/terraform.tfstate
 infra/opentofu/examples/**/terraform.tfstate.backup
 coverage
+deploy/current-system/images/*.tar.gz
+deploy/current-system/images/*.tar.gz.sha256

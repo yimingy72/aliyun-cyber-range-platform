@@ -32,7 +32,7 @@ services:
       retries: 5
 
   keycloak:
-    image: ${KEYCLOAK_IMAGE:-vdagxumcha4qdz-quay.xuanyuan.run/keycloak/keycloak:26.1.4}
+    image: ${KEYCLOAK_IMAGE:-vdagxumcha4qdz-quay.xuanyuan.dev/keycloak/keycloak:26.1.4}
     restart: unless-stopped
     command: ["start-dev", "--import-realm"]
     depends_on:
@@ -56,7 +56,7 @@ services:
       - ./infra/keycloak/themes:/opt/keycloak/themes:ro
 
   keycloak-bootstrap:
-    image: ${KEYCLOAK_IMAGE:-vdagxumcha4qdz-quay.xuanyuan.run/keycloak/keycloak:26.1.4}
+    image: ${KEYCLOAK_IMAGE:-vdagxumcha4qdz-quay.xuanyuan.dev/keycloak/keycloak:26.1.4}
     restart: "no"
     depends_on:
       keycloak:
@@ -77,7 +77,6 @@ services:
       dockerfile: apps/api/Dockerfile
       args:
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
-        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
         PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
         PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
@@ -134,7 +133,7 @@ services:
       - "${API_PORT:-3001}:3001"
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
-      - provider-mirror:/var/lib/cyber-range/provider-mirror
+      - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-mirror}:/var/lib/cyber-range/provider-mirror:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/health >/dev/null || exit 1"]
       interval: 10s
@@ -148,7 +147,6 @@ services:
       dockerfile: apps/api/Dockerfile
       args:
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
-        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
         PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
         PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
@@ -192,7 +190,7 @@ services:
       ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
-      - provider-mirror:/var/lib/cyber-range/provider-mirror
+      - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-mirror}:/var/lib/cyber-range/provider-mirror:ro
 
   web:
     build:
@@ -203,7 +201,6 @@ services:
         NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
         NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-platform-web}
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
-        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
         PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
         PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
@@ -226,7 +223,6 @@ services:
       dockerfile: apps/mcp/Dockerfile
       args:
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
-        PNPM_NETWORK_CONCURRENCY: ${PNPM_NETWORK_CONCURRENCY:-2}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
         PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
         PNPM_FETCH_RETRY_MAX_TIMEOUT: ${PNPM_FETCH_RETRY_MAX_TIMEOUT:-30000}
@@ -264,4 +260,3 @@ volumes:
   postgres-data:
   keycloak-postgres-data:
   opentofu-workspaces:
-  provider-mirror:
