@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 
 import { BadRequestException, Injectable } from '@nestjs/common';
 
-import { decryptCloudAccountCredential } from './cloud-account-credentials';
 import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
@@ -116,8 +115,8 @@ export class SystemConfigService {
         provider: activeContext.provider,
         defaultRegion: activeContext.regionId,
         defaultZoneId: activeContext.zoneId,
-        accessKeyId: decryptCloudAccountCredential(activeContext.accessKeyId),
-        accessKeySecret: decryptCloudAccountCredential(activeContext.accessKeySecret),
+        accessKeyId: activeContext.accessKeyId,
+        accessKeySecret: activeContext.accessKeySecret,
       });
       this.syncProcessEnv(snapshot);
       return snapshot;

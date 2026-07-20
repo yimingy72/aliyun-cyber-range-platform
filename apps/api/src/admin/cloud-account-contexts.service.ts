@@ -2,7 +2,6 @@ import { createHash, createHmac, randomUUID } from 'node:crypto';
 
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
-import { decryptCloudAccountCredential, encryptCloudAccountCredential } from './cloud-account-credentials';
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import type { CreateCloudAccountContextDto } from './dto/cloud-account-context.dto';
@@ -70,8 +69,8 @@ export class CloudAccountContextsService {
       accountUid: context.accountUid,
       regionId: context.regionId,
       zoneId: context.zoneId,
-      accessKeyId: decryptCloudAccountCredential(context.accessKeyId),
-      accessKeySecret: decryptCloudAccountCredential(context.accessKeySecret),
+      accessKeyId: context.accessKeyId,
+      accessKeySecret: context.accessKeySecret,
       imageImportBucket: context.imageImportBucket,
       status: context.status,
     };
@@ -112,8 +111,8 @@ export class CloudAccountContextsService {
         accountUid,
         regionId: normalized.regionId,
         zoneId: normalized.zoneId,
-        accessKeyId: encryptCloudAccountCredential(normalized.accessKeyId),
-        accessKeySecret: encryptCloudAccountCredential(normalized.accessKeySecret),
+        accessKeyId: normalized.accessKeyId,
+        accessKeySecret: normalized.accessKeySecret,
         imageImportBucket,
         isActive: configuredContextCount === 0,
         status: 'provisioning',
@@ -135,8 +134,8 @@ export class CloudAccountContextsService {
       await this.ensurePrivateImportBucket({
         bucket: context.imageImportBucket,
         regionId: context.regionId,
-        accessKeyId: decryptCloudAccountCredential(context.accessKeyId),
-        accessKeySecret: decryptCloudAccountCredential(context.accessKeySecret),
+        accessKeyId: context.accessKeyId,
+        accessKeySecret: context.accessKeySecret,
       });
       const ready = await this.prisma.cloudAccountContext.update({
         where: { id },

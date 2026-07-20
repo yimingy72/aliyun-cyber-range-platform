@@ -13,11 +13,6 @@ function createResponse(payload: unknown, status = 200) {
 describe('CloudAccountContextsService', () => {
   const originalFetch = global.fetch;
   const originalAllowedOrigins = process.env.IMAGE_IMPORT_ALLOWED_ORIGINS;
-  const originalCredentialSecret = process.env.CLOUD_ACCOUNT_CREDENTIALS_SECRET_KEY;
-
-  beforeEach(() => {
-    process.env.CLOUD_ACCOUNT_CREDENTIALS_SECRET_KEY = 'unit-test-cloud-account-credential-key';
-  });
 
   afterEach(() => {
     global.fetch = originalFetch;
@@ -28,11 +23,6 @@ describe('CloudAccountContextsService', () => {
       process.env.IMAGE_IMPORT_ALLOWED_ORIGINS = originalAllowedOrigins;
     }
 
-    if (originalCredentialSecret === undefined) {
-      delete process.env.CLOUD_ACCOUNT_CREDENTIALS_SECRET_KEY;
-    } else {
-      process.env.CLOUD_ACCOUNT_CREDENTIALS_SECRET_KEY = originalCredentialSecret;
-    }
   });
 
   it('returns only the ready active context to ordinary users without credentials', async () => {
@@ -155,59 +145,6 @@ describe('CloudAccountContextsService', () => {
     await expect(resolveAccountUid.call(service, 'test-access-key', 'test-access-secret')).resolves.toBe('1234567890');
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=GetCallerIdentity');
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).not.toContain('test-access-secret');
-  });
-
-  it('encrypts persisted credentials and decrypts them only for cloud API calls', async () => {
-    let stored: Record<string, unknown> | null = null;
-    const create = jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
-      stored = {
-        id: 'context-created',
-        ...data,
-        lastError: null,
-        lastVerifiedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      return stored;
-    });
-    const update = jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
-      stored = { ...stored!, ...data };
-      return stored;
-    });
-    const findUnique = jest.fn(async ({ where }: { where: Record<string, unknown> }) =>
-      'id' in where ? stored : null,
-    );
-    global.fetch = jest
-      .fn()
-      .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockResolvedValueOnce(createResponse({}, 200))
-      .mockResolvedValueOnce(createResponse({}, 200));
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique,
-        count: jest.fn().mockResolvedValue(0),
-        create,
-        update,
-      },
-    } as unknown as PrismaService);
-
-    await service.create({
-      displayName: 'Training Account',
-      regionId: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-    });
-
-    const persisted = create.mock.calls[0][0].data as { accessKeyId: string; accessKeySecret: string };
-    expect(persisted.accessKeyId).toMatch(/^enc:cloud:v1:/);
-    expect(persisted.accessKeySecret).toMatch(/^enc:cloud:v1:/);
-    expect(persisted.accessKeyId).not.toContain('test-access-key');
-    expect(persisted.accessKeySecret).not.toContain('test-access-secret');
-    await expect(service.getCredentials('context-created')).resolves.toMatchObject({
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-    });
   });
 
   it('blocks an account switch while live instances or provision jobs still exist', async () => {
