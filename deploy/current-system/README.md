@@ -15,15 +15,18 @@
 - 平台拓扑 / 我的拓扑双视角
 - 单实例专属 `实例管理` 页与批量创建 / 历史 / 自动到期销毁
 - 独立 `provisioner-worker` 容器执行创建、销毁、状态刷新和 auto-expire
+- Keycloak OIDC 登录、Token Exchange 与平台用户同步
+- 独立 `mcp` Gateway，提供受 OIDC 保护的 Streamable HTTP MCP endpoint
 
 ## 目录内容
 
-- [docker-compose.yml](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/docker-compose.yml)
-- [docker-compose.images.yml](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/docker-compose.images.yml)
-- [apps/api/Dockerfile](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/apps/api/Dockerfile)
-- [apps/web/Dockerfile](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/apps/web/Dockerfile)
-- [scripts/docker/seed-provider-mirror.sh](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/scripts/docker/seed-provider-mirror.sh)
-- [.env.example](/Users/yym/Documents/阿里云For综合靶场竞赛平台/deploy/current-system/.env.example)
+- [docker-compose.yml](./docker-compose.yml)
+- [docker-compose.images.yml](./docker-compose.images.yml)
+- [apps/api/Dockerfile](./apps/api/Dockerfile)
+- [apps/web/Dockerfile](./apps/web/Dockerfile)
+- [apps/mcp/Dockerfile](./apps/mcp/Dockerfile)
+- [scripts/docker/seed-provider-mirror.sh](./scripts/docker/seed-provider-mirror.sh)
+- [.env.example](./.env.example)
 - `images/image-manifest.txt`
 
 ## 使用方式
@@ -52,8 +55,12 @@ cp .env.example .env
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
 - `ADMIN_TOKEN`
+- `KEYCLOAK_ADMIN_PASSWORD`
+- `MCP_OIDC_CLIENT_SECRET`
 
 `RANGE_PROVISIONER_MODE` 默认使用 `opentofu`，会实际创建并计费阿里云资源；如仅需演练平台流程，请在 `.env` 中显式设置为 `dry-run`。
+
+`OIDC_ISSUER` 和 `KEYCLOAK_HOSTNAME` 必须是浏览器与 MCP 客户端可访问的外部地址；若使用非默认端口，`KEYCLOAK_HOSTNAME` 必须是完整 URL（例如 `http://localhost:18080`），并与 `OIDC_ISSUER` 完全一致。Compose 内部的 JWKS、Token Exchange 和 Keycloak Admin 调用固定使用 `keycloak:8080`，不应配置为容器内的 `localhost`。
 
 5. 启动系统：
 
@@ -67,8 +74,8 @@ docker compose up -d --build
 
 注意：
 
-- 当前部署标签已经对齐到 `2026-07-08`
-- 本仓库里现存的 `2026-07-03` 离线包没有随这轮代码一起重导出
+- 当前部署标签默认对齐到 `2026-07-19`（可通过 `CYBER_RANGE_IMAGE_TAG` 覆盖）
+- 离线包需要包含 PostgreSQL、Keycloak、API、worker、Web 和 MCP 镜像
 - 如果你要部署“当前代码”，请先在当前机器重新导出一份新的离线包，再拷贝到目标机器
 
 1. 进入目录：
@@ -80,13 +87,13 @@ cd deploy/current-system
 2. 如果你已经重新导出当前版本镜像包，导入镜像：
 
 ```bash
-docker load -i images/current-system-images-2026-07-08.tar.gz
+docker load -i images/current-system-images-2026-07-19.tar.gz
 ```
 
 如需校验包完整性：
 
 ```bash
-shasum -a 256 -c images/current-system-images-2026-07-08.tar.gz.sha256
+shasum -a 256 -c images/current-system-images-2026-07-19.tar.gz.sha256
 ```
 
 3. 复制环境变量模板：
@@ -103,9 +110,10 @@ docker compose -f docker-compose.images.yml up -d
 
 镜像版 compose 默认使用以下标签：
 
-- `cyber-range-api:2026-07-08`
-- `cyber-range-provisioner-worker:2026-07-08`
-- `cyber-range-web:2026-07-08`
+- `cyber-range-api:2026-07-19`
+- `cyber-range-provisioner-worker:2026-07-19`
+- `cyber-range-web:2026-07-19`
+- `cyber-range-mcp:2026-07-19`
 
 ## 部署说明
 
@@ -116,9 +124,10 @@ docker compose -f docker-compose.images.yml up -d
   - `packages/`
   - `infra/`
   - `deploy/current-system/`
+- Keycloak 的 realm、主题和 bootstrap 脚本通过仓库根目录挂载；镜像版 compose 不需要重新构建应用镜像，但仍需要完整仓库源码。
 - 如果使用已导出的镜像：
   - 优先使用 `docker-compose.images.yml`
-  - 不依赖源码构建
+  - 不依赖源码构建应用镜像
 
 ## 启动后的服务
 
@@ -126,6 +135,12 @@ docker compose -f docker-compose.images.yml up -d
   - 默认端口：`3000`
 - `api`
   - 默认端口：`3001`
+- `mcp`
+  - 默认端口：`8787`，endpoint：`POST /mcp`
+- `keycloak`
+  - 默认端口：`8080`，负责 Web 与 MCP 的 OIDC 登录和 Token Exchange
+- `keycloak-bootstrap`
+  - 一次性初始化 realm、MCP Gateway client 与 smoke service account
 - `provisioner-worker`
   - 负责 OpenTofu 执行与资源任务处理
 - `postgres`
@@ -144,6 +159,8 @@ docker compose -f docker-compose.images.yml up -d
 
 - `postgres-data`
   - 数据库数据
+- `keycloak-postgres-data`
+  - Keycloak 身份与授权数据
 - `opentofu-workspaces`
   - OpenTofu 工作目录、plan、state、outputs
 - `provider-mirror`
@@ -155,8 +172,11 @@ docker compose -f docker-compose.images.yml up -d
 docker compose config
 docker compose ps
 docker compose logs -f api
+docker compose logs -f keycloak
 docker compose logs -f provisioner-worker
 docker compose logs -f web
+docker compose logs -f mcp
+curl -fsS http://127.0.0.1:8787/healthz
 ```
 
 ## 说明

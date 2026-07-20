@@ -167,7 +167,7 @@ docker compose config
 
 ### 5. MCP 联调
 
-完整对外接入手册见：`/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/product/2026-07-15-MCP客户端接入示例.md:1`
+完整对外接入手册见：[MCP 客户端接入示例](docs/product/2026-07-15-MCP客户端接入示例.md)。
 
 该文档现在已经包含：
 

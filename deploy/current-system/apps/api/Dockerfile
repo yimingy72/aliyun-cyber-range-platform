@@ -46,7 +46,18 @@ COPY deploy/current-system/scripts/docker/seed-provider-mirror.sh /usr/local/bin
 
 RUN chmod +x /usr/local/bin/tofu /usr/local/bin/seed-provider-mirror.sh
 
-RUN pnpm --filter @aliyun-cyber-range/api build
+RUN build_attempt=1; \
+  while [ "$build_attempt" -le 3 ]; do \
+    if pnpm --filter @aliyun-cyber-range/api build; then \
+      exit 0; \
+    fi; \
+    if [ "$build_attempt" -eq 3 ]; then \
+      exit 1; \
+    fi; \
+    build_attempt=$((build_attempt + 1)); \
+    echo "API build failed; retrying attempt $build_attempt of 3..."; \
+    sleep 5; \
+  done
 
 EXPOSE 3001
 

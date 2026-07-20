@@ -1,6 +1,6 @@
 # MCP Gateway
 
-接入示例见：`/Users/yym/Documents/阿里云For综合靶场竞赛平台/docs/product/2026-07-15-MCP客户端接入示例.md:1`
+接入示例见：[MCP 客户端接入示例](../../docs/product/2026-07-15-MCP客户端接入示例.md)。
 
 完整的以下内容都统一维护在上面的产品文档里：
 
@@ -31,6 +31,7 @@
 - `single_instance_list`
 - `single_instance_get`
 - `single_instance_get_access`
+- `single_instance_spec_check`
 - `single_instance_batch_launch`
 - `single_instance_destroy`
 - `single_instance_batch_destroy`

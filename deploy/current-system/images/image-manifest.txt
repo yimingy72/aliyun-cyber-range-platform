@@ -1,6 +1,9 @@
 exportedAt=not-exported
-archive=not-exported-for-2026-07-08
+archive=not-exported-for-2026-07-19
 images:
-  - repoTags=[cyber-range-api:2026-07-08 for-api:latest] | id=sha256:ef2781047073f423a9910bbf203d201f46736f799036a3c4861c9ad18cd49dbf | size=1360753992
-  - repoTags=[cyber-range-provisioner-worker:2026-07-08 for-provisioner-worker:latest] | id=sha256:ef2781047073f423a9910bbf203d201f46736f799036a3c4861c9ad18cd49dbf | size=1360753992
-  - repoTags=[cyber-range-web:2026-07-08 for-web:latest] | id=sha256:cffb8a499a716bad2d81a2ec664f5aee1c43d8356e67a58f0b9c3e2577692f05 | size=1219015067
+  - repoTags=[postgres:16-alpine] | id=sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 | size=113870104
+  - repoTags=[vdagxumcha4qdz-quay.xuanyuan.run/keycloak/keycloak:26.1.4] | id=sha256:044a457e04987e1fff756be3d2fa325a4ef420fa356b7034ecc9f1b693c32761 | size=237671373
+  - repoTags=[cyber-range-api:2026-07-19] | id=sha256:1abb9d7587821d9a2f0e3b3f0c75be0011e244437714ddf55caa8527e8ab2604 | size=574752751
+  - repoTags=[cyber-range-provisioner-worker:2026-07-19] | id=sha256:a0b6beaa8c6b86cc928e351396c021ad1c17c80d380c86e72cca3aa54cb641ff | size=574752766
+  - repoTags=[cyber-range-web:2026-07-19] | id=sha256:73892366c3309b46fbec638fcf07b7ee9f5bb80bbaab0c3d15652b6e5679a2c5 | size=427365291
+  - repoTags=[cyber-range-mcp:2026-07-19] | id=sha256:831d8e5ad5d9937061ab5c7cb6b2dcf9178bcf95746f79b021f5f0e33315ad93 | size=261905830
