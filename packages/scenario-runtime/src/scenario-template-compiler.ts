@@ -95,6 +95,7 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
         internalPort: mapping.internalPort,
       })),
     ),
+    securityGroupRulesConfigured: true,
     securityGroupRules: [
       ...(template.access.securityGroupRules ?? []).map((rule) => ({
         key: rule.key,

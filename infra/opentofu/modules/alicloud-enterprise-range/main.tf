@@ -115,33 +115,8 @@ locals {
     for eip in local.normalized_eips : eip.key => eip
   }
 
-  normalized_security_group_rules = length(var.security_group_rules) > 0 ? var.security_group_rules : [
-    {
-      key             = "entry-ssh-default"
-      name            = "Entry SSH Default"
-      target_host_key = local.resolved_entry_host_key
-      direction       = "ingress"
-      policy          = "accept"
-      protocol        = "tcp"
-      port_range      = "22/22"
-      source_cidr     = var.allowed_ingress_cidr
-      priority        = 1
-    },
-    {
-      key             = "entry-http-default"
-      name            = "Entry HTTP Default"
-      target_host_key = local.resolved_entry_host_key
-      direction       = "ingress"
-      policy          = "accept"
-      protocol        = "tcp"
-      port_range      = "80/80"
-      source_cidr     = var.allowed_ingress_cidr
-      priority        = 1
-    },
-  ]
-
   security_group_rule_map = {
-    for rule in local.normalized_security_group_rules : rule.key => rule
+    for rule in var.security_group_rules : rule.key => rule
   }
 
   acl_map = {
@@ -259,7 +234,7 @@ check "eip_target_exists" {
 check "security_group_rule_target_exists" {
   assert {
     condition = alltrue([
-      for rule in local.normalized_security_group_rules : contains(keys(local.host_map), rule.target_host_key)
+      for rule in var.security_group_rules : contains(keys(local.host_map), rule.target_host_key)
     ])
     error_message = "Every security group rule must reference an existing host target."
   }
@@ -424,11 +399,15 @@ resource "alicloud_network_acl" "zone_acls" {
   })
 }
 
-resource "alicloud_security_group" "range" {
-  security_group_name = "${var.resource_name_prefix}-sg"
-  description         = "Security group for the stage-one enterprise cyber range."
+resource "alicloud_security_group" "hosts" {
+  for_each = local.host_map
+
+  security_group_name = substr(replace("${var.resource_name_prefix}-${each.key}-sg", " ", "-"), 0, 128)
+  description         = "Security group for ${each.value.name}."
   vpc_id              = alicloud_vpc.range.id
-  tags                = local.common_tags
+  tags = merge(local.common_tags, {
+    host_key = each.key
+  })
 }
 
 resource "alicloud_security_group_rule" "compiled_rules" {
@@ -440,7 +419,7 @@ resource "alicloud_security_group_rule" "compiled_rules" {
   policy            = each.value.policy
   port_range        = each.value.port_range
   priority          = each.value.priority
-  security_group_id = alicloud_security_group.range.id
+  security_group_id = alicloud_security_group.hosts[each.value.target_host_key].id
   cidr_ip           = each.value.source_cidr
 }
 
@@ -452,7 +431,7 @@ resource "alicloud_instance" "hosts" {
   instance_type        = try(each.value.instance_type, var.instance_type)
   image_id             = var.image_id
   password             = lookup(var.host_passwords, each.key, var.instance_password)
-  security_groups      = [alicloud_security_group.range.id]
+  security_groups      = [alicloud_security_group.hosts[each.key].id]
   vswitch_id           = alicloud_vswitch.zones[each.value.zone_key].id
   private_ip           = each.value.private_ip
   user_data            = try(local.host_user_data_map[each.key], null)
@@ -489,7 +468,7 @@ resource "alicloud_network_interface" "secondary" {
   description        = each.value.description
   vswitch_id         = alicloud_vswitch.zones[each.value.zone_key].id
   primary_ip_address = each.value.private_ip
-  security_group_ids = [alicloud_security_group.range.id]
+  security_group_ids = [alicloud_security_group.hosts[each.value.host_key].id]
   tags = merge(local.common_tags, {
     host_key     = each.value.host_key
     zone_key     = each.value.zone_key

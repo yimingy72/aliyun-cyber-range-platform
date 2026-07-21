@@ -21,6 +21,7 @@ export type CompiledProvisionSpec = {
   eips: CompiledEip[];
   snatEntries: CompiledSnatEntry[];
   dnatEntries: CompiledDnatEntry[];
+  securityGroupRulesConfigured: true;
   securityGroupRules: CompiledSecurityGroupRule[];
   aclRules: CompiledAclRule[];
   bootstrapScripts: CompiledBootstrapScript[];

@@ -10,7 +10,11 @@ import type {
   SwitchTemplateNode,
   TemplateNode,
 } from '../../../lib/scenario-graph';
-import { findDuplicateDnatExternalPorts } from '../../../lib/scenario-graph';
+import {
+  findDuplicateDnatExternalPorts,
+  getEffectiveSecurityGroupRules,
+  resolveSecurityGroupRulesMode,
+} from '../../../lib/scenario-graph';
 export type {
   EcsTemplateNode,
   RouterTemplateNode,
@@ -426,29 +430,37 @@ function renderHostFields(
     });
   }
 
-  function handleAddNicSecurityRule(nicId: string) {
+  function updateNicSecurityGroupRules(
+    nicId: string,
+    updateRules: (rules: ReturnType<typeof getEffectiveSecurityGroupRules>) => ReturnType<typeof getEffectiveSecurityGroupRules>,
+  ) {
     onUpdateNode(selectedNode.id, {
       ...selectedNode,
-      nics: nicItems.map((item) =>
+      nics: nicItems.map((item, index) =>
         item.id === nicId
           ? {
               ...item,
-              securityGroupRules: [
-                ...item.securityGroupRules,
-                {
-                  key: `${nicId}-sg-${item.securityGroupRules.length + 1}`,
-                  direction: 'ingress',
-                  protocol: 'tcp',
-                  portRange: '22/22',
-                  sourceCidr: '0.0.0.0/0',
-                  policy: 'accept',
-                  priority: item.securityGroupRules.length + 1,
-                },
-              ],
+              securityGroupRulesMode: 'custom',
+              securityGroupRules: updateRules(index === 0 ? getEffectiveSecurityGroupRules(item) : item.securityGroupRules),
             }
           : item,
       ),
     });
+  }
+
+  function handleAddNicSecurityRule(nicId: string) {
+    updateNicSecurityGroupRules(nicId, (rules) => [
+      ...rules,
+      {
+        key: `${nicId}-sg-${rules.length + 1}`,
+        direction: 'ingress',
+        protocol: 'tcp',
+        portRange: '22/22',
+        sourceCidr: '0.0.0.0/0',
+        policy: 'accept',
+        priority: rules.length + 1,
+      },
+    ]);
   }
 
   function buildNodeWithUpdatedCompute(nextPatch: Partial<EcsTemplateNode>) {
@@ -567,6 +579,9 @@ function renderHostFields(
         }
       >
         {nicItems.map((nic, index) => {
+          const isPrimaryNic = index === 0;
+          const securityGroupRules = isPrimaryNic ? getEffectiveSecurityGroupRules(nic) : nic.securityGroupRules;
+          const securityGroupRulesMode = isPrimaryNic ? resolveSecurityGroupRulesMode(nic) : 'custom';
           const selectedSwitch = switchById.get(nic.switchId) ?? null;
           const ipHint = selectedSwitch ? `仅允许 ${selectedSwitch.cidr} 网段` : '仅允许已连接交换机的网段';
           const ipError =
@@ -582,7 +597,10 @@ function renderHostFields(
           return (
             <div key={nic.id} className="template-property-card">
             <div className="template-property-card-head">
-              <strong className="template-property-card-title">网卡 {index + 1}</strong>
+              <strong className="template-property-card-title">
+                网卡 {index + 1}
+                {securityGroupRulesMode === 'default' ? <span className="template-property-group-badge">平台默认</span> : null}
+              </strong>
               <div className="template-property-card-actions">
                 <button
                   type="button"
@@ -677,29 +695,19 @@ function renderHostFields(
                 />
               </PropertyField>
             </div>
-            {nic.securityGroupRules.map((rule, ruleIndex) => (
+            {securityGroupRules.map((rule, ruleIndex) => (
               <div key={rule.key} className="template-property-card template-property-card-sub">
                 <div className="template-property-card-head">
                   <strong className="template-property-card-title">安全规则 {index + 1}-{ruleIndex + 1}</strong>
                   <button
                     type="button"
-                    className="template-property-inline-button is-danger"
-                    aria-label={`删除安全规则 ${index + 1}-${ruleIndex + 1}`}
-                    onClick={() =>
-                      onUpdateNode(selectedNode.id, {
-                        ...selectedNode,
-                        nics: nicItems.map((item) =>
-                          item.id === nic.id
-                            ? {
-                                ...item,
-                                securityGroupRules: item.securityGroupRules.filter(
-                                  (securityRule) => securityRule.key !== rule.key,
-                                ),
-                              }
-                            : item,
-                        ),
-                      })
-                    }
+                  className="template-property-inline-button is-danger"
+                  aria-label={`删除安全规则 ${index + 1}-${ruleIndex + 1}`}
+                  onClick={() =>
+                    updateNicSecurityGroupRules(nic.id, (rules) =>
+                      rules.filter((securityRule) => securityRule.key !== rule.key),
+                    )
+                  }
                   >
                     删除
                   </button>
@@ -710,21 +718,13 @@ function renderHostFields(
                       aria-label={`安全方向 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.direction}
                       onChange={(event) =>
-                        onUpdateNode(selectedNode.id, {
-                          ...selectedNode,
-                          nics: nicItems.map((item) =>
-                            item.id === nic.id
-                              ? {
-                                  ...item,
-                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
-                                    securityRule.key === rule.key
-                                      ? { ...securityRule, direction: event.target.value as typeof securityRule.direction }
-                                      : securityRule,
-                                  ),
-                                }
-                              : item,
+                        updateNicSecurityGroupRules(nic.id, (rules) =>
+                          rules.map((securityRule) =>
+                            securityRule.key === rule.key
+                              ? { ...securityRule, direction: event.target.value as typeof securityRule.direction }
+                              : securityRule,
                           ),
-                        })
+                        )
                       }
                     >
                       <option value="ingress">ingress</option>
@@ -736,21 +736,13 @@ function renderHostFields(
                       aria-label={`安全协议 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.protocol}
                       onChange={(event) =>
-                        onUpdateNode(selectedNode.id, {
-                          ...selectedNode,
-                          nics: nicItems.map((item) =>
-                            item.id === nic.id
-                              ? {
-                                  ...item,
-                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
-                                    securityRule.key === rule.key
-                                      ? { ...securityRule, protocol: event.target.value }
-                                      : securityRule,
-                                  ),
-                                }
-                              : item,
+                        updateNicSecurityGroupRules(nic.id, (rules) =>
+                          rules.map((securityRule) =>
+                            securityRule.key === rule.key
+                              ? { ...securityRule, protocol: event.target.value }
+                              : securityRule,
                           ),
-                        })
+                        )
                       }
                     >
                       <option value="tcp">tcp</option>
@@ -764,21 +756,13 @@ function renderHostFields(
                       aria-label={`安全端口 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.portRange}
                       onChange={(event) =>
-                        onUpdateNode(selectedNode.id, {
-                          ...selectedNode,
-                          nics: nicItems.map((item) =>
-                            item.id === nic.id
-                              ? {
-                                  ...item,
-                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
-                                    securityRule.key === rule.key
-                                      ? { ...securityRule, portRange: event.target.value }
-                                      : securityRule,
-                                  ),
-                                }
-                              : item,
+                        updateNicSecurityGroupRules(nic.id, (rules) =>
+                          rules.map((securityRule) =>
+                            securityRule.key === rule.key
+                              ? { ...securityRule, portRange: event.target.value }
+                              : securityRule,
                           ),
-                        })
+                        )
                       }
                     />
                   </PropertyField>
@@ -787,21 +771,13 @@ function renderHostFields(
                       aria-label={`安全策略 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.policy}
                       onChange={(event) =>
-                        onUpdateNode(selectedNode.id, {
-                          ...selectedNode,
-                          nics: nicItems.map((item) =>
-                            item.id === nic.id
-                              ? {
-                                  ...item,
-                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
-                                    securityRule.key === rule.key
-                                      ? { ...securityRule, policy: event.target.value as typeof securityRule.policy }
-                                      : securityRule,
-                                  ),
-                                }
-                              : item,
+                        updateNicSecurityGroupRules(nic.id, (rules) =>
+                          rules.map((securityRule) =>
+                            securityRule.key === rule.key
+                              ? { ...securityRule, policy: event.target.value as typeof securityRule.policy }
+                              : securityRule,
                           ),
-                        })
+                        )
                       }
                     >
                       <option value="accept">accept</option>
@@ -814,21 +790,13 @@ function renderHostFields(
                       type="number"
                       value={rule.priority}
                       onChange={(event) =>
-                        onUpdateNode(selectedNode.id, {
-                          ...selectedNode,
-                          nics: nicItems.map((item) =>
-                            item.id === nic.id
-                              ? {
-                                  ...item,
-                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
-                                    securityRule.key === rule.key
-                                      ? { ...securityRule, priority: Number(event.target.value) || 1 }
-                                      : securityRule,
-                                  ),
-                                }
-                              : item,
+                        updateNicSecurityGroupRules(nic.id, (rules) =>
+                          rules.map((securityRule) =>
+                            securityRule.key === rule.key
+                              ? { ...securityRule, priority: Number(event.target.value) || 1 }
+                              : securityRule,
                           ),
-                        })
+                        )
                       }
                     />
                   </PropertyField>
@@ -837,21 +805,13 @@ function renderHostFields(
                       aria-label={`安全源网段 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.sourceCidr}
                       onChange={(event) =>
-                        onUpdateNode(selectedNode.id, {
-                          ...selectedNode,
-                          nics: nicItems.map((item) =>
-                            item.id === nic.id
-                              ? {
-                                  ...item,
-                                  securityGroupRules: item.securityGroupRules.map((securityRule) =>
-                                    securityRule.key === rule.key
-                                      ? { ...securityRule, sourceCidr: event.target.value }
-                                      : securityRule,
-                                  ),
-                                }
-                              : item,
+                        updateNicSecurityGroupRules(nic.id, (rules) =>
+                          rules.map((securityRule) =>
+                            securityRule.key === rule.key
+                              ? { ...securityRule, sourceCidr: event.target.value }
+                              : securityRule,
                           ),
-                        })
+                        )
                       }
                     />
                   </PropertyField>

@@ -3,6 +3,110 @@ import { describe, expect, it } from 'vitest';
 import { buildScenarioTemplateSpecFromTopologyGraph } from './topology-graph-to-scenario-template';
 
 describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
+  it('materializes platform defaults per ECS but preserves a custom empty rule set', () => {
+    const template = buildScenarioTemplateSpecFromTopologyGraph({
+      metadata: {
+        name: '综合靶场',
+        slug: 'enterprise-range',
+        version: 'v1',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        edges: [],
+        nodes: [
+          {
+            id: 'switch-core',
+            kind: 'switch',
+            label: '核心交换机',
+            zoneKey: 'core',
+            cidr: '10.0.0.0/24',
+            purpose: 'business-zone',
+            aclRules: [],
+            nat: { snatEnabled: false, dnatMappings: [] },
+          },
+          {
+            id: 'ecs-default',
+            kind: 'ecs',
+            label: '默认规则 ECS',
+            zoneKey: 'core',
+            role: 'entry',
+            privateIp: '10.0.0.10',
+            exposePublic: true,
+            image: 'ubuntu_22_04_x64_20G_alibase',
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.10' }],
+            portGroups: [],
+            nics: [
+              {
+                id: 'ecs-default-nic-1',
+                switchId: 'switch-core',
+                privateIp: '10.0.0.10',
+                secondaryIps: [],
+                securityGroupRules: [],
+                securityGroupRulesMode: 'default',
+              },
+            ],
+            initScript: '',
+            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+            instanceTypeStrategy: { mode: 'auto' },
+          },
+          {
+            id: 'ecs-custom-empty',
+            kind: 'ecs',
+            label: '空规则 ECS',
+            zoneKey: 'core',
+            role: 'host',
+            privateIp: '10.0.0.11',
+            exposePublic: false,
+            image: 'ubuntu_22_04_x64_20G_alibase',
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.11' }],
+            portGroups: [],
+            nics: [
+              {
+                id: 'ecs-custom-empty-nic-1',
+                switchId: 'switch-core',
+                privateIp: '10.0.0.11',
+                secondaryIps: [],
+                securityGroupRules: [],
+                securityGroupRulesMode: 'custom',
+              },
+            ],
+            initScript: '',
+            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+            instanceTypeStrategy: { mode: 'auto' },
+          },
+        ] as any,
+      },
+      defaults: { vpcCidr: '10.0.0.0/16' },
+    });
+
+    expect(template.access.securityGroupRules).toEqual([
+      expect.objectContaining({
+        key: 'ecs-default-nic-1-default-ssh',
+        targetHostKey: 'ecs-default',
+        direction: 'ingress',
+        protocol: 'tcp',
+        portRange: '22/22',
+        sourceCidr: '0.0.0.0/0',
+        policy: 'accept',
+        priority: 1,
+      }),
+      expect.objectContaining({
+        key: 'ecs-default-nic-1-default-http',
+        targetHostKey: 'ecs-default',
+        direction: 'ingress',
+        protocol: 'tcp',
+        portRange: '80/80',
+        sourceCidr: '0.0.0.0/0',
+        policy: 'accept',
+        priority: 1,
+      }),
+    ]);
+  });
+
   it('builds shared NAT EIPs for every switch SNAT and DNAT rule in a topology', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {

@@ -62,6 +62,8 @@ export type ScenarioGraphSecurityGroupRule = {
   description?: string;
 };
 
+export type SecurityGroupRulesMode = 'default' | 'custom';
+
 export type ScenarioGraphNic = {
   id: string;
   switchId: string;
@@ -69,7 +71,47 @@ export type ScenarioGraphNic = {
   privateIp: string;
   secondaryIps: string[];
   securityGroupRules: ScenarioGraphSecurityGroupRule[];
+  securityGroupRulesMode?: SecurityGroupRulesMode;
 };
+
+export function getPlatformDefaultSecurityGroupRules(nicId: string): ScenarioGraphSecurityGroupRule[] {
+  return [
+    {
+      key: `${nicId}-default-ssh`,
+      direction: 'ingress',
+      protocol: 'tcp',
+      portRange: '22/22',
+      sourceCidr: '0.0.0.0/0',
+      policy: 'accept',
+      priority: 1,
+      description: '平台默认 SSH 访问',
+    },
+    {
+      key: `${nicId}-default-http`,
+      direction: 'ingress',
+      protocol: 'tcp',
+      portRange: '80/80',
+      sourceCidr: '0.0.0.0/0',
+      policy: 'accept',
+      priority: 1,
+      description: '平台默认 HTTP 访问',
+    },
+  ];
+}
+
+export function resolveSecurityGroupRulesMode(nic: ScenarioGraphNic): SecurityGroupRulesMode {
+  if (nic.securityGroupRulesMode) {
+    return nic.securityGroupRulesMode;
+  }
+
+  return nic.securityGroupRules.length > 0 ? 'custom' : 'default';
+}
+
+export function getEffectiveSecurityGroupRules(nic: ScenarioGraphNic): ScenarioGraphSecurityGroupRule[] {
+  return resolveSecurityGroupRulesMode(nic) === 'default'
+    ? getPlatformDefaultSecurityGroupRules(nic.id)
+    : nic.securityGroupRules;
+}
 
 export type ScenarioGraphSwitchDnatMapping = {
   key: string;

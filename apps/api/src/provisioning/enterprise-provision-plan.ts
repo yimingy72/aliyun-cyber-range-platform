@@ -248,9 +248,15 @@ export function buildEnterpriseProvisionPlan(input: {
     buildNatGatewaysFromCompiledSpec(input.compiledSpec);
   const eipDefinitions =
     buildEipsFromCompiledProvisionSpec(input.compiledProvisionSpec) || buildEipsFromCompiledSpec(input.compiledSpec);
-  const securityGroupRules =
-    buildSecurityGroupRulesFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
-    buildSecurityGroupRulesFromCompiledSpec(input.compiledSpec);
+  const compiledProvisionSecurityGroupRules = buildSecurityGroupRulesFromCompiledProvisionSpec(
+    input.compiledProvisionSpec,
+  );
+  const securityGroupRules = resolveSecurityGroupRules({
+    compiledProvisionSecurityGroupRules,
+    compiledProvisionSpec: input.compiledProvisionSpec,
+    compiledSpec: input.compiledSpec,
+    hosts: topologySpec.hosts,
+  });
   const aclDefinitions =
     buildAclDefinitionsFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
     buildAclDefinitionsFromCompiledSpec(input.compiledSpec);
@@ -623,6 +629,44 @@ function buildSecurityGroupRulesFromCompiledProvisionSpec(
       priority: typeof record.priority === 'number' ? record.priority : 1,
     }];
   });
+}
+
+function resolveSecurityGroupRules(input: {
+  compiledProvisionSecurityGroupRules: ReturnType<typeof buildSecurityGroupRulesFromCompiledProvisionSpec>;
+  compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined;
+  compiledSpec: RangeTemplateCompiledSpec | null | undefined;
+  hosts: RangeTemplateHost[];
+}) {
+  const explicitRules = input.compiledProvisionSecurityGroupRules ?? buildSecurityGroupRulesFromCompiledSpec(input.compiledSpec);
+
+  if (explicitRules.length > 0 || input.compiledProvisionSpec?.securityGroupRulesConfigured === true) {
+    return explicitRules;
+  }
+
+  return input.hosts.flatMap((host) => [
+    {
+      key: `${host.key}-default-ssh`,
+      name: `${host.key} default SSH`,
+      targetHostKey: host.key,
+      direction: 'ingress',
+      policy: 'accept',
+      protocol: 'tcp',
+      portRange: '22/22',
+      sourceCidr: '0.0.0.0/0',
+      priority: 1,
+    },
+    {
+      key: `${host.key}-default-http`,
+      name: `${host.key} default HTTP`,
+      targetHostKey: host.key,
+      direction: 'ingress',
+      policy: 'accept',
+      protocol: 'tcp',
+      portRange: '80/80',
+      sourceCidr: '0.0.0.0/0',
+      priority: 1,
+    },
+  ]);
 }
 
 function buildAclDefinitionsFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {

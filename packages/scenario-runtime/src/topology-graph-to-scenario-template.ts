@@ -1,5 +1,5 @@
 import { resolvePreferredInstanceTypes } from './instance-type-catalog';
-import type { TemplateNode } from './scenario-graph';
+import { getPlatformDefaultSecurityGroupRules, type TemplateNode } from './scenario-graph';
 import type {
   ScenarioTemplateAclRule,
   ScenarioTemplateAccessConfig,
@@ -62,6 +62,7 @@ type HostNicDraft = {
   privateIp?: string;
   secondaryIps?: string[];
   securityGroupRules?: HostNicSecurityRuleDraft[];
+  securityGroupRulesMode?: 'default' | 'custom';
 };
 
 function readRecord(value: unknown) {
@@ -232,8 +233,17 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
         const candidate = readRecord(host);
         const nics = Array.isArray(candidate?.nics) ? (candidate.nics as HostNicDraft[]) : [];
 
-        return nics.flatMap<ScenarioTemplateSecurityGroupRule>((nic) =>
-          (nic.securityGroupRules ?? []).map((rule, index) => ({
+        return nics.flatMap<ScenarioTemplateSecurityGroupRule>((nic, nicIndex) => {
+          const storedRules = nic.securityGroupRules ?? [];
+          const usePlatformDefaults =
+            nicIndex === 0 &&
+            (nic.securityGroupRulesMode === 'default' ||
+              (nic.securityGroupRulesMode === undefined && storedRules.length === 0));
+          const rules = usePlatformDefaults
+            ? getPlatformDefaultSecurityGroupRules(nic.id ?? `${host.id}-nic-${nicIndex + 1}`)
+            : storedRules;
+
+          return rules.map((rule, index) => ({
             key: rule.key ?? `${host.id}-nic-sg-${index + 1}`,
             targetHostKey: host.id,
             direction: readIngressDirection(rule.direction),
@@ -242,8 +252,8 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
             sourceCidr: typeof rule.sourceCidr === 'string' ? rule.sourceCidr : '0.0.0.0/0',
             policy: readAcceptPolicy(rule.policy),
             priority: typeof rule.priority === 'number' ? rule.priority : 1,
-          })),
-        );
+          }));
+        });
       }),
     ],
     aclRules: [

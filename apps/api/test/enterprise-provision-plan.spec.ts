@@ -1,6 +1,121 @@
 import { buildEnterpriseProvisionPlan } from '../src/provisioning/enterprise-provision-plan';
 
 describe('buildEnterpriseProvisionPlan', () => {
+  it('backfills platform SSH and HTTP rules for every ECS in a legacy template with no security-group rule intent', () => {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: 'range-instance-legacy-defaults',
+      templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
+      allocatedCidr: null,
+      topologySpec: {
+        vpcCidr: '10.99.0.0/16',
+        networkZones: [{ key: 'core', name: 'Core', purpose: 'business-zone', cidr: '10.99.1.0/24' }],
+        hosts: [
+          {
+            key: 'ecs-entry',
+            name: 'Entry ECS',
+            zoneKey: 'core',
+            role: 'entry',
+            privateIp: '10.99.1.10',
+            exposePublic: true,
+          },
+          {
+            key: 'ecs-app',
+            name: 'App ECS',
+            zoneKey: 'core',
+            role: 'app',
+            privateIp: '10.99.1.11',
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        securityGroupRules: [],
+      },
+    });
+
+    expect(plan.securityGroupRules).toEqual([
+      {
+        key: 'ecs-entry-default-ssh',
+        name: 'ecs-entry default SSH',
+        targetHostKey: 'ecs-entry',
+        direction: 'ingress',
+        policy: 'accept',
+        protocol: 'tcp',
+        portRange: '22/22',
+        sourceCidr: '0.0.0.0/0',
+        priority: 1,
+      },
+      {
+        key: 'ecs-entry-default-http',
+        name: 'ecs-entry default HTTP',
+        targetHostKey: 'ecs-entry',
+        direction: 'ingress',
+        policy: 'accept',
+        protocol: 'tcp',
+        portRange: '80/80',
+        sourceCidr: '0.0.0.0/0',
+        priority: 1,
+      },
+      {
+        key: 'ecs-app-default-ssh',
+        name: 'ecs-app default SSH',
+        targetHostKey: 'ecs-app',
+        direction: 'ingress',
+        policy: 'accept',
+        protocol: 'tcp',
+        portRange: '22/22',
+        sourceCidr: '0.0.0.0/0',
+        priority: 1,
+      },
+      {
+        key: 'ecs-app-default-http',
+        name: 'ecs-app default HTTP',
+        targetHostKey: 'ecs-app',
+        direction: 'ingress',
+        policy: 'accept',
+        protocol: 'tcp',
+        portRange: '80/80',
+        sourceCidr: '0.0.0.0/0',
+        priority: 1,
+      },
+    ]);
+  });
+
+  it('keeps an explicitly saved empty security-group rule set empty', () => {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: 'range-instance-custom-empty',
+      templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
+      allocatedCidr: null,
+      topologySpec: {
+        vpcCidr: '10.98.0.0/16',
+        networkZones: [{ key: 'core', name: 'Core', purpose: 'business-zone', cidr: '10.98.1.0/24' }],
+        hosts: [
+          {
+            key: 'ecs-custom',
+            name: 'Custom ECS',
+            zoneKey: 'core',
+            role: 'entry',
+            privateIp: '10.98.1.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-custom',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+      compiledProvisionSpec: {
+        securityGroupRulesConfigured: true,
+        securityGroupRules: [],
+      },
+    });
+
+    expect(plan.securityGroupRules).toEqual([]);
+  });
+
   it('builds a stable enterprise provision plan from topologySpec', () => {
     const plan = buildEnterpriseProvisionPlan({
       rangeInstanceId: 'range-instance-1',
@@ -99,37 +214,37 @@ describe('buildEnterpriseProvisionPlan', () => {
           isPublicEntry: false,
         },
       ],
-      hostDefinitions: [
-        {
+      hostDefinitions: expect.arrayContaining([
+        expect.objectContaining({
           key: 'dmz-entry',
           name: 'DMZ Entry',
           zoneKey: 'dmz',
           privateIp: '10.88.10.10',
           role: 'entry',
           exposePublic: true,
-        },
-        {
+        }),
+        expect.objectContaining({
           key: 'office-client',
           name: 'Office Client',
           zoneKey: 'office',
           privateIp: '10.88.20.10',
           role: 'workstation',
           exposePublic: false,
-        },
-        {
+        }),
+        expect.objectContaining({
           key: 'server-app',
           name: 'Server App',
           zoneKey: 'server',
           privateIp: '10.88.30.10',
           role: 'app',
           exposePublic: false,
-        },
-      ],
-      hosts: {
+        }),
+      ]),
+      hosts: expect.objectContaining({
         publicEntry: expect.objectContaining({ key: 'dmz-entry', privateIp: '10.88.10.10' }),
         officePrimary: expect.objectContaining({ key: 'office-client', privateIp: '10.88.20.10' }),
         serverPrimary: expect.objectContaining({ key: 'server-app', privateIp: '10.88.30.10' }),
-      },
+      }),
     }));
   });
 

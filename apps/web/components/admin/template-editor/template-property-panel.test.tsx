@@ -9,7 +9,157 @@ afterEach(() => {
   cleanup();
 });
 
+function createEcsNodeWithPlatformDefaults(): TemplateNode {
+  return {
+    id: 'ecs-1',
+    kind: 'ecs',
+    label: 'ECS 1',
+    instanceName: 'ECS 1',
+    hostName: 'ecs-1',
+    zoneKey: 'core',
+    role: 'host',
+    privateIp: '10.0.0.10',
+    exposePublic: true,
+    image: 'ubuntu_22_04_x64_20G_alibase',
+    imageName: 'ubuntu_22_04_x64_20G_alibase',
+    imageId: 'ubuntu_22_04_x64_20G_alibase',
+    cpu: 1,
+    memory: 2,
+    dnatMappings: [],
+    networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.10' }],
+    portGroups: [],
+    nics: [
+      {
+        id: 'ecs-1-nic-1',
+        switchId: 'switch-1',
+        privateIp: '10.0.0.10',
+        secondaryIps: [],
+        securityGroupRules: [],
+      },
+    ],
+    initScript: '',
+    imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+    instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+  };
+}
+
 describe('TemplatePropertyPanel', () => {
+  it('shows the platform default SSH and HTTP rules for an ECS without custom rules', () => {
+    const node: TemplateNode = {
+      id: 'ecs-1',
+      kind: 'ecs',
+      label: 'ECS 1',
+      instanceName: 'ECS 1',
+      hostName: 'ecs-1',
+      zoneKey: 'core',
+      role: 'host',
+      privateIp: '10.0.0.10',
+      exposePublic: true,
+      image: 'ubuntu_22_04_x64_20G_alibase',
+      imageName: 'ubuntu_22_04_x64_20G_alibase',
+      imageId: 'ubuntu_22_04_x64_20G_alibase',
+      cpu: 1,
+      memory: 2,
+      dnatMappings: [],
+      networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.10' }],
+      portGroups: [],
+      nics: [
+        {
+          id: 'ecs-1-nic-1',
+          switchId: 'switch-1',
+          privateIp: '10.0.0.10',
+          secondaryIps: [],
+          securityGroupRules: [],
+        },
+      ],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+      instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+    };
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
+
+    expect(screen.getByText('平台默认')).toBeTruthy();
+    expect((screen.getByLabelText('安全协议 1-1') as HTMLSelectElement).value).toBe('tcp');
+    expect((screen.getByLabelText('安全端口 1-1') as HTMLInputElement).value).toBe('22/22');
+    expect((screen.getByLabelText('安全协议 1-2') as HTMLSelectElement).value).toBe('tcp');
+    expect((screen.getByLabelText('安全端口 1-2') as HTMLInputElement).value).toBe('80/80');
+    expect(screen.getAllByDisplayValue('0.0.0.0/0')).toHaveLength(2);
+  });
+
+  it('persists the remaining rules as custom when a platform default rule is deleted', () => {
+    const node: TemplateNode = {
+      id: 'ecs-1',
+      kind: 'ecs',
+      label: 'ECS 1',
+      instanceName: 'ECS 1',
+      hostName: 'ecs-1',
+      zoneKey: 'core',
+      role: 'host',
+      privateIp: '10.0.0.10',
+      exposePublic: true,
+      image: 'ubuntu_22_04_x64_20G_alibase',
+      imageName: 'ubuntu_22_04_x64_20G_alibase',
+      imageId: 'ubuntu_22_04_x64_20G_alibase',
+      cpu: 1,
+      memory: 2,
+      dnatMappings: [],
+      networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.10' }],
+      portGroups: [],
+      nics: [
+        {
+          id: 'ecs-1-nic-1',
+          switchId: 'switch-1',
+          privateIp: '10.0.0.10',
+          secondaryIps: [],
+          securityGroupRules: [],
+        },
+      ],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+      instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+    };
+    const onUpdateNode = vi.fn();
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={onUpdateNode} />);
+    fireEvent.click(screen.getByRole('button', { name: '删除安全规则 1-1' }));
+
+    expect(onUpdateNode).toHaveBeenCalledWith(
+      'ecs-1',
+      expect.objectContaining({
+        nics: [
+          expect.objectContaining({
+            securityGroupRulesMode: 'custom',
+            securityGroupRules: [expect.objectContaining({ portRange: '80/80' })],
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('persists edited platform default rules as custom', () => {
+    const node = createEcsNodeWithPlatformDefaults();
+    const onUpdateNode = vi.fn();
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={onUpdateNode} />);
+    fireEvent.change(screen.getByLabelText('安全端口 1-1'), { target: { value: '2222/2222' } });
+
+    expect(onUpdateNode).toHaveBeenCalledWith(
+      'ecs-1',
+      expect.objectContaining({
+        nics: [
+          expect.objectContaining({
+            securityGroupRulesMode: 'custom',
+            securityGroupRules: [
+              expect.objectContaining({ portRange: '2222/2222' }),
+              expect.objectContaining({ portRange: '80/80' }),
+            ],
+          }),
+        ],
+      }),
+    );
+  });
+
   it('marks duplicate DNAT external ports across switches as invalid', () => {
     const nodes: TemplateNode[] = [
       {
