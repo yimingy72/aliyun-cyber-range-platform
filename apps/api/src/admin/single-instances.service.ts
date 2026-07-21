@@ -119,12 +119,34 @@ export class SingleInstancesService {
     };
   }
 
-  async prepareLaunchConfirmation(input: LaunchSingleInstanceDto, currentUserId: string) {
+  async prepareLaunchConfirmation(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
+    const systemDiskSize = input.systemDiskSize ?? 40;
+    const ingress = 'TCP 1-65535 from 0.0.0.0/0';
     return {
       targetId: image.id,
-      targetSnapshot: { imageId: image.imageId, imageName: image.displayName, instanceName: input.name, quantity: input.quantity, expiresAt: input.expiresAt },
-      summary: { targetName: input.name, imageName: image.displayName, quantity: input.quantity, destructive: false },
+      targetSnapshot: {
+        imageId: image.imageId,
+        imageName: image.displayName,
+        instanceName: input.name,
+        cpu: input.cpu,
+        memory: input.memory,
+        systemDiskSize,
+        quantity: input.quantity,
+        expiresAt: input.expiresAt,
+        ingress,
+      },
+      summary: {
+        targetName: input.name,
+        imageName: image.displayName,
+        cpu: input.cpu,
+        memory: input.memory,
+        systemDiskSize,
+        quantity: input.quantity,
+        expiresAt: input.expiresAt,
+        ingress,
+        destructive: false,
+      },
     };
   }
 
@@ -169,7 +191,7 @@ export class SingleInstancesService {
     };
   }
 
-  async launch(input: LaunchSingleInstanceDto, currentUserId: string) {
+  async launch(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile();
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
     const sharedPassword = input.password?.trim() || null;

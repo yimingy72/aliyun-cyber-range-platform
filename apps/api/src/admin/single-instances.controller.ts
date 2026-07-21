@@ -12,6 +12,8 @@ import { OperationControlService, readOperationRequestMetadata } from '../operat
 
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
 
+const DEFAULT_SINGLE_INSTANCE_EXPIRY_MS = 8 * 60 * 60 * 1_000;
+
 @Controller('admin/instances')
 @UseGuards(AdminAuthGuard)
 export class SingleInstancesController {
@@ -51,22 +53,27 @@ export class SingleInstancesController {
 
   @Post('launch')
   launch(@Req() request: AuthenticatedAdminRequest, @Body() body: LaunchSingleInstanceDto) {
+    const input: LaunchSingleInstanceDto & { expiresAt: string } = {
+      ...body,
+      expiresAt: body.expiresAt ?? new Date(Date.now() + DEFAULT_SINGLE_INSTANCE_EXPIRY_MS).toISOString(),
+    };
+
     if (request.authContext.source === 'mcp') {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
         metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `launch:${body.platformImageAssetId}:${body.name}` },
         toolName: 'single_instance_batch_launch',
-        arguments: body as unknown as Record<string, unknown>,
+        arguments: input as unknown as Record<string, unknown>,
         targetType: 'single_instance_batch',
-        resolveConfirmation: () => this.singleInstancesService.prepareLaunchConfirmation(body, request.adminUser.id),
+        resolveConfirmation: () => this.singleInstancesService.prepareLaunchConfirmation(input, request.adminUser.id),
         execute: async () => {
-          const result = await this.singleInstancesService.launch(body, request.adminUser.id);
+          const result = await this.singleInstancesService.launch(input, request.adminUser.id);
           return { batchId: result.batch.id, instanceIds: result.instances.map((instance) => instance.id) };
         },
       });
     }
-    return this.singleInstancesService.launch(body, request.adminUser.id);
+    return this.singleInstancesService.launch(input, request.adminUser.id);
   }
 
   @Post(':id/destroy')

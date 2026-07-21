@@ -73,7 +73,7 @@ export const singleInstanceTools: ToolDefinition[] = [
   {
     name: 'single_instance_batch_launch',
     description:
-      'Launch one or more single instances from an image. The server validates the exact CPU and memory specification again before forwarding the launch request.',
+      'Launch one or more single instances from an image. expiresAt is optional and defaults to eight hours from the first request; when confirmation is required, repeat the exact expiresAt returned in the confirmation summary. The server validates the exact CPU and memory specification again before forwarding the launch request.',
     requiredScopes: ['instances:read', 'instances:create'],
     async call(context, args) {
       const input = args as {
@@ -83,7 +83,7 @@ export const singleInstanceTools: ToolDefinition[] = [
         cpu: number;
         memory: number;
         systemDiskSize?: number;
-        expiresAt: string;
+        expiresAt?: string;
         password?: string;
         quantity: number;
         remark?: string;

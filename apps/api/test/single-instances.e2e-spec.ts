@@ -5,6 +5,7 @@ import request from 'supertest';
 import { hashPassword } from '../src/admin/admin-user-auth';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
+import { SingleInstancesService } from '../src/admin/single-instances.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { SystemConfigService } from '../src/admin/system-config.service';
@@ -191,6 +192,59 @@ describe('single instances', () => {
       vpcId: 'vpc-bootstrap-real',
       securityGroupId: 'sg-bootstrap-real',
       vswitchIds: ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'],
+    });
+  });
+
+  it('defaults an omitted single-instance expiry to eight hours from launch', async () => {
+    const startedAt = Date.now();
+    const response = await request(app.getHttpServer())
+      .post('/admin/instances/launch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'default-expiry-lab',
+        platformImageAssetId: 'memory-2',
+        cpu: 2,
+        memory: 4,
+        quantity: 1,
+      })
+      .expect(201);
+
+    const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
+    const expectedExpiresAt = startedAt + 8 * 60 * 60 * 1_000;
+
+    expect(instance?.expiresAt?.getTime()).toBeGreaterThanOrEqual(expectedExpiresAt);
+    expect(instance?.expiresAt?.getTime()).toBeLessThan(expectedExpiresAt + 5_000);
+  });
+
+  it('includes effective launch parameters in the single-instance confirmation summary', async () => {
+    const service = app.get(SingleInstancesService);
+
+    await expect(
+      service.prepareLaunchConfirmation(
+        {
+          name: 'confirmation-lab',
+          platformImageAssetId: 'memory-2',
+          cpu: 2,
+          memory: 4,
+          quantity: 1,
+          expiresAt: '2026-07-21T08:00:00.000Z',
+        },
+        'admin',
+      ),
+    ).resolves.toMatchObject({
+      targetSnapshot: {
+        cpu: 2,
+        memory: 4,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-21T08:00:00.000Z',
+      },
+      summary: {
+        cpu: 2,
+        memory: 4,
+        systemDiskSize: 40,
+        expiresAt: '2026-07-21T08:00:00.000Z',
+        ingress: 'TCP 1-65535 from 0.0.0.0/0',
+      },
     });
   });
 

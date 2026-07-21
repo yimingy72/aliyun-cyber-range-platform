@@ -69,6 +69,19 @@ test('enterprise range module preserves each host image ID instead of using a sh
   );
 });
 
+test('single-instance shared security group opens every TCP port to the internet', () => {
+  const mainTf = fs.readFileSync(
+    new URL('../infra/opentofu/modules/alicloud-single-instance-network/main.tf', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(mainTf, /resource "alicloud_security_group_rule" "open_all_ingress"/);
+  assert.match(mainTf, /ip_protocol\s*=\s*"tcp"/);
+  assert.match(mainTf, /port_range\s*=\s*"1\/65535"/);
+  assert.match(mainTf, /cidr_ip\s*=\s*"0\.0\.0\.0\/0"/);
+  assert.doesNotMatch(mainTf, /ip_protocol\s*=\s*"all"/);
+});
+
 test('workspace scripts and examples expose the opentofu bootstrap flow', () => {
   const rootPackageJson = JSON.parse(
     fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),

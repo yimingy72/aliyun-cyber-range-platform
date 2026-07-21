@@ -39,7 +39,7 @@
 | `single_instance_get` | `singleInstanceId` | — | `instances:read` | 不返回凭据。 |
 | `single_instance_get_access` | `singleInstanceId` | — | `instances:read`、`instances:credentials:read` | 敏感输出。 |
 | `single_instance_spec_check` | 正整数 `cpu`、正整数 `memory`（GiB） | — | `instances:read` | **只读**；校验单实例执行器支持的精确规格是否在默认地域/可用区可售；`exactAvailable: true` 不预留库存。 |
-| `single_instance_batch_launch` | `name`、`platformImageAssetId`、整数 `cpu`、整数 `memory`、ISO-8601 `expiresAt`、整数 `quantity` | `hostName`、最小 20 的 `systemDiskSize`、`password`、`remark`、操作元数据 | `instances:read`、`instances:create` | **写操作**；数量为 1–99；首次调用前必须用相同 CPU/内存执行规格校验；服务端也会再次校验。 |
+| `single_instance_batch_launch` | `name`、`platformImageAssetId`、整数 `cpu`、整数 `memory`、整数 `quantity` | ISO-8601 `expiresAt`（省略则服务端默认首次请求后 8 小时）、`hostName`、最小 20 的 `systemDiskSize`、`password`、`remark`、操作元数据 | `instances:read`、`instances:create` | **写操作**；数量为 1–99；首次调用前必须用相同 CPU/内存执行规格校验；服务端也会再次校验。 |
 | `single_instance_destroy` | `singleInstanceId` | 操作元数据 | `instances:destroy` | **写操作**。 |
 | `single_instance_batch_destroy` | `batchId` | 操作元数据 | `instances:destroy` | **写操作**；针对当前整批实例。 |
 | `single_instance_retry` | `singleInstanceId` | 操作元数据 | `instances:control` | **写操作**；仅用于创建/销毁失败。 |

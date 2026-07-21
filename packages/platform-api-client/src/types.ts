@@ -69,7 +69,7 @@ export type LaunchSingleInstancesInput = {
   cpu: number;
   memory: number;
   systemDiskSize?: number;
-  expiresAt: string;
+  expiresAt?: string;
   password?: string;
   quantity: number;
   remark?: string;

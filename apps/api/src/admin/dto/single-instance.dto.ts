@@ -31,8 +31,9 @@ export class LaunchSingleInstanceDto {
   @Min(20)
   systemDiskSize?: number;
 
+  @IsOptional()
   @IsISO8601()
-  expiresAt!: string;
+  expiresAt?: string;
 
   @IsOptional()
   @IsString()
