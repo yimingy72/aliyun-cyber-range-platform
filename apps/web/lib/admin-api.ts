@@ -2,6 +2,7 @@ import type {
   AdminUser,
   AdminBootstrapData,
   BillingAnomaly,
+  BillingLaunchGroup,
   BillingLineItem,
   BillingSummary,
   BillingUserSummary,
@@ -468,6 +469,62 @@ export async function fetchBillingUsers(
   });
 
   return readJson<BillingUserSummary[]>(response);
+}
+
+export async function fetchBillingUserGroups(
+  apiBaseUrl: string,
+  token: string,
+  options?: { userId?: string; startAt?: string; endAt?: string; limit?: number },
+): Promise<BillingLaunchGroup[]> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/user-groups`);
+
+  if (options?.userId) {
+    url.searchParams.set('userId', options.userId);
+  }
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  if (options?.limit) {
+    url.searchParams.set('limit', String(options.limit));
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingLaunchGroup[]>(response);
+}
+
+export async function fetchPlatformBillingGroups(
+  apiBaseUrl: string,
+  token: string,
+  options?: { startAt?: string; endAt?: string; limit?: number },
+): Promise<BillingLaunchGroup[]> {
+  const url = new URL(`${apiBaseUrl}/admin/billing/platform/groups`);
+
+  if (options?.startAt) {
+    url.searchParams.set('startAt', options.startAt);
+  }
+
+  if (options?.endAt) {
+    url.searchParams.set('endAt', options.endAt);
+  }
+
+  if (options?.limit) {
+    url.searchParams.set('limit', String(options.limit));
+  }
+
+  const response = await fetch(url, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<BillingLaunchGroup[]>(response);
 }
 
 export async function fetchBillingUserItems(

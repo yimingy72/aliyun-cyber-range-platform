@@ -88,4 +88,63 @@ describe('billing-ledger-sync', () => {
       }),
     ]);
   });
+
+  it('preserves the first successful launch as the source for existing resources when an instance is updated', async () => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({
+      name: 'lab-3',
+      ownerUserId: 'user-1',
+      status: 'running',
+    });
+    const initialStartAt = new Date('2026-07-16T02:03:42.000Z');
+    const updateStartAt = new Date('2026-07-16T12:00:00.000Z');
+
+    await syncRangeInstanceBillingLedger({
+      repository,
+      instance,
+      regionId: 'cn-hangzhou',
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: { dmz: 'i-existing' },
+      },
+      sourceProvisionJobId: 'job-create',
+      billingStartAt: initialStartAt,
+    });
+
+    await syncRangeInstanceBillingLedger({
+      repository,
+      instance,
+      regionId: 'cn-hangzhou',
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: { dmz: 'i-existing' },
+        eipAllocationIds: { entry: 'eip-new' },
+      },
+      sourceProvisionJobId: 'job-update',
+      billingStartAt: updateStartAt,
+    });
+
+    await expect(repository.listBillingLedgerResources()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'i-existing',
+          cloudResourceType: 'ecs',
+          sourceProvisionJobId: 'job-create',
+          billingStartAt: initialStartAt,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'i-existing',
+          cloudResourceType: 'disk',
+          sourceProvisionJobId: 'job-create',
+          billingStartAt: initialStartAt,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'eip-new',
+          cloudResourceType: 'eip',
+          sourceProvisionJobId: 'job-update',
+          billingStartAt: updateStartAt,
+        }),
+      ]),
+    );
+  });
 });

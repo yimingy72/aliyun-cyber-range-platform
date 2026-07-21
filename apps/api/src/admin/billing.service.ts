@@ -13,6 +13,30 @@ type BillingWindowInput = Partial<{
   limit: number;
 }>;
 
+type BillingGroupInput = BillingWindowInput & {
+  userId?: string;
+};
+
+type BillingLaunchGroup = {
+  id: string;
+  kind: 'range_launch' | 'single_launch' | 'unmatched';
+  title: '开启靶场实例' | '开启编排实例' | '未关联平台启动的费用';
+  completedAt: string | null;
+  billingPeriodStart: string;
+  billingPeriodEnd: string;
+  ownerUserId: string | null;
+  ownerUsername: string | null;
+  instance: { id: string; name: string; batchId: string | null } | null;
+  resourceCount: number;
+  pretaxAmount: number;
+  currency: string;
+  items: BillingLineItemRecord[];
+};
+
+type BillingLaunchGroupBuilder = Omit<BillingLaunchGroup, 'resourceCount'> & {
+  resourceKeys: Set<string>;
+};
+
 function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10);
 }
@@ -108,6 +132,15 @@ export class BillingService {
       billingScope: 'user',
     });
 
+    const groups = await this.groupBillingLineItems(lineItems);
+    const launchCountsByUserId = new Map<string, number>();
+
+    for (const group of groups) {
+      if (group.kind !== 'unmatched' && group.ownerUserId) {
+        launchCountsByUserId.set(group.ownerUserId, (launchCountsByUserId.get(group.ownerUserId) ?? 0) + 1);
+      }
+    }
+
     const totalsByUserId = new Map<string, { pretaxAmount: number; itemCount: number }>();
 
     for (const item of lineItems) {
@@ -130,6 +163,7 @@ export class BillingService {
           username: user?.username ?? userId,
           pretaxAmount: totals.pretaxAmount,
           itemCount: totals.itemCount,
+          launchCount: launchCountsByUserId.get(userId) ?? 0,
         };
       }),
     );
@@ -146,13 +180,42 @@ export class BillingService {
       billingScope: 'user',
     });
     const user = await this.adminRepository.getPlatformUserById(userId);
+    const launchCount = (await this.groupBillingLineItems(items)).filter((group) => group.kind !== 'unmatched').length;
 
     return {
       userId,
       username: user?.username ?? userId,
       pretaxAmount: sumPretax(items),
       itemCount: items.length,
+      launchCount,
     };
+  }
+
+  async listUserGroups(input: BillingGroupInput) {
+    const window = resolveBillingWindow(input);
+    const limit = resolveListLimit(input, 100);
+    const items = await this.adminRepository.listBillingLineItems({
+      startAt: window.startAt,
+      endAt: window.endAt,
+      billingScope: 'user',
+      ...(input.userId ? { ownerUserId: input.userId } : {}),
+    });
+
+    const groups = (await this.groupBillingLineItems(items)).slice(0, limit);
+    return this.attachOwnerUsernames(groups);
+  }
+
+  async listPlatformGroups(input: BillingWindowInput) {
+    const window = resolveBillingWindow(input);
+    const limit = resolveListLimit(input, 100);
+    const items = await this.adminRepository.listBillingLineItems({
+      startAt: window.startAt,
+      endAt: window.endAt,
+      billingScope: 'platform',
+    });
+
+    const groups = (await this.groupBillingLineItems(items)).slice(0, limit);
+    return this.attachOwnerUsernames(groups);
   }
 
   async listUserItems(userId: string, input: BillingWindowInput) {
@@ -280,5 +343,121 @@ export class BillingService {
         pretaxAmount,
       }))
       .sort((left, right) => left.billingDate.localeCompare(right.billingDate));
+  }
+
+  private async attachOwnerUsernames(groups: BillingLaunchGroup[]) {
+    const ownerUserIds = [...new Set(groups.flatMap((group) => (group.ownerUserId ? [group.ownerUserId] : [])))];
+    const users = await Promise.all(ownerUserIds.map((userId) => this.adminRepository.getPlatformUserById(userId)));
+    const usernameById = new Map(
+      users.flatMap((user) => (user ? [[user.id, user.username] as const] : [])),
+    );
+
+    return groups.map((group) => ({
+      ...group,
+      ownerUsername: group.ownerUserId ? usernameById.get(group.ownerUserId) ?? null : null,
+    }));
+  }
+
+  private async groupBillingLineItems(lineItems: BillingLineItemRecord[]): Promise<BillingLaunchGroup[]> {
+    const [ledgerResources, instances, jobs] = await Promise.all([
+      this.adminRepository.listBillingLedgerResources(),
+      this.adminRepository.listRangeInstances(),
+      this.adminRepository.listProvisionJobs(),
+    ]);
+    const ledgerById = new Map(ledgerResources.map((ledger) => [ledger.id, ledger]));
+    const instanceById = new Map(instances.map((instance) => [instance.id, instance]));
+    const jobById = new Map(jobs.map((job) => [job.id, job]));
+    const groups = new Map<string, BillingLaunchGroupBuilder>();
+    const unmatchedItems: BillingLineItemRecord[] = [];
+
+    for (const item of lineItems) {
+      const ledger = item.matchedLedgerId ? ledgerById.get(item.matchedLedgerId) : null;
+      const job = ledger?.sourceProvisionJobId ? jobById.get(ledger.sourceProvisionJobId) : null;
+      const instance = ledger?.rangeInstanceId ? instanceById.get(ledger.rangeInstanceId) : null;
+      const isSuccessfulLaunch =
+        Boolean(job?.finishedAt) &&
+        job?.status === 'succeeded' &&
+        (job.jobType === 'create' || job.jobType === 'retry') &&
+        Boolean(instance);
+
+      if (!ledger || !job || !instance || !isSuccessfulLaunch) {
+        unmatchedItems.push(item);
+        continue;
+      }
+
+      const kind = instance.instanceMode === 'single' ? 'single_launch' : 'range_launch';
+      const completedAt = job.finishedAt!.toISOString();
+      const billingDate = toIsoDate(item.billingDate);
+      const existing = groups.get(job.id);
+
+      if (existing) {
+        existing.items.push(item);
+        existing.pretaxAmount += item.pretaxAmount;
+        existing.resourceKeys.add(`${item.cloudResourceType}:${item.cloudResourceId}`);
+        existing.billingPeriodStart = existing.billingPeriodStart < billingDate ? existing.billingPeriodStart : billingDate;
+        existing.billingPeriodEnd = existing.billingPeriodEnd > billingDate ? existing.billingPeriodEnd : billingDate;
+        continue;
+      }
+
+      groups.set(job.id, {
+        id: job.id,
+        kind,
+        title: kind === 'single_launch' ? '开启编排实例' : '开启靶场实例',
+        completedAt,
+        billingPeriodStart: billingDate,
+        billingPeriodEnd: billingDate,
+        ownerUserId: ledger.ownerUserId ?? null,
+        ownerUsername: null,
+        instance: {
+          id: instance.id,
+          name: instance.name,
+          batchId: instance.singleInstanceBatchId ?? null,
+        },
+        resourceKeys: new Set([`${item.cloudResourceType}:${item.cloudResourceId}`]),
+        pretaxAmount: item.pretaxAmount,
+        currency: item.currency,
+        items: [item],
+      });
+    }
+
+    if (unmatchedItems.length > 0) {
+      const billingDates = unmatchedItems.map((item) => toIsoDate(item.billingDate)).sort();
+      groups.set('unmatched', {
+        id: 'unmatched',
+        kind: 'unmatched',
+        title: '未关联平台启动的费用',
+        completedAt: null,
+        billingPeriodStart: billingDates[0]!,
+        billingPeriodEnd: billingDates[billingDates.length - 1]!,
+        ownerUserId: null,
+        ownerUsername: null,
+        instance: null,
+        resourceKeys: new Set(unmatchedItems.map((item) => `${item.cloudResourceType}:${item.cloudResourceId}`)),
+        pretaxAmount: sumPretax(unmatchedItems),
+        currency: unmatchedItems[0]!.currency,
+        items: unmatchedItems,
+      });
+    }
+
+    return [...groups.values()]
+      .map(({ resourceKeys, ...group }) => ({
+        ...group,
+        resourceCount: resourceKeys.size,
+      }))
+      .sort((left, right) => {
+        if (left.completedAt && right.completedAt) {
+          return right.completedAt.localeCompare(left.completedAt);
+        }
+
+        if (left.completedAt) {
+          return -1;
+        }
+
+        if (right.completedAt) {
+          return 1;
+        }
+
+        return right.billingPeriodEnd.localeCompare(left.billingPeriodEnd);
+      });
   }
 }

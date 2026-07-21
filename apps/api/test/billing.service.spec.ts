@@ -92,6 +92,7 @@ describe('BillingService', () => {
         username: 'alice',
         pretaxAmount: 1.25,
         itemCount: 1,
+        launchCount: 0,
       },
     ]);
 
@@ -102,6 +103,167 @@ describe('BillingService', () => {
         billItem: '公网IP保有费',
         pretaxAmount: 0.5,
       }),
+    ]);
+  });
+
+  it('groups user billing by the successful range and single-instance launch that created each resource', async () => {
+    const repository = createMemoryAdminRepository();
+    const service = new BillingService(repository);
+
+    await repository.createPlatformUser({
+      id: 'user-1',
+      username: 'alice',
+      passwordHash: 'hash',
+      role: 'user',
+    });
+
+    const rangeInstance = await repository.createRangeInstance({
+      name: 'web-lab',
+      ownerUserId: 'user-1',
+      instanceMode: 'range',
+      status: 'running',
+    });
+    const singleInstance = await repository.createRangeInstance({
+      name: 'ubuntu-training',
+      ownerUserId: 'user-1',
+      instanceMode: 'single',
+      status: 'running',
+    });
+    const rangeJob = await repository.createProvisionJob({
+      rangeInstanceId: rangeInstance.id,
+      jobType: 'create',
+      triggeredBy: 'user-1',
+    });
+    const singleJob = await repository.createProvisionJob({
+      rangeInstanceId: singleInstance.id,
+      jobType: 'create',
+      triggeredBy: 'user-1',
+    });
+    await repository.updateProvisionJob(rangeJob.id, {
+      status: 'succeeded',
+      finishedAt: new Date('2026-07-16T02:03:42.000Z'),
+    });
+    await repository.updateProvisionJob(singleJob.id, {
+      status: 'succeeded',
+      finishedAt: new Date('2026-07-16T07:16:07.000Z'),
+    });
+
+    const rangeLedger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-range',
+      cloudResourceType: 'ecs',
+      billingScope: 'user',
+      ownerUserId: 'user-1',
+      rangeInstanceId: rangeInstance.id,
+      sourceProvisionJobId: rangeJob.id,
+      billingStartAt: new Date('2026-07-16T02:03:42.000Z'),
+      tagsSnapshot: {},
+    });
+    const singleLedger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-single',
+      cloudResourceType: 'ecs',
+      billingScope: 'user',
+      ownerUserId: 'user-1',
+      rangeInstanceId: singleInstance.id,
+      sourceProvisionJobId: singleJob.id,
+      billingStartAt: new Date('2026-07-16T07:16:07.000Z'),
+      tagsSnapshot: {},
+    });
+
+    await repository.upsertBillingLineItems([
+      {
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'range-ecs',
+        billCycle: '2026-07',
+        billingDate: '2026-07-16',
+        productCode: 'ecs',
+        billItem: '云服务器配置',
+        cloudResourceId: 'i-range',
+        cloudResourceType: 'ecs',
+        pretaxAmount: 8.4,
+        currency: 'CNY',
+        billingScope: 'user',
+        ownerUserId: 'user-1',
+        matchedLedgerId: rangeLedger.id,
+        rawPayload: {},
+      },
+      {
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'single-ecs',
+        billCycle: '2026-07',
+        billingDate: '2026-07-16',
+        productCode: 'ecs',
+        billItem: '云服务器配置',
+        cloudResourceId: 'i-single',
+        cloudResourceType: 'ecs',
+        pretaxAmount: 9.2,
+        currency: 'CNY',
+        billingScope: 'user',
+        ownerUserId: 'user-1',
+        matchedLedgerId: singleLedger.id,
+        rawPayload: {},
+      },
+      {
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'legacy',
+        billCycle: '2026-07',
+        billingDate: '2026-07-16',
+        productCode: 'eip',
+        billItem: '公网IP保有费',
+        cloudResourceId: 'eip-legacy',
+        cloudResourceType: 'eip',
+        pretaxAmount: 0.5,
+        currency: 'CNY',
+        billingScope: 'user',
+        ownerUserId: 'user-1',
+        rawPayload: {},
+      },
+    ]);
+
+    const groups = await Promise.resolve(
+      (
+        service as unknown as {
+          listUserGroups?: (input: { startAt: string; endAt: string }) => Promise<unknown>;
+        }
+      ).listUserGroups?.({ startAt: '2026-07-16', endAt: '2026-07-16' }),
+    );
+
+    expect(groups).toEqual([
+      expect.objectContaining({
+        id: singleJob.id,
+        kind: 'single_launch',
+        title: '开启编排实例',
+        completedAt: '2026-07-16T07:16:07.000Z',
+        ownerUsername: 'alice',
+        pretaxAmount: 9.2,
+        resourceCount: 1,
+      }),
+      expect.objectContaining({
+        id: rangeJob.id,
+        kind: 'range_launch',
+        title: '开启靶场实例',
+        completedAt: '2026-07-16T02:03:42.000Z',
+        ownerUsername: 'alice',
+        pretaxAmount: 8.4,
+        resourceCount: 1,
+      }),
+      expect.objectContaining({
+        kind: 'unmatched',
+        title: '未关联平台启动的费用',
+        completedAt: null,
+        pretaxAmount: 0.5,
+      }),
+    ]);
+
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
+      {
+        userId: 'user-1',
+        username: 'alice',
+        pretaxAmount: 18.1,
+        itemCount: 3,
+        launchCount: 2,
+      },
     ]);
   });
 });

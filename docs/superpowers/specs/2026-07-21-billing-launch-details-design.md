@@ -76,6 +76,8 @@ type BillingLaunchGroup = {
   completedAt: string | null;
   billingPeriodStart: string;
   billingPeriodEnd: string;
+  ownerUserId: string | null;
+  ownerUsername: string | null;
   instance: { id: string; name: string; batchId: string | null } | null;
   resourceCount: number;
   pretaxAmount: number;

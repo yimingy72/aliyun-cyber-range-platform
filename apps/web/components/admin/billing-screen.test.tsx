@@ -7,10 +7,9 @@ const {
   exportBillingUsersCsvMock,
   exportPlatformBillingCsvMock,
   fetchBillingSummaryMock,
-  fetchPlatformBillingItemsMock,
+  fetchBillingUserGroupsMock,
   fetchBillingUsersMock,
-  fetchBillingUserItemsMock,
-  fetchBillingAnomaliesMock,
+  fetchPlatformBillingGroupsMock,
   replaceMock,
   routerMock,
   triggerBillingSyncMock,
@@ -19,10 +18,9 @@ const {
   exportBillingUsersCsvMock: vi.fn(),
   exportPlatformBillingCsvMock: vi.fn(),
   fetchBillingSummaryMock: vi.fn(),
-  fetchPlatformBillingItemsMock: vi.fn(),
+  fetchBillingUserGroupsMock: vi.fn(),
   fetchBillingUsersMock: vi.fn(),
-  fetchBillingUserItemsMock: vi.fn(),
-  fetchBillingAnomaliesMock: vi.fn(),
+  fetchPlatformBillingGroupsMock: vi.fn(),
   replaceMock: vi.fn(),
   routerMock: {} as { replace: typeof replaceMock },
   triggerBillingSyncMock: vi.fn(),
@@ -43,10 +41,9 @@ vi.mock('../../lib/admin-api', async () => {
     exportBillingUsersCsv: exportBillingUsersCsvMock,
     exportPlatformBillingCsv: exportPlatformBillingCsvMock,
     fetchBillingSummary: fetchBillingSummaryMock,
-    fetchPlatformBillingItems: fetchPlatformBillingItemsMock,
+    fetchBillingUserGroups: fetchBillingUserGroupsMock,
     fetchBillingUsers: fetchBillingUsersMock,
-    fetchBillingUserItems: fetchBillingUserItemsMock,
-    fetchBillingAnomalies: fetchBillingAnomaliesMock,
+    fetchPlatformBillingGroups: fetchPlatformBillingGroupsMock,
     triggerBillingSync: triggerBillingSyncMock,
   };
 });
@@ -55,6 +52,86 @@ import { AdminApiError } from '../../lib/admin-api';
 import * as adminSessionModule from './use-admin-session';
 import { BillingScreen } from './billing-screen';
 
+const adminSession = {
+  token: 'dev-admin-token',
+  profile: { id: 'admin', username: 'admin', role: 'admin' as const },
+  isAdmin: true,
+  isReady: true,
+  login: vi.fn(),
+  logout: vi.fn(),
+};
+
+const userGroups = [
+  {
+    id: 'job-range',
+    kind: 'range_launch',
+    title: '开启靶场实例',
+    completedAt: '2026-07-16T02:03:42.000Z',
+    billingPeriodStart: '2026-07-16',
+    billingPeriodEnd: '2026-07-16',
+    ownerUserId: 'user-1',
+    ownerUsername: 'alice',
+    instance: { id: 'range-1', name: 'web-lab', batchId: null },
+    resourceCount: 2,
+    pretaxAmount: 8.4,
+    currency: 'CNY',
+    items: [
+      {
+        id: 'item-1',
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'item-1',
+        billCycle: '2026-07',
+        billingDate: '2026-07-16T00:00:00.000Z',
+        productCode: 'ecs',
+        productDetail: '云服务器ECS-按量付费',
+        billItem: '云服务器配置',
+        cloudResourceId: 'i-range',
+        cloudResourceType: 'ecs',
+        pretaxAmount: 8.4,
+        currency: 'CNY',
+        billingScope: 'user' as const,
+        ownerUserId: 'user-1',
+        matchedLedgerId: 'ledger-1',
+      },
+    ],
+  },
+];
+
+const platformGroups = [
+  {
+    id: 'unmatched',
+    kind: 'unmatched',
+    title: '未关联平台启动的费用',
+    completedAt: null,
+    billingPeriodStart: '2026-07-16',
+    billingPeriodEnd: '2026-07-16',
+    ownerUserId: null,
+    instance: null,
+    resourceCount: 1,
+    pretaxAmount: 0.5,
+    currency: 'CNY',
+    items: [
+      {
+        id: 'platform-1',
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'platform-1',
+        billCycle: '2026-07',
+        billingDate: '2026-07-16T00:00:00.000Z',
+        productCode: 'eip',
+        productDetail: '弹性公网IP',
+        billItem: '公网IP保有费',
+        cloudResourceId: 'eip-1',
+        cloudResourceType: 'eip',
+        pretaxAmount: 0.5,
+        currency: 'CNY',
+        billingScope: 'platform' as const,
+        ownerUserId: null,
+        matchedLedgerId: null,
+      },
+    ],
+  },
+];
+
 describe('BillingScreen', () => {
   beforeEach(() => {
     replaceMock.mockReset();
@@ -62,10 +139,9 @@ describe('BillingScreen', () => {
     exportBillingUsersCsvMock.mockReset();
     exportPlatformBillingCsvMock.mockReset();
     fetchBillingSummaryMock.mockReset();
-    fetchPlatformBillingItemsMock.mockReset();
+    fetchBillingUserGroupsMock.mockReset();
     fetchBillingUsersMock.mockReset();
-    fetchBillingUserItemsMock.mockReset();
-    fetchBillingAnomaliesMock.mockReset();
+    fetchPlatformBillingGroupsMock.mockReset();
     triggerBillingSyncMock.mockReset();
     vi.stubGlobal('Blob', class BlobMock {
       constructor(_parts?: unknown[], _options?: Record<string, unknown>) {}
@@ -90,84 +166,23 @@ describe('BillingScreen', () => {
     vi.restoreAllMocks();
   });
 
-  it('loads summary first and fetches user items after selecting a user', async () => {
-    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
-      token: 'dev-admin-token',
-      profile: { id: 'admin', username: 'admin', role: 'admin' },
-      isAdmin: true,
-      isReady: true,
-      login: vi.fn(),
-      logout: vi.fn(),
-    });
-
+  it('defaults to all-user launch details, filters by user, and switches the single detail panel to platform fees', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
     fetchBillingSummaryMock.mockResolvedValue({
       startAt: '2026-06-17',
       endAt: '2026-07-16',
-      totalPretaxAmount: 3.5001128,
-      platformPretaxAmount: 0.500000001,
+      totalPretaxAmount: 8.9,
+      platformPretaxAmount: 0.5,
       anomalyCount: 1,
-      resourceTypeTotals: [
-        { resourceType: 'ecs', pretaxAmount: 2.5001234 },
-        { resourceType: 'eip', pretaxAmount: 1.0 },
-      ],
-      dailyTotals: [{ billingDate: '2026-07-16', pretaxAmount: 3.5001128 }],
+      resourceTypeTotals: [],
+      dailyTotals: [],
     });
     fetchBillingUsersMock.mockResolvedValue([
-      { userId: 'user-1', username: 'alice', pretaxAmount: 2.5001234, itemCount: 2 },
-      { userId: 'user-2', username: 'bob', pretaxAmount: 0.5, itemCount: 1 },
+      { userId: 'user-1', username: 'alice', pretaxAmount: 8.4, itemCount: 1, launchCount: 1 },
+      { userId: 'user-2', username: 'bob', pretaxAmount: 0.0, itemCount: 0, launchCount: 0 },
     ]);
-    fetchPlatformBillingItemsMock.mockResolvedValue([
-      {
-        id: 'platform-1',
-        syncBatchId: 'sync-1',
-        sourceFingerprint: 'platform-1',
-        billCycle: '2026-07',
-        billingDate: '2026-07-16T00:00:00.000Z',
-        productCode: 'eip',
-        productDetail: '弹性公网IP',
-        billItem: '公网IP保有费',
-        cloudResourceId: 'eip-1',
-        cloudResourceType: 'eip',
-        pretaxAmount: 0.500000001,
-        currency: 'CNY',
-        billingScope: 'platform',
-        ownerUserId: null,
-        matchedLedgerId: 'ledger-platform',
-      },
-    ]);
-    fetchBillingAnomaliesMock.mockResolvedValue([
-      {
-        id: 'anomaly-1',
-        syncBatchId: 'sync-1',
-        sourceFingerprint: 'fp-1',
-        billCycle: '2026-07',
-        billingDate: '2026-07-16T00:00:00.000Z',
-        cloudResourceId: 'cn-hangzhou',
-        cloudResourceType: 'snapshot_region',
-        pretaxAmount: 0.880000001,
-        currency: 'CNY',
-        reason: 'missing aggregation rule',
-      },
-    ]);
-    fetchBillingUserItemsMock.mockResolvedValue([
-      {
-        id: 'item-1',
-        syncBatchId: 'sync-1',
-        sourceFingerprint: 'item-1',
-        billCycle: '2026-07',
-        billingDate: '2026-07-16T00:00:00.000Z',
-        productCode: 'ecs',
-        productDetail: '云服务器ECS-按量付费',
-        billItem: '云服务器配置',
-        cloudResourceId: 'i-test-1',
-        cloudResourceType: 'ecs',
-        pretaxAmount: 2.5001234,
-        currency: 'CNY',
-        billingScope: 'user',
-        ownerUserId: 'user-1',
-        matchedLedgerId: 'ledger-1',
-      },
-    ]);
+    fetchBillingUserGroupsMock.mockResolvedValue(userGroups);
+    fetchPlatformBillingGroupsMock.mockResolvedValue(platformGroups);
     triggerBillingSyncMock.mockResolvedValue({
       syncedDays: 1,
       importedLineItems: 3,
@@ -180,80 +195,86 @@ describe('BillingScreen', () => {
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByText('账单费用');
-    await screen.findByText('平台总应付');
-    await screen.findByText('¥ 3.5001128');
-    expect(screen.getAllByText('¥ 0.500000001')).toHaveLength(2);
-    await screen.findByText('alice');
-    await screen.findByText('平台公共费用明细');
-    await screen.findByText('公网IP保有费');
-    await screen.findByText('missing aggregation rule');
+    await screen.findByRole('heading', { name: '账单费用' });
+    await screen.findByText('用户明细');
+    await screen.findByText('开启靶场实例');
+    expect(screen.getByText(/02:03:42/)).toBeTruthy();
+    expect(screen.getByText('账期')).toBeTruthy();
+    expect(screen.queryByText('待确认归属')).toBeNull();
+    expect(screen.queryByText('已纳入平台账单范围')).toBeNull();
+    expect(screen.queryByText('未分摊到具体用户')).toBeNull();
+    expect(screen.queryByText('资源类型汇总')).toBeNull();
+    expect(screen.getByText(/1 次成功开通/)).toBeTruthy();
+    expect(fetchBillingUserGroupsMock).toHaveBeenCalledWith(
+      'http://localhost:3001',
+      'dev-admin-token',
+      expect.objectContaining({ userId: undefined }),
+    );
+    expect(fetchBillingUsersMock).toHaveBeenCalledWith(
+      'http://localhost:3001',
+      'dev-admin-token',
+      expect.objectContaining({ limit: 500 }),
+    );
 
-    expect(fetchBillingSummaryMock).toHaveBeenCalled();
-    expect(fetchPlatformBillingItemsMock).toHaveBeenCalled();
-    expect(fetchBillingUsersMock).toHaveBeenCalled();
-    expect(fetchBillingAnomaliesMock).toHaveBeenCalled();
-    expect(fetchBillingUserItemsMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /开启靶场实例/ }));
+    await screen.findByText('CNY');
 
-    fireEvent.click(screen.getByRole('button', { name: /alice/i }));
-
-    await screen.findByText(/i-test-1/);
-
-    fireEvent.click(screen.getByRole('button', { name: /bob/i }));
+    fireEvent.click(screen.getByRole('button', { name: '导出账单' }));
+    await screen.findByRole('button', { name: '导出平台账单' });
+    await screen.findByRole('button', { name: '导出用户汇总' });
+    await screen.findByRole('button', { name: '导出当前用户' });
+    fireEvent.click(screen.getByRole('button', { name: '导出平台账单' }));
 
     await waitFor(() => {
-      expect(fetchBillingUserItemsMock).toHaveBeenLastCalledWith(
+      expect(exportPlatformBillingCsvMock).toHaveBeenCalledWith(
         'http://localhost:3001',
         'dev-admin-token',
-        'user-2',
-        expect.objectContaining({
-          startAt: expect.any(String),
-          endAt: expect.any(String),
-        }),
+        expect.objectContaining({ startAt: expect.any(String), endAt: expect.any(String) }),
       );
     });
 
+    const initialGroupRequestCount = fetchBillingUserGroupsMock.mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '立即同步' }));
 
     await waitFor(() => {
-      expect(triggerBillingSyncMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        expect.objectContaining({
-          startAt: expect.any(String),
-          endAt: expect.any(String),
-        }),
-      );
       expect(screen.getByText('已同步 1 天，导入 3 条账单。')).toBeTruthy();
+      expect(fetchBillingUserGroupsMock.mock.calls.length).toBeGreaterThan(initialGroupRequestCount);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '导出平台账单' }));
-    fireEvent.click(screen.getByRole('button', { name: '导出用户汇总' }));
-    fireEvent.click(screen.getByRole('button', { name: '导出当前用户' }));
+    fireEvent.change(screen.getByLabelText('筛选用户'), { target: { value: 'user-1' } });
 
     await waitFor(() => {
-      expect(exportPlatformBillingCsvMock).toHaveBeenCalled();
-      expect(exportBillingUsersCsvMock).toHaveBeenCalled();
-      expect(exportBillingUserItemsCsvMock).toHaveBeenCalledWith(
+      expect(fetchBillingUserGroupsMock).toHaveBeenLastCalledWith(
         'http://localhost:3001',
         'dev-admin-token',
-        'user-2',
-        expect.objectContaining({
-          startAt: expect.any(String),
-          endAt: expect.any(String),
-        }),
+        expect.objectContaining({ userId: 'user-1' }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '平台费用明细' }));
+
+    await screen.findByText('未关联平台启动的费用');
+    expect(fetchPlatformBillingGroupsMock).toHaveBeenCalled();
+    expect((screen.getByLabelText('筛选用户') as HTMLSelectElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /alice/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '用户明细' }).getAttribute('aria-pressed')).toBe('true');
+      expect(fetchBillingUserGroupsMock).toHaveBeenLastCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        expect.objectContaining({ userId: 'user-1' }),
       );
     });
   });
 
   it('redirects regular users away without loading billing data', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      ...adminSession,
       token: 'user-token',
       profile: { id: 'user-1', username: 'alice', role: 'user' },
       isAdmin: false,
-      isReady: true,
-      login: vi.fn(),
-      logout: vi.fn(),
     });
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
@@ -266,20 +287,17 @@ describe('BillingScreen', () => {
     expect(screen.getByText('当前账号无权访问账单费用。')).toBeTruthy();
   });
 
-  it('redirects to login when billing summary returns 401', async () => {
+  it('redirects to login when the billing summary returns 401', async () => {
     const logoutMock = vi.fn();
 
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
-      token: 'dev-admin-token',
-      profile: { id: 'admin', username: 'admin', role: 'admin' },
-      isAdmin: true,
-      isReady: true,
-      login: vi.fn(),
+      ...adminSession,
       logout: logoutMock,
     });
     fetchBillingSummaryMock.mockRejectedValue(new AdminApiError(401));
     fetchBillingUsersMock.mockResolvedValue([]);
-    fetchBillingAnomaliesMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    fetchPlatformBillingGroupsMock.mockResolvedValue([]);
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
 

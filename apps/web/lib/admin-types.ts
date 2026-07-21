@@ -423,6 +423,7 @@ export type BillingUserSummary = {
   username: string;
   pretaxAmount: number;
   itemCount: number;
+  launchCount: number;
 };
 
 export type BillingLineItem = {
@@ -441,6 +442,22 @@ export type BillingLineItem = {
   billingScope: 'user' | 'platform';
   ownerUserId?: string | null;
   matchedLedgerId?: string | null;
+};
+
+export type BillingLaunchGroup = {
+  id: string;
+  kind: 'range_launch' | 'single_launch' | 'unmatched';
+  title: '开启靶场实例' | '开启编排实例' | '未关联平台启动的费用';
+  completedAt: string | null;
+  billingPeriodStart: string;
+  billingPeriodEnd: string;
+  ownerUserId: string | null;
+  ownerUsername: string | null;
+  instance: { id: string; name: string; batchId: string | null } | null;
+  resourceCount: number;
+  pretaxAmount: number;
+  currency: string;
+  items: BillingLineItem[];
 };
 
 export type BillingAnomaly = {

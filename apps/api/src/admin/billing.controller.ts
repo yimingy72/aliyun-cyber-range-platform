@@ -24,6 +24,11 @@ export class BillingController {
     return this.billingService.listUsers(query);
   }
 
+  @Get('user-groups')
+  listUserGroups(@Query() query: BillingWindowDto) {
+    return this.billingService.listUserGroups(query);
+  }
+
   @Get('users/:userId')
   getUserSummary(@Param('userId') userId: string, @Query() query: BillingWindowDto) {
     return this.billingService.getUserSummary(userId, query);
@@ -37,6 +42,11 @@ export class BillingController {
   @Get('platform/items')
   listPlatformItems(@Query() query: BillingWindowDto) {
     return this.billingService.listPlatformItems(query);
+  }
+
+  @Get('platform/groups')
+  listPlatformGroups(@Query() query: BillingWindowDto) {
+    return this.billingService.listPlatformGroups(query);
   }
 
   @Get('anomalies')

@@ -89,7 +89,6 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
         ownerUserId: input.instance.ownerUserId ?? null,
         rangeInstanceId: input.instance.id,
         singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-        sourceProvisionJobId: input.sourceProvisionJobId ?? null,
         releasedAt: null,
       });
       continue;

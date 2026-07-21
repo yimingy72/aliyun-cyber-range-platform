@@ -6,16 +6,15 @@ import { useRouter } from 'next/navigation';
 import {
   exportBillingUserItemsCsv,
   exportBillingUsersCsv,
-  fetchPlatformBillingItems,
   exportPlatformBillingCsv,
-  fetchBillingAnomalies,
   fetchBillingSummary,
-  fetchBillingUserItems,
+  fetchBillingUserGroups,
   fetchBillingUsers,
+  fetchPlatformBillingGroups,
   triggerBillingSync,
 } from '../../lib/admin-api';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
-import type { BillingAnomaly, BillingLineItem, BillingSummary, BillingUserSummary } from '../../lib/admin-types';
+import type { BillingLaunchGroup, BillingSummary, BillingUserSummary } from '../../lib/admin-types';
 import { useAdminSession } from './use-admin-session';
 
 type BillingScreenProps = {
@@ -26,6 +25,9 @@ type BillingRange = {
   startAt: string;
   endAt: string;
 };
+
+type DetailView = 'users' | 'platform';
+type BillingExportKind = 'platform' | 'users' | 'user';
 
 const preciseMoneyFormatter = new Intl.NumberFormat('zh-CN', {
   minimumFractionDigits: 2,
@@ -43,8 +45,24 @@ function getDefaultRange(): BillingRange {
   };
 }
 
-function formatMoney(value: number) {
-  return `¥ ${preciseMoneyFormatter.format(Number.isFinite(value) ? value : 0)}`;
+function formatMoney(value: number, currency = 'CNY') {
+  const amount = Number.isFinite(value) ? value : 0;
+
+  if (currency === 'CNY') {
+    return `¥ ${preciseMoneyFormatter.format(amount)}`;
+  }
+
+  try {
+    return new Intl.NumberFormat('zh-CN', {
+      style: 'currency',
+      currency,
+      currencyDisplay: 'code',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 9,
+    }).format(amount);
+  } catch {
+    return `${currency} ${preciseMoneyFormatter.format(amount)}`;
+  }
 }
 
 function formatResourceType(resourceType: string) {
@@ -72,7 +90,7 @@ function formatResourceType(resourceType: string) {
   }
 }
 
-function formatBillingLineSecondary(item: BillingLineItem) {
+function formatBillingLineSecondary(item: BillingLaunchGroup['items'][number]) {
   return item.productDetail?.trim() || item.productCode || '账单项';
 }
 
@@ -88,27 +106,23 @@ function downloadCsv(contents: string, fileName: string) {
 
 export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingScreenProps) {
   const router = useRouter();
-  const session = useAdminSession();
-  const { isAdmin, isReady, logout, token } = session;
+  const { isAdmin, isReady, logout, token } = useAdminSession();
   const [range, setRange] = useState<BillingRange>(getDefaultRange);
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [users, setUsers] = useState<BillingUserSummary[]>([]);
-  const [platformItems, setPlatformItems] = useState<BillingLineItem[]>([]);
-  const [anomalies, setAnomalies] = useState<BillingAnomaly[]>([]);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [selectedUserItems, setSelectedUserItems] = useState<BillingLineItem[]>([]);
+  const [groups, setGroups] = useState<BillingLaunchGroup[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string>('');
+  const [detailView, setDetailView] = useState<DetailView>('users');
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [groupsRevision, setGroupsRevision] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingUserItems, setIsLoadingUserItems] = useState(false);
+  const [isLoadingGroups, setIsLoadingGroups] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const selectedUser = useMemo(
-    () => (selectedUserId ? users.find((user) => user.userId === selectedUserId) ?? null : null),
-    [selectedUserId, users],
-  );
-  const hasAnomalies = (summary?.anomalyCount ?? anomalies.length) > 0;
-
+  const userNameById = useMemo(() => new Map(users.map((user) => [user.userId, user.username])), [users]);
   useEffect(() => {
     if (!isReady) {
       return;
@@ -117,10 +131,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     if (!token) {
       setSummary(null);
       setUsers([]);
-      setPlatformItems([]);
-      setAnomalies([]);
-      setSelectedUserId(null);
-      setSelectedUserItems([]);
+      setGroups([]);
       setErrorMessage(null);
       setSyncMessage(null);
       setIsLoading(false);
@@ -138,21 +149,16 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     Promise.all([
       fetchBillingSummary(apiBaseUrl, token, range),
-      fetchBillingUsers(apiBaseUrl, token, { ...range, limit: 50 }),
-      fetchPlatformBillingItems(apiBaseUrl, token, { ...range, limit: 200 }),
-      fetchBillingAnomalies(apiBaseUrl, token, { ...range, limit: 30 }),
+      fetchBillingUsers(apiBaseUrl, token, { ...range, limit: 500 }),
     ])
-      .then(([summaryPayload, usersPayload, platformItemsPayload, anomaliesPayload]) => {
+      .then(([summaryPayload, usersPayload]) => {
         if (!isActive) {
           return;
         }
 
         setSummary(summaryPayload);
         setUsers(usersPayload);
-        setPlatformItems(platformItemsPayload);
-        setAnomalies(anomaliesPayload);
-        setSyncMessage(null);
-        setSelectedUserId((current) => (current && usersPayload.some((user) => user.userId === current) ? current : null));
+        setSelectedUserId((current) => (current && usersPayload.some((user) => user.userId === current) ? current : ''));
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -179,18 +185,23 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   }, [apiBaseUrl, isAdmin, isReady, logout, range, router, token]);
 
   useEffect(() => {
-    if (!token || !selectedUserId || !isAdmin) {
-      setSelectedUserItems([]);
+    if (!token || !isAdmin) {
       return;
     }
 
     let isActive = true;
-    setIsLoadingUserItems(true);
+    setIsLoadingGroups(true);
+    setExpandedGroupIds(new Set());
 
-    fetchBillingUserItems(apiBaseUrl, token, selectedUserId, { ...range, limit: 100 })
-      .then((items) => {
+    const request =
+      detailView === 'users'
+        ? fetchBillingUserGroups(apiBaseUrl, token, { ...range, limit: 100, userId: selectedUserId || undefined })
+        : fetchPlatformBillingGroups(apiBaseUrl, token, { ...range, limit: 100 });
+
+    request
+      .then((payload) => {
         if (isActive) {
-          setSelectedUserItems(items);
+          setGroups(payload);
         }
       })
       .catch((error: unknown) => {
@@ -204,18 +215,19 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           return;
         }
 
-        setSelectedUserItems([]);
+        setGroups([]);
+        setErrorMessage('费用明细加载失败，请稍后重试。');
       })
       .finally(() => {
         if (isActive) {
-          setIsLoadingUserItems(false);
+          setIsLoadingGroups(false);
         }
       });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isAdmin, logout, range, router, selectedUserId, token]);
+  }, [apiBaseUrl, detailView, groupsRevision, isAdmin, logout, range, router, selectedUserId, token]);
 
   if (!isReady) {
     return null;
@@ -243,6 +255,19 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     );
   }
 
+  const refreshOverview = async () => {
+    if (!token) {
+      return;
+    }
+
+    const [summaryPayload, usersPayload] = await Promise.all([
+      fetchBillingSummary(apiBaseUrl, token, range),
+      fetchBillingUsers(apiBaseUrl, token, { ...range, limit: 500 }),
+    ]);
+    setSummary(summaryPayload);
+    setUsers(usersPayload);
+  };
+
   const handleSync = async () => {
     if (!token) {
       return;
@@ -254,17 +279,9 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     try {
       const result = await triggerBillingSync(apiBaseUrl, token, range);
+      await refreshOverview();
+      setGroupsRevision((current) => current + 1);
       setSyncMessage(`已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。`);
-      const [summaryPayload, usersPayload, platformItemsPayload, anomaliesPayload] = await Promise.all([
-        fetchBillingSummary(apiBaseUrl, token, range),
-        fetchBillingUsers(apiBaseUrl, token, { ...range, limit: 50 }),
-        fetchPlatformBillingItems(apiBaseUrl, token, { ...range, limit: 200 }),
-        fetchBillingAnomalies(apiBaseUrl, token, { ...range, limit: 30 }),
-      ]);
-      setSummary(summaryPayload);
-      setUsers(usersPayload);
-      setPlatformItems(platformItemsPayload);
-      setAnomalies(anomaliesPayload);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         logout();
@@ -278,272 +295,209 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     }
   };
 
-  const handleExportPlatform = async () => {
+  const handleExport = async (kind: BillingExportKind) => {
     if (!token) {
       return;
     }
 
-    const csv = await exportPlatformBillingCsv(apiBaseUrl, token, range);
-    downloadCsv(csv, 'platform-billing.csv');
-  };
+    setIsExportMenuOpen(false);
 
-  const handleExportUsers = async () => {
-    if (!token) {
+    if (kind === 'platform') {
+      downloadCsv(await exportPlatformBillingCsv(apiBaseUrl, token, range), 'platform-billing.csv');
       return;
     }
 
-    const csv = await exportBillingUsersCsv(apiBaseUrl, token, range);
-    downloadCsv(csv, 'billing-users.csv');
-  };
-
-  const handleExportUserItems = async () => {
-    if (!token || !selectedUserId) {
+    if (kind === 'user' && selectedUserId) {
+      downloadCsv(await exportBillingUserItemsCsv(apiBaseUrl, token, selectedUserId, range), `billing-user-${selectedUserId}.csv`);
       return;
     }
 
-    const csv = await exportBillingUserItemsCsv(apiBaseUrl, token, selectedUserId, range);
-    downloadCsv(csv, `billing-user-${selectedUserId}.csv`);
+    if (kind === 'users') {
+      downloadCsv(await exportBillingUsersCsv(apiBaseUrl, token, range), 'billing-users.csv');
+    }
+  };
+
+  const selectUser = (userId: string) => {
+    setSelectedUserId(userId);
+    setDetailView('users');
+  };
+
+  const toggleGroup = (groupId: string) => {
+    setExpandedGroupIds((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
   };
 
   return (
     <div className="admin-screen admin-workbench-screen billing-screen">
-      <section className="admin-workbench-panel billing-screen-filter">
-        <div className="template-workbench-list-header billing-screen-header">
-          <div className="template-workbench-list-header-copy billing-screen-header-copy">
-            <h2>账单费用</h2>
+      <section className="admin-workbench-panel billing-page-header">
+        <div className="billing-page-title">
+          <h2>账单费用</h2>
+        </div>
+        <div className="billing-page-totals" aria-label="账单概览">
+          <div>
+            <span>平台总应付</span>
+            <strong>{summary ? formatMoney(summary.totalPretaxAmount) : isLoading ? '加载中...' : '¥ 0.00'}</strong>
           </div>
-          <div className="template-workbench-list-header-meta billing-screen-actions">
-            <button type="button" className="template-workbench-secondary-action" onClick={() => void handleExportPlatform()}>
-              导出平台账单
-            </button>
-            <button type="button" className="template-workbench-secondary-action" onClick={() => void handleExportUsers()}>
-              导出用户汇总
-            </button>
+          <div>
+            <span>平台公共费用</span>
+            <strong>{summary ? formatMoney(summary.platformPretaxAmount) : isLoading ? '加载中...' : '¥ 0.00'}</strong>
+          </div>
+        </div>
+        <div className="billing-page-actions">
+          <div className="billing-export-menu">
             <button
               type="button"
               className="template-workbench-secondary-action"
-              onClick={() => void handleExportUserItems()}
-              disabled={!selectedUserId}
+              aria-expanded={isExportMenuOpen}
+              onClick={() => setIsExportMenuOpen((current) => !current)}
             >
-              导出当前用户
+              导出账单
             </button>
-            <button type="button" className="template-workbench-primary-action" onClick={() => void handleSync()} disabled={isSyncing}>
-              {isSyncing ? '正在同步...' : '立即同步'}
-            </button>
+            {isExportMenuOpen ? (
+              <div className="billing-export-menu-options" role="group" aria-label="账单导出选项">
+                <button type="button" onClick={() => void handleExport('platform')}>
+                  导出平台账单
+                </button>
+                <button type="button" onClick={() => void handleExport('users')}>
+                  导出用户汇总
+                </button>
+                <button type="button" disabled={!selectedUserId} onClick={() => void handleExport('user')}>
+                  导出当前用户
+                </button>
+              </div>
+            ) : null}
           </div>
-        </div>
-        <div className="billing-screen-filter-row">
-          <label className="billing-filter-field">
-            <span>开始日期</span>
-            <input
-              type="date"
-              value={range.startAt}
-              onChange={(event) => setRange((current) => ({ ...current, startAt: event.target.value }))}
-            />
-          </label>
-          <label className="billing-filter-field">
-            <span>结束日期</span>
-            <input
-              type="date"
-              value={range.endAt}
-              onChange={(event) => setRange((current) => ({ ...current, endAt: event.target.value }))}
-            />
-          </label>
+          <button type="button" className="template-workbench-primary-action" onClick={() => void handleSync()} disabled={isSyncing}>
+            {isSyncing ? '正在同步...' : '立即同步'}
+          </button>
         </div>
       </section>
 
       {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
       {syncMessage ? <p className="admin-success">{syncMessage}</p> : null}
 
-      <section className="admin-workbench-panel billing-summary-grid">
-        <article className="billing-summary-card">
-          <span className="billing-summary-label">平台总应付</span>
-          <strong className="billing-summary-value">{summary ? formatMoney(summary.totalPretaxAmount) : isLoading ? '加载中...' : '¥ 0.00'}</strong>
-          <p className="billing-summary-meta">已纳入平台账单范围</p>
-        </article>
-        <article className="billing-summary-card">
-          <span className="billing-summary-label">平台公共费用</span>
-          <strong className="billing-summary-value">{summary ? formatMoney(summary.platformPretaxAmount) : isLoading ? '加载中...' : '¥ 0.00'}</strong>
-          <p className="billing-summary-meta">未分摊到具体用户</p>
-        </article>
-        <article className={hasAnomalies ? 'billing-summary-card is-warning' : 'billing-summary-card is-clear'}>
-          <span className="billing-summary-label">待确认归属</span>
-          <strong className="billing-summary-value">{summary ? `${summary.anomalyCount} 条` : isLoading ? '加载中...' : '0 条'}</strong>
-          <p className="billing-summary-meta">{hasAnomalies ? '需要补规则或补台账' : '当前没有待确认项'}</p>
-        </article>
-      </section>
       <div className="billing-screen-body">
-        <div className="billing-screen-primary">
-          <section className="admin-workbench-panel billing-user-items-panel">
-            <div className="admin-workbench-panel-header">
-              <div>
-                <h2>{selectedUser ? `${selectedUser.username} 费用明细` : '用户费用明细'}</h2>
-                <span>{selectedUser ? `${selectedUser.itemCount} 项` : '请选择用户'}</span>
-              </div>
+        <section className="admin-workbench-panel billing-detail-workspace">
+          <div className="billing-detail-toolbar">
+            <h2>费用明细</h2>
+            <div className="billing-detail-switch" role="group" aria-label="费用明细视图">
+              <button
+                type="button"
+                className={detailView === 'users' ? 'is-active' : ''}
+                aria-pressed={detailView === 'users'}
+                onClick={() => setDetailView('users')}
+              >
+                用户明细
+              </button>
+              <button
+                type="button"
+                className={detailView === 'platform' ? 'is-active' : ''}
+                aria-pressed={detailView === 'platform'}
+                onClick={() => setDetailView('platform')}
+              >
+                平台费用明细
+              </button>
             </div>
-            <div className="billing-detail-list">
-              <div className="billing-detail-head" aria-hidden="true">
-                <span>消费时间</span>
-                <span>账单项</span>
-                <span>资源</span>
-                <span>金额</span>
-              </div>
-              {selectedUserItems.map((item) => (
-                <div key={item.id} className="billing-detail-row">
-                  <div className="billing-detail-cell billing-detail-time">
-                    <strong>{formatAdminDateTime(item.billingDate)}</strong>
-                    <span>{item.billCycle}</span>
-                  </div>
-                  <div className="billing-detail-cell billing-detail-main">
-                    <strong>{item.billItem}</strong>
-                    <span>{formatBillingLineSecondary(item)}</span>
-                  </div>
-                  <div className="billing-detail-cell billing-detail-resource">
-                    <strong>{formatResourceType(item.cloudResourceType)}</strong>
-                    <span>{item.cloudResourceId}</span>
-                  </div>
-                  <div className="billing-detail-cell billing-detail-amount">
-                    <strong>{formatMoney(item.pretaxAmount)}</strong>
-                    <span>{item.currency}</span>
-                  </div>
-                </div>
-              ))}
-              {!selectedUserItems.length && !isLoadingUserItems ? (
-                <p className="admin-empty billing-panel-empty">{selectedUser ? '当前用户暂无账单明细。' : '先从右侧选择一个用户查看明细。'}</p>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="admin-workbench-panel billing-platform-items-panel">
-            <div className="admin-workbench-panel-header">
-              <div>
-                <h2>平台公共费用明细</h2>
-                <span>{platformItems.length} 项</span>
-              </div>
-            </div>
-            <div className="billing-detail-list">
-              <div className="billing-detail-head" aria-hidden="true">
-                <span>消费时间</span>
-                <span>账单项</span>
-                <span>资源</span>
-                <span>金额</span>
-              </div>
-              {platformItems.map((item) => (
-                <div key={item.id} className="billing-detail-row">
-                  <div className="billing-detail-cell billing-detail-time">
-                    <strong>{formatAdminDateTime(item.billingDate)}</strong>
-                    <span>{item.billCycle}</span>
-                  </div>
-                  <div className="billing-detail-cell billing-detail-main">
-                    <strong>{item.billItem}</strong>
-                    <span>{formatBillingLineSecondary(item)}</span>
-                  </div>
-                  <div className="billing-detail-cell billing-detail-resource">
-                    <strong>{formatResourceType(item.cloudResourceType)}</strong>
-                    <span>{item.cloudResourceId}</span>
-                  </div>
-                  <div className="billing-detail-cell billing-detail-amount">
-                    <strong>{formatMoney(item.pretaxAmount)}</strong>
-                    <span>{item.currency}</span>
-                  </div>
-                </div>
-              ))}
-              {!platformItems.length && !isLoading ? <p className="admin-empty billing-panel-empty">当前时间范围内暂无平台公共费用。</p> : null}
-            </div>
-          </section>
-
-          {hasAnomalies || isLoading ? (
-            <section className="admin-workbench-panel billing-anomalies-panel">
-              <div className="admin-workbench-panel-header">
-                <div>
-                  <h2>待确认归属</h2>
-                  <span>{anomalies.length} 条</span>
-                </div>
-              </div>
-              <div className="billing-detail-list">
-                <div className="billing-detail-head" aria-hidden="true">
-                  <span>消费时间</span>
-                  <span>原因</span>
-                  <span>资源</span>
-                  <span>金额</span>
-                </div>
-                {anomalies.map((item) => (
-                  <div key={item.id} className="billing-detail-row is-warning">
-                    <div className="billing-detail-cell billing-detail-time">
-                      <strong>{formatAdminDateTime(item.billingDate)}</strong>
-                      <span>{item.billCycle}</span>
-                    </div>
-                    <div className="billing-detail-cell billing-detail-main">
-                      <strong>{item.reason}</strong>
-                      <span>待补归属规则或台账映射</span>
-                    </div>
-                    <div className="billing-detail-cell billing-detail-resource">
-                      <strong>{formatResourceType(item.cloudResourceType)}</strong>
-                      <span>{item.cloudResourceId}</span>
-                    </div>
-                    <div className="billing-detail-cell billing-detail-amount">
-                      <strong>{formatMoney(item.pretaxAmount)}</strong>
-                      <span>{item.currency}</span>
-                    </div>
-                  </div>
+            <label className="billing-user-filter">
+              <span>筛选用户</span>
+              <select value={selectedUserId} disabled={detailView === 'platform'} onChange={(event) => selectUser(event.target.value)}>
+                <option value="">全部用户</option>
+                {users.map((user) => (
+                  <option key={user.userId} value={user.userId}>
+                    {user.username}
+                  </option>
                 ))}
-                {!anomalies.length && !isLoading ? <p className="admin-empty billing-panel-empty">当前时间范围内没有待确认账单。</p> : null}
-              </div>
-            </section>
-          ) : (
-            <section className="admin-workbench-panel billing-status-panel">
-              <div className="billing-status-pill is-success">当前没有待确认账单</div>
-            </section>
-          )}
-        </div>
+              </select>
+            </label>
+            <div className="billing-date-filter">
+              <label>
+                <span>账期</span>
+                <input type="date" value={range.startAt} onChange={(event) => setRange((current) => ({ ...current, startAt: event.target.value }))} />
+              </label>
+              <span>至</span>
+              <label>
+                <span className="sr-only">结束账期</span>
+                <input type="date" value={range.endAt} onChange={(event) => setRange((current) => ({ ...current, endAt: event.target.value }))} />
+              </label>
+            </div>
+          </div>
 
-        <aside className="billing-screen-sidebar">
-          <section className="admin-workbench-panel billing-users-panel">
-            <div className="admin-workbench-panel-header">
-              <div>
-                <h2>用户账单</h2>
-                <span>{users.length} 位用户</span>
-              </div>
-            </div>
-            <div className="billing-user-list">
-              {users.map((user) => (
-                <button
-                  key={user.userId}
-                  type="button"
-                  className={user.userId === selectedUserId ? 'billing-user-row is-active' : 'billing-user-row'}
-                  onClick={() => setSelectedUserId(user.userId)}
-                >
-                  <div className="billing-row-copy">
-                    <strong>{user.username}</strong>
-                    <span>{user.itemCount} 项账单</span>
-                  </div>
-                  <strong>{formatMoney(user.pretaxAmount)}</strong>
-                </button>
-              ))}
-              {!users.length && !isLoading ? <p className="admin-empty billing-panel-empty">当前时间范围内暂无用户账单。</p> : null}
-            </div>
-          </section>
+          <div className="billing-group-list" aria-live="polite">
+            {groups.map((group) => {
+              const isExpanded = expandedGroupIds.has(group.id);
+              const ownerName = group.ownerUserId ? group.ownerUsername ?? userNameById.get(group.ownerUserId) ?? group.ownerUserId : null;
+              const groupTime = group.completedAt ? formatAdminDateTime(group.completedAt) : `账期 ${group.billingPeriodStart} 至 ${group.billingPeriodEnd}`;
 
-          <section className="admin-workbench-panel billing-resource-breakdown">
-            <div className="admin-workbench-panel-header">
-              <div>
-                <h2>资源类型汇总</h2>
-                <span>{summary?.resourceTypeTotals.length ?? 0} 类</span>
-              </div>
+              return (
+                <article key={group.id} className={isExpanded ? 'billing-launch-group is-expanded' : 'billing-launch-group'}>
+                  <button type="button" className="billing-launch-summary" aria-expanded={isExpanded} onClick={() => toggleGroup(group.id)}>
+                    <span className="billing-launch-toggle">{isExpanded ? '⌄' : '›'}</span>
+                    <span className="billing-launch-time">{groupTime}</span>
+                    <span className="billing-launch-copy">
+                      <strong>{group.title}</strong>
+                      <span>{[ownerName, group.instance?.name, `${group.resourceCount} 项资源`].filter(Boolean).join(' · ')}</span>
+                    </span>
+                    <span className="billing-launch-amount">{formatMoney(group.pretaxAmount, group.currency)}</span>
+                  </button>
+                  {isExpanded ? (
+                    <div className="billing-launch-children">
+                      {group.items.map((item) => (
+                        <div key={item.id} className="billing-launch-item">
+                          <span>账期 {item.billingDate.slice(0, 10)}</span>
+                          <span>
+                            <strong>{formatResourceType(item.cloudResourceType)}</strong> · {item.cloudResourceId}
+                          </span>
+                          <span>{item.billItem} · {formatBillingLineSecondary(item)}</span>
+                          <span className="billing-launch-item-amount">
+                            <strong>{formatMoney(item.pretaxAmount, item.currency)}</strong>
+                            <span>{item.currency}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+            {!groups.length && !isLoadingGroups ? (
+              <p className="admin-empty billing-panel-empty">
+                {detailView === 'users' ? '当前账期内暂无用户费用明细。' : '当前账期内暂无平台费用明细。'}
+              </p>
+            ) : null}
+          </div>
+        </section>
+
+        <aside className="admin-workbench-panel billing-users-panel">
+          <div className="admin-workbench-panel-header">
+            <div>
+              <h2>用户账单</h2>
+              <span>{users.length} 位用户</span>
             </div>
-            <div className="billing-simple-table">
-              {(summary?.resourceTypeTotals ?? []).map((item) => (
-                <div key={item.resourceType} className="billing-simple-row">
-                  <div className="billing-row-copy">
-                    <strong>{formatResourceType(item.resourceType)}</strong>
-                    <span>{item.resourceType}</span>
-                  </div>
-                  <strong>{formatMoney(item.pretaxAmount)}</strong>
+          </div>
+          <div className="billing-user-list">
+            {users.map((user) => (
+              <button
+                key={user.userId}
+                type="button"
+                className={user.userId === selectedUserId && detailView === 'users' ? 'billing-user-row is-active' : 'billing-user-row'}
+                onClick={() => selectUser(user.userId)}
+              >
+                <div className="billing-row-copy">
+                  <strong>{user.username}</strong>
+                  <span>{user.launchCount} 次成功开通 · {user.itemCount} 项费用</span>
                 </div>
-              ))}
-              {!summary?.resourceTypeTotals.length && !isLoading ? <p className="admin-empty billing-panel-empty">当前时间范围内暂无平台账单。</p> : null}
-            </div>
-          </section>
+                <strong>{formatMoney(user.pretaxAmount)}</strong>
+              </button>
+            ))}
+            {!users.length && !isLoading ? <p className="admin-empty billing-panel-empty">当前账期内暂无用户账单。</p> : null}
+          </div>
         </aside>
       </div>
     </div>

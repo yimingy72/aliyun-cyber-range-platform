@@ -153,12 +153,41 @@ describe('Admin billing', () => {
       .expect(200)
       .expect([
         {
-          userId: 'user-1',
-          username: 'alice',
-          pretaxAmount: 1.25,
-          itemCount: 1,
-        },
-      ]);
+        userId: 'user-1',
+        username: 'alice',
+        pretaxAmount: 1.25,
+        itemCount: 1,
+        launchCount: 0,
+      },
+    ]);
+
+    const userGroupsResponse = await request(app.getHttpServer())
+      .get('/admin/billing/user-groups?startAt=2026-07-16&endAt=2026-07-16')
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(userGroupsResponse.body).toEqual([
+      expect.objectContaining({
+        kind: 'unmatched',
+        title: '未关联平台启动的费用',
+        completedAt: null,
+        pretaxAmount: 1.25,
+      }),
+    ]);
+
+    const platformGroupsResponse = await request(app.getHttpServer())
+      .get('/admin/billing/platform/groups?startAt=2026-07-16&endAt=2026-07-16')
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(platformGroupsResponse.body).toEqual([
+      expect.objectContaining({
+        kind: 'unmatched',
+        title: '未关联平台启动的费用',
+        completedAt: null,
+        pretaxAmount: 0.5,
+      }),
+    ]);
 
     const itemsResponse = await request(app.getHttpServer())
       .get('/admin/billing/users/user-1/items?startAt=2026-07-16&endAt=2026-07-16')
