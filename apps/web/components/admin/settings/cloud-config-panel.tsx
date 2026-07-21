@@ -40,7 +40,7 @@ export function CloudConfigPanel({
       <div className="admin-workbench-panel-header settings-workbench-header">
         <div className="settings-workbench-header-copy">
           <h2>云配置</h2>
-          <span>5 项配置</span>
+          <span>6 项配置</span>
         </div>
 
         <button type="submit" className="template-workbench-primary-action" disabled={isLoading || isSaving}>
@@ -48,7 +48,7 @@ export function CloudConfigPanel({
         </button>
       </div>
 
-      <p className="settings-workbench-description">保存时将校验当前阿里云账号，并查询该账号和地域的专属私有 OSS Bucket；存在则复用，不存在则创建，用于本地镜像导入。</p>
+      <p className="settings-workbench-description">保存时将校验当前阿里云账号。镜像导入仅使用管理员提供的现有 OSS Bucket；平台不会创建 Bucket 或修改其权限、CORS。</p>
 
       <div className="settings-workbench-rows">
         <label className="settings-workbench-row">
@@ -117,7 +117,23 @@ export function CloudConfigPanel({
             />
           </div>
         </label>
+
+        <label className="settings-workbench-row">
+          <span className="settings-workbench-row-label">自定义 OSS 存储桶名</span>
+          <div className="settings-workbench-row-control">
+            <input
+              aria-label="自定义 OSS 存储桶名"
+              value={value.imageImportBucket}
+              onChange={handleInputChange('imageImportBucket', onChange)}
+              disabled={isLoading || isSaving}
+              placeholder="可选，例如 training-image-imports"
+              autoComplete="off"
+            />
+          </div>
+        </label>
       </div>
+
+      <p className="settings-workbench-description">仅使用已存在的 Bucket。留空将关闭镜像上传；平台不会创建 Bucket 或修改其权限、CORS。</p>
 
       {saveErrorMessage ? <p className="admin-error settings-workbench-feedback">{saveErrorMessage}</p> : null}
       {saveSuccessMessage ? <p className="admin-success settings-workbench-feedback">{saveSuccessMessage}</p> : null}

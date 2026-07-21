@@ -151,6 +151,7 @@ describe('Admin system config', () => {
       defaultZoneId: 'cn-hangzhou-h',
       accessKeyId: 'test-ak',
       accessKeySecret: MASKED_SECRET,
+      imageImportBucket: '',
     });
 
     await app.close();
@@ -171,6 +172,7 @@ describe('Admin system config', () => {
         defaultZoneId: 'cn-beijing-k',
         accessKeyId: 'LTAI-updated',
         accessKeySecret: 'updated-secret',
+        imageImportBucket: '',
       })
       .expect(200);
 
@@ -180,6 +182,7 @@ describe('Admin system config', () => {
       defaultZoneId: 'cn-beijing-k',
       accessKeyId: 'LTAI-updated',
       accessKeySecret: MASKED_SECRET,
+      imageImportBucket: '',
     });
     expect(saveFromCloudConfig).toHaveBeenCalledWith({
       provider: 'alibaba_cloud',
@@ -187,6 +190,7 @@ describe('Admin system config', () => {
       defaultZoneId: 'cn-beijing-k',
       accessKeyId: 'LTAI-updated',
       accessKeySecret: 'updated-secret',
+      imageImportBucket: '',
     });
 
     const snapshot = await request(app.getHttpServer())
@@ -215,6 +219,7 @@ describe('Admin system config', () => {
         defaultZoneId: 'cn-shanghai-b',
         accessKeyId: 'reload-ak',
         accessKeySecret: 'reload-secret',
+        imageImportBucket: '',
       })
       .expect(200);
 
@@ -235,6 +240,7 @@ describe('Admin system config', () => {
       defaultZoneId: 'cn-shanghai-b',
       accessKeyId: 'reload-ak',
       accessKeySecret: MASKED_SECRET,
+      imageImportBucket: '',
     });
 
     await secondApp.close();

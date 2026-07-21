@@ -13,6 +13,7 @@ export type SystemCloudConfig = {
   defaultZoneId: string;
   accessKeyId: string;
   accessKeySecret: string;
+  imageImportBucket: string;
 };
 
 export type SystemCloudAccountContext = SystemCloudConfig & {
@@ -121,6 +122,7 @@ export class SystemConfigService {
         defaultZoneId: activeContext.zoneId,
         accessKeyId: activeContext.accessKeyId,
         accessKeySecret: activeContext.accessKeySecret,
+        imageImportBucket: activeContext.imageImportBucket,
       });
       this.syncProcessEnv(snapshot);
       return snapshot;
@@ -140,11 +142,11 @@ export class SystemConfigService {
     await this.prisma.systemCloudConfig.upsert({
       where: { id: SYSTEM_CLOUD_CONFIG_ROW_ID },
       update: {
-        ...snapshot,
+        ...this.toPersistedSnapshot(snapshot),
       },
       create: {
         id: SYSTEM_CLOUD_CONFIG_ROW_ID,
-        ...snapshot,
+        ...this.toPersistedSnapshot(snapshot),
       },
     });
     this.syncProcessEnv(snapshot);
@@ -162,6 +164,8 @@ export class SystemConfigService {
         payload.defaultZoneId !== undefined ? normalizeValue(payload.defaultZoneId) : current.defaultZoneId,
       accessKeyId: payload.accessKeyId !== undefined ? normalizeValue(payload.accessKeyId) : current.accessKeyId,
       accessKeySecret: this.resolveSecretValue(payload.accessKeySecret, current.accessKeySecret),
+      imageImportBucket:
+        payload.imageImportBucket !== undefined ? normalizeValue(payload.imageImportBucket) : current.imageImportBucket,
     };
 
     await this.cloudAccountContextsService.saveFromCloudConfig(snapshot);
@@ -169,14 +173,14 @@ export class SystemConfigService {
     const saved = await this.prisma.systemCloudConfig.upsert({
       where: { id: SYSTEM_CLOUD_CONFIG_ROW_ID },
       update: {
-        ...snapshot,
+        ...this.toPersistedSnapshot(snapshot),
       },
       create: {
         id: SYSTEM_CLOUD_CONFIG_ROW_ID,
-        ...snapshot,
+        ...this.toPersistedSnapshot(snapshot),
       },
     });
-    const nextSnapshot = this.toSnapshot(saved);
+    const nextSnapshot = this.toSnapshot({ ...saved, imageImportBucket: snapshot.imageImportBucket });
     this.syncProcessEnv(nextSnapshot);
 
     return nextSnapshot;
@@ -287,6 +291,7 @@ export class SystemConfigService {
       defaultZoneId: normalizeValue(process.env.ALICLOUD_ZONE_ID),
       accessKeyId: normalizeValue(process.env.ALICLOUD_ACCESS_KEY),
       accessKeySecret: normalizeValue(process.env.ALICLOUD_SECRET_KEY),
+      imageImportBucket: '',
     };
   }
 
@@ -296,6 +301,7 @@ export class SystemConfigService {
     defaultZoneId: string;
     accessKeyId: string;
     accessKeySecret: string;
+    imageImportBucket?: string;
   }): SystemCloudConfig {
     return {
       provider: 'alibaba_cloud',
@@ -303,6 +309,17 @@ export class SystemConfigService {
       defaultZoneId: normalizeValue(config.defaultZoneId),
       accessKeyId: normalizeValue(config.accessKeyId),
       accessKeySecret: normalizeValue(config.accessKeySecret),
+      imageImportBucket: normalizeValue(config.imageImportBucket),
+    };
+  }
+
+  private toPersistedSnapshot(snapshot: SystemCloudConfig) {
+    return {
+      provider: snapshot.provider,
+      defaultRegion: snapshot.defaultRegion,
+      defaultZoneId: snapshot.defaultZoneId,
+      accessKeyId: snapshot.accessKeyId,
+      accessKeySecret: snapshot.accessKeySecret,
     };
   }
 

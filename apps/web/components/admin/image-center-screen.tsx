@@ -357,6 +357,14 @@ export function ImageCenterScreen({
   }
 
   const activeCloudContext = cloudContexts.find((context) => context.isActive && context.status === 'ready') ?? null;
+  const imageImportUnavailableMessage = !activeCloudContext
+    ? '请先由管理员保存云配置并完成阿里云账号验证。'
+    : !activeCloudContext.imageImportBucket.trim() || activeCloudContext.bucketStatus === 'unconfigured'
+      ? '当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。'
+      : activeCloudContext.bucketStatus !== 'ready'
+        ? '配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。'
+        : null;
+  const canImportImages = imageImportUnavailableMessage === null;
 
   function openImageImportDialog() {
     setImageImportDraft(createImageImportDraft());
@@ -592,8 +600,8 @@ export function ImageCenterScreen({
   }
 
   async function handleSubmitImageImport() {
-    if (!session.token || !imageImportDraft || !activeCloudContext) {
-      setImageImportErrorMessage('请先由管理员保存云配置，完成阿里云账号验证和镜像导入 Bucket 初始化。');
+    if (!session.token || !imageImportDraft || !activeCloudContext || !canImportImages) {
+      setImageImportErrorMessage(imageImportUnavailableMessage ?? '当前镜像导入不可用。');
       return;
     }
 
@@ -1264,8 +1272,8 @@ export function ImageCenterScreen({
               {activeTab === 'mine' ? (
                 <button
                   type="button"
-                  disabled={!activeCloudContext || pendingActionKeys.includes('create:image-import')}
-                  title={activeCloudContext ? undefined : '请先由管理员保存云配置，完成阿里云账号验证和镜像导入 Bucket 初始化。'}
+                  disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
+                  title={imageImportUnavailableMessage ?? undefined}
                   onClick={openImageImportDialog}
                 >
                   上传镜像
@@ -1472,7 +1480,7 @@ export function ImageCenterScreen({
                 ) : null}
                 {imageImportErrorMessage ? <p className="admin-error image-import-dialog-error" role="alert">{imageImportErrorMessage}</p> : null}
                 <div className="template-workbench-dialog-actions">
-                  <button type="submit" disabled={pendingActionKeys.includes('create:image-import') || !activeCloudContext}>
+                  <button type="submit" disabled={pendingActionKeys.includes('create:image-import') || !canImportImages}>
                     {pendingActionKeys.includes('create:image-import') ? '正在处理…' : '上传并导入'}
                   </button>
                   <button type="button" disabled={pendingActionKeys.includes('create:image-import')} onClick={closeImageImportDialog}>

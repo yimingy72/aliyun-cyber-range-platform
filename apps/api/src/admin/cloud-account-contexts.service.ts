@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
@@ -36,6 +36,7 @@ type SaveCloudConfigInput = {
   defaultZoneId: string;
   accessKeyId: string;
   accessKeySecret: string;
+  imageImportBucket?: string;
 };
 
 @Injectable()
@@ -53,7 +54,7 @@ export class CloudAccountContextsService {
 
   async getCredentials(
     id: string,
-    options: { requireReady?: boolean; requireActive?: boolean } = {},
+    options: { requireReady?: boolean; requireActive?: boolean; requireImageImportBucket?: boolean } = {},
   ): Promise<CloudAccountContextCredentials> {
     const context = await this.prisma.cloudAccountContext.findUnique({ where: { id } });
 
@@ -62,11 +63,21 @@ export class CloudAccountContextsService {
     }
 
     if (options.requireReady && context.status !== 'ready') {
-      throw new BadRequestException('当前云账号的镜像导入 Bucket 未就绪，请先在云配置中修复。');
+      throw new BadRequestException('当前阿里云账号不可用，请先在云配置中修复。');
     }
 
     if (options.requireActive && (!context.isActive || context.status !== 'ready')) {
-      throw new BadRequestException('请选择当前已启用且 Bucket 已就绪的阿里云账号。');
+      throw new BadRequestException('请选择当前已启用且可用的阿里云账号。');
+    }
+
+    if (options.requireImageImportBucket) {
+      if (!context.imageImportBucket.trim() || context.bucketStatus === 'unconfigured') {
+        throw new BadRequestException('当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。');
+      }
+
+      if (context.bucketStatus !== 'ready') {
+        throw new BadRequestException('配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。');
+      }
     }
 
     return {
@@ -83,6 +94,7 @@ export class CloudAccountContextsService {
   }
 
   async saveFromCloudConfig(input: SaveCloudConfigInput): Promise<CloudAccountContextView> {
+    const requestedImageImportBucket = input.imageImportBucket?.trim();
     const normalized = {
       regionId: input.defaultRegion.trim(),
       zoneId: input.defaultZoneId.trim(),
@@ -93,6 +105,8 @@ export class CloudAccountContextsService {
     if (!normalized.regionId || !normalized.zoneId || !normalized.accessKeyId || !normalized.accessKeySecret) {
       throw new BadRequestException('保存云配置前，请填写地域、可用区和阿里云访问凭据。');
     }
+
+    this.assertImageImportBucketName(requestedImageImportBucket ?? '');
 
     const accountUid = await this.resolveAccountUid(normalized.accessKeyId, normalized.accessKeySecret);
     const existing = await this.prisma.cloudAccountContext.findUnique({
@@ -105,7 +119,16 @@ export class CloudAccountContextsService {
       },
     });
     const displayName = `阿里云 ${accountUid} · ${normalized.regionId}`;
-    const imageImportBucket = existing?.imageImportBucket || this.buildBucketName(accountUid, normalized.regionId);
+    const imageImportBucket = requestedImageImportBucket ?? existing?.imageImportBucket.trim() ?? '';
+
+    this.assertImageImportBucketName(imageImportBucket);
+    await this.assertImageImportBucketCanChange(existing, imageImportBucket);
+    const bucketVerification = await this.verifyImageImportBucket({
+      bucket: imageImportBucket,
+      regionId: normalized.regionId,
+      accessKeyId: normalized.accessKeyId,
+      accessKeySecret: normalized.accessKeySecret,
+    });
     const context = existing
       ? await this.prisma.cloudAccountContext.update({
           where: { id: existing.id },
@@ -115,9 +138,8 @@ export class CloudAccountContextsService {
             accessKeyId: normalized.accessKeyId,
             accessKeySecret: normalized.accessKeySecret,
             imageImportBucket,
-            status: 'provisioning',
-            bucketStatus: 'creating',
-            lastError: null,
+            status: 'ready',
+            ...bucketVerification,
           },
         })
       : await this.prisma.cloudAccountContext.create({
@@ -131,55 +153,12 @@ export class CloudAccountContextsService {
             accessKeySecret: normalized.accessKeySecret,
             imageImportBucket,
             isActive: (await this.prisma.cloudAccountContext.count()) === 0,
-            status: 'provisioning',
-            bucketStatus: 'creating',
+            status: 'ready',
+            ...bucketVerification,
           },
         });
-    const ready = await this.ensureBucket(context.id);
 
-    if (ready.status !== 'ready') {
-      throw new BadRequestException(ready.lastError || '镜像导入 OSS Bucket 初始化失败。');
-    }
-
-    return ready.isActive ? ready : this.activate(ready.id);
-  }
-
-  async ensureBucket(id: string): Promise<CloudAccountContextView> {
-    const context = await this.prisma.cloudAccountContext.findUnique({ where: { id } });
-
-    if (!context) {
-      throw new NotFoundException('Cloud account context not found');
-    }
-
-    try {
-      await this.ensurePrivateImportBucket({
-        bucket: context.imageImportBucket,
-        regionId: context.regionId,
-        accessKeyId: context.accessKeyId,
-        accessKeySecret: context.accessKeySecret,
-      });
-      const ready = await this.prisma.cloudAccountContext.update({
-        where: { id },
-        data: {
-          status: 'ready',
-          bucketStatus: 'ready',
-          lastError: null,
-          lastVerifiedAt: new Date(),
-        },
-      });
-      return this.toView(ready);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown OSS Bucket initialization error';
-      const degraded = await this.prisma.cloudAccountContext.update({
-        where: { id },
-        data: {
-          status: 'degraded',
-          bucketStatus: 'failed',
-          lastError: message,
-        },
-      });
-      return this.toView(degraded);
-    }
+    return context.isActive ? this.toView(context) : this.activate(context.id);
   }
 
   async activate(id: string): Promise<CloudAccountContextView> {
@@ -190,7 +169,7 @@ export class CloudAccountContextsService {
     }
 
     if (context.status !== 'ready') {
-      throw new BadRequestException('当前云账号的镜像导入 Bucket 未就绪，无法切换。');
+      throw new BadRequestException('当前阿里云账号不可用，无法切换。');
     }
 
     if (context.isActive) {
@@ -259,160 +238,88 @@ export class CloudAccountContextsService {
     return accountUid;
   }
 
-  private async ensurePrivateImportBucket(input: {
+  private async verifyImageImportBucket(input: {
     bucket: string;
     regionId: string;
     accessKeyId: string;
     accessKeySecret: string;
   }) {
-    const endpoint = this.getBucketEndpoint(input.bucket, input.regionId);
-    const bucketResponse = await this.ossRequest({
-      url: endpoint,
-      method: 'HEAD',
-      bucket: input.bucket,
-      resource: `/${input.bucket}/`,
-      accessKeyId: input.accessKeyId,
-      accessKeySecret: input.accessKeySecret,
-    });
-
-    const bucketExists = bucketResponse.ok;
-
-    if (!bucketExists && bucketResponse.status !== 404) {
-      throw new Error(`查询 OSS Bucket 失败（HTTP ${bucketResponse.status}）：${await bucketResponse.text()}`);
+    if (!input.bucket) {
+      return {
+        bucketStatus: 'unconfigured',
+        lastError: null,
+        lastVerifiedAt: null,
+      };
     }
 
-    if (!bucketExists) {
-      const createResponse = await this.ossRequest({
-        url: endpoint,
-        method: 'PUT',
+    try {
+      const response = await this.ossRequest({
+        url: this.getBucketEndpoint(input.bucket, input.regionId),
+        method: 'HEAD',
         bucket: input.bucket,
         resource: `/${input.bucket}/`,
         accessKeyId: input.accessKeyId,
         accessKeySecret: input.accessKeySecret,
-        headers: { 'x-oss-acl': 'private' },
       });
 
-      if (!createResponse.ok) {
-        throw new Error(`创建 OSS Bucket 失败（HTTP ${createResponse.status}）：${await createResponse.text()}`);
+      if (!response.ok) {
+        return {
+          bucketStatus: 'unavailable',
+          lastError: `无法验证镜像导入 Bucket（HTTP ${response.status}）。`,
+          lastVerifiedAt: null,
+        };
       }
+
+      return {
+        bucketStatus: 'ready',
+        lastError: null,
+        lastVerifiedAt: new Date(),
+      };
+    } catch {
+      return {
+        bucketStatus: 'unavailable',
+        lastError: '无法连接 OSS 验证镜像导入 Bucket。',
+        lastVerifiedAt: null,
+      };
     }
+  }
 
-    const aclResponse = await this.ossRequest({
-      url: `${endpoint}?acl`,
-      method: 'PUT',
-      bucket: input.bucket,
-      resource: `/${input.bucket}/?acl`,
-      accessKeyId: input.accessKeyId,
-      accessKeySecret: input.accessKeySecret,
-      headers: { 'x-oss-acl': 'private' },
-    });
-
-    if (!aclResponse.ok) {
-      throw new Error(`设置 OSS Bucket 私有权限失败（HTTP ${aclResponse.status}）：${await aclResponse.text()}`);
+  private assertImageImportBucketName(bucket: string) {
+    if (bucket && !/^[a-z0-9](?:[a-z0-9-]{1,61})[a-z0-9]$/.test(bucket)) {
+      throw new BadRequestException('自定义 OSS 存储桶名格式无效。');
     }
+  }
 
-    const importCorsRule = [
-      '<CORSRule>',
-      ...this.getAllowedCorsOrigins().map((origin) => `<AllowedOrigin>${origin}</AllowedOrigin>`),
-      '<AllowedMethod>PUT</AllowedMethod>',
-      '<AllowedHeader>*</AllowedHeader>',
-      '<ExposeHeader>ETag</ExposeHeader>',
-      '<MaxAgeSeconds>900</MaxAgeSeconds>',
-      '</CORSRule>',
-    ].join('');
-    const corsBody = !bucketExists
-      ? this.createCorsConfiguration(importCorsRule)
-      : await this.mergeImportCorsRule({
-          endpoint,
-          bucket: input.bucket,
-          accessKeyId: input.accessKeyId,
-          accessKeySecret: input.accessKeySecret,
-          importCorsRule,
-        });
-
-    if (!corsBody) {
+  private async assertImageImportBucketCanChange(
+    existing: { id: string; imageImportBucket: string } | null,
+    imageImportBucket: string,
+  ) {
+    if (!existing || existing.imageImportBucket === imageImportBucket) {
       return;
     }
 
-    const corsResponse = await this.ossRequest({
-      url: `${endpoint}?cors`,
-      method: 'PUT',
-      bucket: input.bucket,
-      resource: `/${input.bucket}/?cors`,
-      accessKeyId: input.accessKeyId,
-      accessKeySecret: input.accessKeySecret,
-      headers: { 'Content-Type': 'application/xml' },
-      body: corsBody,
+    const pendingJobCount = await this.prisma.imageImportJob.count({
+      where: {
+        cloudAccountContextId: existing.id,
+        temporaryObjectDeletedAt: null,
+      },
     });
 
-    if (!corsResponse.ok) {
-      throw new Error(`配置 OSS Bucket CORS 失败（HTTP ${corsResponse.status}）：${await corsResponse.text()}`);
+    if (pendingJobCount > 0) {
+      throw new ConflictException('当前账号仍有待完成或待清理的镜像导入任务，暂不能更换或清空镜像导入 Bucket。');
     }
-  }
-
-  private createCorsConfiguration(corsRule: string) {
-    return [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<CORSConfiguration>',
-      corsRule,
-      '</CORSConfiguration>',
-    ].join('');
-  }
-
-  private async mergeImportCorsRule(input: {
-    endpoint: string;
-    bucket: string;
-    accessKeyId: string;
-    accessKeySecret: string;
-    importCorsRule: string;
-  }) {
-    const existingResponse = await this.ossRequest({
-      url: `${input.endpoint}?cors`,
-      method: 'GET',
-      bucket: input.bucket,
-      resource: `/${input.bucket}/?cors`,
-      accessKeyId: input.accessKeyId,
-      accessKeySecret: input.accessKeySecret,
-    });
-
-    if (existingResponse.status === 404) {
-      return this.createCorsConfiguration(input.importCorsRule);
-    }
-
-    if (!existingResponse.ok) {
-      throw new Error(`读取 OSS Bucket CORS 失败（HTTP ${existingResponse.status}）：${await existingResponse.text()}`);
-    }
-
-    const existingXml = await existingResponse.text();
-    const compactExistingXml = existingXml.replace(/\s+/g, '');
-    const compactImportRule = input.importCorsRule.replace(/\s+/g, '');
-
-    if (compactExistingXml.includes(compactImportRule)) {
-      return null;
-    }
-
-    const closingTag = '</CORSConfiguration>';
-    const closingTagIndex = existingXml.lastIndexOf(closingTag);
-
-    if (closingTagIndex < 0) {
-      throw new Error('读取到的 OSS Bucket CORS 配置格式无效。');
-    }
-
-    return `${existingXml.slice(0, closingTagIndex)}${input.importCorsRule}${existingXml.slice(closingTagIndex)}`;
   }
 
   private async ossRequest(input: {
     url: string;
-    method: 'PUT' | 'GET' | 'HEAD';
+    method: 'HEAD';
     bucket: string;
     resource: string;
     accessKeyId: string;
     accessKeySecret: string;
-    headers?: Record<string, string>;
-    body?: string;
   }) {
     const date = new Date().toUTCString();
-    const headers = { Date: date, ...(input.headers ?? {}) };
+    const headers = { Date: date };
     const authorization = this.signOssRequest({
       method: input.method,
       headers,
@@ -424,7 +331,6 @@ export class CloudAccountContextsService {
     return fetch(input.url, {
       method: input.method,
       headers: { ...headers, Authorization: authorization },
-      ...(input.body !== undefined ? { body: input.body } : {}),
     });
   }
 
@@ -453,40 +359,6 @@ export class CloudAccountContextsService {
 
   private getBucketEndpoint(bucket: string, regionId: string) {
     return `https://${bucket}.oss-${regionId}.aliyuncs.com/`;
-  }
-
-  private getAllowedCorsOrigins() {
-    const configured = process.env.IMAGE_IMPORT_ALLOWED_ORIGINS?.split(',') ?? [];
-    const candidates = configured.length > 0 ? configured : ['http://localhost:3000'];
-    const origins = candidates
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map((value) => {
-        try {
-          const url = new URL(value);
-
-          if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-            return null;
-          }
-
-          return url.origin;
-        } catch {
-          return null;
-        }
-      })
-      .filter((value): value is string => Boolean(value));
-
-    if (origins.length === 0) {
-      throw new BadRequestException('IMAGE_IMPORT_ALLOWED_ORIGINS 必须包含至少一个有效的 HTTP(S) 来源。');
-    }
-
-    return [...new Set(origins)];
-  }
-
-  private buildBucketName(accountUid: string, regionId: string) {
-    const accountHash = createHash('sha256').update(accountUid).digest('hex').slice(0, 10);
-    const regionSlug = regionId.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
-    return `cyber-range-image-${accountHash}-${regionSlug}`;
   }
 
   private toView(context: {

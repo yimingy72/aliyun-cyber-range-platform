@@ -86,6 +86,16 @@ docker compose ps
 
 `pnpm compose:down` 会停止并移除容器与网络，但不会删除命名数据卷。如确需清除本地测试数据，请在确认目标后另行执行卷清理操作。
 
+### 5. 配置镜像导入 Bucket（可选）
+
+管理员可在后台“基础配置 → 云配置”填写“自定义 OSS 存储桶名”。平台只使用管理员已创建的 Bucket：保存时通过 STS 校验账号，并对填写的 Bucket 发起只读 `HEAD` 验证；不会创建 Bucket，也不会修改 ACL、CORS 或其他策略。
+
+- 留空：云账号仍可保存和切换，镜像上传入口关闭；
+- 已存在且当前凭据可访问：开放镜像上传；
+- 不存在、地域不匹配或不可访问：云账号仍可使用，镜像上传关闭并显示原因。
+
+镜像直传由浏览器完成，因此 Bucket 管理员还需要自行配置允许平台 Web 来源执行 `PUT` 的 CORS，并为当前凭据授予上传、查询和清理临时对象所需的权限。
+
 ## MCP 连接
 
 MCP 服务使用 Streamable HTTP：`POST /mcp`，健康检查为 `GET /healthz`。生产接入使用 OIDC Bearer access token；Gateway 会验证 token，并为下游平台 API 执行 token exchange。静态 Bearer Token 只应用于受控的本地 stub / smoke 场景。

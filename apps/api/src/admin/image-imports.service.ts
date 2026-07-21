@@ -69,6 +69,7 @@ export class ImageImportsService {
     const cloudContext = await this.cloudAccountContextsService.getCredentials(input.cloudContextId, {
       requireReady: true,
       requireActive: true,
+      requireImageImportBucket: true,
     });
     const now = new Date();
     const uploadExpiresAt = new Date(now.getTime() + IMAGE_IMPORT_UPLOAD_TTL_MS);

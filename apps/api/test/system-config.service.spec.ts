@@ -114,7 +114,7 @@ describe('SystemConfigService instance type availability', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('initializes the active account import Bucket whenever cloud configuration is saved', async () => {
+  it('passes the custom image import Bucket through cloud configuration saves', async () => {
     const upsert = jest.fn().mockResolvedValue({
       id: 'default',
       provider: 'alibaba_cloud',
@@ -134,6 +134,7 @@ describe('SystemConfigService instance type availability', () => {
           zoneId: 'cn-hangzhou-h',
           accessKeyId: 'current-ak',
           accessKeySecret: 'current-secret',
+          imageImportBucket: 'current-image-imports',
           isActive: true,
           status: 'ready',
         }),
@@ -146,17 +147,21 @@ describe('SystemConfigService instance type availability', () => {
       saveFromCloudConfig,
     } as never);
 
-    await expect(service.updateSnapshot({
+    const cloudConfig = {
       defaultRegion: 'cn-beijing',
       defaultZoneId: 'cn-beijing-k',
       accessKeyId: 'updated-ak',
       accessKeySecret: 'updated-secret',
-    })).resolves.toEqual({
+      imageImportBucket: 'training-image-imports',
+    };
+
+    await expect(service.updateSnapshot(cloudConfig)).resolves.toEqual({
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-beijing',
       defaultZoneId: 'cn-beijing-k',
       accessKeyId: 'updated-ak',
       accessKeySecret: 'updated-secret',
+      imageImportBucket: 'training-image-imports',
     });
     expect(saveFromCloudConfig).toHaveBeenCalledWith({
       provider: 'alibaba_cloud',
@@ -164,6 +169,7 @@ describe('SystemConfigService instance type availability', () => {
       defaultZoneId: 'cn-beijing-k',
       accessKeyId: 'updated-ak',
       accessKeySecret: 'updated-secret',
+      imageImportBucket: 'training-image-imports',
     });
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'default' },

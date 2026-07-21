@@ -38,6 +38,7 @@ const cloudConfigPayload = {
   defaultZoneId: 'cn-hangzhou-h',
   accessKeyId: 'LTAI-test-ak',
   accessKeySecret: 'test-secret',
+  imageImportBucket: '',
 };
 
 function mockAdminSession() {
@@ -72,13 +73,14 @@ describe('SettingsScreen', () => {
     await screen.findByDisplayValue('cn-hangzhou');
 
     expect(screen.getByRole('heading', { name: '云配置' })).toBeTruthy();
-    expect(screen.getByText('保存时将校验当前阿里云账号，并查询该账号和地域的专属私有 OSS Bucket；存在则复用，不存在则创建，用于本地镜像导入。')).toBeTruthy();
+    expect(screen.getByText('保存时将校验当前阿里云账号。镜像导入仅使用管理员提供的现有 OSS Bucket；平台不会创建 Bucket 或修改其权限、CORS。')).toBeTruthy();
+    expect(screen.getByLabelText('自定义 OSS 存储桶名')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '阿里云账号与镜像存储' })).toBeNull();
     expect(screen.queryByLabelText('账号名称')).toBeNull();
     expect(screen.queryByLabelText('导入 Bucket')).toBeNull();
   });
 
-  it('saves cloud configuration and reports that the import Bucket is ready', async () => {
+  it('saves cloud configuration without claiming that an optional Bucket is ready', async () => {
     mockAdminSession();
     fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
     saveCloudConfigMock.mockResolvedValue({
@@ -94,7 +96,7 @@ describe('SettingsScreen', () => {
     await waitFor(() => {
       expect(saveCloudConfigMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', cloudConfigPayload);
     });
-    expect(await screen.findByText('云配置已保存，镜像导入 OSS Bucket 已就绪。')).toBeTruthy();
+    expect(await screen.findByText('云配置已保存。')).toBeTruthy();
   });
 
   it('shows the STS or OSS initialization error returned while saving', async () => {

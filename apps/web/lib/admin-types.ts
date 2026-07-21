@@ -396,6 +396,7 @@ export type CloudConfigSnapshot = {
   defaultZoneId: string;
   accessKeyId: string;
   accessKeySecret: string;
+  imageImportBucket: string;
 };
 
 export type BillingResourceTypeTotal = {

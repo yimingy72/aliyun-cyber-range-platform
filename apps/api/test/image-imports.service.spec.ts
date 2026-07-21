@@ -126,6 +126,7 @@ describe('ImageImportsService', () => {
     expect(contextService.getCredentials).toHaveBeenCalledWith(CONTEXT.id, {
       requireReady: true,
       requireActive: true,
+      requireImageImportBucket: true,
     });
     expect(createInput.defaultPassword).toMatch(/^enc:v1:/);
     expect(createInput.defaultPassword).not.toContain('SecretPass123!');

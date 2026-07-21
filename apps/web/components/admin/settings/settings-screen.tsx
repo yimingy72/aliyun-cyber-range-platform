@@ -19,6 +19,7 @@ const emptyCloudConfig: CloudConfigSnapshot = {
   defaultZoneId: '',
   accessKeyId: '',
   accessKeySecret: '',
+  imageImportBucket: '',
 };
 
 export function SettingsScreen({
@@ -120,7 +121,7 @@ export function SettingsScreen({
     try {
       const savedConfig = await saveCloudConfig(apiBaseUrl, token, cloudConfig);
       setCloudConfig(savedConfig);
-      setCloudConfigSaveSuccessMessage('云配置已保存，镜像导入 OSS Bucket 已就绪。');
+      setCloudConfigSaveSuccessMessage('云配置已保存。');
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         logout();
@@ -128,7 +129,7 @@ export function SettingsScreen({
         return;
       }
 
-      setCloudConfigSaveErrorMessage(error instanceof Error ? error.message : '云配置保存失败，请检查凭据和 Bucket 权限。');
+      setCloudConfigSaveErrorMessage(error instanceof Error ? error.message : '云配置保存失败，请检查凭据或自定义 Bucket 配置。');
     } finally {
       setIsSavingCloudConfig(false);
     }

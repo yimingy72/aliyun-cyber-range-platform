@@ -418,6 +418,56 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByText('文件会直接上传到当前云账号的私有 OSS Bucket，再由阿里云导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。')).toBeTruthy();
   });
 
+  it('disables image upload when the active cloud account has no custom import Bucket', async () => {
+    fetchCloudAccountContextsMock.mockResolvedValue([
+      {
+        id: 'cloud-context-1',
+        displayName: '测试阿里云账号',
+        provider: 'alibaba_cloud',
+        accountUid: '1234567890',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        imageImportBucket: '',
+        isActive: true,
+        status: 'ready',
+        bucketStatus: 'unconfigured',
+      },
+    ]);
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    const uploadButton = await screen.findByRole('button', { name: '上传镜像' });
+    expect((uploadButton as HTMLButtonElement).disabled).toBe(true);
+    expect(uploadButton.getAttribute('title')).toBe('当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。');
+  });
+
+  it('disables image upload when the configured import Bucket is unavailable', async () => {
+    fetchCloudAccountContextsMock.mockResolvedValue([
+      {
+        id: 'cloud-context-1',
+        displayName: '测试阿里云账号',
+        provider: 'alibaba_cloud',
+        accountUid: '1234567890',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        imageImportBucket: 'missing-image-imports',
+        isActive: true,
+        status: 'ready',
+        bucketStatus: 'unavailable',
+      },
+    ]);
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    const uploadButton = await screen.findByRole('button', { name: '上传镜像' });
+    expect((uploadButton as HTMLButtonElement).disabled).toBe(true);
+    expect(uploadButton.getAttribute('title')).toBe('配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。');
+  });
+
   it('creates a direct-OSS upload session and completes the Alibaba Cloud import after a file upload', async () => {
     class SuccessfulXmlHttpRequest {
       status = 200;
