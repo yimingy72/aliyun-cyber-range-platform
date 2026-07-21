@@ -153,6 +153,7 @@ docker compose -f docker-compose.images.yml up -d
   - 默认端口：`3001`
 - `mcp`
   - 默认端口：`8787`，endpoint：`POST /mcp`
+  - 健康检查：`GET /healthz`
 - `keycloak`
   - 默认端口：`8080`，负责 Web 与 MCP 的 OIDC 登录和 Token Exchange
 - `keycloak-bootstrap`
@@ -161,6 +162,25 @@ docker compose -f docker-compose.images.yml up -d
   - 负责 OpenTofu 执行与资源任务处理
 - `postgres`
   - 默认端口：`5432`
+
+## 部署后连接 MCP
+
+MCP Gateway 是面向外部 MCP 客户端的 Streamable HTTP 服务。部署完成后，客户端应连接部署暴露的 `/mcp` 地址，并携带 OIDC Bearer access token；建议令 `.env` 的 `MCP_PUBLIC_URL` 与该公开地址保持一致，方便交接与客户端配置。
+
+- `MCP_PUBLIC_URL` 应记录客户端可访问的 HTTPS 地址，并以 `/mcp` 结尾。
+- `OIDC_ISSUER` 是 token 中的公开 issuer，应与客户端可访问的 Keycloak / OIDC 地址一致。
+- `OIDC_JWKS_URL` 与 `OIDC_TOKEN_ENDPOINT` 供 Gateway 在 Compose 网络内验签和 Token Exchange，可继续使用 `keycloak:8080`，不要改为容器内的 `localhost`。
+- `MCP_OIDC_CLIENT_ID`、`MCP_OIDC_CLIENT_SECRET`、`MCP_OIDC_AUDIENCE` 和 `PLATFORM_API_AUDIENCE` 必须与 OIDC realm 配置一致。
+- 生产环境不要设置 `MCP_STATIC_BEARER_TOKEN`，它仅用于受控的本地 stub / smoke。
+
+部署后可依次验证：
+
+```bash
+curl -fsS http://127.0.0.1:8787/healthz
+docker compose ps mcp api keycloak
+```
+
+客户端配置、token 要求、工具清单和排错说明见：[平台 MCP 客户端接入手册](../../docs/product/2026-07-15-MCP客户端接入示例.md)。
 
 ## 当前前端加载策略
 
