@@ -63,5 +63,8 @@ output "resource_summary" {
     attempted_zones       = try(var.runtime_selections.attempted_zones, [])
     resolved_instance_type = var.instance_type
     resolved_image_id      = var.image_id
+    resolved_image_ids = {
+      for host_key, host in alicloud_instance.hosts : host_key => host.image_id
+    }
   }
 }

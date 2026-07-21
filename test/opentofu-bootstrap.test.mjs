@@ -31,23 +31,42 @@ test('opentofu module exposes the enterprise cyber range resources and outputs',
   assert.match(providersTf, /required_providers/);
   assert.match(providersTf, /aliyun\/alicloud/);
   assert.match(mainTf, /resource "alicloud_vpc"/);
-  assert.match(mainTf, /resource "alicloud_vswitch" "dmz"/);
-  assert.match(mainTf, /resource "alicloud_vswitch" "office"/);
-  assert.match(mainTf, /resource "alicloud_vswitch" "server"/);
+  assert.match(mainTf, /resource "alicloud_vswitch" "zones"/);
   assert.match(mainTf, /resource "alicloud_security_group"/);
   assert.match(mainTf, /security_group_name/);
   assert.doesNotMatch(mainTf, /resource "alicloud_security_group" "range"[\s\S]*\n\s+name\s*=/);
   assert.match(mainTf, /resource "alicloud_security_group_rule"/);
-  assert.match(mainTf, /resource "alicloud_instance" "dmz"/);
-  assert.match(mainTf, /resource "alicloud_instance" "office"/);
-  assert.match(mainTf, /resource "alicloud_instance" "server"/);
-  assert.match(mainTf, /resource "alicloud_eip_address" "dmz"/);
-  assert.match(mainTf, /resource "alicloud_eip_association" "dmz"/);
+  assert.match(mainTf, /resource "alicloud_instance" "hosts"/);
+  assert.match(mainTf, /resource "alicloud_eip_address" "addresses"/);
+  assert.match(mainTf, /resource "alicloud_eip_association" "host_targets"/);
   assert.match(outputsTf, /output "vpc_id"/);
   assert.match(outputsTf, /output "subnet_ids"/);
   assert.match(outputsTf, /output "host_ids"/);
   assert.match(outputsTf, /output "public_entry"/);
   assert.match(outputsTf, /output "resource_summary"/);
+  assert.match(outputsTf, /resolved_image_ids/);
+});
+
+test('enterprise range module preserves each host image ID instead of using a shared image', () => {
+  const mainTf = fs.readFileSync(
+    new URL('../infra/opentofu/modules/alicloud-enterprise-range/main.tf', import.meta.url),
+    'utf8',
+  );
+  const variablesTf = fs.readFileSync(
+    new URL('../infra/opentofu/modules/alicloud-enterprise-range/variables.tf', import.meta.url),
+    'utf8',
+  );
+  const rootWrapper = fs.readFileSync(
+    new URL('../apps/api/src/provisioning/root-wrapper-template.ts', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(variablesTf, /variable "hosts"[\s\S]*image_id\s*=\s*optional\(string\)/);
+  assert.match(rootWrapper, /variable "hosts"[\s\S]*image_id\s*=\s*optional\(string\)/);
+  assert.match(
+    mainTf,
+    /resource "alicloud_instance" "hosts"[\s\S]*image_id\s*=\s*coalesce\(try\(each\.value\.image_id, null\), var\.image_id\)/,
+  );
 });
 
 test('workspace scripts and examples expose the opentofu bootstrap flow', () => {

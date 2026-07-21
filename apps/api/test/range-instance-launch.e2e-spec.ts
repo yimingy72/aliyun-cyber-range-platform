@@ -227,6 +227,34 @@ describe('Range instance launch API', () => {
       role: 'user',
       status: 'active',
     });
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-range-launch-image',
+          sourceImageName: 'Range launch image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-21T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [imageSnapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-range-launch-image',
+    });
+    const imageAsset = await repository.collectPlatformImageAsset({
+      snapshotId: imageSnapshot!.id,
+      displayName: 'Range launch image',
+      ownerUserId: launchUser.id,
+      visibility: 'private',
+    });
 
     const template = await repository.createRangeTemplate({
       name: 'Launchable Template',
@@ -252,7 +280,32 @@ describe('Range instance launch API', () => {
       },
       topologyGraph: {
         schemaVersion: '1',
-        nodes: [{ id: 'entry-host', kind: 'ecs', data: { label: 'entry-host' } }],
+        nodes: [
+          {
+            id: 'entry-host',
+            kind: 'ecs',
+            data: {
+              label: 'entry-host',
+              platformImageAssetId: imageAsset.id,
+              image: imageAsset.displayName,
+              imageName: imageAsset.displayName,
+              imageId: imageAsset.imageId,
+              imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
+            },
+          },
+          {
+            id: 'db-host',
+            kind: 'ecs',
+            data: {
+              label: 'db-host',
+              platformImageAssetId: imageAsset.id,
+              image: imageAsset.displayName,
+              imageName: imageAsset.displayName,
+              imageId: imageAsset.imageId,
+              imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
+            },
+          },
+        ],
         edges: [],
       },
       scenarioTemplateSpec: {
@@ -364,6 +417,53 @@ describe('Range instance launch API', () => {
         runtimeCredentials: launchResponse.body.runtimeCredentials,
       }),
     );
+  });
+
+  it('rejects launching a legacy template whose ECS directly references an Alibaba Cloud image', async () => {
+    const legacyTemplate = await repository.createRangeTemplate({
+      name: 'Legacy Image Template',
+      createdBy: launchUser.id,
+      ownerUserId: launchUser.id,
+      slug: 'legacy-image-template',
+      visibility: 'private',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.91.0.0/16',
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.91.10.0/24', isPublicEntry: true },
+        ],
+        hosts: [
+          { key: 'entry-host', name: 'entry-host', zoneKey: 'dmz', role: 'entry', privateIp: '10.91.10.10', exposePublic: true },
+        ],
+        publicEntry: { hostKey: 'entry-host', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        nodes: [
+          {
+            id: 'entry-host',
+            kind: 'ecs',
+            label: '入口 ECS',
+            imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd' },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/admin/ranges/launch')
+      .set('authorization', `Bearer ${userToken}`)
+      .send({
+        templateId: legacyTemplate.id,
+        name: '旧模板实例',
+        expiresAt: '2026-07-12T12:00:00.000Z',
+      })
+      .expect(400);
+
+    expect(response.body.message).toBe('入口 ECS 请选择镜像');
   });
 
   it('rejects client-sent triggeredBy on range launch requests', async () => {

@@ -49,6 +49,7 @@ export type RangeProvisionCreateInput = {
   preserveWorkspaceState?: boolean;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
   runtimeCredentials?: RangeRuntimeCredentials;
+  topologyGraph?: Record<string, unknown> | null;
   topologySpec?: RangeTemplateTopologySpec | null;
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;
@@ -70,6 +71,7 @@ export type RangeProvisionDestroyInput = {
   allocatedCidr: string | null;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
   runtimeCredentials?: RangeRuntimeCredentials;
+  topologyGraph?: Record<string, unknown> | null;
   topologySpec?: RangeTemplateTopologySpec | null;
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: RangeTemplateCompiledSpec | null;

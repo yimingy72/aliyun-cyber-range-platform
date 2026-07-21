@@ -167,6 +167,7 @@ export type RangeResourceSummary = {
   runtimeSelections?: Record<string, unknown> | null;
   resolvedInstanceType?: string | null;
   resolvedImageId?: string | null;
+  resolvedImageIds?: Record<string, string> | null;
   topologySpec?: RangeResourceTopologySummary;
 };
 

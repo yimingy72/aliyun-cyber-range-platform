@@ -222,7 +222,46 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByRole('button', { name: '发布编排' })).toBeTruthy();
   });
 
-  it('loads platform image assets only for ecs image options', async () => {
+  it('loads platform image assets and the current user\'s own image assets for ecs image options', async () => {
+    fetchPlatformImagesMock.mockImplementation(
+      async (_apiBaseUrl: string, _token: string, view?: string) => ({
+        items:
+          view === 'mine'
+            ? [
+                {
+                  id: 'my-image-1',
+                  displayName: '我的渗透靶机',
+                  imageId: 'm-bp1c97oenzc22sbr1e7s',
+                  provider: 'alibaba_cloud',
+                  accountUid: null,
+                  accountScopeKey: 'public:cn-hangzhou',
+                  regionId: 'cn-hangzhou',
+                  sourceScope: 'custom',
+                  sourceSnapshotId: 'snapshot-custom-1',
+                  enabled: true,
+                  createdAt: '2026-07-03T00:00:00.000Z',
+                  updatedAt: '2026-07-03T00:00:00.000Z',
+                },
+              ]
+            : [
+                {
+                  id: 'platform-image-1',
+                  displayName: 'Ubuntu 24.04 LTS',
+                  imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+                  provider: 'alibaba_cloud',
+                  accountUid: null,
+                  accountScopeKey: 'public:cn-hangzhou',
+                  regionId: 'cn-hangzhou',
+                  sourceScope: 'public',
+                  sourceSnapshotId: 'snapshot-public-1',
+                  enabled: true,
+                  createdAt: '2026-07-03T00:00:00.000Z',
+                  updatedAt: '2026-07-03T00:00:00.000Z',
+                },
+              ],
+      }),
+    );
+
     render(
       <TemplateEditorScreen
         template={{
@@ -249,7 +288,8 @@ describe('TemplateEditorScreen', () => {
     );
 
     await waitFor(() => {
-      expect(fetchPlatformImagesMock).toHaveBeenCalledTimes(1);
+      expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'platform');
+      expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
     });
     expect(fetchPublicImageCatalogScopeMock).not.toHaveBeenCalled();
     expect(fetchCustomImageCatalogScopeMock).not.toHaveBeenCalled();
@@ -259,8 +299,46 @@ describe('TemplateEditorScreen', () => {
 
     const imageCombobox = screen.getByRole('combobox', { name: '镜像名' });
     expect(imageCombobox).toBeTruthy();
-    fireEvent.change(imageCombobox, { target: { value: 'Ubuntu 24.04 LTS' } });
-    expect(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' })).toBeTruthy();
+    fireEvent.change(imageCombobox, { target: { value: '我的渗透靶机' } });
+    expect(await screen.findByRole('option', { name: '我的渗透靶机' })).toBeTruthy();
+  });
+
+  it('starts a new ECS without an image and blocks topology validation until an image is selected', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+
+    expect((screen.getByRole('combobox', { name: '镜像名' }) as HTMLInputElement).value).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+
+    expect(await screen.findByText(/ECS 1 请选择镜像/)).toBeTruthy();
+    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('supports only router, switch and ecs nodes in the phase-one topology editor', () => {
@@ -595,7 +673,8 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByTestId('template-canvas-edge-edge-switch-2-ecs-1')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-2' } });
-    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'ubuntu_22_04_x64_20G_alibase' } });
+    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
     fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
@@ -1716,8 +1795,8 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
-    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'aliyun_linux_3_x64_20G_alibase' } });
-    fireEvent.keyDown(screen.getByLabelText('镜像名'), { key: 'Enter' });
+    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
@@ -1810,6 +1889,7 @@ describe('TemplateEditorScreen', () => {
                   privateIp: '',
                   exposePublic: true,
                   image: 'ubuntu_22_04_x64_20G_alibase',
+                  platformImageAssetId: 'platform-image-1',
                   imageName: 'ubuntu_22_04_x64_20G_alibase',
                   imageId: 'ubuntu_22_04_x64_20G_alibase',
                   cpu: 2,
@@ -2034,6 +2114,7 @@ describe('TemplateEditorScreen', () => {
                   privateIp: '10.0.0.10',
                   exposePublic: true,
                   image: 'ubuntu_22_04_x64_20G_alibase',
+                  platformImageAssetId: 'platform-image-1',
                   imageName: 'ubuntu_22_04_x64_20G_alibase',
                   imageId: 'ubuntu_22_04_x64_20G_alibase',
                   cpu: 1,
@@ -2141,6 +2222,7 @@ describe('TemplateEditorScreen', () => {
                   privateIp: '',
                   exposePublic: true,
                   image: 'aliyun_linux_3_x64_20G_alibase',
+                  platformImageAssetId: 'platform-image-1',
                   imageName: 'aliyun_linux_3_x64_20G_alibase',
                   imageId: 'aliyun_linux_3_x64_20G_alibase',
                   cpu: 1,
@@ -2539,6 +2621,7 @@ describe('TemplateEditorScreen', () => {
                   privateIp: '10.0.0.13',
                   exposePublic: true,
                   image: 'ubuntu_22_04_x64_20G_alibase',
+                  platformImageAssetId: 'platform-image-1',
                   imageName: 'ubuntu_22_04_x64_20G_alibase',
                   imageId: 'ubuntu_22_04_x64_20G_alibase',
                   cpu: 8,
@@ -2718,6 +2801,7 @@ describe('TemplateEditorScreen', () => {
           id: 'ecs-1',
           type: 'host',
           config: expect.objectContaining({
+            platformImageAssetId: 'platform-image-1',
             imageId: 'ubuntu_24_04_x64_20G_alibase',
             instanceType: 'ecs.e-c1m2.xlarge',
             instanceTypeStrategy: {
@@ -3026,6 +3110,7 @@ describe('TemplateEditorScreen', () => {
                   privateIp: '',
                   exposePublic: true,
                   image: 'ubuntu_22_04_x64_20G_alibase',
+                  platformImageAssetId: 'platform-image-1',
                   imageName: 'ubuntu_22_04_x64_20G_alibase',
                   imageId: 'ubuntu_22_04_x64_20G_alibase',
                   cpu: 1,
@@ -3061,6 +3146,7 @@ describe('TemplateEditorScreen', () => {
                   privateIp: '',
                   exposePublic: false,
                   image: 'ubuntu_22_04_x64_20G_alibase',
+                  platformImageAssetId: 'platform-image-1',
                   imageName: 'ubuntu_22_04_x64_20G_alibase',
                   imageId: 'ubuntu_22_04_x64_20G_alibase',
                   cpu: 1,
@@ -3195,7 +3281,8 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-publish' } });
-    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'ubuntu_22_04_x64_20G_alibase' } });
+    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
@@ -3255,7 +3342,8 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-fail' } });
-    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'ubuntu_22_04_x64_20G_alibase' } });
+    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));

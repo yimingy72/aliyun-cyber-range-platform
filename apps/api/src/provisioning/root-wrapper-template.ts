@@ -163,6 +163,7 @@ variable "hosts" {
     role          = string
     expose_public = bool
     instance_type = optional(string)
+    image_id      = optional(string)
   }))
   description = "Structured host definitions forwarded to the enterprise range module."
   default     = []

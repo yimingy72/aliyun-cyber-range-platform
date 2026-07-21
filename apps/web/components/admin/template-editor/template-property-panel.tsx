@@ -33,10 +33,6 @@ type TemplatePropertyPanelProps = {
   runtimeNodeStatus?: string | null;
 };
 
-type EcsTemplateNodeWithPlatformImageAssetId = EcsTemplateNode & {
-  platformImageAssetId?: string;
-};
-
 type PropertyFieldProps = {
   label: string;
   hint?: string;
@@ -327,7 +323,6 @@ function renderHostFields(
 ) {
   const instanceDetailMode = options?.instanceDetailMode ?? false;
   const isLockedByInstanceDetail = instanceDetailMode;
-  const selectedNodeWithPlatformImageAsset = selectedNode as EcsTemplateNodeWithPlatformImageAssetId;
   const nicItems = selectedNode.nics ?? [];
   const allSwitchOptions = allNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
   const linkedSwitchIds = linkedSwitchIdsByHostId[selectedNode.id] ?? [];
@@ -337,50 +332,22 @@ function renderHostFields(
       : allSwitchOptions;
   const switchById = new Map(allSwitchOptions.map((node) => [node.id, node]));
   const enabledPlatformImageAssets = platformImageAssets.filter((item) => item.enabled);
-  const fallbackPlatformImageAsset =
-    selectedNode.imageId || selectedNode.imageName || selectedNode.image
-      ? {
-          id:
-            selectedNodeWithPlatformImageAsset.platformImageAssetId ??
-            selectedNode.imageId ??
-            selectedNode.image ??
-            `${selectedNode.id}-current-image`,
-          displayName: selectedNode.imageName ?? selectedNode.image,
-          imageId: selectedNode.imageId ?? selectedNode.image,
-          provider: 'alibaba_cloud' as const,
-          accountUid: null,
-          accountScopeKey: '',
-          regionId: '',
-          sourceScope: 'public' as const,
-          enabled: true,
-          sourceSnapshotId: null,
-          createdAt: null,
-          updatedAt: null,
-        }
-      : null;
   const selectedPlatformImageAsset =
-    (selectedNodeWithPlatformImageAsset.platformImageAssetId
-      ? enabledPlatformImageAssets.find((item) => item.id === selectedNodeWithPlatformImageAsset.platformImageAssetId) ?? null
-      : null) ??
-    (selectedNode.imageId
-      ? enabledPlatformImageAssets.find((item) => item.imageId === selectedNode.imageId) ?? null
-      : null) ??
-    fallbackPlatformImageAsset;
-  const platformImageOptions =
-    selectedPlatformImageAsset && !enabledPlatformImageAssets.some((item) => item.id === selectedPlatformImageAsset.id)
-      ? [selectedPlatformImageAsset, ...enabledPlatformImageAssets]
-      : enabledPlatformImageAssets;
+    selectedNode.platformImageAssetId
+      ? enabledPlatformImageAssets.find((item) => item.id === selectedNode.platformImageAssetId) ?? null
+      : null;
+  const platformImageOptions = enabledPlatformImageAssets;
 
   function handleSelectPlatformImageAsset(nextPlatformImageAsset: PlatformImageAsset | null) {
-    const nextNode: EcsTemplateNodeWithPlatformImageAssetId = {
+    const nextNode: EcsTemplateNode = {
       ...selectedNode,
       platformImageAssetId: nextPlatformImageAsset?.id,
-      image: nextPlatformImageAsset?.displayName ?? selectedNode.image,
-      imageName: nextPlatformImageAsset?.displayName ?? selectedNode.imageName,
-      imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
+      image: nextPlatformImageAsset?.displayName ?? '',
+      imageName: nextPlatformImageAsset?.displayName ?? '',
+      imageId: nextPlatformImageAsset?.imageId ?? '',
       imageStrategy: {
         mode: 'fixed',
-        imageId: nextPlatformImageAsset?.imageId ?? selectedNode.imageId,
+        ...(nextPlatformImageAsset ? { imageId: nextPlatformImageAsset.imageId } : {}),
       },
     };
 

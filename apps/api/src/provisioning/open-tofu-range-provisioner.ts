@@ -105,6 +105,7 @@ type OpenTofuOutputs = {
     }>;
     resolved_instance_type?: string;
     resolved_image_id?: string;
+    resolved_image_ids?: Record<string, string>;
   }>;
 };
 
@@ -432,6 +433,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         })) ?? null,
         resolvedInstanceType: resourceSummary?.resolved_instance_type ?? null,
         resolvedImageId: resourceSummary?.resolved_image_id ?? null,
+        resolvedImageIds: resourceSummary?.resolved_image_ids ?? null,
         ...(plan ? { topologySpec: plan.topologySummary } : {}),
       },
     };
@@ -611,6 +613,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const hostProvisioningHints = buildHostInstanceResolutionHints(
       input.compiledProvisionSpec,
       input.compiledSpec,
+      input.topologyGraph,
     );
     let zoneId = runtimeConfig.defaultZoneId;
     let attemptedZones: ProvisioningAttemptedZoneSummary[] = [];
@@ -663,10 +666,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostKeys: plan.hostDefinitions.map((host) => host.key),
       preferredHostKey: plan.entryHostKey,
     });
-    const finalHostImageId = resolveGlobalHostImageId(hostImageIds);
-    const imageId = finalHostImageId
-      ? finalHostImageId
-      : await this.resolveImageId(runtimeConfig);
+    const imageId =
+      hostImageIds?.[plan.entryHostKey] ??
+      Object.values(hostImageIds ?? {})[0] ??
+      (await this.resolveImageId(runtimeConfig));
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
         host.key,
@@ -1108,6 +1111,7 @@ function deriveInstanceTypePreferencesForResources(
 function buildHostInstanceResolutionHints(
   compiledProvisionSpec: Record<string, unknown> | null | undefined,
   compiledSpec: RangeTemplateCompiledSpec | null | undefined,
+  topologyGraph: Record<string, unknown> | null | undefined,
 ) {
   const hints = new Map<string, HostInstanceResolutionHint>();
 
@@ -1150,6 +1154,23 @@ function buildHostInstanceResolutionHints(
         : {}),
       ...(finalImageId ? { finalImageId } : {}),
       ...(instanceTypeStrategy ? { instanceTypeStrategy } : {}),
+    });
+  }
+
+  const topologyNodes = Array.isArray(topologyGraph?.nodes) ? topologyGraph.nodes : [];
+  for (const nodeValue of topologyNodes) {
+    const node = readObjectRecord(nodeValue);
+    const nodeData = readObjectRecord(node?.data) ?? node;
+
+    if (!node || !nodeData || node.kind !== 'ecs' || typeof node.id !== 'string') {
+      continue;
+    }
+
+    const existing = hints.get(node.id) ?? {};
+    const finalImageId = resolveFinalImageIdFromRecord(nodeData);
+    hints.set(node.id, {
+      ...existing,
+      ...(finalImageId ? { finalImageId } : {}),
     });
   }
 
@@ -1306,22 +1327,6 @@ function resolveFinalHostImageIds(input: {
     [input.preferredHostKey]: preferredImageId,
     ...resolvedHostImageIds,
   };
-}
-
-function resolveGlobalHostImageId(hostImageIds: Record<string, string> | undefined) {
-  if (!hostImageIds) {
-    return undefined;
-  }
-
-  const uniqueImageIds = [...new Set(Object.values(hostImageIds))];
-
-  if (uniqueImageIds.length > 1) {
-    throw new Error(
-      `Conflicting final host image IDs are not supported by the current OpenTofu runtime: ${uniqueImageIds.join(', ')}`,
-    );
-  }
-
-  return uniqueImageIds[0];
 }
 
 function readImageIdPreferences(env: OpenTofuProvisionerEnv) {

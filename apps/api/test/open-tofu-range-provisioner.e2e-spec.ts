@@ -587,6 +587,11 @@ describe('OpenTofuRangeProvisioner', () => {
             },
             resolved_instance_type: 'ecs.u1-c1m2.large',
             resolved_image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+            resolved_image_ids: {
+              'dmz-entry': 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+              'office-client': 'm-office-image',
+              'server-app': 'm-server-image',
+            },
           },
         },
       }),
@@ -1015,6 +1020,11 @@ describe('OpenTofuRangeProvisioner', () => {
         },
         outputFilePath: path.join(workspaceDir, 'outputs.json'),
         resolvedImageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        resolvedImageIds: {
+          'dmz-entry': 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+          'office-client': 'm-office-image',
+          'server-app': 'm-server-image',
+        },
         resolvedInstanceType: 'ecs.u1-c1m2.large',
         runtimeSelections: null,
         selectedZoneId: null,
@@ -3521,7 +3531,7 @@ describe('OpenTofuRangeProvisioner', () => {
     }
   });
 
-  it('rejects conflicting final host imageIds before calling the aliyun runtime image resolver', async () => {
+  it('renders a distinct image ID for each host without using the global runtime image resolver', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-host-image-conflict-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
@@ -3539,7 +3549,24 @@ describe('OpenTofuRangeProvisioner', () => {
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
       apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
-      output: jest.fn().mockResolvedValue({}),
+      output: jest.fn().mockResolvedValue({
+        public_entry: {
+          value: {
+            host_role: 'entry',
+            public_ip: '1.1.1.1',
+            private_ip: '10.97.10.10',
+            ssh: 'ssh root@example.range',
+          },
+        },
+        resource_summary: {
+          value: {
+            vpc_id: 'vpc-host-image-conflict',
+            subnet_ids: { 'zone-1': 'vsw-zone1' },
+            host_ids: { 'ecs-1': 'i-ecs1', 'ecs-2': 'i-ecs2' },
+            eip_allocation_id: 'eip-host-image-conflict',
+          },
+        },
+      }),
       destroy: jest.fn().mockResolvedValue({ stdout: 'destroy ok', stderr: '' }),
     };
 
@@ -3561,8 +3588,7 @@ describe('OpenTofuRangeProvisioner', () => {
       },
     });
 
-    await expect(
-      provisioner.create({
+    await provisioner.create({
         rangeInstanceId: 'range-instance-host-image-conflict',
         templateModulePath: 'infra/module',
         allocatedCidr: null,
@@ -3601,6 +3627,28 @@ describe('OpenTofuRangeProvisioner', () => {
             hostKey: 'ecs-1',
             protocols: [{ protocol: 'ssh', port: 22 }],
           },
+        },
+        topologyGraph: {
+          schemaVersion: '2.0.0',
+          nodes: [
+            {
+              id: 'ecs-1',
+              kind: 'ecs',
+              data: {
+                imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+                imageStrategy: { mode: 'fixed', imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd' },
+              },
+            },
+            {
+              id: 'ecs-2',
+              kind: 'ecs',
+              data: {
+                imageId: 'debian_12_14_x64_20G_alibase_20260609.vhd',
+                imageStrategy: { mode: 'fixed', imageId: 'debian_12_14_x64_20G_alibase_20260609.vhd' },
+              },
+            },
+          ],
+          edges: [],
         },
         compiledProvisionSpec: {
           schemaVersion: '1.0.0',
@@ -3670,7 +3718,7 @@ describe('OpenTofuRangeProvisioner', () => {
                 privateIp: '10.97.10.10',
                 exposePublic: true,
                 instanceType: 'ecs.g7.large',
-                imageId: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+                imageId: 'm-unapproved-ecs-1',
               },
             },
             {
@@ -3684,7 +3732,7 @@ describe('OpenTofuRangeProvisioner', () => {
                 privateIp: '10.97.10.20',
                 exposePublic: false,
                 instanceType: 'ecs.c7.large',
-                imageId: 'debian_12_14_x64_20G_alibase_20260609.vhd',
+                imageId: 'm-unapproved-ecs-2',
               },
             },
             {
@@ -3700,13 +3748,29 @@ describe('OpenTofuRangeProvisioner', () => {
             },
           ],
         },
-      }),
-    ).rejects.toThrow(
-      'Conflicting final host image IDs are not supported by the current OpenTofu runtime',
+      });
+
+    const varsFilePath = path.join(
+      workspacesRootDir,
+      'range-instance-host-image-conflict',
+      'range.auto.tfvars.json',
     );
+    const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
 
     expect(availableImageIdResolver).not.toHaveBeenCalled();
-    expect(runner.init).not.toHaveBeenCalled();
+    expect(runner.init).toHaveBeenCalled();
+    expect(renderedVariables.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'ecs-1',
+          image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',
+        }),
+        expect.objectContaining({
+          key: 'ecs-2',
+          image_id: 'debian_12_14_x64_20G_alibase_20260609.vhd',
+        }),
+      ]),
+    );
   });
 
   it('does not treat generic host image strings as final executable image IDs', async () => {

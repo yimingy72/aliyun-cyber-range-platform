@@ -48,6 +48,8 @@ export type CompiledHost = {
   zoneKey: string;
   primaryPrivateIp: string;
   exposePublic: boolean;
+  platformImageAssetId?: string;
+  imageId?: string;
   accountPreset?: {
     username?: string;
     password?: string;

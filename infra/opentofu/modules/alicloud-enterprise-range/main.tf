@@ -429,7 +429,7 @@ resource "alicloud_instance" "hosts" {
   instance_name        = substr(replace(replace("${var.resource_name_prefix}-${each.key}", " ", "-"), "_", "-"), 0, 128)
   host_name            = try(each.value.host_name, null)
   instance_type        = try(each.value.instance_type, var.instance_type)
-  image_id             = var.image_id
+  image_id             = coalesce(try(each.value.image_id, null), var.image_id)
   password             = lookup(var.host_passwords, each.key, var.instance_password)
   security_groups      = [alicloud_security_group.hosts[each.key].id]
   vswitch_id           = alicloud_vswitch.zones[each.value.zone_key].id

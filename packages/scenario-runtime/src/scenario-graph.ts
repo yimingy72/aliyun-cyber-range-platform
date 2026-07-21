@@ -133,6 +133,7 @@ export type EcsTemplateNode = TemplateNodeBase & {
   customPassword?: string;
   exposePublic: boolean;
   image: string;
+  platformImageAssetId?: string;
   instanceName?: string;
   hostName?: string;
   imageName?: string;

@@ -15,6 +15,17 @@ import { attachCreatedByUsernames } from './creator-display';
 type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
 type RangeTemplateView = 'platform' | 'mine';
+type EcsImageSelection = {
+  platformImageAssetId: string;
+  imageId: string;
+};
+type TemplateEcsImageValidationInput = {
+  topologyGraph?: Record<string, unknown>;
+  topologySpec?: RangeTemplateTopologySpec | null;
+  scenarioTemplateSpec?: Record<string, unknown> | null;
+  compiledProvisionSpec?: Record<string, unknown> | null;
+  compiledSpec?: Record<string, unknown> | null;
+};
 
 @Injectable()
 export class RangeTemplatesService {
@@ -95,6 +106,7 @@ export class RangeTemplatesService {
     this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
     this.validateTopologySpec(input.topologySpec);
+    await this.assertTemplateEcsImageSelections(input, currentUser);
 
     const template = await this.adminRepository.createRangeTemplate({
       ...input,
@@ -130,6 +142,25 @@ export class RangeTemplatesService {
     if (!modulePathOrRef) {
       throw new BadRequestException('Template module path not found');
     }
+
+    await this.assertTemplateEcsImageSelections(
+      {
+        topologyGraph:
+          sourceVersion?.topologyGraph ?? (allowTemplateFallback ? existingTemplate.topologyGraph : undefined) ?? undefined,
+        topologySpec,
+        scenarioTemplateSpec:
+          sourceVersion?.scenarioTemplateSpec ??
+          (allowTemplateFallback ? existingTemplate.scenarioTemplateSpec : undefined) ??
+          undefined,
+        compiledProvisionSpec:
+          sourceVersion?.compiledProvisionSpec ??
+          (allowTemplateFallback ? existingTemplate.compiledProvisionSpec : undefined) ??
+          undefined,
+        compiledSpec:
+          sourceVersion?.compiledSpec ?? (allowTemplateFallback ? existingTemplate.compiledSpec : undefined) ?? undefined,
+      },
+      currentUser,
+    );
 
     const rangeTemplates = await this.adminRepository.listRangeTemplates();
     const actorId = currentUser?.id ?? existingTemplate.createdBy;
@@ -190,6 +221,29 @@ export class RangeTemplatesService {
     this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
     this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
+    await this.assertTemplateEcsImageSelections(
+      {
+        topologyGraph:
+          input.topologyGraph ?? existingTemplate.currentDraftVersion?.topologyGraph ?? existingTemplate.topologyGraph ?? undefined,
+        topologySpec,
+        scenarioTemplateSpec:
+          input.scenarioTemplateSpec ??
+          existingTemplate.currentDraftVersion?.scenarioTemplateSpec ??
+          existingTemplate.scenarioTemplateSpec ??
+          undefined,
+        compiledProvisionSpec:
+          input.compiledProvisionSpec ??
+          existingTemplate.currentDraftVersion?.compiledProvisionSpec ??
+          existingTemplate.compiledProvisionSpec ??
+          undefined,
+        compiledSpec:
+          input.compiledSpec ??
+          existingTemplate.currentDraftVersion?.compiledSpec ??
+          existingTemplate.compiledSpec ??
+          undefined,
+      },
+      currentUser,
+    );
 
     const template = await this.adminRepository.updateRangeTemplate(id, input);
     return this.withCreatorUsername(template);
@@ -206,6 +260,10 @@ export class RangeTemplatesService {
       this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
+    await this.assertTemplateEcsImageSelections(
+      this.getCurrentDraftTemplateEcsImageValidationInput(existingTemplate),
+      currentUser,
+    );
     this.assertTemplateReadyForPublish(existingTemplate);
 
     const template = await this.adminRepository.publishRangeTemplate(id);
@@ -222,6 +280,17 @@ export class RangeTemplatesService {
     if (this.isSharedTemplateConsumer(existingTemplate, currentUser)) {
       const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
 
+      await this.assertTemplateEcsImageSelections(
+        {
+          topologyGraph: sourceVersion?.topologyGraph ?? undefined,
+          topologySpec: sourceVersion?.topologySpec ?? null,
+          scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec ?? undefined,
+          compiledProvisionSpec: sourceVersion?.compiledProvisionSpec ?? undefined,
+          compiledSpec: sourceVersion?.compiledSpec ?? undefined,
+        },
+        currentUser,
+      );
+
       this.assertTemplateStateReadyForPublish({
         scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec,
         compiledProvisionSpec: sourceVersion?.compiledProvisionSpec,
@@ -236,6 +305,10 @@ export class RangeTemplatesService {
       this.assertTemplateReadable(existingTemplate, currentUser);
     }
 
+    await this.assertTemplateEcsImageSelections(
+      this.getCurrentDraftTemplateEcsImageValidationInput(existingTemplate),
+      currentUser,
+    );
     this.assertTemplateReadyForPublish(existingTemplate);
 
     return { valid: true as const };
@@ -421,6 +494,32 @@ export class RangeTemplatesService {
     return `${normalizedSlug}-${suffix}`;
   }
 
+  private getCurrentDraftTemplateEcsImageValidationInput(
+    template: ExistingRangeTemplate,
+  ): TemplateEcsImageValidationInput {
+    return {
+      topologyGraph: template.currentDraftVersion?.topologyGraph ?? template.topologyGraph ?? undefined,
+      topologySpec: template.currentDraftVersion?.topologySpec ?? template.topologySpec,
+      scenarioTemplateSpec:
+        template.currentDraftVersion?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? undefined,
+      compiledProvisionSpec:
+        template.currentDraftVersion?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? undefined,
+      compiledSpec: template.currentDraftVersion?.compiledSpec ?? template.compiledSpec ?? undefined,
+    };
+  }
+
+  async assertTemplateEcsImageSelections(
+    input: TemplateEcsImageValidationInput,
+    currentUser?: AuthenticatedUser,
+  ) {
+    const selections = await this.assertTopologyGraphEcsImageSelections(
+      input.topologyGraph,
+      currentUser,
+      input.topologySpec,
+    );
+    this.assertCompiledEcsImageSelections(input, selections);
+  }
+
   private validateTopologySpec(topologySpec: RangeTemplateTopologySpec) {
     const zoneKeys = new Set<string>();
     const hostKeys = new Set<string>();
@@ -449,6 +548,146 @@ export class RangeTemplatesService {
       throw new BadRequestException(
         `Public entry host does not exist in hosts: ${topologySpec.publicEntry.hostKey}`,
       );
+    }
+  }
+
+  async assertTopologyGraphEcsImageSelections(
+    topologyGraph: Record<string, unknown> | undefined,
+    currentUser?: AuthenticatedUser,
+    topologySpec?: RangeTemplateTopologySpec | null,
+  ): Promise<Record<string, EcsImageSelection>> {
+    const nodes = Array.isArray(topologyGraph?.nodes) ? topologyGraph.nodes : [];
+    const selectedImageIds: Record<string, EcsImageSelection> = {};
+
+    for (const nodeValue of nodes) {
+      if (!nodeValue || typeof nodeValue !== 'object') {
+        continue;
+      }
+
+      const node = nodeValue as Record<string, unknown>;
+      const nodeData = node.data && typeof node.data === 'object' ? (node.data as Record<string, unknown>) : node;
+      const kind = typeof node.kind === 'string' ? node.kind : nodeData.kind;
+
+      if (kind !== 'ecs') {
+        continue;
+      }
+
+      const label =
+        (typeof node.label === 'string' && node.label.trim()) ||
+        (typeof nodeData.label === 'string' && nodeData.label.trim()) ||
+        (typeof node.id === 'string' && node.id) ||
+        'ECS';
+      const platformImageAssetId =
+        typeof nodeData.platformImageAssetId === 'string' ? nodeData.platformImageAssetId.trim() : '';
+
+      if (!platformImageAssetId) {
+        throw new BadRequestException(`${label} 请选择镜像`);
+      }
+
+      const asset = await this.adminRepository.getPlatformImageAssetById(platformImageAssetId);
+
+      if (!asset || !asset.enabled) {
+        throw new BadRequestException(`${label} 选择的镜像不可用`);
+      }
+
+      if (
+        currentUser &&
+        currentUser.role !== 'admin' &&
+        asset.visibility !== 'platform' &&
+        asset.ownerUserId !== currentUser.id
+      ) {
+        throw new ForbiddenException(`${label} 无权使用所选镜像`);
+      }
+
+      const selectedImageId = typeof nodeData.imageId === 'string' ? nodeData.imageId.trim() : '';
+      const strategy = nodeData.imageStrategy && typeof nodeData.imageStrategy === 'object'
+        ? (nodeData.imageStrategy as Record<string, unknown>)
+        : null;
+      const strategyImageId = typeof strategy?.imageId === 'string' ? strategy.imageId.trim() : '';
+
+      if (selectedImageId !== asset.imageId || strategyImageId !== asset.imageId) {
+        throw new BadRequestException(`${label} 的镜像配置与所选镜像不一致`);
+      }
+
+      const hostKey = typeof node.id === 'string' ? node.id.trim() : '';
+      if (hostKey) {
+        selectedImageIds[hostKey] = {
+          platformImageAssetId,
+          imageId: asset.imageId,
+        };
+      }
+    }
+
+    for (const host of topologySpec?.hosts ?? []) {
+      if (!selectedImageIds[host.key]?.imageId) {
+        throw new BadRequestException(`${host.name || host.key} 请选择镜像`);
+      }
+    }
+
+    return selectedImageIds;
+  }
+
+  private assertCompiledEcsImageSelections(
+    input: TemplateEcsImageValidationInput,
+    selections: Record<string, EcsImageSelection>,
+  ) {
+    const assertHostSelection = (hostKey: string, value: unknown) => {
+      const expected = selections[hostKey];
+
+      if (!expected) {
+        return;
+      }
+
+      const record = value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+      const imageStrategy = record?.imageStrategy && typeof record.imageStrategy === 'object'
+        ? (record.imageStrategy as Record<string, unknown>)
+        : null;
+
+      if (
+        !record ||
+        record.platformImageAssetId !== expected.platformImageAssetId ||
+        record.imageId !== expected.imageId ||
+        (imageStrategy && imageStrategy.imageId !== expected.imageId)
+      ) {
+        throw new BadRequestException(`${hostKey} 的编译镜像配置与所选镜像不一致`);
+      }
+    };
+
+    const scenarioHosts = Array.isArray(input.scenarioTemplateSpec?.hosts) ? input.scenarioTemplateSpec.hosts : [];
+    for (const hostValue of scenarioHosts) {
+      const host = hostValue && typeof hostValue === 'object' && !Array.isArray(hostValue)
+        ? (hostValue as Record<string, unknown>)
+        : null;
+
+      if (typeof host?.key === 'string') {
+        assertHostSelection(host.key, host);
+      }
+    }
+
+    const compiledProvisionHosts = Array.isArray(input.compiledProvisionSpec?.hosts)
+      ? input.compiledProvisionSpec.hosts
+      : [];
+    for (const hostValue of compiledProvisionHosts) {
+      const host = hostValue && typeof hostValue === 'object' && !Array.isArray(hostValue)
+        ? (hostValue as Record<string, unknown>)
+        : null;
+
+      if (typeof host?.key === 'string') {
+        assertHostSelection(host.key, host);
+      }
+    }
+
+    const compiledResources = Array.isArray(input.compiledSpec?.resources) ? input.compiledSpec.resources : [];
+    for (const resourceValue of compiledResources) {
+      const resource = resourceValue && typeof resourceValue === 'object' && !Array.isArray(resourceValue)
+        ? (resourceValue as Record<string, unknown>)
+        : null;
+
+      if (resource?.type === 'host' && typeof resource.id === 'string') {
+        assertHostSelection(resource.id, resource.config);
+      }
     }
   }
 

@@ -1,8 +1,59 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildScenarioTemplateSpecFromTopologyGraph } from './topology-graph-to-scenario-template';
+import { compileScenarioTemplateSpec } from './scenario-template-compiler';
 
 describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
+  it('carries the selected image asset and exact image ID into the compiled host', () => {
+    const scenario = buildScenarioTemplateSpecFromTopologyGraph({
+      metadata: {
+        name: '镜像靶场',
+        slug: 'image-range',
+        version: 'v1',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        edges: [],
+        nodes: [
+          {
+            id: 'ecs-1',
+            kind: 'ecs',
+            label: 'ECS 1',
+            zoneKey: 'core',
+            role: 'entry',
+            privateIp: '10.0.0.10',
+            exposePublic: true,
+            image: 'Ubuntu 22.04',
+            platformImageAssetId: 'asset-ubuntu-2204',
+            imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+            dnatMappings: [],
+            networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.10' }],
+            portGroups: [],
+            initScript: '',
+            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd' },
+            instanceTypeStrategy: { mode: 'auto' },
+          },
+        ] as any,
+      },
+      defaults: { vpcCidr: '10.0.0.0/16' },
+    });
+
+    expect(scenario.hosts[0]).toEqual(
+      expect.objectContaining({
+        platformImageAssetId: 'asset-ubuntu-2204',
+        imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+      }),
+    );
+    expect(compileScenarioTemplateSpec(scenario).hosts[0]).toEqual(
+      expect.objectContaining({
+        platformImageAssetId: 'asset-ubuntu-2204',
+        imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+      }),
+    );
+  });
+
   it('materializes platform defaults per ECS but preserves a custom empty rule set', () => {
     const template = buildScenarioTemplateSpecFromTopologyGraph({
       metadata: {

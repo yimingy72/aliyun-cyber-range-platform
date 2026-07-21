@@ -164,6 +164,11 @@ export class ProvisioningWorkerService {
       const baseCompiledSpec =
         this.getCompiledSpec(sourceVersion?.compiledSpec) ??
         (allowTemplateFallback ? this.getCompiledSpec(template.compiledSpec) : null);
+      const baseTopologyGraph =
+        sourceVersion?.topologyGraph ??
+        (allowTemplateFallback ? template.topologyGraph : null) ??
+        instance.runtimeTopologyGraph ??
+        null;
       const baseTopologySpec =
         this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
         this.getCompiledTopologySpec(baseCompiledSpec) ??
@@ -190,6 +195,10 @@ export class ProvisioningWorkerService {
           ? this.getTopologySpecFromCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ??
             baseTopologySpec
           : baseTopologySpec;
+      const topologyGraph =
+        effectiveJobType === 'update'
+          ? instance.draftTopologyGraph ?? baseTopologyGraph
+          : baseTopologyGraph;
       const accountContext = await this.resolveAccountContext();
 
       if (effectiveJobType === 'create') {
@@ -205,6 +214,7 @@ export class ProvisioningWorkerService {
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
           runtimeCredentials: instance.runtimeCredentials ?? undefined,
+          topologyGraph,
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
@@ -263,6 +273,7 @@ export class ProvisioningWorkerService {
           preserveWorkspaceState: true,
           runtimeConfig,
           runtimeCredentials: instance.runtimeCredentials ?? undefined,
+          topologyGraph,
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,

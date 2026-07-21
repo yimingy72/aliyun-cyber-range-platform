@@ -74,6 +74,7 @@ function compileNodeConfig(node: GraphNode, graphNodes: GraphNode[]): Record<str
         privateIp: placement.privateIp,
         exposePublic: node.exposePublic,
         image: node.image,
+        platformImageAssetId: node.platformImageAssetId,
         instanceName: node.instanceName,
         hostName: node.hostName,
         imageName: node.imageName,

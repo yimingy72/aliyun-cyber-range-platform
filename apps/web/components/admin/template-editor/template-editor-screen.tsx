@@ -361,9 +361,9 @@ function createDefaultEcsNode(
     privateIp,
     customPassword: '',
     exposePublic,
-    image: 'ubuntu_22_04_x64_20G_alibase',
-    imageName: 'ubuntu_22_04_x64_20G_alibase',
-    imageId: 'ubuntu_22_04_x64_20G_alibase',
+    image: '',
+    imageName: '',
+    imageId: '',
     cpu: 2,
     memory: 2,
     description: '',
@@ -384,7 +384,6 @@ function createDefaultEcsNode(
     initScript: '',
     imageStrategy: {
       mode: 'fixed',
-      imageId: 'ubuntu_22_04_x64_20G_alibase',
     },
     ...applyEconomyInstanceType({
       cpu: 2,
@@ -856,11 +855,11 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
         hostName: typeof candidateRecord.hostName === 'string' ? candidateRecord.hostName : `ecs-${kindOrdinal}`,
         role: typeof candidateRecord.role === 'string' ? candidateRecord.role : 'ecs',
         customPassword: typeof candidateRecord.customPassword === 'string' ? candidateRecord.customPassword : '',
-        image: typeof candidateRecord.image === 'string' ? candidateRecord.image : 'ubuntu_22_04_x64_20G_alibase',
+        image: typeof candidateRecord.image === 'string' ? candidateRecord.image : '',
         platformImageAssetId:
           typeof candidateRecord.platformImageAssetId === 'string' ? candidateRecord.platformImageAssetId : undefined,
-        imageName: typeof candidateRecord.imageName === 'string' ? candidateRecord.imageName : (typeof candidateRecord.image === 'string' ? candidateRecord.image : 'ubuntu_22_04_x64_20G_alibase'),
-        imageId: typeof candidateRecord.imageId === 'string' ? candidateRecord.imageId : (typeof candidateRecord.image === 'string' ? candidateRecord.image : 'ubuntu_22_04_x64_20G_alibase'),
+        imageName: typeof candidateRecord.imageName === 'string' ? candidateRecord.imageName : (typeof candidateRecord.image === 'string' ? candidateRecord.image : ''),
+        imageId: typeof candidateRecord.imageId === 'string' ? candidateRecord.imageId : (typeof candidateRecord.image === 'string' ? candidateRecord.image : ''),
         cpu: typeof candidateRecord.cpu === 'number' ? candidateRecord.cpu : 1,
         memory: typeof candidateRecord.memory === 'number' ? candidateRecord.memory : 2,
         description: typeof candidateRecord.description === 'string' ? candidateRecord.description : '',
@@ -896,7 +895,7 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
           candidateRecord.imageStrategy,
           typeof candidateRecord.image === 'string'
             ? candidateRecord.image
-            : 'ubuntu_22_04_x64_20G_alibase',
+            : '',
         ),
         ...normalizeInstanceTypeStrategy(
           candidateRecord.instanceTypeStrategy,
@@ -1061,8 +1060,8 @@ function buildDraftUpdatePayload(
         }
       }
 
-      if (!hostNode.image?.trim()) {
-        validationErrors.push(`${hostNode.label} 未填写镜像名`);
+      if (!hostNode.platformImageAssetId?.trim() || !hostNode.imageId?.trim()) {
+        validationErrors.push(`${hostNode.label} 请选择镜像`);
       }
 
       const nics = hostNode.nics ?? [];
@@ -1262,14 +1261,17 @@ function buildDraftUpdatePayload(
 
     let isActive = true;
 
-    fetchPlatformImages(apiBaseUrl, session.token)
-      .then((payload) => {
+    Promise.all([
+      fetchPlatformImages(apiBaseUrl, session.token, 'platform'),
+      fetchPlatformImages(apiBaseUrl, session.token, 'mine'),
+    ])
+      .then(([platformPayload, minePayload]) => {
         if (!isActive) {
           return;
         }
 
         setPlatformImageAssets(
-          payload.items
+          [...platformPayload.items, ...minePayload.items]
             .filter((item) => item.enabled)
             .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index),
         );

@@ -46,6 +46,8 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
       zoneKey: host.zoneKey,
       primaryPrivateIp: host.primaryPrivateIp,
       exposePublic: Boolean(host.exposePublic),
+      platformImageAssetId: host.platformImageAssetId,
+      imageId: host.imageId,
       accountPreset: host.accountPreset
         ? {
             username: host.accountPreset.username,

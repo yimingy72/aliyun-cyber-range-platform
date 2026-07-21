@@ -68,6 +68,8 @@ export type ScenarioTemplateHost = {
   primaryPrivateIp: string;
   exposePublic?: boolean;
   image?: string;
+  platformImageAssetId?: string;
+  imageId?: string;
   networkInterfaces?: ScenarioTemplateHostNic[];
   portGroupRefs?: string[];
   dnat?: ScenarioTemplateDnatConfig;
@@ -152,6 +154,7 @@ export type ScenarioTemplateBootstrapConfig = {
 export type ScenarioTemplateImagePolicy = {
   key: string;
   mode: 'fixed' | 'auto' | 'prefer-list';
+  platformImageAssetId?: string;
   imageId?: string;
   preferredImageIds?: string[];
 };

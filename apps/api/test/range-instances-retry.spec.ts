@@ -1,7 +1,65 @@
 import { RangeInstancesService } from '../src/admin/range-instances.service';
+import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('RangeInstancesService retry flow', () => {
+  it('blocks launching a legacy template that directly references an Alibaba Cloud image', async () => {
+    const repository = createMemoryAdminRepository();
+    const dispatched: string[] = [];
+    const service = new RangeInstancesService(
+      repository,
+      new RangeTemplatesService(repository),
+      {} as never,
+      {
+        serialize: async <T>(handler: () => Promise<T>) => handler(),
+        getPool: () => [],
+        allocate: () => null,
+      } as never,
+      {
+        dispatch: (jobId: string) => dispatched.push(jobId),
+      } as never,
+    );
+    const template = await repository.createRangeTemplate({
+      name: 'Legacy image template',
+      slug: 'legacy-image-template-service-spec',
+      version: 'v1',
+      createdBy: 'user-1',
+      ownerUserId: 'user-1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.92.0.0/16',
+        networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.92.10.0/24' }],
+        hosts: [{ key: 'entry-host', name: '入口 ECS', zoneKey: 'dmz', role: 'entry', privateIp: '10.92.10.10' }],
+        publicEntry: { hostKey: 'entry-host', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        nodes: [
+          {
+            id: 'entry-host',
+            kind: 'ecs',
+            label: '入口 ECS',
+            imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+            imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd' },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    await expect(
+      service.launch(
+        {
+          templateId: template.id,
+          name: 'legacy-range',
+          expiresAt: '2026-07-22T00:00:00.000Z',
+        },
+        { id: 'user-1', role: 'user' },
+      ),
+    ).rejects.toThrow('入口 ECS 请选择镜像');
+    expect(dispatched).toEqual([]);
+  });
+
   it('creates a retry job and resets a failed create instance back to pending_create', async () => {
     const repository = createMemoryAdminRepository();
     const cidrPoolService = {
@@ -16,13 +74,37 @@ describe('RangeInstancesService retry flow', () => {
       },
     };
 
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-retry-image',
+          sourceImageName: 'Retry image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-21T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [imageSnapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-retry-image',
+    });
+    const imageAsset = await repository.collectPlatformImageAsset({
+      snapshotId: imageSnapshot!.id,
+      displayName: 'Retry image',
+      visibility: 'platform',
+    });
     const service = new RangeInstancesService(
       repository,
-      {
-        update: async () => {
-          throw new Error('not used in retry test');
-        },
-      } as never,
+      new RangeTemplatesService(repository),
+      {} as never,
       cidrPoolService as never,
       provisioningWorkerService as never,
     );
@@ -45,6 +127,20 @@ describe('RangeInstancesService retry flow', () => {
           { key: 'server-app', name: 'Server App', zoneKey: 'server', role: 'app', privateIp: '10.90.30.10' },
         ],
         publicEntry: { hostKey: 'dmz-entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+      topologyGraph: {
+        schemaVersion: '2.0.0',
+        nodes: ['dmz-entry', 'office-client', 'server-app'].map((id) => ({
+          id,
+          kind: 'ecs',
+          label: id,
+          platformImageAssetId: imageAsset.id,
+          image: imageAsset.displayName,
+          imageName: imageAsset.displayName,
+          imageId: imageAsset.imageId,
+          imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
+        })),
+        edges: [],
       },
     });
     await repository.publishRangeTemplate(template.id);

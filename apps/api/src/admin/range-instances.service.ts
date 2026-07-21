@@ -191,10 +191,34 @@ export class RangeInstancesService {
       throw new ConflictException('Range template does not have an active template version');
     }
 
+    const sourceTopologyGraph =
+      sourceTemplateVersion.topologyGraph ??
+      (allowTemplateFallback ? template.topologyGraph : null) ??
+      undefined;
+    const sourceTopologySpec =
+      sourceTemplateVersion.topologySpec ??
+      (allowTemplateFallback ? template.topologySpec : null) ??
+      null;
     const runtimeScenarioTemplateSpec =
       sourceTemplateVersion.scenarioTemplateSpec ??
       (allowTemplateFallback ? template.scenarioTemplateSpec : null) ??
       null;
+    const runtimeCompiledProvisionSpec =
+      sourceTemplateVersion.compiledProvisionSpec ??
+      (allowTemplateFallback ? template.compiledProvisionSpec : null) ??
+      null;
+    const sourceCompiledSpec =
+      sourceTemplateVersion.compiledSpec ?? (allowTemplateFallback ? template.compiledSpec : null) ?? null;
+    await this.rangeTemplatesService.assertTemplateEcsImageSelections(
+      {
+        topologyGraph: sourceTopologyGraph,
+        topologySpec: sourceTopologySpec,
+        scenarioTemplateSpec: runtimeScenarioTemplateSpec,
+        compiledProvisionSpec: runtimeCompiledProvisionSpec,
+        compiledSpec: sourceCompiledSpec,
+      },
+      currentUser,
+    );
     const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
     const actorId = currentUser?.id ?? 'admin';
 
@@ -205,15 +229,9 @@ export class RangeInstancesService {
       instanceMode: 'range',
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
-      runtimeTopologyGraph:
-        sourceTemplateVersion.topologyGraph ??
-        (allowTemplateFallback ? template.topologyGraph : null) ??
-        null,
+      runtimeTopologyGraph: sourceTopologyGraph ?? null,
       runtimeScenarioTemplateSpec,
-      runtimeCompiledProvisionSpec:
-        sourceTemplateVersion.compiledProvisionSpec ??
-        (allowTemplateFallback ? template.compiledProvisionSpec : null) ??
-        null,
+      runtimeCompiledProvisionSpec,
       runtimeCredentials,
       status: 'pending_create',
       expiresAt: input.expiresAt,
@@ -447,6 +465,23 @@ export class RangeInstancesService {
           template.currentDraftVersion?.topologySpec ??
           template.currentPublishedVersion?.topologySpec ??
           template.topologySpec;
+      const imageValidationUser =
+        typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy
+          ? currentUserOrTriggeredBy
+          : instance.ownerUserId
+            ? await this.adminRepository.getPlatformUserById(instance.ownerUserId)
+            : undefined;
+      await this.rangeTemplatesService.assertTemplateEcsImageSelections(
+        {
+          topologyGraph: sourceTemplateVersion?.topologyGraph ?? template.topologyGraph ?? undefined,
+          topologySpec: effectiveTopologySpec,
+          scenarioTemplateSpec: sourceTemplateVersion?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? undefined,
+          compiledProvisionSpec:
+            sourceTemplateVersion?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? undefined,
+          compiledSpec: sourceTemplateVersion?.compiledSpec ?? template.compiledSpec ?? undefined,
+        },
+        imageValidationUser ?? undefined,
+      );
       const fixedVpcCidr = effectiveTopologySpec?.vpcCidr ?? null;
 
       const allocatedCidr =
@@ -536,6 +571,35 @@ export class RangeInstancesService {
 
     if (!['create_failed', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Range instance cannot start a retry job from the current status');
+    }
+
+    if (instance.status === 'create_failed') {
+      const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
+
+      if (!template) {
+        throw new NotFoundException('Range template not found');
+      }
+
+      const sourceTemplateVersion = instance.sourceTemplateVersionId
+        ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
+        : template.currentDraftVersion ?? template.currentPublishedVersion;
+      const imageValidationUser =
+        typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy
+          ? currentUserOrTriggeredBy
+          : instance.ownerUserId
+            ? await this.adminRepository.getPlatformUserById(instance.ownerUserId)
+            : undefined;
+      await this.rangeTemplatesService.assertTemplateEcsImageSelections(
+        {
+          topologyGraph: sourceTemplateVersion?.topologyGraph ?? template.topologyGraph ?? undefined,
+          topologySpec: this.resolveFrozenSourceTopologySpec(sourceTemplateVersion) ?? template.topologySpec,
+          scenarioTemplateSpec: sourceTemplateVersion?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? undefined,
+          compiledProvisionSpec:
+            sourceTemplateVersion?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? undefined,
+          compiledSpec: sourceTemplateVersion?.compiledSpec ?? template.compiledSpec ?? undefined,
+        },
+        imageValidationUser ?? undefined,
+      );
     }
 
     const previousJob = instance.lastJobId

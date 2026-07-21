@@ -290,6 +290,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
     imagePolicies: hostNodes.map((host) => ({
       key: `${host.id}-image-policy`,
       mode: host.imageStrategy.mode,
+      platformImageAssetId: host.platformImageAssetId,
       imageId: host.imageStrategy.imageId,
       preferredImageIds: host.imageStrategy.preferredImageIds,
     })),
@@ -420,6 +421,8 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
         primaryPrivateIp: primaryPlacement.privateIp,
         exposePublic: node.exposePublic,
         image: node.image || node.imageId || node.imageName,
+        platformImageAssetId: node.platformImageAssetId,
+        imageId: node.imageId,
         networkInterfaces: normalizedNetworkInterfaces,
         portGroupRefs: (node.portGroups ?? []).map((_, index) => `${node.id}-port-group-${index + 1}`),
         dnat: {
