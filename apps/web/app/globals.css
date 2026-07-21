@@ -2004,8 +2004,13 @@ body {
 }
 
 .template-property-card-sub {
-  margin-top: 8px;
   background: #fbfcfe;
+}
+
+.template-property-card-sub-list {
+  display: grid;
+  gap: 8px;
+  padding: 8px 12px 12px;
 }
 
 .template-property-card-title {

@@ -13,7 +13,6 @@ import type {
 import {
   findDuplicateDnatExternalPorts,
   getEffectiveSecurityGroupRules,
-  resolveSecurityGroupRulesMode,
 } from '../../../lib/scenario-graph';
 export type {
   EcsTemplateNode,
@@ -581,7 +580,6 @@ function renderHostFields(
         {nicItems.map((nic, index) => {
           const isPrimaryNic = index === 0;
           const securityGroupRules = isPrimaryNic ? getEffectiveSecurityGroupRules(nic) : nic.securityGroupRules;
-          const securityGroupRulesMode = isPrimaryNic ? resolveSecurityGroupRulesMode(nic) : 'custom';
           const selectedSwitch = switchById.get(nic.switchId) ?? null;
           const ipHint = selectedSwitch ? `仅允许 ${selectedSwitch.cidr} 网段` : '仅允许已连接交换机的网段';
           const ipError =
@@ -596,107 +594,105 @@ function renderHostFields(
 
           return (
             <div key={nic.id} className="template-property-card">
-            <div className="template-property-card-head">
-              <strong className="template-property-card-title">
-                网卡 {index + 1}
-                {securityGroupRulesMode === 'default' ? <span className="template-property-group-badge">平台默认</span> : null}
-              </strong>
-              <div className="template-property-card-actions">
-                <button
-                  type="button"
-                  className="template-property-inline-button"
-                  onClick={() => handleAddNicSecurityRule(nic.id)}
-                >
-                  添加安全规则 {index + 1}
-                </button>
-                <button
-                  type="button"
-                  className="template-property-inline-button is-danger"
-                  disabled={instanceDetailMode || nicItems.length <= 1}
-                  aria-label={`删除网卡 ${index + 1}`}
-                  onClick={() => handleDeleteNic(nic.id)}
-                >
-                  删除网卡
-                </button>
+              <div className="template-property-card-head">
+                <strong className="template-property-card-title">网卡 {index + 1}</strong>
+                <div className="template-property-card-actions">
+                  <button
+                    type="button"
+                    className="template-property-inline-button"
+                    onClick={() => handleAddNicSecurityRule(nic.id)}
+                  >
+                    添加安全规则
+                  </button>
+                  <button
+                    type="button"
+                    className="template-property-inline-button is-danger"
+                    disabled={instanceDetailMode || nicItems.length <= 1}
+                    aria-label={`删除网卡 ${index + 1}`}
+                    onClick={() => handleDeleteNic(nic.id)}
+                  >
+                    删除网卡
+                  </button>
+                </div>
               </div>
-            </div>
-            <div className="template-property-card-grid">
-              <PropertyField label="交换机标识" className="template-property-field-full">
-                <select
-                  aria-label={`交换机标识 ${index + 1}`}
-                  disabled={instanceDetailMode}
-                  value={nic.switchId}
-                  onChange={(event) => {
-                    const nextSwitch = switchById.get(event.target.value) ?? null;
+              <div className="template-property-card-grid">
+                <PropertyField label="交换机标识" className="template-property-field-full">
+                  <select
+                    aria-label={`交换机标识 ${index + 1}`}
+                    disabled={instanceDetailMode}
+                    value={nic.switchId}
+                    onChange={(event) => {
+                      const nextSwitch = switchById.get(event.target.value) ?? null;
 
-                    onUpdateNode(selectedNode.id, {
-                      ...selectedNode,
-                      nics: nicItems.map((item) =>
-                        item.id === nic.id
-                          ? {
-                              ...item,
-                              switchId: event.target.value,
-                            }
-                          : item,
-                      ),
-                    });
-                  }}
-                >
-                  <option value="">未连接交换机</option>
-                  {switchOptions.map((switchNode) => (
-                    <option key={switchNode.id} value={switchNode.id}>
-                      {switchNode.label}
-                    </option>
-                  ))}
-                </select>
-              </PropertyField>
-              <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
-                <input
-                  aria-label={`私网 IP ${index + 1}`}
-                  disabled={instanceDetailMode || !selectedSwitch}
-                  value={nic.privateIp}
-                  onChange={(event) => {
-                    const nextValue = event.target.value.trim();
+                      onUpdateNode(selectedNode.id, {
+                        ...selectedNode,
+                        nics: nicItems.map((item) =>
+                          item.id === nic.id
+                            ? {
+                                ...item,
+                                switchId: event.target.value,
+                              }
+                            : item,
+                        ),
+                      });
+                    }}
+                  >
+                    <option value="">未连接交换机</option>
+                    {switchOptions.map((switchNode) => (
+                      <option key={switchNode.id} value={switchNode.id}>
+                        {switchNode.label}
+                      </option>
+                    ))}
+                  </select>
+                </PropertyField>
+                <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
+                  <input
+                    aria-label={`私网 IP ${index + 1}`}
+                    disabled={instanceDetailMode || !selectedSwitch}
+                    value={nic.privateIp}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.trim();
 
-                    onUpdateNode(selectedNode.id, {
-                      ...selectedNode,
-                      nics: nicItems.map((item) =>
-                        item.id === nic.id
-                          ? {
-                              ...item,
-                              privateIp: nextValue,
-                            }
-                          : item,
-                      ),
-                    });
-                  }}
-                />
-              </PropertyField>
-              <PropertyField label="辅助 IP" hint={secondaryIpError ?? ipHint} className="template-property-field-full">
-                <input
-                  aria-label={`辅助 IP ${index + 1}`}
-                  disabled={!selectedSwitch}
-                  value={nic.secondaryIps.join(',')}
-                  onChange={(event) => {
-                    const nextIps = parseMultiLineList(event.target.value);
+                      onUpdateNode(selectedNode.id, {
+                        ...selectedNode,
+                        nics: nicItems.map((item) =>
+                          item.id === nic.id
+                            ? {
+                                ...item,
+                                privateIp: nextValue,
+                              }
+                            : item,
+                        ),
+                      });
+                    }}
+                  />
+                </PropertyField>
+                <PropertyField label="辅助 IP" hint={secondaryIpError ?? ipHint} className="template-property-field-full">
+                  <input
+                    aria-label={`辅助 IP ${index + 1}`}
+                    disabled={!selectedSwitch}
+                    value={nic.secondaryIps.join(',')}
+                    onChange={(event) => {
+                      const nextIps = parseMultiLineList(event.target.value);
 
-                    onUpdateNode(selectedNode.id, {
-                      ...selectedNode,
-                      nics: nicItems.map((item) =>
-                        item.id === nic.id
-                          ? {
-                              ...item,
-                              secondaryIps: selectedSwitch ? nextIps : [],
-                            }
-                          : item,
-                      ),
-                    });
-                  }}
-                />
-              </PropertyField>
-            </div>
-            {securityGroupRules.map((rule, ruleIndex) => (
-              <div key={rule.key} className="template-property-card template-property-card-sub">
+                      onUpdateNode(selectedNode.id, {
+                        ...selectedNode,
+                        nics: nicItems.map((item) =>
+                          item.id === nic.id
+                            ? {
+                                ...item,
+                                secondaryIps: selectedSwitch ? nextIps : [],
+                              }
+                            : item,
+                        ),
+                      });
+                    }}
+                  />
+                </PropertyField>
+              </div>
+              <div className="template-property-card-sub-list">
+                {securityGroupRules.map((rule, ruleIndex) => (
+                  <div key={rule.key} className="template-property-card template-property-card-sub">
                 <div className="template-property-card-head">
                   <strong className="template-property-card-title">安全规则 {index + 1}-{ruleIndex + 1}</strong>
                   <button
@@ -816,8 +812,9 @@ function renderHostFields(
                     />
                   </PropertyField>
                 </div>
+                  </div>
+                ))}
               </div>
-            ))}
             </div>
           );
         })}

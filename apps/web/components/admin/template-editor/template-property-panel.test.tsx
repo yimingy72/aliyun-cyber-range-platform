@@ -44,7 +44,7 @@ function createEcsNodeWithPlatformDefaults(): TemplateNode {
 }
 
 describe('TemplatePropertyPanel', () => {
-  it('shows the platform default SSH and HTTP rules for an ECS without custom rules', () => {
+  it('shows the platform default SSH and HTTP rules without a status label', () => {
     const node: TemplateNode = {
       id: 'ecs-1',
       kind: 'ecs',
@@ -79,12 +79,30 @@ describe('TemplatePropertyPanel', () => {
 
     render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
 
-    expect(screen.getByText('平台默认')).toBeTruthy();
+    expect(screen.queryByText('平台默认')).toBeNull();
     expect((screen.getByLabelText('安全协议 1-1') as HTMLSelectElement).value).toBe('tcp');
     expect((screen.getByLabelText('安全端口 1-1') as HTMLInputElement).value).toBe('22/22');
     expect((screen.getByLabelText('安全协议 1-2') as HTMLSelectElement).value).toBe('tcp');
     expect((screen.getByLabelText('安全端口 1-2') as HTMLInputElement).value).toBe('80/80');
     expect(screen.getAllByDisplayValue('0.0.0.0/0')).toHaveLength(2);
+  });
+
+  it('uses an unnumbered action label when adding a security rule', () => {
+    const node = createEcsNodeWithPlatformDefaults();
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: '添加安全规则' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '添加安全规则 1' })).toBeNull();
+  });
+
+  it('groups security rule cards inside the network-field inset', () => {
+    const node = createEcsNodeWithPlatformDefaults();
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
+
+    const securityRuleCard = screen.getByLabelText('安全协议 1-1').closest('.template-property-card');
+    expect(securityRuleCard?.parentElement?.className).toContain('template-property-card-sub-list');
   });
 
   it('persists the remaining rules as custom when a platform default rule is deleted', () => {
