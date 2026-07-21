@@ -3,6 +3,9 @@ import type * as z from 'zod/v4';
 
 export type PlatformScope =
   | 'templates:read'
+  | 'templates:write'
+  | 'templates:publish'
+  | 'templates:delete'
   | 'images:read'
   | 'images:write'
   | 'ranges:read'
@@ -29,6 +32,6 @@ export type ToolDefinition<TArgs = Record<string, unknown>> = {
   description: string;
   requiredScopes: PlatformScope[];
   readOnlyHint?: boolean;
-  inputSchema?: z.ZodType;
+  inputSchema: z.ZodType;
   call(context: ToolContext, args: TArgs): Promise<unknown>;
 };

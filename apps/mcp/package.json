@@ -14,6 +14,7 @@
   "dependencies": {
     "@aliyun-cyber-range/database": "workspace:*",
     "@aliyun-cyber-range/platform-api-client": "workspace:*",
+    "@aliyun-cyber-range/scenario-runtime": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "tsx": "^4.20.5",
     "zod": "^3.25.76"

@@ -1,5 +1,17 @@
 import type { ToolDefinition } from './tool-context';
 import * as z from 'zod/v4';
+import {
+  singleInstanceBatchDestroyInputSchema,
+  singleInstanceBatchExportCsvInputSchema,
+  singleInstanceDestroyInputSchema,
+  singleInstanceIdInputSchema,
+  singleInstanceLaunchInputSchema,
+  singleInstanceListInputSchema,
+  singleInstanceOpenVncInputSchema,
+  singleInstancePackImageInputSchema,
+  singleInstanceRebootInputSchema,
+  singleInstanceRetryInputSchema,
+} from './input-schemas';
 
 const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
   idempotencyKey: args.idempotencyKey,
@@ -33,6 +45,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     description: 'List single instances and batches.',
     requiredScopes: ['instances:read'],
     readOnlyHint: true,
+    inputSchema: singleInstanceListInputSchema,
     call(context, args) {
       return context.client.listSingleInstances((args as { view?: 'active' | 'history' }).view ?? 'active');
     },
@@ -42,6 +55,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     description: 'Get a single instance by id.',
     requiredScopes: ['instances:read'],
     readOnlyHint: true,
+    inputSchema: singleInstanceIdInputSchema,
     call(context, args) {
       return context.client.getSingleInstance((args as { singleInstanceId: string }).singleInstanceId);
     },
@@ -51,6 +65,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     description: 'Get access metadata for a single instance.',
     requiredScopes: ['instances:read', 'instances:credentials:read'],
     readOnlyHint: true,
+    inputSchema: singleInstanceIdInputSchema,
     call(context, args) {
       return context.client.getSingleInstanceAccess((args as { singleInstanceId: string }).singleInstanceId);
     },
@@ -75,6 +90,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     description:
       'Launch one or more single instances from an image. expiresAt is optional and defaults to eight hours from the first request; when confirmation is required, repeat the exact expiresAt returned in the confirmation summary. The server validates the exact CPU and memory specification again before forwarding the launch request.',
     requiredScopes: ['instances:read', 'instances:create'],
+    inputSchema: singleInstanceLaunchInputSchema,
     async call(context, args) {
       const input = args as {
         name: string;
@@ -119,6 +135,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_destroy',
     description: 'Destroy a single instance.',
     requiredScopes: ['instances:destroy'],
+    inputSchema: singleInstanceDestroyInputSchema,
     call(context, args) {
       const input = args as { singleInstanceId: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.destroySingleInstance(input.singleInstanceId, operation(input));
@@ -128,6 +145,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_batch_destroy',
     description: 'Destroy all instances in a batch.',
     requiredScopes: ['instances:destroy'],
+    inputSchema: singleInstanceBatchDestroyInputSchema,
     call(context, args) {
       const input = args as { batchId: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.destroySingleInstanceBatch(input.batchId, operation(input));
@@ -137,6 +155,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_retry',
     description: 'Retry a failed single instance job.',
     requiredScopes: ['instances:control'],
+    inputSchema: singleInstanceRetryInputSchema,
     call(context, args) {
       const input = args as { singleInstanceId: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.retrySingleInstance(input.singleInstanceId, operation(input));
@@ -146,6 +165,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_reboot',
     description: 'Reboot a single instance.',
     requiredScopes: ['instances:control'],
+    inputSchema: singleInstanceRebootInputSchema,
     call(context, args) {
       const input = args as {
         singleInstanceId: string;
@@ -172,6 +192,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_open_vnc',
     description: 'Open VNC for a single instance.',
     requiredScopes: ['instances:control', 'instances:credentials:read'],
+    inputSchema: singleInstanceOpenVncInputSchema,
     call(context, args) {
       const input = args as {
         singleInstanceId: string;
@@ -192,6 +213,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_pack_image',
     description: 'Pack a single instance into an image.',
     requiredScopes: ['instances:control'],
+    inputSchema: singleInstancePackImageInputSchema,
     call(context, args) {
       const input = args as {
         singleInstanceId: string;
@@ -219,6 +241,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     description: 'Export a batch of single instances as CSV.',
     requiredScopes: ['instances:read', 'instances:credentials:read'],
     readOnlyHint: true,
+    inputSchema: singleInstanceBatchExportCsvInputSchema,
     async call(context, args) {
       const input = args as { batchId: string; view?: 'active' | 'history' };
       const lists = input.view ? [await context.client.listSingleInstances(input.view)] : await Promise.all([

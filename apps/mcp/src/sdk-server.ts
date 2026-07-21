@@ -1,5 +1,4 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as z from 'zod/v4';
 
 import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
@@ -7,6 +6,9 @@ import { createToolRegistry } from './server';
 
 const allScopes = [
   'templates:read',
+  'templates:write',
+  'templates:publish',
+  'templates:delete',
   'images:read',
   'images:write',
   'ranges:read',
@@ -37,7 +39,7 @@ export function createSdkServer(client: PlatformApiClientLike, scopes: string[] 
       {
         title: tool.name,
         description: tool.description,
-        inputSchema: tool.inputSchema ?? z.object({}).passthrough(),
+        inputSchema: tool.inputSchema,
         annotations: {
           readOnlyHint: tool.annotations.readOnlyHint,
         },

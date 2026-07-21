@@ -1,77 +1,97 @@
 ---
 name: aliyun-cyber-range-operations
-description: 通过 aliyun-cyber-range-platform MCP Server 安全查询、创建、控制和清理阿里云综合靶场资源。当用户要查询靶场模板、整套综合靶场、平台镜像、独立靶机、可用实例规格或作业，创建、销毁、重试、重启、打包或导出实例，管理平台用户，或更新云配置时使用；执行意图路由、参数契约、权限边界、资源清理和敏感数据规则。
+description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶场平台：镜像中心、实例管理、靶场编排、编排实例、用户管理、账单费用和基础配置。用于安全查询、创建、控制、发布和清理平台资源。
 ---
 
-# 阿里云综合靶场操作
+# 云上综合靶场平台全产品 Skill
 
-通过 `aliyun-cyber-range-platform` MCP Server 操作平台。保持最小权限、最小查询范围和可追踪的资源生命周期。
+通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责产品路由、安全边界和统一流程；进入产品参考后，先按其中的“产品内意图路由”选择具体功能，再读取对应参数、约束和流程。
 
-## 运行时事实源
+> ⚠️ **运行时 MCP 工具列表、输入 schema 和 scope 是唯一事实源。** 工具未暴露、schema 未接受或 scope 不足时，停止并说明缺口；不要改用 HTTP API、数据库、云厂商 CLI 或其它身份绕过限制。
 
-以当前会话实际暴露的 MCP 工具名、说明、输入 schema 和可见 scope 判断“能否调用”。构造参数时同时读取 [tool-contracts.md](./references/tool-contracts.md)；其中 `single_instance_spec_check` 的类型化 schema 是 CPU/内存校验的事实源。未来若 MCP 发布了与契约冲突的类型化 schema，以类型化 schema 为准。
+## 严格禁止（NEVER DO）
 
-工具未暴露或当前 scope 不足时，停止操作并说明具体缺口。不要尝试未暴露的替代接口。
+- 仅通过 MCP 操作平台资源；不得调用未暴露的替代接口。
+- 不编造资源 ID、scope、实例状态、镜像 ID、规格、密码或服务端默认值；通过最小范围的 `list`/`get` 获取事实。
+- 未获用户明确授权，不创建、修改、发布、销毁、导出或获取凭据；工具可见不等于可越权操作。
+- 不把“关闭”擅自解释为重启或销毁；必须确认是单实例、批次还是整套编排靶场。
+- 不在摘要、日志、Skill 文件或后续回复中回显密码、Token、SSH/VNC 链接、AccessKey 或凭据 CSV 内容。
 
-## 严格禁止（NEVER）
+## 严格要求（MUST DO）
 
-- 平台资源操作仅调用 MCP；连通性和权限验证优先使用只读工具。
-- 不要编造资源 ID、scope、实例状态或权限。用户未提供的必填创建参数须补问；仅使用本 Skill 明确标注的服务端默认值。
-- 未获用户明确授权 smoke test 时，不得为测试连通性、权限或工具行为发起创建、销毁或修改。
-- 工具可见不代表可以操作任意资源；不要试图绕过服务端的 owner/admin 校验。
-- 不要在未经明确请求的情况下获取密码、SSH 连接信息、VNC URL 或凭据 CSV。
+- 先根据动作和资源域路由到一个产品，再阅读对应产品参考；含糊请求只提出必要澄清。
+- 写操作必须具有用户对准确目标和影响范围的明确授权。平台实际返回 `confirmationId` 时，才执行二阶段确认。
+- 仅当 schema 或服务端响应要求时传 `idempotencyKey`；同一业务请求保持稳定，目标或参数变化则重新授权并使用新键。
+- 创建、重试、销毁或打包后，只能报告“已受理”，直至查询到资源或作业终态。
+- 需要访问密码、SSH、VNC 或导出凭据时，必须同时阅读 [敏感输出规则](./references/sensitive-outputs.md)。
+- 授权 smoke test 使用最小资源集；达到验证条件后立即销毁并确认终态。
 
-## 严格要求（MUST）
+## 产品总览
 
-- 先按动作和资源域选择工具；范围、目标、权限或影响不清楚时，先澄清，不要猜选工具。
-- 先用范围最小的 `list`/`get` 定位 ID，再执行动作；显示名称只能帮助定位，不能代替 ID。
-- 按工具契约和当前类型化 schema（如存在）构造参数；只传用户明确要求、服务端默认或工具必需的字段。
-- 所有写操作都需要用户对准确目标和影响范围的明确授权。仅当服务端实际返回 `confirmationId` 时，才遵循其二阶段确认流程。
-- 仅当当前工具 schema 或服务端响应要求 `idempotencyKey` 时传入；参数改变时绝不复用旧键。
-- 创建独立靶机前，读取 [instance-specifications.md](./references/instance-specifications.md)，并在首次创建调用前用相同 CPU/内存执行 `single_instance_spec_check`。结果不是 `exactAvailable: true`、校验报错，或 CPU/内存随后改变时，均不得调用 `single_instance_batch_launch`。
-- 对授权的 smoke test 使用最小资源集，达到验证条件后立即销毁，并确认终态。
+| 产品 | 用途 | MCP 工具域 | 参考文件 |
+|---|---|---|---|
+| `image-center` 镜像中心 | 查询、收录、重命名、启停、发布或删除平台镜像 | `platform_image_*` | [image-center.md](./references/products/image-center.md) |
+| `instance-management` 实例管理 | 基于平台镜像创建、查询、控制、打包和销毁独立靶机 | `single_instance_*` | [instance-management.md](./references/products/instance-management.md) |
+| `range-authoring` 靶场编排 | 设计、编辑、检测、发布和共享综合靶场模板 | `range_template_*` | [range-authoring.md](./references/products/range-authoring.md) |
+| `range-instances` 编排实例 | 基于模板启动、查询、访问和销毁整套靶场环境 | `range_instance_*` | [range-instances.md](./references/products/range-instances.md) |
+| `user-management` 用户管理 | 管理平台用户、角色、状态和密码 | `admin_user_*` | [user-management.md](./references/products/user-management.md) |
+| `billing` 账单费用 | 查看平台费用与成本信息 | 当前未暴露 MCP 工具 | [billing.md](./references/products/billing.md) |
+| `settings` 基础配置 | 查询和更新平台云配置 | `cloud_config_*` | [settings.md](./references/products/settings.md) |
 
-## 意图路由
+异步开通任务属于所有资源域的通用支撑能力：使用 `provision_job_get`，见 [全局运行时规则](./references/global-reference.md) 和 [错误处理](./references/error-handling.md)。
 
-| 用户要处理的对象 | 工具域 | 典型动作 |
-|---|---|---|
-| 靶场模板 | `range_template_*` | 列表、查看模板、作为整套靶场启动来源 |
-| 整套综合靶场 | `range_instance_*` | 启动、查询、获取授权访问、完整销毁 |
-| 平台镜像资产 | `platform_image_*` | 查询、收录、重命名、发布、停用、删除 |
-| 独立训练靶机 | `single_instance_*` | 批量创建、查询、重试、重启、打包、导出、销毁 |
-| 独立靶机规格/可用性 | `single_instance_spec_check` | 以 CPU、内存校验单实例执行器支持性和当前可售性。 |
-| 异步开通任务 | `provision_job_get` | 查询已知 `provisionJobId` 的进度和失败详情 |
-| 用户或云配置 | `admin_user_*`、`cloud_config_*` | 仅限实际具备管理员 scope 的明确管理请求 |
+## 意图判断决策树
 
-动作优先于名词。遇到“实例”“镜像”“关闭”“访问”“重试”等歧义词，先读取 [intent-guide.md](./references/intent-guide.md) 并只提出必要的澄清问题。
+- 用户提到“镜像、快照、收录镜像、启用镜像、发布镜像” → `image-center`
+- 用户提到“单台靶机、训练主机、CPU/内存、批量创建、VNC、打包镜像” → `instance-management`
+- 用户提到“拓扑、模板、编排、交换机、ECS 节点、NAT、草稿、发布模板” → `range-authoring`
+- 用户提到“整套靶场、环境、基于模板启动、编排实例、销毁靶场” → `range-instances`
+- 用户提到“平台用户、角色、禁用、重置密码” → `user-management`
+- 用户提到“账单、费用、成本” → `billing`
+- 用户提到“云配置、地域、可用区、AccessKey、基础配置” → `settings`
 
 关键区分：
 
-- “创建实例”可能是基于模板启动整套靶场，也可能是基于平台镜像创建独立靶机。
-- “查看访问”可能是普通详情，也可能是密码、SSH 或 VNC 等敏感访问数据。
-- “镜像”可能是收录已有快照、把单实例打包成私有镜像，或变更平台镜像的可见性。
-- “销毁”必须区分单台靶机、整批靶机和整套综合靶场；平台没有通用的“关闭”替代动作。
+- “创建实例”：提到模板/拓扑/环境时是 `range-instances`；提到平台镜像、CPU、内存、数量时是 `instance-management`。
+- “镜像”：收录快照和管理镜像是 `image-center`；由独立靶机生成镜像是 `instance-management`。
+- “访问实例”：查询状态使用产品的 `list`/`get`；明确索要密码、SSH 或 VNC 才属于敏感输出。
+- “重试”：仅用于创建或销毁失败；运行中的实例使用重启，不可互相替代。
+- “模板发布”与“启动靶场”：前者是 `range-authoring` 的可见性/版本操作，后者是 `range-instances` 的云资源创建。
+
+更多模糊请求见 [intent-guide.md](./references/intent-guide.md)。
+
+## 危险操作确认
+
+以下操作在已有明确意图之外，还必须展示“操作 + 准确目标 ID + 影响范围/不可逆后果”并取得用户确认。确认后仅在平台也要求时传 `confirmationId`。
+
+| 产品 | 操作 | 风险 |
+|---|---|---|
+| 镜像中心 | 收录、重命名、启用/停用、发布/取消发布、删除镜像 | 创建或改变镜像资产的名称、可用性、可见性，或永久删除资产 |
+| 实例管理 | 创建批次、销毁单台/整批、重启、打包镜像、导出 CSV、打开 VNC | 产生云资源、释放资源、改变运行态或暴露凭据 |
+| 靶场编排 | 发布/取消发布、分享/取消分享、删除模板 | 改变平台可见性或删除可复用资产 |
+| 编排实例 | 启动、销毁整套靶场、获取访问凭据 | 产生/释放整套云资源或暴露敏感数据 |
+| 用户管理 | 创建用户、角色/状态变更、密码重置 | 改变访问权限或身份凭据 |
+| 基础配置 | 更新云配置 | 影响后续所有云资源操作，且可能涉及密钥 |
+
+保存已经由用户明确要求的模板草稿、节点、边或原子 changeset 不需要额外二次确认，但仍必须通过 MCP 校验；模板发布、分享、删除始终属于危险操作。
+
+完整确认格式、服务端确认和幂等规则见 [confirmation.md](./references/confirmation.md)。
 
 ## 核心流程
 
-1. 识别用户的动作、资源域和影响范围；存在歧义时只读取 [intent-guide.md](./references/intent-guide.md) 并先澄清，不加载写操作或敏感输出规则。
-2. 查看当前 MCP 工具和 scope；构造参数时读取 [tool-contracts.md](./references/tool-contracts.md)。
-3. 按场景加载必要规则并执行最小操作：创建独立靶机读取 [instance-specifications.md](./references/instance-specifications.md) 和 [write-operations.md](./references/write-operations.md)，写操作读取 [write-operations.md](./references/write-operations.md)，敏感输出读取 [sensitive-outputs.md](./references/sensitive-outputs.md)。
-4. 返回资源 ID、scope、状态和下一步安全操作。异步操作只能报告“已受理”或“进行中”，直到资源或作业进入终态。
+1. **意图分类**：先判断动词与资源域；含糊的“实例、镜像、关闭、访问、重试”按决策树澄清。
+2. **能力核对**：确认当前 MCP 暴露目标工具、其 schema 与当前 scope；读取 [global-reference.md](./references/global-reference.md)。
+3. **阅读产品参考**：加载该产品文档；只有涉及敏感输出、确认或错误时，再加载相应通用参考。
+4. **定位目标与前置条件**：用最小 `list`/`get` 获取 ID，核对 owner/visibility、状态、镜像或模板可见性。
+5. **授权与执行**：先完成危险操作确认；严格按 schema 和产品流程调用 MCP，不猜测参数。
+6. **跟踪终态**：异步响应返回后，用资源详情或 `provision_job_get` 跟踪；失败仅按当前状态允许的流程处理。
+7. **安全交付**：报告非敏感 ID、状态、影响范围和下一步；授权 smoke test 成功后立即清理资源。
 
-## 按需加载的参考
+## 详细参考（按需读取）
 
-| 场景 | 读取文件 |
-|---|---|
-| 选择工具、核对参数、scope 或写入属性 | [tool-contracts.md](./references/tool-contracts.md) |
-| 意图不清，或涉及实例/镜像/关闭/访问/重试等易混淆表达 | [intent-guide.md](./references/intent-guide.md) |
-| 创建独立靶机，或用户询问 CPU/内存/磁盘/数量/可用规格 | [instance-specifications.md](./references/instance-specifications.md) |
-| 已明确目标与影响的创建、销毁、修改、重试、重启、打包、用户管理或云配置 | [write-operations.md](./references/write-operations.md) |
-| 请求或处理密码、SSH、VNC、AccessKey、Token 或凭据 CSV | [sensitive-outputs.md](./references/sensitive-outputs.md) |
-| MCP 调用失败、超时、确认响应或状态不一致 | [error-handling.md](./references/error-handling.md) |
-
-只读 list/get 请求不加载写操作、规格或敏感输出规则；不要为了“保险”而一次读取全部参考文件。
-
-## 输出约束
-
-报告已使用的资源 ID、非敏感状态、影响范围和下一步。除非用户明确请求且有权接收，否则脱敏密码、Token、AccessKey、VNC URL 和 CSV 凭据行。
+- [products/](./references/products/)：7 个导航产品的工具、参数、前置条件和流程。
+- [global-reference.md](./references/global-reference.md)：运行时 schema、scope、ID、异步作业与通用输出规则。
+- [intent-guide.md](./references/intent-guide.md)：易混淆意图的细分路由。
+- [confirmation.md](./references/confirmation.md)：危险操作确认、`confirmationId` 与 `idempotencyKey`。
+- [sensitive-outputs.md](./references/sensitive-outputs.md)：密码、SSH、VNC、Token 与 CSV 处理。
+- [error-handling.md](./references/error-handling.md)：认证、权限、校验、超时和异步失败处理。

@@ -2,6 +2,7 @@ import type {
   AdminUser,
   CloudConfigSnapshot,
   CollectPlatformImageInput,
+  CreateRangeTemplateInput,
   CreateAdminUserInput,
   InstanceMode,
   InstanceTypeAvailabilitySnapshot,
@@ -23,6 +24,7 @@ import type {
   SingleInstanceListPayload,
   UpdateAdminUserRoleInput,
   UpdateAdminUserStatusInput,
+  UpdateRangeTemplateInput,
 } from './types';
 
 export class PlatformApiError extends Error {
@@ -51,8 +53,60 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<RangeTemplate[]>(`/admin/scenarios?view=${encodeURIComponent(view)}`);
   }
 
-  getRangeTemplate(id: string) {
-    return this.request<RangeTemplate>(`/admin/scenarios/${encodeURIComponent(id)}`);
+  async getRangeTemplate(id: string) {
+    try {
+      return await this.request<RangeTemplate>(`/admin/scenarios/${encodeURIComponent(id)}`);
+    } catch (error) {
+      if (error instanceof PlatformApiError && error.status === 404) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  createRangeTemplate(payload: CreateRangeTemplateInput, operation?: OperationRequest) {
+    return this.request<RangeTemplate>('/admin/scenarios', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      operation,
+    });
+  }
+
+  updateRangeTemplate(id: string, payload: UpdateRangeTemplateInput, operation?: OperationRequest) {
+    return this.request<RangeTemplate>(`/admin/scenarios/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+      operation,
+    });
+  }
+
+  cloneRangeTemplate(id: string, operation?: OperationRequest) {
+    return this.templateAction<RangeTemplate>(id, 'clone', operation);
+  }
+
+  validateRangeTemplate(id: string, operation?: OperationRequest) {
+    return this.templateAction<Record<string, unknown>>(id, 'validate', operation);
+  }
+
+  publishRangeTemplate(id: string, operation?: OperationRequest) {
+    return this.templateAction<RangeTemplate>(id, 'publish', operation);
+  }
+
+  unpublishRangeTemplate(id: string, operation?: OperationRequest) {
+    return this.templateAction<RangeTemplate>(id, 'unpublish', operation);
+  }
+
+  shareRangeTemplate(id: string, operation?: OperationRequest) {
+    return this.templateAction<RangeTemplate>(id, 'share', operation);
+  }
+
+  unshareRangeTemplate(id: string, operation?: OperationRequest) {
+    return this.templateAction<RangeTemplate>(id, 'unshare', operation);
+  }
+
+  async removeRangeTemplate(id: string, operation?: OperationRequest) {
+    await this.request<void>(`/admin/scenarios/${encodeURIComponent(id)}`, { method: 'DELETE', operation });
   }
 
   async listPlatformImages(view: PlatformImageView = 'platform') {
@@ -275,6 +329,14 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<Record<string, unknown>>(`/admin/instances/${encodeURIComponent(id)}/actions/${action}`, {
       method: 'POST',
       body: JSON.stringify(payload),
+      operation,
+    });
+  }
+
+  private templateAction<T>(id: string, action: 'clone' | 'validate' | 'publish' | 'unpublish' | 'share' | 'unshare', operation?: OperationRequest) {
+    return this.request<T>(`/admin/scenarios/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+      body: '{}',
       operation,
     });
   }

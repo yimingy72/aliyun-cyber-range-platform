@@ -1,23 +1,25 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
-import type { SessionUserProfile } from './admin-user-auth';
 import {
   CreateRangeTemplateDto,
   RangeTemplateRevisionDto,
   SaveRangeTemplateTopologyDto,
   UpdateRangeTemplateDto,
 } from './dto/range-template.dto';
+import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { RangeTemplatesService } from './range-templates.service';
+import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
-type AuthenticatedAdminRequest = {
-  adminUser: SessionUserProfile;
-};
+type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
 
 @Controller('admin/scenarios')
 @UseGuards(AdminAuthGuard)
 export class ScenariosController {
-  constructor(private readonly rangeTemplatesService: RangeTemplatesService) {}
+  constructor(
+    private readonly rangeTemplatesService: RangeTemplatesService,
+    private readonly operationControlService: OperationControlService,
+  ) {}
 
   @Get()
   list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: string) {
@@ -61,7 +63,14 @@ export class ScenariosController {
     @Param('id') id: string,
     @Body() body: RangeTemplateRevisionDto,
   ) {
-    return this.rangeTemplatesService.publishToPlatform(id, body.expectedRevision, request.adminUser);
+    return this.confirmedMcpLifecycle(
+      request,
+      'range_template_publish',
+      id,
+      { templateId: id, expectedRevision: body.expectedRevision },
+      false,
+      () => this.rangeTemplatesService.publishToPlatform(id, body.expectedRevision, request.adminUser),
+    );
   }
 
   @Post(':id/unshare')
@@ -71,12 +80,58 @@ export class ScenariosController {
     @Param('id') id: string,
     @Body() body: RangeTemplateRevisionDto,
   ) {
-    return this.rangeTemplatesService.returnToPrivate(id, body.expectedRevision, request.adminUser);
+    return this.confirmedMcpLifecycle(
+      request,
+      'range_template_unpublish',
+      id,
+      { templateId: id, expectedRevision: body.expectedRevision },
+      false,
+      () => this.rangeTemplatesService.returnToPrivate(id, body.expectedRevision, request.adminUser),
+    );
   }
 
   @Delete(':id')
   @HttpCode(204)
   async delete(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    await this.rangeTemplatesService.delete(id, request.adminUser);
+    return this.confirmedMcpLifecycle(
+      request,
+      'range_template_delete',
+      id,
+      { templateId: id },
+      true,
+      async () => {
+        await this.rangeTemplatesService.delete(id, request.adminUser);
+        return { deleted: true };
+      },
+    );
+  }
+
+  private confirmedMcpLifecycle<TResult extends Record<string, unknown>>(
+    request: AuthenticatedAdminRequest,
+    toolName: 'range_template_publish' | 'range_template_unpublish' | 'range_template_delete',
+    templateId: string,
+    argumentsValue: Record<string, unknown>,
+    destructive: boolean,
+    execute: () => Promise<TResult>,
+  ) {
+    if (request.authContext.source !== 'mcp') {
+      return execute();
+    }
+
+    const metadata = readOperationRequestMetadata(request);
+    return this.operationControlService.executeConfirmed({
+      context: request.authContext,
+      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${templateId}` },
+      toolName,
+      arguments: argumentsValue,
+      targetType: 'range_template',
+      targetId: templateId,
+      resolveConfirmation: async () => ({
+        targetId: templateId,
+        targetSnapshot: { templateId },
+        summary: { templateId, action: toolName, destructive },
+      }),
+      execute: async () => ({ result: await execute() }),
+    });
   }
 }

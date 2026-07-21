@@ -24,6 +24,14 @@ export type RangeAccessPayload = {
 };
 
 export type RangeTemplate = Record<string, unknown> & { id: string };
+export type CreateRangeTemplateInput = Record<string, unknown> & {
+  name: string;
+  slug: string;
+  version: string;
+  modulePathOrRef: string;
+  topologySpec: Record<string, unknown>;
+};
+export type UpdateRangeTemplateInput = Record<string, unknown>;
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
 export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
 export type ProvisionJob = Record<string, unknown> & { id: string };
@@ -108,6 +116,15 @@ export type ResetAdminUserPasswordInput = {
 export type PlatformApiClientLike = {
   listRangeTemplates(view?: RangeTemplateView): Promise<RangeTemplate[]>;
   getRangeTemplate(id: string): Promise<RangeTemplate | null>;
+  createRangeTemplate(payload: CreateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;
+  updateRangeTemplate(id: string, payload: UpdateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;
+  cloneRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  validateRangeTemplate(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
+  publishRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  unpublishRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  shareRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  unshareRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;
   renamePlatformImage(id: string, displayName: string, operation?: OperationRequest): Promise<PlatformImageAsset>;

@@ -34,6 +34,25 @@ describe('PlatformApiClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('maps template lifecycle requests and operation headers', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/scenarios/tpl-1/publish');
+      expect(init?.method).toBe('POST');
+      expect(init?.body).toBe('{}');
+      expect((init?.headers as Record<string, string>)['x-idempotency-key']).toBe('idem-1');
+      expect((init?.headers as Record<string, string>)['x-confirmation-id']).toBe('confirm-1');
+      return new Response(JSON.stringify({ id: 'tpl-1', visibility: 'platform' }), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
+
+    await expect(
+      (client as unknown as { publishRangeTemplate: (id: string, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown> }).publishRangeTemplate(
+        'tpl-1',
+        { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' },
+      ),
+    ).resolves.toEqual({ id: 'tpl-1', visibility: 'platform' });
+  });
+
   it('maps range launch and operation headers', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/ranges/launch');
