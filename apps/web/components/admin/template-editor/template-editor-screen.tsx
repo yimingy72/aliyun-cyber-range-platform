@@ -364,7 +364,7 @@ function createDefaultEcsNode(
     image: 'ubuntu_22_04_x64_20G_alibase',
     imageName: 'ubuntu_22_04_x64_20G_alibase',
     imageId: 'ubuntu_22_04_x64_20G_alibase',
-    cpu: 1,
+    cpu: 2,
     memory: 2,
     description: '',
     bootPriority: 1,
@@ -387,7 +387,7 @@ function createDefaultEcsNode(
       imageId: 'ubuntu_22_04_x64_20G_alibase',
     },
     ...applyEconomyInstanceType({
-      cpu: 1,
+      cpu: 2,
       memory: 2,
       instanceTypeStrategy: {
         mode: 'auto',

@@ -349,7 +349,7 @@ describe('TemplatePropertyPanel', () => {
     expect(screen.queryByLabelText('启动等待时间')).toBeNull();
   });
 
-  it('renders custom password with helper text, hide/show toggle, and shared validation feedback', () => {
+  it('renders custom password as visible text without a visibility toggle', () => {
     const onUpdateNode = vi.fn();
     const nodes: TemplateNode[] = [
       {
@@ -400,13 +400,9 @@ describe('TemplatePropertyPanel', () => {
     );
 
     const passwordInput = screen.getByLabelText('自定义密码') as HTMLInputElement;
-    expect(passwordInput.type).toBe('password');
+    expect(passwordInput.type).toBe('text');
     expect(screen.getByText('留空时，生成实例会为当前 ECS 自动生成随机密码')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '显示密码' })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: '显示密码' }));
-    expect((screen.getByLabelText('自定义密码') as HTMLInputElement).type).toBe('text');
-    expect(screen.getByRole('button', { name: '隐藏密码' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /显示密码|隐藏密码/ })).toBeNull();
 
     fireEvent.change(screen.getByLabelText('自定义密码'), {
       target: { value: 'abcdefgh' },
@@ -505,7 +501,7 @@ describe('TemplatePropertyPanel', () => {
     );
   });
 
-  it('resets custom password visibility back to hidden when switching to another ecs node', () => {
+  it('keeps custom passwords visible when switching to another ecs node', () => {
     const nodes: TemplateNode[] = [
       {
         id: 'ecs-1',
@@ -575,8 +571,8 @@ describe('TemplatePropertyPanel', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '显示密码' }));
     expect((screen.getByLabelText('自定义密码') as HTMLInputElement).type).toBe('text');
+    expect((screen.getByLabelText('自定义密码') as HTMLInputElement).value).toBe('Valid123!');
 
     rerender(
       <TemplatePropertyPanel
@@ -588,8 +584,8 @@ describe('TemplatePropertyPanel', () => {
       />,
     );
 
-    expect((screen.getByLabelText('自定义密码') as HTMLInputElement).type).toBe('password');
-    expect(screen.getByRole('button', { name: '显示密码' })).toBeTruthy();
+    expect((screen.getByLabelText('自定义密码') as HTMLInputElement).type).toBe('text');
+    expect((screen.getByLabelText('自定义密码') as HTMLInputElement).value).toBe('Another123!');
   });
 
   it('renders switch cidr editing without the old device-type row or subnet label', () => {

@@ -285,13 +285,11 @@ function TemplateImageCombobox({
 }
 
 type EcsCustomPasswordFieldProps = {
-  nodeId: string;
   value: string | undefined;
   onChange: (nextValue: string) => void;
 };
 
-function EcsCustomPasswordField({ nodeId, value, onChange }: EcsCustomPasswordFieldProps) {
-  const [isVisible, setIsVisible] = useState(false);
+function EcsCustomPasswordField({ value, onChange }: EcsCustomPasswordFieldProps) {
   const customPassword = value ?? '';
   const validationResult =
     customPassword.length > 0 ? validateAliyunEcsPassword(customPassword) : { valid: true, message: null };
@@ -300,28 +298,16 @@ function EcsCustomPasswordField({ nodeId, value, onChange }: EcsCustomPasswordFi
       ? '留空时，生成实例会为当前 ECS 自动生成随机密码'
       : validationResult.message ?? undefined;
 
-  useEffect(() => {
-    setIsVisible(false);
-  }, [nodeId]);
-
   return (
     <PropertyField label="自定义密码" hint={hint} className="template-property-field-full">
       <div>
         <input
           aria-label="自定义密码"
           autoComplete="new-password"
-          type={isVisible ? 'text' : 'password'}
+          type="text"
           value={customPassword}
           onChange={(event) => onChange(event.target.value)}
         />
-        <button
-          type="button"
-          aria-label={isVisible ? '隐藏密码' : '显示密码'}
-          className="template-property-inline-button"
-          onClick={() => setIsVisible((previous) => !previous)}
-        >
-          {isVisible ? '隐藏' : '显示'}
-        </button>
       </div>
     </PropertyField>
   );
@@ -552,7 +538,6 @@ function renderHostFields(
           </PropertyField>
         ) : (
           <EcsCustomPasswordField
-            nodeId={selectedNode.id}
             value={selectedNode.customPassword}
             onChange={(nextValue) =>
               onUpdateNode(selectedNode.id, {

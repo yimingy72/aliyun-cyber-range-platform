@@ -391,13 +391,13 @@ describe('TemplateEditorScreen', () => {
 
   it('shows an inline warning when the selected ecs cpu-memory combination has no exact x86 postpaid match', async () => {
     fetchInstanceTypeAvailabilityMock.mockResolvedValueOnce({
-      cpu: 1,
+      cpu: 2,
       memory: 2,
       regionId: 'cn-hangzhou',
       zoneId: 'cn-hangzhou-h',
       exactAvailable: false,
       matches: [],
-      warning: '当前默认可用区 cn-hangzhou-h 没有精确匹配 1C2G 的 X86 按量付费实例规格。',
+      warning: '当前默认可用区 cn-hangzhou-h 没有精确匹配 2C2G 的 X86 按量付费实例规格。',
     });
 
     render(
@@ -432,20 +432,20 @@ describe('TemplateEditorScreen', () => {
       expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalledWith(
         'http://localhost:3001',
         'dev-admin-token',
-        1,
+        2,
         2,
       ),
     );
 
     expect(
-      await screen.findByText('当前默认可用区 cn-hangzhou-h 没有精确匹配 1C2G 的 X86 按量付费实例规格。'),
+      await screen.findByText('当前默认可用区 cn-hangzhou-h 没有精确匹配 2C2G 的 X86 按量付费实例规格。'),
     ).toBeTruthy();
   });
 
   it('rechecks instance type availability when ecs cpu-memory fields change', async () => {
     fetchInstanceTypeAvailabilityMock
       .mockResolvedValueOnce({
-        cpu: 1,
+        cpu: 2,
         memory: 2,
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
@@ -454,15 +454,15 @@ describe('TemplateEditorScreen', () => {
         warning: null,
       })
       .mockResolvedValueOnce({
-        cpu: 1,
+        cpu: 2,
         memory: 4,
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
         exactAvailable: true,
         matches: [
           {
-            instanceTypeId: 'ecs.g7.large',
-            cpu: 1,
+            instanceTypeId: 'ecs.g7.xlarge',
+            cpu: 2,
             memoryGiB: 4,
             family: 'ecs.g7',
             generation: 'ecs-7',
@@ -511,7 +511,7 @@ describe('TemplateEditorScreen', () => {
         2,
         'http://localhost:3001',
         'dev-admin-token',
-        1,
+        2,
         4,
       ),
     );
@@ -1145,7 +1145,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByLabelText('镜像 ID')).toBeNull();
     expect(screen.getByLabelText('CPU')).toBeTruthy();
     expect(screen.getByLabelText('内存')).toBeTruthy();
-    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('1');
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('2');
     expect((screen.getByLabelText('内存') as HTMLInputElement).value).toBe('2');
     expect(screen.getByText('网卡 1')).toBeTruthy();
     expect(screen.getByLabelText('交换机标识 1')).toBeTruthy();
@@ -1237,6 +1237,38 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('已选择连线起点，请点击目标节点完成连接。')).toBeTruthy();
   });
 
+  it('creates new ECS nodes with 2 CPU and 2 GB memory', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('2');
+    expect((screen.getByLabelText('内存') as HTMLInputElement).value).toBe('2');
+  });
+
   it('clears pending link state when clicking the empty canvas board', () => {
     render(
       <TemplateEditorScreen
@@ -1299,7 +1331,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     expect(screen.getByLabelText('交换机标识 1')).toBeTruthy();
-    fireEvent.click(screen.getByText('添加安全规则 1'));
+    fireEvent.click(screen.getByText('添加安全规则'));
     expect(screen.getByLabelText('安全方向 1-1')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '添加网卡' }));
     expect(screen.getByLabelText('交换机标识 2')).toBeTruthy();
@@ -1346,10 +1378,10 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('ECS')).toBeTruthy();
     expect(screen.queryByLabelText('启动优先级')).toBeNull();
     expect(screen.queryByLabelText('启动等待时间')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '添加安全规则 1' }));
-    expect(screen.getByLabelText('安全方向 1-1')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '删除安全规则 1-1' }));
-    expect(screen.queryByLabelText('安全方向 1-1')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '添加安全规则' }));
+    expect(screen.getByLabelText('安全方向 1-3')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '删除安全规则 1-3' }));
+    expect(screen.queryByLabelText('安全方向 1-3')).toBeNull();
 
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
@@ -1392,7 +1424,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    fireEvent.click(screen.getByRole('button', { name: '添加安全规则 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加安全规则' }));
     expect(screen.getByLabelText('安全策略 1-1')).toBeTruthy();
     expect(screen.getByLabelText('安全优先级 1-1')).toBeTruthy();
 
@@ -1431,7 +1463,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    fireEvent.click(screen.getByRole('button', { name: '添加安全规则 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加安全规则' }));
     expect(screen.getByRole('combobox', { name: '安全方向 1-1' })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: '安全协议 1-1' })).toBeTruthy();
 
@@ -2802,9 +2834,9 @@ describe('TemplateEditorScreen', () => {
         imageName: 'Ubuntu 24.04 LTS',
         instanceName: 'ECS 1',
         hostName: 'edge-host-1',
-        cpu: 1,
+        cpu: 2,
         memory: 2,
-        instanceType: undefined,
+        instanceType: 'ecs.e-c1m1.large',
         networkInterfaces: [
           expect.objectContaining({
             zoneKey: 'core',
@@ -2824,8 +2856,8 @@ describe('TemplateEditorScreen', () => {
           imageId: 'ubuntu_24_04_x64_20G_alibase',
         },
         instanceTypeStrategy: {
-          mode: 'auto',
-          preferredInstanceTypes: [],
+          mode: 'prefer-list',
+          preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
         },
       }),
     }));
@@ -2848,8 +2880,8 @@ describe('TemplateEditorScreen', () => {
           instanceTypePolicies: [
             expect.objectContaining({
               key: 'ecs-1-instance-type-policy',
-              mode: 'auto',
-              preferredInstanceTypes: [],
+              mode: 'prefer-list',
+              preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
             }),
           ],
         }),
@@ -2873,8 +2905,8 @@ describe('TemplateEditorScreen', () => {
         runtimeSelections: expect.objectContaining({
           instanceTypePolicies: expect.objectContaining({
             'ecs-1-instance-type-policy': expect.objectContaining({
-              mode: 'auto',
-              preferredInstanceTypes: [],
+              mode: 'prefer-list',
+              preferredInstanceTypes: ['ecs.e-c1m1.large', 'ecs.u1-c1m1.large', 'ecs.t6-c1m1.large'],
             }),
           }),
         }),
