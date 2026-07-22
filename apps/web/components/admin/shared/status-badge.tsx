@@ -83,7 +83,8 @@ const unknownStatus = {
 } as const;
 
 export function StatusBadge({ status }: StatusBadgeProps) {
-  const { label, variant } = statusConfig[status as keyof typeof statusConfig] ?? unknownStatus;
+  const config = Object.hasOwn(statusConfig, status) ? statusConfig[status as keyof typeof statusConfig] : unknownStatus;
+  const { label, variant } = config;
 
   return (
     <Badge aria-label={`状态：${label}`} data-status={status} variant={variant}>

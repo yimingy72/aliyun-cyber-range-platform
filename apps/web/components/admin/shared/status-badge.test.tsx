@@ -40,4 +40,12 @@ describe('StatusBadge', () => {
     expect(badge.getAttribute('data-status')).toBe('future_backend_status');
     expect(badge.getAttribute('data-variant')).toBe('outline');
   });
+
+  it('treats prototype-chain status keys as unknown', () => {
+    render(<StatusBadge status="constructor" />);
+
+    const badge = screen.getByText('状态未知');
+    expect(badge.getAttribute('data-status')).toBe('constructor');
+    expect(badge.getAttribute('data-variant')).toBe('outline');
+  });
 });
