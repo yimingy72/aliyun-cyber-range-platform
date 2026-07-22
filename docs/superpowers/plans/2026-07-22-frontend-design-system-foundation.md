@@ -180,6 +180,7 @@
   pnpm dlx shadcn@latest init \
     --template next \
     --base radix \
+    --preset rhea \
     --no-monorepo \
     --css-variables \
     --yes

@@ -10,6 +10,74 @@ function getRuleBlock(css: string, selector: string) {
   return match?.[0] ?? '';
 }
 
+describe('design system CSS transition contract', () => {
+  const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
+
+  it('defines the Tailwind import and core shadcn tokens', () => {
+    expect(stylesheet).toContain('@import "tailwindcss";');
+    expect(stylesheet).toContain('--background:');
+    expect(stylesheet).toContain('--foreground:');
+    expect(stylesheet).toContain('--primary:');
+    expect(stylesheet).toContain('--radius:');
+  });
+
+  it('keeps the approved transition token values', () => {
+    for (const token of [
+      '--background: #eff4fb;',
+      '--foreground: #1d2b44;',
+      '--card: #ffffff;',
+      '--card-foreground: #1d2b44;',
+      '--popover: #ffffff;',
+      '--popover-foreground: #1d2b44;',
+      '--primary: #1f5fbf;',
+      '--primary-foreground: #ffffff;',
+      '--secondary: #edf3fb;',
+      '--secondary-foreground: #21314c;',
+      '--muted: #f5f7fb;',
+      '--muted-foreground: #617089;',
+      '--accent: #e9f1ff;',
+      '--accent-foreground: #184b97;',
+      '--destructive: #bf3f45;',
+      '--border: #d7dfe9;',
+      '--input: #d7dfe9;',
+      '--ring: #1f5fbf;',
+      '--radius: 0.5rem;',
+    ]) {
+      expect(stylesheet).toContain(token);
+    }
+  });
+
+  it('maps generated font, sidebar, and chart utilities to light-mode tokens', () => {
+    const rootTokens = getRuleBlock(stylesheet, ':root');
+    const themeMapping = getRuleBlock(stylesheet, '@theme inline');
+
+    expect(rootTokens).toContain(
+      '--platform-font-sans: "IBM Plex Sans", "PingFang SC", "Helvetica Neue", sans-serif;',
+    );
+    expect(themeMapping).toContain('--font-sans: var(--platform-font-sans);');
+    expect(themeMapping).toContain('--font-heading: var(--platform-font-sans);');
+    expect(themeMapping).not.toContain('--font-sans: var(--font-sans);');
+
+    for (const token of [
+      '--sidebar:',
+      '--sidebar-foreground:',
+      '--sidebar-primary:',
+      '--sidebar-primary-foreground:',
+      '--sidebar-accent:',
+      '--sidebar-accent-foreground:',
+      '--sidebar-border:',
+      '--sidebar-ring:',
+      '--chart-1:',
+      '--chart-2:',
+      '--chart-3:',
+      '--chart-4:',
+      '--chart-5:',
+    ]) {
+      expect(rootTokens).toContain(token);
+    }
+  });
+});
+
 describe('admin page scroll ownership', () => {
   const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
 
