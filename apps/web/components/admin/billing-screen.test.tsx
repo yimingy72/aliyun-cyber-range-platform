@@ -338,6 +338,33 @@ describe('BillingScreen', () => {
     expect(screen.getByRole('button', { name: '重试加载' })).toBeTruthy();
   });
 
+  it('does not leave the detail workspace busy when the active view is selected again', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({
+      startAt: '2026-06-17',
+      endAt: '2026-07-16',
+      totalPretaxAmount: 8.4,
+      platformPretaxAmount: 0,
+      anomalyCount: 0,
+      resourceTypeTotals: [],
+      dailyTotals: [],
+    });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue(userGroups);
+
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('开启靶场实例');
+    const detailWorkspace = screen.getByRole('region', { name: '费用明细' });
+
+    fireEvent.click(screen.getByRole('button', { name: '用户明细' }));
+
+    await waitFor(() => {
+      expect(detailWorkspace.getAttribute('aria-busy')).toBeNull();
+      expect(screen.queryByText('正在更新费用明细...')).toBeNull();
+    });
+  });
+
   it('redirects regular users away without loading billing data', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       ...adminSession,

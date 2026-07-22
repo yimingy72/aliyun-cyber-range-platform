@@ -325,12 +325,20 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   };
 
   const selectUser = (userId: string) => {
+    if (detailView === 'users' && selectedUserId === userId) {
+      return;
+    }
+
     setIsLoadingGroups(true);
     setSelectedUserId(userId);
     setDetailView('users');
   };
 
   const selectDetailView = (view: DetailView) => {
+    if (detailView === view) {
+      return;
+    }
+
     setIsLoadingGroups(true);
     setDetailView(view);
   };
