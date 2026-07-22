@@ -31,6 +31,8 @@
   }
 }
 
+@custom-variant data-vertical (&[data-orientation="vertical"]);
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

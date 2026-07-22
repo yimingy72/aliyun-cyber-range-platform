@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { compile } from 'tailwindcss';
 import { describe, expect, it } from 'vitest';
 
 function getRuleBlock(css: string, selector: string) {
@@ -46,12 +47,29 @@ describe('design system CSS transition contract', () => {
     expect(stylesheet).toContain('--radius:');
   });
 
-  it('keeps the shadcn CLI out of production CSS while retaining generated state variants', () => {
+  it('keeps the shadcn CLI out of production CSS while retaining generated state and orientation variants', async () => {
     expect(stylesheet).not.toContain('shadcn/');
 
-    for (const variant of ['data-open', 'data-closed', 'data-disabled', 'data-active', 'data-horizontal']) {
+    for (const variant of ['data-open', 'data-closed', 'data-disabled', 'data-active', 'data-horizontal', 'data-vertical']) {
       expect(stylesheet).toContain(`@custom-variant ${variant}`);
     }
+
+    expect(stylesheet).toContain('&:where([data-orientation="horizontal"])');
+    expect(stylesheet).toContain('@custom-variant data-vertical (&[data-orientation="vertical"]);');
+
+    const compiler = await compile(
+      stylesheet
+        .replace('@import "tailwindcss";', '@tailwind utilities;')
+        .replace('@import "tw-animate-css";', ''),
+    );
+    const output = compiler.build(['group-data-horizontal/tabs:flex-col', 'group-data-vertical/tabs:flex-col']);
+
+    expect(output).toContain(
+      '.group-data-horizontal\\/tabs\\:flex-col:is(:where(.group\\/tabs):where([data-orientation="horizontal"]) *)',
+    );
+    expect(output).toContain(
+      '.group-data-vertical\\/tabs\\:flex-col:is(:where(.group\\/tabs)[data-orientation="vertical"] *)',
+    );
   });
 
   it('keeps the approved transition token values', () => {
