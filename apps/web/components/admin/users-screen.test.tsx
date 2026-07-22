@@ -108,6 +108,140 @@ describe('UsersScreen', () => {
     expect(screen.getAllByText('已启用').length).toBeGreaterThan(0);
   });
 
+  it('renders an empty user list inside the shared table body', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockResolvedValue([]);
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('当前还没有后台用户。');
+
+    const table = await screen.findByRole('table', { name: '用户列表' });
+    expect(within(table).getByRole('columnheader', { name: '用户名' })).toBeTruthy();
+    expect(within(table).getByText('当前还没有后台用户。').closest('tbody')).toBeTruthy();
+  });
+
+  it('keeps a failed initial user load inside the table and retries it', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockRejectedValueOnce(new Error('network error')).mockResolvedValue(adminUsersPayload);
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    const table = await screen.findByRole('table', { name: '用户列表' });
+    const retryButton = await within(table).findByRole('button', { name: '重试加载' });
+    expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
+
+    fireEvent.click(retryButton);
+
+    expect(await within(table).findByText('operator')).toBeTruthy();
+  });
+
+  it('shows a newly created user after the initial list request failed', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockRejectedValue(new Error('network error'));
+    createAdminUserMock.mockResolvedValue({
+      id: 'user-2',
+      username: 'range-ops',
+      role: 'user',
+      status: 'active',
+      createdAt: '2026-07-10T03:00:00.000Z',
+      updatedAt: '2026-07-10T03:00:00.000Z',
+    });
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByRole('button', { name: '重试加载' });
+    fireEvent.click(screen.getByRole('button', { name: '创建用户' }));
+
+    const dialog = screen.getByRole('dialog', { name: '创建用户' });
+    fireEvent.change(within(dialog).getByLabelText('用户名'), { target: { value: 'range-ops' } });
+    fireEvent.change(within(dialog).getByLabelText('初始密码'), { target: { value: 'Password123!' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
+
+    await waitFor(() => {
+      expect(createAdminUserMock).toHaveBeenCalled();
+    });
+
+    const table = await screen.findByRole('table', { name: '用户列表' });
+    expect(await within(table).findByText('range-ops')).toBeTruthy();
+    expect(within(table).queryByRole('button', { name: '重试加载' })).toBeNull();
+  });
+
+  it('retains users and exposes an in-table retry after revalidation fails', async () => {
+    let rejectRevalidation: (error: Error) => void = () => undefined;
+
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock
+      .mockResolvedValueOnce(adminUsersPayload)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectRevalidation = reject;
+          }),
+      );
+
+    const { rerender } = render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('operator');
+
+    rerender(<UsersScreen apiBaseUrl="http://localhost:3002" />);
+
+    const table = screen.getByRole('table', { name: '用户列表' });
+    await waitFor(() => {
+      expect(fetchAdminUsersMock).toHaveBeenCalledWith('http://localhost:3002', 'dev-admin-token');
+    });
+    expect(within(table).getByText('operator')).toBeTruthy();
+    expect(table.getAttribute('aria-busy')).toBe('true');
+
+    rejectRevalidation(new Error('network error'));
+
+    expect(await within(table).findByRole('button', { name: '重试加载' })).toBeTruthy();
+    expect(within(table).getByText('operator')).toBeTruthy();
+  });
+
   it('creates a user from the create dialog', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
       token: 'dev-admin-token',
@@ -182,7 +316,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('operator')).closest('.users-workbench-row');
+    const row = (await screen.findByText('operator')).closest('tr');
     expect(row).toBeTruthy();
 
     fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
@@ -193,7 +327,7 @@ describe('UsersScreen', () => {
       });
     });
 
-    expect(within(row!).getByText('已禁用')).toBeTruthy();
+    expect(within(row!).getByText('已停用')).toBeTruthy();
   });
 
   it('shows a permission state for non-admin sessions without loading users', () => {
@@ -234,7 +368,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    const row = (await screen.findByText('admin')).closest('tr');
     expect(row).toBeTruthy();
 
     fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
@@ -267,11 +401,11 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    const row = (await screen.findByText('admin')).closest('tr');
     expect(row).toBeTruthy();
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(within(row!).getByRole('button', { name: '重置密码' }));
+    fireEvent.keyDown(within(row!).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '重置密码' }));
 
     const dialog = screen.getByRole('dialog', { name: '重置密码' });
     fireEvent.change(within(dialog).getByLabelText('新密码'), {
@@ -313,11 +447,11 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    const row = (await screen.findByText('admin')).closest('tr');
     expect(row).toBeTruthy();
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(within(row!).getByRole('button', { name: '设为普通用户' }));
+    fireEvent.keyDown(within(row!).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '设为普通用户' }));
 
     await waitFor(() => {
       expect(updateAdminUserRoleMock).toHaveBeenCalledWith(
@@ -348,14 +482,14 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('operator')).closest('.users-workbench-row');
+    const row = (await screen.findByText('operator')).closest('tr');
     expect(row).toBeTruthy();
     expect(within(row!).getByRole('button', { name: '禁用用户' })).toBeTruthy();
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    fireEvent.keyDown(within(row!).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
 
-    expect(within(row!).queryByRole('button', { name: '禁用用户' })).toBeTruthy();
-    expect(within(row!).getByRole('button', { name: '设为管理员' })).toBeTruthy();
-    expect(within(row!).getByRole('button', { name: '重置密码' })).toBeTruthy();
+    expect(within(row!).getByRole('button', { hidden: true, name: '禁用用户' })).toBeTruthy();
+    expect(await screen.findByRole('menuitem', { name: '设为管理员' })).toBeTruthy();
+    expect(await screen.findByRole('menuitem', { name: '重置密码' })).toBeTruthy();
   });
 });
