@@ -145,7 +145,7 @@ describe('UsersScreen', () => {
       login: vi.fn(),
       logout: logoutMock,
     });
-    fetchAdminUsersMock.mockRejectedValueOnce(new Error('network error')).mockResolvedValueOnce(adminUsersPayload);
+    fetchAdminUsersMock.mockRejectedValueOnce(new Error('network error')).mockResolvedValue(adminUsersPayload);
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -192,7 +192,7 @@ describe('UsersScreen', () => {
       expect(fetchAdminUsersMock).toHaveBeenCalledWith('http://localhost:3002', 'dev-admin-token');
     });
     expect(within(table).getByText('operator')).toBeTruthy();
-    expect(table).toHaveAttribute('aria-busy', 'true');
+    expect(table.getAttribute('aria-busy')).toBe('true');
 
     rejectRevalidation(new Error('network error'));
 
@@ -274,7 +274,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('operator')).closest('.users-workbench-row');
+    const row = (await screen.findByText('operator')).closest('tr');
     expect(row).toBeTruthy();
 
     fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
@@ -285,7 +285,7 @@ describe('UsersScreen', () => {
       });
     });
 
-    expect(within(row!).getByText('已禁用')).toBeTruthy();
+    expect(within(row!).getByText('已停用')).toBeTruthy();
   });
 
   it('shows a permission state for non-admin sessions without loading users', () => {
@@ -326,7 +326,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    const row = (await screen.findByText('admin')).closest('tr');
     expect(row).toBeTruthy();
 
     fireEvent.click(within(row!).getByRole('button', { name: '禁用用户' }));
@@ -359,7 +359,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    const row = (await screen.findByText('admin')).closest('tr');
     expect(row).toBeTruthy();
 
     fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
@@ -405,7 +405,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('admin')).closest('.users-workbench-row');
+    const row = (await screen.findByText('admin')).closest('tr');
     expect(row).toBeTruthy();
 
     fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
@@ -440,7 +440,7 @@ describe('UsersScreen', () => {
 
     render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('operator')).closest('.users-workbench-row');
+    const row = (await screen.findByText('operator')).closest('tr');
     expect(row).toBeTruthy();
     expect(within(row!).getByRole('button', { name: '禁用用户' })).toBeTruthy();
 

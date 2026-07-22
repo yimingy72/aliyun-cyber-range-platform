@@ -185,7 +185,7 @@ export function UsersScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, loadAttempt, router, session, session.isAdmin, session.isReady, session.token]);
+  }, [apiBaseUrl, loadAttempt, session.isAdmin, session.isReady, session.token]);
 
   const counts = useMemo(() => {
     let adminCount = 0;
@@ -546,11 +546,6 @@ export function UsersScreen({
                   if (!hasVisibleUsers) {
                     return (
                       <AdminDataTableState
-                        action={
-                          <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
-                            创建用户
-                          </Button>
-                        }
                         columns={columns}
                         description={
                           normalizedSearchName
@@ -573,7 +568,7 @@ export function UsersScreen({
                         </AdminDataTableCell>
                         <AdminDataTableCell column={roleColumn!}>{getUserRoleLabel(user.role)}</AdminDataTableCell>
                         <AdminDataTableCell column={statusColumn!}>
-                          <StatusBadge status={user.status} />
+                          <StatusBadge status={user.status === 'active' ? 'enabled' : user.status} />
                         </AdminDataTableCell>
                         <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
@@ -614,14 +609,20 @@ export function UsersScreen({
 
                               {menuOpen ? (
                                 <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                                  <button
+                                  <Button
+                                    className="w-full justify-start"
+                                    size="sm"
                                     type="button"
+                                    variant="ghost"
                                     onClick={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
                                   >
                                     {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
-                                  </button>
-                                  <button
+                                  </Button>
+                                  <Button
+                                    className="w-full justify-start"
+                                    size="sm"
                                     type="button"
+                                    variant="ghost"
                                     onClick={() => {
                                       setMenuUserId(null);
                                       setResetPasswordState({
@@ -632,7 +633,7 @@ export function UsersScreen({
                                     }}
                                   >
                                     重置密码
-                                  </button>
+                                  </Button>
                                 </div>
                               ) : null}
                             </div>
