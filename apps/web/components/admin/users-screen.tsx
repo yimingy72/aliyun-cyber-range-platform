@@ -1,8 +1,22 @@
 'use client';
 
-import type { MouseEvent, ReactNode } from 'react';
+import type { MouseEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { MoreHorizontal, Plus } from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { TableCell, TableRow } from '@/components/ui/table';
 
 import {
   createAdminUser,
@@ -20,6 +34,16 @@ import {
   PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
+import { AdminPageHeader } from './shared/admin-page-header';
+import {
+  AdminDataTable,
+  AdminDataTableCell,
+  AdminDataTableState,
+  type AdminDataColumn,
+} from './shared/admin-data-table';
+import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { StatusBadge } from './shared/status-badge';
+import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
 
 type UsersScreenProps = {
@@ -38,40 +62,19 @@ const EMPTY_CREATE_USER_DRAFT: CreateAdminUserInput = {
   password: '',
   role: 'user',
 };
+const USER_COLUMNS: readonly AdminDataColumn[] = [
+  { id: 'username', label: '用户名', priority: 'primary' },
+  { id: 'role', label: '角色', priority: 'secondary' },
+  { id: 'status', label: '状态', priority: 'primary' },
+  { id: 'createdAt', label: '创建时间', priority: 'tertiary' },
+  { id: 'updatedAt', label: '更新时间', priority: 'detail' },
+  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+];
 const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
 const ACTION_MENU_ESTIMATED_HEIGHT_PX = 88;
 
-function UsersDialog({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="template-workbench-dialog-backdrop" role="presentation">
-      <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="template-workbench-dialog-header">
-          <div>
-            <h2>{title}</h2>
-          </div>
-        </div>
-        {children}
-      </section>
-    </div>
-  );
-}
-
 function getUserRoleLabel(role: AdminUser['role']) {
   return role === 'admin' ? '管理员' : '普通用户';
-}
-
-function getUserStatusLabel(status: AdminUser['status']) {
-  return status === 'disabled' ? '已禁用' : '已启用';
-}
-
-function getUserStatusTone(status: AdminUser['status']) {
-  return status === 'disabled' ? 'warning' : 'success';
 }
 
 function readActionErrorMessage(error: unknown, fallbackMessage: string) {
@@ -114,6 +117,8 @@ export function UsersScreen({
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasLoadedUsers, setHasLoadedUsers] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [menuUserId, setMenuUserId] = useState<string | null>(null);
@@ -122,6 +127,7 @@ export function UsersScreen({
   const [resetPasswordState, setResetPasswordState] = useState<ResetPasswordState>(null);
   const [page, setPage] = useState(1);
   const [jumpPageValue, setJumpPageValue] = useState('1');
+  const [searchName, setSearchName] = useState('');
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   useEffect(() => {
@@ -135,12 +141,12 @@ export function UsersScreen({
       setActionErrorMessage(null);
       setActionSuccessMessage(null);
       setIsLoading(false);
+      setHasLoadedUsers(false);
       return;
     }
 
     let isActive = true;
 
-    setUsers([]);
     setErrorMessage(null);
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
@@ -153,6 +159,7 @@ export function UsersScreen({
         }
 
         setUsers(payload);
+        setHasLoadedUsers(true);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -178,7 +185,7 @@ export function UsersScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isAdmin, session.isReady, session.token]);
+  }, [apiBaseUrl, loadAttempt, router, session, session.isAdmin, session.isReady, session.token]);
 
   const counts = useMemo(() => {
     let adminCount = 0;
@@ -199,9 +206,17 @@ export function UsersScreen({
       disabledCount,
     };
   }, [users]);
-  const pagination = getPagination(users.length, page, pageSize);
+  const normalizedSearchName = searchName.trim().toLocaleLowerCase();
+  const filteredUsers = useMemo(
+    () =>
+      normalizedSearchName
+        ? users.filter((user) => user.username.toLocaleLowerCase().includes(normalizedSearchName))
+        : users,
+    [normalizedSearchName, users],
+  );
+  const pagination = getPagination(filteredUsers.length, page, pageSize);
   const visiblePages = buildVisiblePages(pagination.totalPages, pagination.page);
-  const pagedUsers = users.slice(pagination.startIndex, pagination.endIndex);
+  const pagedUsers = filteredUsers.slice(pagination.startIndex, pagination.endIndex);
 
   useEffect(() => {
     if (page !== pagination.page) {
@@ -243,6 +258,12 @@ export function UsersScreen({
 
   const closeResetPasswordDialog = () => {
     setResetPasswordState(null);
+  };
+
+  const retryUserLoad = () => {
+    setErrorMessage(null);
+    setIsLoading(true);
+    setLoadAttempt((current) => current + 1);
   };
 
   const currentUserId = session.profile?.id ?? null;
@@ -429,215 +450,259 @@ export function UsersScreen({
 
   if (!session.isAdmin) {
     return (
-      <div className="admin-screen admin-workbench-screen">
-        <article className="admin-workbench-panel users-workbench-panel">
-          <div className="admin-workbench-panel-header users-workbench-header">
-            <div className="users-workbench-header-copy">
-              <h2>用户管理</h2>
-              <p>创建后台账号，并管理角色、启用状态和密码重置。</p>
-            </div>
+      <div className="admin-screen">
+        <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+          <AdminPageHeader description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理" />
+          <div className="py-16 text-center">
+            <strong className="text-sm font-medium text-foreground">只有管理员可以访问用户管理页。</strong>
+            <p className="mt-1 text-sm text-muted-foreground">请使用管理员账号登录后再执行创建、角色调整或密码重置。</p>
           </div>
-
-          <div className="admin-workbench-empty">
-            <strong>只有管理员可以访问用户管理页。</strong>
-            <p>请使用管理员账号登录后再执行创建、角色调整或密码重置。</p>
-          </div>
-        </article>
+        </section>
       </div>
     );
   }
 
-  const isBootstrapLoading = isLoading && users.length === 0;
+  const isBootstrapLoading = isLoading && !hasLoadedUsers;
+  const isRefreshing = isLoading && hasLoadedUsers;
+  const hasVisibleUsers = filteredUsers.length > 0;
 
   return (
-    <div className="admin-screen admin-workbench-screen" onClickCapture={handleScreenClickCapture}>
-      <h1 className="sr-only">用户管理</h1>
-      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
-      {actionErrorMessage ? <p className="admin-error">{actionErrorMessage}</p> : null}
-      {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
+    <div className="admin-screen" onClickCapture={handleScreenClickCapture}>
+      {actionErrorMessage ? (
+        <p className="mb-3 text-sm text-destructive" role="alert">
+          {actionErrorMessage}
+        </p>
+      ) : null}
+      {actionSuccessMessage ? (
+        <p className="mb-3 text-sm text-emerald-700" aria-live="polite">
+          {actionSuccessMessage}
+        </p>
+      ) : null}
 
-      <section>
-        <article className="admin-workbench-panel users-workbench-panel">
-          <div className="admin-workbench-panel-header users-workbench-header">
-            <div className="users-workbench-header-copy">
-              <h2>用户管理</h2>
-              <p>创建后台账号，并管理角色、启用状态和密码重置。</p>
-            </div>
-          </div>
+      <section className="admin-workbench-panel users-workbench-panel rounded-md border border-border bg-card p-4 shadow-sm">
+        <AdminPageHeader description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理" />
 
-          <div className="template-workbench-controls users-workbench-controls">
-            <div className="template-workbench-list-meta" aria-label="用户统计">
-              <span>总用户 {users.length}</span>
-              <span>管理员 {counts.adminCount}</span>
-              <span>已禁用 {counts.disabledCount}</span>
-            </div>
+        <div className="mt-4">
+          <AdminListToolbar
+            action={
+              <>
+                <div aria-label="用户统计" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+                  <span>总用户 {users.length}</span>
+                  <span>管理员 {counts.adminCount}</span>
+                  <span>已禁用 {counts.disabledCount}</span>
+                </div>
+                <Button disabled={isSubmitting} onClick={() => setIsCreateDialogOpen(true)} type="button">
+                  <Plus aria-hidden="true" data-icon="inline-start" />
+                  创建用户
+                </Button>
+              </>
+            }
+            onSearchChange={setSearchName}
+            searchLabel="筛选用户名"
+            searchPlaceholder="搜索用户名"
+            searchValue={searchName}
+          >
+            <div className="mt-4 overflow-hidden rounded-md border border-border bg-background">
+              <AdminDataTable columns={USER_COLUMNS} isRefreshing={isRefreshing} label="用户列表">
+                {(columns) => {
+                  const [usernameColumn, roleColumn, statusColumn, createdAtColumn, updatedAtColumn, actionsColumn] = columns;
 
-            <button
-              type="button"
-              className="template-workbench-primary-action"
-              disabled={isSubmitting}
-              onClick={() => setIsCreateDialogOpen(true)}
-            >
-              创建用户
-            </button>
-          </div>
+                  if (isBootstrapLoading) {
+                    return <TableLoadingState columnCount={columns.length} label="正在加载用户列表" rowCount={5} />;
+                  }
 
-          <div className="users-workbench-column-head">
-            <div className="template-workbench-column-cell">
-              <strong>用户名</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>角色</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>状态</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>创建时间</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>更新时间</strong>
-            </div>
-            <div className="template-workbench-column-cell workbench-action-cell">
-              <strong>操作</strong>
-            </div>
-          </div>
+                  if (errorMessage && !hasLoadedUsers) {
+                    return (
+                      <AdminDataTableState
+                        columns={columns}
+                        description={errorMessage}
+                        onRetry={retryUserLoad}
+                        title="无法加载用户列表"
+                        variant="error"
+                      />
+                    );
+                  }
 
-          {isBootstrapLoading ? (
-            <div className="admin-workbench-empty" aria-hidden="true" />
-          ) : users.length ? (
-            <div className="users-workbench-rows">
-              {pagedUsers.map((user) => {
-                const menuOpen = menuUserId === user.id;
-
-                return (
-                  <article key={user.id} className={`users-workbench-row${menuOpen ? ' is-menu-open' : ''}`}>
-                    <div className="users-workbench-main">
-                      <strong>{user.username}</strong>
-                    </div>
-
-                    <div className="users-workbench-role">
-                      <span className="admin-pill admin-pill-neutral">{getUserRoleLabel(user.role)}</span>
-                    </div>
-
-                    <div className="users-workbench-status">
-                      <span className={`admin-pill admin-pill-${getUserStatusTone(user.status)}`}>{getUserStatusLabel(user.status)}</span>
-                    </div>
-
-                    <div className="users-workbench-time">
-                      <span>{formatAdminDateTime(user.createdAt)}</span>
-                    </div>
-
-                    <div className="users-workbench-time">
-                      <span>{formatAdminDateTime(user.updatedAt)}</span>
-                    </div>
-
-                    <div className="users-workbench-actions workbench-action-cell">
-                      <button
-                        type="button"
-                        className="template-workbench-secondary-action"
-                        disabled={isSubmitting}
-                        onClick={() => void handleUpdateUserStatus(user, user.status === 'active' ? 'disabled' : 'active')}
-                      >
-                        {user.status === 'active' ? '禁用用户' : '启用用户'}
-                      </button>
-                      <div className="template-workbench-row-menu users-workbench-row-menu">
-                        <button
-                          type="button"
-                          className="template-workbench-secondary-action"
-                          aria-expanded={menuOpen}
-                          disabled={isSubmitting}
-                          onClick={(event) => {
-                            if (menuUserId === user.id) {
-                              setMenuUserId(null);
-                              setMenuPlacement('down');
-                              return;
-                            }
-
-                            setMenuUserId(user.id);
-                            setMenuPlacement(resolveActionMenuPlacement(event.currentTarget));
-                          }}
-                        >
-                          更多操作
-                        </button>
-
-                        {menuOpen ? (
-                          <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                            <button
-                              type="button"
-                              onClick={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
-                            >
-                              {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMenuUserId(null);
-                                setResetPasswordState({
-                                  userId: user.id,
-                                  username: user.username,
-                                  password: '',
-                                });
-                              }}
-                            >
-                              重置密码
-                            </button>
+                  const retainedListErrorRow =
+                    errorMessage && hasLoadedUsers ? (
+                      <TableRow className="hover:bg-transparent" key="retained-user-list-error">
+                        <TableCell className="px-3 py-3 text-sm whitespace-normal" colSpan={columns.length}>
+                          <div className="flex flex-wrap items-center justify-between gap-3" role="alert">
+                            <span className="text-destructive">
+                              {errorMessage} 正在显示上次成功加载的用户列表。
+                            </span>
+                            <Button onClick={retryUserLoad} size="sm" type="button" variant="outline">
+                              重试加载
+                            </Button>
                           </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
+                        </TableCell>
+                      </TableRow>
+                    ) : null;
+
+                  if (retainedListErrorRow && !hasVisibleUsers) {
+                    return retainedListErrorRow;
+                  }
+
+                  if (!hasVisibleUsers) {
+                    return (
+                      <AdminDataTableState
+                        action={
+                          <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
+                            创建用户
+                          </Button>
+                        }
+                        columns={columns}
+                        description={
+                          normalizedSearchName
+                            ? '没有找到匹配的后台用户。'
+                            : '你可以先创建一个普通用户或新的管理员账号。'
+                        }
+                        title={normalizedSearchName ? '没有匹配的后台用户' : '当前还没有后台用户。'}
+                        variant="empty"
+                      />
+                    );
+                  }
+
+                  const userRows = pagedUsers.map((user) => {
+                    const menuOpen = menuUserId === user.id;
+
+                    return (
+                      <TableRow key={user.id}>
+                        <AdminDataTableCell className="font-medium" column={usernameColumn!}>
+                          {user.username}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={roleColumn!}>{getUserRoleLabel(user.role)}</AdminDataTableCell>
+                        <AdminDataTableCell column={statusColumn!}>
+                          <StatusBadge status={user.status} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
+                        <AdminDataTableCell column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
+                        <AdminDataTableCell column={actionsColumn!}>
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              disabled={isSubmitting}
+                              onClick={() =>
+                                void handleUpdateUserStatus(user, user.status === 'active' ? 'disabled' : 'active')
+                              }
+                              size="sm"
+                              type="button"
+                              variant="outline"
+                            >
+                              {user.status === 'active' ? '禁用用户' : '启用用户'}
+                            </Button>
+                            <div className="template-workbench-row-menu users-workbench-row-menu relative">
+                              <Button
+                                aria-expanded={menuOpen}
+                                aria-label="更多操作"
+                                disabled={isSubmitting}
+                                onClick={(event) => {
+                                  if (menuUserId === user.id) {
+                                    setMenuUserId(null);
+                                    setMenuPlacement('down');
+                                    return;
+                                  }
+
+                                  setMenuUserId(user.id);
+                                  setMenuPlacement(resolveActionMenuPlacement(event.currentTarget));
+                                }}
+                                size="icon-sm"
+                                type="button"
+                                variant="ghost"
+                              >
+                                <MoreHorizontal aria-hidden="true" />
+                              </Button>
+
+                              {menuOpen ? (
+                                <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
+                                  >
+                                    {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setMenuUserId(null);
+                                      setResetPasswordState({
+                                        userId: user.id,
+                                        username: user.username,
+                                        password: '',
+                                      });
+                                    }}
+                                  >
+                                    重置密码
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        </AdminDataTableCell>
+                      </TableRow>
+                    );
+                  });
+
+                  return retainedListErrorRow ? [retainedListErrorRow, ...userRows] : userRows;
+                }}
+              </AdminDataTable>
             </div>
-          ) : (
-            <div className="admin-workbench-empty">
-              <strong>当前还没有后台用户。</strong>
-              <p>你可以先创建一个普通用户或新的管理员账号。</p>
-            </div>
-          )}
-          {users.length ? (
-            <AdminPaginationControls
-              label="用户列表分页"
-              pageSizeMode={pageSizeMode}
-              pagination={pagination}
-              visiblePages={visiblePages}
-              jumpPageValue={jumpPageValue}
-              onPageSizeChange={handlePageSizeChange}
-              onPreviousPage={() => setPage(pagination.page - 1)}
-              onNextPage={() => setPage(pagination.page + 1)}
-              onPageSelect={setPage}
-              onJumpPageValueChange={setJumpPageValue}
-              onJumpPage={handleJumpToPage}
-            />
-          ) : null}
-        </article>
+            {hasVisibleUsers ? (
+              <div className="mt-4">
+                <AdminPaginationControls
+                  jumpPageValue={jumpPageValue}
+                  label="用户列表分页"
+                  onJumpPage={handleJumpToPage}
+                  onJumpPageValueChange={setJumpPageValue}
+                  onNextPage={() => setPage(pagination.page + 1)}
+                  onPageSelect={setPage}
+                  onPageSizeChange={handlePageSizeChange}
+                  onPreviousPage={() => setPage(pagination.page - 1)}
+                  pageSizeMode={pageSizeMode}
+                  pagination={pagination}
+                  visiblePages={visiblePages}
+                />
+              </div>
+            ) : null}
+          </AdminListToolbar>
+        </div>
       </section>
 
-      {isCreateDialogOpen ? (
-        <UsersDialog title="创建用户">
-          <div className="template-workbench-dialog-grid">
-            <label>
-              <span>用户名</span>
-              <input
-                aria-label="用户名"
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open && !isSubmitting) {
+            closeCreateDialog();
+          }
+        }}
+        open={isCreateDialogOpen}
+      >
+        <DialogContent closeButtonDisabled={isSubmitting}>
+          <DialogHeader>
+            <DialogTitle>创建用户</DialogTitle>
+            <DialogDescription>创建新的后台账号，并分配初始角色。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="create-user-username">用户名</Label>
+              <Input
+                id="create-user-username"
                 value={createDraft.username}
                 onChange={(event) => setCreateDraft((currentValue) => ({ ...currentValue, username: event.target.value }))}
               />
-            </label>
-            <label>
-              <span>初始密码</span>
-              <input
-                aria-label="初始密码"
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="create-user-password">初始密码</Label>
+              <Input
+                id="create-user-password"
                 type="password"
                 value={createDraft.password}
                 onChange={(event) => setCreateDraft((currentValue) => ({ ...currentValue, password: event.target.value }))}
               />
-            </label>
-            <label>
-              <span>角色</span>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="create-user-role">角色</Label>
               <select
-                aria-label="角色"
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                id="create-user-role"
                 value={createDraft.role}
                 onChange={(event) =>
                   setCreateDraft((currentValue) => ({
@@ -649,55 +714,60 @@ export function UsersScreen({
                 <option value="user">普通用户</option>
                 <option value="admin">管理员</option>
               </select>
-            </label>
+            </div>
           </div>
-
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleCreateUser()}>
+          <DialogFooter>
+            <Button disabled={isSubmitting} onClick={() => void handleCreateUser()} type="button">
               确认创建
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeCreateDialog}>
+            </Button>
+            <Button disabled={isSubmitting} onClick={closeCreateDialog} type="button" variant="outline">
               取消
-            </button>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open && !isSubmitting) {
+            closeResetPasswordDialog();
+          }
+        }}
+        open={resetPasswordState !== null}
+      >
+        <DialogContent closeButtonDisabled={isSubmitting}>
+          <DialogHeader>
+            <DialogTitle>重置密码</DialogTitle>
+            <DialogDescription>将为“{resetPasswordState?.username}”设置新的登录密码。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="reset-user-password">新密码</Label>
+            <Input
+              id="reset-user-password"
+              type="password"
+              value={resetPasswordState?.password ?? ''}
+              onChange={(event) =>
+                setResetPasswordState((currentValue) =>
+                  currentValue
+                    ? {
+                        ...currentValue,
+                        password: event.target.value,
+                      }
+                    : currentValue,
+                )
+              }
+            />
           </div>
-        </UsersDialog>
-      ) : null}
-
-      {resetPasswordState ? (
-        <UsersDialog title="重置密码">
-          <p className="template-workbench-confirm-copy">将为“{resetPasswordState.username}”设置新的登录密码。</p>
-
-          <div className="template-workbench-dialog-grid">
-            <label>
-              <span>新密码</span>
-              <input
-                aria-label="新密码"
-                type="password"
-                value={resetPasswordState.password}
-                onChange={(event) =>
-                  setResetPasswordState((currentValue) =>
-                    currentValue
-                      ? {
-                          ...currentValue,
-                          password: event.target.value,
-                        }
-                      : currentValue,
-                  )
-                }
-              />
-            </label>
-          </div>
-
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleResetPassword()}>
+          <DialogFooter>
+            <Button disabled={isSubmitting} onClick={() => void handleResetPassword()} type="button">
               确认重置
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeResetPasswordDialog}>
+            </Button>
+            <Button disabled={isSubmitting} onClick={closeResetPasswordDialog} type="button" variant="outline">
               取消
-            </button>
-          </div>
-        </UsersDialog>
-      ) : null}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
