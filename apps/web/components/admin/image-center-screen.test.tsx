@@ -510,11 +510,31 @@ describe('ImageCenterScreen', () => {
         expiresAt: '2026-07-20T00:30:00.000Z',
       },
     });
-  completeImageImportMock.mockResolvedValue({
+    completeImageImportMock.mockResolvedValue({
       ...createdJob,
       status: 'importing',
       imageId: 'm-importing-image',
+      platformImageAssetId: 'my-image-importing-1',
     });
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine'
+        ? ({
+            items: [
+              createPlatformImageAsset({
+                id: 'my-image-importing-1',
+                imageId: 'm-importing-image',
+                displayName: 'ubuntu',
+                createdBy: 'admin',
+                sourceSnapshotId: 'custom-snapshot-importing-1',
+                sourceScope: 'custom',
+                sourceSnapshotStatus: 'Creating 65%',
+                sourceSnapshotAvailable: false,
+                enabled: false,
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload)
+        : platformImagesPayload,
+    );
     vi.stubGlobal('XMLHttpRequest', SuccessfulXmlHttpRequest);
 
     try {
@@ -548,9 +568,159 @@ describe('ImageCenterScreen', () => {
         );
       });
       expect(await screen.findByText('镜像文件已上传，阿里云正在导入；导入完成后会自动启用“我的镜像”。')).toBeTruthy();
+      expect(screen.queryByRole('dialog', { name: '上传本地镜像' })).toBeNull();
+      expect(await screen.findByText('ubuntu')).toBeTruthy();
+      expect(screen.getByText('65%')).toBeTruthy();
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('hides fully cleaned cancelled import jobs from 我的镜像', async () => {
+    fetchImageImportJobsMock.mockResolvedValue({
+      items: [
+        {
+          id: 'image-import-job-cancelled',
+          cloudAccountContextId: 'cloud-context-1',
+          ownerUserId: 'admin-user',
+          displayName: 'CentOS6.10-阿里云基础镜像',
+          osType: 'linux',
+          architecture: 'x86_64',
+          bootMode: 'BIOS',
+          imageFormat: 'qcow2',
+          systemDiskSize: 40,
+          sourceFileName: 'centos.qcow2',
+          sourceContentType: 'application/octet-stream',
+          sourceSizeBytes: 4096,
+          uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+          status: 'cancelled' as const,
+          imageId: null,
+          taskId: null,
+          sourceSnapshotId: null,
+          platformImageAssetId: null,
+          temporaryObjectDeletedAt: '2026-07-20T00:40:00.000Z',
+          errorMessage: '上传地址已过期，临时镜像文件已进入清理流程。',
+        },
+      ],
+    });
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine' ? ({ items: [] } satisfies PlatformImageAssetListPayload) : platformImagesPayload,
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    expect(await screen.findByText('当前没有我的镜像。')).toBeTruthy();
+    expect(screen.queryByText('CentOS6.10-阿里云基础镜像')).toBeNull();
+    expect(screen.queryByText('上传地址已过期，临时镜像文件已进入清理流程。')).toBeNull();
+  });
+
+  it('keeps a matching import task visible when the backend reports a synchronisation error', async () => {
+    fetchImageImportJobsMock.mockResolvedValue({
+      items: [
+        {
+          id: 'image-import-job-sync-error',
+          cloudAccountContextId: 'cloud-context-1',
+          ownerUserId: 'admin-user',
+          displayName: 'My Ubuntu 22.04',
+          osType: 'linux',
+          architecture: 'x86_64',
+          bootMode: 'BIOS',
+          imageFormat: 'qcow2',
+          systemDiskSize: 40,
+          sourceFileName: 'ubuntu.qcow2',
+          sourceContentType: 'application/octet-stream',
+          sourceSizeBytes: 4096,
+          uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+          status: 'importing' as const,
+          imageId: 'm-owned-001',
+          platformImageAssetId: 'my-image-1',
+          errorMessage: 'asset update unavailable',
+        },
+      ],
+    });
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    await screen.findByText('My Ubuntu 22.04');
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('asset update unavailable');
+    });
+  });
+
+  it('keeps an available task visible until its temporary OSS cleanup succeeds', async () => {
+    fetchImageImportJobsMock.mockResolvedValue({
+      items: [
+        {
+          id: 'image-import-job-cleanup',
+          cloudAccountContextId: 'cloud-context-1',
+          ownerUserId: 'admin-user',
+          displayName: 'My Ubuntu 22.04',
+          osType: 'linux',
+          architecture: 'x86_64',
+          bootMode: 'BIOS',
+          imageFormat: 'qcow2',
+          systemDiskSize: 40,
+          sourceFileName: 'ubuntu.qcow2',
+          sourceContentType: 'application/octet-stream',
+          sourceSizeBytes: 4096,
+          uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+          status: 'available' as const,
+          imageId: 'm-owned-001',
+          platformImageAssetId: 'my-image-1',
+          temporaryObjectDeletedAt: null,
+          errorMessage: '临时 OSS 文件清理失败：删除 OSS 临时镜像文件失败。',
+        },
+      ],
+    });
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+
+    await screen.findByText('My Ubuntu 22.04');
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('临时 OSS 文件清理失败');
+    });
+  });
+
+  it('does not let a delayed initial import-task response replace a newer 我的镜像 refresh', async () => {
+    let resolveInitialJobs: ((value: { items: [] }) => void) | undefined;
+    const initialJobs = new Promise<{ items: [] }>((resolve) => {
+      resolveInitialJobs = resolve;
+    });
+    const currentJob = {
+      id: 'image-import-job-current',
+      cloudAccountContextId: 'cloud-context-1',
+      ownerUserId: 'admin-user',
+      displayName: 'Current Import',
+      osType: 'linux',
+      architecture: 'x86_64',
+      bootMode: 'BIOS',
+      imageFormat: 'qcow2',
+      systemDiskSize: 40,
+      sourceFileName: 'current.qcow2',
+      sourceContentType: 'application/octet-stream',
+      sourceSizeBytes: 4096,
+      uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+      status: 'importing' as const,
+      imageId: 'm-current-import',
+      errorMessage: null,
+    };
+    fetchImageImportJobsMock.mockImplementationOnce(() => initialJobs).mockResolvedValue({ items: [currentJob] });
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    expect(await screen.findByText('Current Import')).toBeTruthy();
+
+    resolveInitialJobs?.({ items: [] });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(screen.getByText('Current Import')).toBeTruthy();
   });
 
   it('offers a retry action when ImportImage failed before an Alibaba Cloud ImageId was returned', async () => {
@@ -589,7 +759,7 @@ describe('ImageCenterScreen', () => {
     });
   });
 
-  it('shows exporting private images in 我的镜像 with progress and without create-instance action', async () => {
+  it('shows importing private images with progress but without destructive asset actions', async () => {
     fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
       view === 'mine' ? exportingMyImagesPayload : platformImagesPayload,
     );
@@ -599,9 +769,10 @@ describe('ImageCenterScreen', () => {
     fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
 
     expect(await screen.findByText('Exporting Ubuntu 22.04')).toBeTruthy();
-    expect(screen.getByText('导出中 65%')).toBeTruthy();
+    expect(screen.getByText('65%')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '创建实例 Exporting Ubuntu 22.04' })).toBeNull();
-    expect((screen.getByRole('button', { name: '发布到平台 Exporting Ubuntu 22.04' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: '发布到平台 Exporting Ubuntu 22.04' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
   });
 
   it('keeps 我的镜像 rows compact by moving rename enable and delete into 更多操作', async () => {
@@ -649,7 +820,7 @@ describe('ImageCenterScreen', () => {
 
     expect(await screen.findByText('Owned Platform Image')).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建实例 Owned Platform Image' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重命名 Owned Platform Image' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
@@ -903,7 +1074,7 @@ describe('ImageCenterScreen', () => {
     });
   });
 
-  it('shows 回退为私有 for the owner on the 平台镜像 view', async () => {
+  it('does not show publish or unpublish actions to ordinary owners', async () => {
     sessionState.profile = {
       id: 'owner-user',
       username: 'owner-user',
@@ -954,7 +1125,7 @@ describe('ImageCenterScreen', () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     const ownedRow = (await screen.findByText('Owned Platform Image')).closest('article') as HTMLElement;
-    expect(within(ownedRow).getByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeTruthy();
+    expect(within(ownedRow).queryByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeNull();
 
     const otherRow = screen.getByText('Other Platform Image').closest('article') as HTMLElement;
     expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Platform Image' })).toBeNull();

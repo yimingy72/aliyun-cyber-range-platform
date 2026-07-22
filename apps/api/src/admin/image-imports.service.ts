@@ -15,6 +15,7 @@ const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const IMAGE_IMPORT_UPLOAD_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_IMAGE_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024;
+const DEFAULT_IMAGE_IMPORT_MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
 type ImageImportJobRow = {
   id: string;
@@ -36,6 +37,7 @@ type ImageImportJobRow = {
   objectKey: string;
   uploadExpiresAt: Date;
   uploadCompletedAt: Date | null;
+  lastPolledAt: Date | null;
   status: 'awaiting_upload' | 'importing' | 'available' | 'failed' | 'cancelled';
   imageId: string | null;
   taskId: string | null;
@@ -214,17 +216,26 @@ export class ImageImportsService {
 
   async list(currentUser: SessionUserProfile) {
     const jobs = await this.prisma.imageImportJob.findMany({
-      where: currentUser.role === 'admin' ? {} : { ownerUserId: currentUser.id },
+      where: { ownerUserId: currentUser.id },
       orderBy: { createdAt: 'desc' },
     });
     return { items: jobs.map((job) => this.toView(job)) };
   }
 
   async refreshImport(id: string) {
-    const job = await this.prisma.imageImportJob.findUnique({ where: { id } });
+    const existingJob = await this.prisma.imageImportJob.findUnique({ where: { id } });
 
-    if (!job || job.status !== 'importing' || !job.imageId) {
-      return job ? this.toView(job) : null;
+    if (!existingJob || existingJob.status !== 'importing' || !existingJob.imageId) {
+      return existingJob ? this.toView(existingJob) : null;
+    }
+
+    const job = await this.prisma.imageImportJob.update({
+      where: { id: existingJob.id },
+      data: { lastPolledAt: new Date() },
+    });
+
+    if (this.hasExceededImportDuration(job)) {
+      return this.toView(await this.failTimedOutImport(job));
     }
 
     try {
@@ -236,9 +247,10 @@ export class ImageImportsService {
         return this.toView(importJob);
       }
 
-      const status = image.Status?.trim() || 'Creating';
-      const isAvailable = status === 'Available';
-      const failed = /Failed|Error/i.test(status);
+      const rawStatus = image.Status?.trim() || 'Creating';
+      const status = this.buildSnapshotStatus(image) ?? rawStatus;
+      const isAvailable = rawStatus === 'Available';
+      const failed = /Failed|Error|Unavailable/i.test(rawStatus);
       const syncedAt = new Date();
       await this.adminRepository.upsertImageSnapshots({
         provider: 'alibaba_cloud',
@@ -271,15 +283,14 @@ export class ImageImportsService {
         await this.adminRepository.setPlatformImageAssetEnabled(importJob.platformImageAssetId, true);
       }
 
-      const next = await this.prisma.imageImportJob.update({
-        where: { id: importJob.id },
-        data: {
-          status: isAvailable ? 'available' : 'failed',
-          errorMessage: failed ? `阿里云镜像导入失败：${status}` : null,
-        },
-      });
-
-      return this.toView(await this.cleanupTemporaryObject(context, next));
+      return this.toView(
+        await this.finalizeImport(
+          context,
+          importJob,
+          isAvailable ? 'available' : 'failed',
+          failed ? `阿里云镜像导入失败：${status}` : null,
+        ),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : '镜像导入状态同步失败。';
       const pending = await this.prisma.imageImportJob.update({
@@ -293,10 +304,13 @@ export class ImageImportsService {
   async refreshPendingImports() {
     const [jobs, expiredUploads, terminalJobs] = await Promise.all([
       this.prisma.imageImportJob.findMany({
-      where: { status: 'importing' },
-      select: { id: true },
-      take: 20,
-      orderBy: { updatedAt: 'asc' },
+        where: { status: 'importing' },
+        select: { id: true },
+        take: 20,
+        orderBy: [
+          { lastPolledAt: { sort: 'asc', nulls: 'first' } },
+          { createdAt: 'asc' },
+        ],
       }),
       this.prisma.imageImportJob.findMany({
         where: {
@@ -344,7 +358,18 @@ export class ImageImportsService {
       throw new Error('镜像导入任务缺少阿里云 ImageId。');
     }
 
-    if (job.sourceSnapshotId && job.platformImageAssetId) {
+    const [sourceSnapshot, linkedPlatformImageAsset] = await Promise.all([
+      job.sourceSnapshotId ? this.adminRepository.getImageSnapshotById(job.sourceSnapshotId) : null,
+      job.platformImageAssetId ? this.adminRepository.getPlatformImageAssetById(job.platformImageAssetId) : null,
+    ]);
+
+    if (
+      sourceSnapshot &&
+      sourceSnapshot.imageId === job.imageId &&
+      linkedPlatformImageAsset &&
+      linkedPlatformImageAsset.imageId === job.imageId &&
+      linkedPlatformImageAsset.sourceSnapshotId === sourceSnapshot.id
+    ) {
       return job;
     }
 
@@ -591,7 +616,7 @@ export class ImageImportsService {
       const message = error instanceof Error ? error.message : '临时 OSS 文件清理失败。';
       return this.prisma.imageImportJob.update({
         where: { id: job.id },
-        data: { errorMessage: `${job.errorMessage ?? ''}\n临时 OSS 文件清理失败：${message}`.trim() },
+        data: { errorMessage: this.withCleanupError(job.errorMessage, message) },
       });
     }
   }
@@ -609,13 +634,91 @@ export class ImageImportsService {
 
     return this.prisma.imageImportJob.update({
       where: { id: job.id },
-      data: { temporaryObjectDeletedAt: new Date() },
+      data: {
+        temporaryObjectDeletedAt: new Date(),
+        ...(job.status === 'available' ? { errorMessage: null } : {}),
+        ...(job.status === 'failed' ? { errorMessage: this.withoutCleanupError(job.errorMessage) } : {}),
+      },
     });
   }
 
   private readMaxUploadBytes() {
     const parsed = Number(process.env.IMAGE_IMPORT_MAX_BYTES);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_IMAGE_IMPORT_MAX_BYTES;
+  }
+
+  private readMaxImportDurationMs() {
+    const parsed = Number(process.env.IMAGE_IMPORT_MAX_DURATION_MS);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_IMAGE_IMPORT_MAX_DURATION_MS;
+  }
+
+  private hasExceededImportDuration(job: ImageImportJobRow) {
+    return (
+      job.uploadCompletedAt !== null &&
+      Date.now() - job.uploadCompletedAt.getTime() > this.readMaxImportDurationMs()
+    );
+  }
+
+  private async finalizeImport(
+    context: CloudAccountContextCredentials,
+    job: ImageImportJobRow,
+    status: 'available' | 'failed',
+    errorMessage: string | null,
+  ) {
+    const terminal = await this.prisma.imageImportJob.update({
+      where: { id: job.id },
+      data: { status, errorMessage },
+    });
+
+    try {
+      return await this.cleanupTemporaryObject(context, terminal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '临时 OSS 文件清理失败。';
+      return this.prisma.imageImportJob.update({
+        where: { id: terminal.id },
+        data: { errorMessage: this.withCleanupError(terminal.errorMessage, message) },
+      });
+    }
+  }
+
+  private async failTimedOutImport(job: ImageImportJobRow) {
+    const terminal = await this.prisma.imageImportJob.update({
+      where: { id: job.id },
+      data: {
+        status: 'failed',
+        errorMessage: `镜像导入超过最大等待时长（${this.readMaxImportDurationMs()} 毫秒）。`,
+      },
+    });
+    return this.cleanupTerminalObject(terminal);
+  }
+
+  private withCleanupError(existingMessage: string | null, cleanupMessage: string) {
+    return [this.withoutCleanupError(existingMessage), `临时 OSS 文件清理失败：${cleanupMessage}`].filter(Boolean).join('\n');
+  }
+
+  private withoutCleanupError(message: string | null) {
+    return (
+      message
+        ?.split('\n')
+        .filter((line) => !line.startsWith('临时 OSS 文件清理失败：'))
+        .join('\n')
+        .trim() || null
+    );
+  }
+
+  private buildSnapshotStatus(image: AliyunImage) {
+    const status = image.Status?.trim();
+    const progress = image.Progress?.trim();
+
+    if (!status) {
+      return null;
+    }
+
+    if (progress && progress !== '100%' && status !== 'Available') {
+      return `${status} ${progress}`;
+    }
+
+    return status;
   }
 
   private toView(job: ImageImportJobRow): ImageImportJobView {
@@ -634,4 +737,5 @@ type AliyunImage = {
   Platform?: string;
   Architecture?: string;
   Status?: string;
+  Progress?: string;
 };

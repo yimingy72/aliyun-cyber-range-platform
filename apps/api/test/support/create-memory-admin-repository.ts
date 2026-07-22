@@ -1025,6 +1025,9 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async hasActiveImageImportForArtifact() {
+      return false;
+    },
     async deletePlatformImageAsset(id: string) {
       findPlatformImageAssetOrThrow(id);
 

@@ -139,11 +139,11 @@ function formatCloudImageStatusText(status?: string | null, isAvailable?: boolea
 
   const creatingMatch = normalizedStatus.match(/^Creating(?:\s+(\d+%))?$/i);
   if (creatingMatch) {
-    return creatingMatch[1] ? `导出中 ${creatingMatch[1]}` : '导出中';
+    return creatingMatch[1] ?? '创建中';
   }
 
   if (/CreateFailed/i.test(normalizedStatus)) {
-    return '导出失败';
+    return '创建失败';
   }
 
   if (/Unavailable/i.test(normalizedStatus)) {
@@ -175,6 +175,27 @@ function getAssetStatusTone(asset: PlatformImageAsset) {
 
 function canCreateInstanceFromAsset(asset: PlatformImageAsset) {
   return asset.enabled && asset.sourceSnapshotAvailable !== false;
+}
+
+function shouldShowImageImportJob(job: ImageImportJob, resolvedAssetIds: ReadonlySet<string>) {
+  if (job.status === 'available') {
+    return Boolean(job.errorMessage && !job.temporaryObjectDeletedAt);
+  }
+
+  if (job.status === 'cancelled' && job.temporaryObjectDeletedAt) {
+    return false;
+  }
+
+  if (
+    job.status === 'importing' &&
+    !job.errorMessage &&
+    job.platformImageAssetId &&
+    resolvedAssetIds.has(job.platformImageAssetId)
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
@@ -291,6 +312,7 @@ export function ImageCenterScreen({
   const [imageImportProgress, setImageImportProgress] = useState<number | null>(null);
   const platformRequestVersionRef = useRef(0);
   const mineRequestVersionRef = useRef(0);
+  const imageImportJobsRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
@@ -387,6 +409,47 @@ export function ImageCenterScreen({
     setImageImportErrorMessage('');
   }
 
+  async function refreshMyAssets(token: string, isActive = () => true) {
+    const requestVersion = mineRequestVersionRef.current + 1;
+    mineRequestVersionRef.current = requestVersion;
+    const imageImportJobsRequestVersion = imageImportJobsRequestVersionRef.current + 1;
+    imageImportJobsRequestVersionRef.current = imageImportJobsRequestVersion;
+
+    try {
+      const [jobsPayload, myAssetsPayload] = await Promise.all([
+        fetchImageImportJobs(apiBaseUrl, token),
+        fetchPlatformImages(apiBaseUrl, token, 'mine'),
+      ]);
+
+      if (
+        !isActive() ||
+        mineRequestVersionRef.current !== requestVersion ||
+        imageImportJobsRequestVersionRef.current !== imageImportJobsRequestVersion
+      ) {
+        return false;
+      }
+
+      setImageImportJobs(jobsPayload.items);
+      setMyAssets(myAssetsPayload.items);
+      setLoadedTabs((current) => ({ ...current, mine: true }));
+      return true;
+    } catch (error) {
+      if (
+        !isActive() ||
+        mineRequestVersionRef.current !== requestVersion ||
+        imageImportJobsRequestVersionRef.current !== imageImportJobsRequestVersion
+      ) {
+        return false;
+      }
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        return false;
+      }
+      setErrorMessage(error instanceof Error ? error.message : '我的镜像刷新失败');
+      return false;
+    }
+  }
+
   useEffect(() => {
     if (!session.isReady || !session.token) {
       setCloudContexts([]);
@@ -395,6 +458,8 @@ export function ImageCenterScreen({
     }
 
     let isActive = true;
+    const imageImportJobsRequestVersion = imageImportJobsRequestVersionRef.current + 1;
+    imageImportJobsRequestVersionRef.current = imageImportJobsRequestVersion;
 
     Promise.all([
       fetchCloudAccountContexts(apiBaseUrl, session.token),
@@ -405,7 +470,9 @@ export function ImageCenterScreen({
           return;
         }
         setCloudContexts(contextsPayload);
-        setImageImportJobs(jobsPayload.items);
+        if (imageImportJobsRequestVersionRef.current === imageImportJobsRequestVersion) {
+          setImageImportJobs(jobsPayload.items);
+        }
       })
       .catch((error) => {
         if (!isActive) {
@@ -423,21 +490,34 @@ export function ImageCenterScreen({
     };
   }, [apiBaseUrl, session.isReady, session.token]);
 
+  const hasImportingJobs = imageImportJobs.some((job) => job.status === 'importing');
+
   useEffect(() => {
-    if (!session.token || !imageImportJobs.some((job) => job.status === 'importing')) {
+    if (!session.token || !hasImportingJobs) {
       return;
     }
 
     const token = session.token;
+    let isActive = true;
+    let refreshing = false;
 
-    const interval = window.setInterval(() => {
-      void fetchImageImportJobs(apiBaseUrl, token)
-        .then((payload) => setImageImportJobs(payload.items))
-        .catch(() => undefined);
-    }, 5_000);
+    const refresh = async () => {
+      if (refreshing) {
+        return;
+      }
+      refreshing = true;
+      await refreshMyAssets(token, () => isActive);
+      refreshing = false;
+    };
 
-    return () => window.clearInterval(interval);
-  }, [apiBaseUrl, imageImportJobs, session.token]);
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5_000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(interval);
+    };
+  }, [apiBaseUrl, hasImportingJobs, session.token]);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -482,13 +562,7 @@ export function ImageCenterScreen({
             setPlatformAssets(payload.items);
           })
         : activeTab === 'mine'
-          ? fetchPlatformImages(apiBaseUrl, token, 'mine').then((payload) => {
-              if (!isActive || mineRequestVersionRef.current !== mineRequestVersion) {
-                return;
-              }
-
-              setMyAssets(payload.items);
-            })
+          ? refreshMyAssets(token, () => isActive)
           : activeTab === 'custom'
             ? fetchCustomImageCatalogScope(apiBaseUrl, token).then((scope) => {
                 if (!isActive || customScopeRequestVersionRef.current !== customRequestVersion) {
@@ -668,12 +742,11 @@ export function ImageCenterScreen({
         return;
       }
 
-      const assets = await fetchPlatformImages(apiBaseUrl, session.token, 'mine');
-      setMyAssets(assets.items);
-      setLoadedTabs((current) => ({ ...current, mine: true }));
+      setActiveTab('mine');
       setImageImportDraft(null);
       setImageImportProgress(null);
       setImageImportSuccessMessage('镜像文件已上传，阿里云正在导入；导入完成后会自动启用“我的镜像”。');
+      void refreshMyAssets(session.token);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
@@ -989,6 +1062,13 @@ export function ImageCenterScreen({
   const pagedPublicSnapshots = filteredPublicSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
 
   const collectedImageIds = buildCollectedImageIdSet(platformAssets);
+  const myAssetIds = new Set(myAssets.map((asset) => asset.id));
+  const visibleImageImportJobs = imageImportJobs.filter((job) => shouldShowImageImportJob(job, myAssetIds));
+  const importingAssetIds = new Set(
+    imageImportJobs
+      .filter((job) => job.status === 'importing')
+      .flatMap((job) => [job.platformImageAssetId, job.imageId].filter((value): value is string => Boolean(value))),
+  );
 
   function renderAssetRows(
     items: PlatformImageAsset[],
@@ -1018,8 +1098,12 @@ export function ImageCenterScreen({
         typeof options.allowVisibilityToggle === 'function'
           ? options.allowVisibilityToggle(asset)
           : options.allowVisibilityToggle ?? false;
+      const isImportingAsset =
+        importingAssetIds.has(asset.id) ||
+        importingAssetIds.has(asset.imageId) ||
+        /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? '');
       const canCreate = canCreateInstanceFromAsset(asset);
-      const showCompactActions = options.compactActions && canManageAsset;
+      const showCompactActions = options.compactActions && canManageAsset && !isImportingAsset;
 
       return (
         <article
@@ -1054,7 +1138,7 @@ export function ImageCenterScreen({
             ) : null}
             {canManageAsset ? (
               <>
-                {canToggleVisibility ? (
+                {canToggleVisibility && session.isAdmin && !isImportingAsset ? (
                   <button
                     type="button"
                     disabled={isPending || asset.sourceSnapshotAvailable === false}
@@ -1152,6 +1236,11 @@ export function ImageCenterScreen({
       const deleteActionKey = `delete:custom:${snapshot.id}`;
       const isCollectPending = pendingActionKeys.includes(collectActionKey);
       const isDeletePending = pendingActionKeys.includes(deleteActionKey);
+      const isImportingSnapshot = imageImportJobs.some(
+        (job) =>
+          job.status === 'importing' &&
+          (job.sourceSnapshotId === snapshot.id || (job.imageId !== null && job.imageId === snapshot.imageId)),
+      );
 
       return (
         <article
@@ -1180,7 +1269,7 @@ export function ImageCenterScreen({
                 {isCollected ? '已收录' : '收录到平台'}
               </button>
             ) : null}
-            {scope === 'custom' && session.isAdmin ? (
+            {scope === 'custom' && session.isAdmin && !isImportingSnapshot ? (
               <button
                 type="button"
                 disabled={isDeletePending}
@@ -1302,15 +1391,14 @@ export function ImageCenterScreen({
             </div>
           </div>
 
-          {activeTab === 'mine' && imageImportJobs.some((job) => job.status !== 'available') ? (
+          {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
             <div className="image-import-job-list" aria-live="polite">
-              {imageImportJobs
-                .filter((job) => job.status !== 'available')
+              {visibleImageImportJobs
                 .slice(0, 3)
                 .map((job) => (
                   <div key={job.id} className={`image-import-job image-import-job--${job.status}`}>
                     <strong>{job.displayName}</strong>
-                    <span>{formatImportStatus(job.status)}</span>
+                    <span>{job.status === 'available' && job.errorMessage ? '临时文件清理重试中' : formatImportStatus(job.status)}</span>
                     {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
                     {job.status === 'failed' && !job.imageId ? (
                       <button

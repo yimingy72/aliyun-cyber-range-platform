@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -201,19 +201,30 @@ export class ImageCatalogService {
       throw new BadRequestException('Only owner-backed image assets can change visibility');
     }
 
+    if (asset.visibility === 'platform' && nextVisibility === 'private') {
+      await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
+    }
+
     const updatedAsset = await this.recollectPlatformAssetWithVisibility(asset, nextDisplayName, nextVisibility);
     return this.withCreatorUsername(updatedAsset);
   }
 
   async setPlatformAssetEnabled(id: string, enabled: boolean, currentUser: SessionUserProfile) {
-    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    await this.assertPlatformAssetNotImporting(asset);
+
+    if (!enabled) {
+      await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
+    }
 
     const updatedAsset = await this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
     return this.withCreatorUsername(updatedAsset);
   }
 
   async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
-    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    await this.assertPlatformAssetNotImporting(asset);
+    await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
     await this.adminRepository.deletePlatformImageAsset(id);
   }
 
@@ -257,6 +268,7 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
+    await this.assertImageSnapshotNotImporting(snapshot);
     await this.assertCustomSnapshotNotInUse(snapshot);
 
     await this.performAliyunRpcRequest({
@@ -362,6 +374,66 @@ export class ImageCatalogService {
     }
 
     return asset;
+  }
+
+  private async assertPlatformAssetNotImporting(asset: PlatformImageAssetRecord) {
+    const importing = await this.adminRepository.hasActiveImageImportForArtifact({
+      platformImageAssetId: asset.id,
+      sourceSnapshotId: asset.sourceSnapshotId,
+      imageId: asset.imageId,
+    });
+
+    if (importing) {
+      throw new ConflictException('镜像正在导入，完成前不能修改启用状态或删除。');
+    }
+  }
+
+  private async assertImageSnapshotNotImporting(snapshot: CloudImageSnapshotRecord) {
+    const importing = await this.adminRepository.hasActiveImageImportForArtifact({
+      sourceSnapshotId: snapshot.id,
+      imageId: snapshot.imageId,
+    });
+
+    if (importing) {
+      throw new ConflictException('镜像正在导入，完成前不能删除。');
+    }
+  }
+
+  private async assertPlatformAssetNotReferencedByPublishedTemplates(asset: PlatformImageAssetRecord) {
+    const templates = await this.adminRepository.listRangeTemplates();
+    const publishedTemplates = templates.filter(
+      (template) => template.visibility === 'platform' && Boolean(template.currentPublishedVersionId),
+    );
+    const publishedSnapshots = await Promise.all(
+      publishedTemplates.map(async (template) => ({
+        template,
+        snapshot:
+          template.currentPublishedVersion ??
+          (template.currentPublishedVersionId
+            ? await this.adminRepository.getRangeTemplateVersionById(template.currentPublishedVersionId)
+            : null),
+      })),
+    );
+    const assetIds = new Set([asset.id]);
+    const imageIds = new Set([asset.imageId]);
+    const referencingTemplates = publishedSnapshots
+      .filter(({ snapshot }) => containsImageReference(snapshot, assetIds, imageIds))
+      .map(({ template }) => template);
+
+    if (referencingTemplates.length === 0) {
+      return;
+    }
+
+    const names = referencingTemplates
+      .slice(0, 3)
+      .map((template) => `“${template.name?.trim() || template.slug}”`)
+      .join('、');
+    const omitted = referencingTemplates.length - 3;
+    const suffix = omitted > 0 ? `等 ${referencingTemplates.length} 个拓扑` : '';
+
+    throw new ConflictException(
+      `镜像仍被已发布拓扑${names}${suffix}引用，请先将相关拓扑回退为私有并替换镜像。`,
+    );
   }
 
   private async recollectPlatformAssetWithVisibility(

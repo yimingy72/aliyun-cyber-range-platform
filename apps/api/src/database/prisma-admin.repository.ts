@@ -1234,6 +1234,34 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<PlatformImageAssetRecord>;
   }
 
+  async hasActiveImageImportForArtifact(input: {
+    platformImageAssetId?: string | null;
+    sourceSnapshotId?: string | null;
+    imageId?: string | null;
+  }): Promise<boolean> {
+    const references = [
+      input.platformImageAssetId ? { platformImageAssetId: input.platformImageAssetId } : null,
+      input.sourceSnapshotId ? { sourceSnapshotId: input.sourceSnapshotId } : null,
+      input.imageId ? { imageId: input.imageId } : null,
+    ].filter(
+      (value): value is { platformImageAssetId: string } | { sourceSnapshotId: string } | { imageId: string } =>
+        value !== null,
+    );
+
+    if (references.length === 0) {
+      return false;
+    }
+
+    return (
+      (await this.prisma.imageImportJob.count({
+        where: {
+          status: 'importing',
+          OR: references,
+        },
+      })) > 0
+    );
+  }
+
   async deletePlatformImageAsset(id: string): Promise<void> {
     await this.prisma.platformImageAsset.delete({
       where: {

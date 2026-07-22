@@ -866,6 +866,11 @@ export interface AdminRepository {
   collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord>;
   updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord>;
   setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord>;
+  hasActiveImageImportForArtifact(input: {
+    platformImageAssetId?: string | null;
+    sourceSnapshotId?: string | null;
+    imageId?: string | null;
+  }): Promise<boolean>;
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
   getSingleInstanceNetworkProfile(input: {

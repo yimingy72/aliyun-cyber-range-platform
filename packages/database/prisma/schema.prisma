@@ -289,6 +289,7 @@ model ImageImportJob {
   objectKey             String               @unique
   uploadExpiresAt       DateTime
   uploadCompletedAt     DateTime?
+  lastPolledAt          DateTime?
   status                ImageImportJobStatus @default(awaiting_upload)
   imageId               String?              @unique
   taskId                String?
@@ -303,6 +304,7 @@ model ImageImportJob {
 
   @@index([cloudAccountContextId, status, updatedAt])
   @@index([ownerUserId, createdAt])
+  @@index([status, lastPolledAt, createdAt])
   @@index([status, temporaryObjectDeletedAt, updatedAt])
 }
 

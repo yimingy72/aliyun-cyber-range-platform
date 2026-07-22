@@ -70,6 +70,7 @@ function createImportJob(overrides: Record<string, unknown> = {}) {
 describe('ImageImportsService', () => {
   const originalFetch = global.fetch;
   const originalImageSecret = process.env.PLATFORM_IMAGE_SECRET_KEY;
+  const originalImportMaxDuration = process.env.IMAGE_IMPORT_MAX_DURATION_MS;
 
   beforeEach(() => {
     process.env.PLATFORM_IMAGE_SECRET_KEY = 'unit-test-image-encryption-key';
@@ -82,6 +83,12 @@ describe('ImageImportsService', () => {
       delete process.env.PLATFORM_IMAGE_SECRET_KEY;
     } else {
       process.env.PLATFORM_IMAGE_SECRET_KEY = originalImageSecret;
+    }
+
+    if (originalImportMaxDuration === undefined) {
+      delete process.env.IMAGE_IMPORT_MAX_DURATION_MS;
+    } else {
+      process.env.IMAGE_IMPORT_MAX_DURATION_MS = originalImportMaxDuration;
     }
   });
 
@@ -157,6 +164,15 @@ describe('ImageImportsService', () => {
     };
     const adminRepositoryMock = {
       upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue({
+        id: 'snapshot-1',
+        imageId: job.imageId,
+      }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({
+        id: 'asset-1',
+        imageId: job.imageId,
+        sourceSnapshotId: 'snapshot-1',
+      }),
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
       setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: false }),
@@ -225,6 +241,15 @@ describe('ImageImportsService', () => {
     };
     const adminRepositoryMock = {
       upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue({
+        id: 'snapshot-1',
+        imageId: job.imageId,
+      }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({
+        id: 'asset-1',
+        imageId: job.imageId,
+        sourceSnapshotId: 'snapshot-1',
+      }),
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
       setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: true }),
@@ -279,6 +304,15 @@ describe('ImageImportsService', () => {
     });
     const adminRepositoryMock = {
       upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue({
+        id: 'snapshot-1',
+        imageId: job.imageId,
+      }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({
+        id: 'asset-1',
+        imageId: job.imageId,
+        sourceSnapshotId: 'snapshot-1',
+      }),
       setPlatformImageAssetEnabled: jest.fn().mockRejectedValue(new Error('asset update unavailable')),
     };
     const imageImportJob = {
@@ -313,6 +347,421 @@ describe('ImageImportsService', () => {
 
     expect(result).toEqual(expect.objectContaining({ status: 'importing', errorMessage: 'asset update unavailable' }));
     expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  it('stores Alibaba Cloud creating progress on the snapshot while the import is still running', async () => {
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-imported-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'asset-1',
+    });
+    const snapshot: CloudImageSnapshotRecord = {
+      id: 'snapshot-1',
+      provider: 'alibaba_cloud',
+      accountUid: CONTEXT.accountUid,
+      regionId: CONTEXT.regionId,
+      scope: 'custom',
+      imageId: job.imageId!,
+      sourceImageName: job.displayName,
+      osType: job.osType,
+      platform: job.platform,
+      architecture: job.architecture,
+      status: 'Creating',
+      isAvailable: false,
+      lastSyncedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue({
+        id: 'snapshot-1',
+        imageId: job.imageId,
+      }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({
+        id: 'asset-1',
+        imageId: job.imageId,
+        sourceSnapshotId: 'snapshot-1',
+      }),
+      listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
+      collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
+      setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: false }),
+    };
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest.fn().mockResolvedValue(
+      createResponse({
+        Images: {
+          Image: {
+            ImageId: job.imageId,
+            ImageName: job.displayName,
+            OSType: 'linux',
+            Platform: 'Others Linux',
+            Architecture: 'x86_64',
+            Status: 'Creating',
+            Progress: '65%',
+          },
+        },
+      }),
+    );
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(expect.objectContaining({ status: 'importing', imageId: job.imageId }));
+    expect(adminRepositoryMock.upsertImageSnapshots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snapshots: [
+          expect.objectContaining({
+            imageId: job.imageId,
+            status: 'Creating 65%',
+            isAvailable: false,
+          }),
+        ],
+      }),
+    );
+    expect(imageImportJob.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'available' }) }),
+    );
+  });
+
+  it('keeps image import lists owner-scoped for administrators', async () => {
+    const imageImportJob = {
+      findMany: jest.fn().mockResolvedValue([createImportJob()]),
+    };
+    const service = new ImageImportsService(
+      {} as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      {} as CloudAccountContextsService,
+    );
+
+    await service.list({ id: 'admin-1', username: 'admin', role: 'admin' });
+
+    expect(imageImportJob.findMany).toHaveBeenCalledWith({
+      where: { ownerUserId: 'admin-1' },
+      orderBy: { createdAt: 'desc' },
+    });
+  });
+
+  it('marks Alibaba Cloud Unavailable images as failed imports and starts cleanup', async () => {
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-unavailable-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'asset-1',
+    });
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue({
+        id: 'snapshot-1',
+        imageId: job.imageId,
+      }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({
+        id: 'asset-1',
+        imageId: job.imageId,
+        sourceSnapshotId: 'snapshot-1',
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: job.imageId,
+              Status: 'UnAvailable',
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({}, 204));
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: expect.stringContaining('UnAvailable'),
+        temporaryObjectDeletedAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it('fails an import that remains absent from DescribeImages beyond the maximum duration', async () => {
+    process.env.IMAGE_IMPORT_MAX_DURATION_MS = '1';
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-missing-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'asset-1',
+      uploadCompletedAt: new Date(Date.now() - 10_000),
+    });
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const adminRepositoryMock = {
+      getImageSnapshotById: jest.fn().mockResolvedValue({ id: 'snapshot-1' }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({ id: 'asset-1' }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(createResponse({ Images: {} }))
+      .mockResolvedValueOnce(createResponse({}, 204));
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: expect.stringContaining('超过最大等待时长'),
+        temporaryObjectDeletedAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it('fails an overdue import even when its cloud account context is temporarily unavailable', async () => {
+    process.env.IMAGE_IMPORT_MAX_DURATION_MS = '1';
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-overdue-image',
+      uploadCompletedAt: new Date(Date.now() - 10_000),
+    });
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockRejectedValue(new Error('cloud account unavailable')) };
+    const service = new ImageImportsService(
+      {} as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: expect.stringContaining('超过最大等待时长'),
+      }),
+    );
+    expect(contextService.getCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  it('recreates a missing private asset before enabling an imported image', async () => {
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-recovered-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'deleted-asset-1',
+    });
+    const snapshot: CloudImageSnapshotRecord = {
+      id: 'snapshot-1',
+      provider: 'alibaba_cloud',
+      accountUid: CONTEXT.accountUid,
+      regionId: CONTEXT.regionId,
+      scope: 'custom',
+      imageId: job.imageId!,
+      sourceImageName: job.displayName,
+      osType: job.osType,
+      platform: job.platform,
+      architecture: job.architecture,
+      status: 'Creating',
+      isAvailable: false,
+      lastSyncedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue(snapshot),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue(null),
+      listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
+      collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'recovered-asset-1' }),
+      setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'recovered-asset-1', enabled: true }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: job.imageId,
+              Status: 'Available',
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({}, 204));
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    const result = await service.refreshImport(job.id);
+
+    expect(adminRepositoryMock.collectPlatformImageAsset).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotId: snapshot.id, ownerUserId: USER.id }),
+    );
+    expect(adminRepositoryMock.setPlatformImageAssetEnabled).toHaveBeenLastCalledWith('recovered-asset-1', true);
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'available',
+        platformImageAssetId: 'recovered-asset-1',
+      }),
+    );
+  });
+
+  it('clears a resolved cleanup error after the temporary object is deleted', async () => {
+    const job = createImportJob({
+      status: 'available',
+      imageId: 'm-available-image',
+      temporaryObjectDeletedAt: null,
+      errorMessage: '临时 OSS 文件清理失败：删除 OSS 临时镜像文件失败。',
+    });
+    const imageImportJob = {
+      findMany: jest.fn().mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+        if (where.status === 'importing') {
+          return [];
+        }
+        if (where.temporaryObjectDeletedAt === null) {
+          return [job];
+        }
+        return [];
+      }),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest.fn().mockResolvedValue(createResponse({}, 204));
+    const service = new ImageImportsService(
+      {} as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    await service.refreshPendingImports();
+
+    expect(job.temporaryObjectDeletedAt).toEqual(expect.any(Date));
+    expect(job.errorMessage).toBeNull();
+  });
+
+  it('selects the least recently polled import so a twenty-first job is not starved', async () => {
+    const jobs = Array.from({ length: 21 }, (_, index) =>
+      createImportJob({
+        id: `image-import-${index + 1}`,
+        status: 'importing',
+        imageId: `m-image-${index + 1}`,
+        sourceSnapshotId: `snapshot-${index + 1}`,
+        platformImageAssetId: `asset-${index + 1}`,
+        lastPolledAt: new Date(index === 20 ? '2026-07-20T00:00:00.000Z' : '2026-07-20T01:00:00.000Z'),
+        updatedAt: new Date(index === 20 ? '2026-07-20T01:00:00.000Z' : '2026-07-20T00:00:00.000Z'),
+      }),
+    );
+    const imageImportJob = {
+      findMany: jest.fn().mockImplementation(async ({ where, orderBy }: { where: Record<string, unknown>; orderBy: unknown }) => {
+        if (where.status === 'importing') {
+          const firstOrderField = Array.isArray(orderBy) ? Object.keys(orderBy[0] ?? {})[0] : Object.keys(orderBy as object)[0];
+          return firstOrderField === 'lastPolledAt' ? [jobs[20]] : jobs.slice(0, 20);
+        }
+        return [];
+      }),
+      findUnique: jest.fn().mockImplementation(async ({ where }: { where: { id: string } }) =>
+        jobs.find((job) => job.id === where.id) ?? null,
+      ),
+      update: jest.fn().mockImplementation(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const job = jobs.find((item) => item.id === where.id)!;
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const adminRepositoryMock = {
+      upsertImageSnapshots: jest.fn().mockResolvedValue(undefined),
+      getImageSnapshotById: jest.fn().mockResolvedValue({
+        id: 'snapshot-21',
+        imageId: 'm-image-21',
+      }),
+      getPlatformImageAssetById: jest.fn().mockResolvedValue({
+        id: 'asset-21',
+        imageId: 'm-image-21',
+        sourceSnapshotId: 'snapshot-21',
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    global.fetch = jest.fn().mockResolvedValue(
+      createResponse({
+        Images: {
+          Image: {
+            ImageId: 'm-image-21',
+            Status: 'Creating',
+            Progress: '65%',
+          },
+        },
+      }),
+    );
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+
+    await service.refreshPendingImports();
+
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('ImageId=m-image-21'));
+    expect(imageImportJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'image-import-21' },
+        data: expect.objectContaining({ lastPolledAt: expect.any(Date) }),
+      }),
+    );
   });
 
   it('rejects an object whose actual OSS size does not match the requested upload size', async () => {
