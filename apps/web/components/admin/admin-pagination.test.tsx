@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AdminPaginationControls, buildVisiblePages, getPagination } from './admin-pagination';
 
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+  configurable: true,
+  value: () => undefined,
+});
+
 describe('admin pagination helpers', () => {
   it('clamps page numbers and returns the correct slice indexes', () => {
     expect(getPagination(101, 99, 50)).toEqual({
@@ -45,7 +50,10 @@ describe('AdminPaginationControls', () => {
       />,
     );
 
-    fireEvent.change(screen.getByRole('combobox', { name: '每页条数' }), { target: { value: '100' } });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '每页条数' }), {
+      key: 'ArrowDown',
+    });
+    fireEvent.click(screen.getByRole('option', { name: '100 条' }));
     fireEvent.click(screen.getByRole('button', { name: '上一页' }));
     fireEvent.click(screen.getByRole('button', { name: '下一页' }));
     fireEvent.click(screen.getByRole('button', { name: '第 3 页' }));

@@ -2,6 +2,16 @@
 
 import { useEffect, useState } from 'react';
 
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
 export const PAGE_SIZE_AUTO = 'auto';
 export const MANUAL_PAGE_SIZE_OPTIONS = [50, 100, 200];
 const ROWS_BASED_PAGE_SIZE_FALLBACK = 8;
@@ -94,51 +104,65 @@ export function AdminPaginationControls({
   onJumpPage: () => void;
 }) {
   return (
-    <div className="image-center-pagination" aria-label={label}>
-      <label className="image-center-pagination-size">
+    <div aria-label={label} className="image-center-pagination">
+      <div className="image-center-pagination-size">
         <span>每页条数</span>
-        <select aria-label="每页条数" value={pageSizeMode} onChange={(event) => onPageSizeChange(event.target.value)}>
-          <option value={PAGE_SIZE_AUTO}>自动</option>
-          {MANUAL_PAGE_SIZE_OPTIONS.map((option) => (
-            <option key={option} value={String(option)}>
-              {option} 条
-            </option>
-          ))}
-        </select>
-      </label>
-      <button type="button" aria-label="上一页" disabled={pagination.page <= 1} onClick={onPreviousPage}>
+        <Select value={pageSizeMode} onValueChange={onPageSizeChange}>
+          <SelectTrigger aria-label="每页条数" size="sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={PAGE_SIZE_AUTO}>自动</SelectItem>
+            {MANUAL_PAGE_SIZE_OPTIONS.map((option) => (
+              <SelectItem key={option} value={String(option)}>
+                {option} 条
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <Button aria-label="上一页" disabled={pagination.page <= 1} size="sm" type="button" variant="outline" onClick={onPreviousPage}>
         上一页
-      </button>
+      </Button>
       <div className="image-center-pagination-pages" aria-label="页码">
         {visiblePages.map((pageNumber) => (
-          <button
+          <Button
             key={pageNumber}
-            type="button"
             aria-label={`第 ${pageNumber} 页`}
             aria-pressed={pageNumber === pagination.page}
+            size="icon-xs"
+            type="button"
+            variant={pageNumber === pagination.page ? 'default' : 'outline'}
             onClick={() => onPageSelect(pageNumber)}
           >
             {pageNumber}
-          </button>
+          </Button>
         ))}
       </div>
-      <button type="button" aria-label="下一页" disabled={pagination.page >= pagination.totalPages} onClick={onNextPage}>
+      <Button
+        aria-label="下一页"
+        disabled={pagination.page >= pagination.totalPages}
+        size="sm"
+        type="button"
+        variant="outline"
+        onClick={onNextPage}
+      >
         下一页
-      </button>
+      </Button>
       <label className="image-center-pagination-jump">
         <span>跳转到</span>
-        <input
+        <Input
           aria-label="跳转到页码"
-          type="number"
           min={1}
           max={pagination.totalPages}
+          type="number"
           value={jumpPageValue}
           onChange={(event) => onJumpPageValueChange(event.target.value)}
         />
       </label>
-      <button type="button" aria-label="跳转" onClick={onJumpPage}>
+      <Button aria-label="跳转" size="sm" type="button" variant="outline" onClick={onJumpPage}>
         跳转
-      </button>
+      </Button>
       <span className="image-center-pagination-summary">
         第 {pagination.page} / {pagination.totalPages} 页
       </span>

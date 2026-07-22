@@ -1,8 +1,34 @@
 'use client';
 
-import React from 'react';
-import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type MouseEvent, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { MoreHorizontal, Plus } from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 import {
   AdminApiError,
@@ -27,6 +53,12 @@ import {
   PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
+import { AdminPageHeader } from './shared/admin-page-header';
+import { AsyncContentState } from './shared/async-content-state';
+import { ConfirmActionDialog } from './shared/confirm-action-dialog';
+import { ListToolbar } from './shared/list-toolbar';
+import { StatusBadge } from './shared/status-badge';
+import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
 
 type TemplatesScreenProps = {
@@ -119,10 +151,6 @@ function getScenarioDescription(scenario: Scenario) {
   return (scenario as Scenario & { description?: string | null }).description?.trim() || '暂无描述';
 }
 
-function readPublishedLabel(scenario: Scenario) {
-  return scenario.status === 'published' ? '已发布' : '私有';
-}
-
 function buildRangeInstanceName(template: Scenario) {
   return `${getScenarioDisplayName(template)} 实例`;
 }
@@ -141,27 +169,6 @@ function removeScenario(items: Scenario[], scenarioId: string) {
   return items.filter((scenario) => scenario.id !== scenarioId);
 }
 
-function TemplateDialog({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="template-workbench-dialog-backdrop" role="presentation">
-      <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="template-workbench-dialog-header">
-          <div>
-            <h2>{title}</h2>
-          </div>
-        </div>
-        {children}
-      </section>
-    </div>
-  );
-}
-
 export function TemplatesScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: TemplatesScreenProps) {
@@ -176,12 +183,12 @@ export function TemplatesScreen({
     mine: false,
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
-  const [menuTemplateId, setMenuTemplateId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [searchName, setSearchName] = useState('');
@@ -266,7 +273,7 @@ export function TemplatesScreen({
     return () => {
       isActive = false;
     };
-  }, [activeView, apiBaseUrl, loadedViews.mine, loadedViews.platform, router, session.isReady, session.token]);
+  }, [activeView, apiBaseUrl, loadAttempt, loadedViews.mine, loadedViews.platform, router, session.isReady, session.token]);
 
   const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
 
@@ -321,6 +328,15 @@ export function TemplatesScreen({
       '',
       nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname,
     );
+  }
+
+  function retryActiveView() {
+    setErrorMessage(null);
+    setLoadedViews((current) => ({
+      ...current,
+      [activeView]: false,
+    }));
+    setLoadAttempt((current) => current + 1);
   }
 
   function handleJumpToPage() {
@@ -406,7 +422,6 @@ export function TemplatesScreen({
 
   function openEditDialog(scenario: Scenario) {
     setEditingTemplateId(scenario.id);
-    setMenuTemplateId(null);
     setEditDraft({
       name: scenario.name?.trim() || scenario.slug,
       description: getScenarioDescription(scenario) === '暂无描述' ? '' : getScenarioDescription(scenario),
@@ -419,7 +434,6 @@ export function TemplatesScreen({
   }
 
   function openLaunchDialog(template: Scenario) {
-    setMenuTemplateId(null);
     setLaunchDraft({
       templateId: template.id,
       templateName: getScenarioDisplayName(template),
@@ -436,8 +450,23 @@ export function TemplatesScreen({
     setConfirmState(null);
   }
 
+  function handlePendingDialogOpenChange(open: boolean, closeDialog: () => void) {
+    if (!open && isSubmitting) {
+      return;
+    }
+
+    if (!open) {
+      closeDialog();
+    }
+  }
+
+  function preventPendingDialogClose(event: Event) {
+    if (isSubmitting) {
+      event.preventDefault();
+    }
+  }
+
   function openConfirmDialog(type: 'delete', template: Scenario) {
-    setMenuTemplateId(null);
     setConfirmState({ type, template });
   }
 
@@ -498,7 +527,6 @@ export function TemplatesScreen({
         expectedRevision: template?.revision ?? 0,
       });
       syncOwnedTemplate(savedTemplate);
-      setMenuTemplateId(null);
       setActionSuccessMessage('已发布到平台。');
       return savedTemplate;
     } catch (error: unknown) {
@@ -520,7 +548,6 @@ export function TemplatesScreen({
         expectedRevision: template?.revision ?? 0,
       });
       syncOwnedTemplate(savedTemplate);
-      setMenuTemplateId(null);
       setActionSuccessMessage('已回退为私有。');
       return savedTemplate;
     } catch (error: unknown) {
@@ -535,11 +562,11 @@ export function TemplatesScreen({
 
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
+    setIsSubmitting(true);
 
     try {
       await deleteRangeTemplate(apiBaseUrl, session.token, id);
       removeTemplateFromViews(id);
-      setMenuTemplateId(null);
       closeConfirmDialog();
       setActionSuccessMessage('靶场模板已删除。');
     } catch (error: unknown) {
@@ -551,6 +578,8 @@ export function TemplatesScreen({
 
       const conflictMessage = getDeleteTemplateConflictMessage(error);
       setActionErrorMessage(conflictMessage ?? '靶场编排删除失败，请稍后重试。');
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -566,7 +595,6 @@ export function TemplatesScreen({
     try {
       const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id);
       syncOwnedTemplate(savedTemplate);
-      setMenuTemplateId(null);
       return savedTemplate;
     } catch (error: unknown) {
       return handleProtectedActionError(error, '编排复制失败，请稍后重试。');
@@ -655,7 +683,7 @@ export function TemplatesScreen({
     );
   }
 
-  const isBootstrapLoading = isLoading && platformTemplates.length === 0 && myTemplates.length === 0;
+  const isActiveViewLoading = isLoading && !loadedViews[activeView];
 
   function canManageTemplate(template: Scenario) {
     return session.isAdmin || template.ownerUserId === session.profile?.id;
@@ -663,327 +691,355 @@ export function TemplatesScreen({
 
   return (
     <div className="admin-screen template-workbench-screen" onClickCapture={handleScreenClickCapture}>
-      <h1 className="sr-only">靶场编排</h1>
-      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
       {actionErrorMessage ? <p className="admin-error">{actionErrorMessage}</p> : null}
       {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
 
-      <section className="template-workbench-shell">
-        <div className="template-workbench-list">
-          <div className="template-workbench-list-header">
-            <div className="template-workbench-list-header-copy">
-              <h2>靶场列表</h2>
-            </div>
-          </div>
-
-          <div className="template-workbench-controls">
-            <div className="template-workbench-search-grid">
-              <label className="template-workbench-search-field">
-                <span className="sr-only">靶场名搜索</span>
-                <input
-                  aria-label="筛选靶场名"
-                  value={searchName}
-                  onChange={(event) => setSearchName(event.target.value)}
-                  placeholder="搜索靶场名"
+      <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+        <AdminPageHeader
+          action={
+            <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
+              <Plus aria-hidden="true" />
+              新建拓扑
+            </Button>
+          }
+          description="管理可复用的演练蓝图"
+          title="靶场编排"
+        />
+        <div className="mt-4">
+          <ListToolbar
+            activeView={activeView}
+            searchValue={searchName}
+            onSearchChange={setSearchName}
+            onViewChange={setActiveViewWithUrl}
+          >
+            <div className="mt-4">
+              {errorMessage ? (
+                <AsyncContentState
+                  description={errorMessage}
+                  onRetry={retryActiveView}
+                  title="无法加载靶场列表"
+                  variant="error"
                 />
-              </label>
-            </div>
+              ) : (
+                <>
+                  <Table aria-label="靶场列表">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>靶场</TableHead>
+                        <TableHead>创建人</TableHead>
+                        <TableHead>靶场描述</TableHead>
+                        <TableHead>拓扑概览</TableHead>
+                        <TableHead>状态</TableHead>
+                        <TableHead className="text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {isActiveViewLoading ? (
+                        <TableLoadingState columnCount={6} label="正在加载靶场列表" rowCount={pageSize} />
+                      ) : pagedTemplates.length ? (
+                        pagedTemplates.map((template) => {
+                          const isPublished = isPublishedScenario(template);
+                          const isShared = template.visibility === 'platform';
+                          const canManageCurrentTemplate = canManageTemplate(template);
+                          const canConsumeTemplate = canManageCurrentTemplate || isPublished;
+                          const canEnterTemplate = canManageCurrentTemplate || isShared;
 
-            <div className="template-workbench-controls-actions">
-              <div className="template-workbench-segmented" role="tablist" aria-label="靶场编排视图">
-                <button type="button" aria-pressed={activeView === 'platform'} onClick={() => setActiveViewWithUrl('platform')}>
-                  平台拓扑
-                </button>
-                <button type="button" aria-pressed={activeView === 'mine'} onClick={() => setActiveViewWithUrl('mine')}>
-                  我的拓扑
-                </button>
-              </div>
-
-              <button type="button" className="template-workbench-create-button" onClick={() => setIsCreateDialogOpen(true)}>
-                新建靶场
-              </button>
-            </div>
-          </div>
-
-          <div className="template-workbench-column-head">
-            <div className="template-workbench-column-cell">
-              <strong>靶场</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>创建人</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>靶场描述</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>拓扑概览</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>状态</strong>
-            </div>
-            <div className="template-workbench-column-cell workbench-action-cell">
-              <strong>操作</strong>
-            </div>
-          </div>
-
-          {isBootstrapLoading ? (
-            <div className="template-workbench-empty" aria-hidden="true" />
-          ) : filteredTemplates.length ? (
-            <div className="template-workbench-rows">
-              {pagedTemplates.map((template) => {
-                const menuOpen = menuTemplateId === template.id;
-                const isPublished = isPublishedScenario(template);
-                const isShared = template.visibility === 'platform';
-                const canManageCurrentTemplate = canManageTemplate(template);
-                const canConsumeTemplate = canManageCurrentTemplate || isPublished;
-                const canOpenActionMenu = canConsumeTemplate;
-                const canEnterTemplate = canManageCurrentTemplate || isShared;
-
-                return (
-                  <article key={template.id} className={`template-workbench-row${menuOpen ? ' is-menu-open' : ''}`}>
-                    <div className="template-workbench-main">
-                      <div className="template-workbench-main-top">
-                        <strong>{getScenarioDisplayName(template)}</strong>
-                      </div>
+                          return (
+                            <TableRow key={template.id}>
+                              <TableCell className="font-medium">{getScenarioDisplayName(template)}</TableCell>
+                              <TableCell>{template.createdBy?.trim() || 'admin'}</TableCell>
+                              <TableCell className="max-w-72 whitespace-normal text-muted-foreground">
+                                {getScenarioDescription(template)}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+                                  <span>区域 {readZoneCount(template)}</span>
+                                  <span>主机 {readHostCount(template)}</span>
+                                  <span>节点 {readNodeCount(template)}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge status={isPublished ? 'published' : 'private'} />
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    disabled={isSubmitting || !canEnterTemplate}
+                                    size="sm"
+                                    type="button"
+                                    onClick={() => void handleOpenTemplateEditor(template)}
+                                  >
+                                    进入编排
+                                  </Button>
+                                  {canConsumeTemplate ? (
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button
+                                          aria-label="更多操作"
+                                          disabled={isSubmitting}
+                                          size="icon-sm"
+                                          type="button"
+                                          variant="ghost"
+                                        >
+                                          <MoreHorizontal aria-hidden="true" />
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="end">
+                                        <DropdownMenuItem onSelect={() => void handleCloneTemplate(template)}>
+                                          复制模板
+                                        </DropdownMenuItem>
+                                        {canManageCurrentTemplate ? (
+                                          <>
+                                            <DropdownMenuItem onSelect={() => openEditDialog(template)}>
+                                              编辑信息
+                                            </DropdownMenuItem>
+                                            {isShared ? (
+                                              <DropdownMenuItem onSelect={() => void handleUnshareTemplate(template.id)}>
+                                                回退为私有
+                                              </DropdownMenuItem>
+                                            ) : (
+                                              <DropdownMenuItem onSelect={() => void handleShareTemplate(template.id)}>
+                                                发布到平台
+                                              </DropdownMenuItem>
+                                            )}
+                                          </>
+                                        ) : null}
+                                        <DropdownMenuItem onSelect={() => void handleOpenGenerateInstance(template)}>
+                                          生成实例
+                                        </DropdownMenuItem>
+                                        {canManageCurrentTemplate ? (
+                                          <DropdownMenuItem
+                                            variant="destructive"
+                                            onSelect={() => openConfirmDialog('delete', template)}
+                                          >
+                                            删除模板
+                                          </DropdownMenuItem>
+                                        ) : null}
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  ) : null}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
+                      ) : (
+                        <TableRow>
+                          <TableCell colSpan={6}>
+                            <AsyncContentState
+                              action={
+                                activeView === 'mine' ? (
+                                  <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
+                                    新建拓扑
+                                  </Button>
+                                ) : undefined
+                              }
+                              description={
+                                activeView === 'mine'
+                                  ? '你可以新建一个靶场并开始编排。'
+                                  : '平台暂时没有可用的已发布拓扑。'
+                              }
+                              title="当前筛选条件下没有靶场"
+                              variant="empty"
+                            />
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                  {filteredTemplates.length ? (
+                    <div className="mt-4">
+                      <AdminPaginationControls
+                        jumpPageValue={jumpPageValue}
+                        label="靶场列表分页"
+                        pageSizeMode={pageSizeMode}
+                        pagination={activePagination}
+                        visiblePages={visiblePages}
+                        onJumpPage={handleJumpToPage}
+                        onJumpPageValueChange={setJumpPageValue}
+                        onNextPage={() =>
+                          setViewPages((current) => ({
+                            ...current,
+                            [activeView]: activePagination.page + 1,
+                          }))
+                        }
+                        onPageSelect={(pageNumber) =>
+                          setViewPages((current) => ({
+                            ...current,
+                            [activeView]: pageNumber,
+                          }))
+                        }
+                        onPageSizeChange={handlePageSizeChange}
+                        onPreviousPage={() =>
+                          setViewPages((current) => ({
+                            ...current,
+                            [activeView]: activePagination.page - 1,
+                          }))
+                        }
+                      />
                     </div>
-
-                    <div className="template-workbench-column-cell">
-                      <strong>{template.createdBy?.trim() || 'admin'}</strong>
-                    </div>
-
-                    <div className="template-workbench-description-cell">
-                      <p className="template-workbench-description">{getScenarioDescription(template)}</p>
-                    </div>
-
-                    <div className="template-workbench-topology">
-                      <div className="template-workbench-metric-pills">
-                        <span>区域 {readZoneCount(template)}</span>
-                        <span>主机 {readHostCount(template)}</span>
-                        <span>节点 {readNodeCount(template)}</span>
-                      </div>
-                    </div>
-
-                    <div className="template-workbench-status">
-                      <span className={isPublished ? 'template-workbench-status-pill is-published' : 'template-workbench-status-pill is-private'}>
-                        {readPublishedLabel(template)}
-                      </span>
-                    </div>
-
-                    <div className="template-workbench-actions workbench-action-cell">
-                      <button
-                        type="button"
-                        className="template-workbench-primary-action"
-                        disabled={isSubmitting || !canEnterTemplate}
-                        onClick={() => void handleOpenTemplateEditor(template)}
-                      >
-                        进入编排
-                      </button>
-
-                      {canOpenActionMenu ? (
-                        <div className="template-workbench-row-menu">
-                          <button
-                            type="button"
-                            className="template-workbench-secondary-action"
-                            aria-expanded={menuOpen}
-                            disabled={isSubmitting}
-                            onClick={() => setMenuTemplateId((previous) => (previous === template.id ? null : template.id))}
-                          >
-                            更多操作
-                          </button>
-
-                          {menuOpen ? (
-                            <div className="template-workbench-action-menu">
-                              {canConsumeTemplate ? (
-                                <button type="button" onClick={() => void handleCloneTemplate(template)}>
-                                  复制模板
-                                </button>
-                              ) : null}
-                              {canManageCurrentTemplate ? (
-                                <>
-                                  <button type="button" onClick={() => openEditDialog(template)}>
-                                    编辑信息
-                                  </button>
-                                  {isShared ? (
-                                    <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
-                                      回退为私有
-                                    </button>
-                                  ) : (
-                                    <button type="button" onClick={() => void handleShareTemplate(template.id)}>
-                                      发布到平台
-                                    </button>
-                                  )}
-                                </>
-                              ) : null}
-                              {canConsumeTemplate ? (
-                                <button type="button" onClick={() => void handleOpenGenerateInstance(template)}>
-                                  生成实例
-                                </button>
-                              ) : null}
-                              {canManageCurrentTemplate ? (
-                                <button type="button" onClick={() => openConfirmDialog('delete', template)}>
-                                  删除模板
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  </article>
-                );
-              })}
+                  ) : null}
+                </>
+              )}
             </div>
-          ) : (
-            <div className="template-workbench-empty">
-              <strong>当前筛选条件下没有靶场。</strong>
-              <p>你可以调整筛选条件，或者直接新建靶场进入拓扑编排页。</p>
-            </div>
-          )}
-          {filteredTemplates.length ? (
-            <AdminPaginationControls
-              label="靶场列表分页"
-              pageSizeMode={pageSizeMode}
-              pagination={activePagination}
-              visiblePages={visiblePages}
-              jumpPageValue={jumpPageValue}
-              onPageSizeChange={handlePageSizeChange}
-              onPreviousPage={() =>
-                setViewPages((current) => ({
-                  ...current,
-                  [activeView]: activePagination.page - 1,
-                }))
-              }
-              onNextPage={() =>
-                setViewPages((current) => ({
-                  ...current,
-                  [activeView]: activePagination.page + 1,
-                }))
-              }
-              onPageSelect={(pageNumber) =>
-                setViewPages((current) => ({
-                  ...current,
-                  [activeView]: pageNumber,
-                }))
-              }
-              onJumpPageValueChange={setJumpPageValue}
-              onJumpPage={handleJumpToPage}
-            />
-          ) : null}
+          </ListToolbar>
         </div>
       </section>
 
-      {isCreateDialogOpen ? (
-        <TemplateDialog title="创建靶场">
-          <div className="template-workbench-dialog-grid">
-            <label>
-              <span>靶场名</span>
-              <input
-                aria-label="靶场名"
+      <Dialog
+        open={isCreateDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeCreateDialog();
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>创建靶场</DialogTitle>
+            <DialogDescription className="sr-only">填写靶场基础信息后进入拓扑编排。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="create-template-name">靶场名</Label>
+              <Input
+                id="create-template-name"
                 value={createDraft.name}
                 onChange={(event) => setCreateDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
-            </label>
-            <label>
-              <span>靶场描述</span>
-              <input
-                aria-label="靶场描述"
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="create-template-description">靶场描述</Label>
+              <Input
+                id="create-template-description"
                 value={createDraft.description}
                 onChange={(event) => setCreateDraft((previous) => ({ ...previous, description: event.target.value }))}
               />
-            </label>
+            </div>
           </div>
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleCreateTemplate()}>
-              创建并进入编排
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeCreateDialog}>
+          <DialogFooter>
+            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeCreateDialog}>
               取消
-            </button>
-          </div>
-        </TemplateDialog>
-      ) : null}
+            </Button>
+            <Button disabled={isSubmitting} type="button" onClick={() => void handleCreateTemplate()}>
+              创建并进入编排
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {editingTemplate ? (
-        <TemplateDialog title="编辑靶场">
-          <div className="template-workbench-dialog-grid">
-            <label>
-              <span>靶场名</span>
-              <input
-                aria-label="靶场名"
+      <Dialog
+        open={Boolean(editingTemplate)}
+        onOpenChange={(open) => {
+          handlePendingDialogOpenChange(open, closeEditDialog);
+        }}
+      >
+        <DialogContent
+          closeButtonDisabled={isSubmitting}
+          onEscapeKeyDown={preventPendingDialogClose}
+          onInteractOutside={preventPendingDialogClose}
+          onPointerDownOutside={preventPendingDialogClose}
+        >
+          <DialogHeader>
+            <DialogTitle>编辑靶场</DialogTitle>
+            <DialogDescription className="sr-only">更新靶场的基础信息。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="edit-template-name">靶场名</Label>
+              <Input
+                id="edit-template-name"
                 value={editDraft.name}
                 onChange={(event) => setEditDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
-            </label>
-            <label>
-              <span>靶场描述</span>
-              <input
-                aria-label="靶场描述"
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-template-description">靶场描述</Label>
+              <Input
+                id="edit-template-description"
                 value={editDraft.description}
                 onChange={(event) => setEditDraft((previous) => ({ ...previous, description: event.target.value }))}
               />
-            </label>
+            </div>
           </div>
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleUpdateTemplate(editingTemplate.id)}>
-              保存信息
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeEditDialog}>
+          <DialogFooter>
+            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeEditDialog}>
               取消编辑
-            </button>
-          </div>
-        </TemplateDialog>
-      ) : null}
+            </Button>
+            <Button
+              disabled={isSubmitting || !editingTemplate}
+              type="button"
+              onClick={() => editingTemplate && void handleUpdateTemplate(editingTemplate.id)}
+            >
+              保存信息
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {launchDraft.templateId ? (
-        <TemplateDialog title="生成实例">
-          <div className="template-workbench-dialog-grid">
-            <label>
-              <span>实例名</span>
-              <input
-                aria-label="实例名"
+      <Dialog
+        open={Boolean(launchDraft.templateId)}
+        onOpenChange={(open) => {
+          handlePendingDialogOpenChange(open, closeLaunchDialog);
+        }}
+      >
+        <DialogContent
+          closeButtonDisabled={isSubmitting}
+          onEscapeKeyDown={preventPendingDialogClose}
+          onInteractOutside={preventPendingDialogClose}
+          onPointerDownOutside={preventPendingDialogClose}
+        >
+          <DialogHeader>
+            <DialogTitle>生成实例</DialogTitle>
+            <DialogDescription className="sr-only">填写实例名和到期时间后生成靶场实例。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="launch-instance-name">实例名</Label>
+              <Input
+                id="launch-instance-name"
                 value={launchDraft.name}
                 onChange={(event) => setLaunchDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
-            </label>
-            <label>
-              <span>到期时间</span>
-              <input
-                aria-label="到期时间"
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="launch-instance-expires-at">到期时间</Label>
+              <Input
+                id="launch-instance-expires-at"
                 type="datetime-local"
                 value={launchDraft.expiresAt}
                 onChange={(event) => setLaunchDraft((previous) => ({ ...previous, expiresAt: event.target.value }))}
               />
-            </label>
+            </div>
           </div>
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleLaunchInstance()}>
+          <DialogFooter>
+            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeLaunchDialog}>
+              取消
+            </Button>
+            <Button disabled={isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
               确认生成
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeLaunchDialog}>
-              取消
-            </button>
-          </div>
-        </TemplateDialog>
-      ) : null}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {confirmState?.type === 'delete' ? (
-        <TemplateDialog title="确认删除靶场">
-          <p className="template-workbench-confirm-copy">
-            删除“{getScenarioDisplayName(confirmState.template)}”后将无法恢复，请确认当前不再需要这套编排模板。
-          </p>
-          <p className="template-workbench-confirm-copy">
-            如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。
-          </p>
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleDeleteTemplate(confirmState.template.id)}>
-              确认删除
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeConfirmDialog}>
-              取消
-            </button>
-          </div>
-        </TemplateDialog>
-      ) : null}
+      <ConfirmActionDialog
+        confirmLabel="删除模板"
+        description={
+          confirmState
+            ? `删除“${getScenarioDisplayName(confirmState.template)}”后将无法恢复。如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。`
+            : ''
+        }
+        open={confirmState?.type === 'delete'}
+        pending={isSubmitting}
+        title="删除靶场"
+        onConfirm={() => confirmState && void handleDeleteTemplate(confirmState.template.id)}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeConfirmDialog();
+          }
+        }}
+      />
     </div>
   );
 }
