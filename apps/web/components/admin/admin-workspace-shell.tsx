@@ -16,6 +16,7 @@ import {
 } from '../../lib/admin-oidc';
 import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../lib/admin-oidc-config';
 import { writeAdminSession } from '../../lib/admin-auth-storage';
+import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { useAdminSession } from './use-admin-session';
 
 type AdminWorkspaceShellProps = {
@@ -245,11 +246,11 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   }
 
   if (!session.isReady) {
-    return null;
+    return <AdminWorkspaceLoadingState label="正在恢复管理会话" />;
   }
 
   if (isRenewingSession || shouldRenewNow) {
-    return null;
+    return <AdminWorkspaceLoadingState label="正在续期管理会话" />;
   }
 
   if (!session.token) {
