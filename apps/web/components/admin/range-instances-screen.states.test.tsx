@@ -120,6 +120,8 @@ describe('RangeInstancesScreen list states', () => {
   it('writes the selected list view to the URL', async () => {
     fetchRangeInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);
+    searchParamsState.value = 'source=overview';
+    window.history.replaceState(null, '', '/admin/ranges?source=overview');
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -130,7 +132,7 @@ describe('RangeInstancesScreen list states', () => {
 
     await waitFor(() => {
       expect(window.location.pathname).toBe('/admin/ranges');
-      expect(window.location.search).toBe('?view=history');
+      expect(window.location.search).toBe('?source=overview&view=history');
     });
 
     const historyTab = screen.getByRole('tab', { name: '实例历史' });
@@ -138,7 +140,7 @@ describe('RangeInstancesScreen list states', () => {
     fireEvent.keyDown(historyTab, { key: 'ArrowLeft' });
 
     await waitFor(() => {
-      expect(window.location.search).toBe('');
+      expect(window.location.search).toBe('?source=overview');
     });
   });
 
@@ -153,6 +155,23 @@ describe('RangeInstancesScreen list states', () => {
     expect(screen.getByRole('columnheader', { name: '实例名称' })).toBeTruthy();
     expect(screen.getByLabelText('筛选实例名')).toBeTruthy();
     expect(screen.getByRole('button', { name: '重试加载' })).toBeTruthy();
+  });
+
+  it('shows an in-table skeleton immediately when retrying a failed initial load', async () => {
+    const pendingRetry = createPendingPromise<never[]>();
+
+    fetchRangeInstancesMock
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockReturnValueOnce(pendingRetry.promise);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('无法加载编排实例');
+    fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
+
+    expect(screen.getByRole('status', { name: '正在加载编排实例' })).toBeTruthy();
+    expect(screen.queryByText('还没有编排实例')).toBeNull();
   });
 
   it('keeps active rows visible and marks the table busy while active data revalidates', async () => {
@@ -188,6 +207,40 @@ describe('RangeInstancesScreen list states', () => {
       expect(screen.getByText('蓝队靶场')).toBeTruthy();
       expect(screen.getByRole('table', { name: '编排实例列表' }).getAttribute('aria-busy')).toBe('true');
     });
+  });
+
+  it('keeps rows and reports revalidation failures inside the table body', async () => {
+    fetchRangeInstancesMock
+      .mockResolvedValueOnce([
+        {
+          id: 'range-active',
+          name: '蓝队靶场',
+          templateNameSnapshot: '企业攻防靶场',
+          status: 'running',
+          createdAt: '2026-07-22T08:00:00.000Z',
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('network unavailable'));
+    fetchProvisionJobsMock.mockResolvedValue([]);
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('蓝队靶场')).toBeTruthy();
+
+    const activeTab = screen.getByRole('tab', { name: '实例列表' });
+    activeTab.focus();
+    fireEvent.keyDown(activeTab, { key: 'ArrowRight' });
+    await screen.findByText('还没有已回收实例');
+
+    const historyTab = screen.getByRole('tab', { name: '实例历史' });
+    historyTab.focus();
+    fireEvent.keyDown(historyTab, { key: 'ArrowLeft' });
+
+    const retainedError = await screen.findByRole('alert');
+    expect(retainedError.closest('tr')).toBeTruthy();
+    expect(retainedError.closest('td')?.getAttribute('colspan')).toBe('6');
+    expect(screen.getByText('蓝队靶场')).toBeTruthy();
   });
 
   it('preserves detail navigation and range lifecycle actions', async () => {

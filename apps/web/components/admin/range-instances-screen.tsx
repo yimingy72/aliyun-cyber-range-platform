@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
-import { TableRow } from '@/components/ui/table';
+import { TableCell, TableRow } from '@/components/ui/table';
 import {
   deleteRangeInstance,
   fetchProvisionJobs,
@@ -471,7 +471,7 @@ export function RangeInstancesScreen({
     );
   }
 
-  const isInitialLoading = isListLoading && !hasLoadedList;
+  const isInitialLoading = !hasLoadedList && !listErrorMessage;
   const isRefreshing = isListLoading && hasLoadedList;
   const shouldShowTableError = Boolean(listErrorMessage && !hasLoadedList);
   const columns = listMode === 'history' ? RANGE_HISTORY_COLUMNS : RANGE_ACTIVE_COLUMNS;
@@ -499,6 +499,10 @@ export function RangeInstancesScreen({
   }
 
   function retryListLoad() {
+    setLoadingViews((current) => ({
+      ...current,
+      [listMode]: true,
+    }));
     setListErrors((current) => ({
       ...current,
       [listMode]: null,
@@ -531,9 +535,6 @@ export function RangeInstancesScreen({
             ]}
           >
             <div className="mt-4">
-              {listErrorMessage && hasLoadedList ? (
-                <p className="mb-3 text-sm text-destructive" role="alert">{listErrorMessage}</p>
-              ) : null}
               <AdminDataTable
                 columns={columns}
                 isRefreshing={isRefreshing}
@@ -577,7 +578,21 @@ export function RangeInstancesScreen({
                     );
                   }
 
-                  return pagedVisibleListInstances.map((instance) => {
+                  const retainedErrorRow = listErrorMessage && hasLoadedList ? (
+                    <TableRow className="hover:bg-transparent" key="retained-list-error">
+                      <TableCell className="px-3 py-2" colSpan={tableColumns.length}>
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-sm" role="alert">
+                          <span className="text-destructive">
+                            {listErrorMessage} 正在显示上次成功加载的列表。
+                          </span>
+                          <Button onClick={retryListLoad} size="sm" type="button" variant="outline">
+                            重试加载
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : null;
+                  const rows = pagedVisibleListInstances.map((instance) => {
                     const nameColumn = getRangeColumn(tableColumns, 'name');
                     const createdByColumn = getRangeColumn(tableColumns, 'createdBy');
                     const templateColumn = getRangeColumn(tableColumns, 'template');
@@ -663,6 +678,8 @@ export function RangeInstancesScreen({
                       </TableRow>
                     );
                   });
+
+                  return retainedErrorRow ? [retainedErrorRow, ...rows] : rows;
                 }}
               </AdminDataTable>
             </div>
