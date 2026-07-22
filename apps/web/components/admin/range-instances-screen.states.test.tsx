@@ -243,6 +243,43 @@ describe('RangeInstancesScreen list states', () => {
     expect(screen.getByText('蓝队靶场')).toBeTruthy();
   });
 
+  it('keeps the in-table retry affordance when search hides a retained snapshot', async () => {
+    fetchRangeInstancesMock
+      .mockResolvedValueOnce([
+        {
+          id: 'range-active',
+          name: '蓝队靶场',
+          templateNameSnapshot: '企业攻防靶场',
+          status: 'running',
+          createdAt: '2026-07-22T08:00:00.000Z',
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('network unavailable'));
+    fetchProvisionJobsMock.mockResolvedValue([]);
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('蓝队靶场');
+    fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: '未匹配' } });
+    await screen.findByText('还没有编排实例');
+
+    const activeTab = screen.getByRole('tab', { name: '实例列表' });
+    activeTab.focus();
+    fireEvent.keyDown(activeTab, { key: 'ArrowRight' });
+    await screen.findByText('还没有已回收实例');
+
+    const historyTab = screen.getByRole('tab', { name: '实例历史' });
+    historyTab.focus();
+    fireEvent.keyDown(historyTab, { key: 'ArrowLeft' });
+
+    const retainedError = await screen.findByRole('alert');
+    expect(retainedError.closest('tr')).toBeTruthy();
+    expect(retainedError.closest('td')?.getAttribute('colspan')).toBe('6');
+    expect(screen.getByRole('button', { name: '重试加载' })).toBeTruthy();
+    expect(screen.queryByText('还没有编排实例')).toBeNull();
+  });
+
   it('preserves detail navigation and range lifecycle actions', async () => {
     fetchRangeInstancesMock.mockResolvedValue([
       {

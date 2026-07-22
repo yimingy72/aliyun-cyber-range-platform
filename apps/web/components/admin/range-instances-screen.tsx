@@ -563,21 +563,6 @@ export function RangeInstancesScreen({
                     );
                   }
 
-                  if (!visibleListInstances.length) {
-                    return (
-                      <AdminDataTableState
-                        columns={tableColumns}
-                        description={
-                          listMode === 'history'
-                            ? '实例完成销毁后，会自动沉淀到这里。'
-                            : '实例会在靶场编排页生成后进入这里。'
-                        }
-                        title={listMode === 'history' ? '还没有已回收实例' : '还没有编排实例'}
-                        variant="empty"
-                      />
-                    );
-                  }
-
                   const retainedErrorRow = listErrorMessage && hasLoadedList ? (
                     <TableRow className="hover:bg-transparent" key="retained-list-error">
                       <TableCell className="px-3 py-2" colSpan={tableColumns.length}>
@@ -592,6 +577,22 @@ export function RangeInstancesScreen({
                       </TableCell>
                     </TableRow>
                   ) : null;
+
+                  if (!visibleListInstances.length) {
+                    return retainedErrorRow ?? (
+                      <AdminDataTableState
+                        columns={tableColumns}
+                        description={
+                          listMode === 'history'
+                            ? '实例完成销毁后，会自动沉淀到这里。'
+                            : '实例会在靶场编排页生成后进入这里。'
+                        }
+                        title={listMode === 'history' ? '还没有已回收实例' : '还没有编排实例'}
+                        variant="empty"
+                      />
+                    );
+                  }
+
                   const rows = pagedVisibleListInstances.map((instance) => {
                     const nameColumn = getRangeColumn(tableColumns, 'name');
                     const createdByColumn = getRangeColumn(tableColumns, 'createdBy');
