@@ -7,6 +7,14 @@ ADMIN_USERNAME=${KEYCLOAK_ADMIN_USERNAME:-admin}
 ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-change-me}
 WEB_PUBLIC_URL=${WEB_PUBLIC_URL:-http://localhost:3000}
 WEB_PUBLIC_URL=${WEB_PUBLIC_URL%/}
+KEYCLOAK_ADMIN_CLIENT_ID=${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
+KEYCLOAK_ADMIN_CLIENT_SECRET=${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
+MCP_OIDC_CLIENT_ID=${MCP_OIDC_CLIENT_ID:-mcp-gateway}
+MCP_OIDC_CLIENT_SECRET=${MCP_OIDC_CLIENT_SECRET:-mcp-gateway-dev-only}
+MCP_SMOKE_CLIENT_ID=${MCP_SMOKE_CLIENT_ID:-smoke-conf}
+MCP_SMOKE_CLIENT_SECRET=${MCP_SMOKE_CLIENT_SECRET:-smoke-secret}
+MCP_SMOKE_OIDC_CLIENT_ID=${MCP_SMOKE_OIDC_CLIENT_ID:-mcp-smoke-sa}
+MCP_SMOKE_OIDC_CLIENT_SECRET=${MCP_SMOKE_OIDC_CLIENT_SECRET:-mcp-smoke-secret}
 
 json_first_id() {
   sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p'
@@ -69,9 +77,24 @@ fi
   --rolename view-realm
 
 PLATFORM_WEB_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=platform-web | json_first_id)
-SMOKE_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=smoke-conf | json_first_id)
-MCP_GATEWAY_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=mcp-gateway | json_first_id)
+PLATFORM_ADMIN_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId="$KEYCLOAK_ADMIN_CLIENT_ID" | json_first_id)
+SMOKE_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId="$MCP_SMOKE_CLIENT_ID" | json_first_id)
+MCP_SMOKE_SERVICE_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId="$MCP_SMOKE_OIDC_CLIENT_ID" | json_first_id)
+MCP_GATEWAY_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId="$MCP_OIDC_CLIENT_ID" | json_first_id)
 PLATFORM_API_CLIENT_ID=$(/opt/keycloak/bin/kcadm.sh get clients -r "$REALM" -q clientId=platform-api | json_first_id)
+
+set_client_secret() {
+  client_id=$1
+  client_secret=$2
+
+  [ -n "$client_id" ] || return
+  /opt/keycloak/bin/kcadm.sh update "clients/$client_id" -r "$REALM" -s "secret=$client_secret" >/dev/null
+}
+
+set_client_secret "$PLATFORM_ADMIN_CLIENT_ID" "$KEYCLOAK_ADMIN_CLIENT_SECRET"
+set_client_secret "$MCP_GATEWAY_CLIENT_ID" "$MCP_OIDC_CLIENT_SECRET"
+set_client_secret "$SMOKE_CLIENT_ID" "$MCP_SMOKE_CLIENT_SECRET"
+set_client_secret "$MCP_SMOKE_SERVICE_CLIENT_ID" "$MCP_SMOKE_OIDC_CLIENT_SECRET"
 
 ensure_audience_mapper() {
   client_id=$1

@@ -56,6 +56,7 @@ cp .env.example .env
 - `ADMIN_PASSWORD`
 - `ADMIN_TOKEN`
 - `KEYCLOAK_ADMIN_PASSWORD`
+- `KEYCLOAK_ADMIN_CLIENT_SECRET`
 - `MCP_OIDC_CLIENT_SECRET`
 
 `RANGE_PROVISIONER_MODE` 默认使用 `opentofu`，会实际创建并计费阿里云资源；如仅需演练平台流程，请在 `.env` 中显式设置为 `dry-run`。
@@ -63,6 +64,8 @@ cp .env.example .env
 `OIDC_ISSUER` 和 `KEYCLOAK_HOSTNAME` 必须是浏览器与 MCP 客户端可访问的外部地址；若使用非默认端口，`KEYCLOAK_HOSTNAME` 必须是完整 URL（例如 `http://localhost:18080`），并与 `OIDC_ISSUER` 完全一致。Compose 内部的 JWKS、Token Exchange 和 Keycloak Admin 调用固定使用 `keycloak:8080`，不应配置为容器内的 `localhost`。
 
 `WEB_PUBLIC_URL` 必须是浏览器访问 Web 控制台的完整外部地址（例如 `https://range.example.com` 或 `http://203.0.113.10:3000`）。Keycloak 初始化时会使用它注册登录回调地址和 Web 来源。
+
+在公网部署中，`KEYCLOAK_ADMIN_CLIENT_SECRET`、`MCP_OIDC_CLIENT_SECRET`、`MCP_SMOKE_CLIENT_SECRET` 和 `MCP_SMOKE_OIDC_CLIENT_SECRET` 必须替换默认值。Keycloak bootstrap 会用这些值轮换对应的 confidential client secret。
 
 5. 下载并校验宿主机 OpenTofu provider 缓存：
 

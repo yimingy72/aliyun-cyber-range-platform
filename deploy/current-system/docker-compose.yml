@@ -68,6 +68,14 @@ services:
       KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me}
       WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:3000}
+      KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
+      MCP_OIDC_CLIENT_ID: ${MCP_OIDC_CLIENT_ID:-mcp-gateway}
+      MCP_OIDC_CLIENT_SECRET: ${MCP_OIDC_CLIENT_SECRET:-mcp-gateway-dev-only}
+      MCP_SMOKE_CLIENT_ID: ${MCP_SMOKE_CLIENT_ID:-smoke-conf}
+      MCP_SMOKE_CLIENT_SECRET: ${MCP_SMOKE_CLIENT_SECRET:-smoke-secret}
+      MCP_SMOKE_OIDC_CLIENT_ID: ${MCP_SMOKE_OIDC_CLIENT_ID:-mcp-smoke-sa}
+      MCP_SMOKE_OIDC_CLIENT_SECRET: ${MCP_SMOKE_OIDC_CLIENT_SECRET:-mcp-smoke-secret}
     volumes:
       - ../../scripts/dev/bootstrap-keycloak.sh:/opt/keycloak/bootstrap-keycloak.sh:ro
 
