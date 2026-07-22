@@ -46,6 +46,14 @@ describe('design system CSS transition contract', () => {
     expect(stylesheet).toContain('--radius:');
   });
 
+  it('keeps the shadcn CLI out of production CSS while retaining generated state variants', () => {
+    expect(stylesheet).not.toContain('shadcn/');
+
+    for (const variant of ['data-open', 'data-closed', 'data-disabled', 'data-active', 'data-horizontal']) {
+      expect(stylesheet).toContain(`@custom-variant ${variant}`);
+    }
+  });
+
   it('keeps the approved transition token values', () => {
     for (const token of [
       '--background: #eff4fb;',

@@ -11,6 +11,11 @@ import type {
   PlatformImageAssetListPayload,
 } from '../../lib/admin-types';
 
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+  configurable: true,
+  value: () => undefined,
+});
+
 const {
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
@@ -1187,7 +1192,8 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
 
     const pageSizeSelector = screen.getByRole('combobox', { name: '每页条数' });
-    fireEvent.change(pageSizeSelector, { target: { value: '50' } });
+    fireEvent.keyDown(pageSizeSelector, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '50 条' }));
 
     expect(await screen.findByText('Platform Asset 3')).toBeTruthy();
   });
@@ -1221,7 +1227,8 @@ describe('ImageCenterScreen', () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
-    fireEvent.change(screen.getByRole('combobox', { name: '每页条数' }), { target: { value: '50' } });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '50 条' }));
     fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
 
     expect(await screen.findByText('Platform Asset 51')).toBeTruthy();
