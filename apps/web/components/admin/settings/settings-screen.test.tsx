@@ -1,21 +1,27 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   fetchCloudConfigMock,
   saveCloudConfigMock,
   replaceMock,
-} = vi.hoisted(() => ({
-  fetchCloudConfigMock: vi.fn(),
-  saveCloudConfigMock: vi.fn(),
-  replaceMock: vi.fn(),
-}));
+  routerMock,
+} = vi.hoisted(() => {
+  const replaceMock = vi.fn();
+
+  return {
+    fetchCloudConfigMock: vi.fn(),
+    saveCloudConfigMock: vi.fn(),
+    replaceMock,
+    routerMock: {
+      replace: replaceMock,
+    },
+  };
+});
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    replace: replaceMock,
-  }),
+  useRouter: () => routerMock,
 }));
 
 vi.mock('../../../lib/admin-api', async () => {
@@ -96,7 +102,8 @@ describe('SettingsScreen', () => {
     await waitFor(() => {
       expect(saveCloudConfigMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', cloudConfigPayload);
     });
-    expect(await screen.findByText('云配置已保存。')).toBeTruthy();
+
+    expect((await within(screen.getByTestId('cloud-config-form')).findByRole('status')).textContent).toBe('云配置已保存。');
   });
 
   it('shows the STS or OSS initialization error returned while saving', async () => {
@@ -161,10 +168,31 @@ describe('SettingsScreen', () => {
 
     expect(screen.getByRole('heading', { name: '云配置' })).toBeTruthy();
     expect((screen.getByRole('button', { name: '保存云配置' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('cloud-config-form').getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByTestId('cloud-config-form-skeleton')).toBeTruthy();
+    expect(screen.queryByLabelText('默认地域')).toBeNull();
 
     await waitFor(() => expect(resolveCloudConfig).not.toBeNull());
     resolveCloudConfig?.(cloudConfigPayload);
     await screen.findByDisplayValue('cn-hangzhou');
+  });
+
+  it('keeps cloud configuration load failures inside the form and retries from there', async () => {
+    mockAdminSession();
+    fetchCloudConfigMock
+      .mockRejectedValueOnce(new Error('网络暂时不可用'))
+      .mockResolvedValueOnce(cloudConfigPayload);
+
+    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
+
+    const form = await screen.findByTestId('cloud-config-form');
+    expect(within(form).getByRole('alert').textContent).toContain('云配置加载失败，请稍后重试。');
+
+    fireEvent.click(within(form).getByRole('button', { name: '重试加载' }));
+
+    expect(screen.getByTestId('cloud-config-form-skeleton')).toBeTruthy();
+    expect(await screen.findByDisplayValue('cn-hangzhou')).toBeTruthy();
+    expect(fetchCloudConfigMock).toHaveBeenCalledTimes(2);
   });
 
   it('redirects regular users away from cloud settings without loading configuration', async () => {
