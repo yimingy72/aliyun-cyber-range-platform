@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
@@ -37,7 +38,6 @@ import { syncTopologySpecFromNodes } from '../../../lib/template-topology-sync';
 import { useAdminSession } from '../use-admin-session';
 import { TemplateCanvas } from './template-canvas';
 import { TemplateNodePalette } from './template-node-palette';
-import { TemplatePropertyPanel } from './template-property-panel';
 
 type TemplateEditorScreenProps = {
   templateId?: string;
@@ -57,6 +57,30 @@ type TopologyCachePayload = {
   topologyGraph: DraftTopologyGraph;
   persistedGraphSignature: string;
 };
+
+function TemplatePropertyPanelPlaceholder() {
+  return (
+    <aside className="template-editor-panel template-property-panel">
+      <div className="admin-section-header template-property-panel-header">
+        <h2>属性面板</h2>
+      </div>
+
+      <div className="template-property-shell">
+        <div className="template-property-placeholder">
+          <strong>选择节点后配置</strong>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+const TemplatePropertyPanel = dynamic(
+  () => import('./template-property-panel').then(({ TemplatePropertyPanel: Component }) => Component),
+  {
+    ssr: false,
+    loading: TemplatePropertyPanelPlaceholder,
+  },
+);
 
 function applyEconomyInstanceType(
   node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'instanceType' | 'instanceTypeStrategy'>,
@@ -1814,14 +1838,18 @@ function buildDraftUpdatePayload(
           onMoveNode={handleMoveNode}
           onBoardClick={handleBoardClick}
         />
-        <TemplatePropertyPanel
-          selectedNode={selectedNode}
-          allNodes={nodes}
-          platformImageAssets={platformImageAssets}
-          instanceTypeAvailability={selectedEcsNode ? instanceTypeAvailability : null}
-          linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
-          onUpdateNode={handleUpdateNode}
-        />
+        {selectedNode ? (
+          <TemplatePropertyPanel
+            selectedNode={selectedNode}
+            allNodes={nodes}
+            platformImageAssets={platformImageAssets}
+            instanceTypeAvailability={selectedEcsNode ? instanceTypeAvailability : null}
+            linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
+            onUpdateNode={handleUpdateNode}
+          />
+        ) : (
+          <TemplatePropertyPanelPlaceholder />
+        )}
       </div>
     </section>
   );
