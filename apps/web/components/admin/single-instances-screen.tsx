@@ -1459,6 +1459,21 @@ export function SingleInstancesScreen({
                       );
                     }
 
+                    const retainedSnapshotError =
+                      listErrorMessage && hasCurrentViewSnapshot ? (
+                        <AdminDataTableState
+                          columns={columns}
+                          description="已保留最近一次加载的实例数据。请重试刷新以获取最新状态。"
+                          onRetry={handleListRetry}
+                          title={listErrorMessage}
+                          variant="error"
+                        />
+                      ) : null;
+
+                    if (retainedSnapshotError && !hasVisibleContent) {
+                      return retainedSnapshotError;
+                    }
+
                     if (!hasVisibleContent) {
                       return (
                         <AdminDataTableState
@@ -1470,16 +1485,6 @@ export function SingleInstancesScreen({
                       );
                     }
 
-                    const retainedSnapshotError =
-                      listErrorMessage && hasCurrentViewSnapshot ? (
-                        <AdminDataTableState
-                          columns={columns}
-                          description="已保留最近一次加载的实例数据。请重试刷新以获取最新状态。"
-                          onRetry={handleListRetry}
-                          title={listErrorMessage}
-                          variant="error"
-                        />
-                      ) : null;
                     const listRows = (
                       <>
                         {pagedBatchGroups.map((group) => {

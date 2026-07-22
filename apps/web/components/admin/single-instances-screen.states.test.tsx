@@ -270,4 +270,48 @@ describe('SingleInstancesScreen list states', () => {
       expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(3);
     });
   });
+
+  it('keeps the in-table retry affordance above an empty search result when revalidation fails', async () => {
+    const failedRefresh = createDeferred<unknown>();
+    const polls: Array<() => void> = [];
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 100) {
+        polls.push(callback as () => void);
+      }
+      return 1;
+    });
+    fetchSingleInstancesMock
+      .mockResolvedValueOnce([activeInstance])
+      .mockReturnValueOnce(failedRefresh.promise)
+      .mockResolvedValueOnce([activeInstance]);
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" pollIntervalMs={100} />);
+
+    expect(await screen.findByText('web-lab-01')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: 'no-match' } });
+    expect(await screen.findByText('暂无实例')).toBeTruthy();
+
+    await waitFor(() => {
+      expect(polls).toHaveLength(2);
+    });
+    act(() => {
+      polls.at(-1)?.();
+    });
+    await act(async () => {
+      failedRefresh.reject(new Error('network unavailable'));
+    });
+
+    const table = screen.getByRole('table', { name: '实例列表' });
+    const errorTitle = await screen.findByRole('heading', { name: '实例管理数据加载失败，请稍后重试。' });
+    const errorRow = errorTitle.closest('tr');
+
+    expect(table.querySelector('tbody tr')?.textContent).toContain('实例管理数据加载失败，请稍后重试。');
+    expect(errorRow?.querySelector('td')?.getAttribute('colspan')).toBe(String(table.querySelectorAll('thead th').length));
+    expect(screen.queryByText('暂无实例')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
+    await waitFor(() => {
+      expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(3);
+    });
+  });
 });
