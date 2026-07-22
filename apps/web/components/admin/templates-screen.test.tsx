@@ -303,6 +303,64 @@ describe('TemplatesScreen', () => {
     expect(window.location.search).toBe('?view=platform');
   });
 
+  it('shows a table-body skeleton before empty state when opening an unloaded platform view', async () => {
+    fetchRangeTemplatesMock.mockImplementation(
+      (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+        view === 'platform'
+          ? new Promise(() => {
+              // Keep the platform request pending after the view switch.
+            })
+          : Promise.resolve([bootstrapPayload.rangeTemplates[1]]),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    selectTemplateView('platform');
+
+    expect(await screen.findByRole('tab', { name: '平台拓扑', selected: true })).toBeTruthy();
+    expect(await screen.findByRole('status', { name: '正在加载靶场列表' })).toBeTruthy();
+    expect(screen.queryByText('当前筛选条件下没有靶场')).toBeNull();
+    expect(screen.queryByText('无法加载靶场列表')).toBeNull();
+  });
+
+  it('replaces a failed view with a table-body skeleton immediately when retrying', async () => {
+    fetchRangeTemplatesMock
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockImplementationOnce(
+        () =>
+          new Promise(() => {
+            // Keep the retry request pending so the transient table state is observable.
+          }),
+      );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    const retryButton = await screen.findByRole('button', { name: '重试加载' });
+    fireEvent.click(retryButton);
+
+    expect(await screen.findByRole('status', { name: '正在加载靶场列表' })).toBeTruthy();
+    expect(screen.queryByText('无法加载靶场列表')).toBeNull();
+    expect(screen.queryByText('当前筛选条件下没有靶场')).toBeNull();
+  });
+
+  it('keeps table headers and full column span when an active view fails', async () => {
+    fetchRangeTemplatesMock.mockRejectedValue(new Error('network unavailable'));
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('无法加载靶场列表')).toBeTruthy();
+
+    const table = screen.getByRole('table', { name: '靶场列表' });
+    expect(within(table).getByRole('columnheader', { name: '靶场' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '靶场描述' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '拓扑概览' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
+    expect(screen.getByText('无法加载靶场列表').closest('td')?.getAttribute('colspan')).toBe('6');
+  });
+
   it('keeps low-frequency template actions inside the action menu', async () => {
     fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
 

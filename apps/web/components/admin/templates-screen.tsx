@@ -320,6 +320,7 @@ export function TemplatesScreen({
   }
 
   function setActiveViewWithUrl(nextView: RangeTemplateView) {
+    setErrorMessage(null);
     setActiveView(nextView);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
@@ -690,7 +691,7 @@ export function TemplatesScreen({
     );
   }
 
-  const isActiveViewLoading = isLoading && !loadedViews[activeView];
+  const isActiveViewLoading = !loadedViews[activeView] && !errorMessage;
 
   function canManageTemplate(template: Scenario) {
     return session.isAdmin || template.ownerUserId === session.profile?.id;
@@ -729,7 +730,7 @@ export function TemplatesScreen({
             <div className="mt-4">
               <AdminDataTable
                 columns={TEMPLATE_COLUMNS}
-                isRefreshing={isLoading}
+                isRefreshing={isLoading || isActiveViewLoading}
                 label="靶场列表"
               >
                 {(columns) => {
