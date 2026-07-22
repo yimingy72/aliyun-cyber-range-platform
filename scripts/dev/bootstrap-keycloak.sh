@@ -3,8 +3,10 @@ set -eu
 
 SERVER_URL=${KEYCLOAK_ADMIN_BASE_URL:-http://keycloak:8080}
 REALM=${KEYCLOAK_REALM:-cyber-range}
-ADMIN_USERNAME=${KEYCLOAK_ADMIN_USERNAME:-admin}
-ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+KEYCLOAK_ADMIN_USERNAME=${KEYCLOAK_ADMIN_USERNAME:-admin}
+KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+PLATFORM_ADMIN_USERNAME=${PLATFORM_ADMIN_USERNAME:-${ADMIN_USERNAME:-${KEYCLOAK_ADMIN_USERNAME}}}
+PLATFORM_ADMIN_PASSWORD=${PLATFORM_ADMIN_PASSWORD:-${ADMIN_PASSWORD:-${KEYCLOAK_ADMIN_PASSWORD}}}
 WEB_PUBLIC_URL=${WEB_PUBLIC_URL:-http://localhost:3000}
 WEB_PUBLIC_URL=${WEB_PUBLIC_URL%/}
 KEYCLOAK_ADMIN_CLIENT_ID=${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
@@ -28,8 +30,8 @@ find_exact_user_id() {
 until /opt/keycloak/bin/kcadm.sh config credentials \
   --server "$SERVER_URL" \
   --realm master \
-  --user "$ADMIN_USERNAME" \
-  --password "$ADMIN_PASSWORD" >/dev/null 2>&1; do
+  --user "$KEYCLOAK_ADMIN_USERNAME" \
+  --password "$KEYCLOAK_ADMIN_PASSWORD" >/dev/null 2>&1; do
   sleep 2
 done
 
@@ -41,17 +43,17 @@ done
   -s ssoSessionIdleTimeout=604800 \
   -s ssoSessionMaxLifespan=604800
 
-ADMIN_REALM_USER_ID=$(find_exact_user_id "$ADMIN_USERNAME")
+ADMIN_REALM_USER_ID=$(find_exact_user_id "$PLATFORM_ADMIN_USERNAME")
 
 if [ -z "$ADMIN_REALM_USER_ID" ]; then
   ADMIN_REALM_USER_ID=$(
     /opt/keycloak/bin/kcadm.sh create users -r "$REALM" \
-      -s username="$ADMIN_USERNAME" \
+      -s username="$PLATFORM_ADMIN_USERNAME" \
       -s enabled=true \
       -s emailVerified=true \
       -s firstName=Platform \
       -s lastName=Admin \
-      -s email="${ADMIN_USERNAME}@example.local" \
+      -s email="${PLATFORM_ADMIN_USERNAME}@example.local" \
       -i
   )
 fi
@@ -61,10 +63,10 @@ fi
   -s emailVerified=true \
   -s firstName=Platform \
   -s lastName=Admin \
-  -s email="${ADMIN_USERNAME}@example.local" \
+  -s email="${PLATFORM_ADMIN_USERNAME}@example.local" \
   -s 'requiredActions=[]' >/dev/null
 
-/opt/keycloak/bin/kcadm.sh set-password -r "$REALM" --userid "$ADMIN_REALM_USER_ID" --new-password "$ADMIN_PASSWORD" >/dev/null
+/opt/keycloak/bin/kcadm.sh set-password -r "$REALM" --userid "$ADMIN_REALM_USER_ID" --new-password "$PLATFORM_ADMIN_PASSWORD" >/dev/null
 /opt/keycloak/bin/kcadm.sh add-roles -r "$REALM" --uid "$ADMIN_REALM_USER_ID" --rolename admin >/dev/null 2>&1 || true
 
 /opt/keycloak/bin/kcadm.sh add-roles \

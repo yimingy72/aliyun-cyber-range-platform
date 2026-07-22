@@ -67,6 +67,8 @@ cp .env.example .env
 
 在公网部署中，`KEYCLOAK_ADMIN_CLIENT_SECRET`、`MCP_OIDC_CLIENT_SECRET`、`MCP_SMOKE_CLIENT_SECRET` 和 `MCP_SMOKE_OIDC_CLIENT_SECRET` 必须替换默认值。Keycloak bootstrap 会用这些值轮换对应的 confidential client secret。
 
+`KEYCLOAK_ADMIN_USERNAME` / `KEYCLOAK_ADMIN_PASSWORD` 仅用于 Keycloak 管理控制台；平台登录管理员使用 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，两组凭据应当不同。
+
 5. 下载并校验宿主机 OpenTofu provider 缓存：
 
 ```bash
