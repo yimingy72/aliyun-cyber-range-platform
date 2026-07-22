@@ -292,6 +292,43 @@ function ImageCenterDialog({
   );
 }
 
+function CloudSourceTabs({
+  activeTab,
+  children,
+  isCloudView,
+  onTabChange,
+}: {
+  activeTab: ActiveTab;
+  children: React.ReactNode;
+  isCloudView: boolean;
+  onTabChange: (tab: 'custom' | 'public') => void;
+}) {
+  if (!isCloudView) {
+    return <>{children}</>;
+  }
+
+  const cloudTab = activeTab === 'public' ? 'public' : 'custom';
+
+  return (
+    <Tabs
+      onValueChange={(tab) => {
+        if (tab === 'custom' || tab === 'public') {
+          onTabChange(tab);
+        }
+      }}
+      value={cloudTab}
+    >
+      <TabsList aria-label="云上镜像来源切换" variant="line">
+        <TabsTrigger value="custom">阿里云自定义镜像</TabsTrigger>
+        <TabsTrigger value="public">阿里云公共镜像</TabsTrigger>
+      </TabsList>
+      <TabsContent className="mt-4" value={cloudTab}>
+        {children}
+      </TabsContent>
+    </Tabs>
+  );
+}
+
 export function ImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
@@ -310,6 +347,7 @@ export function ImageCenterScreen({
     public: false,
   });
   const [tabErrors, setTabErrors] = useState<TabErrorMap>({});
+  const [revalidationErrors, setRevalidationErrors] = useState<TabErrorMap>({});
   const [actionErrorMessage, setActionErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [refreshingTabs, setRefreshingTabs] = useState<Record<ActiveTab, boolean>>({
@@ -336,6 +374,7 @@ export function ImageCenterScreen({
   const imageImportJobsRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
+  const loadedTabsRef = useRef(loadedTabs);
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
   function beginAction(actionKey: string) {
@@ -357,6 +396,32 @@ export function ImageCenterScreen({
     });
   }
 
+  function clearRevalidationError(tab: ActiveTab) {
+    setRevalidationErrors((current) => {
+      if (!current[tab]) {
+        return current;
+      }
+
+      const { [tab]: _removed, ...remaining } = current;
+      return remaining;
+    });
+  }
+
+  function markTabLoaded(tab: ActiveTab) {
+    if (loadedTabsRef.current[tab]) {
+      return;
+    }
+
+    loadedTabsRef.current = { ...loadedTabsRef.current, [tab]: true };
+    setLoadedTabs((current) => {
+      if (current[tab]) {
+        return current;
+      }
+
+      return { ...current, [tab]: true };
+    });
+  }
+
   function setTabRefreshing(tab: ActiveTab, isRefreshing: boolean) {
     setRefreshingTabs((current) => (current[tab] === isRefreshing ? current : { ...current, [tab]: isRefreshing }));
   }
@@ -364,8 +429,8 @@ export function ImageCenterScreen({
   function reportTabLoadError(tab: ActiveTab, error: unknown, fallback: string) {
     const message = error instanceof Error ? error.message : fallback;
 
-    if (loadedTabs[tab]) {
-      setActionErrorMessage(message);
+    if (loadedTabsRef.current[tab]) {
+      setRevalidationErrors((current) => ({ ...current, [tab]: message }));
       return;
     }
 
@@ -469,6 +534,7 @@ export function ImageCenterScreen({
     imageImportJobsRequestVersionRef.current = imageImportJobsRequestVersion;
 
     if (options.isRevalidation) {
+      clearRevalidationError('mine');
       setTabRefreshing('mine', true);
     }
 
@@ -488,7 +554,7 @@ export function ImageCenterScreen({
 
       setImageImportJobs(jobsPayload.items);
       setMyAssets(myAssetsPayload.items);
-      setLoadedTabs((current) => ({ ...current, mine: true }));
+      markTabLoaded('mine');
       return true;
     } catch (error) {
       if (
@@ -590,8 +656,11 @@ export function ImageCenterScreen({
       setMyAssets([]);
       setPublicScope(null);
       setCustomScope(null);
-      setLoadedTabs({ platform: false, mine: false, custom: false, public: false });
+      const resetLoadedTabs = { platform: false, mine: false, custom: false, public: false };
+      loadedTabsRef.current = resetLoadedTabs;
+      setLoadedTabs(resetLoadedTabs);
       setTabErrors({});
+      setRevalidationErrors({});
       setRefreshingTabs({ platform: false, mine: false, custom: false, public: false });
       setIsLoading(false);
       return;
@@ -652,10 +721,7 @@ export function ImageCenterScreen({
           return;
         }
 
-        setLoadedTabs((current) => ({
-          ...current,
-          [activeTab]: true,
-        }));
+        markTabLoaded(activeTab);
       })
       .catch((error) => {
         if (!isActive) {
@@ -1314,6 +1380,7 @@ export function ImageCenterScreen({
           : '阿里云公共镜像';
   const activeColumns = activeTab === 'platform' || activeTab === 'mine' ? ASSET_COLUMNS : CLOUD_IMAGE_COLUMNS;
   const activeTabError = tabErrors[activeTab] ?? '';
+  const activeRevalidationError = revalidationErrors[activeTab] ?? '';
   const isActiveTabLoading = !loadedTabs[activeTab] && !activeTabError;
   const isRefreshing = refreshingTabs[activeTab] || (isLoading && loadedTabs[activeTab]);
   const emptyState =
@@ -1335,6 +1402,14 @@ export function ImageCenterScreen({
   function retryActiveTabLoad() {
     clearTabError(activeTab);
     setLoadAttempt((current) => current + 1);
+  }
+
+  function retryRevalidation(tab: ActiveTab) {
+    clearRevalidationError(tab);
+
+    if (tab === 'mine' && session.token) {
+      void refreshMyAssets(session.token, () => true, { isRevalidation: true });
+    }
   }
 
   if (!session.isReady) {
@@ -1406,145 +1481,159 @@ export function ImageCenterScreen({
             }
           >
             <div className="mt-4">
-              <Tabs
-                onValueChange={(view) => {
-                  if (view === 'custom' || view === 'public') {
-                    setActiveTab(view);
-                  }
-                }}
-                value={activeTab}
+              <CloudSourceTabs
+                activeTab={activeTab}
+                isCloudView={activeMainView === 'cloud'}
+                onTabChange={setActiveTab}
               >
-              {activeMainView === 'cloud' ? (
-                  <TabsList aria-label="云上镜像来源切换" variant="line">
-                    <TabsTrigger value="custom">阿里云自定义镜像</TabsTrigger>
-                    <TabsTrigger value="public">阿里云公共镜像</TabsTrigger>
-                  </TabsList>
-              ) : null}
-
-              <TabsContent className={activeMainView === 'cloud' ? 'mt-4 space-y-4' : 'mt-0 space-y-4'} value={activeTab}>
-              {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
-                <div className="image-import-job-list" aria-live="polite">
-                  {visibleImageImportJobs.slice(0, 3).map((job) => (
-                    <div key={job.id} className={`image-import-job image-import-job--${job.status}`}>
-                      <strong>{job.displayName}</strong>
-                      <span>{job.status === 'available' && job.errorMessage ? '临时文件清理重试中' : formatImportStatus(job.status)}</span>
-                      {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
-                      {job.status === 'failed' && !job.imageId ? (
-                        <Button
-                          disabled={pendingActionKeys.includes(`retry:image-import:${job.id}`)}
-                          onClick={() => void handleRetryImageImport(job)}
-                          size="sm"
-                          type="button"
-                          variant="outline"
-                        >
-                          重试导入
-                        </Button>
-                      ) : null}
+                <div className="space-y-4">
+                  {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
+                    <div className="image-import-job-list" aria-live="polite">
+                      {visibleImageImportJobs.slice(0, 3).map((job) => (
+                        <div key={job.id} className={`image-import-job image-import-job--${job.status}`}>
+                          <strong>{job.displayName}</strong>
+                          <span>{job.status === 'available' && job.errorMessage ? '临时文件清理重试中' : formatImportStatus(job.status)}</span>
+                          {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
+                          {job.status === 'failed' && !job.imageId ? (
+                            <Button
+                              disabled={pendingActionKeys.includes(`retry:image-import:${job.id}`)}
+                              onClick={() => void handleRetryImageImport(job)}
+                              size="sm"
+                              type="button"
+                              variant="outline"
+                            >
+                              重试导入
+                            </Button>
+                          ) : null}
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : null}
+
+                  <div className="overflow-hidden rounded-md border border-border">
+                    <AdminDataTable columns={activeColumns} isRefreshing={isRefreshing} label={activeTabTitle}>
+                      {(columns) => {
+                        const actionErrorRow = actionErrorMessage ? (
+                          <TableRow className="hover:bg-transparent">
+                            <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
+                              <p role="alert">{actionErrorMessage}</p>
+                            </TableCell>
+                          </TableRow>
+                        ) : null;
+                        const revalidationErrorRow = activeRevalidationError ? (
+                          <TableRow className="hover:bg-transparent">
+                            <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <p role="alert">{activeRevalidationError}</p>
+                                {activeTab === 'mine' ? (
+                                  <Button
+                                    aria-label="重试加载我的镜像"
+                                    onClick={() => retryRevalidation('mine')}
+                                    size="sm"
+                                    type="button"
+                                    variant="outline"
+                                  >
+                                    重试
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ) : null;
+
+                        if (activeTabError) {
+                          return (
+                            <AdminDataTableState
+                              columns={columns}
+                              description={activeTabError}
+                              onRetry={retryActiveTabLoad}
+                              title={`无法加载${activeTabTitle}`}
+                              variant="error"
+                            />
+                          );
+                        }
+
+                        if (isActiveTabLoading) {
+                          return (
+                            <TableLoadingState
+                              columnCount={columns.length}
+                              label={`正在加载${activeTabTitle}`}
+                              rowCount={5}
+                            />
+                          );
+                        }
+
+                        if (!activeItemsCount) {
+                          return (
+                            <>
+                              {revalidationErrorRow}
+                              {actionErrorRow}
+                              <AdminDataTableState
+                                columns={columns}
+                                description={emptyState.description}
+                                title={emptyState.title}
+                                variant="empty"
+                              />
+                            </>
+                          );
+                        }
+
+                        if (activeTab === 'platform') {
+                          return (
+                            <>
+                              {revalidationErrorRow}
+                              {actionErrorRow}
+                              {renderAssetRows(pagedPlatformAssets, columns, {
+                                allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
+                                allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
+                              })}
+                            </>
+                          );
+                        }
+
+                        if (activeTab === 'mine') {
+                          return (
+                            <>
+                              {revalidationErrorRow}
+                              {actionErrorRow}
+                              {renderAssetRows(pagedMyAssets, columns, {
+                                allowManagement: true,
+                                allowVisibilityToggle: true,
+                              })}
+                            </>
+                          );
+                        }
+
+                        return (
+                          <>
+                            {revalidationErrorRow}
+                            {actionErrorRow}
+                            {activeTab === 'custom'
+                              ? renderScopeRows('custom', pagedCustomSnapshots, columns)
+                              : renderScopeRows('public', pagedPublicSnapshots, columns)}
+                          </>
+                        );
+                      }}
+                    </AdminDataTable>
+                  </div>
+
+                  {!isActiveTabLoading && !activeTabError && activeItemsCount ? (
+                    <AdminPaginationControls
+                      jumpPageValue={jumpPageValue}
+                      label={`${activeTabTitle} 分页`}
+                      pageSizeMode={pageSizeMode}
+                      pagination={activePagination}
+                      visiblePages={visiblePages}
+                      onJumpPage={handleJumpToPage}
+                      onJumpPageValueChange={setJumpPageValue}
+                      onNextPage={goToNextPage}
+                      onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
+                      onPageSizeChange={handlePageSizeChange}
+                      onPreviousPage={goToPreviousPage}
+                    />
+                  ) : null}
                 </div>
-              ) : null}
-
-              <div className="overflow-hidden rounded-md border border-border">
-                <AdminDataTable columns={activeColumns} isRefreshing={isRefreshing} label={activeTabTitle}>
-                  {(columns) => {
-                    const actionErrorRow = actionErrorMessage ? (
-                      <TableRow className="hover:bg-transparent">
-                        <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
-                          <p role="alert">{actionErrorMessage}</p>
-                        </TableCell>
-                      </TableRow>
-                    ) : null;
-
-                    if (activeTabError) {
-                      return (
-                        <AdminDataTableState
-                          columns={columns}
-                          description={activeTabError}
-                          onRetry={retryActiveTabLoad}
-                          title={`无法加载${activeTabTitle}`}
-                          variant="error"
-                        />
-                      );
-                    }
-
-                    if (isActiveTabLoading) {
-                      return (
-                        <TableLoadingState
-                          columnCount={columns.length}
-                          label={`正在加载${activeTabTitle}`}
-                          rowCount={5}
-                        />
-                      );
-                    }
-
-                    if (!activeItemsCount) {
-                      return (
-                        <>
-                          {actionErrorRow}
-                          <AdminDataTableState
-                            columns={columns}
-                            description={emptyState.description}
-                            title={emptyState.title}
-                            variant="empty"
-                          />
-                        </>
-                      );
-                    }
-
-                    if (activeTab === 'platform') {
-                      return (
-                        <>
-                          {actionErrorRow}
-                          {renderAssetRows(pagedPlatformAssets, columns, {
-                            allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
-                            allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
-                          })}
-                        </>
-                      );
-                    }
-
-                    if (activeTab === 'mine') {
-                      return (
-                        <>
-                          {actionErrorRow}
-                          {renderAssetRows(pagedMyAssets, columns, {
-                            allowManagement: true,
-                            allowVisibilityToggle: true,
-                          })}
-                        </>
-                      );
-                    }
-
-                    return (
-                      <>
-                        {actionErrorRow}
-                        {activeTab === 'custom'
-                          ? renderScopeRows('custom', pagedCustomSnapshots, columns)
-                          : renderScopeRows('public', pagedPublicSnapshots, columns)}
-                      </>
-                    );
-                  }}
-                </AdminDataTable>
-              </div>
-
-              {!isActiveTabLoading && !activeTabError && activeItemsCount ? (
-                <AdminPaginationControls
-                  jumpPageValue={jumpPageValue}
-                  label={`${activeTabTitle} 分页`}
-                  pageSizeMode={pageSizeMode}
-                  pagination={activePagination}
-                  visiblePages={visiblePages}
-                  onJumpPage={handleJumpToPage}
-                  onJumpPageValueChange={setJumpPageValue}
-                  onNextPage={goToNextPage}
-                  onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
-                  onPageSizeChange={handlePageSizeChange}
-                  onPreviousPage={goToPreviousPage}
-                />
-              ) : null}
-              </TabsContent>
-              </Tabs>
+              </CloudSourceTabs>
             </div>
           </AdminListToolbar>
         </div>

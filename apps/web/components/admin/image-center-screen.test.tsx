@@ -382,6 +382,26 @@ describe('ImageCenterScreen', () => {
     expect(within(table).getByText('当前没有平台镜像。')).toBeTruthy();
   });
 
+  it('only renders nested cloud tab panels for cloud source views', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    const platformPanel = await screen.findByRole('tabpanel', { name: '平台镜像' });
+    expect(within(platformPanel).queryByRole('tabpanel')).toBeNull();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+
+    const minePanel = await screen.findByRole('tabpanel', { name: '我的镜像' });
+    expect(within(minePanel).queryByRole('tabpanel')).toBeNull();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
+
+    const cloudPanel = await screen.findByRole('tabpanel', { name: '云上镜像来源' });
+    expect(within(cloudPanel).getByRole('tabpanel', { name: '阿里云自定义镜像' })).toBeTruthy();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(2);
+  });
+
   it('renders 平台镜像 / 我的镜像 / 云上镜像来源 and loads all payloads', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -744,6 +764,81 @@ describe('ImageCenterScreen', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(screen.getByText('Current Import')).toBeTruthy();
+  });
+
+  it('keeps my image rows during a failed import poll and exposes an in-table retry', async () => {
+    let rejectPoll: ((error: Error) => void) | undefined;
+    let mineRequestCount = 0;
+    const importingJob = {
+      id: 'image-import-job-poll-failure',
+      cloudAccountContextId: 'cloud-context-1',
+      ownerUserId: 'admin-user',
+      displayName: 'Polling Ubuntu',
+      osType: 'linux' as const,
+      architecture: 'x86_64' as const,
+      bootMode: 'BIOS' as const,
+      imageFormat: 'qcow2' as const,
+      systemDiskSize: 40,
+      sourceFileName: 'polling-ubuntu.qcow2',
+      sourceContentType: 'application/octet-stream',
+      sourceSizeBytes: 4096,
+      uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+      status: 'importing' as const,
+      imageId: 'm-owned-001',
+      platformImageAssetId: 'my-image-1',
+      errorMessage: null,
+    };
+
+    fetchImageImportJobsMock
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValue({ items: [importingJob] });
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') => {
+      if (view !== 'mine') {
+        return platformImagesPayload;
+      }
+
+      mineRequestCount += 1;
+      if (mineRequestCount === 1) {
+        return myImagesPayload;
+      }
+
+      if (mineRequestCount === 2) {
+        return new Promise<PlatformImageAssetListPayload>((_resolve, reject) => {
+          rejectPoll = reject;
+        });
+      }
+
+      return myImagesPayload;
+    });
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
+
+    const table = await screen.findByRole('table', { name: '我的镜像' });
+    expect(await within(table).findByText('My Ubuntu 22.04')).toBeTruthy();
+
+    await waitFor(() => {
+      expect(rejectPoll).toBeTypeOf('function');
+      expect(table.getAttribute('aria-busy')).toBe('true');
+    });
+
+    rejectPoll?.(new Error('镜像轮询刷新失败'));
+
+    await waitFor(() => {
+      expect(within(table).getByText('My Ubuntu 22.04')).toBeTruthy();
+      expect(within(table).getByText('镜像轮询刷新失败')).toBeTruthy();
+      expect(within(table).getByRole('button', { name: '重试加载我的镜像' })).toBeTruthy();
+      expect((within(table).getByRole('cell', { name: /镜像轮询刷新失败/ }) as HTMLTableCellElement).colSpan).toBe(5);
+      expect(table.getAttribute('aria-busy')).toBeNull();
+    });
+
+    fireEvent.click(within(table).getByRole('button', { name: '重试加载我的镜像' }));
+
+    await waitFor(() => {
+      expect(mineRequestCount).toBe(3);
+      expect(within(table).queryByText('镜像轮询刷新失败')).toBeNull();
+    });
   });
 
   it('offers a retry action when ImportImage failed before an Alibaba Cloud ImageId was returned', async () => {
