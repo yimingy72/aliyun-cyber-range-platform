@@ -49,8 +49,9 @@ services:
       KC_FEATURES: ${KEYCLOAK_FEATURES:-token-exchange,admin-fine-grained-authz}
       KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-localhost}
       KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: ${KC_PROXY_HEADERS:-xforwarded}
     ports:
-      - "${KEYCLOAK_PORT:-8080}:8080"
+      - "${KEYCLOAK_BIND_ADDRESS:-127.0.0.1}:${KEYCLOAK_PORT:-8080}:8080"
     volumes:
       - ./infra/keycloak:/opt/keycloak/data/import:ro
       - ./infra/keycloak/themes:/opt/keycloak/themes:ro
@@ -141,7 +142,7 @@ services:
       ALICLOUD_RANGE_SERVER_PRIVATE_IP: ${ALICLOUD_RANGE_SERVER_PRIVATE_IP:-10.70.30.10}
       ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip
     ports:
-      - "${API_PORT:-3001}:3001"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
       - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-mirror}:/var/lib/cyber-range/provider-mirror:ro
@@ -226,7 +227,7 @@ services:
       NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
       NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-platform-web}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
 
   mcp:
     build:
@@ -260,12 +261,36 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8787/mcp}
     ports:
-      - "${MCP_PORT:-8787}:8787"
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-8787}:8787"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/healthz >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  caddy:
+    profiles: ["quick-tunnel"]
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      keycloak:
+        condition: service_started
+      web:
+        condition: service_started
+      mcp:
+        condition: service_started
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+
+  cloudflared:
+    profiles: ["quick-tunnel"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      caddy:
+        condition: service_started
+    command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://caddy:80"]
 
 volumes:
   postgres-data:

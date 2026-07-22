@@ -69,6 +69,8 @@ cp .env.example .env
 
 `KEYCLOAK_ADMIN_USERNAME` / `KEYCLOAK_ADMIN_PASSWORD` 仅用于 Keycloak 管理控制台；平台登录管理员使用 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，两组凭据应当不同。
 
+没有可用域名时，可设置 `COMPOSE_PROFILES=quick-tunnel` 并启动 Compose。`cloudflared` 日志会输出一个临时 `https://*.trycloudflare.com` 地址；将该地址写入 `WEB_PUBLIC_URL`、`KEYCLOAK_HOSTNAME`、`OIDC_ISSUER`、`NEXT_PUBLIC_OIDC_ISSUER` 和 `MCP_PUBLIC_URL`，将 API 地址写为 `${入口}/api` 后重新构建 Web。Quick Tunnel 仅适合免费演示和联调，隧道重建后地址会变化。
+
 5. 下载并校验宿主机 OpenTofu provider 缓存：
 
 ```bash

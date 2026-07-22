@@ -86,6 +86,17 @@ docker compose ps
 
 `pnpm compose:down` 会停止并移除容器与网络，但不会删除命名数据卷。如确需清除本地测试数据，请在确认目标后另行执行卷清理操作。
 
+### 公网免费演示
+
+没有可用域名时，可启用 Cloudflare Quick Tunnel 获取一个临时 HTTPS 地址：
+
+```bash
+COMPOSE_PROFILES=quick-tunnel docker compose up -d
+docker compose logs -f cloudflared
+```
+
+日志中的 `https://*.trycloudflare.com` 是临时公网入口。将它写入 `WEB_PUBLIC_URL`、`KEYCLOAK_HOSTNAME`、`OIDC_ISSUER`、`NEXT_PUBLIC_OIDC_ISSUER` 和 `MCP_PUBLIC_URL`，并将 API 地址设为 `${入口}/api` 后重新构建 Web。Quick Tunnel 无需域名或付费账号，但地址会在隧道重建后变化，仅适合演示和联调。
+
 ### 5. 配置镜像导入 Bucket（可选）
 
 管理员可在后台“基础配置 → 云配置”填写“自定义 OSS 存储桶名”。平台只使用管理员已创建的 Bucket：保存时通过 STS 校验账号，并对填写的 Bucket 发起只读 `HEAD` 验证；不会创建 Bucket，也不会修改 ACL、CORS 或其他策略。
