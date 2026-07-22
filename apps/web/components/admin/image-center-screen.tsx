@@ -3,6 +3,18 @@
 import React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { TableCell, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
   collectPlatformImage,
@@ -39,6 +51,15 @@ import {
   PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
+import { AdminPageHeader } from './shared/admin-page-header';
+import {
+  AdminDataTable,
+  AdminDataTableCell,
+  AdminDataTableState,
+  type AdminDataColumn,
+} from './shared/admin-data-table';
+import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
 
 type ImageCenterScreenProps = {
@@ -47,11 +68,11 @@ type ImageCenterScreenProps = {
 
 type ActiveTab = 'platform' | 'mine' | 'custom' | 'public';
 type TabPageMap = Record<ActiveTab, number>;
+type TabErrorMap = Partial<Record<ActiveTab, string>>;
 type ImageCenterConfirmState =
   | { type: 'remove-platform'; asset: PlatformImageAsset }
   | { type: 'delete-custom'; snapshot: ImageSnapshot }
   | null;
-type ActionMenuPlacement = 'down' | 'up';
 type ImageImportDialogDraft = {
   file: File | null;
   displayName: string;
@@ -66,8 +87,20 @@ type ImageImportDialogDraft = {
   systemDiskSize: string;
 };
 
-const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
-const ACTION_MENU_ESTIMATED_HEIGHT_PX = 132;
+const ASSET_COLUMNS: readonly AdminDataColumn[] = [
+  { id: 'name', label: '镜像名', priority: 'primary' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary' },
+  { id: 'status', label: '状态', priority: 'secondary' },
+  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+];
+
+const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
+  { id: 'name', label: '镜像名', priority: 'primary' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
+  { id: 'status', label: '状态', priority: 'secondary' },
+  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+];
 
 function createImageImportDraft(): ImageImportDialogDraft {
   return {
@@ -165,14 +198,6 @@ function formatAssetStatus(asset: PlatformImageAsset) {
   return asset.enabled ? '已启用' : '已禁用';
 }
 
-function getAssetStatusTone(asset: PlatformImageAsset) {
-  if (asset.sourceSnapshotAvailable === false) {
-    return 'is-draft';
-  }
-
-  return asset.enabled ? 'is-published' : 'is-draft';
-}
-
 function canCreateInstanceFromAsset(asset: PlatformImageAsset) {
   return asset.enabled && asset.sourceSnapshotAvailable !== false;
 }
@@ -196,16 +221,6 @@ function shouldShowImageImportJob(job: ImageImportJob, resolvedAssetIds: Readonl
   }
 
   return true;
-}
-
-function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
-  const triggerRect = triggerElement.getBoundingClientRect();
-  const containerRect =
-    triggerElement.closest('.image-center-list')?.getBoundingClientRect() ??
-    triggerElement.closest('.admin-main-content')?.getBoundingClientRect();
-  const availableBelow = (containerRect?.bottom ?? window.innerHeight) - triggerRect.bottom;
-
-  return availableBelow < ACTION_MENU_ESTIMATED_HEIGHT_PX + ACTION_MENU_VERTICAL_OFFSET_PX ? 'up' : 'down';
 }
 
 function normalizeKeyword(keyword: string) {
@@ -294,16 +309,22 @@ export function ImageCenterScreen({
     custom: false,
     public: false,
   });
-  const [errorMessage, setErrorMessage] = useState('');
+  const [tabErrors, setTabErrors] = useState<TabErrorMap>({});
+  const [actionErrorMessage, setActionErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshingTabs, setRefreshingTabs] = useState<Record<ActiveTab, boolean>>({
+    platform: false,
+    mine: false,
+    custom: false,
+    public: false,
+  });
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
   const [tabPages, setTabPages] = useState<TabPageMap>({ platform: 1, mine: 1, custom: 1, public: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
-  const [menuAssetId, setMenuAssetId] = useState<string | null>(null);
-  const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [cloudContexts, setCloudContexts] = useState<CloudAccountContext[]>([]);
   const [imageImportJobs, setImageImportJobs] = useState<ImageImportJob[]>([]);
   const [imageImportDraft, setImageImportDraft] = useState<ImageImportDialogDraft | null>(null);
@@ -323,6 +344,32 @@ export function ImageCenterScreen({
 
   function endAction(actionKey: string) {
     setPendingActionKeys((previous) => previous.filter((item) => item !== actionKey));
+  }
+
+  function clearTabError(tab: ActiveTab) {
+    setTabErrors((current) => {
+      if (!current[tab]) {
+        return current;
+      }
+
+      const { [tab]: _removed, ...remaining } = current;
+      return remaining;
+    });
+  }
+
+  function setTabRefreshing(tab: ActiveTab, isRefreshing: boolean) {
+    setRefreshingTabs((current) => (current[tab] === isRefreshing ? current : { ...current, [tab]: isRefreshing }));
+  }
+
+  function reportTabLoadError(tab: ActiveTab, error: unknown, fallback: string) {
+    const message = error instanceof Error ? error.message : fallback;
+
+    if (loadedTabs[tab]) {
+      setActionErrorMessage(message);
+      return;
+    }
+
+    setTabErrors((current) => ({ ...current, [tab]: message }));
   }
 
   function setPage(tab: ActiveTab, page: number) {
@@ -409,11 +456,21 @@ export function ImageCenterScreen({
     setImageImportErrorMessage('');
   }
 
-  async function refreshMyAssets(token: string, isActive = () => true) {
+  async function refreshMyAssets(
+    token: string,
+    isActive = () => true,
+    options: {
+      isRevalidation?: boolean;
+    } = {},
+  ) {
     const requestVersion = mineRequestVersionRef.current + 1;
     mineRequestVersionRef.current = requestVersion;
     const imageImportJobsRequestVersion = imageImportJobsRequestVersionRef.current + 1;
     imageImportJobsRequestVersionRef.current = imageImportJobsRequestVersion;
+
+    if (options.isRevalidation) {
+      setTabRefreshing('mine', true);
+    }
 
     try {
       const [jobsPayload, myAssetsPayload] = await Promise.all([
@@ -445,8 +502,12 @@ export function ImageCenterScreen({
         session.logout();
         return false;
       }
-      setErrorMessage(error instanceof Error ? error.message : '我的镜像刷新失败');
+      reportTabLoadError('mine', error, '我的镜像刷新失败');
       return false;
+    } finally {
+      if (options.isRevalidation && isActive()) {
+        setTabRefreshing('mine', false);
+      }
     }
   }
 
@@ -482,7 +543,7 @@ export function ImageCenterScreen({
           session.logout();
           return;
         }
-        setErrorMessage(error instanceof Error ? error.message : '云账号上下文加载失败');
+        setActionErrorMessage(error instanceof Error ? error.message : '云账号上下文加载失败');
       });
 
     return () => {
@@ -506,7 +567,7 @@ export function ImageCenterScreen({
         return;
       }
       refreshing = true;
-      await refreshMyAssets(token, () => isActive);
+      await refreshMyAssets(token, () => isActive, { isRevalidation: true });
       refreshing = false;
     };
 
@@ -530,6 +591,8 @@ export function ImageCenterScreen({
       setPublicScope(null);
       setCustomScope(null);
       setLoadedTabs({ platform: false, mine: false, custom: false, public: false });
+      setTabErrors({});
+      setRefreshingTabs({ platform: false, mine: false, custom: false, public: false });
       setIsLoading(false);
       return;
     }
@@ -550,7 +613,7 @@ export function ImageCenterScreen({
     const token = session.token;
     let isActive = true;
     setIsLoading(true);
-    setErrorMessage('');
+    clearTabError(activeTab);
 
     const request =
       activeTab === 'platform'
@@ -580,8 +643,12 @@ export function ImageCenterScreen({
               });
 
     request
-      .then(() => {
+      .then((didLoad) => {
         if (!isActive) {
+          return;
+        }
+
+        if (didLoad === false) {
           return;
         }
 
@@ -600,7 +667,7 @@ export function ImageCenterScreen({
           return;
         }
 
-        setErrorMessage(error instanceof Error ? error.message : '镜像中心加载失败');
+        reportTabLoadError(activeTab, error, '镜像中心加载失败');
       })
       .finally(() => {
         if (!isActive) {
@@ -613,7 +680,7 @@ export function ImageCenterScreen({
     return () => {
       isActive = false;
     };
-  }, [activeTab, apiBaseUrl, loadedTabs[activeTab], session.isReady, session.token]);
+  }, [activeTab, apiBaseUrl, loadAttempt, loadedTabs[activeTab], session.isReady, session.token]);
 
   async function handleSyncPublicImages() {
     if (!session.token) {
@@ -625,7 +692,8 @@ export function ImageCenterScreen({
     publicScopeRequestVersionRef.current = requestVersion;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
+      setTabRefreshing('public', true);
       beginAction(actionKey);
       const nextScope = await syncPublicImages(apiBaseUrl, session.token);
 
@@ -638,9 +706,10 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '公共镜像同步失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '公共镜像同步失败');
     } finally {
       endAction(actionKey);
+      setTabRefreshing('public', false);
     }
   }
 
@@ -654,7 +723,8 @@ export function ImageCenterScreen({
     customScopeRequestVersionRef.current = requestVersion;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
+      setTabRefreshing('custom', true);
       beginAction(actionKey);
       const nextScope = await syncCustomImages(apiBaseUrl, session.token);
 
@@ -667,9 +737,10 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '自定义镜像同步失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '自定义镜像同步失败');
     } finally {
       endAction(actionKey);
+      setTabRefreshing('custom', false);
     }
   }
 
@@ -736,7 +807,7 @@ export function ImageCenterScreen({
       if (completedJob.status === 'failed' && !completedJob.imageId) {
         setImageImportDraft(null);
         setImageImportProgress(null);
-        setErrorMessage(
+        setActionErrorMessage(
           `${completedJob.errorMessage || '阿里云尚未接受导入请求。'} 已保留已上传文件，请在“我的镜像”的导入任务中点击“重试导入”。`,
         );
         return;
@@ -746,7 +817,7 @@ export function ImageCenterScreen({
       setImageImportDraft(null);
       setImageImportProgress(null);
       setImageImportSuccessMessage('镜像文件已上传，阿里云正在导入；导入完成后会自动启用“我的镜像”。');
-      void refreshMyAssets(session.token);
+      void refreshMyAssets(session.token, () => true, { isRevalidation: true });
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
@@ -777,7 +848,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '镜像导入重试失败。');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像导入重试失败。');
     } finally {
       endAction(actionKey);
     }
@@ -791,7 +862,7 @@ export function ImageCenterScreen({
     const actionKey = `collect:${snapshot.scope}:${snapshot.imageId}`;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       const nextPlatformAsset = await collectPlatformImage(apiBaseUrl, session.token, {
         snapshotId: snapshot.id,
@@ -805,15 +876,13 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '镜像收录失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像收录失败');
     } finally {
       endAction(actionKey);
     }
   }
 
   function openRenameDialog(asset: PlatformImageAsset) {
-    setMenuAssetId(null);
-    setMenuPlacement('down');
     setRenamingAsset(asset);
     setRenameDraft(asset.displayName);
   }
@@ -825,17 +894,6 @@ export function ImageCenterScreen({
 
   function closeConfirmDialog() {
     setConfirmState(null);
-  }
-
-  function toggleActionMenu(assetId: string, triggerElement: HTMLElement) {
-    if (menuAssetId === assetId) {
-      setMenuAssetId(null);
-      setMenuPlacement('down');
-      return;
-    }
-
-    setMenuAssetId(assetId);
-    setMenuPlacement(resolveActionMenuPlacement(triggerElement));
   }
 
   async function handleRenamePlatformAsset() {
@@ -852,7 +910,7 @@ export function ImageCenterScreen({
     const actionKey = `rename:platform:${renamingAsset.id}`;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       const nextAsset = await renamePlatformImage(apiBaseUrl, session.token, renamingAsset.id, nextDisplayName);
       syncAssetAcrossViews(nextAsset);
@@ -863,7 +921,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '平台镜像重命名失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '平台镜像重命名失败');
     } finally {
       endAction(actionKey);
     }
@@ -877,7 +935,7 @@ export function ImageCenterScreen({
     const actionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       const nextAsset = asset.enabled
         ? await disablePlatformImage(apiBaseUrl, session.token, asset.id)
@@ -889,7 +947,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '平台镜像状态更新失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '平台镜像状态更新失败');
     } finally {
       endAction(actionKey);
     }
@@ -903,7 +961,7 @@ export function ImageCenterScreen({
     const actionKey = `publish:platform:${asset.id}`;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       const nextAsset = await publishPlatformImage(apiBaseUrl, session.token, asset.id);
       syncAssetAcrossViews(nextAsset);
@@ -913,7 +971,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '镜像发布失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像发布失败');
     } finally {
       endAction(actionKey);
     }
@@ -927,7 +985,7 @@ export function ImageCenterScreen({
     const actionKey = `unpublish:platform:${asset.id}`;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       const nextAsset = await unpublishPlatformImage(apiBaseUrl, session.token, asset.id);
       syncAssetAcrossViews(nextAsset);
@@ -937,7 +995,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '镜像已回退为私有失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像已回退为私有失败');
     } finally {
       endAction(actionKey);
     }
@@ -951,7 +1009,7 @@ export function ImageCenterScreen({
     const actionKey = `remove:platform:${asset.id}`;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       await removePlatformImage(apiBaseUrl, session.token, asset.id);
       removeAssetFromViews(asset.id);
@@ -962,7 +1020,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '平台镜像删除失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '平台镜像删除失败');
     } finally {
       endAction(actionKey);
     }
@@ -978,7 +1036,7 @@ export function ImageCenterScreen({
     customScopeRequestVersionRef.current = requestVersion;
 
     try {
-      setErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       await deleteCustomImageSnapshot(apiBaseUrl, session.token, snapshot.id);
 
@@ -992,7 +1050,7 @@ export function ImageCenterScreen({
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '云上镜像删除失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '云上镜像删除失败');
     } finally {
       endAction(actionKey);
     }
@@ -1072,19 +1130,14 @@ export function ImageCenterScreen({
 
   function renderAssetRows(
     items: PlatformImageAsset[],
+    columns: readonly AdminDataColumn[],
     options: {
-      emptyMessage: string;
       allowManagement: boolean | ((asset: PlatformImageAsset) => boolean);
       allowVisibilityToggle?: boolean | ((asset: PlatformImageAsset) => boolean);
-      compactActions?: boolean;
     },
   ) {
-    if (items.length === 0) {
-      return <div className="template-workbench-empty image-center-empty-state">{options.emptyMessage}</div>;
-    }
-
     return items.map((asset) => {
-      const menuOpen = menuAssetId === asset.id;
+      const [nameColumn, imageIdColumn, createdByColumn, statusColumn, actionsColumn] = columns;
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
@@ -1103,134 +1156,89 @@ export function ImageCenterScreen({
         importingAssetIds.has(asset.imageId) ||
         /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? '');
       const canCreate = canCreateInstanceFromAsset(asset);
-      const showCompactActions = options.compactActions && canManageAsset && !isImportingAsset;
+      const statusVariant = asset.sourceSnapshotAvailable === false || !asset.enabled ? 'secondary' : 'default';
 
       return (
-        <article
-          key={asset.id}
-          aria-label={`${asset.displayName} ${asset.imageId}`}
-          className={`range-workbench-row image-center-row${menuOpen ? ' is-menu-open' : ''}`}
-        >
-          <div className="range-workbench-main image-center-main-cell">
-            <strong>{asset.displayName}</strong>
-            <span className="image-center-row-meta">来源：{asset.sourceScope === 'custom' ? '阿里云自定义镜像' : '阿里云公共镜像'}</span>
-          </div>
-          <div className="range-workbench-created-at image-center-secondary-cell">
-            <span>{asset.imageId}</span>
-          </div>
-          <div className="range-workbench-created-at image-center-secondary-cell">
-            <span>{asset.createdBy?.trim() || 'admin'}</span>
-          </div>
-          <div className="range-workbench-status-cell image-center-status-cell">
-            <span className={`template-workbench-status-pill ${getAssetStatusTone(asset)}`}>
-              {formatAssetStatus(asset)}
-            </span>
-          </div>
-          <div className={`range-workbench-actions image-center-actions-cell${showCompactActions ? ' image-center-actions-cell-compact' : ''}`}>
-            {canCreate ? (
-              <button
-                type="button"
-                aria-label={`创建实例 ${asset.displayName}`}
-                onClick={() => handleCreateInstance(asset)}
-              >
-                创建实例
-              </button>
-            ) : null}
-            {canManageAsset ? (
-              <>
-                {canToggleVisibility && session.isAdmin && !isImportingAsset ? (
-                  <button
-                    type="button"
-                    disabled={isPending || asset.sourceSnapshotAvailable === false}
-                    aria-label={`${asset.visibility === 'platform' ? '回退为私有' : '发布到平台'} ${asset.displayName}`}
-                    onClick={() =>
-                      void (asset.visibility === 'platform'
-                        ? handleUnpublishPlatformAsset(asset)
-                        : handlePublishPlatformAsset(asset))
-                    }
-                  >
-                    {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
-                  </button>
-                ) : null}
-                {showCompactActions ? (
-                  <div className="template-workbench-row-menu">
-                    <button
+        <TableRow key={asset.id}>
+          <AdminDataTableCell className="font-medium" column={nameColumn!}>
+            <div className="flex min-w-48 flex-col gap-1">
+              <span>{asset.displayName}</span>
+              <span className="text-xs text-muted-foreground">
+                来源：{asset.sourceScope === 'custom' ? '阿里云自定义镜像' : '阿里云公共镜像'}
+              </span>
+            </div>
+          </AdminDataTableCell>
+          <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
+            {asset.imageId}
+          </AdminDataTableCell>
+          <AdminDataTableCell column={createdByColumn!}>{asset.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+          <AdminDataTableCell column={statusColumn!}>
+            <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
+          </AdminDataTableCell>
+          <AdminDataTableCell column={actionsColumn!}>
+            <div className="flex justify-end gap-1">
+              {canCreate ? (
+                <Button
+                  aria-label={`创建实例 ${asset.displayName}`}
+                  onClick={() => handleCreateInstance(asset)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  创建实例
+                </Button>
+              ) : null}
+              {canManageAsset ? (
+                <>
+                  {canToggleVisibility && session.isAdmin && !isImportingAsset ? (
+                    <Button
+                      disabled={isPending || asset.sourceSnapshotAvailable === false}
+                      aria-label={`${asset.visibility === 'platform' ? '回退为私有' : '发布到平台'} ${asset.displayName}`}
+                      onClick={() =>
+                        void (asset.visibility === 'platform'
+                          ? handleUnpublishPlatformAsset(asset)
+                          : handlePublishPlatformAsset(asset))
+                      }
+                      size="sm"
                       type="button"
-                      className="template-workbench-secondary-action"
-                      aria-expanded={menuOpen}
-                      disabled={isPending}
-                      onClick={(event) => toggleActionMenu(asset.id, event.currentTarget)}
+                      variant="outline"
                     >
-                      更多操作
-                    </button>
-
-                    {menuOpen ? (
-                      <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                        <button type="button" disabled={isPending} onClick={() => openRenameDialog(asset)}>
-                          重命名
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isPending}
-                          onClick={() => {
-                            setMenuAssetId(null);
-                            setMenuPlacement('down');
-                            void handleTogglePlatformAsset(asset);
-                          }}
-                        >
+                      {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
+                    </Button>
+                  ) : null}
+                  {!isImportingAsset ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button aria-label="更多操作" disabled={isPending} size="icon-sm" type="button" variant="ghost">
+                          <MoreHorizontal aria-hidden="true" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => openRenameDialog(asset)}>重命名</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => void handleTogglePlatformAsset(asset)}>
                           {asset.enabled ? '禁用' : '启用'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isPending}
-                          onClick={() => {
-                            setMenuAssetId(null);
-                            setMenuPlacement('down');
-                            setConfirmState({ type: 'remove-platform', asset });
-                          }}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => setConfirmState({ type: 'remove-platform', asset })}
                         >
                           删除
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <>
-                    <button type="button" disabled={isPending} aria-label={`重命名 ${asset.displayName}`} onClick={() => openRenameDialog(asset)}>
-                      重命名
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isPending}
-                      aria-label={`${asset.enabled ? '禁用' : '启用'} ${asset.displayName}`}
-                      onClick={() => void handleTogglePlatformAsset(asset)}
-                    >
-                      {asset.enabled ? '禁用' : '启用'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isPending}
-                      aria-label={`删除 ${asset.displayName}`}
-                      onClick={() => setConfirmState({ type: 'remove-platform', asset })}
-                    >
-                      删除
-                    </button>
-                  </>
-                )}
-              </>
-            ) : null}
-          </div>
-        </article>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          </AdminDataTableCell>
+        </TableRow>
       );
     });
   }
 
-  function renderScopeRows(scope: 'custom' | 'public', snapshots: ImageSnapshot[]) {
-    if (snapshots.length === 0) {
-      return <div className="template-workbench-empty image-center-empty-state">当前没有可展示的云镜像。</div>;
-    }
-
+  function renderScopeRows(scope: 'custom' | 'public', snapshots: ImageSnapshot[], columns: readonly AdminDataColumn[]) {
     return snapshots.map((snapshot) => {
+      const [nameColumn, imageIdColumn, statusColumn, actionsColumn] = columns;
       const isCollected = collectedImageIds.has(snapshot.imageId);
       const collectActionKey = `collect:${snapshot.scope}:${snapshot.imageId}`;
       const deleteActionKey = `delete:custom:${snapshot.id}`;
@@ -1243,44 +1251,48 @@ export function ImageCenterScreen({
       );
 
       return (
-        <article
-          key={snapshot.id}
-          aria-label={`${snapshot.sourceImageName} ${snapshot.imageId}`}
-          className="range-workbench-row image-center-row"
-        >
-          <div className="range-workbench-main image-center-main-cell">
-            <strong>{snapshot.sourceImageName}</strong>
-            <span className="image-center-row-meta">平台：{snapshot.platform || '-'}</span>
-          </div>
-          <div className="range-workbench-created-at image-center-secondary-cell">
-            <span>{snapshot.imageId}</span>
-          </div>
-          <div className="range-workbench-status-cell image-center-status-cell image-center-status-text">
-            <span>{formatImageStatus(snapshot)}</span>
-          </div>
-          <div className="range-workbench-actions image-center-actions-cell">
-            {session.isAdmin ? (
-              <button
-                type="button"
-                disabled={isCollected || isCollectPending}
-                aria-label={`${isCollected ? '已收录' : '收录到平台'} ${snapshot.sourceImageName}`}
-                onClick={() => void handleCollectSnapshot(snapshot)}
-              >
-                {isCollected ? '已收录' : '收录到平台'}
-              </button>
-            ) : null}
-            {scope === 'custom' && session.isAdmin && !isImportingSnapshot ? (
-              <button
-                type="button"
-                disabled={isDeletePending}
-                aria-label={`删除 ${snapshot.sourceImageName}`}
-                onClick={() => setConfirmState({ type: 'delete-custom', snapshot })}
-              >
-                删除
-              </button>
-            ) : null}
-          </div>
-        </article>
+        <TableRow key={snapshot.id}>
+          <AdminDataTableCell className="font-medium" column={nameColumn!}>
+            <div className="flex min-w-48 flex-col gap-1">
+              <span>{snapshot.sourceImageName}</span>
+              <span className="text-xs text-muted-foreground">平台：{snapshot.platform || '-'}</span>
+            </div>
+          </AdminDataTableCell>
+          <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
+            {snapshot.imageId}
+          </AdminDataTableCell>
+          <AdminDataTableCell column={statusColumn!}>
+            <Badge variant={snapshot.isAvailable ? 'default' : 'secondary'}>{formatImageStatus(snapshot)}</Badge>
+          </AdminDataTableCell>
+          <AdminDataTableCell column={actionsColumn!}>
+            <div className="flex justify-end gap-1">
+              {session.isAdmin ? (
+                <Button
+                  disabled={isCollected || isCollectPending}
+                  aria-label={`${isCollected ? '已收录' : '收录到平台'} ${snapshot.sourceImageName}`}
+                  onClick={() => void handleCollectSnapshot(snapshot)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {isCollected ? '已收录' : '收录到平台'}
+                </Button>
+              ) : null}
+              {scope === 'custom' && session.isAdmin && !isImportingSnapshot ? (
+                <Button
+                  disabled={isDeletePending}
+                  aria-label={`删除 ${snapshot.sourceImageName}`}
+                  onClick={() => setConfirmState({ type: 'delete-custom', snapshot })}
+                  size="sm"
+                  type="button"
+                  variant="destructive"
+                >
+                  删除
+                </Button>
+              ) : null}
+            </div>
+          </AdminDataTableCell>
+        </TableRow>
       );
     });
   }
@@ -1297,7 +1309,33 @@ export function ImageCenterScreen({
       ? '平台镜像'
       : activeTab === 'mine'
         ? '我的镜像'
-        : '云上镜像来源';
+        : activeTab === 'custom'
+          ? '阿里云自定义镜像'
+          : '阿里云公共镜像';
+  const activeColumns = activeTab === 'platform' || activeTab === 'mine' ? ASSET_COLUMNS : CLOUD_IMAGE_COLUMNS;
+  const activeTabError = tabErrors[activeTab] ?? '';
+  const isActiveTabLoading = !loadedTabs[activeTab] && !activeTabError;
+  const isRefreshing = refreshingTabs[activeTab] || (isLoading && loadedTabs[activeTab]);
+  const emptyState =
+    activeTab === 'platform'
+      ? {
+          title: '当前没有平台镜像',
+          description: '当前没有平台镜像。',
+        }
+      : activeTab === 'mine'
+        ? {
+            title: '当前没有我的镜像',
+            description: '当前没有我的镜像。',
+          }
+        : {
+            title: '当前没有可展示的云镜像',
+            description: '当前没有可展示的云镜像。',
+          };
+
+  function retryActiveTabLoad() {
+    clearTabError(activeTab);
+    setLoadAttempt((current) => current + 1);
+  }
 
   if (!session.isReady) {
     return null;
@@ -1307,171 +1345,209 @@ export function ImageCenterScreen({
     return null;
   }
 
-  const isBootstrapLoading = isLoading && !loadedTabs[activeTab];
-
   return (
-    <div className="admin-screen admin-workbench-screen image-center-screen">
-      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
-      {imageImportSuccessMessage ? <p className="admin-success" aria-live="polite">{imageImportSuccessMessage}</p> : null}
+    <div className="admin-screen image-center-screen">
+      <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+        <AdminPageHeader description="收录、导入和维护演练镜像资产。" title="镜像中心" />
+        {imageImportSuccessMessage ? <p className="mt-4 text-sm text-emerald-700" aria-live="polite">{imageImportSuccessMessage}</p> : null}
 
-      <section>
-        <article className="admin-workbench-panel range-workbench-shell">
-          <div className="template-workbench-list-header range-workbench-header">
-            <div className="template-workbench-list-header-copy">
-              <h2>镜像中心</h2>
-            </div>
-          </div>
-
-          <div className="template-workbench-controls range-workbench-controls image-center-controls">
-            <div className="template-workbench-search-grid">
-              <label className="template-workbench-search-field">
-                <span className="sr-only">镜像名搜索</span>
-                <input
-                  aria-label="筛选镜像名"
-                  value={searchName}
-                  onChange={(event) => setSearchName(event.target.value)}
-                  placeholder="搜索镜像名或镜像 ID"
-                />
-              </label>
-            </div>
-
-            <div className="template-workbench-segmented range-workbench-segmented image-center-tabs" role="tablist" aria-label="镜像中心视图切换">
-              <button type="button" aria-pressed={activeMainView === 'platform'} onClick={() => setActiveMainView('platform')}>
-                平台镜像
-              </button>
-              <button type="button" aria-pressed={activeMainView === 'mine'} onClick={() => setActiveMainView('mine')}>
-                我的镜像
-              </button>
-              {session.isAdmin ? (
-                <button type="button" aria-pressed={activeMainView === 'cloud'} onClick={() => setActiveMainView('cloud')}>
-                  云上镜像来源
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          <div className={`template-workbench-list image-center-list image-center-list--${activeTab}`}>
-          <div className="template-workbench-list-header">
-            <div className="template-workbench-list-header-copy">
-              <h2>{activeTabTitle}</h2>
-            </div>
-
-            <div className="template-workbench-list-header-meta image-center-list-meta">
-              <span>{activeItemsCount} 条记录</span>
-              {activeTab === 'mine' ? (
-                <button
-                  type="button"
+        <div className="mt-4">
+          <AdminListToolbar
+            activeView={activeMainView}
+            onSearchChange={setSearchName}
+            onViewChange={(view) => {
+              if (view === 'platform' || view === 'mine' || view === 'cloud') {
+                setActiveMainView(view);
+              }
+            }}
+            searchLabel="筛选镜像名"
+            searchPlaceholder="搜索镜像名或镜像 ID"
+            searchValue={searchName}
+            views={[
+              { label: '平台镜像', value: 'platform' },
+              { label: '我的镜像', value: 'mine' },
+              ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
+            ]}
+            action={
+              activeTab === 'mine' ? (
+                <Button
                   disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                   title={imageImportUnavailableMessage ?? undefined}
                   onClick={openImageImportDialog}
+                  size="sm"
+                  type="button"
                 >
+                  <Upload aria-hidden="true" />
                   上传镜像
-                </button>
-              ) : null}
+                </Button>
+              ) : activeTab === 'custom' && session.isAdmin ? (
+                <Button
+                  disabled={pendingActionKeys.includes('sync:custom')}
+                  onClick={() => void handleSyncCustomImages()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <RefreshCw aria-hidden="true" />
+                  同步自定义镜像
+                </Button>
+              ) : activeTab === 'public' && session.isAdmin ? (
+                <Button
+                  disabled={pendingActionKeys.includes('sync:public')}
+                  onClick={() => void handleSyncPublicImages()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <RefreshCw aria-hidden="true" />
+                  同步公共镜像
+                </Button>
+              ) : undefined
+            }
+          >
+            <div className="mt-4">
+              <Tabs
+                onValueChange={(view) => {
+                  if (view === 'custom' || view === 'public') {
+                    setActiveTab(view);
+                  }
+                }}
+                value={activeTab}
+              >
               {activeMainView === 'cloud' ? (
-                <div className="template-workbench-segmented image-center-tabs" role="tablist" aria-label="云上镜像来源切换">
-                  <button type="button" aria-pressed={activeTab === 'custom'} onClick={() => setActiveTab('custom')}>
-                    阿里云自定义镜像
-                  </button>
-                  <button type="button" aria-pressed={activeTab === 'public'} onClick={() => setActiveTab('public')}>
-                    阿里云公共镜像
-                  </button>
+                  <TabsList aria-label="云上镜像来源切换" variant="line">
+                    <TabsTrigger value="custom">阿里云自定义镜像</TabsTrigger>
+                    <TabsTrigger value="public">阿里云公共镜像</TabsTrigger>
+                  </TabsList>
+              ) : null}
+
+              <TabsContent className={activeMainView === 'cloud' ? 'mt-4 space-y-4' : 'mt-0 space-y-4'} value={activeTab}>
+              {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
+                <div className="image-import-job-list" aria-live="polite">
+                  {visibleImageImportJobs.slice(0, 3).map((job) => (
+                    <div key={job.id} className={`image-import-job image-import-job--${job.status}`}>
+                      <strong>{job.displayName}</strong>
+                      <span>{job.status === 'available' && job.errorMessage ? '临时文件清理重试中' : formatImportStatus(job.status)}</span>
+                      {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
+                      {job.status === 'failed' && !job.imageId ? (
+                        <Button
+                          disabled={pendingActionKeys.includes(`retry:image-import:${job.id}`)}
+                          onClick={() => void handleRetryImageImport(job)}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          重试导入
+                        </Button>
+                      ) : null}
+                    </div>
+                  ))}
                 </div>
               ) : null}
-              {activeTab === 'custom' && session.isAdmin ? (
-                <button type="button" disabled={pendingActionKeys.includes('sync:custom')} onClick={() => void handleSyncCustomImages()}>
-                  同步自定义镜像
-                </button>
-              ) : null}
-              {activeTab === 'public' && session.isAdmin ? (
-                <button type="button" disabled={pendingActionKeys.includes('sync:public')} onClick={() => void handleSyncPublicImages()}>
-                  同步公共镜像
-                </button>
-              ) : null}
-            </div>
-          </div>
 
-          {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
-            <div className="image-import-job-list" aria-live="polite">
-              {visibleImageImportJobs
-                .slice(0, 3)
-                .map((job) => (
-                  <div key={job.id} className={`image-import-job image-import-job--${job.status}`}>
-                    <strong>{job.displayName}</strong>
-                    <span>{job.status === 'available' && job.errorMessage ? '临时文件清理重试中' : formatImportStatus(job.status)}</span>
-                    {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
-                    {job.status === 'failed' && !job.imageId ? (
-                      <button
-                        type="button"
-                        disabled={pendingActionKeys.includes(`retry:image-import:${job.id}`)}
-                        onClick={() => void handleRetryImageImport(job)}
-                      >
-                        重试导入
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
-            </div>
-          ) : null}
+              <div className="overflow-hidden rounded-md border border-border">
+                <AdminDataTable columns={activeColumns} isRefreshing={isRefreshing} label={activeTabTitle}>
+                  {(columns) => {
+                    const actionErrorRow = actionErrorMessage ? (
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
+                          <p role="alert">{actionErrorMessage}</p>
+                        </TableCell>
+                      </TableRow>
+                    ) : null;
 
-          <div className="range-workbench-column-head image-center-column-head" aria-hidden="true">
-            <div className="template-workbench-column-cell">
-              <strong>镜像名</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>镜像 ID</strong>
-            </div>
-            {activeTab === 'platform' || activeTab === 'mine' ? (
-              <div className="template-workbench-column-cell">
-                <strong>创建人</strong>
+                    if (activeTabError) {
+                      return (
+                        <AdminDataTableState
+                          columns={columns}
+                          description={activeTabError}
+                          onRetry={retryActiveTabLoad}
+                          title={`无法加载${activeTabTitle}`}
+                          variant="error"
+                        />
+                      );
+                    }
+
+                    if (isActiveTabLoading) {
+                      return (
+                        <TableLoadingState
+                          columnCount={columns.length}
+                          label={`正在加载${activeTabTitle}`}
+                          rowCount={5}
+                        />
+                      );
+                    }
+
+                    if (!activeItemsCount) {
+                      return (
+                        <>
+                          {actionErrorRow}
+                          <AdminDataTableState
+                            columns={columns}
+                            description={emptyState.description}
+                            title={emptyState.title}
+                            variant="empty"
+                          />
+                        </>
+                      );
+                    }
+
+                    if (activeTab === 'platform') {
+                      return (
+                        <>
+                          {actionErrorRow}
+                          {renderAssetRows(pagedPlatformAssets, columns, {
+                            allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
+                            allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
+                          })}
+                        </>
+                      );
+                    }
+
+                    if (activeTab === 'mine') {
+                      return (
+                        <>
+                          {actionErrorRow}
+                          {renderAssetRows(pagedMyAssets, columns, {
+                            allowManagement: true,
+                            allowVisibilityToggle: true,
+                          })}
+                        </>
+                      );
+                    }
+
+                    return (
+                      <>
+                        {actionErrorRow}
+                        {activeTab === 'custom'
+                          ? renderScopeRows('custom', pagedCustomSnapshots, columns)
+                          : renderScopeRows('public', pagedPublicSnapshots, columns)}
+                      </>
+                    );
+                  }}
+                </AdminDataTable>
               </div>
-            ) : null}
-            <div className="template-workbench-column-cell">
-              <strong>状态</strong>
-            </div>
-            <div className="template-workbench-column-cell">
-              <strong>操作</strong>
-            </div>
-          </div>
 
-          <div className="image-center-rows">
-            {isBootstrapLoading ? (
-              <div className="template-workbench-empty image-center-empty-state" aria-hidden="true" />
-            ) : activeTab === 'platform' ? (
-              renderAssetRows(pagedPlatformAssets, {
-                emptyMessage: '当前没有平台镜像。',
-                allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
-                allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
-                compactActions: true,
-              })
-            ) : activeTab === 'mine' ? (
-              renderAssetRows(pagedMyAssets, {
-                emptyMessage: '当前没有我的镜像。',
-                allowManagement: true,
-                allowVisibilityToggle: true,
-                compactActions: true,
-              })
-            ) : activeTab === 'custom' ? (
-              renderScopeRows('custom', pagedCustomSnapshots)
-            ) : (
-              renderScopeRows('public', pagedPublicSnapshots)
-            )}
-          </div>
-
-          <AdminPaginationControls
-            label={`${activeTabTitle} 分页`}
-            pageSizeMode={pageSizeMode}
-            pagination={activePagination}
-            visiblePages={visiblePages}
-            jumpPageValue={jumpPageValue}
-            onPageSizeChange={handlePageSizeChange}
-            onPreviousPage={goToPreviousPage}
-            onNextPage={goToNextPage}
-            onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
-            onJumpPageValueChange={setJumpPageValue}
-            onJumpPage={handleJumpToPage}
-          />
-          </div>
+              {!isActiveTabLoading && !activeTabError && activeItemsCount ? (
+                <AdminPaginationControls
+                  jumpPageValue={jumpPageValue}
+                  label={`${activeTabTitle} 分页`}
+                  pageSizeMode={pageSizeMode}
+                  pagination={activePagination}
+                  visiblePages={visiblePages}
+                  onJumpPage={handleJumpToPage}
+                  onJumpPageValueChange={setJumpPageValue}
+                  onNextPage={goToNextPage}
+                  onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
+                  onPageSizeChange={handlePageSizeChange}
+                  onPreviousPage={goToPreviousPage}
+                />
+              ) : null}
+              </TabsContent>
+              </Tabs>
+            </div>
+          </AdminListToolbar>
+        </div>
 
           {imageImportDraft ? (
             <ImageCenterDialog title="上传本地镜像">
@@ -1641,7 +1717,6 @@ export function ImageCenterScreen({
               </div>
             </ImageCenterDialog>
           ) : null}
-        </article>
       </section>
     </div>
   );
