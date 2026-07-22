@@ -4,7 +4,6 @@ import {
   IsDefined,
   IsArray,
   IsBoolean,
-  IsIn,
   IsInt,
   IsNotEmpty,
   IsObject,
@@ -14,11 +13,6 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-
-import type { CloudProvider, IacType } from '../admin.repository';
-
-const CLOUD_PROVIDERS: CloudProvider[] = ['alibaba_cloud'];
-const IAC_TYPES: IacType[] = ['opentofu', 'terraform'];
 
 class RangeTemplateNetworkZoneDto {
   @IsString()
@@ -134,46 +128,26 @@ export class CreateRangeTemplateDto {
   @IsString()
   description?: string;
 
-  @IsString()
-  @IsNotEmpty()
-  slug!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  version!: string;
-
-  @IsOptional()
-  @IsIn(CLOUD_PROVIDERS)
-  cloudProvider?: CloudProvider;
-
-  @IsOptional()
-  @IsIn(IAC_TYPES)
-  iacType?: IacType;
-
-  @IsString()
-  @IsNotEmpty()
-  modulePathOrRef!: string;
-
   @IsDefined()
   @ValidateNested()
   @Type(() => RangeTemplateTopologySpecDto)
   topologySpec!: RangeTemplateTopologySpecDto;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  topologyGraph?: Record<string, unknown>;
+  topologyGraph!: Record<string, unknown>;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  scenarioTemplateSpec?: Record<string, unknown>;
+  scenarioTemplateSpec!: Record<string, unknown>;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  compiledProvisionSpec?: Record<string, unknown>;
+  compiledProvisionSpec!: Record<string, unknown>;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  compiledSpec?: Record<string, unknown>;
+  compiledSpec!: Record<string, unknown>;
 
   @IsOptional()
   @IsObject()
@@ -189,6 +163,10 @@ export class CreateRangeTemplateDto {
 }
 
 export class UpdateRangeTemplateDto {
+  @IsInt()
+  @Min(1)
+  expectedRevision!: number;
+
   @IsOptional()
   @IsString()
   @IsNotEmpty()
@@ -198,59 +176,37 @@ export class UpdateRangeTemplateDto {
   @IsString()
   description?: string;
 
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  slug?: string;
+}
 
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  version?: string;
+export class SaveRangeTemplateTopologyDto {
+  @IsInt()
+  @Min(1)
+  expectedRevision!: number;
 
-  @IsOptional()
-  @IsIn(CLOUD_PROVIDERS)
-  cloudProvider?: CloudProvider;
-
-  @IsOptional()
-  @IsIn(IAC_TYPES)
-  iacType?: IacType;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  modulePathOrRef?: string;
-
-  @IsOptional()
+  @IsDefined()
   @ValidateNested()
   @Type(() => RangeTemplateTopologySpecDto)
-  topologySpec?: RangeTemplateTopologySpecDto;
+  topologySpec!: RangeTemplateTopologySpecDto;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  topologyGraph?: Record<string, unknown>;
+  topologyGraph!: Record<string, unknown>;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  scenarioTemplateSpec?: Record<string, unknown>;
+  scenarioTemplateSpec!: Record<string, unknown>;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  compiledProvisionSpec?: Record<string, unknown>;
+  compiledProvisionSpec!: Record<string, unknown>;
 
-  @IsOptional()
+  @IsDefined()
   @IsObject()
-  compiledSpec?: Record<string, unknown>;
+  compiledSpec!: Record<string, unknown>;
+}
 
-  @IsOptional()
-  @IsObject()
-  variableSchema?: Record<string, unknown>;
-
-  @IsOptional()
-  @IsObject()
-  outputSchema?: Record<string, unknown>;
-
-  @IsOptional()
-  @IsObject()
-  defaultNetworkPolicy?: Record<string, unknown>;
+export class RangeTemplateRevisionDto {
+  @IsInt()
+  @Min(1)
+  expectedRevision!: number;
 }

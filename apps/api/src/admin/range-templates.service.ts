@@ -1,13 +1,15 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 
 import {
   ADMIN_REPOSITORY,
   AdminRepository,
-  CreateRangeTemplateInput,
   RangeTemplateCompiledSpec,
+  SaveRangeTemplateTopologyInput,
+  TemplateRevisionConflictError,
   RangeTemplateVersionRecord,
   RangeTemplateTopologySpec,
-  UpdateRangeTemplateInput,
+  UpdateRangeTemplateMetadataInput,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
@@ -26,6 +28,17 @@ type TemplateEcsImageValidationInput = {
   compiledProvisionSpec?: Record<string, unknown> | null;
   compiledSpec?: Record<string, unknown> | null;
 };
+type TemplateTopologyPayload = Omit<SaveRangeTemplateTopologyInput, 'expectedRevision'>;
+type CreateRangeTemplateRequest = TemplateTopologyPayload & {
+  name: string;
+  description?: string;
+  variableSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  defaultNetworkPolicy?: Record<string, unknown>;
+};
+
+const INTERNAL_TEMPLATE_VERSION = 'v1';
+const INTERNAL_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-enterprise-range';
 
 @Injectable()
 export class RangeTemplatesService {
@@ -66,13 +79,13 @@ export class RangeTemplatesService {
     }
 
     if (!currentUser) {
-      return this.withCreatorUsername(existingTemplate);
+      return this.toPublicTemplateView(await this.withCreatorUsername(existingTemplate));
     }
 
     this.assertTemplateReadable(existingTemplate, currentUser);
 
     if (!this.isSharedTemplateConsumer(existingTemplate, currentUser)) {
-      return this.withCreatorUsername(existingTemplate);
+      return this.toPublicTemplateView(await this.withCreatorUsername(existingTemplate));
     }
 
     const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
@@ -81,41 +94,41 @@ export class RangeTemplatesService {
       throw new ConflictException('Shared template must be published before other users can consume it');
     }
 
-    return this.withCreatorUsername({
-      ...existingTemplate,
-      version: sourceVersion.version,
-      modulePathOrRef: sourceVersion.modulePathOrRef,
-      topologySpec: sourceVersion.topologySpec,
-      topologyGraph: sourceVersion.topologyGraph,
-      scenarioTemplateSpec: sourceVersion.scenarioTemplateSpec,
-      compiledProvisionSpec: sourceVersion.compiledProvisionSpec,
-      compiledSpec: sourceVersion.compiledSpec,
-      variableSchema: sourceVersion.variableSchema,
-      outputSchema: sourceVersion.outputSchema,
-      defaultNetworkPolicy: sourceVersion.defaultNetworkPolicy,
-      currentDraftVersionId: sourceVersion.id,
-      currentDraftVersion: sourceVersion,
-    });
+    return this.toPublicTemplateView(
+      await this.withCreatorUsername(existingTemplate),
+      sourceVersion,
+    );
   }
 
-  async create(input: CreateRangeTemplateInput, currentUser?: AuthenticatedUser) {
-    const actorId = currentUser?.id ?? input.createdBy ?? 'admin';
-
-    this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
-    this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
-    this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
-    this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
-    this.validateTopologySpec(input.topologySpec);
-    await this.assertTemplateEcsImageSelections(input, currentUser);
-
-    const template = await this.adminRepository.createRangeTemplate({
-      ...input,
-      createdBy: actorId,
-      ownerUserId: currentUser?.id ?? input.ownerUserId ?? null,
-      visibility: currentUser ? 'private' : input.visibility ?? 'private',
+  async create(input: CreateRangeTemplateRequest, currentUser?: AuthenticatedUser) {
+    const actorId = currentUser?.id ?? 'admin';
+    const slug = this.buildServerTemplateSlug(input.name);
+    const topology = this.normalizeTopologyMetadata(input, {
+      name: input.name,
+      slug,
+      version: INTERNAL_TEMPLATE_VERSION,
     });
 
-    return this.withCreatorUsername(template);
+    await this.validateTopologyPayload(topology, currentUser);
+
+    const template = await this.adminRepository.createRangeTemplate({
+      name: input.name,
+      description: input.description,
+      createdBy: actorId,
+      ownerUserId: currentUser?.id ?? null,
+      slug,
+      version: INTERNAL_TEMPLATE_VERSION,
+      cloudProvider: 'alibaba_cloud',
+      iacType: 'opentofu',
+      modulePathOrRef: INTERNAL_TEMPLATE_MODULE_PATH,
+      ...topology,
+      variableSchema: input.variableSchema ?? {},
+      outputSchema: input.outputSchema ?? {},
+      defaultNetworkPolicy: input.defaultNetworkPolicy,
+      visibility: 'private',
+    });
+
+    return this.toPublicTemplateView(await this.withCreatorUsername(template));
   }
 
   async clone(id: string, currentUser?: AuthenticatedUser) {
@@ -162,7 +175,6 @@ export class RangeTemplatesService {
       currentUser,
     );
 
-    const rangeTemplates = await this.adminRepository.listRangeTemplates();
     const actorId = currentUser?.id ?? existingTemplate.createdBy;
 
     const template = await this.adminRepository.createRangeTemplate({
@@ -170,7 +182,7 @@ export class RangeTemplatesService {
       createdBy: actorId,
       ownerUserId: currentUser?.id ?? existingTemplate.ownerUserId,
       description: existingTemplate.description ?? undefined,
-      slug: this.buildClonedSlug(existingTemplate.slug, rangeTemplates.map((item) => item.slug)),
+      slug: this.buildClonedSlug(existingTemplate.slug),
       visibility: 'private',
       version: sourceVersion?.version ?? (allowTemplateFallback ? existingTemplate.version : existingTemplate.version),
       cloudProvider: existingTemplate.cloudProvider,
@@ -197,10 +209,14 @@ export class RangeTemplatesService {
         undefined,
     });
 
-    return this.withCreatorUsername(template);
+    return this.toPublicTemplateView(await this.withCreatorUsername(template));
   }
 
-  async update(id: string, input: UpdateRangeTemplateInput, currentUser?: AuthenticatedUser) {
+  async validateAndSave(
+    id: string,
+    input: SaveRangeTemplateTopologyInput,
+    currentUser?: AuthenticatedUser,
+  ) {
     const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
 
     if (!existingTemplate) {
@@ -211,156 +227,91 @@ export class RangeTemplatesService {
       this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
-    const topologySpec = input.topologySpec ?? existingTemplate.topologySpec;
+    const topology = this.normalizeTopologyMetadata(input, {
+      name: existingTemplate.name,
+      slug: existingTemplate.slug,
+      version: existingTemplate.version,
+    });
 
-    if (topologySpec) {
-      this.validateTopologySpec(topologySpec);
-    }
+    await this.validateTopologyPayload(topology, currentUser);
 
-    this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
-    this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
-    this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
-    this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
-    await this.assertTemplateEcsImageSelections(
-      {
-        topologyGraph:
-          input.topologyGraph ?? existingTemplate.currentDraftVersion?.topologyGraph ?? existingTemplate.topologyGraph ?? undefined,
-        topologySpec,
-        scenarioTemplateSpec:
-          input.scenarioTemplateSpec ??
-          existingTemplate.currentDraftVersion?.scenarioTemplateSpec ??
-          existingTemplate.scenarioTemplateSpec ??
-          undefined,
-        compiledProvisionSpec:
-          input.compiledProvisionSpec ??
-          existingTemplate.currentDraftVersion?.compiledProvisionSpec ??
-          existingTemplate.compiledProvisionSpec ??
-          undefined,
-        compiledSpec:
-          input.compiledSpec ??
-          existingTemplate.currentDraftVersion?.compiledSpec ??
-          existingTemplate.compiledSpec ??
-          undefined,
-      },
-      currentUser,
-    );
-
-    const template = await this.adminRepository.updateRangeTemplate(id, input);
-    return this.withCreatorUsername(template);
-  }
-
-  async publish(id: string, currentUser?: AuthenticatedUser) {
-    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
-
-    if (!existingTemplate) {
-      throw new NotFoundException('Range template not found');
-    }
-
-    if (currentUser) {
-      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
-    }
-
-    await this.assertTemplateEcsImageSelections(
-      this.getCurrentDraftTemplateEcsImageValidationInput(existingTemplate),
-      currentUser,
-    );
-    this.assertTemplateReadyForPublish(existingTemplate);
-
-    const template = await this.adminRepository.publishRangeTemplate(id);
-    return this.withCreatorUsername(template);
-  }
-
-  async validate(id: string, currentUser?: AuthenticatedUser) {
-    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
-
-    if (!existingTemplate) {
-      throw new NotFoundException('Range template not found');
-    }
-
-    if (this.isSharedTemplateConsumer(existingTemplate, currentUser)) {
-      const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
-
-      await this.assertTemplateEcsImageSelections(
-        {
-          topologyGraph: sourceVersion?.topologyGraph ?? undefined,
-          topologySpec: sourceVersion?.topologySpec ?? null,
-          scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec ?? undefined,
-          compiledProvisionSpec: sourceVersion?.compiledProvisionSpec ?? undefined,
-          compiledSpec: sourceVersion?.compiledSpec ?? undefined,
-        },
-        currentUser,
-      );
-
-      this.assertTemplateStateReadyForPublish({
-        scenarioTemplateSpec: sourceVersion?.scenarioTemplateSpec,
-        compiledProvisionSpec: sourceVersion?.compiledProvisionSpec,
-        topologySpec: sourceVersion?.topologySpec,
-        compiledSpec: sourceVersion?.compiledSpec as RangeTemplateCompiledSpec | null | undefined,
+    try {
+      const template = await this.adminRepository.saveRangeTemplateTopology(id, {
+        ...topology,
+        expectedRevision: input.expectedRevision,
       });
+      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+    } catch (error) {
+      this.rethrowRevisionConflict(error);
+    }
+  }
 
-      return { valid: true as const };
+  async updateMetadata(
+    id: string,
+    input: UpdateRangeTemplateMetadataInput,
+    currentUser?: AuthenticatedUser,
+  ) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
     }
 
     if (currentUser) {
-      this.assertTemplateReadable(existingTemplate, currentUser);
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
+    }
+
+    try {
+      const template = await this.adminRepository.updateRangeTemplateMetadata(id, input);
+      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+    } catch (error) {
+      this.rethrowRevisionConflict(error);
+    }
+  }
+
+  async returnToPrivate(id: string, expectedRevision: number, currentUser?: AuthenticatedUser) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
+    }
+
+    try {
+      const template = await this.adminRepository.unshareRangeTemplate(id, expectedRevision);
+      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+    } catch (error) {
+      this.rethrowRevisionConflict(error);
+    }
+  }
+
+  async publishToPlatform(id: string, expectedRevision: number, currentUser?: AuthenticatedUser) {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
     await this.assertTemplateEcsImageSelections(
       this.getCurrentDraftTemplateEcsImageValidationInput(existingTemplate),
       currentUser,
+      { requirePlatformVisibility: true },
     );
     this.assertTemplateReadyForPublish(existingTemplate);
 
-    return { valid: true as const };
-  }
-
-  async unpublish(id: string, currentUser?: AuthenticatedUser) {
-    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
-
-    if (!existingTemplate) {
-      throw new NotFoundException('Range template not found');
+    try {
+      const template = await this.adminRepository.publishRangeTemplateToPlatform(id, expectedRevision);
+      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+    } catch (error) {
+      this.rethrowRevisionConflict(error);
     }
-
-    if (currentUser) {
-      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
-    }
-
-    if (!existingTemplate.currentPublishedVersionId) {
-      throw new BadRequestException('Range template is not published');
-    }
-
-    const template = await this.adminRepository.unpublishRangeTemplate(id);
-    return this.withCreatorUsername(template);
-  }
-
-  async share(id: string, currentUser?: AuthenticatedUser) {
-    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
-
-    if (!existingTemplate) {
-      throw new NotFoundException('Range template not found');
-    }
-
-    if (currentUser) {
-      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
-    }
-
-    const template = await this.adminRepository.updateRangeTemplate(id, { visibility: 'platform' });
-    return this.withCreatorUsername(template);
-  }
-
-  async unshare(id: string, currentUser?: AuthenticatedUser) {
-    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
-
-    if (!existingTemplate) {
-      throw new NotFoundException('Range template not found');
-    }
-
-    if (currentUser) {
-      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
-    }
-
-    const template = await this.adminRepository.updateRangeTemplate(id, { visibility: 'private' });
-    return this.withCreatorUsername(template);
   }
 
   async delete(id: string, currentUser?: AuthenticatedUser) {
@@ -477,21 +428,64 @@ export class RangeTemplatesService {
     return !this.isTemplateOwnerOrAdmin(template, currentUser) && template.visibility === 'platform';
   }
 
-  private buildClonedSlug(sourceSlug: string, existingSlugs: string[]) {
-    const normalizedSlug = `${sourceSlug}-copy`;
-    const slugSet = new Set(existingSlugs);
+  private buildClonedSlug(sourceSlug: string) {
+    return `${sourceSlug}-copy-${randomUUID().slice(0, 8)}`;
+  }
 
-    if (!slugSet.has(normalizedSlug)) {
-      return normalizedSlug;
-    }
+  private buildServerTemplateSlug(name: string) {
+    const base =
+      name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'scenario';
 
-    let suffix = 2;
+    return `${base}-${randomUUID().slice(0, 8)}`;
+  }
 
-    while (slugSet.has(`${normalizedSlug}-${suffix}`)) {
-      suffix += 1;
-    }
+  private normalizeTopologyMetadata(
+    input: TemplateTopologyPayload,
+    identity: { name: string; slug: string; version: string },
+  ): TemplateTopologyPayload {
+    const scenarioMetadata =
+      input.scenarioTemplateSpec.metadata &&
+      typeof input.scenarioTemplateSpec.metadata === 'object' &&
+      !Array.isArray(input.scenarioTemplateSpec.metadata)
+        ? input.scenarioTemplateSpec.metadata as Record<string, unknown>
+        : {};
+    const compiledIdentity =
+      input.compiledProvisionSpec.identity &&
+      typeof input.compiledProvisionSpec.identity === 'object' &&
+      !Array.isArray(input.compiledProvisionSpec.identity)
+        ? input.compiledProvisionSpec.identity as Record<string, unknown>
+        : {};
 
-    return `${normalizedSlug}-${suffix}`;
+    return {
+      topologySpec: input.topologySpec,
+      topologyGraph: input.topologyGraph,
+      scenarioTemplateSpec: {
+        ...input.scenarioTemplateSpec,
+        metadata: {
+          ...scenarioMetadata,
+          name: identity.name,
+          slug: identity.slug,
+          version: identity.version,
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+      },
+      compiledProvisionSpec: {
+        ...input.compiledProvisionSpec,
+        identity: {
+          ...compiledIdentity,
+          templateSlug: identity.slug,
+          templateVersion: identity.version,
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+      },
+      compiledSpec: input.compiledSpec,
+    };
   }
 
   private getCurrentDraftTemplateEcsImageValidationInput(
@@ -511,13 +505,85 @@ export class RangeTemplatesService {
   async assertTemplateEcsImageSelections(
     input: TemplateEcsImageValidationInput,
     currentUser?: AuthenticatedUser,
+    options?: { requirePlatformVisibility?: boolean },
   ) {
     const selections = await this.assertTopologyGraphEcsImageSelections(
       input.topologyGraph,
       currentUser,
       input.topologySpec,
+      options,
     );
     this.assertCompiledEcsImageSelections(input, selections);
+  }
+
+  private async validateTopologyPayload(
+    input: TemplateTopologyPayload,
+    currentUser?: AuthenticatedUser,
+  ) {
+    this.validateTopologySpec(input.topologySpec);
+    this.validateOptionalJsonObject(input.topologyGraph, 'topologyGraph');
+    this.validateOptionalJsonObject(input.scenarioTemplateSpec, 'scenarioTemplateSpec');
+    this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
+    this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
+
+    await this.assertTemplateEcsImageSelections(input, currentUser);
+    this.assertTemplateStateReadyForPublish({
+      scenarioTemplateSpec: input.scenarioTemplateSpec,
+      compiledProvisionSpec: input.compiledProvisionSpec,
+      topologySpec: input.topologySpec,
+      compiledSpec: input.compiledSpec as RangeTemplateCompiledSpec,
+    });
+  }
+
+  private rethrowRevisionConflict(error: unknown): never {
+    if (
+      error instanceof TemplateRevisionConflictError ||
+      (error instanceof Error && error.message === 'TEMPLATE_REVISION_CONFLICT')
+    ) {
+      throw new ConflictException('Template changed since it was loaded; refresh and try again');
+    }
+
+    throw error;
+  }
+
+  private toPublicTemplateView(
+    template: ExistingRangeTemplate & { createdBy?: string },
+    topologyOverride?: RangeTemplateVersionRecord,
+  ) {
+    const topology =
+      topologyOverride ??
+      template.currentDraftVersion ??
+      template.currentPublishedVersion;
+
+    return {
+      id: template.id,
+      name: template.name,
+      createdBy: template.createdBy,
+      ownerUserId: template.ownerUserId,
+      description: template.description,
+      slug: template.slug,
+      cloudProvider: template.cloudProvider,
+      iacType: template.iacType,
+      visibility: template.visibility,
+      status:
+        template.visibility === 'platform' && Boolean(template.currentPublishedVersionId)
+          ? ('published' as const)
+          : ('private' as const),
+      revision: template.revision,
+      topologySpec: topology?.topologySpec ?? template.topologySpec,
+      topologyGraph: topology?.topologyGraph ?? template.topologyGraph ?? null,
+      scenarioTemplateSpec:
+        topology?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? null,
+      compiledProvisionSpec:
+        topology?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? null,
+      compiledSpec: topology?.compiledSpec ?? template.compiledSpec ?? null,
+      variableSchema: topology?.variableSchema ?? template.variableSchema,
+      outputSchema: topology?.outputSchema ?? template.outputSchema,
+      defaultNetworkPolicy:
+        topology?.defaultNetworkPolicy ?? template.defaultNetworkPolicy,
+      createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
+    };
   }
 
   private validateTopologySpec(topologySpec: RangeTemplateTopologySpec) {
@@ -555,6 +621,7 @@ export class RangeTemplatesService {
     topologyGraph: Record<string, unknown> | undefined,
     currentUser?: AuthenticatedUser,
     topologySpec?: RangeTemplateTopologySpec | null,
+    options?: { requirePlatformVisibility?: boolean },
   ): Promise<Record<string, EcsImageSelection>> {
     const nodes = Array.isArray(topologyGraph?.nodes) ? topologyGraph.nodes : [];
     const selectedImageIds: Record<string, EcsImageSelection> = {};
@@ -597,6 +664,10 @@ export class RangeTemplatesService {
         asset.ownerUserId !== currentUser.id
       ) {
         throw new ForbiddenException(`${label} 无权使用所选镜像`);
+      }
+
+      if (options?.requirePlatformVisibility && asset.visibility !== 'platform') {
+        throw new ForbiddenException(`${label} 选择的镜像未发布到平台`);
       }
 
       const selectedImageId = typeof nodeData.imageId === 'string' ? nodeData.imageId.trim() : '';
@@ -1163,14 +1234,18 @@ export class RangeTemplatesService {
 }
 
 function toRangeTemplateListItem(template: ExistingRangeTemplate) {
+  const externallyPublished =
+    template.visibility === 'platform' && Boolean(template.currentPublishedVersionId);
+  const visibleVersion =
+    (externallyPublished ? template.currentPublishedVersion : template.currentDraftVersion) ??
+    template.currentDraftVersion ??
+    template.currentPublishedVersion;
   const topologyGraph =
-    template.currentDraftVersion?.topologyGraph ??
-    template.currentPublishedVersion?.topologyGraph ??
+    visibleVersion?.topologyGraph ??
     template.topologyGraph ??
     null;
   const topologySpec =
-    template.currentDraftVersion?.topologySpec ??
-    template.currentPublishedVersion?.topologySpec ??
+    visibleVersion?.topologySpec ??
     template.topologySpec ??
     null;
 
@@ -1181,13 +1256,11 @@ function toRangeTemplateListItem(template: ExistingRangeTemplate) {
     ownerUserId: template.ownerUserId,
     description: template.description,
     slug: template.slug,
-    version: template.version,
     cloudProvider: template.cloudProvider,
     iacType: template.iacType,
-    modulePathOrRef: template.modulePathOrRef,
     visibility: template.visibility,
-    currentDraftVersionId: template.currentDraftVersionId,
-    currentPublishedVersionId: template.currentPublishedVersionId,
+    status: externallyPublished ? ('published' as const) : ('private' as const),
+    revision: template.revision,
     createdAt: template.createdAt,
     updatedAt: template.updatedAt,
     nodeCount: topologyGraph && typeof topologyGraph === 'object' && Array.isArray(topologyGraph.nodes)

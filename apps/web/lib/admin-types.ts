@@ -53,37 +53,20 @@ export type RangeTemplate = {
   createdBy?: string | null;
   ownerUserId?: string | null;
   visibility?: ResourceVisibility;
+  status: 'private' | 'published';
+  revision: number;
   description?: string | null;
   slug: string;
-  version: string;
   cloudProvider?: 'alibaba_cloud';
   iacType?: 'opentofu' | 'terraform';
-  modulePathOrRef?: string | null;
+  topologySpec?: RangeTemplateTopologySpec | null;
+  topologyGraph?: Record<string, unknown> | null;
+  scenarioTemplateSpec?: ScenarioTemplateSpec | null;
+  compiledProvisionSpec?: CompiledProvisionSpec | null;
+  compiledSpec?: RangeTemplateCompiledSpec | null;
   variableSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   defaultNetworkPolicy?: Record<string, unknown> | null;
-  currentDraftVersionId?: string | null;
-  currentPublishedVersionId?: string | null;
-  currentDraftVersion?: {
-    id: string;
-    status: 'draft' | 'published' | 'archived' | string;
-    version: string;
-    topologySpec?: RangeTemplateTopologySpec | null;
-    topologyGraph?: Record<string, unknown> | null;
-    scenarioTemplateSpec?: ScenarioTemplateSpec | null;
-    compiledProvisionSpec?: CompiledProvisionSpec | null;
-    compiledSpec?: RangeTemplateCompiledSpec | null;
-  } | null;
-  currentPublishedVersion?: {
-    id: string;
-    status: 'draft' | 'published' | 'archived' | string;
-    version: string;
-    topologySpec?: RangeTemplateTopologySpec | null;
-    topologyGraph?: Record<string, unknown> | null;
-    scenarioTemplateSpec?: ScenarioTemplateSpec | null;
-    compiledProvisionSpec?: CompiledProvisionSpec | null;
-    compiledSpec?: RangeTemplateCompiledSpec | null;
-  } | null;
   nodeCount?: number;
   zoneCount?: number;
   hostCount?: number;
@@ -148,27 +131,29 @@ export type RangeTemplateTopologySpec = {
 export type RangeTemplateCreateInput = {
   name: string;
   description?: string;
-  slug: string;
-  version: string;
-  modulePathOrRef: string;
-  cloudProvider: 'alibaba_cloud';
-  iacType: 'opentofu' | 'terraform';
   topologySpec: RangeTemplateTopologySpec;
-  topologyGraph?: Record<string, unknown>;
-  scenarioTemplateSpec?: ScenarioTemplateSpec;
-  compiledProvisionSpec?: CompiledProvisionSpec;
-  compiledSpec?: RangeTemplateCompiledSpec;
-  variableSchema: Record<string, unknown>;
-  outputSchema: Record<string, unknown>;
+  topologyGraph: Record<string, unknown>;
+  scenarioTemplateSpec: ScenarioTemplateSpec;
+  compiledProvisionSpec: CompiledProvisionSpec;
+  compiledSpec: RangeTemplateCompiledSpec;
+  variableSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   defaultNetworkPolicy?: Record<string, unknown>;
 };
 
-export type RangeTemplateUpdateInput = Partial<RangeTemplateCreateInput> & {
-  topologySpec?: RangeTemplateTopologySpec | null;
-  topologyGraph?: Record<string, unknown> | null;
-  scenarioTemplateSpec?: ScenarioTemplateSpec | null;
-  compiledProvisionSpec?: CompiledProvisionSpec | null;
-  compiledSpec?: RangeTemplateCompiledSpec | null;
+export type RangeTemplateUpdateInput = {
+  expectedRevision: number;
+  name?: string;
+  description?: string;
+};
+
+export type RangeTemplateTopologySaveInput = {
+  expectedRevision: number;
+  topologySpec: RangeTemplateTopologySpec;
+  topologyGraph: Record<string, unknown>;
+  scenarioTemplateSpec: ScenarioTemplateSpec;
+  compiledProvisionSpec: CompiledProvisionSpec;
+  compiledSpec: RangeTemplateCompiledSpec;
 };
 
 export type Scenario = RangeTemplate;

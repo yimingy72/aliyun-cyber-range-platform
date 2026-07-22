@@ -141,6 +141,7 @@ function createTemplateRecord(overrides: Partial<RangeTemplateRecord> = {}): Ran
     outputSchema: {},
     defaultNetworkPolicy: null,
     visibility: 'private',
+    revision: 1,
     currentDraftVersionId: 'draft-1',
     currentPublishedVersionId: null,
     currentDraftVersion: createDraftVersion(),
@@ -152,21 +153,79 @@ function createTemplateRecord(overrides: Partial<RangeTemplateRecord> = {}): Ran
   };
 }
 
+function createCompleteSavePayload(
+  template: RangeTemplateRecord,
+  topologyGraph: Record<string, unknown>,
+) {
+  const topologySpec = template.currentDraftVersion!.topologySpec!;
+  const networkZones = topologySpec.networkZones;
+  const hosts = topologySpec.hosts.map((host) => ({
+    key: host.key,
+    name: host.name,
+    zoneKey: host.zoneKey,
+    role: host.role,
+    primaryPrivateIp: host.privateIp,
+    exposePublic: host.exposePublic ?? false,
+  }));
+
+  return {
+    topologySpec,
+    topologyGraph,
+    scenarioTemplateSpec: {
+      schemaVersion: '1.0.0',
+      topology: {
+        vpcCidr: topologySpec.vpcCidr,
+        entryHostKey: topologySpec.publicEntry.hostKey,
+      },
+      networkZones,
+      hosts,
+    },
+    compiledProvisionSpec: {
+      schemaVersion: '1.0.0',
+      topology: {
+        vpcCidr: topologySpec.vpcCidr,
+        entryHostKey: topologySpec.publicEntry.hostKey,
+      },
+      networkZones,
+      hosts,
+      natGateways: [],
+      eips: [],
+      snatEntries: [],
+      dnatEntries: [],
+    },
+    compiledSpec: template.currentDraftVersion!.compiledSpec!,
+    expectedRevision: template.revision,
+  };
+}
+
 describe('RangeTemplatesService publish precheck', () => {
   const ownerUser = {
     id: 'owner-user',
     username: 'owner-user',
     role: 'user' as const,
   };
+  let assertTemplateEcsImageSelectionsSpy: jest.SpiedFunction<RangeTemplatesService['assertTemplateEcsImageSelections']>;
 
   function createRepository(template: RangeTemplateRecord) {
     return {
+      getPlatformUserById: jest.fn().mockResolvedValue(null),
       getRangeTemplateById: jest.fn().mockResolvedValue(template),
-      updateRangeTemplate: jest.fn().mockResolvedValue(template),
-      publishRangeTemplate: jest.fn().mockResolvedValue(template),
-      unpublishRangeTemplate: jest.fn().mockResolvedValue(template),
+      saveRangeTemplateTopology: jest.fn().mockResolvedValue(template),
+      updateRangeTemplateMetadata: jest.fn().mockResolvedValue(template),
+      publishRangeTemplateToPlatform: jest.fn().mockResolvedValue(template),
+      unshareRangeTemplate: jest.fn().mockResolvedValue(template),
     } as unknown as AdminRepository;
   }
+
+  beforeEach(() => {
+    assertTemplateEcsImageSelectionsSpy = jest
+      .spyOn(RangeTemplatesService.prototype, 'assertTemplateEcsImageSelections')
+      .mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    assertTemplateEcsImageSelectionsSpy.mockRestore();
+  });
 
   it('rejects publish when compiled resources are missing declared topology nodes', async () => {
     const template = createTemplateRecord({
@@ -209,7 +268,7 @@ describe('RangeTemplatesService publish precheck', () => {
     });
 
     const service = new RangeTemplatesService(createRepository(template));
-    const result = service.publish(template.id);
+    const result = service.publishToPlatform(template.id, template.revision);
 
     await expect(result).rejects.toThrow(BadRequestException);
 
@@ -225,42 +284,181 @@ describe('RangeTemplatesService publish precheck', () => {
     });
   });
 
-  it('reuses the same backend precheck for explicit topology validation without publishing', async () => {
-    const template = createTemplateRecord();
-    const repository = createRepository(template);
-    const service = new RangeTemplatesService(repository);
+  it('rejects an invalid topology payload before the atomic save action', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+    });
+    const repository = createRepository(template) as unknown as {
+      saveRangeTemplateTopology: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository as unknown as AdminRepository);
 
-    await expect(service.validate(template.id)).resolves.toEqual({ valid: true });
-    expect((repository as unknown as { publishRangeTemplate: jest.Mock }).publishRangeTemplate).not.toHaveBeenCalled();
+    const invalidTopologySpec = {
+      ...template.currentDraftVersion!.topologySpec!,
+      networkZones: [
+        template.currentDraftVersion!.topologySpec!.networkZones[0]!,
+        {
+          ...template.currentDraftVersion!.topologySpec!.networkZones[1]!,
+          key: template.currentDraftVersion!.topologySpec!.networkZones[0]!.key,
+        },
+      ],
+    };
+
+    await expect(
+      service.validateAndSave(
+        template.id,
+        {
+          topologySpec: invalidTopologySpec,
+          topologyGraph: {
+            schemaVersion: '2.0.0',
+            nodes: [],
+            edges: [],
+          },
+          scenarioTemplateSpec: {},
+          compiledProvisionSpec: {},
+          compiledSpec: template.currentDraftVersion!.compiledSpec!,
+          expectedRevision: template.revision,
+        },
+        ownerUser,
+      ),
+    ).rejects.toThrow('Duplicate network zone key');
+
+    expect(repository.saveRangeTemplateTopology).not.toHaveBeenCalled();
   });
 
-  it('shares a template without calling publish or changing template version state', async () => {
+  it('publishes a private saved topology to the platform in one repository action', async () => {
     const template = createTemplateRecord({
       ownerUserId: ownerUser.id,
       visibility: 'private',
-      currentPublishedVersionId: 'published-1',
+      currentPublishedVersionId: null,
+      currentPublishedVersion: null,
     });
-    const sharedTemplate = {
+    const publishedTemplate = {
       ...template,
       visibility: 'platform' as const,
+      revision: template.revision + 1,
+      currentPublishedVersionId: template.currentDraftVersionId,
+      currentPublishedVersion: template.currentDraftVersion,
     };
     const repository = {
       ...createRepository(template),
-      updateRangeTemplate: jest.fn().mockResolvedValue(sharedTemplate),
+      publishRangeTemplateToPlatform: jest.fn().mockResolvedValue(publishedTemplate),
+    } as unknown as {
+      publishRangeTemplateToPlatform: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository as unknown as AdminRepository);
+
+    await expect(
+      service.publishToPlatform(template.id, template.revision, ownerUser),
+    ).resolves.toEqual(expect.objectContaining({
+      id: template.id,
+      status: 'published',
+      revision: template.revision + 1,
+    }));
+    expect(repository.publishRangeTemplateToPlatform).toHaveBeenCalledWith(template.id, template.revision);
+  });
+
+  it('reverts a published topology to private when saving new topology changes', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+      visibility: 'platform',
+      currentPublishedVersionId: 'published-1',
+      currentPublishedVersion: createDraftVersion({
+        id: 'published-1',
+        status: 'published',
+      }),
+    });
+    const revertedTemplate = {
+      ...template,
+      visibility: 'private' as const,
+      revision: template.revision + 1,
+      currentPublishedVersionId: null,
+      currentPublishedVersion: null,
+    };
+    const repository = {
+      ...createRepository(template),
+      saveRangeTemplateTopology: jest.fn().mockResolvedValue(revertedTemplate),
     } as unknown as AdminRepository & {
-      updateRangeTemplate: jest.Mock;
-      publishRangeTemplate: jest.Mock;
-      unpublishRangeTemplate: jest.Mock;
+      saveRangeTemplateTopology: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository);
+    const savePayload = createCompleteSavePayload(template, {
+      schemaVersion: '2.0.0',
+      nodes: [],
+      edges: [],
+    });
+
+    await expect(
+      service.validateAndSave(template.id, savePayload, ownerUser),
+    ).resolves.toEqual(expect.objectContaining({
+      id: template.id,
+      status: 'private',
+      revision: template.revision + 1,
+    }));
+    expect(repository.saveRangeTemplateTopology).toHaveBeenCalledWith(
+      template.id,
+      expect.objectContaining({
+        ...savePayload,
+        scenarioTemplateSpec: expect.objectContaining({
+          ...savePayload.scenarioTemplateSpec,
+          metadata: expect.objectContaining({
+            name: template.name,
+            slug: template.slug,
+            version: template.version,
+          }),
+        }),
+        compiledProvisionSpec: expect.objectContaining({
+          ...savePayload.compiledProvisionSpec,
+          identity: expect.objectContaining({
+            templateSlug: template.slug,
+            templateVersion: template.version,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('keeps the published state when only editing template metadata', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+      visibility: 'platform',
+      currentPublishedVersionId: 'published-1',
+      currentPublishedVersion: createDraftVersion({
+        id: 'published-1',
+        status: 'published',
+      }),
+    });
+    const updatedTemplate = {
+      ...template,
+      name: 'Updated Template Name',
+      revision: template.revision + 1,
+    };
+    const repository = {
+      ...createRepository(template),
+      updateRangeTemplateMetadata: jest.fn().mockResolvedValue(updatedTemplate),
+    } as unknown as AdminRepository & {
+      updateRangeTemplateMetadata: jest.Mock;
     };
     const service = new RangeTemplatesService(repository);
 
-    await expect(service.share(template.id, ownerUser)).resolves.toEqual(sharedTemplate);
-    expect(repository.updateRangeTemplate).toHaveBeenCalledWith(template.id, { visibility: 'platform' });
-    expect(repository.publishRangeTemplate).not.toHaveBeenCalled();
-    expect(repository.unpublishRangeTemplate).not.toHaveBeenCalled();
+    await expect(
+      service.updateMetadata(
+        template.id,
+        { name: 'Updated Template Name', expectedRevision: template.revision },
+        ownerUser,
+      ),
+    ).resolves.toEqual(expect.objectContaining({
+      name: 'Updated Template Name',
+      status: 'published',
+      revision: template.revision + 1,
+    }));
+    expect(repository.updateRangeTemplateMetadata).toHaveBeenCalledWith(template.id, {
+      name: 'Updated Template Name',
+      expectedRevision: template.revision,
+    });
   });
 
-  it('unshares a template without calling unpublish or changing template version state', async () => {
+  it('returns a published topology to private in one revision-checked action', async () => {
     const template = createTemplateRecord({
       ownerUserId: ownerUser.id,
       visibility: 'platform',
@@ -269,21 +467,23 @@ describe('RangeTemplatesService publish precheck', () => {
     const unsharedTemplate = {
       ...template,
       visibility: 'private' as const,
+      revision: template.revision + 1,
     };
     const repository = {
       ...createRepository(template),
-      updateRangeTemplate: jest.fn().mockResolvedValue(unsharedTemplate),
+      unshareRangeTemplate: jest.fn().mockResolvedValue(unsharedTemplate),
     } as unknown as AdminRepository & {
-      updateRangeTemplate: jest.Mock;
-      publishRangeTemplate: jest.Mock;
-      unpublishRangeTemplate: jest.Mock;
+      unshareRangeTemplate: jest.Mock;
     };
     const service = new RangeTemplatesService(repository);
 
-    await expect(service.unshare(template.id, ownerUser)).resolves.toEqual(unsharedTemplate);
-    expect(repository.updateRangeTemplate).toHaveBeenCalledWith(template.id, { visibility: 'private' });
-    expect(repository.publishRangeTemplate).not.toHaveBeenCalled();
-    expect(repository.unpublishRangeTemplate).not.toHaveBeenCalled();
+    await expect(
+      service.returnToPrivate(template.id, template.revision, ownerUser),
+    ).resolves.toEqual(expect.objectContaining({
+      status: 'private',
+      revision: template.revision + 1,
+    }));
+    expect(repository.unshareRangeTemplate).toHaveBeenCalledWith(template.id, template.revision);
   });
 
   it('publishes successfully when draft only carries scenarioTemplateSpec and compiledProvisionSpec', async () => {
@@ -374,11 +574,31 @@ describe('RangeTemplatesService publish precheck', () => {
       }),
     });
 
-    const repository = createRepository(template);
+    const publishedTemplate = {
+      ...template,
+      visibility: 'platform' as const,
+      revision: template.revision + 1,
+      currentPublishedVersionId: template.currentDraftVersionId,
+      currentPublishedVersion: template.currentDraftVersion,
+    };
+    const repository = {
+      ...createRepository(template),
+      publishRangeTemplateToPlatform: jest.fn().mockResolvedValue(publishedTemplate),
+    } as unknown as AdminRepository & {
+      publishRangeTemplateToPlatform: jest.Mock;
+    };
     const service = new RangeTemplatesService(repository);
 
-    await expect(service.publish(template.id)).resolves.toEqual(template);
-    expect(repository.publishRangeTemplate).toHaveBeenCalledWith(template.id);
+    await expect(
+      service.publishToPlatform(template.id, template.revision),
+    ).resolves.toEqual(expect.objectContaining({
+      status: 'published',
+      revision: template.revision + 1,
+    }));
+    expect(repository.publishRangeTemplateToPlatform).toHaveBeenCalledWith(
+      template.id,
+      template.revision,
+    );
   });
 
   it('rejects publish when compiled resources conflict with topology host and zone fields', async () => {
@@ -445,7 +665,7 @@ describe('RangeTemplatesService publish precheck', () => {
     });
 
     const service = new RangeTemplatesService(createRepository(template));
-    const result = service.publish(template.id);
+    const result = service.publishToPlatform(template.id, template.revision);
 
     await expect(result).rejects.toThrow(BadRequestException);
 
@@ -579,7 +799,7 @@ describe('RangeTemplatesService publish precheck', () => {
     });
 
     const service = new RangeTemplatesService(createRepository(template));
-    const result = service.publish(template.id);
+    const result = service.publishToPlatform(template.id, template.revision);
 
     await expect(result).rejects.toThrow(BadRequestException);
 
@@ -686,7 +906,7 @@ describe('RangeTemplatesService publish precheck', () => {
     });
 
     const service = new RangeTemplatesService(createRepository(template));
-    const result = service.publish(template.id);
+    const result = service.publishToPlatform(template.id, template.revision);
 
     await expect(result).rejects.toThrow(BadRequestException);
 

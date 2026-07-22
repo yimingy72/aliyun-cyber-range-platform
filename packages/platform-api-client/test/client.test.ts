@@ -3,6 +3,37 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('PlatformApiClient', () => {
+  it('loads a range template from the detail endpoint', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/scenarios/tpl%2F1');
+      expect(init?.method).toBe('GET');
+
+      return new Response(
+        JSON.stringify({
+          id: 'tpl/1',
+          status: 'private',
+          revision: 3,
+          topologyGraph: { schemaVersion: '2.0.0', nodes: [{ id: 'ecs-1' }], edges: [] },
+        }),
+        { status: 200 },
+      );
+    });
+    const client = new PlatformApiClient({
+      baseUrl: 'https://platform.example',
+      token: 'token-1',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.getRangeTemplate('tpl/1')).resolves.toEqual(
+      expect.objectContaining({
+        id: 'tpl/1',
+        revision: 3,
+        topologyGraph: expect.objectContaining({ nodes: [{ id: 'ecs-1' }] }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('maps range launch and operation headers', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/ranges/launch');

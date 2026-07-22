@@ -51,6 +51,7 @@ describe('syncTopologySpecFromNodes', () => {
       {
         key: 'ecs-core-1',
         name: '业务 ECS',
+        hostName: 'core-entry',
         zoneKey: 'core',
         role: 'entry',
         privateIp: '10.0.0.10',
@@ -141,6 +142,7 @@ describe('syncTopologySpecFromNodes', () => {
       {
         key: 'ecs-app-1',
         name: '应用主机',
+        hostName: 'app-01',
         zoneKey: 'app',
         role: 'entry',
         privateIp: '10.77.20.10',

@@ -38,6 +38,7 @@ import {
   ListBillingLineItemsFilter,
   SingleInstanceNetworkProfileRecord,
   SingleInstanceBatchRecord,
+  TemplateRevisionConflictError,
   UpsertImageSnapshotsInput,
   UpsertSingleInstanceNetworkProfileInput,
   UpdateBillingLedgerResourceInput,
@@ -46,7 +47,6 @@ import {
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
   UpdateRangeInstanceInput,
-  UpdateRangeTemplateInput,
 } from '../../src/admin/admin.repository';
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
 
@@ -396,6 +396,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         outputSchema: clone(input.outputSchema ?? {}),
         defaultNetworkPolicy: cloneIfDefined(input.defaultNetworkPolicy ?? null),
         visibility: input.visibility ?? 'private',
+        revision: 1,
         currentDraftVersionId: draftVersion.id,
         currentPublishedVersionId: null,
         currentDraftVersion: null,
@@ -424,102 +425,135 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return record ? clone(record) : null;
     },
-    async updateRangeTemplate(id: string, input: UpdateRangeTemplateInput) {
+    async updateRangeTemplateMetadata(id, input) {
       const record = rangeTemplates.find((template) => template.id === id)!;
-      const draftVersion = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
 
-      assignIfDefined(record, 'name', input.name);
-      assignIfDefined(record, 'description', input.description);
-      assignIfDefined(record, 'slug', input.slug);
-      assignIfDefined(record, 'version', input.version);
-      assignIfDefined(record, 'ownerUserId', input.ownerUserId);
-      assignIfDefined(record, 'visibility', input.visibility);
-      assignIfDefined(record, 'cloudProvider', input.cloudProvider);
-      assignIfDefined(record, 'iacType', input.iacType);
-      assignIfDefined(record, 'modulePathOrRef', input.modulePathOrRef);
-      assignClonedIfDefined(record, 'topologySpec', input.topologySpec);
-      assignClonedIfDefined(record, 'topologyGraph', input.topologyGraph);
-      assignClonedIfDefined(record, 'scenarioTemplateSpec', input.scenarioTemplateSpec);
-      assignClonedIfDefined(record, 'compiledProvisionSpec', input.compiledProvisionSpec);
-      assignClonedIfDefined(record, 'compiledSpec', input.compiledSpec);
-      assignClonedIfDefined(record, 'variableSchema', input.variableSchema);
-      assignClonedIfDefined(record, 'outputSchema', input.outputSchema);
-      assignClonedIfDefined(record, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
-      record.updatedAt = now();
-
-      assignIfDefined(draftVersion, 'version', input.version);
-      assignIfDefined(draftVersion, 'modulePathOrRef', input.modulePathOrRef);
-      assignClonedIfDefined(draftVersion, 'topologySpec', input.topologySpec);
-      assignClonedIfDefined(draftVersion, 'topologyGraph', input.topologyGraph);
-      assignClonedIfDefined(draftVersion, 'scenarioTemplateSpec', input.scenarioTemplateSpec);
-      assignClonedIfDefined(draftVersion, 'compiledProvisionSpec', input.compiledProvisionSpec);
-      assignClonedIfDefined(draftVersion, 'compiledSpec', input.compiledSpec);
-      assignClonedIfDefined(draftVersion, 'variableSchema', input.variableSchema);
-      assignClonedIfDefined(draftVersion, 'outputSchema', input.outputSchema);
-      assignClonedIfDefined(draftVersion, 'defaultNetworkPolicy', input.defaultNetworkPolicy);
-      draftVersion.updatedAt = now();
-
-      record.currentDraftVersion = clone(draftVersion);
-      record.versions = cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id));
-
-      return clone(record);
-    },
-    async publishRangeTemplate(id: string) {
-      const record = rangeTemplates.find((template) => template.id === id)!;
-      const currentDraft = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
-
-      currentDraft.status = 'published';
-      currentDraft.updatedAt = now();
-
-      const nextDraft: RangeTemplateVersionRecord = {
-        ...clone(currentDraft),
-        id: nextId(),
-        status: 'draft',
-        createdAt: now(),
-        updatedAt: now(),
-      };
-
-      rangeTemplateVersions.unshift(nextDraft);
-
-      Object.assign(record, {
-        version: currentDraft.version,
-        modulePathOrRef: currentDraft.modulePathOrRef,
-        topologySpec: currentDraft.topologySpec,
-        topologyGraph: currentDraft.topologyGraph,
-        scenarioTemplateSpec: currentDraft.scenarioTemplateSpec,
-        compiledProvisionSpec: currentDraft.compiledProvisionSpec,
-        compiledSpec: currentDraft.compiledSpec,
-        variableSchema: currentDraft.variableSchema,
-        outputSchema: currentDraft.outputSchema,
-        defaultNetworkPolicy: currentDraft.defaultNetworkPolicy,
-        currentPublishedVersionId: currentDraft.id,
-        currentDraftVersionId: nextDraft.id,
-        currentPublishedVersion: clone(currentDraft),
-        currentDraftVersion: clone(nextDraft),
-        versions: cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id)),
-        updatedAt: now(),
-      });
-
-      return clone(record);
-    },
-    async unpublishRangeTemplate(id: string) {
-      const record = rangeTemplates.find((template) => template.id === id)!;
-      const currentPublished = record.currentPublishedVersionId
-        ? rangeTemplateVersions.find((item) => item.id === record.currentPublishedVersionId) ?? null
-        : null;
-
-      if (currentPublished) {
-        currentPublished.status = 'archived';
-        currentPublished.updatedAt = now();
+      if (record.revision !== input.expectedRevision) {
+        throw new TemplateRevisionConflictError();
       }
 
-      Object.assign(record, {
-        currentPublishedVersionId: null,
-        currentPublishedVersion: null,
-        versions: cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id)),
-        updatedAt: now(),
-      });
+      const changed =
+        (input.name !== undefined && input.name !== record.name) ||
+        (input.description !== undefined && input.description !== record.description);
 
+      if (changed) {
+        assignIfDefined(record, 'name', input.name);
+        assignIfDefined(record, 'description', input.description);
+        record.revision += 1;
+        record.updatedAt = now();
+      }
+
+      return clone(record);
+    },
+    async saveRangeTemplateTopology(id, input) {
+      const record = rangeTemplates.find((template) => template.id === id)!;
+
+      if (record.revision !== input.expectedRevision) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      const draftVersion = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
+      const topologyChanged =
+        JSON.stringify(draftVersion.topologySpec) !== JSON.stringify(input.topologySpec) ||
+        JSON.stringify(draftVersion.topologyGraph) !== JSON.stringify(input.topologyGraph) ||
+        JSON.stringify(draftVersion.scenarioTemplateSpec) !== JSON.stringify(input.scenarioTemplateSpec) ||
+        JSON.stringify(draftVersion.compiledProvisionSpec) !== JSON.stringify(input.compiledProvisionSpec) ||
+        JSON.stringify(draftVersion.compiledSpec) !== JSON.stringify(input.compiledSpec);
+
+      if (topologyChanged) {
+        Object.assign(draftVersion, {
+          topologySpec: clone(input.topologySpec),
+          topologyGraph: clone(input.topologyGraph),
+          scenarioTemplateSpec: clone(input.scenarioTemplateSpec),
+          compiledProvisionSpec: clone(input.compiledProvisionSpec),
+          compiledSpec: clone(input.compiledSpec),
+          updatedAt: now(),
+        });
+
+        const publishedVersion = record.currentPublishedVersionId
+          ? rangeTemplateVersions.find((item) => item.id === record.currentPublishedVersionId) ?? null
+          : null;
+        if (publishedVersion) {
+          publishedVersion.status = 'archived';
+          publishedVersion.updatedAt = now();
+        }
+
+        Object.assign(record, {
+          topologySpec: clone(input.topologySpec),
+          topologyGraph: clone(input.topologyGraph),
+          scenarioTemplateSpec: clone(input.scenarioTemplateSpec),
+          compiledProvisionSpec: clone(input.compiledProvisionSpec),
+          compiledSpec: clone(input.compiledSpec),
+          visibility: 'private',
+          currentPublishedVersionId: null,
+          currentPublishedVersion: null,
+          currentDraftVersion: clone(draftVersion),
+          revision: record.revision + 1,
+          updatedAt: now(),
+        });
+        record.versions = cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id));
+      }
+
+      return clone(record);
+    },
+    async publishRangeTemplateToPlatform(id, expectedRevision) {
+      const record = rangeTemplates.find((template) => template.id === id)!;
+
+      if (record.revision !== expectedRevision) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      if (record.currentPublishedVersionId && record.visibility === 'platform') {
+        return clone(record);
+      }
+
+      if (!record.currentPublishedVersionId) {
+        const currentDraft = rangeTemplateVersions.find((item) => item.id === record.currentDraftVersionId)!;
+        rangeTemplateVersions
+          .filter((item) => item.templateId === id && item.status === 'published')
+          .forEach((item) => {
+            item.status = 'archived';
+            item.updatedAt = now();
+          });
+        currentDraft.status = 'published';
+        currentDraft.updatedAt = now();
+
+        const nextDraft: RangeTemplateVersionRecord = {
+          ...clone(currentDraft),
+          id: nextId(),
+          status: 'draft',
+          createdAt: now(),
+          updatedAt: now(),
+        };
+        rangeTemplateVersions.unshift(nextDraft);
+        Object.assign(record, {
+          currentPublishedVersionId: currentDraft.id,
+          currentDraftVersionId: nextDraft.id,
+          currentPublishedVersion: clone(currentDraft),
+          currentDraftVersion: clone(nextDraft),
+        });
+      }
+
+      record.visibility = 'platform';
+      record.revision += 1;
+      record.updatedAt = now();
+      record.versions = cloneList(rangeTemplateVersions.filter((item) => item.templateId === record.id));
+      return clone(record);
+    },
+    async unshareRangeTemplate(id, expectedRevision) {
+      const record = rangeTemplates.find((template) => template.id === id)!;
+
+      if (record.revision !== expectedRevision) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      if (record.visibility === 'private') {
+        return clone(record);
+      }
+
+      record.visibility = 'private';
+      record.revision += 1;
+      record.updatedAt = now();
       return clone(record);
     },
     async deleteRangeTemplate(id: string) {

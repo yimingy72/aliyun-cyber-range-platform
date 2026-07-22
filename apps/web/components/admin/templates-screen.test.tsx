@@ -11,8 +11,6 @@ const {
   createRangeTemplateMock,
   launchRangeInstanceMock,
   updateRangeTemplateMock,
-  publishRangeTemplateMock,
-  unpublishRangeTemplateMock,
   shareRangeTemplateMock,
   unshareRangeTemplateMock,
   deleteRangeTemplateMock,
@@ -25,8 +23,6 @@ const {
   createRangeTemplateMock: vi.fn(),
   launchRangeInstanceMock: vi.fn(),
   updateRangeTemplateMock: vi.fn(),
-  publishRangeTemplateMock: vi.fn(),
-  unpublishRangeTemplateMock: vi.fn(),
   shareRangeTemplateMock: vi.fn(),
   unshareRangeTemplateMock: vi.fn(),
   deleteRangeTemplateMock: vi.fn(),
@@ -51,8 +47,6 @@ vi.mock('../../lib/admin-api', async () => {
     createRangeTemplate: createRangeTemplateMock,
     launchRangeInstance: launchRangeInstanceMock,
     updateRangeTemplate: updateRangeTemplateMock,
-    publishRangeTemplate: publishRangeTemplateMock,
-    unpublishRangeTemplate: unpublishRangeTemplateMock,
     shareRangeTemplate: shareRangeTemplateMock,
     unshareRangeTemplate: unshareRangeTemplateMock,
     deleteRangeTemplate: deleteRangeTemplateMock,
@@ -64,6 +58,7 @@ vi.mock('next/navigation', () => ({
     push: pushMock,
     replace: replaceMock,
   }),
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 vi.mock('./use-admin-session', () => ({
@@ -89,40 +84,28 @@ const bootstrapPayload = {
       name: '企业攻防靶场',
       ownerUserId: 'admin-user',
       visibility: 'platform',
+      status: 'published',
+      revision: 3,
       slug: 'enterprise-range',
-      version: 'v1.0.0',
-      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-      currentDraftVersionId: 'draft-1',
-      currentPublishedVersionId: 'published-1',
-      currentDraftVersion: {
-        id: 'draft-1',
-        status: 'draft',
-        version: 'v1.1.0',
-        topologyGraph: {
-          schemaVersion: '1.0.0',
-          nodes: [{ id: 'host-1' }, { id: 'switch-1' }, { id: 'nat-1' }],
-          edges: [],
-        },
-        topologySpec: {
-          vpcCidr: '10.70.0.0/16',
-          networkZones: [
-            { key: 'dmz', name: 'DMZ', purpose: 'dmz', cidr: '10.70.10.0/24' },
-            { key: 'office', name: 'Office', purpose: 'office', cidr: '10.70.20.0/24' },
-          ],
-          hosts: [
-            { key: 'dmz-entry', name: 'DMZ', zoneKey: 'dmz', role: 'entry', privateIp: '10.70.10.10' },
-            { key: 'office-1', name: 'Office 1', zoneKey: 'office', role: 'workstation', privateIp: '10.70.20.10' },
-          ],
-          publicEntry: {
-            hostKey: 'dmz-entry',
-            protocols: [{ protocol: 'ssh', port: 22 }],
-          },
-        },
+      topologyGraph: {
+        schemaVersion: '1.0.0',
+        nodes: [{ id: 'host-1' }, { id: 'switch-1' }, { id: 'nat-1' }],
+        edges: [],
       },
-      currentPublishedVersion: {
-        id: 'published-1',
-        status: 'published',
-        version: 'v1.0.0',
+      topologySpec: {
+        vpcCidr: '10.70.0.0/16',
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', purpose: 'dmz', cidr: '10.70.10.0/24' },
+          { key: 'office', name: 'Office', purpose: 'office', cidr: '10.70.20.0/24' },
+        ],
+        hosts: [
+          { key: 'dmz-entry', name: 'DMZ', zoneKey: 'dmz', role: 'entry', privateIp: '10.70.10.10' },
+          { key: 'office-1', name: 'Office 1', zoneKey: 'office', role: 'workstation', privateIp: '10.70.20.10' },
+        ],
+        publicEntry: {
+          hostKey: 'dmz-entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
       },
     },
     {
@@ -130,31 +113,23 @@ const bootstrapPayload = {
       name: '办公网横向移动靶场',
       ownerUserId: 'admin-user',
       visibility: 'private',
+      status: 'private',
+      revision: 5,
       slug: 'office-lateral-range',
-      version: 'v0.9.0',
-      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-      currentDraftVersionId: 'draft-2',
-      currentPublishedVersionId: null,
-      currentDraftVersion: {
-        id: 'draft-2',
-        status: 'draft',
-        version: 'v0.9.0',
-        topologyGraph: {
-          schemaVersion: '1.0.0',
-          nodes: [{ id: 'host-2' }, { id: 'switch-2' }],
-          edges: [],
-        },
-        topologySpec: {
-          vpcCidr: '10.90.0.0/16',
-          networkZones: [{ key: 'office', name: 'Office', purpose: 'office', cidr: '10.90.10.0/24' }],
-          hosts: [{ key: 'office-client', name: 'Office Client', zoneKey: 'office', role: 'workstation', privateIp: '10.90.10.10' }],
-          publicEntry: {
-            hostKey: 'office-client',
-            protocols: [{ protocol: 'rdp', port: 3389 }],
-          },
+      topologyGraph: {
+        schemaVersion: '1.0.0',
+        nodes: [{ id: 'host-2' }, { id: 'switch-2' }],
+        edges: [],
+      },
+      topologySpec: {
+        vpcCidr: '10.90.0.0/16',
+        networkZones: [{ key: 'office', name: 'Office', purpose: 'office', cidr: '10.90.10.0/24' }],
+        hosts: [{ key: 'office-client', name: 'Office Client', zoneKey: 'office', role: 'workstation', privateIp: '10.90.10.10' }],
+        publicEntry: {
+          hostKey: 'office-client',
+          protocols: [{ protocol: 'rdp', port: 3389 }],
         },
       },
-      currentPublishedVersion: null,
     },
   ],
 };
@@ -165,13 +140,12 @@ beforeEach(() => {
   createRangeTemplateMock.mockReset();
   launchRangeInstanceMock.mockReset();
   updateRangeTemplateMock.mockReset();
-  publishRangeTemplateMock.mockReset();
-  unpublishRangeTemplateMock.mockReset();
   shareRangeTemplateMock.mockReset();
   unshareRangeTemplateMock.mockReset();
   deleteRangeTemplateMock.mockReset();
   pushMock.mockReset();
   replaceMock.mockReset();
+  window.history.replaceState(null, '', '/admin/scenarios');
   sessionState.profile = {
     id: 'admin-user',
     username: 'admin',
@@ -197,9 +171,10 @@ describe('TemplatesScreen', () => {
     expect(screen.getByRole('button', { name: '平台拓扑' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '我的拓扑' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '新建靶场' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '全部编排' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '已发布' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '草稿中' })).toBeTruthy();
+    expect(screen.queryByRole('tablist', { name: '靶场编排状态筛选' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '全部编排' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '已发布' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '私有' })).toBeNull();
     expect(screen.getByRole('textbox', { name: '筛选靶场名' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: '筛选靶场标识' })).toBeNull();
     expect(screen.getByText('靶场列表')).toBeTruthy();
@@ -227,9 +202,10 @@ describe('TemplatesScreen', () => {
     expect(screen.queryByText('主操作始终是“进入编排”，其他动作收进行级操作里。')).toBeNull();
     expect(screen.queryByText('模板总数')).toBeNull();
     expect(screen.queryByText('靶场模板与拓扑编辑')).toBeNull();
-    expect(screen.getByText('已发布 1')).toBeTruthy();
-    expect(screen.getByText('草稿 1')).toBeTruthy();
-    expect(screen.getByText('总节点 5')).toBeTruthy();
+    expect(screen.queryByLabelText('靶场编排统计')).toBeNull();
+    expect(screen.queryByText('已发布 1')).toBeNull();
+    expect(screen.queryByText('私有 1')).toBeNull();
+    expect(screen.queryByText('总节点 5')).toBeNull();
     expect(screen.getAllByText('admin').length).toBeGreaterThan(0);
     expect(screen.queryByText('已发布 v1.0.0')).toBeNull();
 
@@ -253,17 +229,52 @@ describe('TemplatesScreen', () => {
 
     const listTitle = screen.getByText('靶场列表');
     const searchField = screen.getByRole('textbox', { name: '筛选靶场名' });
+    const viewTabs = screen.getByRole('tablist', { name: '靶场编排视图' });
+    const controlsActions = viewTabs.closest('.template-workbench-controls-actions');
     const shell = listTitle.closest('.template-workbench-shell');
     expect(shell).toBeTruthy();
     expect(shell?.contains(searchField)).toBe(true);
+    expect(controlsActions).toBeTruthy();
+    expect(controlsActions?.contains(screen.getByRole('button', { name: '新建靶场' }))).toBe(true);
+    expect(controlsActions?.lastElementChild).toBe(screen.getByRole('button', { name: '新建靶场' }));
+    expect(globalsCss).toMatch(
+      /\.template-workbench-controls-actions\s*\{[\s\S]*margin-left:\s*auto;/m,
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: '草稿中' }));
+    fireEvent.change(searchField, { target: { value: '办公网' } });
 
     expect(screen.queryByText('企业攻防靶场')).toBeNull();
     expect(screen.getByText('办公网横向移动靶场')).toBeTruthy();
   });
 
-  it('splits 平台拓扑 and 我的拓扑 while keeping 发布版本 and 发布到平台 as separate actions', async () => {
+  it('keeps the selected topology view after refresh without navigating away', async () => {
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
+    );
+
+    const firstRender = render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    fireEvent.click(screen.getByRole('button', { name: '平台拓扑' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '平台拓扑' }).getAttribute('aria-pressed')).toBe('true');
+      expect(window.location.search).toBe('?view=platform');
+    });
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
+
+    firstRender.unmount();
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(screen.getByRole('button', { name: '平台拓扑' }).getAttribute('aria-pressed')).toBe('true');
+    expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
+    expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('splits 平台拓扑 and 我的拓扑 while keeping 发布到平台 as a list action', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
     );
@@ -276,17 +287,18 @@ describe('TemplatesScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '平台拓扑' }));
     expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
     expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
+    expect(screen.getByRole('button', { name: '新建靶场' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '我的拓扑' }));
     expect(await screen.findByText('办公网横向移动靶场')).toBeTruthy();
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '发布版本' })).toBeTruthy();
+    const privateRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(privateRow).toBeTruthy();
+    fireEvent.click(within(privateRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '发布到平台' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '取消发布' })).toBeNull();
     expect(screen.queryByRole('button', { name: '回退为私有' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
   });
 
   it('still lets admins manage templates from the 平台拓扑 view', async () => {
@@ -303,7 +315,7 @@ describe('TemplatesScreen', () => {
     fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
 
     expect(screen.getByRole('button', { name: '编辑信息' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '取消发布' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '取消发布' })).toBeNull();
     expect(screen.getByRole('button', { name: '回退为私有' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除模板' })).toBeTruthy();
   });
@@ -402,15 +414,9 @@ describe('TemplatesScreen', () => {
     expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
   });
 
-  it('creates a template from minimal metadata and jumps directly into the topology editor', async () => {
+  it('opens a local new-template editor without calling the create API', async () => {
     fetchRangeTemplatesMock.mockResolvedValue([]);
-    createRangeTemplateMock.mockResolvedValue({
-      id: 'template-2',
-      slug: 'enterprise-range-v2',
-      version: 'v2',
-      name: '企业攻防靶场 V2',
-      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-    });
+    window.sessionStorage.clear();
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -428,41 +434,22 @@ describe('TemplatesScreen', () => {
     });
     fireEvent.click(within(dialog).getByRole('button', { name: '创建并进入编排' }));
 
-    await waitFor(() => {
-      expect(createRangeTemplateMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        expect.objectContaining({
-          name: '企业攻防靶场 V2',
-          description: '用于综合渗透训练的企业网络靶场',
-          slug: 'v2',
-          version: 'v1',
-          topologySpec: expect.objectContaining({
-            vpcCidr: '10.0.0.0/16',
-            publicEntry: expect.objectContaining({ hostKey: 'ecs-core-1' }),
-          }),
-        }),
-      );
+    expect(createRangeTemplateMock).not.toHaveBeenCalled();
+    expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/new');
+    expect(JSON.parse(window.sessionStorage.getItem('template-editor:new-template') ?? '{}')).toEqual({
+      name: '企业攻防靶场 V2',
+      description: '用于综合渗透训练的企业网络靶场',
     });
-
-    expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-2');
   });
 
-  it('keeps edit and publish actions inside the row action menu', async () => {
+  it('keeps edit and share actions inside the row action menu', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
     );
     updateRangeTemplateMock.mockResolvedValue({
       ...bootstrapPayload.rangeTemplates[0],
-      version: 'v1.1.0',
+      revision: 4,
     });
-    publishRangeTemplateMock.mockResolvedValue({
-      ...bootstrapPayload.rangeTemplates[0],
-      currentPublishedVersionId: 'published-2',
-      currentPublishedVersion: { id: 'published-2', status: 'published', version: 'v1.1.0' },
-      currentDraftVersion: { id: 'draft-2', status: 'draft', version: 'v1.1.0' },
-    });
-
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
     await screen.findByText('企业攻防靶场');
@@ -472,7 +459,8 @@ describe('TemplatesScreen', () => {
     fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByText('企业攻防靶场').closest('.template-workbench-row')?.className.includes('is-menu-open')).toBe(true);
     expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
-    expect(screen.getByRole('button', { name: '取消发布' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '取消发布' })).toBeNull();
+    expect(screen.getByRole('button', { name: '回退为私有' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
     const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
     expect(within(editDialog).queryByLabelText('编排标识')).toBeNull();
@@ -489,23 +477,19 @@ describe('TemplatesScreen', () => {
         'dev-admin-token',
         'template-1',
         expect.objectContaining({
-          slug: 'enterprise-range',
-          version: 'v1.0.0',
+          name: '企业攻防靶场',
           description: '更新后的靶场描述',
+          expectedRevision: 3,
         }),
       );
     });
     expect(screen.getByText('靶场信息已保存。')).toBeTruthy();
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '发布版本' }));
-
-    await waitFor(() => {
-      expect(publishRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-2');
-    });
-    expect(screen.getByText('靶场模板已发布。')).toBeTruthy();
+    const privateRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
+    expect(privateRow).toBeTruthy();
+    fireEvent.click(within(privateRow!).getByRole('button', { name: '更多操作' }));
+    expect(screen.getByRole('button', { name: '发布到平台' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
   });
 
   it('dismisses the success banner when the user clicks another button', async () => {
@@ -537,7 +521,7 @@ describe('TemplatesScreen', () => {
       expect(screen.getByText('靶场信息已保存。')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '草稿中' }));
+    fireEvent.click(screen.getByRole('button', { name: '我的拓扑' }));
 
     expect(screen.queryByText('靶场信息已保存。')).toBeNull();
   });
@@ -571,14 +555,15 @@ describe('TemplatesScreen', () => {
     expect(within(publishedDialog).queryByLabelText('状态')).toBeNull();
   });
 
-  it('shows 取消发布 for published scenarios and calls the explicit unpublish action', async () => {
+  it('shows 回退为私有 for shared scenarios and calls the explicit unshare action', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
     );
-    unpublishRangeTemplateMock.mockResolvedValue({
+    unshareRangeTemplateMock.mockResolvedValue({
       ...bootstrapPayload.rangeTemplates[0],
-      currentPublishedVersionId: null,
-      currentPublishedVersion: null,
+      visibility: 'private',
+      status: 'private',
+      revision: 4,
     });
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
@@ -589,21 +574,24 @@ describe('TemplatesScreen', () => {
     expect(publishedRow).toBeTruthy();
 
     fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '取消发布' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '回退为私有' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '取消发布' }));
-    expect(screen.getByRole('dialog', { name: '确认取消发布' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '确认取消发布' }));
+    fireEvent.click(screen.getByRole('button', { name: '回退为私有' }));
 
     await waitFor(() => {
-      expect(unpublishRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1');
+      expect(unshareRangeTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'template-1',
+        { expectedRevision: 3 },
+      );
     });
 
     await waitFor(() => {
-      expect(within(publishedRow!).getByText('草稿')).toBeTruthy();
+      expect(within(publishedRow!).getByText('私有')).toBeTruthy();
     });
-    expect(screen.getByText('已取消发布。')).toBeTruthy();
+    expect(screen.getByText('已回退为私有。')).toBeTruthy();
   });
 
   it('shows explicit dependency guidance in the delete template dialog', async () => {
@@ -659,9 +647,11 @@ describe('TemplatesScreen', () => {
     cloneRangeTemplateMock.mockResolvedValue({
       id: 'template-3',
       name: '企业攻防靶场 副本',
+      ownerUserId: 'admin-user',
+      visibility: 'private',
+      status: 'private',
+      revision: 1,
       slug: 'enterprise-range-copy',
-      version: 'v1.0.0',
-      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
     });
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
@@ -722,7 +712,7 @@ describe('TemplatesScreen', () => {
         {
           templateId: 'template-2',
           name: '办公网横向移动靶场-测试实例',
-          expiresAt: '2026-07-09T12:30:00.000Z',
+          expiresAt: '2026-07-09T20:30:00.000Z',
         },
       );
     });
@@ -775,13 +765,15 @@ describe('TemplatesScreen', () => {
     });
   });
 
-  it('routes 发布到平台 through the dedicated share action instead of the version publish action', async () => {
+  it('publishes a private topology through the dedicated share action with its revision', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
     );
     shareRangeTemplateMock.mockResolvedValue({
       ...bootstrapPayload.rangeTemplates[1],
       visibility: 'platform',
+      status: 'published',
+      revision: 6,
     });
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
@@ -794,8 +786,12 @@ describe('TemplatesScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
 
     await waitFor(() => {
-      expect(shareRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-2');
+      expect(shareRangeTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'template-2',
+        { expectedRevision: 5 },
+      );
     });
-    expect(publishRangeTemplateMock).not.toHaveBeenCalled();
   });
 });

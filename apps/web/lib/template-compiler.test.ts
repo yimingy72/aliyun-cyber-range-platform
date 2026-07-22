@@ -348,6 +348,7 @@ describe('compileTopologyGraph', () => {
       'memory',
       'networkInterfaces',
       'nics',
+      'platformImageAssetId',
       'portGroups',
       'privateIp',
       'role',

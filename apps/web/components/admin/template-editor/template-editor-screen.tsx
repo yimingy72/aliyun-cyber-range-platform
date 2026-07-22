@@ -2,16 +2,17 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 
 import {
   AdminApiError,
+  createRangeTemplate,
   fetchRangeTemplateById,
   fetchInstanceTypeAvailability,
   fetchPlatformImages,
-  publishRangeTemplate,
-  updateRangeTemplate,
-  validateRangeTemplate,
+  shareRangeTemplate,
+  validateAndSaveRangeTemplate,
 } from '../../../lib/admin-api';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset, RangeTemplate } from '../../../lib/admin-types';
 import type { ScenarioTemplateMetadata } from '../../../lib/scenario-template-spec';
@@ -49,9 +50,10 @@ export type TemplateEdge = ScenarioGraphEdge;
 type TemplateEditorEcsNode = EcsTemplateNode & { platformImageAssetId?: string };
 const SCENARIO_GRAPH_SCHEMA_VERSION = '2.0.0';
 const DEFAULT_SWITCH_CIDRS = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'] as const;
-const DRAFT_CACHE_PREFIX = 'template-editor:draft-cache';
+const TOPOLOGY_CACHE_PREFIX = 'template-editor:topology-cache';
+const NEW_TEMPLATE_SESSION_KEY = 'template-editor:new-template';
 
-type DraftCachePayload = {
+type TopologyCachePayload = {
   topologyGraph: DraftTopologyGraph;
   persistedGraphSignature: string;
 };
@@ -120,19 +122,15 @@ function readFinalInstanceType(node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'i
   );
 }
 
-function readDraftVersionId(template: RangeTemplate | null | undefined) {
-  return template?.currentDraftVersion?.id ?? template?.currentDraftVersionId ?? null;
-}
-
-function readDraftCacheKey(template: RangeTemplate | null | undefined, fallbackTemplateId?: string) {
+function readTopologyCacheKey(template: RangeTemplate | null | undefined, fallbackTemplateId?: string) {
   const resolvedTemplateId = template?.id ?? fallbackTemplateId ?? null;
-  const draftVersionId = readDraftVersionId(template);
+  const revision = template?.revision ?? null;
 
-  if (!resolvedTemplateId || !draftVersionId) {
+  if (!resolvedTemplateId || revision === null) {
     return null;
   }
 
-  return `${DRAFT_CACHE_PREFIX}:${resolvedTemplateId}:${draftVersionId}`;
+  return `${TOPOLOGY_CACHE_PREFIX}:${resolvedTemplateId}:${revision}`;
 }
 
 function readTopologyGraphFromCache(
@@ -151,7 +149,7 @@ function readTopologyGraphFromCache(
     }
 
     const parsedValue = JSON.parse(rawValue) as
-      | DraftCachePayload
+      | TopologyCachePayload
       | Partial<DraftTopologyGraph>
       | null;
 
@@ -208,7 +206,7 @@ function writeTopologyGraphToCache(
     JSON.stringify({
       topologyGraph,
       persistedGraphSignature,
-    } satisfies DraftCachePayload),
+    } satisfies TopologyCachePayload),
   );
 }
 
@@ -221,7 +219,7 @@ function removeTopologyGraphCache(cacheKey: string | null) {
 }
 
 function readTemplateTopologyGraph(template: RangeTemplate | null) {
-  const topologyGraph = template?.currentDraftVersion?.topologyGraph;
+  const topologyGraph = template?.topologyGraph;
   return topologyGraph && typeof topologyGraph === 'object' ? topologyGraph : null;
 }
 
@@ -237,7 +235,7 @@ function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTempl
   );
 
   return (
-    readTopologyGraphFromCache(readDraftCacheKey(template, fallbackTemplateId), currentPersistedGraphSignature) ??
+    readTopologyGraphFromCache(readTopologyCacheKey(template, fallbackTemplateId), currentPersistedGraphSignature) ??
     persistedTopologyGraph
   );
 }
@@ -693,13 +691,51 @@ function buildScenarioTemplateMetadata(template: RangeTemplate): ScenarioTemplat
   return {
     name: template.name ?? template.slug,
     slug: template.slug,
-    version: template.version,
+    version: 'v1',
     cloudProvider: 'alibaba_cloud',
     iacType: 'opentofu',
   };
 }
 
-function readSaveDraftErrorMessage(error: unknown) {
+function readNewTemplateSession(): RangeTemplate {
+  let seed: { name?: unknown; description?: unknown } = {};
+
+  if (typeof window !== 'undefined') {
+    try {
+      seed = JSON.parse(window.sessionStorage.getItem(NEW_TEMPLATE_SESSION_KEY) ?? '{}') as typeof seed;
+    } catch {
+      seed = {};
+    }
+  }
+
+  return {
+    id: 'new',
+    name: typeof seed.name === 'string' && seed.name.trim() ? seed.name.trim() : '未命名拓扑',
+    description: typeof seed.description === 'string' ? seed.description.trim() : '',
+    slug: 'new-template',
+    visibility: 'private',
+    status: 'private',
+    revision: 0,
+    topologyGraph: {
+      schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
+      nodes: [],
+      edges: [],
+    },
+  };
+}
+
+function readInitialTemplate(
+  providedTemplate: RangeTemplate | undefined,
+  templateId: string | undefined,
+) {
+  if (providedTemplate) {
+    return providedTemplate;
+  }
+
+  return templateId === 'new' ? readNewTemplateSession() : null;
+}
+
+function readPersistTopologyErrorMessage(error: unknown) {
   if (error instanceof AdminApiError) {
     const details = error.details;
 
@@ -707,26 +743,26 @@ function readSaveDraftErrorMessage(error: unknown) {
       const message = (details as { message?: unknown }).message;
 
       if (Array.isArray(message) && message.every((item) => typeof item === 'string')) {
-        return `草稿保存失败：${message.join('；')}`;
+        return `拓扑保存失败：${message.join('；')}`;
       }
 
       if (typeof message === 'string' && message.trim().length > 0) {
-        return `草稿保存失败：${message}`;
+        return `拓扑保存失败：${message}`;
       }
     }
 
     if (error.message.trim().length > 0) {
-      return `草稿保存失败：${error.message}`;
+      return `拓扑保存失败：${error.message}`;
     }
   }
 
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message.startsWith('拓扑检测未通过')
       ? error.message
-      : `草稿保存失败：${error.message}`;
+      : `拓扑保存失败：${error.message}`;
   }
 
-  return '草稿保存失败，请稍后重试';
+  return '拓扑保存失败，请稍后重试';
 }
 
 function readInvalidCustomPasswordMessage(nodes: TemplateNode[]) {
@@ -947,9 +983,16 @@ export function TemplateEditorScreen({
   template: providedTemplate,
 }: TemplateEditorScreenProps) {
   const session = useAdminSession();
-  const [template, setTemplate] = useState<RangeTemplate | null>(providedTemplate ?? null);
-  const [nodes, setNodes] = useState<TemplateNode[]>(() => readNodesFromTemplate(providedTemplate ?? null, templateId));
-  const [edges, setEdges] = useState<TemplateEdge[]>(() => readEdgesFromTemplate(providedTemplate ?? null, templateId));
+  const router = useRouter();
+  const [template, setTemplate] = useState<RangeTemplate | null>(() =>
+    readInitialTemplate(providedTemplate, templateId),
+  );
+  const [nodes, setNodes] = useState<TemplateNode[]>(() =>
+    readNodesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
+  );
+  const [edges, setEdges] = useState<TemplateEdge[]>(() =>
+    readEdgesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
+  );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [pendingLinkSourceNodeId, setPendingLinkSourceNodeId] = useState<string | null>(null);
@@ -959,15 +1002,14 @@ export function TemplateEditorScreen({
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(
     null,
   );
-  const draftCacheKey = useMemo(() => readDraftCacheKey(template, templateId), [template, templateId]);
+  const topologyCacheKey = useMemo(() => readTopologyCacheKey(template, templateId), [template, templateId]);
   const graphSignature = useMemo(() => readGraphSignature(nodes, edges), [edges, nodes]);
   const lastPersistedGraphRef = useRef(
     readGraphSignature(
-      readNodesFromTemplate(providedTemplate ?? null, templateId),
-      readEdgesFromTemplate(providedTemplate ?? null, templateId),
+      readNodesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
+      readEdgesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
     ),
   );
-  const lastValidatedDraftRef = useRef<{ draftVersionId: string | null; graphSignature: string } | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
 
   function applyTemplateState(nextTemplate: RangeTemplate | null) {
@@ -1167,53 +1209,6 @@ function buildDraftUpdatePayload(
     };
   }
 
-  async function persistDraft(options?: {
-    silent?: boolean;
-    successMessage?: string;
-    errorMessage?: string;
-    mode?: 'graph' | 'validated';
-  }) {
-    if (!template || !session.token) {
-      return;
-    }
-
-    const silent = options?.silent ?? false;
-    const successMessage = options?.successMessage ?? '草稿已保存';
-    const errorMessage = options?.errorMessage ?? '草稿自动保存失败，请手动保存';
-    const mode = options?.mode ?? 'graph';
-    const nextGraphSignature = graphSignature;
-
-    if (silent && nextGraphSignature === lastPersistedGraphRef.current) {
-      return;
-    }
-
-    setIsSubmitting(true);
-
-    try {
-      const payload =
-        mode === 'validated'
-          ? buildValidatedDraftPayload(template, nodes, edges)
-          : buildDraftUpdatePayload(nodes, edges);
-      const nextTemplate = await updateRangeTemplate(apiBaseUrl, session.token, template.id, payload);
-
-      applyTemplateState(nextTemplate);
-
-      if (!silent) {
-        setStatusMessage(successMessage);
-      }
-
-      return nextTemplate;
-    } catch (error) {
-      if (!silent) {
-        throw error;
-      }
-
-      setStatusMessage(errorMessage);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
   useEffect(() => {
     if (providedTemplate) {
       applyTemplateState(providedTemplate);
@@ -1221,7 +1216,7 @@ function buildDraftUpdatePayload(
   }, [providedTemplate, templateId]);
 
   useEffect(() => {
-    if (providedTemplate || !templateId || !session.isReady || !session.token) {
+    if (providedTemplate || !templateId || templateId === 'new' || !session.isReady || !session.token) {
       return;
     }
 
@@ -1359,16 +1354,16 @@ function buildDraftUpdatePayload(
   }, [apiBaseUrl, selectedEcsNode, session.isReady, session.token]);
 
   useEffect(() => {
-    if (!draftCacheKey || !template) {
+    if (!topologyCacheKey || !template) {
       return;
     }
 
-    writeTopologyGraphToCache(draftCacheKey, {
+    writeTopologyGraphToCache(topologyCacheKey, {
       schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
       nodes,
       edges,
     }, lastPersistedGraphRef.current);
-  }, [draftCacheKey, edges, nodes, template]);
+  }, [edges, nodes, template, topologyCacheKey]);
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1388,6 +1383,10 @@ function buildDraftUpdatePayload(
   }, [edges, nodes]);
 
   function handleAddNode(kind: string) {
+    if (isSubmitting) {
+      return;
+    }
+
     const nextIndex = nodes.length + 1;
     const kindCount = nodes.filter((node) => node.kind === kind).length + 1;
 
@@ -1433,6 +1432,10 @@ function buildDraftUpdatePayload(
   }
 
   function handleUpdateNode(nodeId: string, nextNode: TemplateNode) {
+    if (isSubmitting) {
+      return;
+    }
+
     setNodes((previous) =>
       previous.map((node) => {
         if (node.id !== nodeId) {
@@ -1454,6 +1457,10 @@ function buildDraftUpdatePayload(
   }
 
   function handleMoveNode(nodeId: string, position: { x: number; y: number }) {
+    if (isSubmitting) {
+      return;
+    }
+
     setNodes((previous) =>
       previous.map((node) =>
         node.id === nodeId
@@ -1490,6 +1497,10 @@ function buildDraftUpdatePayload(
   }
 
   function handleSelectNode(nodeId: string) {
+    if (isSubmitting) {
+      return;
+    }
+
     if (!pendingLinkSourceNodeId) {
       setSelectedNodeId(nodeId);
       setSelectedEdgeId(null);
@@ -1573,6 +1584,10 @@ function buildDraftUpdatePayload(
   }
 
   function handleDeleteSelectedNode() {
+    if (isSubmitting) {
+      return;
+    }
+
     if (selectedEdgeId) {
       const targetEdge = edges.find((edge) => edge.id === selectedEdgeId) ?? null;
 
@@ -1615,95 +1630,96 @@ function buildDraftUpdatePayload(
     setStatusMessage(`已删除节点：${targetNode.label}`);
   }
 
-  async function handleSaveDraft() {
-    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
-
-    if (invalidCustomPasswordMessage) {
-      setStatusMessage(invalidCustomPasswordMessage);
-      return;
-    }
-
-    const currentDraftVersionId = readDraftVersionId(template);
-    const hasValidatedCurrentGraph =
-      lastValidatedDraftRef.current?.draftVersionId === currentDraftVersionId &&
-      lastValidatedDraftRef.current.graphSignature === graphSignature;
-
-    if (!hasValidatedCurrentGraph) {
-      setStatusMessage('请先点击“检测拓扑”并通过后，再保存草稿。');
-      return;
-    }
-
-    try {
-      await persistDraft({
-        silent: false,
-        successMessage: '草稿已保存',
-        mode: 'validated',
-      });
-    } catch (error) {
-      setStatusMessage(readSaveDraftErrorMessage(error));
-    }
-  }
-
   async function handleDetectTopology() {
-    lastValidatedDraftRef.current = null;
+    if (!template || !session.token || isSubmitting) {
+      return;
+    }
+
     const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
 
     if (invalidCustomPasswordMessage) {
       setStatusMessage(invalidCustomPasswordMessage);
       return;
     }
+
+    let payload: ReturnType<typeof buildValidatedDraftPayload>;
 
     try {
-      const validatedTemplate = await persistDraft({
-        silent: false,
-        successMessage: '拓扑检测通过，可继续发布编排或创建实例',
-        errorMessage: '拓扑检测失败，请检查配置后重试',
-        mode: 'validated',
-      });
-      const validatedTemplateId = validatedTemplate?.id ?? template?.id;
-
-      if (!validatedTemplateId || !session.token) {
-        return;
-      }
-
-      await validateRangeTemplate(apiBaseUrl, session.token, validatedTemplateId);
-      lastValidatedDraftRef.current = {
-        draftVersionId: readDraftVersionId(validatedTemplate ?? template),
-        graphSignature,
-      };
+      payload = buildValidatedDraftPayload(template, nodes, edges);
     } catch (error) {
-      setStatusMessage(readSaveDraftErrorMessage(error));
-    }
-  }
-
-  async function handlePublishTemplate() {
-    if (!template || !session.token) {
-      return;
-    }
-
-    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
-
-    if (invalidCustomPasswordMessage) {
-      setStatusMessage(invalidCustomPasswordMessage);
-      return;
-    }
-
-    const currentDraftVersionId = readDraftVersionId(template);
-    const hasValidatedCurrentGraph =
-      lastValidatedDraftRef.current?.draftVersionId === currentDraftVersionId &&
-      lastValidatedDraftRef.current.graphSignature === graphSignature;
-
-    if (!hasValidatedCurrentGraph) {
-      setStatusMessage('请先点击“检测拓扑”并通过后，再发布编排。');
+      setStatusMessage(readPersistTopologyErrorMessage(error));
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const previousCacheKey = draftCacheKey;
-      const nextTemplate = await publishRangeTemplate(apiBaseUrl, session.token, template.id);
-      const nextCacheKey = readDraftCacheKey(nextTemplate, templateId);
+      const previousCacheKey = topologyCacheKey;
+      const nextTemplate =
+        template.id === 'new'
+          ? await createRangeTemplate(apiBaseUrl, session.token, {
+              name: template.name?.trim() || '未命名拓扑',
+              description: template.description?.trim() || undefined,
+              ...payload,
+            })
+          : await validateAndSaveRangeTemplate(apiBaseUrl, session.token, template.id, {
+              ...payload,
+              expectedRevision: template.revision,
+            });
+      const nextCacheKey = readTopologyCacheKey(nextTemplate, nextTemplate.id);
+
+      if (previousCacheKey && previousCacheKey !== nextCacheKey) {
+        removeTopologyGraphCache(previousCacheKey);
+      }
+
+      if (template.id === 'new' && typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(NEW_TEMPLATE_SESSION_KEY);
+      }
+
+      applyTemplateState(nextTemplate);
+      setPendingLinkSourceNodeId(null);
+      setStatusMessage('拓扑检测通过，已保存');
+
+      if (template.id === 'new') {
+        router.replace(`/admin/scenarios/${nextTemplate.id}`);
+      }
+    } catch (error) {
+      setStatusMessage(readPersistTopologyErrorMessage(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handlePublishTemplate() {
+    if (!template || !session.token || isSubmitting) {
+      return;
+    }
+
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
+
+    if (invalidCustomPasswordMessage) {
+      setStatusMessage(invalidCustomPasswordMessage);
+      return;
+    }
+
+    if (template.id === 'new' || graphSignature !== lastPersistedGraphRef.current) {
+      setStatusMessage('请先点击“检测&保存”，再发布到平台。');
+      return;
+    }
+
+    if (template.status === 'published') {
+      setStatusMessage('当前拓扑已发布到平台。');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const previousCacheKey = topologyCacheKey;
+      const nextTemplate = await shareRangeTemplate(apiBaseUrl, session.token, template.id, {
+        expectedRevision: template.revision,
+      });
+      const nextCacheKey = readTopologyCacheKey(nextTemplate, nextTemplate.id);
 
       if (previousCacheKey && previousCacheKey !== nextCacheKey) {
         removeTopologyGraphCache(previousCacheKey);
@@ -1711,7 +1727,7 @@ function buildDraftUpdatePayload(
 
       applyTemplateState(nextTemplate);
       setPendingLinkSourceNodeId(null);
-      setStatusMessage('编排已发布，并已生成新的草稿版本');
+      setStatusMessage('拓扑已发布到平台。');
     } catch (error) {
       setStatusMessage(readPublishErrorMessage(error));
     } finally {
@@ -1730,7 +1746,7 @@ function buildDraftUpdatePayload(
   }
 
   const topologyGraph = {
-    ...(template?.currentDraftVersion?.topologyGraph ?? {}),
+    ...(template?.topologyGraph ?? {}),
     schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
     nodes,
     edges,
@@ -1740,7 +1756,7 @@ function buildDraftUpdatePayload(
     return (
       <section className="admin-panel">
         <h2>正在加载靶场编排页...</h2>
-        <p className="admin-empty">请稍候，正在读取场景草稿。</p>
+        <p className="admin-empty">请稍候，正在读取当前拓扑。</p>
       </section>
     );
   }
@@ -1751,7 +1767,7 @@ function buildDraftUpdatePayload(
         <div className="template-editor-toolbar-copy">
           <h1>{template.name ?? template.slug}</h1>
           <p className="template-editor-toolbar-status">
-            {template.currentPublishedVersion ? '已发布' : '草稿'}
+            {template.status === 'published' ? '已发布' : '私有'}
           </p>
         </div>
         <div className="admin-inline-actions">
@@ -1767,17 +1783,9 @@ function buildDraftUpdatePayload(
             type="button"
             className="template-editor-toolbar-button is-neutral"
             disabled={isSubmitting}
-            onClick={() => void handleSaveDraft()}
-          >
-            保存草稿
-          </button>
-          <button
-            type="button"
-            className="template-editor-toolbar-button is-neutral"
-            disabled={isSubmitting}
             onClick={() => void handleDetectTopology()}
           >
-            检测拓扑
+            检测&保存
           </button>
           <button
             type="button"
@@ -1785,7 +1793,7 @@ function buildDraftUpdatePayload(
             disabled={isSubmitting}
             onClick={() => void handlePublishTemplate()}
           >
-            发布编排
+            发布到平台
           </button>
         </div>
       </div>

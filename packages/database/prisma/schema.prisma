@@ -377,6 +377,7 @@ model RangeTemplate {
   outputSchema             Json
   defaultNetworkPolicy     Json?
   visibility               ResourceVisibility @default(private)
+  revision                 Int             @default(1)
   currentDraftVersionId    String?         @unique
   currentPublishedVersionId String?        @unique
   createdAt                DateTime        @default(now())

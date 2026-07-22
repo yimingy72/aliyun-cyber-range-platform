@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { AdminAuthGuard } from '../src/admin/admin-auth.guard';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
@@ -28,15 +29,33 @@ describe('Range instance apply API', () => {
   let instanceId: string;
 
   beforeAll(async () => {
+    process.env.NODE_ENV = 'test';
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
+    process.env.OIDC_ISSUER = 'https://test-issuer.example/realms/cyber-range';
+    process.env.OIDC_JWKS_URL = 'https://test-issuer.example/realms/cyber-range/certs';
+    process.env.OIDC_TOKEN_ENDPOINT = 'https://test-issuer.example/realms/cyber-range/token';
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(createMemoryAdminRepository())
+      .overrideGuard(AdminAuthGuard)
+      .useValue({
+        canActivate: (context: {
+          switchToHttp(): {
+            getRequest(): Record<string, unknown>;
+          };
+        }) => {
+          const authenticatedUser = { id: 'admin', username: 'admin', role: 'admin' as const };
+          const requestContext = context.switchToHttp().getRequest();
+          requestContext.adminUser = authenticatedUser;
+          requestContext.authContext = { user: authenticatedUser, source: 'web' };
+          return true;
+        },
+      })
       .overrideProvider(SystemConfigService)
       .useValue(createSystemConfigServiceStub())
       .compile();
@@ -89,14 +108,14 @@ describe('Range instance apply API', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await app?.close();
   });
 
   it('applies a saved draft through an update job only when the instance is running', async () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' })
+      .send({})
       .expect(201);
 
     expect(response.body.jobType).toBe('update');
@@ -120,11 +139,38 @@ describe('Range instance apply API', () => {
     await request(app.getHttpServer())
       .post(`/admin/ranges/${stopped.id}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' })
+      .send({})
       .expect(409);
   });
 
-  it('syncs the instance draft back into the source template draft without creating an update job', async () => {
+  it('validates and saves the instance topology back into the private source template', async () => {
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'public',
+      snapshots: [
+        {
+          imageId: 'ubuntu_22_04_x64_20G_alibase',
+          sourceImageName: 'Ubuntu 22.04',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-22T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [imageSnapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'public',
+      imageId: 'ubuntu_22_04_x64_20G_alibase',
+    });
+    const imageAsset = await repository.collectPlatformImageAsset({
+      snapshotId: imageSnapshot!.id,
+      displayName: 'Ubuntu 22.04',
+      visibility: 'platform',
+    });
     const template = await repository.createRangeTemplate({
       name: 'Sync Template',
       slug: `sync-template-${Date.now()}`,
@@ -147,16 +193,31 @@ describe('Range instance apply API', () => {
         schemaVersion: '2.0.0',
         nodes: [
           {
+            id: 'switch-1',
+            kind: 'switch',
+            label: 'Switch 1',
+            zoneKey: 'zone-1',
+            cidr: '10.67.10.0/24',
+            purpose: 'business-zone',
+          },
+          {
             id: 'ecs-1',
             kind: 'ecs',
             label: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'host',
+            privateIp: '10.67.10.10',
+            exposePublic: true,
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
+            imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
             cpu: 2,
             memory: 2,
             instanceType: 'ecs.e-c1m1.large',
             instanceTypeStrategy: { mode: 'fixed', instanceType: 'ecs.e-c1m1.large' },
           },
         ],
-        edges: [],
+        edges: [{ id: 'edge-1', fromNodeId: 'switch-1', toNodeId: 'ecs-1' }],
       },
       scenarioTemplateSpec: {
         metadata: {
@@ -180,6 +241,8 @@ describe('Range instance apply API', () => {
             zoneKey: 'zone-1',
             role: 'host',
             image: 'ubuntu_22_04_x64_20G_alibase',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
             primaryPrivateIp: '10.67.10.10',
             exposePublic: true,
             networkInterfaces: [{ zoneKey: 'zone-1', privateIp: '10.67.10.10', deviceIndex: 0 }],
@@ -204,6 +267,8 @@ describe('Range instance apply API', () => {
             name: 'ECS 1',
             zoneKey: 'zone-1',
             role: 'host',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
             primaryPrivateIp: '10.67.10.10',
             exposePublic: true,
             networkInterfaces: [{ zoneKey: 'zone-1', privateIp: '10.67.10.10', deviceIndex: 0 }],
@@ -211,6 +276,13 @@ describe('Range instance apply API', () => {
             instanceTypePolicyKey: 'ecs-1-instance-type-policy',
           },
         ],
+        natGateways: [],
+        eips: [],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
         runtimeSelections: {
           imagePolicies: {
             'ecs-1-image-policy': { key: 'ecs-1-image-policy', mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
@@ -230,6 +302,9 @@ describe('Range instance apply API', () => {
             config: {
               cpu: 2,
               memory: 2,
+              platformImageAssetId: imageAsset.id,
+              imageId: imageAsset.imageId,
+              imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
               instanceType: 'ecs.e-c1m1.large',
               instanceTypeStrategy: { mode: 'fixed', instanceType: 'ecs.e-c1m1.large' },
             },
@@ -250,16 +325,31 @@ describe('Range instance apply API', () => {
         schemaVersion: '2.0.0',
         nodes: [
           {
+            id: 'switch-1',
+            kind: 'switch',
+            label: 'Switch 1',
+            zoneKey: 'zone-1',
+            cidr: '10.67.10.0/24',
+            purpose: 'business-zone',
+          },
+          {
             id: 'ecs-1',
             kind: 'ecs',
             label: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'host',
+            privateIp: '10.67.10.10',
+            exposePublic: true,
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
+            imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
             cpu: 2,
             memory: 4,
             instanceType: 'ecs.e-c1m2.large',
             instanceTypeStrategy: { mode: 'fixed', instanceType: 'ecs.e-c1m2.large' },
           },
         ],
-        edges: [],
+        edges: [{ id: 'edge-1', fromNodeId: 'switch-1', toNodeId: 'ecs-1' }],
       },
       draftScenarioTemplateSpec: {
         metadata: {
@@ -280,6 +370,8 @@ describe('Range instance apply API', () => {
             zoneKey: 'zone-1',
             role: 'host',
             image: 'ubuntu_22_04_x64_20G_alibase',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
             primaryPrivateIp: '10.67.10.10',
             exposePublic: true,
             networkInterfaces: [{ zoneKey: 'zone-1', privateIp: '10.67.10.10', deviceIndex: 0 }],
@@ -304,6 +396,8 @@ describe('Range instance apply API', () => {
             name: 'ECS 1',
             zoneKey: 'zone-1',
             role: 'host',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
             primaryPrivateIp: '10.67.10.10',
             exposePublic: true,
             networkInterfaces: [{ zoneKey: 'zone-1', privateIp: '10.67.10.10', deviceIndex: 0 }],
@@ -311,6 +405,13 @@ describe('Range instance apply API', () => {
             instanceTypePolicyKey: 'ecs-1-instance-type-policy',
           },
         ],
+        natGateways: [],
+        eips: [],
+        snatEntries: [],
+        dnatEntries: [],
+        securityGroupRules: [],
+        aclRules: [],
+        bootstrapScripts: [],
         runtimeSelections: {
           imagePolicies: {
             'ecs-1-image-policy': { key: 'ecs-1-image-policy', mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
@@ -325,10 +426,21 @@ describe('Range instance apply API', () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instance.id}/sync-template`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' })
-      .expect(201);
+      .send({});
 
+    expect({ status: response.status, body: response.body }).toEqual({
+      status: 201,
+      body: expect.objectContaining({ id: template.id }),
+    });
     expect(response.body.id).toBe(template.id);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        status: 'private',
+        revision: template.revision + 1,
+      }),
+    );
+    expect(response.body).not.toHaveProperty('currentDraftVersion');
+    expect(response.body).not.toHaveProperty('currentPublishedVersion');
 
     const updatedTemplate = await repository.getRangeTemplateById(template.id);
 

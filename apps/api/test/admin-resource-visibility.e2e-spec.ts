@@ -2,95 +2,104 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
+import { AdminAuthGuard } from '../src/admin/admin-auth.guard';
 import { hashPassword } from '../src/admin/admin-user-auth';
-import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
+import {
+  ADMIN_REPOSITORY,
+  type AdminRepository,
+  type CreateRangeTemplateInput,
+} from '../src/admin/admin.repository';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
-import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
-import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
 
-let repositoryForLogin: AdminRepository;
+let platformImageAssetId = '';
+let repositoryTemplateCounter = 0;
+const platformImageId = 'm-visibility-shared-image';
 
-function createTemplatePayload(name: string, slug: string) {
-  return {
-    name,
-    slug,
-    version: 'v1',
-    modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-    topologySpec: {
-      vpcCidr: '10.66.0.0/16',
-      networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true }],
-      hosts: [{ key: 'entry', name: 'entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.66.10.10', exposePublic: true }],
-      publicEntry: {
-        hostKey: 'entry',
-        protocols: [{ protocol: 'ssh', port: 22 }],
-      },
-    },
-  };
-}
-
-function createConsumableTemplatePayload(input: {
+function createTemplatePayload(input: {
   name: string;
-  slug: string;
-  version: string;
-  scenarioName: string;
-  hostName: string;
-  vpcCidr: string;
+  scenarioName?: string;
+  hostName?: string;
+  vpcCidr?: string;
 }) {
+  const scenarioName = input.scenarioName ?? input.name;
+  const hostName = input.hostName ?? 'entry';
+  const vpcCidr = input.vpcCidr ?? '10.66.0.0/16';
+  const vpcPrefix = vpcCidr.split('.').slice(0, 2).join('.');
+  const zoneCidr = `${vpcPrefix}.10.0/24`;
+  const privateIp = `${vpcPrefix}.10.10`;
+  const imageSelection = {
+    platformImageAssetId,
+    imageId: platformImageId,
+    imageStrategy: { mode: 'fixed', imageId: platformImageId },
+  };
+  const networkZone = {
+    key: 'dmz',
+    name: 'DMZ',
+    purpose: 'public-entry',
+    cidr: zoneCidr,
+    isPublicEntry: true,
+  };
+  const scenarioHost = {
+    key: 'entry',
+    name: hostName,
+    zoneKey: 'dmz',
+    role: 'entry',
+    primaryPrivateIp: privateIp,
+    exposePublic: true,
+    ...imageSelection,
+  };
+
   return {
     name: input.name,
-    slug: input.slug,
-    version: input.version,
-    modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
     topologySpec: {
-      vpcCidr: input.vpcCidr,
-      networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true }],
-      hosts: [{ key: 'entry', name: input.hostName, zoneKey: 'dmz', role: 'entry', privateIp: '10.66.10.10', exposePublic: true }],
+      vpcCidr,
+      networkZones: [networkZone],
+      hosts: [
+        {
+          key: 'entry',
+          name: hostName,
+          zoneKey: 'dmz',
+          role: 'entry',
+          privateIp,
+          exposePublic: true,
+        },
+      ],
       publicEntry: {
         hostKey: 'entry',
         protocols: [{ protocol: 'ssh', port: 22 }],
       },
     },
     topologyGraph: {
-      schemaVersion: '1',
-      nodes: [{ id: 'entry', kind: 'ecs', data: { label: input.hostName } }],
-      edges: [],
+      schemaVersion: '2.0.0',
+      nodes: [
+        {
+          id: 'switch-dmz',
+          kind: 'switch',
+          label: 'DMZ',
+          zoneKey: 'dmz',
+          cidr: zoneCidr,
+        },
+        {
+          id: 'entry',
+          kind: 'ecs',
+          label: hostName,
+          ...imageSelection,
+        },
+      ],
+      edges: [{ id: 'edge-entry', fromNodeId: 'switch-dmz', toNodeId: 'entry' }],
     },
     scenarioTemplateSpec: {
       schemaVersion: '1.0.0',
-      metadata: {
-        name: input.scenarioName,
-        slug: input.slug,
-        version: input.version,
-        cloudProvider: 'alibaba_cloud',
-        iacType: 'opentofu',
-      },
+      metadata: { name: scenarioName },
       topology: {
-        vpcCidr: input.vpcCidr,
+        vpcCidr,
         entryHostKey: 'entry',
       },
-      networkZones: [
-        {
-          key: 'dmz',
-          name: 'DMZ',
-          cidr: '10.66.10.0/24',
-          purpose: 'public-entry',
-          isPublicEntry: true,
-          routeRole: 'entry',
-        },
-      ],
-      hosts: [
-        {
-          key: 'entry',
-          name: input.hostName,
-          role: 'entry',
-          zoneKey: 'dmz',
-          primaryPrivateIp: '10.66.10.10',
-          exposePublic: true,
-        },
-      ],
+      networkZones: [networkZone],
+      hosts: [scenarioHost],
       nat: { natGateways: [], eips: [] },
       access: { portGroups: [] },
       bootstrap: { scripts: [] },
@@ -98,35 +107,15 @@ function createConsumableTemplatePayload(input: {
     },
     compiledProvisionSpec: {
       schemaVersion: '1.0.0',
-      identity: {
-        templateSlug: input.slug,
-        templateVersion: input.version,
-        cloudProvider: 'alibaba_cloud',
-        iacType: 'opentofu',
-      },
       topology: {
-        vpcCidr: input.vpcCidr,
+        vpcCidr,
         entryHostKey: 'entry',
       },
-      networkZones: [
-        {
-          key: 'dmz',
-          name: 'DMZ',
-          cidr: '10.66.10.0/24',
-          purpose: 'public-entry',
-          isPublicEntry: true,
-          routeRole: 'entry',
-        },
-      ],
+      networkZones: [networkZone],
       hosts: [
         {
-          key: 'entry',
-          name: input.hostName,
-          role: 'entry',
-          zoneKey: 'dmz',
-          primaryPrivateIp: '10.66.10.10',
-          exposePublic: true,
-          networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp: '10.66.10.10' }],
+          ...scenarioHost,
+          networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp }],
         },
       ],
       natGateways: [],
@@ -138,11 +127,70 @@ function createConsumableTemplatePayload(input: {
       bootstrapScripts: [],
       runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
     },
+    compiledSpec: {
+      schemaVersion: '1.0.0',
+      resources: [
+        {
+          id: 'switch-dmz',
+          type: 'switch',
+          provider: 'alibaba_cloud',
+          config: {
+            label: 'DMZ',
+            zoneKey: 'dmz',
+            cidr: zoneCidr,
+            purpose: 'public-entry',
+          },
+        },
+        {
+          id: 'entry',
+          type: 'host',
+          provider: 'alibaba_cloud',
+          config: {
+            label: hostName,
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp,
+            exposePublic: true,
+            ...imageSelection,
+          },
+        },
+      ],
+      topology: {
+        vpcCidr,
+        publicEntryHostKey: 'entry',
+        networkZoneKeys: ['dmz'],
+        hostKeys: ['entry'],
+      },
+    },
   };
 }
 
-async function loginAs(_app: INestApplication, username = 'admin', _password = 'change-me') {
-  return loginAsRepositoryUser(repositoryForLogin, username);
+function createSavePayload(
+  input: Parameters<typeof createTemplatePayload>[0],
+  expectedRevision: number,
+) {
+  const { name: _name, ...topology } = createTemplatePayload(input);
+  return {
+    ...topology,
+    expectedRevision,
+  };
+}
+
+function createRepositoryTemplateInput(
+  name: string,
+  ownerUserId: string,
+): CreateRangeTemplateInput {
+  repositoryTemplateCounter += 1;
+
+  return {
+    ...createTemplatePayload({ name }),
+    slug: `visibility-template-${repositoryTemplateCounter}`,
+    version: 'v1',
+    modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+    createdBy: ownerUserId,
+    ownerUserId,
+    visibility: 'private',
+  };
 }
 
 function createSystemConfigServiceStub() {
@@ -176,7 +224,6 @@ describe('Admin resource visibility', () => {
     username: 'alice',
     password: 'AlicePass123!',
   };
-
   const bob = {
     id: 'user-bob',
     username: 'bob',
@@ -184,19 +231,47 @@ describe('Admin resource visibility', () => {
   };
 
   beforeAll(async () => {
+    process.env.NODE_ENV = 'test';
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
+    process.env.OIDC_ISSUER = 'https://test-issuer.example/realms/cyber-range';
+    process.env.OIDC_JWKS_URL = 'https://test-issuer.example/realms/cyber-range/certs';
+    process.env.OIDC_TOKEN_ENDPOINT = 'https://test-issuer.example/realms/cyber-range/token';
 
     fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
-    const moduleRef = await overrideTestOidc(Test.createTestingModule({
+    const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
-    }))
+    })
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(createMemoryAdminRepository())
+      .overrideGuard(AdminAuthGuard)
+      .useValue({
+        canActivate: (context: {
+          switchToHttp(): {
+            getRequest(): {
+              headers: Record<string, string | undefined>;
+              adminUser?: Record<string, unknown>;
+              authContext?: Record<string, unknown>;
+            };
+          };
+        }) => {
+          const requestContext = context.switchToHttp().getRequest();
+          const username = requestContext.headers.authorization?.replace(/^Bearer\s+/i, '') || 'admin';
+          const authenticatedUser =
+            username === alice.username
+              ? { id: alice.id, username: alice.username, role: 'user' as const }
+              : username === bob.username
+                ? { id: bob.id, username: bob.username, role: 'user' as const }
+                : { id: 'admin', username: 'admin', role: 'admin' as const };
+          requestContext.adminUser = authenticatedUser;
+          requestContext.authContext = { user: authenticatedUser, source: 'web' };
+          return true;
+        },
+      })
       .overrideProvider(SystemConfigService)
       .useValue(createSystemConfigServiceStub())
       .compile();
@@ -206,7 +281,6 @@ describe('Admin resource visibility', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
-    repositoryForLogin = repository;
 
     await repository.createPlatformUser({
       id: alice.id,
@@ -215,7 +289,6 @@ describe('Admin resource visibility', () => {
       role: 'user',
       status: 'active',
     });
-
     await repository.createPlatformUser({
       id: bob.id,
       username: bob.username,
@@ -223,655 +296,322 @@ describe('Admin resource visibility', () => {
       role: 'user',
       status: 'active',
     });
+
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: platformImageId,
+          sourceImageName: 'Visibility Shared Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-22T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: platformImageId,
+    });
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot!.id,
+      displayName: 'Visibility Shared Image',
+      ownerUserId: null,
+      visibility: 'platform',
+    });
+    platformImageAssetId = asset.id;
   });
 
   afterAll(async () => {
-    fetchMock.mockRestore();
-    await app.close();
+    fetchMock?.mockRestore();
+    await app?.close();
   });
 
-  it('lets a user create a private template and share it without publishing it', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-
-    const createResponse = await request(app.getHttpServer())
+  it('publishes and returns a topology to private with revision-checked idempotency', async () => {
+    const created = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(createTemplatePayload('Alice Private Template', 'alice-private-template'))
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({ name: 'Alice State Template' }))
       .expect(201);
 
-    expect(createResponse.body).toEqual(
+    expect(created.body).toEqual(
       expect.objectContaining({
         createdBy: alice.username,
         ownerUserId: alice.id,
         visibility: 'private',
-        currentPublishedVersionId: null,
+        status: 'private',
+        revision: 1,
       }),
     );
+    expect(created.body).not.toHaveProperty('version');
+    expect(created.body).not.toHaveProperty('currentDraftVersionId');
+    expect(created.body).not.toHaveProperty('currentPublishedVersionId');
 
-    const shareResponse = await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/share`)
-      .set('authorization', `Bearer ${aliceToken}`)
+    const published = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/share`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: created.body.revision })
       .expect(200);
 
-    expect(shareResponse.body).toEqual(
+    expect(published.body).toEqual(
       expect.objectContaining({
-        id: createResponse.body.id,
-        ownerUserId: alice.id,
+        status: 'published',
         visibility: 'platform',
-        currentPublishedVersionId: null,
-        currentDraftVersionId: createResponse.body.currentDraftVersionId,
+        revision: 2,
       }),
     );
+    expect(published.body).not.toHaveProperty('currentPublishedVersion');
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/share`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: published.body.revision })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.revision).toBe(published.body.revision);
+      });
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/share`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: created.body.revision })
+      .expect(409);
+
+    const privateResponse = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/unshare`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: published.body.revision })
+      .expect(200);
+
+    expect(privateResponse.body).toEqual(
+      expect.objectContaining({
+        status: 'private',
+        visibility: 'private',
+        revision: 3,
+      }),
+    );
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/unshare`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: privateResponse.body.revision })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.revision).toBe(privateResponse.body.revision);
+      });
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/unshare`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: published.body.revision })
+      .expect(409);
   });
 
-  it("shows only published shared templates from other users in view=platform and keeps view=mine owner-scoped", async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
-    const aliceShared = await request(app.getHttpServer())
+  it('returns a changed published topology to private and rejects a stale save', async () => {
+    const created = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(createTemplatePayload('Alice Shared Template', 'alice-shared-template'))
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({
+        name: 'Alice Changed Template',
+        scenarioName: 'Saved V1',
+        hostName: 'entry-v1',
+        vpcCidr: '10.91.0.0/16',
+      }))
       .expect(201);
+    const published = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/share`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: created.body.revision })
+      .expect(200);
+    const changedPayload = createSavePayload(
+      {
+        name: 'Alice Changed Template',
+        scenarioName: 'Saved V2',
+        hostName: 'entry-v2',
+        vpcCidr: '10.92.0.0/16',
+      },
+      published.body.revision,
+    );
 
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${aliceShared.body.id}/share`)
-      .set('authorization', `Bearer ${aliceToken}`)
+    const saved = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/validate-and-save`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(changedPayload)
       .expect(200);
 
+    expect(saved.body).toEqual(
+      expect.objectContaining({
+        id: created.body.id,
+        status: 'private',
+        visibility: 'private',
+        revision: published.body.revision + 1,
+        topologySpec: expect.objectContaining({
+          vpcCidr: '10.92.0.0/16',
+        }),
+      }),
+    );
+    expect(saved.body).not.toHaveProperty('currentPublishedVersionId');
+
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/validate-and-save`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(changedPayload)
+      .expect(409);
+  });
+
+  it('shows other users only published topologies while keeping view=mine owner-scoped', async () => {
+    const alicePrivate = await request(app.getHttpServer())
+      .post('/admin/scenarios')
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({ name: 'Alice Private Catalog Template' }))
+      .expect(201);
     const alicePublished = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(createTemplatePayload('Alice Published Template', 'alice-published-template'))
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({ name: 'Alice Published Catalog Template' }))
       .expect(201);
-
     await request(app.getHttpServer())
       .post(`/admin/scenarios/${alicePublished.body.id}/share`)
-      .set('authorization', `Bearer ${aliceToken}`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: alicePublished.body.revision })
       .expect(200);
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${alicePublished.body.id}/publish`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .expect(200);
-
-    await request(app.getHttpServer())
+    const bobPrivate = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${bobToken}`)
-      .send(createTemplatePayload('Bob Private Template', 'bob-private-template'))
+      .set('authorization', `Bearer ${bob.username}`)
+      .send(createTemplatePayload({ name: 'Bob Private Catalog Template' }))
       .expect(201);
 
     const platformResponse = await request(app.getHttpServer())
       .get('/admin/scenarios?view=platform')
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .expect(200);
 
     expect(platformResponse.body).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: alicePublished.body.id,
-          createdBy: alice.username,
+          status: 'published',
           ownerUserId: alice.id,
-          visibility: 'platform',
         }),
       ]),
     );
     expect(platformResponse.body).not.toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          id: aliceShared.body.id,
-        }),
-      ]),
-    );
-    expect(platformResponse.body).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          slug: 'bob-private-template',
-        }),
+        expect.objectContaining({ id: alicePrivate.body.id }),
+        expect.objectContaining({ id: bobPrivate.body.id }),
       ]),
     );
 
     const mineResponse = await request(app.getHttpServer())
       .get('/admin/scenarios?view=mine')
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .expect(200);
 
     expect(mineResponse.body).toEqual([
       expect.objectContaining({
-        createdBy: bob.username,
+        id: bobPrivate.body.id,
+        status: 'private',
         ownerUserId: bob.id,
-        visibility: 'private',
-        slug: 'bob-private-template',
       }),
     ]);
   });
 
-  it("hides shared unpublished templates from other users in platform view and still blocks direct clone/create/launch/validate consumption", async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
-    const sharedTemplate = await request(app.getHttpServer())
+  it('keeps an existing instance pinned to the published snapshot after the owner saves changes', async () => {
+    const created = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(
-        createConsumableTemplatePayload({
-          name: 'Alice Shared Draft Only',
-          slug: 'alice-shared-draft-only',
-          version: 'v1',
-          scenarioName: 'Alice Shared Draft Only',
-          hostName: 'draft-only-entry',
-          vpcCidr: '10.81.0.0/16',
-        }),
-      )
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({
+        name: 'Alice Pinned Template',
+        scenarioName: 'Published Snapshot',
+        hostName: 'published-entry',
+        vpcCidr: '10.82.0.0/16',
+      }))
       .expect(201);
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${sharedTemplate.body.id}/share`)
-      .set('authorization', `Bearer ${aliceToken}`)
+    const published = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/share`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send({ expectedRevision: created.body.revision })
       .expect(200);
+    const internalPublished = await repository.getRangeTemplateById(created.body.id);
+    const publishedSnapshotId = internalPublished!.currentPublishedVersionId!;
 
-    const platformView = await request(app.getHttpServer())
-      .get('/admin/scenarios?view=platform')
-      .set('authorization', `Bearer ${bobToken}`)
-      .expect(200);
-
-    expect(platformView.body).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: sharedTemplate.body.id,
-        }),
-      ]),
-    );
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${sharedTemplate.body.id}/clone`)
-      .set('authorization', `Bearer ${bobToken}`)
-      .expect(409)
-      .expect(({ body }) => {
-        expect(body.message).toBe('Shared template must be published before other users can consume it');
-      });
-
-    await request(app.getHttpServer())
+    const instanceResponse = await request(app.getHttpServer())
       .post('/admin/ranges')
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .send({
-        name: 'bob-shared-draft-create',
-        templateId: sharedTemplate.body.id,
+        name: 'bob-pinned-instance',
+        templateId: created.body.id,
       })
-      .expect(409)
-      .expect(({ body }) => {
-        expect(body.message).toBe('Shared template must be published before other users can consume it');
-      });
-
-    await request(app.getHttpServer())
-      .post('/admin/ranges/launch')
-      .set('authorization', `Bearer ${bobToken}`)
-      .send({
-        name: 'bob-shared-draft-launch',
-        templateId: sharedTemplate.body.id,
-        expiresAt: '2026-07-12T12:00:00.000Z',
-      })
-      .expect(409)
-      .expect(({ body }) => {
-        expect(body.message).toBe('Shared template must be published before other users can consume it');
-      });
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${sharedTemplate.body.id}/validate`)
-      .set('authorization', `Bearer ${bobToken}`)
-      .expect(409)
-      .expect(({ body }) => {
-        expect(body.message).toBe('Shared template must be published before other users can consume it');
-      });
-  });
-
-  it('makes non-owners clone and launch the published snapshot instead of the owner draft', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
-    const createResponse = await request(app.getHttpServer())
-      .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(
-        createConsumableTemplatePayload({
-          name: 'Alice Shared Published',
-          slug: 'alice-shared-published',
-          version: 'v1',
-          scenarioName: 'Published Scenario V1',
-          hostName: 'published-entry-v1',
-          vpcCidr: '10.82.0.0/16',
-        }),
-      )
       .expect(201);
 
+    expect(instanceResponse.body.sourceTemplateVersionId).toBe(publishedSnapshotId);
+
     await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/share`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .expect(200);
-
-    const publishResponse = await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/publish`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .expect(200);
-
-    const publishedVersionId = publishResponse.body.currentPublishedVersionId as string;
-
-    const updateResponse = await request(app.getHttpServer())
-      .patch(`/admin/scenarios/${createResponse.body.id}`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send({
-        version: 'v2',
-        scenarioTemplateSpec: {
-          schemaVersion: '1.0.0',
-          metadata: {
-            name: 'Draft Scenario V2',
-            slug: 'alice-shared-published',
-            version: 'v2',
-            cloudProvider: 'alibaba_cloud',
-            iacType: 'opentofu',
-          },
-          topology: {
-            vpcCidr: '10.83.0.0/16',
-            entryHostKey: 'entry',
-          },
-          networkZones: [
-            {
-              key: 'dmz',
-              name: 'DMZ',
-              cidr: '10.66.10.0/24',
-              purpose: 'public-entry',
-              isPublicEntry: true,
-              routeRole: 'entry',
-            },
-          ],
-          hosts: [
-            {
-              key: 'entry',
-              name: 'draft-entry-v2',
-              role: 'entry',
-              zoneKey: 'draft-only-zone',
-              primaryPrivateIp: '10.66.10.10',
-              exposePublic: true,
-            },
-          ],
-          nat: { natGateways: [], eips: [] },
-          access: { portGroups: [] },
-          bootstrap: { scripts: [] },
-          runtimePreferences: { imagePolicies: [], instanceTypePolicies: [] },
+      .post(`/admin/scenarios/${created.body.id}/validate-and-save`)
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createSavePayload(
+        {
+          name: 'Alice Pinned Template',
+          scenarioName: 'Private Saved Change',
+          hostName: 'private-entry',
+          vpcCidr: '10.83.0.0/16',
         },
-      })
-      .expect(200);
-
-    expect(updateResponse.body.currentPublishedVersionId).toBe(publishedVersionId);
-    expect(updateResponse.body.currentPublishedVersion.version).toBe('v1');
-    expect(updateResponse.body.currentDraftVersion.version).toBe('v2');
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/validate`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .expect(400)
-      .expect(({ body }) => {
-        expect(String(body.message)).toContain('draft-only-zone');
-      });
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/validate`)
-      .set('authorization', `Bearer ${bobToken}`)
+        published.body.revision,
+      ))
       .expect(200)
       .expect(({ body }) => {
-        expect(body).toEqual({ valid: true });
+        expect(body.status).toBe('private');
       });
 
-    const cloneResponse = await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/clone`)
-      .set('authorization', `Bearer ${bobToken}`)
-      .expect(201);
-
-    expect(cloneResponse.body).toEqual(
-      expect.objectContaining({
-        version: 'v1',
-        scenarioTemplateSpec: expect.objectContaining({
-          metadata: expect.objectContaining({
-            name: 'Published Scenario V1',
-            version: 'v1',
-          }),
-        }),
-        compiledProvisionSpec: expect.objectContaining({
-          topology: expect.objectContaining({
-            vpcCidr: '10.82.0.0/16',
-          }),
-        }),
-      }),
-    );
-
-    const createInstanceResponse = await request(app.getHttpServer())
-      .post('/admin/ranges')
-      .set('authorization', `Bearer ${bobToken}`)
-      .send({
-        name: 'bob-published-create',
-        templateId: createResponse.body.id,
-      })
-      .expect(201);
-
-    expect(createInstanceResponse.body).toEqual(
-      expect.objectContaining({
-        ownerUserId: bob.id,
-        sourceTemplateVersionId: publishedVersionId,
-      }),
-    );
-
-    const launchResponse = await request(app.getHttpServer())
-      .post('/admin/ranges/launch')
-      .set('authorization', `Bearer ${bobToken}`)
-      .send({
-        name: 'bob-published-launch',
-        templateId: createResponse.body.id,
-        expiresAt: '2026-07-13T12:00:00.000Z',
-      })
-      .expect(201);
-
-    expect(launchResponse.body).toEqual(
-      expect.objectContaining({
-        ownerUserId: bob.id,
-        sourceTemplateVersionId: publishedVersionId,
-        runtimeScenarioTemplateSpec: expect.objectContaining({
-          metadata: expect.objectContaining({
-            name: 'Published Scenario V1',
-            version: 'v1',
-          }),
-        }),
-        runtimeCompiledProvisionSpec: expect.objectContaining({
-          topology: expect.objectContaining({
-            vpcCidr: '10.82.0.0/16',
-          }),
-        }),
-      }),
-    );
-  });
-
-  it('does not fall back to draft-only fields when a shared published snapshot lacks them', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-    const provisioningWorker = app.get(ProvisioningWorkerService);
-    const draftOnlyGraph = {
-      schemaVersion: '1',
-      nodes: [{ id: 'entry', kind: 'ecs', data: { label: 'draft-only-entry-graph' } }],
-      edges: [],
-    };
-
-    const { topologyGraph: _unusedGraph, ...publishableTemplate } = createConsumableTemplatePayload({
-      name: 'Alice Shared No Graph Published',
-      slug: 'alice-shared-no-graph-published',
-      version: 'v1',
-      scenarioName: 'Published Without Graph',
-      hostName: 'published-no-graph-entry',
-      vpcCidr: '10.84.0.0/16',
-    });
-
-    const createResponse = await request(app.getHttpServer())
-      .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(publishableTemplate)
-      .expect(201);
-
     await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/share`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .expect(200);
-
-    const publishResponse = await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/publish`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .expect(200);
-
-    const publishedVersionId = publishResponse.body.currentPublishedVersionId as string;
-
-    const updateResponse = await request(app.getHttpServer())
-      .patch(`/admin/scenarios/${createResponse.body.id}`)
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send({
-        version: 'v2',
-        topologyGraph: draftOnlyGraph,
-      })
-      .expect(200);
-
-    expect(updateResponse.body.currentPublishedVersionId).toBe(publishedVersionId);
-    expect(updateResponse.body.currentPublishedVersion.topologyGraph).toBeUndefined();
-    expect(updateResponse.body.currentDraftVersion.topologyGraph).toEqual(draftOnlyGraph);
-
-    const cloneResponse = await request(app.getHttpServer())
-      .post(`/admin/scenarios/${createResponse.body.id}/clone`)
-      .set('authorization', `Bearer ${bobToken}`)
-      .expect(201);
-
-    expect(cloneResponse.body.currentPublishedVersionId).toBeNull();
-    expect(cloneResponse.body.topologyGraph).toBeUndefined();
-    expect(cloneResponse.body.scenarioTemplateSpec).toEqual(
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          name: 'Published Without Graph',
-          version: 'v1',
-        }),
-      }),
-    );
-
-    const createInstanceResponse = await request(app.getHttpServer())
+      .post(`/admin/scenarios/${created.body.id}/clone`)
+      .set('authorization', `Bearer ${bob.username}`)
+      .expect(403);
+    await request(app.getHttpServer())
       .post('/admin/ranges')
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .send({
-        name: 'bob-worker-published-create',
-        templateId: createResponse.body.id,
+        name: 'bob-cannot-create-from-private',
+        templateId: created.body.id,
       })
-      .expect(201);
+      .expect(403);
 
-    expect(createInstanceResponse.body.sourceTemplateVersionId).toBe(publishedVersionId);
+    const persisted = await repository.getRangeInstanceById(instanceResponse.body.id);
+    const pinnedSnapshot = await repository.getRangeTemplateVersionById(publishedSnapshotId);
 
-    const createJobResponse = await request(app.getHttpServer())
-      .post(`/admin/ranges/${createInstanceResponse.body.id}/create`)
-      .set('authorization', `Bearer ${bobToken}`)
-      .send({})
-      .expect(201);
-
-    await provisioningWorker.process(createJobResponse.body.id as string);
-
-    const persisted = await repository.getRangeInstanceById(createInstanceResponse.body.id);
-
-    expect(persisted?.sourceTemplateVersionId).toBe(publishedVersionId);
-    expect(persisted?.runtimeTopologyGraph).toBeNull();
-    expect(persisted?.runtimeScenarioTemplateSpec).toEqual(
+    expect(persisted?.sourceTemplateVersionId).toBe(publishedSnapshotId);
+    expect(pinnedSnapshot?.scenarioTemplateSpec).toEqual(
       expect.objectContaining({
         metadata: expect.objectContaining({
-          name: 'Published Without Graph',
-          version: 'v1',
+          name: 'Alice Pinned Template',
+        }),
+        topology: expect.objectContaining({
+          vpcCidr: '10.82.0.0/16',
         }),
       }),
     );
-  });
-
-  it('does not fall back to draft topology when delayed create uses a pinned published version', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-    const provisioningWorker = app.get(ProvisioningWorkerService);
-    const draftOnlyVpcCidr = '10.250.0.0/16';
-    const compiledSpecVpcCidr = '10.91.0.0/16';
-    const previousPool = process.env.RANGE_CIDR_POOL;
-
-    process.env.RANGE_CIDR_POOL = '10.200.0.0/16';
-
-    try {
-      const createResponse = await request(app.getHttpServer())
-        .post('/admin/scenarios')
-        .set('authorization', `Bearer ${aliceToken}`)
-        .send(
-          createConsumableTemplatePayload({
-            name: 'Alice Shared Delayed Create',
-            slug: 'alice-shared-delayed-create',
-            version: 'v1',
-            scenarioName: 'Published Delayed Create',
-            hostName: 'published-delayed-entry',
-            vpcCidr: '10.85.0.0/16',
-          }),
-        )
-        .expect(201);
-
-      await request(app.getHttpServer())
-        .post(`/admin/scenarios/${createResponse.body.id}/share`)
-        .set('authorization', `Bearer ${aliceToken}`)
-        .expect(200);
-
-      const publishResponse = await request(app.getHttpServer())
-        .post(`/admin/scenarios/${createResponse.body.id}/publish`)
-        .set('authorization', `Bearer ${aliceToken}`)
-        .expect(200);
-
-      const publishedVersionId = publishResponse.body.currentPublishedVersionId as string;
-
-      await request(app.getHttpServer())
-        .patch(`/admin/scenarios/${createResponse.body.id}`)
-        .set('authorization', `Bearer ${aliceToken}`)
-        .send({
-          version: 'v2',
-          topologySpec: {
-            vpcCidr: draftOnlyVpcCidr,
-            networkZones: [
-              { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true },
-            ],
-            hosts: [
-              {
-                key: 'entry',
-                name: 'draft-delayed-entry',
-                zoneKey: 'dmz',
-                role: 'entry',
-                privateIp: '10.66.10.10',
-                exposePublic: true,
-              },
-            ],
-            publicEntry: {
-              hostKey: 'entry',
-              protocols: [{ protocol: 'ssh', port: 22 }],
-            },
-          },
-        })
-        .expect(200);
-
-      const createInstanceResponse = await request(app.getHttpServer())
-        .post('/admin/ranges')
-        .set('authorization', `Bearer ${bobToken}`)
-        .send({
-          name: 'bob-delayed-create-instance',
-          templateId: createResponse.body.id,
-        })
-        .expect(201);
-
-      expect(createInstanceResponse.body.sourceTemplateVersionId).toBe(publishedVersionId);
-
-      const originalGetRangeTemplateVersionById = repository.getRangeTemplateVersionById.bind(repository);
-      const getRangeTemplateVersionByIdSpy = jest
-        .spyOn(repository, 'getRangeTemplateVersionById')
-        .mockImplementation(async (id: string) => {
-          const version = await originalGetRangeTemplateVersionById(id);
-
-          if (id !== publishedVersionId || !version) {
-            return version;
-          }
-
-          return {
-            ...version,
-            topologySpec: null,
-            compiledProvisionSpec: null,
-            compiledSpec: {
-              ...(version.compiledSpec as Record<string, unknown> | null | undefined),
-              topologySpec: null,
-              topology: {
-                vpcCidr: compiledSpecVpcCidr,
-                publicEntryHostKey: 'entry',
-                networkZoneKeys: ['dmz'],
-                hostKeys: ['entry'],
-              },
-              resources: [
-                {
-                  id: 'switch-dmz',
-                  type: 'switch',
-                  provider: 'alibaba_cloud',
-                  config: {
-                    label: 'DMZ',
-                    zoneKey: 'dmz',
-                    cidr: '10.66.10.0/24',
-                    purpose: 'public-entry',
-                  },
-                },
-                {
-                  id: 'entry',
-                  type: 'host',
-                  provider: 'alibaba_cloud',
-                  config: {
-                    label: 'published-delayed-entry',
-                    zoneKey: 'dmz',
-                    role: 'entry',
-                    privateIp: '10.66.10.10',
-                    exposePublic: true,
-                  },
-                },
-              ],
-            },
-          };
-        });
-
-      try {
-        const createJobResponse = await request(app.getHttpServer())
-          .post(`/admin/ranges/${createInstanceResponse.body.id}/create`)
-          .set('authorization', `Bearer ${bobToken}`)
-          .send({})
-          .expect(201);
-
-        const persisted = await repository.getRangeInstanceById(createInstanceResponse.body.id);
-
-        expect(persisted?.allocatedCidr).toBe(compiledSpecVpcCidr);
-        expect(persisted?.allocatedCidr).not.toBe(draftOnlyVpcCidr);
-        expect(persisted?.allocatedCidr).not.toBe('10.200.0.0/16');
-
-        const createJob = await repository.getProvisionJobById(createJobResponse.body.id as string);
-
-        expect(createJob?.status).toBe('pending');
-
-        await provisioningWorker.process(createJobResponse.body.id as string);
-
-        const afterWorker = await repository.getRangeInstanceById(createInstanceResponse.body.id);
-
-        expect(afterWorker?.status).toBe('running');
-        expect(afterWorker?.allocatedCidr).toBe(compiledSpecVpcCidr);
-        expect(afterWorker?.resourceSummary).toEqual(
-          expect.objectContaining({
-            topologySpec: expect.objectContaining({
-              vpcCidr: compiledSpecVpcCidr,
-            }),
-          }),
-        );
-      } finally {
-        getRangeTemplateVersionByIdSpy.mockRestore();
-      }
-    } finally {
-      if (previousPool === undefined) {
-        delete process.env.RANGE_CIDR_POOL;
-      } else {
-        process.env.RANGE_CIDR_POOL = previousPool;
-      }
-    }
+    expect(pinnedSnapshot?.compiledProvisionSpec).toEqual(
+      expect.objectContaining({
+        topology: expect.objectContaining({
+          vpcCidr: '10.82.0.0/16',
+        }),
+      }),
+    );
   });
 
   it('shows regular users only their own range instances', async () => {
-    const aliceTemplate = await repository.createRangeTemplate({
-      ...createTemplatePayload('Alice Range Template', 'alice-range-template'),
-      createdBy: alice.id,
-      ownerUserId: alice.id,
-      visibility: 'private',
-    });
-    const bobTemplate = await repository.createRangeTemplate({
-      ...createTemplatePayload('Bob Range Template', 'bob-range-template'),
-      createdBy: bob.id,
-      ownerUserId: bob.id,
-      visibility: 'private',
-    });
+    const aliceTemplate = await repository.createRangeTemplate(
+      createRepositoryTemplateInput('Alice Range Template', alice.id),
+    );
+    const bobTemplate = await repository.createRangeTemplate(
+      createRepositoryTemplateInput('Bob Range Template', bob.id),
+    );
 
     await repository.createRangeInstance({
       name: 'alice-range-instance',
@@ -881,7 +621,6 @@ describe('Admin resource visibility', () => {
       instanceMode: 'range',
       status: 'running',
     });
-
     const bobInstance = await repository.createRangeInstance({
       name: 'bob-range-instance',
       createdBy: bob.id,
@@ -891,18 +630,15 @@ describe('Admin resource visibility', () => {
       status: 'running',
     });
 
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
     const response = await request(app.getHttpServer())
       .get('/admin/ranges')
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .expect(200);
 
     expect(response.body).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: bobInstance.id,
-          name: 'bob-range-instance',
           ownerUserId: bob.id,
         }),
       ]),
@@ -911,49 +647,56 @@ describe('Admin resource visibility', () => {
       expect.arrayContaining([
         expect.objectContaining({
           name: 'alice-range-instance',
-          ownerUserId: alice.id,
         }),
       ]),
     );
   });
 
-  it('blocks non-owner users from editing, sharing, or deleting another user private template', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
+  it('blocks non-owners from mutating another user private topology', async () => {
     const privateTemplate = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(createTemplatePayload('Alice Locked Template', 'alice-locked-template'))
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({ name: 'Alice Locked Template' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .patch(`/admin/scenarios/${privateTemplate.body.id}`)
-      .set('authorization', `Bearer ${bobToken}`)
-      .send({ name: 'Bob Should Not Edit This' })
+      .set('authorization', `Bearer ${bob.username}`)
+      .send({
+        name: 'Bob Should Not Edit This',
+        expectedRevision: privateTemplate.body.revision,
+      })
       .expect(403);
-
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${privateTemplate.body.id}/validate-and-save`)
+      .set('authorization', `Bearer ${bob.username}`)
+      .send(createSavePayload(
+        { name: 'Alice Locked Template' },
+        privateTemplate.body.revision,
+      ))
+      .expect(403);
     await request(app.getHttpServer())
       .post(`/admin/scenarios/${privateTemplate.body.id}/share`)
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
+      .send({ expectedRevision: privateTemplate.body.revision })
       .expect(403);
-
+    await request(app.getHttpServer())
+      .post(`/admin/scenarios/${privateTemplate.body.id}/unshare`)
+      .set('authorization', `Bearer ${bob.username}`)
+      .send({ expectedRevision: privateTemplate.body.revision })
+      .expect(403);
     await request(app.getHttpServer())
       .delete(`/admin/scenarios/${privateTemplate.body.id}`)
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .expect(403);
   });
 
   it('blocks non-owner users from executing node actions on another user range instance', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
     const templateResponse = await request(app.getHttpServer())
       .post('/admin/scenarios')
-      .set('authorization', `Bearer ${aliceToken}`)
-      .send(createTemplatePayload('Alice Node Action Template', 'alice-node-action-template'))
+      .set('authorization', `Bearer ${alice.username}`)
+      .send(createTemplatePayload({ name: 'Alice Node Action Template' }))
       .expect(201);
-
     const instance = await repository.createRangeInstance({
       name: 'alice-node-action-range',
       createdBy: alice.id,
@@ -971,21 +714,15 @@ describe('Admin resource visibility', () => {
 
     await request(app.getHttpServer())
       .post(`/admin/ranges/${instance.id}/nodes/entry/actions/reboot`)
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .send({})
       .expect(403);
   });
 
   it('rejects malformed node-action metadata with 400 instead of 500', async () => {
-    const aliceToken = await loginAs(app, alice.username, alice.password);
-
-    const template = await repository.createRangeTemplate({
-      ...createTemplatePayload('Alice Action Validation Template', 'alice-action-validation-template'),
-      createdBy: alice.id,
-      ownerUserId: alice.id,
-      visibility: 'private',
-    });
-
+    const template = await repository.createRangeTemplate(
+      createRepositoryTemplateInput('Alice Action Validation Template', alice.id),
+    );
     const instance = await repository.createRangeInstance({
       name: 'alice-action-validation-range',
       createdBy: alice.id,
@@ -1003,7 +740,7 @@ describe('Admin resource visibility', () => {
 
     await request(app.getHttpServer())
       .post(`/admin/ranges/${instance.id}/nodes/entry/actions/pack-image`)
-      .set('authorization', `Bearer ${aliceToken}`)
+      .set('authorization', `Bearer ${alice.username}`)
       .send({
         displayName: {
           bad: true,
@@ -1016,17 +753,11 @@ describe('Admin resource visibility', () => {
   });
 
   it('rejects client-sent triggeredBy on range provision job routes', async () => {
-    const bobToken = await loginAs(app, bob.username, bob.password);
-
-    const template = await repository.createRangeTemplate({
-      ...createTemplatePayload('Bob Create Route Template', 'bob-create-route-template'),
-      createdBy: bob.id,
-      ownerUserId: bob.id,
-      visibility: 'private',
-    });
-
+    const template = await repository.createRangeTemplate(
+      createRepositoryTemplateInput('Bob Create Route Template', bob.id),
+    );
     const instance = await repository.createRangeInstance({
-      name: 'bob-draft-instance',
+      name: 'bob-instance-pending-create',
       createdBy: bob.id,
       ownerUserId: bob.id,
       templateId: template.id,
@@ -1036,11 +767,13 @@ describe('Admin resource visibility', () => {
 
     await request(app.getHttpServer())
       .post(`/admin/ranges/${instance.id}/create`)
-      .set('authorization', `Bearer ${bobToken}`)
+      .set('authorization', `Bearer ${bob.username}`)
       .send({ triggeredBy: 'malicious-client' })
       .expect(400)
       .expect(({ body }) => {
-        expect(body.message).toEqual(expect.arrayContaining(['property triggeredBy should not exist']));
+        expect(body.message).toEqual(
+          expect.arrayContaining(['property triggeredBy should not exist']),
+        );
       });
   });
 });

@@ -2,27 +2,22 @@
 
 import React from 'react';
 import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import {
   AdminApiError,
   cloneRangeTemplate,
-  createRangeTemplate,
   deleteRangeTemplate,
   fetchRangeTemplates,
   launchRangeInstance,
-  publishRangeTemplate,
   shareRangeTemplate,
-  unpublishRangeTemplate,
   unshareRangeTemplate,
   updateRangeTemplate,
 } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
-import { createDefaultEnterpriseTopologySpec, DEFAULT_TEMPLATE_MODULE_PATH } from '../../lib/admin-template-defaults';
 import type {
   RangeTemplateView,
   Scenario,
-  ScenarioCreateInput,
   ScenarioUpdateInput,
 } from '../../lib/admin-types';
 import {
@@ -40,11 +35,7 @@ type TemplatesScreenProps = {
 
 type TemplateDraft = {
   name: string;
-  slug: string;
-  version: string;
   description: string;
-  modulePathOrRef: string;
-  defaultRegion: string;
 };
 
 type CreateTemplateDraft = {
@@ -59,21 +50,16 @@ type LaunchInstanceDraft = {
   expiresAt: string;
 };
 
-type TemplateStatusFilter = 'all' | 'published' | 'draft';
 type TemplateConfirmState =
   | {
-      type: 'delete' | 'unpublish';
+      type: 'delete';
       template: Scenario;
     }
   | null;
 
 const EMPTY_TEMPLATE_DRAFT: TemplateDraft = {
   name: '',
-  slug: '',
-  version: 'v1',
   description: '',
-  modulePathOrRef: DEFAULT_TEMPLATE_MODULE_PATH,
-  defaultRegion: 'cn-hangzhou',
 };
 
 const EMPTY_CREATE_TEMPLATE_DRAFT: CreateTemplateDraft = {
@@ -88,12 +74,16 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
   expiresAt: '',
 };
 
+function readTemplateView(value: string | null): RangeTemplateView {
+  return value === 'platform' ? 'platform' : 'mine';
+}
+
 function readNodeCount(scenario: Scenario) {
   if (typeof scenario.nodeCount === 'number') {
     return scenario.nodeCount;
   }
 
-  const graph = scenario.currentDraftVersion?.topologyGraph;
+  const graph = scenario.topologyGraph;
 
   if (!graph || typeof graph !== 'object') {
     return 0;
@@ -108,7 +98,7 @@ function readZoneCount(scenario: Scenario) {
     return scenario.zoneCount;
   }
 
-  const zones = scenario.currentDraftVersion?.topologySpec?.networkZones;
+  const zones = scenario.topologySpec?.networkZones;
   return Array.isArray(zones) ? zones.length : 0;
 }
 
@@ -117,7 +107,7 @@ function readHostCount(scenario: Scenario) {
     return scenario.hostCount;
   }
 
-  const hosts = scenario.currentDraftVersion?.topologySpec?.hosts;
+  const hosts = scenario.topologySpec?.hosts;
   return Array.isArray(hosts) ? hosts.length : 0;
 }
 
@@ -130,66 +120,7 @@ function getScenarioDescription(scenario: Scenario) {
 }
 
 function readPublishedLabel(scenario: Scenario) {
-  return scenario.currentPublishedVersion ? '已发布' : '草稿';
-}
-
-function buildClonedSlug(sourceSlug: string, existingScenarios: Scenario[]) {
-  const normalizedSlug = `${sourceSlug}-copy`;
-  const existingSlugs = new Set(existingScenarios.map((scenario) => scenario.slug));
-
-  if (!existingSlugs.has(normalizedSlug)) {
-    return normalizedSlug;
-  }
-
-  let suffix = 2;
-
-  while (existingSlugs.has(`${normalizedSlug}-${suffix}`)) {
-    suffix += 1;
-  }
-
-  return `${normalizedSlug}-${suffix}`;
-}
-
-function buildGeneratedSlug(name: string, existingScenarios: Scenario[]) {
-  const normalizedBase =
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'scenario';
-  const existingSlugs = new Set(existingScenarios.map((scenario) => scenario.slug));
-
-  if (!existingSlugs.has(normalizedBase)) {
-    return normalizedBase;
-  }
-
-  let suffix = 2;
-
-  while (existingSlugs.has(`${normalizedBase}-${suffix}`)) {
-    suffix += 1;
-  }
-
-  return `${normalizedBase}-${suffix}`;
-}
-
-function buildCreatePayload(payload: TemplateDraft): ScenarioCreateInput {
-  return {
-    name: payload.name,
-    slug: payload.slug,
-    version: payload.version,
-    description: payload.description,
-    modulePathOrRef: payload.modulePathOrRef || DEFAULT_TEMPLATE_MODULE_PATH,
-    cloudProvider: 'alibaba_cloud',
-    iacType: 'opentofu',
-    topologySpec: createDefaultEnterpriseTopologySpec(),
-    variableSchema: {
-      vpc_cidr: 'string',
-      default_region: payload.defaultRegion,
-    },
-    outputSchema: {
-      public_entry: 'object',
-    },
-  };
+  return scenario.status === 'published' ? '已发布' : '私有';
 }
 
 function buildRangeInstanceName(template: Scenario) {
@@ -197,7 +128,7 @@ function buildRangeInstanceName(template: Scenario) {
 }
 
 function isPublishedScenario(scenario: Scenario) {
-  return Boolean(scenario.currentPublishedVersionId);
+  return scenario.status === 'published';
 }
 
 function upsertScenario(items: Scenario[], nextScenario: Scenario) {
@@ -235,8 +166,9 @@ export function TemplatesScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: TemplatesScreenProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const session = useAdminSession();
-  const [activeView, setActiveView] = useState<RangeTemplateView>('mine');
+  const [activeView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>([]);
   const [myTemplates, setMyTemplates] = useState<Scenario[]>([]);
   const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>({
@@ -253,7 +185,6 @@ export function TemplatesScreen({
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [searchName, setSearchName] = useState('');
-  const [statusFilter, setStatusFilter] = useState<TemplateStatusFilter>('all');
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
   const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
@@ -338,23 +269,13 @@ export function TemplatesScreen({
   }, [activeView, apiBaseUrl, loadedViews.mine, loadedViews.platform, router, session.isReady, session.token]);
 
   const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
-  const publishedCount = useMemo(
-    () => scenarios.filter((scenario) => isPublishedScenario(scenario)).length,
-    [scenarios],
-  );
-  const draftCount = scenarios.length - publishedCount;
-  const totalNodeCount = useMemo(() => scenarios.reduce((sum, scenario) => sum + readNodeCount(scenario), 0), [scenarios]);
 
   const filteredTemplates = useMemo(() => {
     return scenarios.filter((scenario) => {
       const displayName = getScenarioDisplayName(scenario).toLowerCase();
-      const matchesName = searchName.trim().length === 0 || displayName.includes(searchName.trim().toLowerCase());
-      const matchesStatus =
-        statusFilter === 'all' ? true : statusFilter === 'published' ? isPublishedScenario(scenario) : !isPublishedScenario(scenario);
-
-      return matchesName && matchesStatus;
+      return searchName.trim().length === 0 || displayName.includes(searchName.trim().toLowerCase());
     });
-  }, [searchName, statusFilter, scenarios]);
+  }, [searchName, scenarios]);
   const activePagination = getPagination(filteredTemplates.length, viewPages[activeView], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedTemplates = filteredTemplates.slice(activePagination.startIndex, activePagination.endIndex);
@@ -382,6 +303,24 @@ export function TemplatesScreen({
     setPageSizeMode(nextValue);
     setPageSize(Number(nextValue));
     setViewPages({ platform: 1, mine: 1 });
+  }
+
+  function setActiveViewWithUrl(nextView: RangeTemplateView) {
+    setActiveView(nextView);
+
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    if (nextView === 'platform') {
+      nextSearchParams.set('view', 'platform');
+    } else {
+      nextSearchParams.delete('view');
+    }
+
+    const nextQuery = nextSearchParams.toString();
+    window.history.replaceState(
+      null,
+      '',
+      nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname,
+    );
   }
 
   function handleJumpToPage() {
@@ -470,11 +409,7 @@ export function TemplatesScreen({
     setMenuTemplateId(null);
     setEditDraft({
       name: scenario.name?.trim() || scenario.slug,
-      slug: scenario.slug,
-      version: scenario.version,
       description: getScenarioDescription(scenario) === '暂无描述' ? '' : getScenarioDescription(scenario),
-      modulePathOrRef: scenario.modulePathOrRef?.trim() || DEFAULT_TEMPLATE_MODULE_PATH,
-      defaultRegion: 'cn-hangzhou',
     });
   }
 
@@ -501,23 +436,15 @@ export function TemplatesScreen({
     setConfirmState(null);
   }
 
-  function openConfirmDialog(type: 'delete' | 'unpublish', template: Scenario) {
+  function openConfirmDialog(type: 'delete', template: Scenario) {
     setMenuTemplateId(null);
     setConfirmState({ type, template });
   }
 
   async function handleCreateTemplate() {
-    if (!session.token) {
-      throw new Error('admin session missing');
-    }
-
     const payload = {
       name: createDraft.name.trim(),
       description: createDraft.description.trim(),
-      slug: buildGeneratedSlug(createDraft.name, myTemplates),
-      version: 'v1',
-      modulePathOrRef: DEFAULT_TEMPLATE_MODULE_PATH,
-      defaultRegion: 'cn-hangzhou',
     };
 
     if (!payload.name) {
@@ -525,20 +452,9 @@ export function TemplatesScreen({
       return;
     }
 
-    setActionErrorMessage(null);
-    setActionSuccessMessage(null);
-    setIsSubmitting(true);
-
-    try {
-      const savedTemplate = await createRangeTemplate(apiBaseUrl, session.token, buildCreatePayload(payload));
-      syncOwnedTemplate(savedTemplate);
-      closeCreateDialog();
-      router.push(`/admin/scenarios/${savedTemplate.id}`);
-    } catch (error: unknown) {
-      handleProtectedActionError(error, '靶场编排创建失败，请检查输入后重试。');
-    } finally {
-      setIsSubmitting(false);
-    }
+    window.sessionStorage.setItem('template-editor:new-template', JSON.stringify(payload));
+    closeCreateDialog();
+    router.push('/admin/scenarios/new');
   }
 
   async function handleUpdateTemplate(id: string) {
@@ -548,10 +464,8 @@ export function TemplatesScreen({
 
     const payload: ScenarioUpdateInput = {
       name: editDraft.name.trim(),
-      slug: editDraft.slug.trim(),
-      version: editDraft.version.trim(),
       description: editDraft.description.trim(),
-      modulePathOrRef: editDraft.modulePathOrRef.trim() || DEFAULT_TEMPLATE_MODULE_PATH,
+      expectedRevision: editingTemplate?.revision ?? 0,
     };
 
     setActionErrorMessage(null);
@@ -570,45 +484,6 @@ export function TemplatesScreen({
     }
   }
 
-  async function handlePublishTemplate(id: string): Promise<Scenario> {
-    if (!session.token) {
-      throw new Error('admin session missing');
-    }
-
-    setActionErrorMessage(null);
-    setActionSuccessMessage(null);
-
-    try {
-      const savedTemplate = await publishRangeTemplate(apiBaseUrl, session.token, id);
-      syncOwnedTemplate(savedTemplate);
-      setMenuTemplateId(null);
-      setActionSuccessMessage('靶场模板已发布。');
-      return savedTemplate;
-    } catch (error: unknown) {
-      return handleProtectedActionError(error, '靶场编排发布失败，请检查拓扑与编译结果后重试。');
-    }
-  }
-
-  async function handleUnpublishTemplate(id: string): Promise<Scenario> {
-    if (!session.token) {
-      throw new Error('admin session missing');
-    }
-
-    setActionErrorMessage(null);
-    setActionSuccessMessage(null);
-
-    try {
-      const savedTemplate = await unpublishRangeTemplate(apiBaseUrl, session.token, id);
-      syncOwnedTemplate(savedTemplate);
-      setMenuTemplateId(null);
-      closeConfirmDialog();
-      setActionSuccessMessage('已取消发布。');
-      return savedTemplate;
-    } catch (error: unknown) {
-      return handleProtectedActionError(error, '取消发布失败，请稍后重试。');
-    }
-  }
-
   async function handleShareTemplate(id: string): Promise<Scenario> {
     if (!session.token) {
       throw new Error('admin session missing');
@@ -618,7 +493,10 @@ export function TemplatesScreen({
     setActionSuccessMessage(null);
 
     try {
-      const savedTemplate = await shareRangeTemplate(apiBaseUrl, session.token, id);
+      const template = myTemplates.find((item) => item.id === id) ?? platformTemplates.find((item) => item.id === id);
+      const savedTemplate = await shareRangeTemplate(apiBaseUrl, session.token, id, {
+        expectedRevision: template?.revision ?? 0,
+      });
       syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
       setActionSuccessMessage('已发布到平台。');
@@ -637,7 +515,10 @@ export function TemplatesScreen({
     setActionSuccessMessage(null);
 
     try {
-      const savedTemplate = await unshareRangeTemplate(apiBaseUrl, session.token, id);
+      const template = myTemplates.find((item) => item.id === id) ?? platformTemplates.find((item) => item.id === id);
+      const savedTemplate = await unshareRangeTemplate(apiBaseUrl, session.token, id, {
+        expectedRevision: template?.revision ?? 0,
+      });
       syncOwnedTemplate(savedTemplate);
       setMenuTemplateId(null);
       setActionSuccessMessage('已回退为私有。');
@@ -775,7 +656,6 @@ export function TemplatesScreen({
   }
 
   const isBootstrapLoading = isLoading && platformTemplates.length === 0 && myTemplates.length === 0;
-  const canCreateTemplates = activeView === 'mine';
 
   function canManageTemplate(template: Scenario) {
     return session.isAdmin || template.ownerUserId === session.profile?.id;
@@ -809,37 +689,19 @@ export function TemplatesScreen({
               </label>
             </div>
 
-            <div className="template-workbench-segmented" role="tablist" aria-label="靶场编排视图">
-              <button type="button" aria-pressed={activeView === 'platform'} onClick={() => setActiveView('platform')}>
-                平台拓扑
-              </button>
-              <button type="button" aria-pressed={activeView === 'mine'} onClick={() => setActiveView('mine')}>
-                我的拓扑
-              </button>
-            </div>
-
-            <div className="template-workbench-segmented" role="tablist" aria-label="靶场编排状态筛选">
-              <div className="template-workbench-list-meta" aria-label="靶场编排统计">
-                <span>已发布 {publishedCount}</span>
-                <span>草稿 {draftCount}</span>
-                <span>总节点 {totalNodeCount}</span>
+            <div className="template-workbench-controls-actions">
+              <div className="template-workbench-segmented" role="tablist" aria-label="靶场编排视图">
+                <button type="button" aria-pressed={activeView === 'platform'} onClick={() => setActiveViewWithUrl('platform')}>
+                  平台拓扑
+                </button>
+                <button type="button" aria-pressed={activeView === 'mine'} onClick={() => setActiveViewWithUrl('mine')}>
+                  我的拓扑
+                </button>
               </div>
 
-              <button type="button" aria-pressed={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>
-                全部编排
+              <button type="button" className="template-workbench-create-button" onClick={() => setIsCreateDialogOpen(true)}>
+                新建靶场
               </button>
-              <button type="button" aria-pressed={statusFilter === 'published'} onClick={() => setStatusFilter('published')}>
-                已发布
-              </button>
-              <button type="button" aria-pressed={statusFilter === 'draft'} onClick={() => setStatusFilter('draft')}>
-                草稿中
-              </button>
-
-              {canCreateTemplates ? (
-                <button type="button" className="template-workbench-create-button" onClick={() => setIsCreateDialogOpen(true)}>
-                  新建靶场
-                </button>
-              ) : null}
             </div>
           </div>
 
@@ -902,7 +764,7 @@ export function TemplatesScreen({
                     </div>
 
                     <div className="template-workbench-status">
-                      <span className={isPublished ? 'template-workbench-status-pill is-published' : 'template-workbench-status-pill is-draft'}>
+                      <span className={isPublished ? 'template-workbench-status-pill is-published' : 'template-workbench-status-pill is-private'}>
                         {readPublishedLabel(template)}
                       </span>
                     </div>
@@ -941,15 +803,6 @@ export function TemplatesScreen({
                                   <button type="button" onClick={() => openEditDialog(template)}>
                                     编辑信息
                                   </button>
-                                  {isPublished ? (
-                                    <button type="button" onClick={() => openConfirmDialog('unpublish', template)}>
-                                      取消发布
-                                    </button>
-                                  ) : (
-                                    <button type="button" onClick={() => void handlePublishTemplate(template.id)}>
-                                      发布版本
-                                    </button>
-                                  )}
                                   {isShared ? (
                                     <button type="button" onClick={() => void handleUnshareTemplate(template.id)}>
                                       回退为私有
@@ -983,7 +836,7 @@ export function TemplatesScreen({
           ) : (
             <div className="template-workbench-empty">
               <strong>当前筛选条件下没有靶场。</strong>
-              <p>{canCreateTemplates ? '你可以调整筛选条件，或者直接新建靶场进入拓扑编排页。' : '你可以切换到我的拓扑继续维护自有编排。'}</p>
+              <p>你可以调整筛选条件，或者直接新建靶场进入拓扑编排页。</p>
             </div>
           )}
           {filteredTemplates.length ? (
@@ -1107,22 +960,6 @@ export function TemplatesScreen({
               确认生成
             </button>
             <button type="button" disabled={isSubmitting} onClick={closeLaunchDialog}>
-              取消
-            </button>
-          </div>
-        </TemplateDialog>
-      ) : null}
-
-      {confirmState?.type === 'unpublish' ? (
-        <TemplateDialog title="确认取消发布">
-          <p className="template-workbench-confirm-copy">
-            当前将撤销“{getScenarioDisplayName(confirmState.template)}”的发布状态，后续将无法直接基于它创建实例。
-          </p>
-          <div className="template-workbench-dialog-actions">
-            <button type="button" disabled={isSubmitting} onClick={() => void handleUnpublishTemplate(confirmState.template.id)}>
-              确认取消发布
-            </button>
-            <button type="button" disabled={isSubmitting} onClick={closeConfirmDialog}>
               取消
             </button>
           </div>

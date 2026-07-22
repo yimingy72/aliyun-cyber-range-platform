@@ -236,6 +236,7 @@ export type RangeTemplateRecord = {
   outputSchema: Record<string, unknown>;
   defaultNetworkPolicy: Record<string, unknown> | null;
   visibility: ResourceVisibility;
+  revision: number;
   currentDraftVersionId: string | null;
   currentPublishedVersionId: string | null;
   currentDraftVersion?: RangeTemplateVersionRecord | null;
@@ -707,7 +708,27 @@ export type CreateRangeTemplateInput = {
   visibility?: ResourceVisibility;
 };
 
-export type UpdateRangeTemplateInput = Partial<Omit<CreateRangeTemplateInput, 'createdBy'>>;
+export type SaveRangeTemplateTopologyInput = {
+  expectedRevision: number;
+  topologySpec: RangeTemplateTopologySpec;
+  topologyGraph: Record<string, unknown>;
+  scenarioTemplateSpec: Record<string, unknown>;
+  compiledProvisionSpec: Record<string, unknown>;
+  compiledSpec: Record<string, unknown>;
+};
+
+export type UpdateRangeTemplateMetadataInput = {
+  expectedRevision: number;
+  name?: string;
+  description?: string | null;
+};
+
+export class TemplateRevisionConflictError extends Error {
+  constructor() {
+    super('TEMPLATE_REVISION_CONFLICT');
+    this.name = 'TemplateRevisionConflictError';
+  }
+}
 
 export type CreateSingleInstanceBatchInput = {
   name: string;
@@ -834,9 +855,10 @@ export interface AdminRepository {
   createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord>;
   getRangeTemplateById(id: string): Promise<RangeTemplateRecord | null>;
   getRangeTemplateVersionById(id: string): Promise<RangeTemplateVersionRecord | null>;
-  updateRangeTemplate(id: string, input: UpdateRangeTemplateInput): Promise<RangeTemplateRecord>;
-  publishRangeTemplate(id: string): Promise<RangeTemplateRecord>;
-  unpublishRangeTemplate(id: string): Promise<RangeTemplateRecord>;
+  updateRangeTemplateMetadata(id: string, input: UpdateRangeTemplateMetadataInput): Promise<RangeTemplateRecord>;
+  saveRangeTemplateTopology(id: string, input: SaveRangeTemplateTopologyInput): Promise<RangeTemplateRecord>;
+  publishRangeTemplateToPlatform(id: string, expectedRevision: number): Promise<RangeTemplateRecord>;
+  unshareRangeTemplate(id: string, expectedRevision: number): Promise<RangeTemplateRecord>;
   deleteRangeTemplate(id: string): Promise<void>;
   createSingleInstanceBatch(input: CreateSingleInstanceBatchInput): Promise<SingleInstanceBatchRecord>;
   getSingleInstanceBatchById(id: string): Promise<SingleInstanceBatchRecord | null>;

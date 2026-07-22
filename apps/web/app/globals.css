@@ -2422,7 +2422,7 @@ body {
   background: #eef4ff;
 }
 
-.template-workbench-segmented .template-workbench-create-button {
+.template-workbench-create-button {
   min-height: var(--ui-button-height);
   padding: 0 14px;
   border-radius: 8px;
@@ -2437,7 +2437,7 @@ body {
   font-weight: 600;
 }
 
-.template-workbench-segmented .template-workbench-create-button:hover {
+.template-workbench-create-button:hover {
   background: #d2e0f7;
   border-color: #b5c8e7;
 }
@@ -2503,6 +2503,14 @@ body {
   gap: 16px;
   padding: 0 18px 10px;
   border-bottom: 1px solid #edf1f5;
+}
+
+.template-workbench-controls-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-left: auto;
 }
 
 .template-workbench-column-head {
@@ -2654,7 +2662,7 @@ body {
   background: #e6f5ee;
 }
 
-.template-workbench-status-pill.is-draft {
+.template-workbench-status-pill.is-private {
   color: #8a5d06;
   background: #fff3db;
 }
@@ -3811,6 +3819,12 @@ body {
     flex-direction: column;
     align-items: flex-start;
     justify-content: flex-start;
+  }
+
+  .template-workbench-controls-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
   }
 
   .template-workbench-search-grid,

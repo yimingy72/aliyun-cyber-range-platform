@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { isDeepStrictEqual } from 'node:util';
 
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import {
@@ -40,6 +41,8 @@ import {
   SingleInstanceBatchRecord,
   SingleInstanceBatchWithInstancesRecord,
   RangeTemplateRecord,
+  SaveRangeTemplateTopologyInput,
+  TemplateRevisionConflictError,
   UpsertImageSnapshotsInput,
   UpdateBillingLedgerResourceInput,
   UpdateIdempotentOperationInput,
@@ -47,7 +50,7 @@ import {
   UpdateProvisionJobInput,
   UpdateProvisionJobStepLogInput,
   UpdateRangeInstanceInput,
-  UpdateRangeTemplateInput,
+  UpdateRangeTemplateMetadataInput,
 } from '../admin/admin.repository';
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
@@ -437,108 +440,120 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async updateRangeTemplate(id: string, input: UpdateRangeTemplateInput): Promise<RangeTemplateRecord> {
+  async updateRangeTemplateMetadata(
+    id: string,
+    input: UpdateRangeTemplateMetadataInput,
+  ): Promise<RangeTemplateRecord> {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.rangeTemplate.findUniqueOrThrow({ where: { id } });
+
+      if (existing.revision !== input.expectedRevision) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      const changed =
+        (input.name !== undefined && input.name !== existing.name) ||
+        (input.description !== undefined && input.description !== existing.description);
+
+      if (changed) {
+        const updated = await tx.rangeTemplate.updateMany({
+          where: {
+            id,
+            revision: input.expectedRevision,
+          },
+          data: {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.description !== undefined ? { description: input.description } : {}),
+            revision: { increment: 1 },
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new TemplateRevisionConflictError();
+        }
+      }
+
+      return tx.rangeTemplate.findUniqueOrThrow({
+        where: { id },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+          versions: true,
+        },
+      }) as Promise<RangeTemplateRecord>;
+    });
+  }
+
+  async saveRangeTemplateTopology(
+    id: string,
+    input: SaveRangeTemplateTopologyInput,
+  ): Promise<RangeTemplateRecord> {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.rangeTemplate.findUniqueOrThrow({
         where: { id },
-        include: { currentDraftVersion: true, currentPublishedVersion: true },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+        },
       });
-      if (existing.currentDraftVersionId) {
+
+      if (existing.revision !== input.expectedRevision) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      if (!existing.currentDraftVersion) {
+        throw new Error('Current editable template snapshot not found');
+      }
+
+      const topologyChanged =
+        !isDeepStrictEqual(existing.currentDraftVersion.topologySpec, input.topologySpec) ||
+        !isDeepStrictEqual(existing.currentDraftVersion.topologyGraph, input.topologyGraph) ||
+        !isDeepStrictEqual(existing.currentDraftVersion.scenarioTemplateSpec, input.scenarioTemplateSpec) ||
+        !isDeepStrictEqual(existing.currentDraftVersion.compiledProvisionSpec, input.compiledProvisionSpec) ||
+        !isDeepStrictEqual(existing.currentDraftVersion.compiledSpec, input.compiledSpec);
+
+      if (topologyChanged) {
         await tx.rangeTemplateVersion.update({
-          where: { id: existing.currentDraftVersionId },
+          where: { id: existing.currentDraftVersion.id },
           data: {
-            ...(input.version !== undefined ? { version: input.version } : {}),
-            ...(input.modulePathOrRef !== undefined ? { modulePathOrRef: input.modulePathOrRef } : {}),
-            ...(input.topologySpec !== undefined ? { topologySpec: input.topologySpec as Prisma.InputJsonValue } : {}),
-            ...(input.topologyGraph !== undefined
-              ? {
-                  topologyGraph: input.topologyGraph as
-                    | Prisma.InputJsonValue
-                    | Prisma.NullableJsonNullValueInput,
-                }
-              : {}),
-            ...(input.scenarioTemplateSpec !== undefined
-              ? {
-                  scenarioTemplateSpec: input.scenarioTemplateSpec as
-                    | Prisma.InputJsonValue
-                    | Prisma.NullableJsonNullValueInput,
-                }
-              : {}),
-            ...(input.compiledProvisionSpec !== undefined
-              ? {
-                  compiledProvisionSpec: input.compiledProvisionSpec as
-                    | Prisma.InputJsonValue
-                    | Prisma.NullableJsonNullValueInput,
-                }
-              : {}),
-            ...(input.compiledSpec !== undefined
-              ? {
-                  compiledSpec: input.compiledSpec as
-                    | Prisma.InputJsonValue
-                    | Prisma.NullableJsonNullValueInput,
-                }
-              : {}),
-            ...(input.variableSchema !== undefined
-              ? { variableSchema: input.variableSchema as Prisma.InputJsonValue }
-              : {}),
-            ...(input.outputSchema !== undefined ? { outputSchema: input.outputSchema as Prisma.InputJsonValue } : {}),
-            ...(input.defaultNetworkPolicy !== undefined
-              ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
-              : {}),
+            topologySpec: input.topologySpec as Prisma.InputJsonValue,
+            topologyGraph: input.topologyGraph as Prisma.InputJsonValue,
+            scenarioTemplateSpec: input.scenarioTemplateSpec as Prisma.InputJsonValue,
+            compiledProvisionSpec: input.compiledProvisionSpec as Prisma.InputJsonValue,
+            compiledSpec: input.compiledSpec as Prisma.InputJsonValue,
           },
         });
+
+        if (existing.currentPublishedVersion) {
+          await tx.rangeTemplateVersion.update({
+            where: { id: existing.currentPublishedVersion.id },
+            data: { status: 'archived' },
+          });
+        }
+
+        const updated = await tx.rangeTemplate.updateMany({
+          where: {
+            id,
+            revision: input.expectedRevision,
+          },
+          data: {
+            topologySpec: input.topologySpec as Prisma.InputJsonValue,
+            topologyGraph: input.topologyGraph as Prisma.InputJsonValue,
+            scenarioTemplateSpec: input.scenarioTemplateSpec as Prisma.InputJsonValue,
+            compiledProvisionSpec: input.compiledProvisionSpec as Prisma.InputJsonValue,
+            compiledSpec: input.compiledSpec as Prisma.InputJsonValue,
+            visibility: 'private',
+            currentPublishedVersionId: null,
+            revision: { increment: 1 },
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new TemplateRevisionConflictError();
+        }
       }
 
-      await tx.rangeTemplate.update({
-        where: { id },
-        data: {
-          ...(input.name !== undefined ? { name: input.name } : {}),
-          ...(input.description !== undefined ? { description: input.description } : {}),
-          ...(input.slug !== undefined ? { slug: input.slug } : {}),
-          ...(input.version !== undefined ? { version: input.version } : {}),
-          ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
-          ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
-          ...(input.cloudProvider !== undefined ? { cloudProvider: input.cloudProvider } : {}),
-          ...(input.iacType !== undefined ? { iacType: input.iacType } : {}),
-          ...(input.modulePathOrRef !== undefined ? { modulePathOrRef: input.modulePathOrRef } : {}),
-          ...(input.topologySpec !== undefined ? { topologySpec: input.topologySpec as Prisma.InputJsonValue } : {}),
-          ...(input.topologyGraph !== undefined
-            ? {
-                topologyGraph: input.topologyGraph as
-                  | Prisma.InputJsonValue
-                  | Prisma.NullableJsonNullValueInput,
-              }
-            : {}),
-          ...(input.scenarioTemplateSpec !== undefined
-            ? {
-                scenarioTemplateSpec: input.scenarioTemplateSpec as
-                  | Prisma.InputJsonValue
-                  | Prisma.NullableJsonNullValueInput,
-              }
-            : {}),
-          ...(input.compiledProvisionSpec !== undefined
-            ? {
-                compiledProvisionSpec: input.compiledProvisionSpec as
-                  | Prisma.InputJsonValue
-                  | Prisma.NullableJsonNullValueInput,
-              }
-            : {}),
-          ...(input.compiledSpec !== undefined
-            ? {
-                compiledSpec: input.compiledSpec as
-                  | Prisma.InputJsonValue
-                  | Prisma.NullableJsonNullValueInput,
-              }
-            : {}),
-          ...(input.variableSchema !== undefined ? { variableSchema: input.variableSchema as Prisma.InputJsonValue } : {}),
-          ...(input.outputSchema !== undefined ? { outputSchema: input.outputSchema as Prisma.InputJsonValue } : {}),
-          ...(input.defaultNetworkPolicy !== undefined
-            ? { defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue }
-            : {}),
-        },
-      });
-
-      return tx.rangeTemplate.findUnique({
+      return tx.rangeTemplate.findUniqueOrThrow({
         where: { id },
         include: {
           currentDraftVersion: true,
@@ -549,77 +564,101 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async publishRangeTemplate(id: string): Promise<RangeTemplateRecord> {
+  async publishRangeTemplateToPlatform(id: string, expectedRevision: number): Promise<RangeTemplateRecord> {
     return this.prisma.$transaction(async (tx) => {
       const template = await tx.rangeTemplate.findUniqueOrThrow({
         where: { id },
-        include: { currentDraftVersion: true },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+        },
       });
+
+      if (template.revision !== expectedRevision) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      if (template.currentPublishedVersion && template.visibility === 'platform') {
+        return tx.rangeTemplate.findUniqueOrThrow({
+          where: { id },
+          include: {
+            currentDraftVersion: true,
+            currentPublishedVersion: true,
+            versions: true,
+          },
+        }) as Promise<RangeTemplateRecord>;
+      }
 
       if (!template.currentDraftVersion) {
-        throw new Error('Current draft version not found');
+        throw new Error('Current editable template snapshot not found');
       }
 
-      const publishedVersion = await tx.rangeTemplateVersion.update({
-        where: { id: template.currentDraftVersion.id },
-        data: { status: 'published' },
-      });
+      let publishedVersionId = template.currentPublishedVersionId;
+      let currentDraftVersionId = template.currentDraftVersionId;
 
-      const nextDraft = await tx.rangeTemplateVersion.create({
+      if (!template.currentPublishedVersion) {
+        await tx.rangeTemplateVersion.updateMany({
+          where: {
+            templateId: id,
+            status: 'published',
+          },
+          data: { status: 'archived' },
+        });
+
+        const publishedVersion = await tx.rangeTemplateVersion.update({
+          where: { id: template.currentDraftVersion.id },
+          data: { status: 'published' },
+        });
+        const nextDraft = await tx.rangeTemplateVersion.create({
+          data: {
+            templateId: template.id,
+            version: publishedVersion.version,
+            status: 'draft',
+            modulePathOrRef: publishedVersion.modulePathOrRef,
+            topologySpec: publishedVersion.topologySpec as Prisma.InputJsonValue,
+            topologyGraph: publishedVersion.topologyGraph as
+              | Prisma.InputJsonValue
+              | Prisma.NullableJsonNullValueInput,
+            scenarioTemplateSpec: publishedVersion.scenarioTemplateSpec as
+              | Prisma.InputJsonValue
+              | Prisma.NullableJsonNullValueInput,
+            compiledProvisionSpec: publishedVersion.compiledProvisionSpec as
+              | Prisma.InputJsonValue
+              | Prisma.NullableJsonNullValueInput,
+            compiledSpec: publishedVersion.compiledSpec as
+              | Prisma.InputJsonValue
+              | Prisma.NullableJsonNullValueInput,
+            variableSchema: publishedVersion.variableSchema as Prisma.InputJsonValue,
+            outputSchema: publishedVersion.outputSchema as Prisma.InputJsonValue,
+            defaultNetworkPolicy: publishedVersion.defaultNetworkPolicy as
+              | Prisma.InputJsonValue
+              | Prisma.NullableJsonNullValueInput,
+          },
+        });
+
+        publishedVersionId = publishedVersion.id;
+        currentDraftVersionId = nextDraft.id;
+      }
+
+      const updated = await tx.rangeTemplate.updateMany({
+        where: {
+          id,
+          revision: expectedRevision,
+        },
         data: {
-          templateId: template.id,
-          version: publishedVersion.version,
-          status: 'draft',
-          modulePathOrRef: publishedVersion.modulePathOrRef,
-          topologySpec: publishedVersion.topologySpec as Prisma.InputJsonValue,
-          topologyGraph: publishedVersion.topologyGraph as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          scenarioTemplateSpec: publishedVersion.scenarioTemplateSpec as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledProvisionSpec: publishedVersion.compiledProvisionSpec as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledSpec: publishedVersion.compiledSpec as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
-          variableSchema: publishedVersion.variableSchema as Prisma.InputJsonValue,
-          outputSchema: publishedVersion.outputSchema as Prisma.InputJsonValue,
-          defaultNetworkPolicy: publishedVersion.defaultNetworkPolicy as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
+          visibility: 'platform',
+          currentPublishedVersionId: publishedVersionId,
+          currentDraftVersionId,
+          revision: { increment: 1 },
         },
       });
 
-      await tx.rangeTemplate.update({
-        where: { id: template.id },
-        data: {
-          version: publishedVersion.version,
-          modulePathOrRef: publishedVersion.modulePathOrRef,
-          topologySpec: publishedVersion.topologySpec as Prisma.InputJsonValue,
-          topologyGraph: publishedVersion.topologyGraph as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          scenarioTemplateSpec: publishedVersion.scenarioTemplateSpec as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledProvisionSpec: publishedVersion.compiledProvisionSpec as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledSpec: publishedVersion.compiledSpec as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          variableSchema: publishedVersion.variableSchema as Prisma.InputJsonValue,
-          outputSchema: publishedVersion.outputSchema as Prisma.InputJsonValue,
-          defaultNetworkPolicy: publishedVersion.defaultNetworkPolicy as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          currentPublishedVersionId: publishedVersion.id,
-          currentDraftVersionId: nextDraft.id,
-        },
-      });
+      if (updated.count !== 1) {
+        throw new TemplateRevisionConflictError();
+      }
 
-      return tx.rangeTemplate.findUnique({
-        where: { id: template.id },
+      return tx.rangeTemplate.findUniqueOrThrow({
+        where: { id },
         include: {
           currentDraftVersion: true,
           currentPublishedVersion: true,
@@ -629,31 +668,42 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async unpublishRangeTemplate(id: string): Promise<RangeTemplateRecord> {
+  async unshareRangeTemplate(id: string, expectedRevision: number): Promise<RangeTemplateRecord> {
     return this.prisma.$transaction(async (tx) => {
-      const template = await tx.rangeTemplate.findUniqueOrThrow({
-        where: { id },
-        include: { currentPublishedVersion: true },
-      });
+      const template = await tx.rangeTemplate.findUniqueOrThrow({ where: { id } });
 
-      if (!template.currentPublishedVersion) {
-        throw new Error('Current published version not found');
+      if (template.revision !== expectedRevision) {
+        throw new TemplateRevisionConflictError();
       }
 
-      await tx.rangeTemplateVersion.update({
-        where: { id: template.currentPublishedVersion.id },
-        data: { status: 'archived' },
-      });
+      if (template.visibility === 'private') {
+        return tx.rangeTemplate.findUniqueOrThrow({
+          where: { id },
+          include: {
+            currentDraftVersion: true,
+            currentPublishedVersion: true,
+            versions: true,
+          },
+        }) as Promise<RangeTemplateRecord>;
+      }
 
-      await tx.rangeTemplate.update({
-        where: { id: template.id },
+      const updated = await tx.rangeTemplate.updateMany({
+        where: {
+          id,
+          revision: expectedRevision,
+        },
         data: {
-          currentPublishedVersionId: null,
+          visibility: 'private',
+          revision: { increment: 1 },
         },
       });
 
-      return tx.rangeTemplate.findUnique({
-        where: { id: template.id },
+      if (updated.count !== 1) {
+        throw new TemplateRevisionConflictError();
+      }
+
+      return tx.rangeTemplate.findUniqueOrThrow({
+        where: { id },
         include: {
           currentDraftVersion: true,
           currentPublishedVersion: true,

@@ -2,7 +2,12 @@ import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
-import { CreateRangeTemplateDto, UpdateRangeTemplateDto } from './dto/range-template.dto';
+import {
+  CreateRangeTemplateDto,
+  RangeTemplateRevisionDto,
+  SaveRangeTemplateTopologyDto,
+  UpdateRangeTemplateDto,
+} from './dto/range-template.dto';
 import { RangeTemplatesService } from './range-templates.service';
 
 type AuthenticatedAdminRequest = {
@@ -36,37 +41,37 @@ export class ScenariosController {
 
   @Patch(':id')
   update(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: UpdateRangeTemplateDto) {
-    return this.rangeTemplatesService.update(id, body, request.adminUser);
+    return this.rangeTemplatesService.updateMetadata(id, body, request.adminUser);
   }
 
-  @Post(':id/publish')
+  @Post(':id/validate-and-save')
   @HttpCode(200)
-  publish(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeTemplatesService.publish(id, request.adminUser);
-  }
-
-  @Post(':id/validate')
-  @HttpCode(200)
-  validate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeTemplatesService.validate(id, request.adminUser);
-  }
-
-  @Post(':id/unpublish')
-  @HttpCode(200)
-  unpublish(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeTemplatesService.unpublish(id, request.adminUser);
+  validateAndSave(
+    @Req() request: AuthenticatedAdminRequest,
+    @Param('id') id: string,
+    @Body() body: SaveRangeTemplateTopologyDto,
+  ) {
+    return this.rangeTemplatesService.validateAndSave(id, body, request.adminUser);
   }
 
   @Post(':id/share')
   @HttpCode(200)
-  share(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeTemplatesService.share(id, request.adminUser);
+  share(
+    @Req() request: AuthenticatedAdminRequest,
+    @Param('id') id: string,
+    @Body() body: RangeTemplateRevisionDto,
+  ) {
+    return this.rangeTemplatesService.publishToPlatform(id, body.expectedRevision, request.adminUser);
   }
 
   @Post(':id/unshare')
   @HttpCode(200)
-  unshare(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeTemplatesService.unshare(id, request.adminUser);
+  unshare(
+    @Req() request: AuthenticatedAdminRequest,
+    @Param('id') id: string,
+    @Body() body: RangeTemplateRevisionDto,
+  ) {
+    return this.rangeTemplatesService.returnToPrivate(id, body.expectedRevision, request.adminUser);
   }
 
   @Delete(':id')

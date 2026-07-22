@@ -6,23 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   fetchRangeTemplatesMock,
   fetchRangeTemplateByIdMock,
-  updateRangeTemplateMock,
-  publishRangeTemplateMock,
-  validateRangeTemplateMock,
+  createRangeTemplateMock,
+  validateAndSaveRangeTemplateMock,
+  shareRangeTemplateMock,
   fetchPlatformImagesMock,
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
   fetchInstanceTypeAvailabilityMock,
+  replaceMock,
 } = vi.hoisted(() => ({
   fetchRangeTemplatesMock: vi.fn(),
   fetchRangeTemplateByIdMock: vi.fn(),
-  updateRangeTemplateMock: vi.fn(),
-  publishRangeTemplateMock: vi.fn(),
-  validateRangeTemplateMock: vi.fn(),
+  createRangeTemplateMock: vi.fn(),
+  validateAndSaveRangeTemplateMock: vi.fn(),
+  shareRangeTemplateMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
   fetchPublicImageCatalogScopeMock: vi.fn(),
   fetchCustomImageCatalogScopeMock: vi.fn(),
   fetchInstanceTypeAvailabilityMock: vi.fn(),
+  replaceMock: vi.fn(),
 }));
 
 vi.mock('../../../lib/admin-api', async () => {
@@ -32,18 +34,45 @@ vi.mock('../../../lib/admin-api', async () => {
     ...actual,
     fetchRangeTemplates: fetchRangeTemplatesMock,
     fetchRangeTemplateById: fetchRangeTemplateByIdMock,
-    updateRangeTemplate: updateRangeTemplateMock,
-    publishRangeTemplate: publishRangeTemplateMock,
-    validateRangeTemplate: validateRangeTemplateMock,
+    createRangeTemplate: createRangeTemplateMock,
+    validateAndSaveRangeTemplate: validateAndSaveRangeTemplateMock,
+    shareRangeTemplate: shareRangeTemplateMock,
     fetchPlatformImages: fetchPlatformImagesMock,
     fetchPublicImageCatalogScope: fetchPublicImageCatalogScopeMock,
     fetchCustomImageCatalogScope: fetchCustomImageCatalogScopeMock,
     fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   };
 });
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    replace: replaceMock,
+  }),
+}));
 import { AdminApiError } from '../../../lib/admin-api';
 import { buildScenarioTemplateSpecFromTopologyGraph } from '../../../lib/topology-graph-to-scenario-template';
-import { TemplateEditorScreen } from './template-editor-screen';
+import { TemplateEditorScreen as ActualTemplateEditorScreen } from './template-editor-screen';
+
+function normalizeTemplateFixture(template: React.ComponentProps<typeof ActualTemplateEditorScreen>['template']) {
+  const legacyTemplate = template as
+    | (React.ComponentProps<typeof ActualTemplateEditorScreen>['template'] & {
+        currentDraftVersion?: { topologyGraph?: Record<string, unknown> | null } | null;
+        currentPublishedVersion?: unknown;
+      })
+    | undefined;
+
+  return legacyTemplate
+    ? ({
+        ...legacyTemplate,
+        status: legacyTemplate.status ?? (legacyTemplate.currentPublishedVersion ? 'published' : 'private'),
+        revision: legacyTemplate.revision ?? 1,
+        topologyGraph: legacyTemplate.topologyGraph ?? legacyTemplate.currentDraftVersion?.topologyGraph ?? null,
+      } as React.ComponentProps<typeof ActualTemplateEditorScreen>['template'])
+    : undefined;
+}
+
+function TemplateEditorScreen(props: React.ComponentProps<typeof ActualTemplateEditorScreen>) {
+  return <ActualTemplateEditorScreen {...props} template={normalizeTemplateFixture(props.template)} />;
+}
 
 vi.mock('../use-admin-session', () => ({
   useAdminSession: () => ({
@@ -62,8 +91,20 @@ function buildUpdatedTemplateResponse(
     name: '企业攻防靶场',
     slug: 'enterprise-range',
     version: 'v1.1.0',
+    visibility: 'private',
+    status: 'private',
+    revision: 4,
+    topologyGraph: (payload?.topologyGraph as Record<string, unknown> | undefined) ?? {
+      schemaVersion: '2.0.0',
+      nodes: [],
+      edges: [],
+    },
+    ...(payload?.topologySpec ? { topologySpec: payload.topologySpec } : {}),
+    ...(payload?.scenarioTemplateSpec ? { scenarioTemplateSpec: payload.scenarioTemplateSpec } : {}),
+    ...(payload?.compiledProvisionSpec ? { compiledProvisionSpec: payload.compiledProvisionSpec } : {}),
+    ...(payload?.compiledSpec ? { compiledSpec: payload.compiledSpec } : {}),
     currentDraftVersionId: 'draft-2',
-    currentPublishedVersionId: 'published-1',
+    currentPublishedVersionId: null,
     currentDraftVersion: {
       id: 'draft-2',
       status: 'draft',
@@ -78,12 +119,7 @@ function buildUpdatedTemplateResponse(
       ...(payload?.compiledProvisionSpec ? { compiledProvisionSpec: payload.compiledProvisionSpec } : {}),
       ...(payload?.compiledSpec ? { compiledSpec: payload.compiledSpec } : {}),
     },
-    currentPublishedVersion: {
-      id: 'published-1',
-      status: 'published',
-      version: 'v1.0.0',
-      topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
-    },
+    currentPublishedVersion: null,
     ...overrides,
   };
 }
@@ -105,13 +141,12 @@ beforeEach(() => {
       },
     },
   });
-  updateRangeTemplateMock.mockImplementation(
+  fetchRangeTemplatesMock.mockResolvedValue([]);
+  fetchRangeTemplateByIdMock.mockResolvedValue(null);
+  validateAndSaveRangeTemplateMock.mockImplementation(
     async (_apiBaseUrl: string, _token: string, _id: string, payload: Record<string, unknown>) =>
       buildUpdatedTemplateResponse(payload),
   );
-  fetchRangeTemplatesMock.mockResolvedValue([]);
-  fetchRangeTemplateByIdMock.mockResolvedValue(null);
-  validateRangeTemplateMock.mockResolvedValue({ valid: true });
   fetchPlatformImagesMock.mockResolvedValue({
     items: [
       {
@@ -175,11 +210,12 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.localStorage?.clear?.();
-  updateRangeTemplateMock.mockReset();
   fetchRangeTemplatesMock.mockReset();
   fetchRangeTemplateByIdMock.mockReset();
-  publishRangeTemplateMock.mockReset();
-  validateRangeTemplateMock.mockReset();
+  validateAndSaveRangeTemplateMock.mockReset();
+  createRangeTemplateMock.mockReset();
+  shareRangeTemplateMock.mockReset();
+  replaceMock.mockReset();
   fetchPlatformImagesMock.mockReset();
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
@@ -217,9 +253,8 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('资源面板')).toBeTruthy();
     expect(screen.getByText('拓扑画布')).toBeTruthy();
     expect(screen.getByText('属性面板')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '检测拓扑' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '保存草稿' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '发布编排' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '检测&保存' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '发布到平台' })).toBeTruthy();
   });
 
   it('loads platform image assets and the current user\'s own image assets for ecs image options', async () => {
@@ -335,10 +370,10 @@ describe('TemplateEditorScreen', () => {
 
     expect((screen.getByRole('combobox', { name: '镜像名' }) as HTMLInputElement).value).toBe('');
 
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     expect(await screen.findByText(/ECS 1 请选择镜像/)).toBeTruthy();
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('supports only router, switch and ecs nodes in the phase-one topology editor', () => {
@@ -639,7 +674,7 @@ describe('TemplateEditorScreen', () => {
     expect(privateIpInput.value).toBe('10.0.8.10');
   });
 
-  it('creates a persisted edge in online orchestration mode and saves it with the draft topology graph', async () => {
+  it('creates a persisted edge in online orchestration mode and saves it with the topology graph', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -677,18 +712,15 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
     await waitFor(() => {
-      expect(validateRangeTemplateMock).toHaveBeenCalled();
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getAllByRole('button', { name: '保存草稿' })[0]!);
-
-    await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(2);
-    });
-
-    expect(updateRangeTemplateMock).toHaveBeenLastCalledWith(
+    expect(validateAndSaveRangeTemplateMock).toHaveBeenLastCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
       'template-1',
@@ -706,7 +738,7 @@ describe('TemplateEditorScreen', () => {
         compiledSpec: expect.any(Object),
       }),
     );
-    expect(updateRangeTemplateMock.mock.lastCall?.[3]).toEqual(
+    expect(validateAndSaveRangeTemplateMock.mock.lastCall?.[3]).toEqual(
       expect.objectContaining({
         scenarioTemplateSpec: expect.objectContaining({
           hosts: expect.arrayContaining([
@@ -837,7 +869,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.22' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
       expect(
@@ -847,8 +879,8 @@ describe('TemplateEditorScreen', () => {
       ).toBeTruthy();
     });
 
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(validateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('blocks topology detection when ecs custom password is invalid', async () => {
@@ -886,7 +918,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.23' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
       expect(
@@ -896,8 +928,8 @@ describe('TemplateEditorScreen', () => {
       ).toBeTruthy();
     });
 
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(validateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('blocks publishing when ecs custom password is invalid', async () => {
@@ -935,7 +967,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.24' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '发布编排' }));
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
 
     await waitFor(() => {
       expect(
@@ -945,9 +977,9 @@ describe('TemplateEditorScreen', () => {
       ).toBeTruthy();
     });
 
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(validateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(publishRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(shareRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('creates canonical edges even when linking starts from ecs or switch', () => {
@@ -1631,7 +1663,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByRole('combobox', { name: 'DNAT 目标主机 1' })).toBeTruthy();
   });
 
-  it('does not render inferred edges when the draft graph has no explicit edges', () => {
+  it('does not render inferred edges when the saved topology has no explicit edges', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -1761,8 +1793,7 @@ describe('TemplateEditorScreen', () => {
   });
 
   it('derives economy-first instance candidates from cpu and memory before validation payload is saved', async () => {
-    updateRangeTemplateMock.mockClear();
-    validateRangeTemplateMock.mockResolvedValue({ valid: true });
+    validateAndSaveRangeTemplateMock.mockClear();
 
     render(
       <TemplateEditorScreen
@@ -1802,13 +1833,13 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '4' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    const latestPayload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3];
     expect(latestPayload?.topologyGraph).toEqual(
       expect.objectContaining({
         nodes: expect.arrayContaining([
@@ -1843,8 +1874,7 @@ describe('TemplateEditorScreen', () => {
   });
 
   it('preserves an explicitly fixed economy instance type when topology detection recompiles the draft', async () => {
-    updateRangeTemplateMock.mockClear();
-    validateRangeTemplateMock.mockResolvedValue({ valid: true });
+    validateAndSaveRangeTemplateMock.mockClear();
 
     render(
       <TemplateEditorScreen
@@ -1939,13 +1969,13 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    const latestPayload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3];
     expect(latestPayload?.topologyGraph).toEqual(
       expect.objectContaining({
         nodes: expect.arrayContaining([
@@ -1985,7 +2015,7 @@ describe('TemplateEditorScreen', () => {
   });
 
   it('does not render the old property-panel helper copy or save button', () => {
-    updateRangeTemplateMock.mockResolvedValue({
+    validateAndSaveRangeTemplateMock.mockResolvedValue({
       id: 'template-1',
       name: '企业攻防靶场',
       slug: 'enterprise-range',
@@ -2037,7 +2067,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByRole('button', { name: '保存属性' })).toBeNull();
   });
 
-  it('blocks incomplete drafts from being saved before topology detection', () => {
+  it('blocks incomplete topologies during 检测&保存', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -2064,10 +2094,11 @@ describe('TemplateEditorScreen', () => {
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
-    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(screen.getByText('请先点击“检测拓扑”并通过后，再保存草稿。')).toBeTruthy();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/拓扑检测未通过：至少需要一个 ECS 主机/)).toBeTruthy();
   });
 
   it('allows topology detection when an ecs hostName is left blank', async () => {
@@ -2161,13 +2192,13 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    const latestPayload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3];
     expect(latestPayload?.topologyGraph?.nodes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2178,7 +2209,7 @@ describe('TemplateEditorScreen', () => {
     );
   });
 
-  it('restores stored switch and ecs positions from the saved draft graph after refresh', () => {
+  it('restores stored switch and ecs positions from the saved topology after refresh', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -2271,9 +2302,9 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByRole('button', { name: /ECS 1 10.0.0.13/ }).getAttribute('style')).toContain('left: 860px');
   });
 
-  it('restores unsaved topology from local cache for the same draft version after refresh', () => {
+  it('restores unsaved topology from local cache for the same template revision after refresh', () => {
     window.localStorage.setItem(
-      'template-editor:draft-cache:template-1:draft-1',
+      'template-editor:topology-cache:template-1:1',
       JSON.stringify({
         persistedGraphSignature: JSON.stringify({ nodes: [], edges: [] }),
         topologyGraph: {
@@ -2348,7 +2379,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByRole('button', { name: /ECS 1/ })).toBeTruthy();
   });
 
-  it('reloads full draft topology by template id instead of replacing it with list summary data', async () => {
+  it('reloads the full topology by template id instead of replacing it with list summary data', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'mine'
         ? [
@@ -2372,7 +2403,7 @@ describe('TemplateEditorScreen', () => {
           ]
         : [],
     );
-    fetchRangeTemplateByIdMock.mockResolvedValue({
+    fetchRangeTemplateByIdMock.mockResolvedValue(normalizeTemplateFixture({
       id: 'template-1',
       name: '企业攻防靶场',
       createdBy: 'test',
@@ -2432,7 +2463,7 @@ describe('TemplateEditorScreen', () => {
         },
       },
       currentPublishedVersion: null,
-    });
+    } as never));
 
     render(<TemplateEditorScreen templateId="template-1" />);
 
@@ -2444,9 +2475,9 @@ describe('TemplateEditorScreen', () => {
     );
   });
 
-  it('ignores stale local cache when the server draft topology has changed', () => {
+  it('ignores stale local cache when the server topology has changed', () => {
     window.localStorage.setItem(
-      'template-editor:draft-cache:template-1:draft-1',
+      'template-editor:topology-cache:template-1:1',
       JSON.stringify({
         persistedGraphSignature: JSON.stringify({
           nodes: [
@@ -2575,8 +2606,7 @@ describe('TemplateEditorScreen', () => {
   });
 
   it('preserves persisted top-level instanceType when reloading saved topology graph', async () => {
-    updateRangeTemplateMock.mockClear();
-    validateRangeTemplateMock.mockResolvedValue({ valid: true });
+    validateAndSaveRangeTemplateMock.mockClear();
 
     render(
       <TemplateEditorScreen
@@ -2670,14 +2700,14 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'persisted-instance-type-host' } });
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     expect(screen.getByDisplayValue('persisted-instance-type-host')).toBeTruthy();
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    const latestPayload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3];
     expect(latestPayload?.topologyGraph?.nodes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2753,13 +2783,13 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '8' } });
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'catalog-backed-host' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
 
-    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
+    const latestPayload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3];
 
     expect(latestPayload?.topologyGraph?.nodes).toEqual(
       expect.arrayContaining([
@@ -2814,28 +2844,16 @@ describe('TemplateEditorScreen', () => {
     );
   });
 
-  it('compiles topology graph into compiledSpec when detecting topology', async () => {
-    updateRangeTemplateMock.mockClear();
-    validateRangeTemplateMock.mockResolvedValue({ valid: true });
-    updateRangeTemplateMock.mockResolvedValue({
+  it('validates and saves one exact compiled topology payload with its revision', async () => {
+    validateAndSaveRangeTemplateMock.mockClear();
+    validateAndSaveRangeTemplateMock.mockResolvedValue({
       id: 'template-1',
       name: '企业攻防靶场',
       slug: 'enterprise-range',
-      version: 'v1.1.0',
-      currentDraftVersionId: 'draft-2',
-      currentPublishedVersionId: 'published-1',
-      currentDraftVersion: {
-        id: 'draft-2',
-        status: 'draft',
-        version: 'v1.1.0',
-        topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
-      },
-      currentPublishedVersion: {
-        id: 'published-1',
-        status: 'published',
-        version: 'v1.0.0',
-        topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
-      },
+      status: 'private',
+      visibility: 'private',
+      revision: 4,
+      topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
     });
 
     render(
@@ -2844,6 +2862,8 @@ describe('TemplateEditorScreen', () => {
           id: 'template-1',
           name: '企业攻防靶场',
           slug: 'enterprise-range',
+          status: 'private',
+          revision: 3,
           version: 'v1.1.0',
           currentDraftVersionId: 'draft-1',
           currentPublishedVersionId: 'published-1',
@@ -2873,35 +2893,28 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledTimes(1);
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
     });
-    expect(validateRangeTemplateMock).toHaveBeenCalledWith(
-      'http://localhost:3001',
-      'dev-admin-token',
-      'template-1',
-    );
-
-    const latestPayload = updateRangeTemplateMock.mock.calls[0]?.[3];
-    expect(latestPayload?.compiledSpec).toBeTruthy();
-    expect(latestPayload?.scenarioTemplateSpec).toBeTruthy();
-    expect(latestPayload?.compiledProvisionSpec).toBeTruthy();
-    expect(latestPayload?.compiledSpec).not.toHaveProperty('topologySpec');
-    expect(updateRangeTemplateMock).toHaveBeenCalledWith(
+    expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
       'template-1',
       expect.objectContaining({
+        expectedRevision: 3,
         topologyGraph: expect.any(Object),
         topologySpec: expect.any(Object),
-        compiledSpec: expect.objectContaining({
-          schemaVersion: '1.0.0',
-          resources: expect.any(Array),
-        }),
+        compiledSpec: expect.any(Object),
       }),
     );
+
+    const latestPayload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3];
+    expect(latestPayload?.compiledSpec).toBeTruthy();
+    expect(latestPayload?.scenarioTemplateSpec).toBeTruthy();
+    expect(latestPayload?.compiledProvisionSpec).toBeTruthy();
+    expect(latestPayload?.compiledSpec).not.toHaveProperty('topologySpec');
     expect(latestPayload?.compiledSpec?.resources[0]).toEqual(expect.objectContaining({
       id: 'ecs-1',
       type: 'host',
@@ -2996,10 +3009,65 @@ describe('TemplateEditorScreen', () => {
         }),
       }),
     );
-    expect(screen.getByText('拓扑检测通过，可继续发布编排或创建实例')).toBeTruthy();
+    expect(screen.getByText('拓扑检测通过，已保存')).toBeTruthy();
   });
 
-  it('blocks saving draft until topology detection passes for the current graph', async () => {
+  it('creates a new topology only after the complete local canvas passes detection', async () => {
+    window.sessionStorage.setItem(
+      'template-editor:new-template',
+      JSON.stringify({
+        name: '新建攻防拓扑',
+        description: '首次检测通过后创建',
+      }),
+    );
+    createRangeTemplateMock.mockResolvedValue({
+      id: 'template-created',
+      name: '新建攻防拓扑',
+      description: '首次检测通过后创建',
+      slug: 'new-range-created',
+      status: 'private',
+      visibility: 'private',
+      revision: 1,
+      topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+    });
+
+    render(<TemplateEditorScreen templateId="new" />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(await screen.findByLabelText('镜像名'), {
+      target: { value: 'Ubuntu 24.04 LTS' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
+    fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'new-edge-host' } });
+    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+
+    await waitFor(() => {
+      expect(createRangeTemplateMock).toHaveBeenCalledTimes(1);
+    });
+    expect(createRangeTemplateMock).toHaveBeenCalledWith(
+      'http://localhost:3001',
+      'dev-admin-token',
+      expect.objectContaining({
+        name: '新建攻防拓扑',
+        description: '首次检测通过后创建',
+        topologyGraph: expect.any(Object),
+        topologySpec: expect.any(Object),
+        scenarioTemplateSpec: expect.any(Object),
+        compiledProvisionSpec: expect.any(Object),
+        compiledSpec: expect.any(Object),
+      }),
+    );
+    expect(createRangeTemplateMock.mock.calls[0]?.[2]).not.toHaveProperty('expectedRevision');
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem('template-editor:new-template')).toBeNull();
+    expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios/template-created');
+  });
+
+  it('blocks publishing when the canvas has unsaved topology changes', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -3025,13 +3093,14 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
 
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(screen.getByText('请先点击“检测拓扑”并通过后，再保存草稿。')).toBeTruthy();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(screen.getByText('请先点击“检测&保存”，再发布到平台。')).toBeTruthy();
   });
 
-  it('blocks publishing until topology detection passes for the current graph', async () => {
+  it('warns when the current topology is already published', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -3057,15 +3126,15 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '发布编排' }));
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
 
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
-    expect(publishRangeTemplateMock).not.toHaveBeenCalled();
-    expect(screen.getByText('请先点击“检测拓扑”并通过后，再发布编排。')).toBeTruthy();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(shareRangeTemplateMock).not.toHaveBeenCalled();
+    expect(screen.getByText('当前拓扑已发布到平台。')).toBeTruthy();
   });
 
   it('rejects duplicate nic private ips on the same switch during topology detection', async () => {
-    updateRangeTemplateMock.mockClear();
+    validateAndSaveRangeTemplateMock.mockClear();
 
     render(
       <TemplateEditorScreen
@@ -3184,14 +3253,14 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
     await waitFor(() => {
       expect(
         screen.getByText(/拓扑检测未通过：交换机 1 中存在重复 IP：10\.0\.0\.4/),
       ).toBeTruthy();
     });
-    expect(updateRangeTemplateMock).not.toHaveBeenCalled();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
   });
 
   it('updates node positions in the local topology state when dragging', () => {
@@ -3230,26 +3299,15 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('top: 196px');
   });
 
-  it('publishes the template and refreshes published and draft version status', async () => {
-    publishRangeTemplateMock.mockResolvedValue({
+  it('publishes the saved private topology to the platform', async () => {
+    shareRangeTemplateMock.mockResolvedValue({
       id: 'template-1',
       name: '企业攻防靶场',
       slug: 'enterprise-range',
-      version: 'v1.2.0',
-      currentDraftVersionId: 'draft-3',
-      currentPublishedVersionId: 'published-2',
-      currentDraftVersion: {
-        id: 'draft-3',
-        status: 'draft',
-        version: 'v1.2.0',
-        topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
-      },
-      currentPublishedVersion: {
-        id: 'published-2',
-        status: 'published',
-        version: 'v1.2.0',
-        topologyGraph: { schemaVersion: '1.0.0', nodes: [], edges: [] },
-      },
+      status: 'published',
+      visibility: 'platform',
+      revision: 5,
+      topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
     });
 
     render(
@@ -3285,26 +3343,27 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
     await waitFor(() => {
-      expect(validateRangeTemplateMock).toHaveBeenCalled();
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
     });
-    fireEvent.click(screen.getAllByRole('button', { name: '发布编排' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '发布到平台' })[0]!);
 
     await waitFor(() => {
-      expect(publishRangeTemplateMock).toHaveBeenCalledWith(
+      expect(shareRangeTemplateMock).toHaveBeenCalledWith(
         'http://localhost:3001',
         'dev-admin-token',
         'template-1',
+        { expectedRevision: 4 },
       );
     });
 
-    expect(screen.getByText('编排已发布，并已生成新的草稿版本')).toBeTruthy();
+    expect(screen.getByText('拓扑已发布到平台。')).toBeTruthy();
     expect(screen.getByText('已发布')).toBeTruthy();
   });
 
   it('shows structured publish precheck errors when publishing fails', async () => {
-    publishRangeTemplateMock.mockRejectedValue(
+    shareRangeTemplateMock.mockRejectedValue(
       new AdminApiError(400, '编排发布失败', {
         message: [
           'Missing switch resource for network zone: office',
@@ -3346,11 +3405,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
     await waitFor(() => {
-      expect(validateRangeTemplateMock).toHaveBeenCalled();
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
     });
-    fireEvent.click(screen.getAllByRole('button', { name: '发布编排' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '发布到平台' })[0]!);
 
     await waitFor(() => {
       expect(screen.getByText(/编排发布失败：Missing switch resource for network zone: office；Compiled public entry host must expose public access: dmz-entry/)).toBeTruthy();

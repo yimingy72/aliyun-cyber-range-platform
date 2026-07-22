@@ -401,14 +401,19 @@ export class RangeInstancesService {
 
     const compiledSpec = this.buildCompiledSpecFromTopologyGraph(topologyGraph, topologySpec);
 
-    return this.rangeTemplatesService.update(
+    if (!compiledSpec) {
+      throw new ConflictException('Unable to compile the instance topology snapshot');
+    }
+
+    return this.rangeTemplatesService.validateAndSave(
       template.id,
       {
+        expectedRevision: template.revision,
         topologySpec,
         topologyGraph,
         scenarioTemplateSpec,
         compiledProvisionSpec,
-        ...(compiledSpec ? { compiledSpec } : {}),
+        compiledSpec,
       },
       currentUser,
     );

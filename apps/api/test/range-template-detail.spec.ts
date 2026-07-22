@@ -36,6 +36,119 @@ async function createPrivateImageAsset(
   });
 }
 
+function createCompleteTopology(imageAsset: { id: string; imageId: string; displayName: string }) {
+  const topologySpec = {
+    vpcCidr: '10.0.0.0/16',
+    networkZones: [
+      {
+        key: 'core',
+        name: 'Core',
+        purpose: 'business-zone',
+        cidr: '10.0.0.0/24',
+        isPublicEntry: true,
+      },
+    ],
+    hosts: [
+      {
+        key: 'ecs-1',
+        name: 'ECS 1',
+        zoneKey: 'core',
+        role: 'entry',
+        privateIp: '10.0.0.10',
+        exposePublic: true,
+      },
+    ],
+    publicEntry: {
+      hostKey: 'ecs-1',
+      protocols: [{ protocol: 'ssh', port: 22 }],
+    },
+  };
+  const imageSelection = {
+    platformImageAssetId: imageAsset.id,
+    imageId: imageAsset.imageId,
+    imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
+  };
+  const host = {
+    key: 'ecs-1',
+    name: 'ECS 1',
+    zoneKey: 'core',
+    role: 'entry',
+    primaryPrivateIp: '10.0.0.10',
+    ...imageSelection,
+  };
+  const networkZone = topologySpec.networkZones[0];
+
+  return {
+    topologySpec,
+    topologyGraph: {
+      schemaVersion: '2.0.0',
+      nodes: [
+        {
+          id: 'switch-1',
+          kind: 'switch',
+          label: 'Core',
+          zoneKey: 'core',
+          cidr: '10.0.0.0/24',
+        },
+        {
+          id: 'ecs-1',
+          kind: 'ecs',
+          label: 'ECS 1',
+          image: imageAsset.displayName,
+          imageName: imageAsset.displayName,
+          ...imageSelection,
+        },
+      ],
+      edges: [{ id: 'edge-1', fromNodeId: 'switch-1', toNodeId: 'ecs-1' }],
+    },
+    scenarioTemplateSpec: {
+      schemaVersion: '1.0.0',
+      topology: { vpcCidr: '10.0.0.0/16', entryHostKey: 'ecs-1' },
+      networkZones: [networkZone],
+      hosts: [host],
+    },
+    compiledProvisionSpec: {
+      schemaVersion: '1.0.0',
+      topology: { vpcCidr: '10.0.0.0/16', entryHostKey: 'ecs-1' },
+      networkZones: [networkZone],
+      hosts: [host],
+      natGateways: [],
+      eips: [],
+      snatEntries: [],
+      dnatEntries: [],
+    },
+    compiledSpec: {
+      schemaVersion: '1.0.0',
+      resources: [
+        {
+          id: 'switch-1',
+          type: 'switch',
+          provider: 'alibaba_cloud',
+          config: { zoneKey: 'core', cidr: '10.0.0.0/24' },
+        },
+        {
+          id: 'ecs-1',
+          type: 'host',
+          provider: 'alibaba_cloud',
+          config: {
+            zoneKey: 'core',
+            role: 'entry',
+            privateIp: '10.0.0.10',
+            exposePublic: true,
+            ...imageSelection,
+          },
+        },
+      ],
+      topology: {
+        vpcCidr: '10.0.0.0/16',
+        publicEntryHostKey: 'ecs-1',
+        networkZoneKeys: ['core'],
+        hostKeys: ['ecs-1'],
+      },
+    },
+  };
+}
+
 describe('RangeTemplatesService getById', () => {
   it('rejects publishing a legacy ECS topology that directly references an Alibaba Cloud image', async () => {
     const repository = createMemoryAdminRepository();
@@ -74,7 +187,9 @@ describe('RangeTemplatesService getById', () => {
     });
     const service = new RangeTemplatesService(repository);
 
-    await expect(service.publish(template.id, { id: 'user-1', role: 'user' })).rejects.toThrow('ECS 1 请选择镜像');
+    await expect(
+      service.publishToPlatform(template.id, template.revision, { id: 'user-1', role: 'user' }),
+    ).rejects.toThrow('ECS 1 请选择镜像');
   });
 
   it('rejects an ECS that references a public image directly instead of a permitted image asset', async () => {
@@ -92,9 +207,6 @@ describe('RangeTemplatesService getById', () => {
       service.create(
         {
           name: '企业攻防靶场',
-          slug: 'enterprise-range',
-          version: 'v1.0.0',
-          modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
           topologySpec: {
             vpcCidr: '10.0.0.0/16',
             networkZones: [
@@ -132,6 +244,9 @@ describe('RangeTemplatesService getById', () => {
             ],
             edges: [],
           },
+          scenarioTemplateSpec: {},
+          compiledProvisionSpec: {},
+          compiledSpec: {},
         },
         { id: 'user-1', role: 'user' },
       ),
@@ -148,49 +263,27 @@ describe('RangeTemplatesService getById', () => {
     });
     const imageAsset = await createPrivateImageAsset(repository, 'user-1');
     const service = new RangeTemplatesService(repository);
+    const topology = createCompleteTopology(imageAsset);
 
     await expect(
       service.create(
         {
           name: '企业攻防靶场',
-          slug: 'enterprise-range-compiled-image',
-          version: 'v1.0.0',
-          modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-          topologySpec: {
-            vpcCidr: '10.0.0.0/16',
-            networkZones: [{ key: 'core', name: 'Core', purpose: 'business-zone', cidr: '10.0.0.0/24' }],
-            hosts: [{ key: 'ecs-1', name: 'ECS 1', zoneKey: 'core', role: 'host', privateIp: '10.0.0.10' }],
-            publicEntry: { hostKey: 'ecs-1', protocols: [{ protocol: 'ssh', port: 22 }] },
-          },
-          topologyGraph: {
-            schemaVersion: '2.0.0',
-            nodes: [
-              {
-                id: 'ecs-1',
-                kind: 'ecs',
-                label: 'ECS 1',
-                platformImageAssetId: imageAsset.id,
-                image: imageAsset.displayName,
-                imageName: imageAsset.displayName,
-                imageId: imageAsset.imageId,
-                imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
-              },
-            ],
-            edges: [],
-          },
+          ...topology,
           compiledSpec: {
-            schemaVersion: '1.0.0',
-            resources: [
-              {
-                id: 'ecs-1',
-                type: 'host',
-                config: {
-                  platformImageAssetId: imageAsset.id,
-                  imageId: 'm-unapproved-image',
-                  imageStrategy: { mode: 'fixed', imageId: 'm-unapproved-image' },
-                },
-              },
-            ],
+            ...topology.compiledSpec,
+            resources: topology.compiledSpec.resources.map((resource) =>
+              resource.id === 'ecs-1'
+                ? {
+                    ...resource,
+                    config: {
+                      ...resource.config,
+                      imageId: 'm-unapproved-image',
+                      imageStrategy: { mode: 'fixed', imageId: 'm-unapproved-image' },
+                    },
+                  }
+                : resource,
+            ),
           },
         },
         { id: 'user-1', role: 'user' },
@@ -198,7 +291,7 @@ describe('RangeTemplatesService getById', () => {
     ).rejects.toThrow('ecs-1 的编译镜像配置与所选镜像不一致');
   });
 
-  it('returns the owner-visible draft topology instead of summary-only list fields', async () => {
+  it('returns the owner-visible topology without internal draft or version fields', async () => {
     const repository = createMemoryAdminRepository();
     await repository.createPlatformUser({
       id: 'user-1',
@@ -212,49 +305,7 @@ describe('RangeTemplatesService getById', () => {
     const created = await service.create(
       {
         name: '企业攻防靶场',
-        slug: 'enterprise-range',
-        version: 'v1.0.0',
-        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-        topologySpec: {
-          vpcCidr: '10.0.0.0/16',
-          networkZones: [
-            {
-              key: 'core',
-              name: 'Core',
-              purpose: 'business-zone',
-              cidr: '10.0.0.0/24',
-            },
-          ],
-          hosts: [
-            {
-              key: 'ecs-1',
-              name: 'ECS 1',
-              zoneKey: 'core',
-              role: 'host',
-              privateIp: '10.0.0.10',
-            },
-          ],
-          publicEntry: {
-            hostKey: 'ecs-1',
-            protocols: [{ protocol: 'ssh', port: 22 }],
-          },
-        },
-        topologyGraph: {
-          schemaVersion: '2.0.0',
-          nodes: [
-            {
-              id: 'ecs-1',
-              kind: 'ecs',
-              label: 'ECS 1',
-              platformImageAssetId: imageAsset.id,
-              image: imageAsset.displayName,
-              imageName: imageAsset.displayName,
-              imageId: imageAsset.imageId,
-              imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
-            },
-          ],
-          edges: [],
-        },
+        ...createCompleteTopology(imageAsset),
       },
       { id: 'user-1', role: 'user' },
     );
@@ -265,12 +316,15 @@ describe('RangeTemplatesService getById', () => {
       expect.objectContaining({
         id: created.id,
         createdBy: 'test',
-        currentDraftVersion: expect.objectContaining({
-          topologyGraph: expect.objectContaining({
-            nodes: [expect.objectContaining({ id: 'ecs-1' })],
-          }),
+        revision: 1,
+        status: 'private',
+        topologyGraph: expect.objectContaining({
+          nodes: expect.arrayContaining([expect.objectContaining({ id: 'ecs-1' })]),
         }),
       }),
     );
+    expect(fetched).not.toHaveProperty('version');
+    expect(fetched).not.toHaveProperty('currentDraftVersion');
+    expect(fetched).not.toHaveProperty('currentPublishedVersion');
   });
 });

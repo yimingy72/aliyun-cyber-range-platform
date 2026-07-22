@@ -824,46 +824,46 @@ export async function updateRangeTemplate(
   return readJson<Scenario>(response);
 }
 
-export async function publishRangeTemplate(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/publish`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-  });
-
-  return readJson<Scenario>(response);
-}
-
-export async function shareRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+export async function shareRangeTemplate(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: { expectedRevision: number },
+) {
   const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/share`, {
     method: 'POST',
     headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
   });
 
   return readJson<Scenario>(response);
 }
 
-export async function validateRangeTemplate(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/validate`, {
+export async function validateAndSaveRangeTemplate(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: import('./admin-types').RangeTemplateTopologySaveInput,
+) {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/validate-and-save`, {
     method: 'POST',
     headers: createAdminHeaders(token),
-  });
-
-  return readJson<{ valid: true }>(response);
-}
-
-export async function unpublishRangeTemplate(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/unpublish`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
   });
 
   return readJson<Scenario>(response);
 }
 
-export async function unshareRangeTemplate(apiBaseUrl: string, token: string, id: string) {
+export async function unshareRangeTemplate(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  payload: { expectedRevision: number },
+) {
   const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/unshare`, {
     method: 'POST',
     headers: createAdminHeaders(token),
+    body: JSON.stringify(payload),
   });
 
   return readJson<Scenario>(response);

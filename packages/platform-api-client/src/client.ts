@@ -51,9 +51,8 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<RangeTemplate[]>(`/admin/scenarios?view=${encodeURIComponent(view)}`);
   }
 
-  async getRangeTemplate(id: string) {
-    const lists = await Promise.all([this.listRangeTemplates('platform'), this.listRangeTemplates('mine')]);
-    return lists.flat().find((item) => item.id === id) ?? null;
+  getRangeTemplate(id: string) {
+    return this.request<RangeTemplate>(`/admin/scenarios/${encodeURIComponent(id)}`);
   }
 
   async listPlatformImages(view: PlatformImageView = 'platform') {
