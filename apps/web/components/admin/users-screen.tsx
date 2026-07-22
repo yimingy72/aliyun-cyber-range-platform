@@ -1,6 +1,5 @@
 'use client';
 
-import type { MouseEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
@@ -14,6 +13,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { TableCell, TableRow } from '@/components/ui/table';
@@ -55,7 +60,6 @@ type ResetPasswordState = {
   username: string;
   password: string;
 } | null;
-type ActionMenuPlacement = 'down' | 'up';
 
 const EMPTY_CREATE_USER_DRAFT: CreateAdminUserInput = {
   username: '',
@@ -70,8 +74,6 @@ const USER_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'updatedAt', label: '更新时间', priority: 'detail' },
   { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
 ];
-const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
-const ACTION_MENU_ESTIMATED_HEIGHT_PX = 88;
 
 function getUserRoleLabel(role: AdminUser['role']) {
   return role === 'admin' ? '管理员' : '普通用户';
@@ -97,16 +99,6 @@ function replaceUser(users: AdminUser[], updatedUser: AdminUser) {
   return users.map((user) => (user.id === updatedUser.id ? updatedUser : user));
 }
 
-function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
-  const triggerRect = triggerElement.getBoundingClientRect();
-  const containerRect =
-    triggerElement.closest('.admin-workbench-panel')?.getBoundingClientRect() ??
-    triggerElement.closest('.admin-main-content')?.getBoundingClientRect();
-  const availableBelow = (containerRect?.bottom ?? window.innerHeight) - triggerRect.bottom;
-
-  return availableBelow < ACTION_MENU_ESTIMATED_HEIGHT_PX + ACTION_MENU_VERTICAL_OFFSET_PX ? 'up' : 'down';
-}
-
 export function UsersScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: UsersScreenProps) {
@@ -121,8 +113,6 @@ export function UsersScreen({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [menuUserId, setMenuUserId] = useState<string | null>(null);
-  const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [createDraft, setCreateDraft] = useState<CreateAdminUserInput>(EMPTY_CREATE_USER_DRAFT);
   const [resetPasswordState, setResetPasswordState] = useState<ResetPasswordState>(null);
   const [page, setPage] = useState(1);
@@ -274,19 +264,6 @@ export function UsersScreen({
     router.replace('/admin/login');
   };
 
-  const handleScreenClickCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (!menuUserId) {
-      return;
-    }
-
-    if ((event.target as HTMLElement).closest('.users-workbench-row-menu')) {
-      return;
-    }
-
-    setMenuUserId(null);
-    setMenuPlacement('down');
-  };
-
   const handleCreateUser = async () => {
     if (!session.token) {
       return;
@@ -311,6 +288,8 @@ export function UsersScreen({
     try {
       const createdUser = await createAdminUser(apiBaseUrl, session.token, payload);
       setUsers((currentUsers) => [createdUser, ...currentUsers]);
+      setHasLoadedUsers(true);
+      setErrorMessage(null);
       closeCreateDialog();
       setActionSuccessMessage(`用户 ${createdUser.username} 已创建。`);
     } catch (error) {
@@ -332,7 +311,6 @@ export function UsersScreen({
     }
 
     setIsSubmitting(true);
-    setMenuUserId(null);
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
 
@@ -365,7 +343,6 @@ export function UsersScreen({
     }
 
     setIsSubmitting(true);
-    setMenuUserId(null);
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
 
@@ -467,7 +444,7 @@ export function UsersScreen({
   const hasVisibleUsers = filteredUsers.length > 0;
 
   return (
-    <div className="admin-screen" onClickCapture={handleScreenClickCapture}>
+    <div className="admin-screen">
       {actionErrorMessage ? (
         <p className="mb-3 text-sm text-destructive" role="alert">
           {actionErrorMessage}
@@ -559,8 +536,6 @@ export function UsersScreen({
                   }
 
                   const userRows = pagedUsers.map((user) => {
-                    const menuOpen = menuUserId === user.id;
-
                     return (
                       <TableRow key={user.id}>
                         <AdminDataTableCell className="font-medium" column={usernameColumn!}>
@@ -585,58 +560,39 @@ export function UsersScreen({
                             >
                               {user.status === 'active' ? '禁用用户' : '启用用户'}
                             </Button>
-                            <div className="template-workbench-row-menu users-workbench-row-menu relative">
-                              <Button
-                                aria-expanded={menuOpen}
-                                aria-label="更多操作"
-                                disabled={isSubmitting}
-                                onClick={(event) => {
-                                  if (menuUserId === user.id) {
-                                    setMenuUserId(null);
-                                    setMenuPlacement('down');
-                                    return;
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  aria-label="更多操作"
+                                  disabled={isSubmitting}
+                                  size="icon-sm"
+                                  type="button"
+                                  variant="ghost"
+                                >
+                                  <MoreHorizontal aria-hidden="true" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  disabled={isSubmitting}
+                                  onSelect={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
+                                >
+                                  {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={isSubmitting}
+                                  onSelect={() =>
+                                    setResetPasswordState({
+                                      userId: user.id,
+                                      username: user.username,
+                                      password: '',
+                                    })
                                   }
-
-                                  setMenuUserId(user.id);
-                                  setMenuPlacement(resolveActionMenuPlacement(event.currentTarget));
-                                }}
-                                size="icon-sm"
-                                type="button"
-                                variant="ghost"
-                              >
-                                <MoreHorizontal aria-hidden="true" />
-                              </Button>
-
-                              {menuOpen ? (
-                                <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                                  <Button
-                                    className="w-full justify-start"
-                                    size="sm"
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
-                                  >
-                                    {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
-                                  </Button>
-                                  <Button
-                                    className="w-full justify-start"
-                                    size="sm"
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={() => {
-                                      setMenuUserId(null);
-                                      setResetPasswordState({
-                                        userId: user.id,
-                                        username: user.username,
-                                        password: '',
-                                      });
-                                    }}
-                                  >
-                                    重置密码
-                                  </Button>
-                                </div>
-                              ) : null}
-                            </div>
+                                >
+                                  重置密码
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
                         </AdminDataTableCell>
                       </TableRow>

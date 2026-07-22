@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -349,8 +349,11 @@ describe('BillingScreen', () => {
       resourceTypeTotals: [],
       dailyTotals: [],
     });
-    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUsersMock.mockResolvedValue([
+      { userId: 'user-1', username: 'alice', pretaxAmount: 8.4, itemCount: 1, launchCount: 1 },
+    ]);
     fetchBillingUserGroupsMock.mockResolvedValue(userGroups);
+    fetchPlatformBillingGroupsMock.mockResolvedValue(platformGroups);
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -358,6 +361,27 @@ describe('BillingScreen', () => {
     const detailWorkspace = screen.getByRole('region', { name: '费用明细' });
 
     fireEvent.click(screen.getByRole('button', { name: '用户明细' }));
+
+    await waitFor(() => {
+      expect(detailWorkspace.getAttribute('aria-busy')).toBeNull();
+      expect(screen.queryByText('正在更新费用明细...')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '平台费用明细' }));
+    await screen.findByText('未关联平台启动的费用');
+
+    fireEvent.click(screen.getByRole('button', { name: '平台费用明细' }));
+
+    await waitFor(() => {
+      expect(detailWorkspace.getAttribute('aria-busy')).toBeNull();
+      expect(screen.queryByText('正在更新费用明细...')).toBeNull();
+    });
+
+    const userBillingPanel = screen.getByLabelText('用户账单');
+    fireEvent.click(within(userBillingPanel).getByRole('button', { name: /alice/i }));
+    await screen.findByText('开启靶场实例');
+
+    fireEvent.click(within(userBillingPanel).getByRole('button', { name: /alice/i }));
 
     await waitFor(() => {
       expect(detailWorkspace.getAttribute('aria-busy')).toBeNull();
