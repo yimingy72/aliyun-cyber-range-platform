@@ -5,6 +5,8 @@ SERVER_URL=${KEYCLOAK_ADMIN_BASE_URL:-http://keycloak:8080}
 REALM=${KEYCLOAK_REALM:-cyber-range}
 ADMIN_USERNAME=${KEYCLOAK_ADMIN_USERNAME:-admin}
 ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+WEB_PUBLIC_URL=${WEB_PUBLIC_URL:-http://localhost:3000}
+WEB_PUBLIC_URL=${WEB_PUBLIC_URL%/}
 
 json_first_id() {
   sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p'
@@ -142,8 +144,8 @@ ensure_realm_roles_mapper() {
 }
 
  /opt/keycloak/bin/kcadm.sh update "clients/$PLATFORM_WEB_CLIENT_ID" -r "$REALM" \
-  -s 'redirectUris=["http://localhost:3000/*","http://127.0.0.1:3000/*"]' \
-  -s 'webOrigins=["http://localhost:3000","http://127.0.0.1:3000"]' >/dev/null
+  -s "redirectUris=[\"${WEB_PUBLIC_URL}/*\"]" \
+  -s "webOrigins=[\"${WEB_PUBLIC_URL}\"]" >/dev/null
 ensure_subject_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_preferred_username_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_realm_roles_mapper "$PLATFORM_WEB_CLIENT_ID"

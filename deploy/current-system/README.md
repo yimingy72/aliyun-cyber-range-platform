@@ -62,6 +62,8 @@ cp .env.example .env
 
 `OIDC_ISSUER` 和 `KEYCLOAK_HOSTNAME` 必须是浏览器与 MCP 客户端可访问的外部地址；若使用非默认端口，`KEYCLOAK_HOSTNAME` 必须是完整 URL（例如 `http://localhost:18080`），并与 `OIDC_ISSUER` 完全一致。Compose 内部的 JWKS、Token Exchange 和 Keycloak Admin 调用固定使用 `keycloak:8080`，不应配置为容器内的 `localhost`。
 
+`WEB_PUBLIC_URL` 必须是浏览器访问 Web 控制台的完整外部地址（例如 `https://range.example.com` 或 `http://203.0.113.10:3000`）。Keycloak 初始化时会使用它注册登录回调地址和 Web 来源。
+
 5. 下载并校验宿主机 OpenTofu provider 缓存：
 
 ```bash
