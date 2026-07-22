@@ -1,6 +1,7 @@
 FROM node:22-alpine
 
 ARG PNPM_REGISTRY=https://registry.npmmirror.com
+ARG ALPINE_REPOSITORY=https://mirrors.aliyun.com/alpine
 ARG PNPM_FETCH_RETRIES=10
 ARG PNPM_FETCH_RETRY_MIN_TIMEOUT=2000
 ARG PNPM_FETCH_RETRY_MAX_TIMEOUT=30000
@@ -21,7 +22,8 @@ ENV NEXT_PUBLIC_OIDC_ISSUER=$NEXT_PUBLIC_OIDC_ISSUER
 ARG NEXT_PUBLIC_OIDC_CLIENT_ID=platform-web
 ENV NEXT_PUBLIC_OIDC_CLIENT_ID=$NEXT_PUBLIC_OIDC_CLIENT_ID
 
-RUN apk add --no-cache curl openssl libc6-compat \
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_REPOSITORY%/}|g" /etc/apk/repositories \
+  && apk add --no-cache curl openssl libc6-compat \
   && corepack enable
 
 WORKDIR /app

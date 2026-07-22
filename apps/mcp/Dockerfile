@@ -1,6 +1,7 @@
 FROM node:22-alpine
 
 ARG PNPM_REGISTRY=https://registry.npmmirror.com
+ARG ALPINE_REPOSITORY=https://mirrors.aliyun.com/alpine
 ARG PNPM_FETCH_RETRIES=10
 ARG PNPM_FETCH_RETRY_MIN_TIMEOUT=2000
 ARG PNPM_FETCH_RETRY_MAX_TIMEOUT=30000
@@ -13,7 +14,8 @@ ENV npm_config_fetch_retries=$PNPM_FETCH_RETRIES
 ENV npm_config_fetch_retry_mintimeout=$PNPM_FETCH_RETRY_MIN_TIMEOUT
 ENV npm_config_fetch_retry_maxtimeout=$PNPM_FETCH_RETRY_MAX_TIMEOUT
 
-RUN apk add --no-cache curl libc6-compat \
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_REPOSITORY%/}|g" /etc/apk/repositories \
+  && apk add --no-cache curl libc6-compat \
   && corepack enable
 
 WORKDIR /app
