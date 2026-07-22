@@ -219,11 +219,11 @@ describe('BillingScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /开启靶场实例/ }));
     await screen.findByText('CNY');
 
-    fireEvent.click(screen.getByRole('button', { name: '导出账单' }));
-    await screen.findByRole('button', { name: '导出平台账单' });
-    await screen.findByRole('button', { name: '导出用户汇总' });
-    await screen.findByRole('button', { name: '导出当前用户' });
-    fireEvent.click(screen.getByRole('button', { name: '导出平台账单' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '导出账单' }), { key: 'Enter' });
+    await screen.findByRole('menuitem', { name: '导出平台账单' });
+    await screen.findByRole('menuitem', { name: '导出用户汇总' });
+    await screen.findByRole('menuitem', { name: '导出当前用户' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出平台账单' }));
 
     await waitFor(() => {
       expect(exportPlatformBillingCsvMock).toHaveBeenCalledWith(
@@ -267,6 +267,75 @@ describe('BillingScreen', () => {
         expect.objectContaining({ userId: 'user-1' }),
       );
     });
+  });
+
+  it('keeps the fee detail workspace present while launch groups are loading', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({
+      startAt: '2026-06-17',
+      endAt: '2026-07-16',
+      totalPretaxAmount: 8.9,
+      platformPretaxAmount: 0.5,
+      anomalyCount: 0,
+      resourceTypeTotals: [],
+      dailyTotals: [],
+    });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockImplementation(() => new Promise(() => {}));
+
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+
+    const detailWorkspace = await screen.findByRole('region', { name: '费用明细' });
+
+    expect(detailWorkspace.getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('status', { name: '正在加载费用明细' })).toBeTruthy();
+  });
+
+  it('renders empty launch groups within the fee detail workspace', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({
+      startAt: '2026-06-17',
+      endAt: '2026-07-16',
+      totalPretaxAmount: 0,
+      platformPretaxAmount: 0,
+      anomalyCount: 0,
+      resourceTypeTotals: [],
+      dailyTotals: [],
+    });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+
+    const detailWorkspace = await screen.findByRole('region', { name: '费用明细' });
+
+    expect(detailWorkspace.getAttribute('aria-busy')).toBeNull();
+    expect(detailWorkspace.textContent).toContain('当前账期内暂无用户费用明细。');
+    expect(screen.getByText('当前账期内暂无用户账单。')).toBeTruthy();
+  });
+
+  it('keeps a failed launch-group request inside the fee detail workspace with a retry action', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({
+      startAt: '2026-06-17',
+      endAt: '2026-07-16',
+      totalPretaxAmount: 0,
+      platformPretaxAmount: 0,
+      anomalyCount: 0,
+      resourceTypeTotals: [],
+      dailyTotals: [],
+    });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockRejectedValue(new Error('network failure'));
+
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+
+    const detailWorkspace = await screen.findByRole('region', { name: '费用明细' });
+    const error = await screen.findByRole('alert');
+
+    expect(detailWorkspace.contains(error)).toBe(true);
+    expect(error.textContent).toContain('费用明细加载失败，请稍后重试。');
+    expect(screen.getByRole('button', { name: '重试加载' })).toBeTruthy();
   });
 
   it('redirects regular users away without loading billing data', async () => {
