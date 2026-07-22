@@ -829,6 +829,11 @@ export function SingleInstancesScreen({
   }
 
   function setListModeWithUrl(nextMode: ListMode) {
+    if (loadedListModeRef.current !== nextMode) {
+      setListErrorMessage(null);
+      setIsLoading(true);
+    }
+
     setListMode(nextMode);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
@@ -1210,7 +1215,7 @@ export function SingleInstancesScreen({
     Math.max(0, activePagination.endIndex - visibleBatchGroups.length),
   );
   const hasVisibleContent = hasCurrentViewSnapshot && (visibleBatchGroups.length > 0 || visibleInstances.length > 0);
-  const isBootstrapLoading = isLoading && !hasCurrentViewSnapshot;
+  const isBootstrapLoading = !hasCurrentViewSnapshot && !listErrorMessage;
 
   useEffect(() => {
     if (listPages[listMode] !== activePagination.page) {
@@ -1465,7 +1470,17 @@ export function SingleInstancesScreen({
                       );
                     }
 
-                    return (
+                    const retainedSnapshotError =
+                      listErrorMessage && hasCurrentViewSnapshot ? (
+                        <AdminDataTableState
+                          columns={columns}
+                          description="已保留最近一次加载的实例数据。请重试刷新以获取最新状态。"
+                          onRetry={handleListRetry}
+                          title={listErrorMessage}
+                          variant="error"
+                        />
+                      ) : null;
+                    const listRows = (
                       <>
                         {pagedBatchGroups.map((group) => {
                           const isExpanded = expandedBatchIds.includes(group.batch.id);
@@ -1553,6 +1568,12 @@ export function SingleInstancesScreen({
                               : renderActiveInstanceCells(instance, columns)}
                           </TableRow>
                         ))}
+                      </>
+                    );
+                    return (
+                      <>
+                        {retainedSnapshotError}
+                        {listRows}
                       </>
                     );
                   }}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -162,6 +163,38 @@ describe('SingleInstancesScreen list states', () => {
     expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(2);
   });
 
+  it('shows a history table skeleton immediately when switching away from a loaded active view', async () => {
+    const pendingHistory = createDeferred<unknown>();
+    fetchSingleInstancesMock
+      .mockResolvedValueOnce([activeInstance])
+      .mockReturnValueOnce(pendingHistory.promise);
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('web-lab-01')).toBeTruthy();
+    const historyTab = screen.getByRole('tab', { name: '实例历史' });
+    flushSync(() => {
+      fireEvent.mouseDown(historyTab, { button: 0 });
+    });
+
+    expect(screen.getByRole('tab', { name: '实例历史', selected: true })).toBeTruthy();
+    expect(screen.getByRole('table', { name: '实例历史' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: '正在加载实例历史' })).toBeTruthy();
+    expect(screen.queryByText('暂无实例历史')).toBeNull();
+
+    await waitFor(() => {
+      expect(fetchSingleInstancesMock).toHaveBeenLastCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        { view: 'history' },
+      );
+    });
+
+    await act(async () => {
+      pendingHistory.resolve([]);
+    });
+  });
+
   it('keeps the active snapshot visible and marks the table busy during polling revalidation', async () => {
     const pendingRefresh = createDeferred<unknown>();
     const polls: Array<() => void> = [];
@@ -193,6 +226,48 @@ describe('SingleInstancesScreen list states', () => {
 
     await act(async () => {
       pendingRefresh.resolve([activeInstance]);
+    });
+  });
+
+  it('adds an in-table retryable error row ahead of retained rows when revalidation fails', async () => {
+    const failedRefresh = createDeferred<unknown>();
+    const polls: Array<() => void> = [];
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 100) {
+        polls.push(callback as () => void);
+      }
+      return 1;
+    });
+    fetchSingleInstancesMock
+      .mockResolvedValueOnce([activeInstance])
+      .mockReturnValueOnce(failedRefresh.promise)
+      .mockResolvedValueOnce([activeInstance]);
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" pollIntervalMs={100} />);
+
+    expect(await screen.findByText('web-lab-01')).toBeTruthy();
+    await waitFor(() => {
+      expect(polls).toHaveLength(2);
+    });
+    act(() => {
+      polls.at(-1)?.();
+    });
+    await act(async () => {
+      failedRefresh.reject(new Error('network unavailable'));
+    });
+
+    const table = screen.getByRole('table', { name: '实例列表' });
+    const errorTitle = await screen.findByRole('heading', { name: '实例管理数据加载失败，请稍后重试。' });
+    const errorRow = errorTitle.closest('tr');
+
+    expect(errorRow).toBeTruthy();
+    expect(table.querySelector('tbody tr')?.textContent).toContain('实例管理数据加载失败，请稍后重试。');
+    expect(errorRow?.querySelector('td')?.getAttribute('colspan')).toBe(String(table.querySelectorAll('thead th').length));
+    expect(screen.getByText('web-lab-01')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
+    await waitFor(() => {
+      expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(3);
     });
   });
 });
