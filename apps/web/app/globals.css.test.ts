@@ -154,6 +154,14 @@ describe('admin page scroll ownership', () => {
     expect(templateWorkbenchScreen).not.toMatch(/overflow-y\s*:/);
   });
 
+  it('allows admin list sections to contain wide tables within their own scroll frames', () => {
+    const adminSection = getRuleBlock(stylesheet, '.admin-screen > section');
+    const adminWorkbenchPanel = getRuleBlock(stylesheet, '.admin-workbench-panel');
+
+    expect(adminSection).toContain('min-width: 0');
+    expect(adminWorkbenchPanel).toContain('grid-template-columns: minmax(0, 1fr)');
+  });
+
   it('constrains the admin main shell so scrolling happens inside the content area', () => {
     const adminMainShell = getRuleBlock(stylesheet, '.admin-main-shell');
 

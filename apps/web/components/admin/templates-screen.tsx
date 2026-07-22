@@ -21,14 +21,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { TableRow } from '@/components/ui/table';
 
 import {
   AdminApiError,
@@ -54,9 +47,14 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminPageHeader } from './shared/admin-page-header';
-import { AsyncContentState } from './shared/async-content-state';
+import {
+  AdminDataTable,
+  AdminDataTableCell,
+  AdminDataTableState,
+  type AdminDataColumn,
+} from './shared/admin-data-table';
+import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
-import { ListToolbar } from './shared/list-toolbar';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
@@ -105,6 +103,15 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
   name: '',
   expiresAt: '',
 };
+
+const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
+  { id: 'template', label: '靶场', priority: 'primary' },
+  { id: 'creator', label: '创建人', priority: 'secondary' },
+  { id: 'description', label: '靶场描述', priority: 'detail' },
+  { id: 'topology', label: '拓扑概览', priority: 'tertiary' },
+  { id: 'status', label: '状态', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+];
 
 function readTemplateView(value: string | null): RangeTemplateView {
   return value === 'platform' ? 'platform' : 'mine';
@@ -313,6 +320,7 @@ export function TemplatesScreen({
   }
 
   function setActiveViewWithUrl(nextView: RangeTemplateView) {
+    setErrorMessage(null);
     setActiveView(nextView);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
@@ -683,7 +691,7 @@ export function TemplatesScreen({
     );
   }
 
-  const isActiveViewLoading = isLoading && !loadedViews[activeView];
+  const isActiveViewLoading = !loadedViews[activeView] && !errorMessage;
 
   function canManageTemplate(template: Scenario) {
     return session.isAdmin || template.ownerUserId === session.profile?.id;
@@ -695,194 +703,206 @@ export function TemplatesScreen({
       {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
 
       <section className="rounded-md border border-border bg-card p-4 shadow-sm">
-        <AdminPageHeader
-          action={
-            <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
-              <Plus aria-hidden="true" />
-              新建拓扑
-            </Button>
-          }
-          description="管理可复用的演练蓝图"
-          title="靶场编排"
-        />
+        <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
         <div className="mt-4">
-          <ListToolbar
+          <AdminListToolbar
             activeView={activeView}
-            searchValue={searchName}
             onSearchChange={setSearchName}
-            onViewChange={setActiveViewWithUrl}
+            onViewChange={(nextView) => {
+              if (nextView === 'mine' || nextView === 'platform') {
+                setActiveViewWithUrl(nextView);
+              }
+            }}
+            searchLabel="筛选靶场名"
+            searchPlaceholder="筛选靶场名"
+            searchValue={searchName}
+            views={[
+              { label: '我的拓扑', value: 'mine' },
+              { label: '平台拓扑', value: 'platform' },
+            ]}
+            action={
+              <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
+                <Plus aria-hidden="true" />
+                新建拓扑
+              </Button>
+            }
           >
             <div className="mt-4">
-              {errorMessage ? (
-                <AsyncContentState
-                  description={errorMessage}
-                  onRetry={retryActiveView}
-                  title="无法加载靶场列表"
-                  variant="error"
-                />
-              ) : (
-                <>
-                  <Table aria-label="靶场列表">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>靶场</TableHead>
-                        <TableHead>创建人</TableHead>
-                        <TableHead>靶场描述</TableHead>
-                        <TableHead>拓扑概览</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead className="text-right">操作</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {isActiveViewLoading ? (
-                        <TableLoadingState columnCount={6} label="正在加载靶场列表" rowCount={pageSize} />
-                      ) : pagedTemplates.length ? (
-                        pagedTemplates.map((template) => {
-                          const isPublished = isPublishedScenario(template);
-                          const isShared = template.visibility === 'platform';
-                          const canManageCurrentTemplate = canManageTemplate(template);
-                          const canConsumeTemplate = canManageCurrentTemplate || isPublished;
-                          const canEnterTemplate = canManageCurrentTemplate || isShared;
+              <AdminDataTable
+                columns={TEMPLATE_COLUMNS}
+                isRefreshing={isLoading || isActiveViewLoading}
+                label="靶场列表"
+              >
+                {(columns) => {
+                  const [templateColumn, creatorColumn, descriptionColumn, topologyColumn, statusColumn, actionsColumn] = columns;
 
-                          return (
-                            <TableRow key={template.id}>
-                              <TableCell className="font-medium">{getScenarioDisplayName(template)}</TableCell>
-                              <TableCell>{template.createdBy?.trim() || 'admin'}</TableCell>
-                              <TableCell className="max-w-72 whitespace-normal text-muted-foreground">
-                                {getScenarioDescription(template)}
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
-                                  <span>区域 {readZoneCount(template)}</span>
-                                  <span>主机 {readHostCount(template)}</span>
-                                  <span>节点 {readNodeCount(template)}</span>
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <StatusBadge status={isPublished ? 'published' : 'private'} />
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex justify-end gap-1">
-                                  <Button
-                                    disabled={isSubmitting || !canEnterTemplate}
-                                    size="sm"
-                                    type="button"
-                                    onClick={() => void handleOpenTemplateEditor(template)}
-                                  >
-                                    进入编排
-                                  </Button>
-                                  {canConsumeTemplate ? (
-                                    <DropdownMenu>
-                                      <DropdownMenuTrigger asChild>
-                                        <Button
-                                          aria-label="更多操作"
-                                          disabled={isSubmitting}
-                                          size="icon-sm"
-                                          type="button"
-                                          variant="ghost"
-                                        >
-                                          <MoreHorizontal aria-hidden="true" />
-                                        </Button>
-                                      </DropdownMenuTrigger>
-                                      <DropdownMenuContent align="end">
-                                        <DropdownMenuItem onSelect={() => void handleCloneTemplate(template)}>
-                                          复制模板
-                                        </DropdownMenuItem>
-                                        {canManageCurrentTemplate ? (
-                                          <>
-                                            <DropdownMenuItem onSelect={() => openEditDialog(template)}>
-                                              编辑信息
-                                            </DropdownMenuItem>
-                                            {isShared ? (
-                                              <DropdownMenuItem onSelect={() => void handleUnshareTemplate(template.id)}>
-                                                回退为私有
-                                              </DropdownMenuItem>
-                                            ) : (
-                                              <DropdownMenuItem onSelect={() => void handleShareTemplate(template.id)}>
-                                                发布到平台
-                                              </DropdownMenuItem>
-                                            )}
-                                          </>
-                                        ) : null}
-                                        <DropdownMenuItem onSelect={() => void handleOpenGenerateInstance(template)}>
-                                          生成实例
-                                        </DropdownMenuItem>
-                                        {canManageCurrentTemplate ? (
-                                          <DropdownMenuItem
-                                            variant="destructive"
-                                            onSelect={() => openConfirmDialog('delete', template)}
-                                          >
-                                            删除模板
-                                          </DropdownMenuItem>
-                                        ) : null}
-                                      </DropdownMenuContent>
-                                    </DropdownMenu>
-                                  ) : null}
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })
-                      ) : (
-                        <TableRow>
-                          <TableCell colSpan={6}>
-                            <AsyncContentState
-                              action={
-                                activeView === 'mine' ? (
-                                  <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
-                                    新建拓扑
-                                  </Button>
-                                ) : undefined
-                              }
-                              description={
-                                activeView === 'mine'
-                                  ? '你可以新建一个靶场并开始编排。'
-                                  : '平台暂时没有可用的已发布拓扑。'
-                              }
-                              title="当前筛选条件下没有靶场"
-                              variant="empty"
-                            />
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                  {filteredTemplates.length ? (
-                    <div className="mt-4">
-                      <AdminPaginationControls
-                        jumpPageValue={jumpPageValue}
-                        label="靶场列表分页"
-                        pageSizeMode={pageSizeMode}
-                        pagination={activePagination}
-                        visiblePages={visiblePages}
-                        onJumpPage={handleJumpToPage}
-                        onJumpPageValueChange={setJumpPageValue}
-                        onNextPage={() =>
-                          setViewPages((current) => ({
-                            ...current,
-                            [activeView]: activePagination.page + 1,
-                          }))
-                        }
-                        onPageSelect={(pageNumber) =>
-                          setViewPages((current) => ({
-                            ...current,
-                            [activeView]: pageNumber,
-                          }))
-                        }
-                        onPageSizeChange={handlePageSizeChange}
-                        onPreviousPage={() =>
-                          setViewPages((current) => ({
-                            ...current,
-                            [activeView]: activePagination.page - 1,
-                          }))
-                        }
+                  if (errorMessage) {
+                    return (
+                      <AdminDataTableState
+                        columns={columns}
+                        description={errorMessage}
+                        onRetry={retryActiveView}
+                        title="无法加载靶场列表"
+                        variant="error"
                       />
-                    </div>
-                  ) : null}
-                </>
-              )}
+                    );
+                  }
+
+                  if (isActiveViewLoading) {
+                    return <TableLoadingState columnCount={columns.length} label="正在加载靶场列表" rowCount={pageSize} />;
+                  }
+
+                  if (!pagedTemplates.length) {
+                    return (
+                      <AdminDataTableState
+                        action={
+                          activeView === 'mine' ? (
+                            <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
+                              新建拓扑
+                            </Button>
+                          ) : undefined
+                        }
+                        columns={columns}
+                        description={
+                          activeView === 'mine'
+                            ? '你可以新建一个靶场并开始编排。'
+                            : '平台暂时没有可用的已发布拓扑。'
+                        }
+                        title="当前筛选条件下没有靶场"
+                        variant="empty"
+                      />
+                    );
+                  }
+
+                  return pagedTemplates.map((template) => {
+                    const isPublished = isPublishedScenario(template);
+                    const isShared = template.visibility === 'platform';
+                    const canManageCurrentTemplate = canManageTemplate(template);
+                    const canConsumeTemplate = canManageCurrentTemplate || isPublished;
+                    const canEnterTemplate = canManageCurrentTemplate || isShared;
+
+                    return (
+                      <TableRow key={template.id}>
+                        <AdminDataTableCell className="font-medium" column={templateColumn!}>
+                          {getScenarioDisplayName(template)}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={creatorColumn!}>
+                          {template.createdBy?.trim() || 'admin'}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell
+                          className="max-w-72 whitespace-normal text-muted-foreground"
+                          column={descriptionColumn!}
+                        >
+                          {getScenarioDescription(template)}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={topologyColumn!}>
+                          <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+                            <span>区域 {readZoneCount(template)}</span>
+                            <span>主机 {readHostCount(template)}</span>
+                            <span>节点 {readNodeCount(template)}</span>
+                          </div>
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={statusColumn!}>
+                          <StatusBadge status={isPublished ? 'published' : 'private'} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={actionsColumn!}>
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              disabled={isSubmitting || !canEnterTemplate}
+                              size="sm"
+                              type="button"
+                              onClick={() => void handleOpenTemplateEditor(template)}
+                            >
+                              进入编排
+                            </Button>
+                            {canConsumeTemplate ? (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    aria-label="更多操作"
+                                    disabled={isSubmitting}
+                                    size="icon-sm"
+                                    type="button"
+                                    variant="ghost"
+                                  >
+                                    <MoreHorizontal aria-hidden="true" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onSelect={() => void handleCloneTemplate(template)}>
+                                    复制模板
+                                  </DropdownMenuItem>
+                                  {canManageCurrentTemplate ? (
+                                    <>
+                                      <DropdownMenuItem onSelect={() => openEditDialog(template)}>
+                                        编辑信息
+                                      </DropdownMenuItem>
+                                      {isShared ? (
+                                        <DropdownMenuItem onSelect={() => void handleUnshareTemplate(template.id)}>
+                                          回退为私有
+                                        </DropdownMenuItem>
+                                      ) : (
+                                        <DropdownMenuItem onSelect={() => void handleShareTemplate(template.id)}>
+                                          发布到平台
+                                        </DropdownMenuItem>
+                                      )}
+                                    </>
+                                  ) : null}
+                                  <DropdownMenuItem onSelect={() => void handleOpenGenerateInstance(template)}>
+                                    生成实例
+                                  </DropdownMenuItem>
+                                  {canManageCurrentTemplate ? (
+                                    <DropdownMenuItem
+                                      variant="destructive"
+                                      onSelect={() => openConfirmDialog('delete', template)}
+                                    >
+                                      删除模板
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            ) : null}
+                          </div>
+                        </AdminDataTableCell>
+                      </TableRow>
+                    );
+                  });
+                }}
+              </AdminDataTable>
+              {filteredTemplates.length ? (
+                <div className="mt-4">
+                  <AdminPaginationControls
+                    jumpPageValue={jumpPageValue}
+                    label="靶场列表分页"
+                    pageSizeMode={pageSizeMode}
+                    pagination={activePagination}
+                    visiblePages={visiblePages}
+                    onJumpPage={handleJumpToPage}
+                    onJumpPageValueChange={setJumpPageValue}
+                    onNextPage={() =>
+                      setViewPages((current) => ({
+                        ...current,
+                        [activeView]: activePagination.page + 1,
+                      }))
+                    }
+                    onPageSelect={(pageNumber) =>
+                      setViewPages((current) => ({
+                        ...current,
+                        [activeView]: pageNumber,
+                      }))
+                    }
+                    onPageSizeChange={handlePageSizeChange}
+                    onPreviousPage={() =>
+                      setViewPages((current) => ({
+                        ...current,
+                        [activeView]: activePagination.page - 1,
+                      }))
+                    }
+                  />
+                </div>
+              ) : null}
             </div>
-          </ListToolbar>
+          </AdminListToolbar>
         </div>
       </section>
 

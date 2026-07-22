@@ -948,6 +948,10 @@ body {
   min-height: max-content;
 }
 
+.admin-screen > section {
+  min-width: 0;
+}
+
 .admin-workbench-layout {
   display: grid;
   gap: 14px;
@@ -957,6 +961,7 @@ body {
 
 .admin-workbench-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   align-content: start;
   width: 100%;
