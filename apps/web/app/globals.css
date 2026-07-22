@@ -3918,15 +3918,14 @@ body {
   }
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1023px) {
   .admin-workspace {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     padding: 14px;
   }
 
   .admin-sidebar {
-    grid-template-rows: auto auto auto auto;
-    border-bottom: 1px solid rgba(84, 102, 135, 0.12);
+    display: none;
   }
 }
 

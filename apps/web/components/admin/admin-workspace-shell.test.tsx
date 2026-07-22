@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminSessionPayload } from '../../lib/admin-types';
@@ -146,6 +146,28 @@ describe('AdminWorkspaceShell', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('opens the compact navigation drawer', async () => {
+    writeAdminSession(createSession());
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    fireEvent.click(screen.getByRole('button', { name: '打开导航' }));
+
+    const navigationDialog = await screen.findByRole('dialog');
+
+    expect(within(navigationDialog).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe(
+      '/admin/scenarios',
+    );
+    expect(within(navigationDialog).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe(
+      '/admin/settings/cloud',
+    );
   });
 
   it('shows the admin navigation, including 用户管理 and 账单费用, for admin sessions', async () => {

@@ -10,6 +10,31 @@ function getRuleBlock(css: string, selector: string) {
   return match?.[0] ?? '';
 }
 
+function getAtRuleBlock(css: string, atRule: string) {
+  const atRuleStart = css.indexOf(atRule);
+  const openingBrace = css.indexOf('{', atRuleStart);
+
+  if (atRuleStart === -1 || openingBrace === -1) {
+    return '';
+  }
+
+  let depth = 0;
+
+  for (let index = openingBrace; index < css.length; index += 1) {
+    if (css[index] === '{') {
+      depth += 1;
+    } else if (css[index] === '}') {
+      depth -= 1;
+
+      if (depth === 0) {
+        return css.slice(openingBrace + 1, index);
+      }
+    }
+  }
+
+  return '';
+}
+
 describe('design system CSS transition contract', () => {
   const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
 
@@ -80,6 +105,13 @@ describe('design system CSS transition contract', () => {
 
 describe('admin page scroll ownership', () => {
   const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
+
+  it('keeps the workspace inset while hiding the sidebar below the desktop breakpoint', () => {
+    const narrowScreenRules = getAtRuleBlock(stylesheet, '@media (max-width: 1023px)');
+
+    expect(getRuleBlock(narrowScreenRules, '.admin-workspace')).toContain('padding: 14px');
+    expect(getRuleBlock(narrowScreenRules, '.admin-sidebar')).toContain('display: none');
+  });
 
   it('keeps vertical scrolling on the outer admin content shell', () => {
     const adminMainContent = getRuleBlock(stylesheet, '.admin-main-content');
