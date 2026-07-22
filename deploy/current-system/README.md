@@ -71,6 +71,8 @@ cp .env.example .env
 
 没有可用域名时，可设置 `COMPOSE_PROFILES=quick-tunnel` 并启动 Compose。`cloudflared` 日志会输出一个临时 `https://*.trycloudflare.com` 地址；将该地址写入 `WEB_PUBLIC_URL`、`KEYCLOAK_HOSTNAME`、`OIDC_ISSUER`、`NEXT_PUBLIC_OIDC_ISSUER` 和 `MCP_PUBLIC_URL`，将 API 地址写为 `${入口}/api` 后重新构建 Web。Quick Tunnel 仅适合免费演示和联调，隧道重建后地址会变化。
 
+若接受浏览器的自签名证书提示，可使用 `COMPOSE_PROFILES=direct-tls` 与 `CADDY_PUBLIC_HOST=<公网 IP>` 直接暴露 Caddy 的 `80/443` 端口。外部地址统一使用 `https://<公网 IP>`，API 使用 `https://<公网 IP>/api`。同时必须在安全组中放行 TCP `80` 和 `443`。
+
 5. 下载并校验宿主机 OpenTofu provider 缓存：
 
 ```bash

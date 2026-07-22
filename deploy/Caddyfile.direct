@@ -1,0 +1,32 @@
+https://{$CADDY_PUBLIC_HOST} {
+  tls internal
+  encode zstd gzip
+
+  handle_path /api/* {
+    reverse_proxy api:3001
+  }
+
+  handle /realms/* {
+    reverse_proxy keycloak:8080 {
+      header_up X-Forwarded-Proto https
+    }
+  }
+
+  handle /resources/* {
+    reverse_proxy keycloak:8080 {
+      header_up X-Forwarded-Proto https
+    }
+  }
+
+  handle /mcp {
+    reverse_proxy mcp:8787
+  }
+
+  handle /healthz {
+    reverse_proxy mcp:8787
+  }
+
+  handle {
+    reverse_proxy web:3000
+  }
+}

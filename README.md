@@ -97,6 +97,23 @@ docker compose logs -f cloudflared
 
 日志中的 `https://*.trycloudflare.com` 是临时公网入口。将它写入 `WEB_PUBLIC_URL`、`KEYCLOAK_HOSTNAME`、`OIDC_ISSUER`、`NEXT_PUBLIC_OIDC_ISSUER` 和 `MCP_PUBLIC_URL`，并将 API 地址设为 `${入口}/api` 后重新构建 Web。Quick Tunnel 无需域名或付费账号，但地址会在隧道重建后变化，仅适合演示和联调。
 
+### 公网 IP HTTPS
+
+若接受浏览器首次访问时的自签名证书提示，可直接使用公网 IP，避免 Quick Tunnel 的跨境绕行：
+
+```dotenv
+COMPOSE_PROFILES=direct-tls
+CADDY_PUBLIC_HOST=203.0.113.10
+WEB_PUBLIC_URL=https://203.0.113.10
+NEXT_PUBLIC_API_BASE_URL=https://203.0.113.10/api
+NEXT_PUBLIC_OIDC_ISSUER=https://203.0.113.10/realms/cyber-range
+KEYCLOAK_HOSTNAME=https://203.0.113.10
+OIDC_ISSUER=https://203.0.113.10/realms/cyber-range
+MCP_PUBLIC_URL=https://203.0.113.10/mcp
+```
+
+同时需在安全组中放行 TCP `80` 和 `443`。Caddy 为 IP 生成本地 CA 证书，浏览器手动继续后即可在 HTTPS 安全上下文中完成 PKCE 登录。
+
 ### 5. 配置镜像导入 Bucket（可选）
 
 管理员可在后台“基础配置 → 云配置”填写“自定义 OSS 存储桶名”。平台只使用管理员已创建的 Bucket：保存时通过 STS 校验账号，并对填写的 Bucket 发起只读 `HEAD` 验证；不会创建 Bucket，也不会修改 ACL、CORS 或其他策略。
