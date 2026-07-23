@@ -954,6 +954,38 @@ describe('tool registry', () => {
     );
   });
 
+  it('normalizes confirmed range lifecycle results to stable resource IDs', async () => {
+    const client = createClientStub();
+    (client.launchRange as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rangeInstanceId: 'range-2',
+      jobId: 'job-2',
+    });
+    (client.syncRangeInstanceTemplate as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rangeInstanceId: 'range-2',
+      templateId: 'tpl-2',
+    });
+    const registry = createToolRegistry(client);
+
+    await expect(
+      registry.callTool('range_instance_launch', ['ranges:create'], {
+        templateId: 'tpl-1',
+        name: 'range-a',
+        expiresAt: '2026-07-20T00:00:00.000Z',
+      }),
+    ).resolves.toMatchObject({
+      structuredContent: { result: { id: 'range-2', jobId: 'job-2' } },
+    });
+
+    await expect(
+      registry.callTool('range_instance_sync_template', ['ranges:write', 'templates:write'], {
+        rangeInstanceId: 'range-2',
+        topologyGraph: authoringGraph,
+      }),
+    ).resolves.toMatchObject({
+      structuredContent: { result: { id: 'tpl-2', rangeInstanceId: 'range-2' } },
+    });
+  });
+
   it('keeps cloud-config operation metadata out of the configuration payload', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);

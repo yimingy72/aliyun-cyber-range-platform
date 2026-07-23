@@ -187,6 +187,7 @@ describe('buildEnterpriseProvisionPlan', () => {
       },
       network: {
         vpcCidr: '10.88.0.0/16',
+        secondaryVpcCidrs: [],
         dmzCidr: '10.88.10.0/24',
         officeCidr: '10.88.20.0/24',
         serverCidr: '10.88.30.0/24',
@@ -312,7 +313,18 @@ describe('buildEnterpriseProvisionPlan', () => {
           { key: 'dnat-server-http', hostKey: 'server-app', natGatewayKey: 'nat-office', eipKey: 'eip-entry', protocol: 'tcp', externalPort: 8080, internalPort: 80 },
         ],
         securityGroupRules: [],
-        aclRules: [],
+        aclRules: [
+          {
+            key: 'acl-dmz-http',
+            zoneKey: 'dmz',
+            direction: 'inbound',
+            policy: 'allow',
+            protocol: 'tcp',
+            portRange: '80/80',
+            sourceCidr: '0.0.0.0/0',
+            priority: 10,
+          },
+        ],
         bootstrapScripts: [],
         runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
       },
@@ -335,6 +347,19 @@ describe('buildEnterpriseProvisionPlan', () => {
     ]);
     expect(plan.dnatEntries).toEqual([
       { key: 'dnat-server-http', name: 'dnat-server-http', natGatewayKey: 'nat-office', eipKey: 'eip-entry', backendHostKey: 'server-app', externalPort: 8080, internalPort: 80, protocol: 'tcp' },
+    ]);
+    expect(plan.aclDefinitions).toEqual([
+      {
+        key: 'acl-dmz-http',
+        name: 'acl-dmz-http',
+        zoneKey: 'dmz',
+        direction: 'inbound',
+        policy: 'accept',
+        protocol: 'tcp',
+        portRange: '80/80',
+        sourceCidr: '0.0.0.0/0',
+        priority: 10,
+      },
     ]);
   });
 
@@ -464,6 +489,7 @@ describe('buildEnterpriseProvisionPlan', () => {
     });
     expect(plan.network).toEqual({
       vpcCidr: '10.70.0.0/16',
+      secondaryVpcCidrs: [],
       dmzCidr: '10.0.0.0/16',
       officeCidr: '10.0.0.0/16',
       serverCidr: '10.0.0.0/16',
@@ -572,6 +598,7 @@ describe('buildEnterpriseProvisionPlan', () => {
     });
     expect(plan.network).toEqual({
       vpcCidr: '10.77.0.0/16',
+      secondaryVpcCidrs: [],
       dmzCidr: '10.77.10.0/24',
       officeCidr: '10.77.20.0/24',
       serverCidr: '10.77.30.0/24',

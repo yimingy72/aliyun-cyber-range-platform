@@ -85,11 +85,14 @@ export const rangeTools: ToolDefinition[] = [
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: rangeLaunchInputSchema,
     outputSchema: resourceOutputSchema,
-    call(context, args) {
+    async call(context, args) {
       const input = args as { templateId: string; name: string; expiresAt: string; idempotencyKey?: string; confirmationId?: string };
-      return context.client.launchRange(
-        { templateId: input.templateId, name: input.name, expiresAt: input.expiresAt },
-        operation(input),
+      return withResourceId(
+        await context.client.launchRange(
+          { templateId: input.templateId, name: input.name, expiresAt: input.expiresAt },
+          operation(input),
+        ),
+        'rangeInstanceId',
       );
     },
   },
@@ -132,7 +135,10 @@ export const rangeTools: ToolDefinition[] = [
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
       await saveRangeInstanceTopology(context, input);
-      return context.client.syncRangeInstanceTemplate(input.rangeInstanceId, operation(input));
+      return withResourceId(
+        await context.client.syncRangeInstanceTemplate(input.rangeInstanceId, operation(input)),
+        'templateId',
+      );
     },
   },
   {
@@ -322,6 +328,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function withResourceId(value: unknown, resultIdField: 'rangeInstanceId' | 'templateId') {
+  const record = asRecord(value);
+
+  if (!record) {
+    return value;
+  }
+
+  const id = readString(record.id) ?? readString(record[resultIdField]);
+  return id ? { ...record, id } : record;
 }
 
 function redactRangeInstanceSecrets<T>(value: T): T {
