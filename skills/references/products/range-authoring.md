@@ -165,8 +165,8 @@ connections:
 4. 先输出转换回执：每个 ECS 的 `key -> platformImageAssetId + imageId`，以及每个 Switch 的唯一逻辑 `zoneKey`；回执存在未解析或重复项时不得调用写工具。
 5. 校验 VPC、CIDR、IP、NAT、ACL、安全组、连线和公网入口；必须有且仅有一个 `exposePublic: true` ECS，且所有 DNAT 都指向它；每台 ECS 与第一张 NIC 必须使用所连 Switch 的 `zoneKey`；缺项或歧义返回给设计 Skill。
 6. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
-7. 每个 ECS 节点写入 `image: displayName`（展示字段）、`imageName: displayName`、`imageId`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`dnatMappings`、`portGroups` 与 `initScript`。镜像身份只由后三个 ID 字段表达；不得把资产 ID 填入 `image`。
-8. Switch 节点写入 `nat: { snatEnabled, dnatMappings }` 与完整 ACL。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
+7. 每个 ECS 节点写入 `image: displayName`（展示字段）、`imageName: displayName`、`imageId`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`portGroups` 与 `initScript`。镜像身份只由后三个 ID 字段表达；不得把资产 ID 填入 `image`。ECS 的遗留 `dnatMappings` 不创建 NAT 规则，转换结果应省略或保持为空数组。
+8. 每个 Switch 节点必须写入完整 `aclRules` 与 `nat: { snatEnabled, dnatMappings }`；**公网 DNAT 仅以 `switch.nat.dnatMappings` 为准**，每条映射必须含 `key`、`targetHostId`、`externalPort`、`internalPort`、`protocol`。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
 
 转换回执和完整图均通过后，恰好调用一次 `range_template_create`，只传 `name`、可选 `description`、可选网络元数据和完整 `topologyGraph`。不要传地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或自动重试。
 

@@ -451,6 +451,54 @@ describe('tool registry', () => {
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
+  it('requires explicit switch NAT and exposes DNAT mappings in the create schema', () => {
+    const registry = createToolRegistry(createClientStub());
+    const create = registry.listTools(['templates:write']).find((tool) => tool.name === 'range_template_create');
+    const graphWithoutNat = structuredClone(authoringGraph);
+    const switchNode = graphWithoutNat.nodes.find((node) => node.id === 'switch-dmz');
+
+    if (switchNode?.kind !== 'switch') {
+      throw new Error('Expected a switch node');
+    }
+
+    delete (switchNode as Partial<typeof switchNode>).nat;
+
+    expect(create?.inputSchema?.safeParse({
+      name: '缺少 NAT 的拓扑',
+      topologyGraph: graphWithoutNat,
+    }).success).toBe(false);
+
+    const serializedSchema = JSON.stringify(create?.inputSchema);
+    expect(serializedSchema).toContain('dnatMappings');
+    expect(serializedSchema).toContain('targetHostId');
+  });
+
+  it('accepts the complete switch ACL shape used by the topology editor', () => {
+    const registry = createToolRegistry(createClientStub());
+    const graphWithDestinationCidr = structuredClone(authoringGraph);
+    const switchNode = graphWithDestinationCidr.nodes.find((node) => node.id === 'switch-dmz');
+
+    if (switchNode?.kind !== 'switch') {
+      throw new Error('Expected a switch node');
+    }
+
+    switchNode.aclRules = [{
+      key: 'dmz-to-internal',
+      direction: 'outbound',
+      protocol: 'tcp',
+      portRange: '443/443',
+      sourceCidr: '10.0.0.0/24',
+      destinationCidr: '172.16.0.0/24',
+      policy: 'allow',
+      priority: 10,
+    }];
+
+    expect(registry.listTools(['templates:write']).find((tool) => tool.name === 'range_template_create')?.inputSchema.safeParse({
+      name: '含 ACL 目标网段的拓扑',
+      topologyGraph: graphWithDestinationCidr,
+    }).success).toBe(true);
+  });
+
   it('accepts the frontend image display name while keeping image identity fields exact', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
