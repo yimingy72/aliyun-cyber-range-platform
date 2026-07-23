@@ -25,12 +25,17 @@ export type RangeAccessPayload = {
 };
 
 export type RangeTemplate = Record<string, unknown> & { id: string };
-export type CreateRangeTemplateInput = Record<string, unknown> & {
+export type CreateRangeTemplateInput = {
   name: string;
-  slug: string;
-  version: string;
-  modulePathOrRef: string;
+  description?: string;
   topologySpec: Record<string, unknown>;
+  topologyGraph: Record<string, unknown>;
+  scenarioTemplateSpec: Record<string, unknown>;
+  compiledProvisionSpec: Record<string, unknown>;
+  compiledSpec: Record<string, unknown>;
+  variableSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  defaultNetworkPolicy?: Record<string, unknown>;
 };
 export type UpdateRangeTemplateInput = {
   expectedRevision: number;

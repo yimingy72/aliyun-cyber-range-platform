@@ -70,14 +70,7 @@ export const topologyGraphSchema = z.object({
   edges: z.array(templateEdgeSchema),
 });
 
-const templateMetadataSchema = z.object({
-  name: identifier,
-  slug: identifier,
-  version: identifier,
-  description: z.string().optional(),
-  cloudProvider: z.literal('alibaba_cloud'),
-  iacType: z.enum(['opentofu', 'terraform']),
-  modulePathOrRef: identifier,
+const templateNetworkMetadataSchema = z.object({
   primaryVpcCidr: identifier.optional().describe('Primary IPv4 CIDR used to create the VPC.'),
   secondaryVpcCidrs: z.array(identifier).max(4).optional().describe('Additional, non-overlapping IPv4 CIDRs attached to the same VPC.'),
   vpcCidr: identifier.optional().describe('Deprecated alias for primaryVpcCidr.'),
@@ -90,7 +83,9 @@ const templateWriteSchema = operationSchema.extend({ templateId: identifier });
 export const templateListInputSchema = z.object({ view: z.enum(['platform', 'mine']).optional() });
 export const templateGetInputSchema = z.object({ templateId: identifier });
 export const templateCreateInputSchema = operationSchema.extend({
-  ...templateMetadataSchema.shape,
+  name: identifier,
+  description: z.string().optional(),
+  ...templateNetworkMetadataSchema.shape,
   topologyGraph: topologyGraphSchema,
   variableSchema: optionalRecord,
   outputSchema: optionalRecord,
@@ -105,6 +100,6 @@ export const templateUpdateInputSchema = templateWriteSchema.extend({
 export const templateCloneInputSchema = templateWriteSchema;
 export const templateDetectAndSaveInputSchema = templateWriteSchema.extend({
   topologyGraph: topologyGraphSchema.describe('待保存的完整拓扑图。必须由设计转换 Skill 产出，且包含 Router、交换机、ECS、NIC 与实际连线。'),
-  ...templateMetadataSchema.partial().shape,
-});
+  ...templateNetworkMetadataSchema.partial().shape,
+}).strict();
 export const templateLifecycleInputSchema = templateWriteSchema;

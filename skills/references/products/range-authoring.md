@@ -12,15 +12,17 @@
 |---|---|---|---|---|
 | 查看模板列表 | `range_template_list` | — | `view: platform\|mine`，默认 `platform` | `templates:read` |
 | 查看模板详情 | `range_template_get` | `templateId` | — | `templates:read` |
-| 新建模板 | `range_template_create` | `name`、`slug`、`version`、`cloudProvider: alibaba_cloud`、`iacType: opentofu\|terraform`、`modulePathOrRef`、完整 `topologyGraph` | `description`、`primaryVpcCidr`、`secondaryVpcCidrs`、已废弃别名 `vpcCidr`、`defaultRegion`、`defaultZoneId`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
+| 新建模板 | `range_template_create` | `name`、完整 `topologyGraph` | `description`、`primaryVpcCidr`、`secondaryVpcCidrs`、已废弃别名 `vpcCidr`、`defaultRegion`、`defaultZoneId`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
 | 编辑信息 | `range_template_update` | `templateId`、`updates`（至少一个 `name` 或 `description`） | 操作元数据 | `templates:write` |
 | 复制模板 | `range_template_clone` | `templateId` | 操作元数据 | `templates:write` |
-| 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、完整 `topologyGraph` | 任意部分模板元数据、`primaryVpcCidr`、`secondaryVpcCidrs`、`vpcCidr`、`publicEntryProtocols`、操作元数据 | `templates:write` |
+| 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、完整 `topologyGraph` | `primaryVpcCidr`、`secondaryVpcCidrs`、`vpcCidr`、`defaultRegion`、`defaultZoneId`、`publicEntryProtocols`、操作元数据 | `templates:write` |
 | 发布到平台 | `range_template_publish` | `templateId` | 操作元数据 | `templates:publish` |
 | 取消发布 | `range_template_unpublish` | `templateId` | 操作元数据 | `templates:publish` |
 | 删除模板 | `range_template_delete` | `templateId` | 操作元数据 | `templates:delete` |
 
 `range_template_topology_detect_and_save` 会编译并校验完整图后保存，但不会发布。拓扑修改始终重新生成完整图；没有“共享/取消共享”、独立预检或节点补丁工具。
+
+创建时平台会生成 `slug`、版本、云厂商、IaC 类型和模块路径。它们不是 `RangeDesign/v1` 输出字段，也不是 `range_template_create` 参数；调用方传入会被 MCP 拒绝。
 
 ## 设计转换流程
 
@@ -30,9 +32,10 @@
 靶场设计 Skill -> RangeDesign/v1 -> 靶场拓扑转换 Skill -> 靶场编排 MCP 工具
 ```
 
-1. **靶场设计 Skill** 输出本文件定义的完整 `RangeDesign/v1`。
-2. **靶场拓扑转换 Skill** 查询当前调用者可见的镜像，解析精确 `imageId`，补齐平台默认值，输出完整 `topologyGraph`。
-3. **MCP 工具** 重新编译与校验完整图，自动生成内部派生规格后调用平台 API。
+1. **严格解析**：先验证输入是一份完整、无截断的 `RangeDesign/v1` YAML。`connections` 使用对象数组，所有 ACL、DNAT 和安全组字段完整；解析失败时不得调用任何 MCP 工具。
+2. **靶场设计 Skill** 输出本文件定义的完整 `RangeDesign/v1`。
+3. **靶场拓扑转换 Skill** 查询当前调用者可见的镜像，解析精确 `imageId`，补齐平台默认值，输出完整 `topologyGraph`。
+4. **MCP 工具** 重新编译与校验完整图，自动生成内部派生规格后调用平台 API。
 
 缺少镜像、IP、CIDR、连线、入口主机或 NAT 参数时，转换 Skill 必须返回缺项给设计 Skill，不得猜测。
 
@@ -45,12 +48,7 @@ schemaVersion: RangeDesign/v1
 
 template:
   name: "<模板名称>"
-  slug: "<小写、连字符分隔的逻辑标识>"
-  version: "v1.0.0"
   description: "<用途、验证目标与安全边界>"
-  cloudProvider: alibaba_cloud
-  iacType: opentofu
-  modulePathOrRef: infra/opentofu/modules/alicloud-enterprise-range
   defaultRegion: "<由转换 Skill 通过 cloud_config_get 解析>"
   defaultZoneId: "<由转换 Skill 通过 cloud_config_get 解析>"
   publicEntryProtocols:
@@ -142,7 +140,7 @@ connections:
 
 | 部分 | 必须表达的事实 | 约束 |
 |---|---|---|
-| `template` | 名称、逻辑标识、版本、描述、云厂商、IaC、模块、默认地域/可用区和入口协议 | `cloudProvider` 固定 `alibaba_cloud`；`iacType` 为 `opentofu` 或 `terraform`；入口协议覆盖每个 DNAT 协议和外部端口。 |
+| `template` | 名称、描述、默认地域/可用区和入口协议 | 入口协议覆盖每个 DNAT 协议和外部端口；`slug`、版本、云厂商、IaC 与模块路径由平台生成，不得输出或传给 MCP。 |
 | `vpc` | 一个主 CIDR、零到四个附加 CIDR、一个共享 NAT 逻辑标识 | 一个 VPC 可使用不连续 CIDR；所有 CIDR 不重叠。SNAT 与 DNAT 使用同一 NAT 网关、不同 EIP。 |
 | `router` | 唯一路由器的键、名称和出口意图 | 每份设计恰好一个 Router。 |
 | `switches` | 交换机 CIDR、可用区、用途、ACL、SNAT、DNAT | CIDR 必须落在主或附加 VPC CIDR 内且互不重叠；`aclRules`、`dnatMappings` 始终存在，可为空数组。 |
@@ -162,12 +160,15 @@ connections:
 
 转换 Skill 必须按顺序：
 
-1. 调用 `cloud_config_get` 解析并校验默认地域、可用区。
-2. 调用 `platform_image_list`，将每个 `imageSelector.displayName` 精确解析为唯一、已启用的 `platformImageAssetId` 和阿里云 `imageId`；无匹配、重名或停用时停止。
-3. 校验 VPC、CIDR、IP、NAT、ACL、安全组、连线和公网入口；缺项或歧义返回给设计 Skill。
-4. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
-5. ECS 节点写入精确 `image`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`dnatMappings`、`portGroups` 与 `initScript`。
-6. Switch 节点写入 `nat: { snatEnabled, dnatMappings }` 与完整 ACL。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
+1. 验证 `RangeDesign/v1` YAML 的语法、字段、数组和连接对象；失败时返回具体路径，不得调用 MCP。
+2. 调用 `cloud_config_get` 解析并校验默认地域、可用区。
+3. 调用 `platform_image_list`，将每个 `imageSelector.displayName` 精确解析为唯一、已启用的 `platformImageAssetId` 和阿里云 `imageId`；无匹配、重名或停用时停止。
+4. 校验 VPC、CIDR、IP、NAT、ACL、安全组、连线和公网入口；缺项或歧义返回给设计 Skill。
+5. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
+6. ECS 节点写入精确 `image`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`dnatMappings`、`portGroups` 与 `initScript`。
+7. Switch 节点写入 `nat: { snatEnabled, dnatMappings }` 与完整 ACL。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
+
+调用 `range_template_create` 时只传 `name`、可选 `description`、可选网络元数据和完整 `topologyGraph`。不要传任何平台生成或编译派生字段。
 
 最小结果形状：
 

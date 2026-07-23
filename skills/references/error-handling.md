@@ -28,6 +28,12 @@
 | 规格不支持、容量不足或 `exactAvailable: false` | 停止创建，报告校验原因并请用户选择新的 CPU/内存；不要猜测替代规格。更改 CPU/内存后重新执行 `single_instance_spec_check`。 |
 | 规格校验工具报错或超时 | 不得调用 `single_instance_batch_launch`；报告校验未完成，等待 MCP 或平台恢复后重新校验。 |
 
+### 靶场模板创建
+
+- `RangeDesign/v1` 解析失败、字段截断、连接使用字符串、ACL/DNAT 不完整或镜像名歧义时，停止在设计阶段并请求修正；不得查询模板、克隆模板或调用写工具。
+- `range_template_create` 只接受名称、描述、网络元数据和完整 `topologyGraph`。`slug`、版本、云厂商、IaC 类型、模块路径和派生规格由平台管理，不能通过添加、删除或替换这些字段重试。
+- MCP `inputSchema` 与服务端响应不一致时，保留错误码和 request ID，停止自动重试并报告契约缺陷。`range_template_topology_detect_and_save` 需要已有 `templateId`，不能作为首次创建的替代路径。
+
 ## 服务端确认与幂等
 
 ### 收到 `CONFIRMATION_REQUIRED`

@@ -289,15 +289,15 @@ describe('tool registry', () => {
     const registry = createToolRegistry(client);
 
     await registry.callTool('range_template_create', ['templates:write'], {
-      name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-      modulePathOrRef: 'modules/enterprise-range', topologyGraph: authoringGraph,
+      name: 'Web DMZ',
+      topologyGraph: authoringGraph,
     });
 
     expect(client.createRangeTemplate).toHaveBeenCalledWith(
       expect.objectContaining({
         topologyGraph: authoringGraph,
         topologySpec: expect.objectContaining({ publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'ssh', port: 22 }, { protocol: 'http', port: 80 }] } }),
-        scenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ slug: 'web-dmz' }) }),
+        scenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ name: 'Web DMZ' }) }),
         compiledProvisionSpec: expect.objectContaining({ dnatEntries: [expect.objectContaining({ hostKey: 'ecs-nginx', externalPort: 80 })] }),
         compiledSpec: expect.objectContaining({
           schemaVersion: '1.0.0',
@@ -311,6 +311,31 @@ describe('tool registry', () => {
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
+  });
+
+  it('creates a template with the API contract instead of caller-supplied server metadata', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('range_template_create', ['templates:write'], {
+      name: 'Web DMZ',
+      description: 'Public web entry template',
+      primaryVpcCidr: '10.0.0.0/16',
+      secondaryVpcCidrs: ['172.16.0.0/16'],
+      topologyGraph: authoringGraph,
+    });
+
+    const payload = (client.createRangeTemplate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      name: 'Web DMZ',
+      description: 'Public web entry template',
+      topologyGraph: authoringGraph,
+    });
+    expect(payload).not.toHaveProperty('slug');
+    expect(payload).not.toHaveProperty('version');
+    expect(payload).not.toHaveProperty('cloudProvider');
+    expect(payload).not.toHaveProperty('iacType');
+    expect(payload).not.toHaveProperty('modulePathOrRef');
   });
 
   it('detects and saves a complete topology only after compilation succeeds', async () => {
@@ -373,11 +398,6 @@ describe('tool registry', () => {
 
     await registry.callTool('range_template_create', ['templates:write'], {
       name: '三网段靶场',
-      slug: 'three-zone-range',
-      version: 'v1',
-      cloudProvider: 'alibaba_cloud',
-      iacType: 'opentofu',
-      modulePathOrRef: 'modules/enterprise-range',
       primaryVpcCidr: '10.0.0.0/16',
       secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
       topologyGraph: graph,
@@ -408,11 +428,6 @@ describe('tool registry', () => {
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
         name: 'Web DMZ',
-        slug: 'web-dmz',
-        version: '1.0.0',
-        cloudProvider: 'alibaba_cloud',
-        iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range',
         topologyGraph: authoringGraph,
         compiledProvisionSpec: { forged: true },
       }),
@@ -425,8 +440,8 @@ describe('tool registry', () => {
     const registry = createToolRegistry(client);
 
     await registry.callTool('range_template_create', ['templates:write'], {
-      name: '最小靶场', slug: 'minimal-range', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-      modulePathOrRef: 'modules/enterprise-range', topologyGraph: minimalAuthoringGraph,
+      name: '最小靶场',
+      topologyGraph: minimalAuthoringGraph,
     });
 
     expect(client.createRangeTemplate).toHaveBeenCalledWith(
@@ -458,8 +473,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: '缺少 Router', slug: 'missing-router', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: routerlessGraph,
+        name: '缺少 Router',
+        topologyGraph: routerlessGraph,
       }),
     ).rejects.toThrow('拓扑必须且只能包含一个 Router 节点');
   });
@@ -471,8 +486,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: '缺少 VPC 连线', slug: 'missing-router-edge', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: graph,
+        name: '缺少 VPC 连线',
+        topologyGraph: graph,
       }),
     ).rejects.toThrow('交换机缺少 Router 连线：switch-dmz');
   });
@@ -492,8 +507,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: invalidGraph,
+        name: 'Web DMZ',
+        topologyGraph: invalidGraph,
       }),
     ).rejects.toThrow('不在 10.0.0.0/24 网段内');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
@@ -514,8 +529,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: invalidGraph,
+        name: 'Web DMZ',
+        topologyGraph: invalidGraph,
       }),
     ).rejects.toThrow('必须指定一个公网入口 ECS');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
@@ -535,8 +550,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: invalidGraph,
+        name: 'Web DMZ',
+        topologyGraph: invalidGraph,
       }),
     ).rejects.toThrow('存在重复 IP：10.0.0.10');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
@@ -554,8 +569,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: invalidGraph,
+        name: 'Web DMZ',
+        topologyGraph: invalidGraph,
       }),
     ).rejects.toThrow('未由目标 ECS 的 NIC 绑定支撑');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
@@ -575,8 +590,8 @@ describe('tool registry', () => {
 
     await expect(
       registry.callTool('range_template_create', ['templates:write'], {
-        name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-        modulePathOrRef: 'modules/enterprise-range', topologyGraph: invalidGraph,
+        name: 'Web DMZ',
+        topologyGraph: invalidGraph,
       }),
     ).rejects.toThrow('自定义密码不合法');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
@@ -664,6 +679,14 @@ describe('tool registry', () => {
     expect(update?.inputSchema).toBeDefined();
     expect(detectAndSave?.inputSchema).toBeDefined();
     expect(create?.inputSchema?.safeParse({ name: 'only-a-name' }).success).toBe(false);
+    expect(create?.inputSchema?.safeParse({ name: 'Web DMZ', topologyGraph: authoringGraph }).success).toBe(true);
+    expect(
+      create?.inputSchema?.safeParse({
+        name: 'Web DMZ',
+        slug: 'caller-must-not-set-this',
+        topologyGraph: authoringGraph,
+      }).success,
+    ).toBe(false);
     expect(update?.inputSchema?.safeParse({ templateId: 'tpl-1', updates: { compiledProvisionSpec: { forged: true } } }).success).toBe(false);
     expect(detectAndSave?.inputSchema?.safeParse({ templateId: 'tpl-1' }).success).toBe(false);
   });

@@ -29,7 +29,15 @@ import type { ToolDefinition } from './tool-context';
 
 type TemplateOperation = { idempotencyKey?: string; confirmationId?: string };
 type TemplateWriteInput = TemplateOperation & { templateId: string };
-type CreateInput = TemplateOperation & TemplateAuthoringMetadata & {
+type CreateInput = TemplateOperation & {
+  name: string;
+  description?: string;
+  primaryVpcCidr?: string;
+  secondaryVpcCidrs?: string[];
+  vpcCidr?: string;
+  defaultRegion?: string;
+  defaultZoneId?: string;
+  publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
   topologyGraph: ScenarioGraphDraft;
   variableSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
@@ -40,6 +48,14 @@ const operation = (input: TemplateOperation): OperationRequest => ({
   idempotencyKey: input.idempotencyKey,
   confirmationId: input.confirmationId,
 });
+
+const internalCreateMetadata = {
+  slug: 'mcp-template',
+  version: 'v1',
+  cloudProvider: 'alibaba_cloud' as const,
+  iacType: 'opentofu' as const,
+  modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+};
 
 export const templateTools: ToolDefinition[] = [
   {
@@ -71,21 +87,16 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_create',
     title: '创建靶场模板',
-    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。仅传名称、描述、网络元数据和拓扑；slug、版本、云厂商、IaC 与模块路径由平台生成。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as CreateInput;
-      const compiled = compileTemplateTopology(input.topologyGraph, input);
+      const compiled = compileTemplateTopology(input.topologyGraph, metadataForTemplateCreation(input));
       const payload: CreateRangeTemplateInput = {
         name: input.name,
-        description: input.description,
-        slug: input.slug,
-        version: input.version,
-        cloudProvider: input.cloudProvider,
-        iacType: input.iacType,
-        modulePathOrRef: input.modulePathOrRef,
+        ...(input.description !== undefined ? { description: input.description } : {}),
         ...compiled,
         ...(input.variableSchema ? { variableSchema: input.variableSchema } : {}),
         ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
@@ -148,7 +159,7 @@ export const templateTools: ToolDefinition[] = [
       };
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
-      const compiled = compileTemplateTopology(topologyGraph, { ...metadataFromTemplate(current), ...pickMetadata(input) });
+      const compiled = compileTemplateTopology(topologyGraph, { ...metadataFromTemplate(current), ...pickTopologyMetadata(input) });
       const template = await context.client.saveRangeTemplateTopology(
         input.templateId,
         { ...compiled, expectedRevision: readTemplateRevision(current) },
@@ -205,8 +216,17 @@ export const templateTools: ToolDefinition[] = [
   },
 ];
 
-function pickMetadata(input: Record<string, unknown>) {
-  const keys = ['name', 'slug', 'version', 'description', 'cloudProvider', 'iacType', 'modulePathOrRef', 'primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'defaultRegion', 'defaultZoneId', 'publicEntryProtocols'] as const;
+function metadataForTemplateCreation(input: CreateInput): TemplateAuthoringMetadata {
+  return {
+    ...internalCreateMetadata,
+    name: input.name,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...pickTopologyMetadata(input),
+  };
+}
+
+function pickTopologyMetadata(input: Record<string, unknown>) {
+  const keys = ['primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'defaultRegion', 'defaultZoneId', 'publicEntryProtocols'] as const;
   return Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
 }
 

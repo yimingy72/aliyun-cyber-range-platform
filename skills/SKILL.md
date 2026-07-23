@@ -1,6 +1,6 @@
 ---
 name: aliyun-cyber-range-operations
-description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶场平台。当用户需要管理镜像中心、独立实例、靶场模板拓扑、编排实例、平台用户、账单费用或云基础配置时使用。支持查询、创建、检测并保存、发布、启动、控制、同步、导出和清理已授权的平台资源。
+description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶场平台。当用户提供 RangeDesign/v1、要求创建或修改靶场模板/模板拓扑，或需要管理镜像中心、独立实例、编排实例、平台用户、账单费用和云基础配置时使用。模板请求必须先加载本 Skill、完成设计校验与转换，随后才能调用 MCP 工具。
 ---
 
 # 云上综合靶场平台全产品 Skill
@@ -8,6 +8,18 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 69 个 MCP 工具。
 
 > ⚠️ **运行时 MCP `tools/list`、工具的 `inputSchema`、`outputSchema`、`annotations` 和当前 scope 是唯一事实源。** 运行时 schema 与静态参考冲突时，以 schema 为准。
+
+## 模板创建硬路由
+
+只要请求包含 `RangeDesign/v1`、YAML 靶场设计、模板、模板拓扑、VPC、交换机、ECS、NAT、ACL、DNAT 或“检测并保存”，都必须在**任何** MCP 调用前加载本 Skill，并路由到 `range-authoring`。不得先尝试 `range_template_create`、列模板、克隆模板、查询镜像或查询云配置。
+
+严格按以下顺序执行：
+
+1. **解析设计**：将用户输入解析为一份完整 YAML `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。
+2. **解析失败即停止**：出现截断字段、无效 YAML、缺失字段、未知图节点、重复 IP 或歧义镜像名时，只返回精确缺项/错误路径，请求修正设计；不得查询资源、猜测补全、试探调用、克隆模板或改用其他 MCP 工具。
+3. **读取靶场编排参考**：完整阅读 [靶场编排](./references/products/range-authoring.md)，再调用 `cloud_config_get` 与 `platform_image_list` 解析默认地域/可用区和镜像。
+4. **转换与创建**：由转换 Skill 生成完整 `topologyGraph`，并以 `range_template_create` 的运行时 schema 传入名称、描述、网络元数据和拓扑。
+5. **不做参数试错**：`slug`、版本、云厂商、IaC 类型、模块路径和所有派生规格均由平台管理，绝不能作为创建参数。创建 schema 或服务端返回校验错误时，停止并报告契约问题；不得通过删改字段、克隆或检测保存绕过。
 
 ## 严格禁止（NEVER DO）
 
@@ -48,7 +60,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 - 用户提到“镜像中心、平台镜像、快照、收录、启用、停用、发布镜像、导入镜像” → `image-center`
 - 用户提到“实例管理、独立靶机、训练主机、CPU、内存、批量创建、单实例 VNC、打包独立实例镜像” → `instance-management`
-- 用户提到“靶场编排、模板、拓扑、交换机、ECS 节点、VPC、NAT、ACL、检测并保存、发布模板” → `range-authoring`
+- 用户提到“RangeDesign/v1、靶场编排、模板、拓扑、交换机、ECS 节点、VPC、NAT、ACL、检测并保存、发布模板” → `range-authoring`
 - 用户提到“编排实例、整套靶场、靶场环境、基于模板启动、实例拓扑变更、节点开关机、销毁靶场” → `range-instances`
 - 用户提到“用户管理、平台用户、角色、禁用、启用账号、重置密码” → `user-management`
 - 用户提到“账单费用、成本、用户费用、账单同步、费用导出、异常费用” → `billing`
