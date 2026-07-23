@@ -552,7 +552,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
       return undefined as T;
     }
 
-    return JSON.parse(text) as T;
+    return unwrapConfirmedOperationResult(JSON.parse(text)) as T;
   }
 
   private async requestText(path: string) {
@@ -589,5 +589,36 @@ export class PlatformApiClient implements PlatformApiClientLike {
       ...(operation?.confirmationId ? { 'x-confirmation-id': operation.confirmationId } : {}),
     };
   }
+}
 
+function unwrapConfirmedOperationResult(value: unknown): unknown {
+  let current = value;
+  let unwrappedOperation = false;
+
+  // Confirmed MCP writes include operation metadata around the business response.
+  while (
+    current &&
+    typeof current === 'object' &&
+    !Array.isArray(current) &&
+    typeof (current as { operationId?: unknown }).operationId === 'string' &&
+    'result' in current &&
+    (current as { result?: unknown }).result !== null
+  ) {
+    current = (current as { result: unknown }).result;
+    unwrappedOperation = true;
+  }
+
+  while (
+    unwrappedOperation &&
+    current &&
+    typeof current === 'object' &&
+    !Array.isArray(current) &&
+    Object.keys(current).length === 1 &&
+    'result' in current &&
+    (current as { result?: unknown }).result !== null
+  ) {
+    current = (current as { result: unknown }).result;
+  }
+
+  return current;
 }

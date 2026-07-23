@@ -38,6 +38,29 @@ describe('PlatformApiClient', () => {
     const calls: Array<{ input: string; init?: RequestInit }> = [];
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       calls.push({ input, init });
+
+      if (input.endsWith('/share')) {
+        return new Response(
+          JSON.stringify({
+            operationId: 'operation-publish-1',
+            result: {
+              result: { id: 'tpl-1', visibility: 'platform', status: 'published', revision: 8 },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (input.endsWith('/unshare')) {
+        return new Response(
+          JSON.stringify({
+            operationId: 'operation-unpublish-1',
+            result: { id: 'tpl-1', visibility: 'private', status: 'private', revision: 9 },
+          }),
+          { status: 200 },
+        );
+      }
+
       return new Response(JSON.stringify({ id: 'tpl-1', visibility: 'platform', revision: 8 }), { status: 200 });
     });
     const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
@@ -66,12 +89,12 @@ describe('PlatformApiClient', () => {
       (client as unknown as {
         publishRangeTemplate: (id: string, expectedRevision: number, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown>;
       }).publishRangeTemplate('tpl-1', 8, { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' }),
-    ).resolves.toMatchObject({ id: 'tpl-1', revision: 8 });
+    ).resolves.toEqual({ id: 'tpl-1', visibility: 'platform', status: 'published', revision: 8 });
     await expect(
       (client as unknown as {
         unpublishRangeTemplate: (id: string, expectedRevision: number, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown>;
       }).unpublishRangeTemplate('tpl-1', 8, { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' }),
-    ).resolves.toMatchObject({ id: 'tpl-1', revision: 8 });
+    ).resolves.toEqual({ id: 'tpl-1', visibility: 'private', status: 'private', revision: 9 });
 
     expect(calls).toEqual([
       expect.objectContaining({
