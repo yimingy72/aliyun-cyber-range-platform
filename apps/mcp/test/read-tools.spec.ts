@@ -364,6 +364,28 @@ describe('tool registry', () => {
     );
   });
 
+  it('detects and saves a template when public detail hides server-owned metadata', async () => {
+    const client = createClientStub();
+    const { version: _version, modulePathOrRef: _modulePathOrRef, ...publicTemplate } = createAuthoringTemplate();
+    (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(publicTemplate);
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
+      templateId: 'tpl-1',
+      topologyGraph: authoringGraph,
+    });
+
+    expect(client.saveRangeTemplateTopology).toHaveBeenCalledWith(
+      'tpl-1',
+      expect.objectContaining({
+        scenarioTemplateSpec: expect.objectContaining({
+          metadata: expect.objectContaining({ version: 'v1' }),
+        }),
+      }),
+      { idempotencyKey: undefined, confirmationId: undefined },
+    );
+  });
+
   it('compiles vSwitches from primary and secondary VPC CIDRs before creation', async () => {
     const client = createClientStub();
     const graph = structuredClone(authoringGraph);

@@ -170,6 +170,8 @@ connections:
 
 转换回执和完整图均通过后，恰好调用一次 `range_template_create`，只传 `name`、可选 `description`、可选网络元数据和完整 `topologyGraph`。不要传地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或自动重试。
 
+调用 `range_template_topology_detect_and_save` 被拒绝时，必须停止并报告原始错误；不得补猜 `version`、`modulePathOrRef`、地域、可用区或派生规格后重试。它们均由平台在服务端读取或注入。
+
 最小结果形状：
 
 ```ts

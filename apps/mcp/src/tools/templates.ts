@@ -157,7 +157,10 @@ export const templateTools: ToolDefinition[] = [
       };
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
-      const compiled = compileTemplateTopology(topologyGraph, { ...metadataFromTemplate(current), ...pickTopologyMetadata(input) });
+      const compiled = compileTemplateTopology(topologyGraph, {
+        ...metadataFromTemplate(withServerOwnedMetadata(current)),
+        ...pickTopologyMetadata(input),
+      });
       const template = await context.client.saveRangeTemplateTopology(
         input.templateId,
         { ...compiled, expectedRevision: readTemplateRevision(current) },
@@ -223,9 +226,28 @@ function metadataForTemplateCreation(input: CreateInput): TemplateAuthoringMetad
   };
 }
 
+function withServerOwnedMetadata(template: Record<string, unknown>) {
+  const scenarioTemplateSpec = readRecord(template.scenarioTemplateSpec);
+  const scenarioMetadata = readRecord(scenarioTemplateSpec?.metadata);
+
+  return {
+    ...template,
+    version: readNonEmptyString(template.version) ?? readNonEmptyString(scenarioMetadata?.version) ?? internalCreateMetadata.version,
+    modulePathOrRef: readNonEmptyString(template.modulePathOrRef) ?? internalCreateMetadata.modulePathOrRef,
+  };
+}
+
 function pickTopologyMetadata(input: Record<string, unknown>) {
   const keys = ['primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'publicEntryProtocols'] as const;
   return Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
+}
+
+function readRecord(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readNonEmptyString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function readTemplateRevision(template: Record<string, unknown>) {
