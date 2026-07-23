@@ -25,6 +25,6 @@
 
 ## 输出规范
 
-返回资源 ID、非敏感状态、影响范围和下一步安全操作。除非用户明确请求且有权接收，不输出密码、Token、AccessKey、SSH/VNC 链接或 CSV 凭据行。
+每个 MCP 工具的结构化输出固定为 `{ result: ... }`，`outputSchema` 描述 `result` 内的稳定业务字段；不要再假定数组结果没有 `structuredContent`。返回资源 ID、非敏感状态、影响范围和下一步安全操作。除非用户明确请求且有权接收，不输出密码、Token、AccessKey、SSH/VNC 链接或 CSV 凭据行。
 
 涉及确认时读取 [confirmation.md](./confirmation.md)；涉及秘密时读取 [sensitive-outputs.md](./sensitive-outputs.md)；失败时读取 [error-handling.md](./error-handling.md)。

@@ -2,11 +2,12 @@ import * as z from 'zod/v4';
 
 import { topologyGraphSchema } from './template-schemas';
 
-export const identifier = z.string().trim().min(1);
-export const isoDateTime = z.iso.datetime({ offset: true });
+export const identifier = z.string().trim().min(1).describe('由对应查询工具返回的平台唯一标识。');
+export const isoDateTime = z.iso.datetime({ offset: true }).describe('带时区的 ISO-8601 时间，例如 2026-07-23T08:00:00.000Z。');
+export const isoDate = z.iso.date().describe('ISO-8601 日期，格式为 YYYY-MM-DD。');
 export const operationSchema = z.object({
-  idempotencyKey: identifier.optional().describe('Reuse only for an identical write request when the server requires it.'),
-  confirmationId: identifier.optional().describe('Provide only after the platform returns CONFIRMATION_REQUIRED.'),
+  idempotencyKey: identifier.optional().describe('仅在服务端要求时传入；相同写请求需复用同一幂等键。'),
+  confirmationId: identifier.optional().describe('仅当平台返回 CONFIRMATION_REQUIRED 后传入对应确认 ID。'),
 });
 
 const viewSchema = z.enum(['active', 'history']).optional();
@@ -18,10 +19,65 @@ const singleInstanceActionFields = {
   description: z.string().optional(),
 };
 
-export const imageListInputSchema = z.object({ view: z.enum(['platform', 'mine']).optional() });
-export const imageCollectInputSchema = operationSchema.extend({ snapshotId: identifier, displayName: identifier });
-export const imageRenameInputSchema = operationSchema.extend({ platformImageAssetId: identifier, displayName: identifier });
-export const imageAssetOperationInputSchema = operationSchema.extend({ platformImageAssetId: identifier });
+export const imageListInputSchema = z.object({
+  view: z.enum(['platform', 'mine']).optional().describe('platform 查询平台可用镜像；mine 查询当前用户可管理的镜像。'),
+});
+export const imageCollectInputSchema = operationSchema.extend({
+  snapshotId: identifier.describe('镜像目录返回的快照 ID。'),
+  displayName: identifier.describe('收录后显示给平台用户的镜像名称。'),
+});
+export const imageRenameInputSchema = operationSchema.extend({
+  platformImageAssetId: identifier.describe('平台镜像资产 ID。'),
+  displayName: identifier.describe('新的非空显示名称。'),
+});
+export const imageAssetOperationInputSchema = operationSchema.extend({
+  platformImageAssetId: identifier.describe('平台镜像资产 ID。'),
+});
+export const imageCatalogListInputSchema = z.object({
+  scope: z.enum(['public', 'custom']).describe('public 为公共镜像目录；custom 为当前云账号的自定义镜像目录。'),
+});
+export const imageCatalogSyncInputSchema = z.object({
+  scope: z.enum(['public', 'custom']).describe('要同步的镜像目录范围。'),
+});
+export const imageCatalogCustomDeleteInputSchema = z.object({
+  snapshotId: identifier.describe('自定义镜像目录中要永久删除的快照 ID。'),
+});
+export const imageImportJobListInputSchema = z.object({});
+export const imageImportJobRetryInputSchema = z.object({
+  imageImportJobId: identifier.describe('状态为 failed 的镜像导入任务 ID。'),
+});
+
+const billingWindowFields = {
+  startAt: isoDate.optional().describe('统计起始日期；与 endAt 必须同时提供。省略两者时使用平台默认窗口。'),
+  endAt: isoDate.optional().describe('统计结束日期；与 startAt 必须同时提供。省略两者时使用平台默认窗口。'),
+  limit: z.number().int().min(1).max(500).optional().describe('返回记录上限，范围为 1 至 500。'),
+};
+
+const billingWindowSchema = z.object(billingWindowFields).refine(
+  (input) => (input.startAt === undefined) === (input.endAt === undefined),
+  'startAt 和 endAt 必须同时提供或同时省略',
+);
+
+export const billingSummaryInputSchema = billingWindowSchema.pick({ startAt: true, endAt: true });
+export const billingUsersInputSchema = billingWindowSchema;
+export const billingUserSummaryInputSchema = billingWindowSchema.extend({
+  userId: identifier.describe('要查看费用汇总的平台用户 ID。'),
+});
+export const billingUserGroupsInputSchema = billingWindowSchema.extend({
+  userId: identifier.optional().describe('可选。仅查看指定平台用户的启动费用分组。'),
+});
+export const billingPlatformGroupsInputSchema = billingWindowSchema;
+export const billingUserItemsInputSchema = billingWindowSchema.extend({
+  userId: identifier.describe('要查看明细的平台用户 ID。'),
+});
+export const billingPlatformItemsInputSchema = billingWindowSchema;
+export const billingAnomaliesInputSchema = billingWindowSchema;
+export const billingSyncInputSchema = billingSummaryInputSchema;
+export const billingExportPlatformCsvInputSchema = billingSummaryInputSchema;
+export const billingExportUsersCsvInputSchema = billingSummaryInputSchema;
+export const billingExportUserCsvInputSchema = billingSummaryInputSchema.extend({
+  userId: identifier.describe('要导出费用明细的平台用户 ID。'),
+});
 
 export const rangeListInputSchema = z.object({ view: viewSchema });
 export const rangeInstanceIdInputSchema = z.object({ rangeInstanceId: identifier });

@@ -11,7 +11,7 @@
 | “单台靶机、训练主机、CPU、内存、数量、批次” | [实例管理](./products/instance-management.md) | 需要平台镜像、CPU、内存、数量和到期时间。 |
 | “镜像、快照、收录、启用、发布镜像” | [镜像中心](./products/image-center.md) | 快照收录、由实例打包，还是资产可见性/可用性管理？ |
 | “用户、角色、禁用、重置密码” | [用户管理](./products/user-management.md) | 需要管理员权限和准确 userId。 |
-| “费用、账单、成本” | [账单费用](./products/billing.md) | 当前 MCP 是否实际暴露账单工具。 |
+| “费用、账单、成本” | [账单费用](./products/billing.md) | 仅管理员可使用 `billing_*`；先按汇总、明细、异常、同步或导出细分。 |
 | “地域、可用区、云配置、密钥” | [基础配置](./products/settings.md) | 需要明确字段和影响范围。 |
 
 ## 易混淆场景

@@ -83,6 +83,11 @@ function createClientStub(): ClientStub {
     enablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: true }),
     disablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: false }),
     removePlatformImage: vi.fn().mockResolvedValue(undefined),
+    listImageCatalog: vi.fn().mockResolvedValue({ snapshots: [{ id: 'snapshot-1' }], catalogItems: [] }),
+    syncImageCatalog: vi.fn().mockResolvedValue({ snapshots: [{ id: 'snapshot-1' }], catalogItems: [] }),
+    removeCustomImageSnapshot: vi.fn().mockResolvedValue(undefined),
+    listImageImportJobs: vi.fn().mockResolvedValue({ items: [{ id: 'import-1', status: 'failed' }] }),
+    retryImageImport: vi.fn().mockResolvedValue({ id: 'import-1', status: 'importing' }),
     listRangeInstances: vi.fn().mockResolvedValue([{ id: 'range-1' }]),
     getRangeInstance: vi.fn().mockResolvedValue({ id: 'range-1' }),
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
@@ -104,6 +109,18 @@ function createClientStub(): ClientStub {
     updateAdminUserRole: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', role: 'admin' }),
     updateAdminUserStatus: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', status: 'disabled' }),
     resetAdminUserPassword: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice' }),
+    getBillingSummary: vi.fn().mockResolvedValue({ totalPretaxAmount: 12.5 }),
+    listBillingUsers: vi.fn().mockResolvedValue([{ userId: 'user-1', username: 'alice' }]),
+    getBillingUserSummary: vi.fn().mockResolvedValue({ userId: 'user-1', username: 'alice' }),
+    listBillingUserGroups: vi.fn().mockResolvedValue([{ id: 'group-1' }]),
+    listBillingPlatformGroups: vi.fn().mockResolvedValue([{ id: 'group-2' }]),
+    listBillingUserItems: vi.fn().mockResolvedValue([{ id: 'bill-user-1' }]),
+    listBillingPlatformItems: vi.fn().mockResolvedValue([{ id: 'bill-platform-1' }]),
+    listBillingAnomalies: vi.fn().mockResolvedValue([{ id: 'anomaly-1' }]),
+    syncBilling: vi.fn().mockResolvedValue({ syncedDays: 1, importedLineItems: 2, anomalyCount: 0, deferredCount: 0 }),
+    exportPlatformBillingCsv: vi.fn().mockResolvedValue('startAt,2026-07-01\n'),
+    exportBillingUsersCsv: vi.fn().mockResolvedValue('userId,username\n'),
+    exportBillingUserItemsCsv: vi.fn().mockResolvedValue('billingDate,amount\n'),
     launchRange: vi.fn().mockResolvedValue({ id: 'range-2' }),
     destroyRange: vi.fn().mockResolvedValue({ ok: true }),
     launchSingleInstances: vi.fn().mockResolvedValue({ batch: { id: 'batch-1' }, instances: [] }),
@@ -282,6 +299,15 @@ describe('tool registry', () => {
         topologySpec: expect.objectContaining({ publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'ssh', port: 22 }, { protocol: 'http', port: 80 }] } }),
         scenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ slug: 'web-dmz' }) }),
         compiledProvisionSpec: expect.objectContaining({ dnatEntries: [expect.objectContaining({ hostKey: 'ecs-nginx', externalPort: 80 })] }),
+        compiledSpec: expect.objectContaining({
+          schemaVersion: '1.0.0',
+          topology: expect.objectContaining({ publicEntryHostKey: 'ecs-nginx' }),
+          resources: expect.arrayContaining([
+            expect.objectContaining({ id: 'router-main', type: 'router' }),
+            expect.objectContaining({ id: 'switch-dmz', type: 'switch' }),
+            expect.objectContaining({ id: 'ecs-nginx', type: 'host' }),
+          ]),
+        }),
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
@@ -648,10 +674,87 @@ describe('tool registry', () => {
       'templates:read', 'templates:write', 'templates:publish', 'templates:delete',
       'images:read', 'images:write', 'ranges:read', 'ranges:create', 'ranges:write', 'ranges:control', 'ranges:destroy', 'ranges:delete',
       'instances:read', 'instances:create', 'instances:destroy', 'instances:control', 'instances:credentials:read',
-      'jobs:read', 'users:read', 'users:write', 'settings:read', 'settings:write',
+      'jobs:read', 'users:read', 'users:write', 'billing:read', 'billing:sync', 'settings:read', 'settings:write',
     ];
 
-    expect(registry.listTools(scopes).every((tool) => tool.inputSchema)).toBe(true);
+    const tools = registry.listTools(scopes);
+
+    expect(tools).toHaveLength(69);
+    expect(tools.every((tool) => tool.inputSchema)).toBe(true);
+    expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
+    expect(
+      tools
+        .filter((tool) => !/[^\x00-\x7F]/.test(tool.title) || !/[^\x00-\x7F]/.test(tool.description))
+        .map((tool) => tool.name),
+    ).toEqual([]);
+  });
+
+  it('exposes every safe-to-automate image-center action from the frontend', () => {
+    const registry = createToolRegistry(createClientStub());
+    const tools = registry.listTools(['images:read', 'images:write']);
+    const expectedNames = [
+      'image_catalog_list',
+      'image_catalog_sync',
+      'image_catalog_custom_delete',
+      'image_import_job_list',
+      'image_import_job_retry',
+    ];
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(expectedNames));
+
+    for (const name of expectedNames) {
+      expect(tools.find((tool) => tool.name === name)).toMatchObject({
+        name,
+        title: expect.any(String),
+        description: expect.stringMatching(/[^\x00-\x7F]/),
+        inputSchema: expect.anything(),
+        outputSchema: expect.anything(),
+        annotations: expect.any(Object),
+      });
+    }
+  });
+
+  it('exposes every billing page action with a scoped MCP definition', () => {
+    const registry = createToolRegistry(createClientStub());
+    const tools = registry.listTools(['billing:read', 'billing:sync']);
+    const expectedNames = [
+      'billing_summary_get',
+      'billing_user_list',
+      'billing_user_summary_get',
+      'billing_user_group_list',
+      'billing_platform_group_list',
+      'billing_user_item_list',
+      'billing_platform_item_list',
+      'billing_anomaly_list',
+      'billing_sync',
+      'billing_export_platform_csv',
+      'billing_export_users_csv',
+      'billing_export_user_csv',
+    ];
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(expectedNames));
+
+    for (const name of expectedNames) {
+      expect(tools.find((tool) => tool.name === name)).toMatchObject({
+        name,
+        title: expect.any(String),
+        description: expect.stringMatching(/[^\x00-\x7F]/),
+        inputSchema: expect.anything(),
+        outputSchema: expect.anything(),
+        annotations: expect.any(Object),
+      });
+    }
+  });
+
+  it('returns a result envelope for arrays and objects', async () => {
+    const registry = createToolRegistry(createClientStub());
+
+    await expect(registry.callTool('platform_image_list', ['images:read'], {})).resolves.toMatchObject({
+      structuredContent: {
+        result: [{ id: 'img-1' }],
+      },
+      content: [{ type: 'text', text: expect.stringContaining('"result"') }],
+    });
   });
 
   it('rejects caller-supplied derived fields during a template update', async () => {
@@ -727,7 +830,9 @@ describe('tool registry', () => {
     ).resolves.toMatchObject({
       isError: true,
       structuredContent: {
-        error: { message: { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1' } },
+        result: {
+          error: { message: { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1' } },
+        },
       },
     });
   });
@@ -746,7 +851,7 @@ describe('tool registry', () => {
       defaultPassword: undefined,
       description: undefined,
     });
-    expect(result.structuredContent).toEqual({ status: 'accepted', vncUrl: 'wss://vnc' });
+    expect(result.structuredContent).toEqual({ result: { status: 'accepted', vncUrl: 'wss://vnc' } });
   });
 
   it('exports a single instance batch as csv', async () => {
@@ -757,11 +862,13 @@ describe('tool registry', () => {
     });
 
     expect(result.structuredContent).toEqual({
-      batchId: 'batch-1',
-      batchName: 'batch-a',
-      fileName: 'batch-a-instances.csv',
-      rowCount: 1,
-      csv: '实例名,公网 IP,账号,密码\nins-1,1.1.1.1,root,secret',
+      result: {
+        batchId: 'batch-1',
+        batchName: 'batch-a',
+        fileName: 'batch-a-instances.csv',
+        rowCount: 1,
+        csv: '实例名,公网 IP,账号,密码\nins-1,1.1.1.1,root,secret',
+      },
     });
   });
 
@@ -775,8 +882,10 @@ describe('tool registry', () => {
       registry.callTool('single_instance_spec_check', ['instances:read'], { cpu: 2, memory: 4 }),
     ).resolves.toMatchObject({
       structuredContent: {
-        exactAvailable: true,
-        matches: [{ instanceTypeId: 'ecs.e-c1m2.large' }],
+        result: {
+          exactAvailable: true,
+          matches: [{ instanceTypeId: 'ecs.e-c1m2.large' }],
+        },
       },
     });
     expect(client.getInstanceTypeAvailability).toHaveBeenCalledWith(2, 4);

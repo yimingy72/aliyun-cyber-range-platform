@@ -10,5 +10,9 @@ describe('MCP auth scopes', () => {
     for (const scope of END_USER_SCOPES) {
       expect(ADMIN_SCOPES).toContain(scope);
     }
+
+    expect(END_USER_SCOPES).not.toContain('billing:read');
+    expect(END_USER_SCOPES).not.toContain('billing:sync');
+    expect(ADMIN_SCOPES).toEqual(expect.arrayContaining(['billing:read', 'billing:sync']));
   });
 });

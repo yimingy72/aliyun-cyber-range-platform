@@ -2,7 +2,13 @@ import {
   buildScenarioTemplateSpecFromTopologyGraph,
 } from './topology-graph-to-scenario-template';
 import { compileScenarioTemplateSpec } from './scenario-template-compiler';
-import type { ScenarioGraphDraft, ScenarioGraphEdge, TemplateNode } from './scenario-graph';
+import type {
+  EcsTemplateNode,
+  ScenarioGraphDraft,
+  ScenarioGraphEdge,
+  SwitchTemplateNode,
+  TemplateNode,
+} from './scenario-graph';
 import type { ScenarioTemplateMetadata } from './scenario-template-spec';
 import { validateAliyunEcsPassword } from './password-policy';
 
@@ -30,7 +36,17 @@ export type CompiledTemplatePayload = {
   topologySpec: Record<string, unknown>;
   scenarioTemplateSpec: Record<string, unknown>;
   compiledProvisionSpec: Record<string, unknown>;
+  compiledSpec: Record<string, unknown>;
 };
+
+type CompiledTopologySpec = {
+  vpcCidr: string;
+  networkZones: Array<{ key: string }>;
+  hosts: Array<{ key: string }>;
+  publicEntry: { hostKey: string };
+};
+
+type GraphNode = Extract<TemplateNode, { kind: 'router' | 'switch' | 'ecs' }>;
 
 const DEFAULT_PUBLIC_ENTRY_PROTOCOLS = [
   { protocol: 'ssh', port: 22 },
@@ -67,38 +83,207 @@ export function compileTemplateTopology(
     throw new Error('拓扑缺少公网入口 ECS 节点');
   }
 
+  const topologySpec = {
+    vpcCidr: scenarioTemplateSpec.topology.vpcCidr,
+    networkZones: scenarioTemplateSpec.networkZones.map((zone) => ({
+      key: zone.key,
+      name: zone.name,
+      purpose: zone.purpose,
+      cidr: zone.cidr,
+      isPublicEntry: zone.isPublicEntry,
+    })),
+    hosts: scenarioTemplateSpec.hosts.map((host) => ({
+      key: host.key,
+      name: host.name,
+      zoneKey: host.zoneKey,
+      role: host.role,
+      privateIp: host.primaryPrivateIp,
+      exposePublic: host.exposePublic,
+    })),
+    publicEntry: {
+      hostKey: entryHost.key,
+      protocols: metadata.publicEntryProtocols ?? DEFAULT_PUBLIC_ENTRY_PROTOCOLS,
+    },
+    executionPolicies: {
+      allowSshIngress: true,
+      allowHttpIngress: true,
+      enableSnatOnDemand: scenarioTemplateSpec.networkZones.some((zone) => zone.snat?.enabled),
+    },
+  };
+
   return {
     topologyGraph: graph,
-    topologySpec: {
-      vpcCidr: scenarioTemplateSpec.topology.vpcCidr,
-      networkZones: scenarioTemplateSpec.networkZones.map((zone) => ({
-        key: zone.key,
-        name: zone.name,
-        purpose: zone.purpose,
-        cidr: zone.cidr,
-        isPublicEntry: zone.isPublicEntry,
-      })),
-      hosts: scenarioTemplateSpec.hosts.map((host) => ({
-        key: host.key,
-        name: host.name,
-        zoneKey: host.zoneKey,
-        role: host.role,
-        privateIp: host.primaryPrivateIp,
-        exposePublic: host.exposePublic,
-      })),
-      publicEntry: {
-        hostKey: entryHost.key,
-        protocols: metadata.publicEntryProtocols ?? DEFAULT_PUBLIC_ENTRY_PROTOCOLS,
-      },
-      executionPolicies: {
-        allowSshIngress: true,
-        allowHttpIngress: true,
-        enableSnatOnDemand: scenarioTemplateSpec.networkZones.some((zone) => zone.snat?.enabled),
-      },
-    },
+    topologySpec,
     scenarioTemplateSpec,
     compiledProvisionSpec: compileScenarioTemplateSpec(scenarioTemplateSpec),
+    compiledSpec: compileTopologyGraph(graph.nodes, topologySpec),
   };
+}
+
+function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopologySpec) {
+  const graphNodes: GraphNode[] = nodes.map((node) => {
+    if (node.kind !== 'router' && node.kind !== 'switch' && node.kind !== 'ecs') {
+      throw new Error(`Unsupported template node kind: ${String((node as { kind?: unknown }).kind)}`);
+    }
+
+    return node;
+  });
+
+  return {
+    schemaVersion: '1.0.0',
+    resources: [
+      ...graphNodes.map((node) => ({
+        id: node.id,
+        type: node.kind === 'ecs' ? 'host' : node.kind,
+        provider: 'alibaba_cloud',
+        config: compileNodeConfig(node, graphNodes),
+      })),
+      ...buildDerivedNatResources(graphNodes),
+    ],
+    topology: {
+      vpcCidr: topologySpec.vpcCidr,
+      publicEntryHostKey: topologySpec.publicEntry.hostKey,
+      networkZoneKeys: topologySpec.networkZones.map((zone) => zone.key),
+      hostKeys: topologySpec.hosts.map((host) => host.key),
+    },
+  };
+}
+
+function compileNodeConfig(node: GraphNode, graphNodes: GraphNode[]): Record<string, unknown> {
+  switch (node.kind) {
+    case 'ecs': {
+      const placement = resolveHostPlacement(node, graphNodes);
+
+      return {
+        label: node.label,
+        zoneKey: placement.zoneKey,
+        role: node.role,
+        privateIp: placement.privateIp,
+        exposePublic: node.exposePublic,
+        image: node.image,
+        platformImageAssetId: node.platformImageAssetId,
+        instanceName: node.instanceName,
+        hostName: node.hostName,
+        imageName: node.imageName,
+        imageId: node.imageId,
+        cpu: node.cpu,
+        memory: node.memory,
+        instanceType: node.instanceType,
+        description: node.description,
+        bootPriority: node.bootPriority,
+        bootWaitSeconds: node.bootWaitSeconds,
+        dnatMappings: node.dnatMappings,
+        networkInterfaces: node.networkInterfaces,
+        portGroups: node.portGroups,
+        nics: node.nics,
+        initScript: node.initScript,
+        imageStrategy: node.imageStrategy,
+        instanceTypeStrategy: node.instanceTypeStrategy,
+      };
+    }
+    case 'switch':
+      return {
+        label: node.label,
+        zoneKey: node.zoneKey,
+        cidr: node.cidr,
+        purpose: node.purpose,
+        description: node.description,
+        aclRules: node.aclRules,
+        nat: node.nat,
+      };
+    case 'router':
+      return {
+        label: node.label,
+        description: node.description,
+      };
+  }
+}
+
+function resolveHostPlacement(node: EcsTemplateNode, graphNodes: GraphNode[]) {
+  const switchById = new Map(
+    graphNodes
+      .filter((graphNode): graphNode is SwitchTemplateNode => graphNode.kind === 'switch')
+      .map((switchNode) => [switchNode.id, switchNode]),
+  );
+  const primaryNic = node.nics?.[0];
+  const resolvedSwitch = primaryNic?.switchId ? switchById.get(primaryNic.switchId) ?? null : null;
+
+  return {
+    zoneKey: resolvedSwitch?.zoneKey ?? primaryNic?.zoneKey ?? node.zoneKey,
+    privateIp: primaryNic?.privateIp?.trim() ? primaryNic.privateIp : node.privateIp,
+  };
+}
+
+function buildDerivedNatResources(nodes: GraphNode[]) {
+  const natEnabledSwitches = nodes.filter(
+    (node): node is SwitchTemplateNode =>
+      node.kind === 'switch' && (Boolean(node.nat?.snatEnabled) || (node.nat?.dnatMappings?.length ?? 0) > 0),
+  );
+  const snatEnabled = natEnabledSwitches.some((node) => Boolean(node.nat?.snatEnabled));
+  const dnatEnabled = natEnabledSwitches.some((node) => (node.nat?.dnatMappings?.length ?? 0) > 0);
+  const sharedNatSwitch = natEnabledSwitches[0];
+  const natGatewayKey = 'nat-shared';
+  const snatEipKey = 'eip-snat-shared';
+  const dnatEipKey = 'eip-dnat-shared';
+
+  const infrastructure = !sharedNatSwitch
+    ? []
+    : [
+        {
+          id: natGatewayKey,
+          type: 'nat_gateway',
+          provider: 'alibaba_cloud',
+          config: { label: '共享 NAT', zoneKey: sharedNatSwitch.zoneKey, snatEnabled },
+        },
+        ...(snatEnabled
+          ? [{
+              id: snatEipKey,
+              type: 'eip',
+              provider: 'alibaba_cloud',
+              config: { label: '共享 SNAT EIP', bindTargetType: 'nat_gateway', bindTargetKey: natGatewayKey, bandwidthMbps: 30 },
+            }]
+          : []),
+        ...(dnatEnabled
+          ? [{
+              id: dnatEipKey,
+              type: 'eip',
+              provider: 'alibaba_cloud',
+              config: { label: '共享 DNAT EIP', bindTargetType: 'nat_gateway', bindTargetKey: natGatewayKey, bandwidthMbps: 30 },
+            }]
+          : []),
+      ];
+
+  return [
+    ...infrastructure,
+    ...nodes.flatMap((node) =>
+      node.kind === 'switch' && node.nat?.snatEnabled
+        ? [{
+            id: `${node.id}-snat-1`,
+            type: 'snat_entry',
+            provider: 'alibaba_cloud',
+            config: { label: `${node.label} SNAT`, natGatewayKey, sourceZoneKey: node.zoneKey, eipKey: snatEipKey },
+          }]
+        : [],
+    ),
+    ...nodes.flatMap((node) =>
+      node.kind === 'switch'
+        ? (node.nat?.dnatMappings ?? []).map((mapping, index) => ({
+            id: `${mapping.targetHostId}-dnat-${index + 1}`,
+            type: 'dnat_entry',
+            provider: 'alibaba_cloud',
+            config: {
+              label: mapping.key,
+              natGatewayKey,
+              eipKey: dnatEipKey,
+              backendHostKey: mapping.targetHostId,
+              externalPort: mapping.externalPort,
+              internalPort: mapping.internalPort,
+              protocol: mapping.protocol,
+            },
+          }))
+        : [],
+    ),
+  ];
 }
 
 export function applyTemplateChangeset(topologyGraph: ScenarioGraphDraft, changes: TemplateGraphChangeset): ScenarioGraphDraft {

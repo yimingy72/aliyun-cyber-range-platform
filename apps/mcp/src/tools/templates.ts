@@ -1,5 +1,6 @@
 import type { CreateRangeTemplateInput, OperationRequest, UpdateRangeTemplateInput } from '@aliyun-cyber-range/platform-api-client';
 import type { ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime';
+import * as z from 'zod/v4';
 
 import {
   compileTemplateTopology,
@@ -16,6 +17,14 @@ import {
   templateListInputSchema,
   templateUpdateInputSchema,
 } from './template-schemas';
+import {
+  nullableResourceOutputSchema,
+  removedOutputSchema,
+  resourceSchema,
+  resourceListOutputSchema,
+  resourceOutputSchema,
+  resultOutputSchema,
+} from './output-schemas';
 import type { ToolDefinition } from './tool-context';
 
 type TemplateOperation = { idempotencyKey?: string; confirmationId?: string };
@@ -40,6 +49,7 @@ export const templateTools: ToolDefinition[] = [
     requiredScopes: ['templates:read'],
     readOnlyHint: true,
     inputSchema: templateListInputSchema,
+    outputSchema: resourceListOutputSchema,
     async call(context, args) {
       const templates = await context.client.listRangeTemplates((args as { view?: 'platform' | 'mine' }).view ?? 'platform');
       return templates.map(redactTemplateSecrets);
@@ -52,6 +62,7 @@ export const templateTools: ToolDefinition[] = [
     requiredScopes: ['templates:read'],
     readOnlyHint: true,
     inputSchema: templateGetInputSchema,
+    outputSchema: nullableResourceOutputSchema,
     async call(context, args) {
       const template = await context.client.getRangeTemplate((args as { templateId: string }).templateId);
       return template ? redactTemplateSecrets(template) : null;
@@ -63,6 +74,7 @@ export const templateTools: ToolDefinition[] = [
     description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as CreateInput;
       const compiled = compileTemplateTopology(input.topologyGraph, input);
@@ -88,6 +100,7 @@ export const templateTools: ToolDefinition[] = [
     description: '更新前端“编辑信息”可修改的模板名称或描述。拓扑变更必须使用“检测并保存拓扑”，派生编译字段不接受调用方传入。',
     requiredScopes: ['templates:write'],
     inputSchema: templateUpdateInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput & { updates: UpdateRangeTemplateInput };
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
@@ -106,6 +119,7 @@ export const templateTools: ToolDefinition[] = [
     description: '将当前有权限读取的模板复制为一个归当前用户所有、已保存但未发布的可编辑模板。复制不会发布到平台。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCloneInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
       return redactTemplateSecrets(await context.client.cloneRangeTemplate(input.templateId, operation(input)));
@@ -118,6 +132,12 @@ export const templateTools: ToolDefinition[] = [
     requiredScopes: ['templates:write'],
     annotations: { idempotentHint: true },
     inputSchema: templateDetectAndSaveInputSchema,
+    outputSchema: resultOutputSchema(
+      z.object({
+        valid: z.literal(true).describe('拓扑已通过编译校验并保存。'),
+        template: resourceSchema.describe('保存后的靶场模板。'),
+      }),
+    ),
     async call(context, args) {
       const input = args as TemplateWriteInput & {
         topologyGraph: ScenarioGraphDraft;
@@ -144,6 +164,7 @@ export const templateTools: ToolDefinition[] = [
     requiredScopes: ['templates:publish'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
@@ -159,6 +180,7 @@ export const templateTools: ToolDefinition[] = [
     requiredScopes: ['templates:publish'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
@@ -174,6 +196,7 @@ export const templateTools: ToolDefinition[] = [
     requiredScopes: ['templates:delete'],
     annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
+    outputSchema: removedOutputSchema('templateId'),
     async call(context, args) {
       const input = args as TemplateWriteInput;
       await context.client.removeRangeTemplate(input.templateId, operation(input));

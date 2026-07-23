@@ -1,5 +1,4 @@
 import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
-import * as z from 'zod/v4';
 
 import { adminUserTools } from './tools/admin-users';
 import { imageTools } from './tools/images';
@@ -9,10 +8,12 @@ import { settingsTools } from './tools/settings';
 import { singleInstanceTools } from './tools/single-instances';
 import { templateTools } from './tools/templates';
 import type { ToolContext, ToolDefinition } from './tools/tool-context';
+import { resultOutputSchema } from './tools/output-schemas';
 import { toToolResult } from './tools/tool-result';
+import { billingTools } from './tools/billing';
 
-const tools = [...templateTools, ...imageTools, ...rangeTools, ...singleInstanceTools, ...jobTools, ...adminUserTools, ...settingsTools];
-const genericOutputSchema = z.object({}).passthrough();
+const tools = [...imageTools, ...singleInstanceTools, ...templateTools, ...rangeTools, ...adminUserTools, ...billingTools, ...settingsTools, ...jobTools];
+const genericOutputSchema = resultOutputSchema();
 
 export function createToolRegistry(client: PlatformApiClientLike) {
   return {
@@ -44,7 +45,7 @@ export function createToolRegistry(client: PlatformApiClientLike) {
       }
 
       try {
-        const result = await tool.call({ client, scopes: scopeSet } satisfies ToolContext, parsed.data);
+        const result = await tool.call({ client, scopes: scopeSet } satisfies ToolContext, parsed.data as Record<string, unknown>);
         return toToolResult(result);
       } catch (error) {
         if (error instanceof PlatformApiError) {

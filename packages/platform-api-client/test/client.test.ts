@@ -214,4 +214,52 @@ describe('PlatformApiClient', () => {
       matches: [{ instanceTypeId: 'ecs.e-c1m2.large' }],
     });
   });
+
+  it('maps image catalog and billing MCP support requests to the frontend APIs', async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init });
+      const payload =
+        input.includes('/billing/')
+          ? input.includes('/export/')
+            ? 'billingDate,pretaxAmount\n'
+            : input.endsWith('/sync')
+              ? { syncedDays: 1, importedLineItems: 2, anomalyCount: 0, deferredCount: 0 }
+              : { totalPretaxAmount: 12.5 }
+          : input.includes('/image-imports')
+            ? input.endsWith('/retry')
+              ? { id: 'import-1', status: 'importing' }
+              : { items: [{ id: 'import-1', status: 'failed' }] }
+            : { snapshots: [{ id: 'snapshot-1' }], catalogItems: [] };
+
+      return new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
+
+    await expect(client.listImageCatalog('custom')).resolves.toMatchObject({ snapshots: [{ id: 'snapshot-1' }] });
+    await expect(client.syncImageCatalog('public')).resolves.toMatchObject({ snapshots: [{ id: 'snapshot-1' }] });
+    await expect(client.listImageImportJobs()).resolves.toMatchObject({ items: [{ id: 'import-1' }] });
+    await expect(client.retryImageImport('import-1')).resolves.toMatchObject({ id: 'import-1', status: 'importing' });
+    await expect(client.getBillingSummary({ startAt: '2026-07-01', endAt: '2026-07-07' })).resolves.toMatchObject({
+      totalPretaxAmount: 12.5,
+    });
+    await expect(client.syncBilling({ startAt: '2026-07-01', endAt: '2026-07-07' })).resolves.toMatchObject({
+      syncedDays: 1,
+    });
+    await expect(client.exportPlatformBillingCsv({ startAt: '2026-07-01', endAt: '2026-07-07' })).resolves.toBe(
+      'billingDate,pretaxAmount\n',
+    );
+
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ input: 'https://platform.example/admin/image-catalog/custom', init: expect.objectContaining({ method: 'GET' }) }),
+        expect.objectContaining({ input: 'https://platform.example/admin/image-catalog/public/sync', init: expect.objectContaining({ method: 'POST' }) }),
+        expect.objectContaining({ input: 'https://platform.example/admin/image-imports', init: expect.objectContaining({ method: 'GET' }) }),
+        expect.objectContaining({ input: 'https://platform.example/admin/image-imports/import-1/retry', init: expect.objectContaining({ method: 'POST' }) }),
+        expect.objectContaining({ input: 'https://platform.example/admin/billing/summary?startAt=2026-07-01&endAt=2026-07-07', init: expect.objectContaining({ method: 'GET' }) }),
+        expect.objectContaining({ input: 'https://platform.example/admin/billing/sync', init: expect.objectContaining({ method: 'POST' }) }),
+        expect.objectContaining({ input: 'https://platform.example/admin/billing/export/platform.csv?startAt=2026-07-01&endAt=2026-07-07', init: expect.objectContaining({ method: 'GET' }) }),
+      ]),
+    );
+  });
 });
