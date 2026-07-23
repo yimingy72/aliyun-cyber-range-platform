@@ -4294,6 +4294,96 @@ body {
   }
 }
 
+@media (max-width: 640px) {
+  .range-instance-directory-table {
+    border: 0;
+    background: transparent;
+  }
+
+  .range-instance-directory-head {
+    display: none;
+  }
+
+  .range-instance-directory-body {
+    gap: 10px;
+  }
+
+  .range-instance-directory-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  .range-instance-directory-cell {
+    min-height: 0;
+    padding: 10px 12px;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .range-instance-directory-cell:nth-child(odd) {
+    border-right: 1px solid var(--border);
+  }
+
+  .range-instance-directory-cell::before {
+    color: var(--muted-foreground);
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  .range-instance-directory-cell:nth-child(1)::before {
+    content: '实例名';
+  }
+
+  .range-instance-directory-cell:nth-child(2)::before {
+    content: '状态';
+  }
+
+  .range-instance-directory-cell:nth-child(3)::before {
+    content: '镜像信息';
+  }
+
+  .range-instance-directory-cell:nth-child(4)::before {
+    content: 'IP 地址';
+  }
+
+  .range-instance-directory-cell:nth-child(5)::before {
+    content: '账号信息';
+  }
+
+  .range-instance-directory-cell:nth-child(6)::before {
+    content: '有效期';
+  }
+
+  .range-instance-directory-cell:nth-child(7)::before {
+    content: '创建时间';
+  }
+
+  .range-instance-directory-actions {
+    grid-column: 1 / -1;
+    min-height: 0;
+    justify-content: flex-start;
+    border-right: 0 !important;
+    border-bottom: 0;
+  }
+
+  .range-instance-directory-actions::before {
+    content: '操作';
+    width: 100%;
+  }
+
+  .range-instance-directory-actions > span {
+    width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+}
+
 .billing-screen {
   gap: 18px;
 }
