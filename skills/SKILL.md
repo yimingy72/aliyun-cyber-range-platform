@@ -14,6 +14,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶
 - 仅通过 MCP 操作平台资源；不得调用未暴露的替代接口。
 - 不编造资源 ID、scope、实例状态、镜像 ID、规格、密码或服务端默认值；通过最小范围的 `list`/`get` 获取事实。
 - 未获用户明确授权，不创建、修改、发布、销毁、导出或获取凭据；工具可见不等于可越权操作。
+- 创建或替换靶场模板拓扑时，必须先执行 `range-authoring` 的“设计转换 Skill”流程；不得把自然语言设计、`topologySpec`、`scenarioTemplateSpec`、`compiledProvisionSpec` 或 `compiledSpec` 直接作为 MCP 创建参数。
 - 不把“关闭”擅自解释为重启或销毁；必须确认是单实例、批次还是整套编排靶场。
 - 不在摘要、日志、Skill 文件或后续回复中回显密码、Token、SSH/VNC 链接、AccessKey 或凭据 CSV 内容。
 
@@ -32,8 +33,8 @@ description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶
 |---|---|---|---|
 | `image-center` 镜像中心 | 查询、收录、重命名、启停、发布或删除平台镜像 | `platform_image_*` | [image-center.md](./references/products/image-center.md) |
 | `instance-management` 实例管理 | 基于平台镜像创建、查询、控制、打包和销毁独立靶机 | `single_instance_*` | [instance-management.md](./references/products/instance-management.md) |
-| `range-authoring` 靶场编排 | 设计、编辑、检测、发布和共享综合靶场模板 | `range_template_*` | [range-authoring.md](./references/products/range-authoring.md) |
-| `range-instances` 编排实例 | 基于模板启动、查询、访问和销毁整套靶场环境 | `range_instance_*` | [range-instances.md](./references/products/range-instances.md) |
+| `range-authoring` 靶场编排 | 设计转换、创建、检测并保存、发布和取消发布综合靶场模板 | `range_template_*` | [range-authoring.md](./references/products/range-authoring.md) |
+| `range-instances` 编排实例 | 启动、查看、修改、控制、访问和销毁整套靶场环境 | `range_instance_*` | [range-instances.md](./references/products/range-instances.md) |
 | `user-management` 用户管理 | 管理平台用户、角色、状态和密码 | `admin_user_*` | [user-management.md](./references/products/user-management.md) |
 | `billing` 账单费用 | 查看平台费用与成本信息 | 当前未暴露 MCP 工具 | [billing.md](./references/products/billing.md) |
 | `settings` 基础配置 | 查询和更新平台云配置 | `cloud_config_*` | [settings.md](./references/products/settings.md) |
@@ -44,8 +45,8 @@ description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶
 
 - 用户提到“镜像、快照、收录镜像、启用镜像、发布镜像” → `image-center`
 - 用户提到“单台靶机、训练主机、CPU/内存、批量创建、VNC、打包镜像” → `instance-management`
-- 用户提到“拓扑、模板、编排、交换机、ECS 节点、NAT、草稿、发布模板” → `range-authoring`
-- 用户提到“整套靶场、环境、基于模板启动、编排实例、销毁靶场” → `range-instances`
+- 用户提到“拓扑、模板、编排、交换机、ECS 节点、NAT、检测并保存、发布模板” → `range-authoring`
+- 用户提到“整套靶场、环境、基于模板启动、实例拓扑变更、节点开关机、销毁靶场” → `range-instances`
 - 用户提到“平台用户、角色、禁用、重置密码” → `user-management`
 - 用户提到“账单、费用、成本” → `billing`
 - 用户提到“云配置、地域、可用区、AccessKey、基础配置” → `settings`
@@ -68,12 +69,12 @@ description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶
 |---|---|---|
 | 镜像中心 | 收录、重命名、启用/停用、发布/取消发布、删除镜像 | 创建或改变镜像资产的名称、可用性、可见性，或永久删除资产 |
 | 实例管理 | 创建批次、销毁单台/整批、重启、打包镜像、导出 CSV、打开 VNC | 产生云资源、释放资源、改变运行态或暴露凭据 |
-| 靶场编排 | 发布/取消发布、分享/取消分享、删除模板 | 改变平台可见性或删除可复用资产 |
-| 编排实例 | 启动、销毁整套靶场、获取访问凭据 | 产生/释放整套云资源或暴露敏感数据 |
+| 靶场编排 | 发布到平台、取消发布、删除模板 | 改变平台可见性或删除可复用资产 |
+| 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、打包镜像、销毁整套靶场、获取访问凭据 | 创建或改变云资源、模板资产，或暴露敏感数据 |
 | 用户管理 | 创建用户、角色/状态变更、密码重置 | 改变访问权限或身份凭据 |
 | 基础配置 | 更新云配置 | 影响后续所有云资源操作，且可能涉及密钥 |
 
-保存已经由用户明确要求的模板草稿、节点、边或原子 changeset 不需要额外二次确认，但仍必须通过 MCP 校验；模板发布、分享、删除始终属于危险操作。
+保存用户明确要求的完整模板或实例拓扑不需要额外二次确认，但必须通过 MCP 编译校验；发布到平台、取消发布、应用实例变更、同步模板、节点控制、打包镜像和删除始终属于危险操作。
 
 完整确认格式、服务端确认和幂等规则见 [confirmation.md](./references/confirmation.md)。
 

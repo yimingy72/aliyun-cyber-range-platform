@@ -10,6 +10,7 @@ export type ScenarioTemplateMetadata = {
 
 export type ScenarioTemplateTopology = {
   vpcCidr: string;
+  secondaryVpcCidrs?: string[];
   entryHostKey: string;
   defaultRegion?: string;
   defaultZoneId?: string;

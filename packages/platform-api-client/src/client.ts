@@ -17,11 +17,13 @@ import type {
   ProvisionJob,
   RangeAccessPayload,
   RangeInstance,
+  RangeInstanceNodeActionPayload,
   RangeTemplate,
   RangeTemplateView,
   ResetAdminUserPasswordInput,
   SingleInstanceActionPayload,
   SingleInstanceListPayload,
+  SaveRangeInstanceDraftInput,
   UpdateAdminUserRoleInput,
   UpdateAdminUserStatusInput,
   UpdateRangeTemplateInput,
@@ -95,14 +97,6 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   unpublishRangeTemplate(id: string, operation?: OperationRequest) {
     return this.templateAction<RangeTemplate>(id, 'unpublish', operation);
-  }
-
-  shareRangeTemplate(id: string, operation?: OperationRequest) {
-    return this.templateAction<RangeTemplate>(id, 'share', operation);
-  }
-
-  unshareRangeTemplate(id: string, operation?: OperationRequest) {
-    return this.templateAction<RangeTemplate>(id, 'unshare', operation);
   }
 
   async removeRangeTemplate(id: string, operation?: OperationRequest) {
@@ -179,6 +173,62 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {
     return this.request<RangeAccessPayload>(`/admin/ranges/${encodeURIComponent(id)}/access`);
+  }
+
+  saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest) {
+    return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}/draft`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+      operation,
+    });
+  }
+
+  applyRangeInstanceDraft(id: string, operation?: OperationRequest) {
+    return this.request<Record<string, unknown>>(`/admin/ranges/${encodeURIComponent(id)}/apply`, {
+      method: 'POST',
+      body: '{}',
+      operation,
+    });
+  }
+
+  syncRangeInstanceTemplate(id: string, operation?: OperationRequest) {
+    return this.request<RangeTemplate>(`/admin/ranges/${encodeURIComponent(id)}/sync-template`, {
+      method: 'POST',
+      body: '{}',
+      operation,
+    });
+  }
+
+  retryRangeInstance(id: string, operation?: OperationRequest) {
+    return this.request<Record<string, unknown>>(`/admin/ranges/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      body: '{}',
+      operation,
+    });
+  }
+
+  async removeFailedRangeInstance(id: string, operation?: OperationRequest) {
+    await this.request<void>(`/admin/ranges/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      operation,
+    });
+  }
+
+  runRangeInstanceNodeAction(
+    rangeInstanceId: string,
+    nodeId: string,
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+    payload: RangeInstanceNodeActionPayload = {},
+    operation?: OperationRequest,
+  ) {
+    return this.request<Record<string, unknown>>(
+      `/admin/ranges/${encodeURIComponent(rangeInstanceId)}/nodes/${encodeURIComponent(nodeId)}/actions/${action}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        operation,
+      },
+    );
   }
 
   listSingleInstances(view: InstanceView = 'active') {
@@ -333,7 +383,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  private templateAction<T>(id: string, action: 'clone' | 'validate' | 'publish' | 'unpublish' | 'share' | 'unshare', operation?: OperationRequest) {
+  private templateAction<T>(id: string, action: 'clone' | 'validate' | 'publish' | 'unpublish', operation?: OperationRequest) {
     return this.request<T>(`/admin/scenarios/${encodeURIComponent(id)}/${action}`, {
       method: 'POST',
       body: '{}',

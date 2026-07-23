@@ -1,5 +1,7 @@
 import * as z from 'zod/v4';
 
+import { topologyGraphSchema } from './template-schemas';
+
 export const identifier = z.string().trim().min(1);
 export const isoDateTime = z.iso.datetime({ offset: true });
 export const operationSchema = z.object({
@@ -29,6 +31,28 @@ export const rangeLaunchInputSchema = operationSchema.extend({
   expiresAt: isoDateTime,
 });
 export const rangeDestroyInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
+export const rangeRetryInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
+export const rangeDeleteFailedInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
+export const rangeTopologyChangeInputSchema = operationSchema.extend({
+  rangeInstanceId: identifier,
+  topologyGraph: topologyGraphSchema.describe('完整的实例拓扑图。由实例编排转换 Skill 生成；MCP 会自行编译运行规格，不能传派生字段。'),
+  primaryVpcCidr: identifier.optional(),
+  secondaryVpcCidrs: z.array(identifier).max(4).optional(),
+  publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
+});
+const rangeNodeActionFields = {
+  rangeInstanceId: identifier,
+  nodeId: identifier.describe('编排实例详情中 ECS 节点的 ID。'),
+  displayName: z.string().trim().min(1).optional(),
+  defaultHostName: z.string().trim().min(1).optional(),
+  defaultPassword: z.string().min(1).optional().describe('敏感字段，仅在用户明确指定打包镜像默认密码时提供。'),
+  description: z.string().optional(),
+};
+export const rangeNodeActionInputSchema = operationSchema.extend(rangeNodeActionFields);
+export const rangeNodeOpenVncInputSchema = z.object({
+  rangeInstanceId: identifier,
+  nodeId: identifier.describe('编排实例详情中 ECS 节点的 ID。'),
+});
 
 export const singleInstanceListInputSchema = z.object({ view: viewSchema });
 export const singleInstanceIdInputSchema = z.object({ singleInstanceId: identifier });

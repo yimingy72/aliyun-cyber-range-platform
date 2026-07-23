@@ -1,4 +1,5 @@
 import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import * as z from 'zod/v4';
 
 import { adminUserTools } from './tools/admin-users';
 import { imageTools } from './tools/images';
@@ -11,6 +12,7 @@ import type { ToolContext, ToolDefinition } from './tools/tool-context';
 import { toToolResult } from './tools/tool-result';
 
 const tools = [...templateTools, ...imageTools, ...rangeTools, ...singleInstanceTools, ...jobTools, ...adminUserTools, ...settingsTools];
+const genericOutputSchema = z.object({}).passthrough();
 
 export function createToolRegistry(client: PlatformApiClientLike) {
   return {
@@ -32,8 +34,17 @@ export function createToolRegistry(client: PlatformApiClientLike) {
         throw new Error(`Forbidden tool: ${name}`);
       }
 
+      const parsed = tool.inputSchema.safeParse(args);
+
+      if (!parsed.success) {
+        const details = parsed.error.issues
+          .map((issue) => `${issue.path.join('.') || 'input'}: ${issue.message}`)
+          .join('; ');
+        throw new Error(`Invalid input for ${name}: ${details}`);
+      }
+
       try {
-        const result = await tool.call({ client, scopes: scopeSet } satisfies ToolContext, args);
+        const result = await tool.call({ client, scopes: scopeSet } satisfies ToolContext, parsed.data);
         return toToolResult(result);
       } catch (error) {
         if (error instanceof PlatformApiError) {
@@ -58,11 +69,16 @@ function canAccess(tool: ToolDefinition, scopes: Set<string>) {
 function describe(tool: ToolDefinition) {
   return {
     name: tool.name,
+    title: tool.title ?? tool.name,
     description: tool.description,
     annotations: {
       readOnlyHint: tool.readOnlyHint === true,
+      destructiveHint: tool.annotations?.destructiveHint ?? false,
+      idempotentHint: tool.annotations?.idempotentHint ?? tool.readOnlyHint === true,
+      openWorldHint: tool.annotations?.openWorldHint ?? false,
     },
     requiredScopes: tool.requiredScopes,
     inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema ?? genericOutputSchema,
   };
 }

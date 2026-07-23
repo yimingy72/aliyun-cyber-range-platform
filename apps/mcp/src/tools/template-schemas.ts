@@ -56,17 +56,6 @@ const ecsNodeSchema = z.object({
 }).passthrough();
 
 const templateNodeSchema = z.union([routerNodeSchema, switchNodeSchema, ecsNodeSchema]);
-const templateNodePatchSchema = z.object({
-  label: identifier.optional(),
-  zoneKey: identifier.optional(),
-  role: identifier.optional(),
-  privateIp: identifier.optional(),
-  exposePublic: z.boolean().optional(),
-  image: identifier.optional(),
-  nics: z.array(nicSchema).min(1).optional(),
-  customPassword: z.string().optional(),
-  position: positionSchema.optional(),
-}).passthrough().refine((patch) => Object.keys(patch).length > 0, 'patch must contain at least one field');
 
 export const templateEdgeSchema = z.object({
   id: identifier,
@@ -89,7 +78,9 @@ const templateMetadataSchema = z.object({
   cloudProvider: z.literal('alibaba_cloud'),
   iacType: z.enum(['opentofu', 'terraform']),
   modulePathOrRef: identifier,
-  vpcCidr: identifier.optional(),
+  primaryVpcCidr: identifier.optional().describe('Primary IPv4 CIDR used to create the VPC.'),
+  secondaryVpcCidrs: z.array(identifier).max(4).optional().describe('Additional, non-overlapping IPv4 CIDRs attached to the same VPC.'),
+  vpcCidr: identifier.optional().describe('Deprecated alias for primaryVpcCidr.'),
   defaultRegion: identifier.optional(),
   defaultZoneId: identifier.optional(),
   publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
@@ -104,39 +95,26 @@ export const templateCreateInputSchema = operationSchema.extend({
   variableSchema: optionalRecord,
   outputSchema: optionalRecord,
   defaultNetworkPolicy: optionalRecord,
-});
+}).strict();
 export const templateUpdateInputSchema = templateWriteSchema.extend({
   updates: z.object({
-    ...templateMetadataSchema.partial().shape,
-    topologyGraph: topologyGraphSchema.optional(),
+    name: identifier.optional(),
+    slug: identifier.optional(),
+    version: identifier.optional(),
+    description: z.string().optional(),
+    cloudProvider: z.literal('alibaba_cloud').optional(),
+    iacType: z.enum(['opentofu', 'terraform']).optional(),
+    modulePathOrRef: identifier.optional(),
+    defaultRegion: identifier.optional(),
+    defaultZoneId: identifier.optional(),
     variableSchema: optionalRecord,
     outputSchema: optionalRecord,
     defaultNetworkPolicy: optionalRecord,
   }).strict(),
 });
 export const templateCloneInputSchema = templateWriteSchema;
-export const templateValidateInputSchema = templateWriteSchema;
-export const templateDetectInputSchema = operationSchema.extend({
-  templateId: identifier.optional(),
-  topologyGraph: topologyGraphSchema.optional(),
+export const templateDetectAndSaveInputSchema = templateWriteSchema.extend({
+  topologyGraph: topologyGraphSchema.describe('待保存的完整拓扑图。必须由设计转换 Skill 产出，且包含 Router、交换机、ECS、NIC 与实际连线。'),
   ...templateMetadataSchema.partial().shape,
-}).refine((input) => Boolean(input.templateId || input.topologyGraph), 'templateId or topologyGraph is required');
-export const templateNodeAddInputSchema = templateWriteSchema.extend({ node: templateNodeSchema });
-export const templateNodeUpdateInputSchema = templateWriteSchema.extend({ nodeId: identifier, patch: templateNodePatchSchema });
-export const templateNodeRemoveInputSchema = templateWriteSchema.extend({ nodeId: identifier });
-export const templateEdgeAddInputSchema = templateWriteSchema.extend({ edge: templateEdgeSchema });
-export const templateEdgeRemoveInputSchema = templateWriteSchema.extend({ edgeId: identifier });
-export const templateChangesetInputSchema = templateWriteSchema.extend({
-  changes: z.array(
-    z.union([
-      z.object({ op: z.literal('add-node'), node: templateNodeSchema }),
-      z.object({ op: z.literal('update-node'), nodeId: identifier, patch: templateNodePatchSchema }),
-      z.object({ op: z.literal('remove-node'), nodeId: identifier }),
-      z.object({ op: z.literal('add-edge'), edge: templateEdgeSchema }),
-      z.object({ op: z.literal('remove-edge'), edgeId: identifier }),
-    ]),
-  ).min(1),
-  vpcCidr: identifier.optional(),
-  publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
 });
 export const templateLifecycleInputSchema = templateWriteSchema;

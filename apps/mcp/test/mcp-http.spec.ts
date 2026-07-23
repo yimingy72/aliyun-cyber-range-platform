@@ -21,8 +21,6 @@ function createClientStub(): ClientStub {
     validateRangeTemplate: vi.fn().mockResolvedValue({ valid: true }),
     publishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     unpublishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
-    shareRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
-    unshareRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),

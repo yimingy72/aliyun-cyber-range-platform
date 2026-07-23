@@ -111,6 +111,7 @@ export type EnterpriseProvisionPlan = {
   };
   network: {
     vpcCidr: string;
+    secondaryVpcCidrs: string[];
     dmzCidr: string;
     officeCidr: string;
     serverCidr: string;
@@ -233,6 +234,7 @@ export function buildEnterpriseProvisionPlan(input: {
     resolveVpcCidr(topologySpec, input.compiledProvisionSpec, input.compiledSpec),
     'topologySpec.vpcCidr',
   );
+  const secondaryVpcCidrs = resolveSecondaryVpcCidrs(input.compiledProvisionSpec);
 
   if (input.allocatedCidr && input.allocatedCidr !== vpcCidr) {
     throw new Error(
@@ -282,6 +284,7 @@ export function buildEnterpriseProvisionPlan(input: {
     },
     network: {
       vpcCidr,
+      secondaryVpcCidrs,
       dmzCidr: compatibilityZones.dmz.cidr,
       officeCidr: compatibilityZones.office.cidr,
       serverCidr: compatibilityZones.server.cidr,
@@ -457,6 +460,16 @@ function resolveVpcCidr(
 ) {
   const topology = readRecord(compiledProvisionSpec?.topology);
   return topologySpec.vpcCidr || (typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : '') || compiledSpec?.topology?.vpcCidr || '';
+}
+
+function resolveSecondaryVpcCidrs(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
+  const topology = readRecord(compiledProvisionSpec?.topology);
+
+  return [...new Set(
+    readArray(topology?.secondaryVpcCidrs).filter(
+      (cidr): cidr is string => typeof cidr === 'string' && cidr.trim().length > 0,
+    ),
+  )];
 }
 
 function isCompiledHostResource(resource: CompiledResource): resource is CompiledHostResource {

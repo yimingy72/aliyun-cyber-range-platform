@@ -31,8 +31,8 @@
 
 `platform_image_collect`、`platform_image_rename`、`platform_image_enable`、`platform_image_disable`、`platform_image_publish`、`platform_image_unpublish` 和 `platform_image_remove` 都是危险操作。每一项均先取得用户确认；服务端返回确认要求时再走本文件的二阶段调用。
 
-## 草稿与拓扑编辑
+## 拓扑编辑与编排实例
 
-用户明确要求创建或编辑模板草稿时，`range_template_create`、`range_template_update`、节点/边工具和 `range_template_changeset_apply` 不额外要求人工二次确认；但 MCP 必须通过完整拓扑二次校验后才会保存。
+用户明确要求创建模板、编辑模板信息、检测并保存模板拓扑或保存实例拓扑时，`range_template_create`、`range_template_update`、`range_template_topology_detect_and_save`、`range_instance_topology_save` 不额外要求人工二次确认；但 MCP 必须通过完整拓扑编译校验后才会保存。
 
-发布、取消发布、分享、取消分享和删除模板始终需要危险操作确认。删除连线会同步移除对应 ECS NIC，属于网络变更，执行前必须在摘要中说明。
+发布到平台、取消发布、删除模板、应用实例变更、同步实例配置回模板、实例重试、节点开机/关机/重启、打包镜像、销毁实例、删除创建失败记录始终需要危险操作确认。VNC 与访问凭据不改变资源状态，但必须符合敏感输出规则。

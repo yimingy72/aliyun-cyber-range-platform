@@ -13,6 +13,7 @@ export type CompiledProvisionSpec = {
   };
   topology: {
     vpcCidr: string;
+    secondaryVpcCidrs?: string[];
     entryHostKey: string;
   };
   networkZones: CompiledNetworkZone[];

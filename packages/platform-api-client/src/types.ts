@@ -70,6 +70,19 @@ export type LaunchRangeInput = {
   expiresAt: string;
 };
 
+export type SaveRangeInstanceDraftInput = {
+  draftTopologyGraph: Record<string, unknown>;
+  draftScenarioTemplateSpec: Record<string, unknown>;
+  draftCompiledProvisionSpec: Record<string, unknown>;
+};
+
+export type RangeInstanceNodeActionPayload = {
+  displayName?: string;
+  defaultHostName?: string;
+  defaultPassword?: string;
+  description?: string;
+};
+
 export type LaunchSingleInstancesInput = {
   name: string;
   hostName?: string;
@@ -122,8 +135,6 @@ export type PlatformApiClientLike = {
   validateRangeTemplate(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
   publishRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
   unpublishRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
-  shareRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
-  unshareRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
   removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;
@@ -136,6 +147,18 @@ export type PlatformApiClientLike = {
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
   getRangeInstance(id: string): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
+  saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
+  applyRangeInstanceDraft(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
+  syncRangeInstanceTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  retryRangeInstance(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
+  removeFailedRangeInstance(id: string, operation?: OperationRequest): Promise<void>;
+  runRangeInstanceNodeAction(
+    rangeInstanceId: string,
+    nodeId: string,
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+    payload?: RangeInstanceNodeActionPayload,
+    operation?: OperationRequest,
+  ): Promise<Record<string, unknown>>;
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;

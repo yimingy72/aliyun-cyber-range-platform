@@ -10,7 +10,10 @@ export type PlatformScope =
   | 'images:write'
   | 'ranges:read'
   | 'ranges:create'
+  | 'ranges:write'
+  | 'ranges:control'
   | 'ranges:destroy'
+  | 'ranges:delete'
   | 'instances:read'
   | 'instances:create'
   | 'instances:destroy'
@@ -29,9 +32,16 @@ export type ToolContext = {
 
 export type ToolDefinition<TArgs = Record<string, unknown>> = {
   name: string;
+  title?: string;
   description: string;
   requiredScopes: PlatformScope[];
   readOnlyHint?: boolean;
+  annotations?: {
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   inputSchema: z.ZodType;
+  outputSchema?: z.ZodType;
   call(context: ToolContext, args: TArgs): Promise<unknown>;
 };

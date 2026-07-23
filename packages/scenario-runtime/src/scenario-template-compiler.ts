@@ -28,6 +28,9 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
     },
     topology: {
       vpcCidr: template.topology.vpcCidr,
+      ...(template.topology.secondaryVpcCidrs?.length
+        ? { secondaryVpcCidrs: template.topology.secondaryVpcCidrs }
+        : {}),
       entryHostKey: template.topology.entryHostKey,
     },
     networkZones: template.networkZones.map((zone) => ({

@@ -4,15 +4,15 @@
 
 ## 敏感工具
 
-- 对资源创建者或管理员，`single_instance_list`、`single_instance_get` 与 `range_instance_get` 在各自 read scope 下也可能返回其自身实例的运行时凭据或访问入口；这不改变其 scope，但返回值必须按秘密处理。
 - `range_instance_get_access`
+- `range_instance_node_open_vnc`
 - `single_instance_get_access`
 - `single_instance_open_vnc`
 - `single_instance_batch_export_csv`
-- 返回或接收默认密码时的 `single_instance_pack_image`
+- 返回或接收默认密码时的 `single_instance_pack_image`、`range_instance_node_pack_image`
 - `admin_user_create` 和 `admin_user_reset_password`
 - `cloud_config_update`
-- `range_template_get`、`range_template_topology_detect` 和模板写操作不会回显 `customPassword`；不要把这个字段当作可读取的访问数据。
+- `range_template_get`、`range_template_topology_detect_and_save` 和模板写操作不会回显 `customPassword`；`range_instance_get` 也会移除运行凭据。不要把这些字段当作可读取的访问数据。
 
 ## 规则
 

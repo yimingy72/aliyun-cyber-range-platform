@@ -73,8 +73,6 @@ function createClientStub(): ClientStub {
     validateRangeTemplate: vi.fn().mockResolvedValue({ valid: true }),
     publishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     unpublishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
-    shareRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
-    unshareRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),
@@ -87,6 +85,12 @@ function createClientStub(): ClientStub {
     listRangeInstances: vi.fn().mockResolvedValue([{ id: 'range-1' }]),
     getRangeInstance: vi.fn().mockResolvedValue({ id: 'range-1' }),
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
+    saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
+    applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
+    retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    removeFailedRangeInstance: vi.fn().mockResolvedValue(undefined),
+    runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [{ batch: { id: 'batch-1', name: 'batch-a' }, instances: [{ id: 'ins-1', name: 'ins-1', accessEntry: { publicIp: '1.1.1.1' }, runtimeCredentials: { 'single-ecs-1': { username: 'root', password: 'secret' } }, singleInstanceConfig: { hostKey: 'single-ecs-1', imageDisplayName: 'Ubuntu 24.04' } }] }], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
     getSingleInstanceAccess: vi.fn().mockResolvedValue({ runtimeCredentials: {} }),
@@ -121,6 +125,50 @@ function createClientStub(): ClientStub {
 }
 
 describe('tool registry', () => {
+  it('publishes every template orchestration tool with a complete MCP definition', () => {
+    const registry = createToolRegistry(createClientStub());
+    const tools = registry.listTools([
+      'templates:read',
+      'templates:write',
+      'templates:publish',
+      'templates:delete',
+    ]);
+    const expectedNames = [
+      'range_template_list',
+      'range_template_get',
+      'range_template_create',
+      'range_template_update',
+      'range_template_clone',
+      'range_template_topology_detect_and_save',
+      'range_template_publish',
+      'range_template_unpublish',
+      'range_template_delete',
+    ];
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(expectedNames));
+
+    for (const name of expectedNames) {
+      const tool = tools.find((item) => item.name === name) as Record<string, unknown> | undefined;
+
+      expect(tool).toMatchObject({
+        name,
+        title: expect.any(String),
+        description: expect.any(String),
+        inputSchema: expect.anything(),
+        outputSchema: expect.anything(),
+        annotations: expect.any(Object),
+      });
+    }
+
+    expect(tools.find((tool) => tool.name === 'range_template_list')?.annotations).toMatchObject({
+      readOnlyHint: true,
+    });
+    expect(tools.find((tool) => tool.name === 'range_template_delete')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
+  });
+
   it('exposes template authoring tools only with the matching write scope', () => {
     const registry = createToolRegistry(createClientStub());
 
@@ -130,15 +178,91 @@ describe('tool registry', () => {
       expect.arrayContaining([
         'range_template_create',
         'range_template_update',
-        'range_template_node_add',
-        'range_template_node_update',
-        'range_template_node_remove',
-        'range_template_edge_add',
-        'range_template_edge_remove',
-        'range_template_changeset_apply',
-        'range_template_topology_detect',
-        'range_template_validate',
+        'range_template_topology_detect_and_save',
       ]),
+    );
+  });
+
+  it('publishes every front-end range-instance operation as a complete MCP tool', () => {
+    const registry = createToolRegistry(createClientStub());
+    const tools = registry.listTools([
+      'ranges:read',
+      'ranges:create',
+      'ranges:write',
+      'ranges:control',
+      'ranges:destroy',
+      'ranges:delete',
+      'instances:credentials:read',
+      'templates:write',
+      'images:write',
+    ]);
+    const expectedNames = [
+      'range_instance_list',
+      'range_instance_get',
+      'range_instance_get_access',
+      'range_instance_launch',
+      'range_instance_topology_save',
+      'range_instance_topology_apply',
+      'range_instance_sync_template',
+      'range_instance_retry',
+      'range_instance_node_start',
+      'range_instance_node_stop',
+      'range_instance_node_reboot',
+      'range_instance_node_open_vnc',
+      'range_instance_node_pack_image',
+      'range_instance_destroy',
+      'range_instance_delete_failed',
+    ];
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(expectedNames));
+
+    for (const name of expectedNames) {
+      expect(tools.find((tool) => tool.name === name)).toMatchObject({
+        name,
+        title: expect.any(String),
+        description: expect.any(String),
+        inputSchema: expect.anything(),
+        outputSchema: expect.anything(),
+        annotations: expect.any(Object),
+      });
+    }
+  });
+
+  it('compiles complete instance topology before saving a range-instance change', async () => {
+    const client = createClientStub();
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'range-1',
+      name: 'Web DMZ 练习环境',
+      runtimeScenarioTemplateSpec: {
+        metadata: {
+          name: 'Web DMZ',
+          slug: 'web-dmz',
+          version: '1.0.0',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: {
+          vpcCidr: '10.0.0.0/16',
+        },
+      },
+    });
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('range_instance_topology_save', ['ranges:write'], {
+      rangeInstanceId: 'range-1',
+      topologyGraph: authoringGraph,
+    });
+
+    expect(client.saveRangeInstanceDraft).toHaveBeenCalledWith(
+      'range-1',
+      expect.objectContaining({
+        draftTopologyGraph: authoringGraph,
+        draftScenarioTemplateSpec: expect.objectContaining({
+          metadata: expect.objectContaining({ slug: 'web-dmz' }),
+        }),
+        draftCompiledProvisionSpec: expect.any(Object),
+      }),
+      { idempotencyKey: undefined, confirmationId: undefined },
     );
   });
 
@@ -160,6 +284,116 @@ describe('tool registry', () => {
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
+  });
+
+  it('detects and saves a complete topology only after compilation succeeds', async () => {
+    const client = createClientStub();
+    (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(createAuthoringTemplate());
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
+      templateId: 'tpl-1',
+      topologyGraph: authoringGraph,
+    });
+
+    expect(client.updateRangeTemplate).toHaveBeenCalledWith(
+      'tpl-1',
+      expect.objectContaining({
+        topologyGraph: authoringGraph,
+        topologySpec: expect.objectContaining({
+          publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'ssh', port: 22 }, { protocol: 'http', port: 80 }] },
+        }),
+        scenarioTemplateSpec: expect.any(Object),
+        compiledProvisionSpec: expect.any(Object),
+      }),
+      { idempotencyKey: undefined, confirmationId: undefined },
+    );
+    expect(client.validateRangeTemplate).toHaveBeenCalledWith(
+      'tpl-1',
+      { idempotencyKey: undefined, confirmationId: undefined },
+    );
+  });
+
+  it('compiles vSwitches from primary and secondary VPC CIDRs before creation', async () => {
+    const client = createClientStub();
+    const graph = structuredClone(authoringGraph);
+    graph.nodes.push(
+      {
+        id: 'switch-office', kind: 'switch', label: '办公网', zoneKey: 'office', cidr: '192.168.0.0/24', purpose: 'office',
+        nat: { snatEnabled: true, dnatMappings: [] }, aclRules: [],
+      },
+      {
+        id: 'switch-server', kind: 'switch', label: '服务网', zoneKey: 'server', cidr: '172.16.0.0/24', purpose: 'server',
+        nat: { snatEnabled: true, dnatMappings: [] }, aclRules: [],
+      },
+      {
+        id: 'ecs-office', kind: 'ecs', label: '办公主机', zoneKey: 'office', role: 'workstation', privateIp: '192.168.0.10', exposePublic: false,
+        image: 'img-nginx', dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
+        imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
+        nics: [{ id: 'nic-office', switchId: 'switch-office', privateIp: '192.168.0.10', secondaryIps: [], securityGroupRules: [] }],
+      },
+      {
+        id: 'ecs-server', kind: 'ecs', label: '服务主机', zoneKey: 'server', role: 'server', privateIp: '172.16.0.10', exposePublic: false,
+        image: 'img-nginx', dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
+        imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
+        nics: [{ id: 'nic-server', switchId: 'switch-server', privateIp: '172.16.0.10', secondaryIps: [], securityGroupRules: [] }],
+      },
+    );
+    graph.edges.push(
+      { id: 'router-to-switch-office', fromNodeId: 'router-main', toNodeId: 'switch-office', relationType: 'manual' },
+      { id: 'router-to-switch-server', fromNodeId: 'router-main', toNodeId: 'switch-server', relationType: 'manual' },
+      { id: 'switch-office-to-ecs-office', fromNodeId: 'switch-office', toNodeId: 'ecs-office', relationType: 'manual' },
+      { id: 'switch-server-to-ecs-server', fromNodeId: 'switch-server', toNodeId: 'ecs-server', relationType: 'manual' },
+    );
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('range_template_create', ['templates:write'], {
+      name: '三网段靶场',
+      slug: 'three-zone-range',
+      version: 'v1',
+      cloudProvider: 'alibaba_cloud',
+      iacType: 'opentofu',
+      modulePathOrRef: 'modules/enterprise-range',
+      primaryVpcCidr: '10.0.0.0/16',
+      secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
+      topologyGraph: graph,
+    });
+
+    expect(client.createRangeTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topologySpec: expect.objectContaining({ vpcCidr: '10.0.0.0/16' }),
+        scenarioTemplateSpec: expect.objectContaining({
+          topology: expect.objectContaining({
+            secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
+          }),
+        }),
+        compiledProvisionSpec: expect.objectContaining({
+          topology: expect.objectContaining({
+            secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
+          }),
+        }),
+      }),
+      { idempotencyKey: undefined, confirmationId: undefined },
+    );
+  });
+
+  it('rejects caller-supplied compiled artifacts during template creation', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: 'Web DMZ',
+        slug: 'web-dmz',
+        version: '1.0.0',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+        modulePathOrRef: 'modules/enterprise-range',
+        topologyGraph: authoringGraph,
+        compiledProvisionSpec: { forged: true },
+      }),
+    ).rejects.toThrow('compiledProvisionSpec');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
   it('normalizes the documented minimum topology graph before creation', async () => {
@@ -217,40 +451,6 @@ describe('tool registry', () => {
         modulePathOrRef: 'modules/enterprise-range', topologyGraph: graph,
       }),
     ).rejects.toThrow('交换机缺少 Router 连线：switch-dmz');
-  });
-
-  it('preserves VPC and public-entry protocols when a node change recompiles a template', async () => {
-    const graph = structuredClone(authoringGraph);
-    const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz')!;
-    const hostNode = graph.nodes.find((node) => node.id === 'ecs-nginx')!;
-    if (switchNode.kind === 'switch') switchNode.cidr = '10.48.0.0/24';
-    if (hostNode.kind === 'ecs') {
-      hostNode.privateIp = '10.48.0.10';
-      hostNode.nics![0]!.privateIp = '10.48.0.10';
-    }
-    const client = createClientStub();
-    (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(
-      createAuthoringTemplate(graph, {
-        vpcCidr: '10.48.0.0/16',
-        publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'rdp', port: 3389 }] },
-      }),
-    );
-    const registry = createToolRegistry(client);
-
-    await registry.callTool('range_template_node_update', ['templates:write'], {
-      templateId: 'tpl-1', nodeId: 'ecs-nginx', patch: { label: '入口 Windows' },
-    });
-
-    expect(client.updateRangeTemplate).toHaveBeenCalledWith(
-      'tpl-1',
-      expect.objectContaining({
-        topologySpec: expect.objectContaining({
-          vpcCidr: '10.48.0.0/16',
-          publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'rdp', port: 3389 }] },
-        }),
-      }),
-      { idempotencyKey: undefined, confirmationId: undefined },
-    );
   });
 
   it('rejects a NIC IP outside its linked switch CIDR before creating a template', async () => {
@@ -358,67 +558,6 @@ describe('tool registry', () => {
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
-  it('applies a changeset in memory and sends one compiled template update', async () => {
-    const client = createClientStub();
-    (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'tpl-1', name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-      modulePathOrRef: 'modules/enterprise-range', topologyGraph: authoringGraph,
-    });
-    const registry = createToolRegistry(client);
-
-    await registry.callTool('range_template_changeset_apply', ['templates:write'], {
-      templateId: 'tpl-1',
-      changes: [{ op: 'update-node', nodeId: 'ecs-nginx', patch: { label: '入口 Nginx' } }],
-    });
-
-    expect(client.updateRangeTemplate).toHaveBeenCalledTimes(1);
-    expect(client.updateRangeTemplate).toHaveBeenCalledWith(
-      'tpl-1',
-      expect.objectContaining({ topologyGraph: expect.objectContaining({ nodes: expect.arrayContaining([expect.objectContaining({ id: 'ecs-nginx', label: '入口 Nginx' })]) }) }),
-      { idempotencyKey: undefined, confirmationId: undefined },
-    );
-  });
-
-  it('removes the matching NIC when an ECS-to-switch edge is removed', async () => {
-    const client = createClientStub();
-    const graph = structuredClone(authoringGraph);
-    graph.nodes.push({
-      id: 'switch-internal', kind: 'switch', label: 'Internal switch', zoneKey: 'internal', cidr: '10.0.1.0/24', purpose: 'internal',
-      nat: { snatEnabled: false, dnatMappings: [] }, aclRules: [],
-    });
-    const host = graph.nodes.find((node) => node.id === 'ecs-nginx')!;
-
-    if (host.kind !== 'ecs') {
-      throw new Error('Expected an ECS node');
-    }
-
-    host.nics!.push({ id: 'nic-internal', switchId: 'switch-internal', privateIp: '10.0.1.10', secondaryIps: [], securityGroupRules: [] });
-    graph.edges.push({ id: 'router-to-switch-internal', fromNodeId: 'router-main', toNodeId: 'switch-internal', relationType: 'manual' });
-    graph.edges.push({ id: 'switch-internal-to-nginx', fromNodeId: 'switch-internal', toNodeId: 'ecs-nginx', relationType: 'manual' });
-    (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(createAuthoringTemplate(graph));
-    const registry = createToolRegistry(client);
-
-    await registry.callTool('range_template_edge_remove', ['templates:write'], {
-      templateId: 'tpl-1',
-      edgeId: 'switch-internal-to-nginx',
-    });
-
-    expect(client.updateRangeTemplate).toHaveBeenCalledWith(
-      'tpl-1',
-      expect.objectContaining({
-        topologyGraph: expect.objectContaining({
-          nodes: expect.arrayContaining([
-            expect.objectContaining({
-              id: 'ecs-nginx',
-              nics: [expect.objectContaining({ id: 'nic-nginx', switchId: 'switch-dmz' })],
-            }),
-          ]),
-        }),
-      }),
-      { idempotencyKey: undefined, confirmationId: undefined },
-    );
-  });
-
   it('redacts template custom passwords from a read-only MCP response', async () => {
     const client = createClientStub();
     const graph = structuredClone(authoringGraph);
@@ -438,7 +577,7 @@ describe('tool registry', () => {
     expect(JSON.stringify(result)).not.toContain('customPassword');
   });
 
-  it('redacts custom passwords from topology detection results', async () => {
+  it('redacts custom passwords from detection-and-save results', async () => {
     const graph = structuredClone(authoringGraph);
     const host = graph.nodes.find((node) => node.id === 'ecs-nginx')!;
 
@@ -447,11 +586,13 @@ describe('tool registry', () => {
     }
 
     host.customPassword = 'SecretPass123!';
-    const registry = createToolRegistry(createClientStub());
+    const client = createClientStub();
+    (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(createAuthoringTemplate(graph));
+    const registry = createToolRegistry(client);
 
-    const result = await registry.callTool('range_template_topology_detect', ['templates:write'], {
-      name: 'Web DMZ', slug: 'web-dmz', version: '1.0.0', cloudProvider: 'alibaba_cloud', iacType: 'opentofu',
-      modulePathOrRef: 'modules/enterprise-range', topologyGraph: graph,
+    const result = await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
+      templateId: 'tpl-1',
+      topologyGraph: graph,
     });
 
     expect(JSON.stringify(result)).not.toContain('SecretPass123!');
@@ -471,9 +612,9 @@ describe('tool registry', () => {
     (client.getRangeTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(createAuthoringTemplate(storedGraph));
     const registry = createToolRegistry(client);
 
-    await registry.callTool('range_template_update', ['templates:write'], {
+    await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
       templateId: 'tpl-1',
-      updates: { topologyGraph: structuredClone(authoringGraph) },
+      topologyGraph: structuredClone(authoringGraph),
     });
 
     expect(client.updateRangeTemplate).toHaveBeenCalledWith(
@@ -487,34 +628,26 @@ describe('tool registry', () => {
     );
   });
 
-  it('publishes structured schemas for topology authoring tools', () => {
+  it('publishes structured schemas for the frontend template workflows', () => {
     const registry = createToolRegistry(createClientStub());
     const tools = registry.listTools(['templates:write']);
     const create = tools.find((tool) => tool.name === 'range_template_create');
     const update = tools.find((tool) => tool.name === 'range_template_update');
-    const nodeAdd = tools.find((tool) => tool.name === 'range_template_node_add');
-    const edgeAdd = tools.find((tool) => tool.name === 'range_template_edge_add');
-    const changeset = tools.find((tool) => tool.name === 'range_template_changeset_apply');
-    const detect = tools.find((tool) => tool.name === 'range_template_topology_detect');
+    const detectAndSave = tools.find((tool) => tool.name === 'range_template_topology_detect_and_save');
 
     expect(create?.inputSchema).toBeDefined();
-    expect(nodeAdd?.inputSchema).toBeDefined();
-    expect(edgeAdd?.inputSchema).toBeDefined();
-    expect(changeset?.inputSchema).toBeDefined();
-    expect(detect?.inputSchema).toBeDefined();
+    expect(update?.inputSchema).toBeDefined();
+    expect(detectAndSave?.inputSchema).toBeDefined();
     expect(create?.inputSchema?.safeParse({ name: 'only-a-name' }).success).toBe(false);
     expect(update?.inputSchema?.safeParse({ templateId: 'tpl-1', updates: { compiledProvisionSpec: { forged: true } } }).success).toBe(false);
-    expect(nodeAdd?.inputSchema?.safeParse({ templateId: 'tpl-1' }).success).toBe(false);
-    expect(edgeAdd?.inputSchema?.safeParse({ templateId: 'tpl-1' }).success).toBe(false);
-    expect(changeset?.inputSchema?.safeParse({ templateId: 'tpl-1' }).success).toBe(false);
-    expect(detect?.inputSchema?.safeParse({}).success).toBe(false);
+    expect(detectAndSave?.inputSchema?.safeParse({ templateId: 'tpl-1' }).success).toBe(false);
   });
 
   it('publishes a structured input schema for every exposed tool', () => {
     const registry = createToolRegistry(createClientStub());
     const scopes = [
       'templates:read', 'templates:write', 'templates:publish', 'templates:delete',
-      'images:read', 'images:write', 'ranges:read', 'ranges:create', 'ranges:destroy',
+      'images:read', 'images:write', 'ranges:read', 'ranges:create', 'ranges:write', 'ranges:control', 'ranges:destroy', 'ranges:delete',
       'instances:read', 'instances:create', 'instances:destroy', 'instances:control', 'instances:credentials:read',
       'jobs:read', 'users:read', 'users:write', 'settings:read', 'settings:write',
     ];
@@ -530,7 +663,7 @@ describe('tool registry', () => {
         templateId: 'tpl-1',
         updates: { compiledProvisionSpec: { forged: true } },
       }),
-    ).rejects.toThrow('compiledProvisionSpec 由 MCP 从 topologyGraph 自动生成');
+    ).rejects.toThrow('compiledProvisionSpec');
   });
 
   it('filters tools by scopes', () => {

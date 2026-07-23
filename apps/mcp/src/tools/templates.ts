@@ -1,29 +1,20 @@
 import type { CreateRangeTemplateInput, OperationRequest, UpdateRangeTemplateInput } from '@aliyun-cyber-range/platform-api-client';
-import type { ScenarioGraphDraft, ScenarioGraphEdge, TemplateNode } from '@aliyun-cyber-range/scenario-runtime';
+import type { ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime';
 
 import {
-  applyTemplateChangeset,
   compileTemplateTopology,
   graphFromTemplate,
   metadataFromTemplate,
   type TemplateAuthoringMetadata,
-  type TemplateGraphChangeset,
 } from './template-authoring';
 import {
-  templateChangesetInputSchema,
   templateCloneInputSchema,
   templateCreateInputSchema,
-  templateDetectInputSchema,
-  templateEdgeAddInputSchema,
-  templateEdgeRemoveInputSchema,
+  templateDetectAndSaveInputSchema,
   templateGetInputSchema,
   templateLifecycleInputSchema,
   templateListInputSchema,
-  templateNodeAddInputSchema,
-  templateNodeRemoveInputSchema,
-  templateNodeUpdateInputSchema,
   templateUpdateInputSchema,
-  templateValidateInputSchema,
 } from './template-schemas';
 import type { ToolDefinition } from './tool-context';
 
@@ -44,7 +35,8 @@ const operation = (input: TemplateOperation): OperationRequest => ({
 export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_list',
-    description: 'List published or owned range templates.',
+    title: '查询靶场模板',
+    description: '查询当前有权限查看的靶场模板。view=platform 仅返回已发布到平台且可供使用的模板；view=mine 返回当前用户拥有的可编辑模板。',
     requiredScopes: ['templates:read'],
     readOnlyHint: true,
     inputSchema: templateListInputSchema,
@@ -55,7 +47,8 @@ export const templateTools: ToolDefinition[] = [
   },
   {
     name: 'range_template_get',
-    description: 'Get a range template, including the owner draft topology graph when authorized.',
+    title: '获取靶场模板详情',
+    description: '获取单个靶场模板及其拓扑。密码等敏感字段会被脱敏；读取结果不可直接作为写入参数回传。',
     requiredScopes: ['templates:read'],
     readOnlyHint: true,
     inputSchema: templateGetInputSchema,
@@ -66,7 +59,8 @@ export const templateTools: ToolDefinition[] = [
   },
   {
     name: 'range_template_create',
-    description: 'Create a complete range template from a topology graph. The server payload is compiled from the graph; do not provide compiled fields.',
+    title: '创建靶场模板',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     async call(context, args) {
@@ -90,28 +84,19 @@ export const templateTools: ToolDefinition[] = [
   },
   {
     name: 'range_template_update',
-    description: 'Update template metadata, or replace its complete topologyGraph. A graph replacement is compiled before it is saved.',
+    title: '更新靶场模板',
+    description: '更新前端“编辑信息”可修改的模板元数据，例如名称、描述、标识和版本。拓扑变更必须使用“检测并保存拓扑”，派生编译字段不接受调用方传入。',
     requiredScopes: ['templates:write'],
     inputSchema: templateUpdateInputSchema,
     async call(context, args) {
-      const input = args as TemplateWriteInput & { updates: UpdateRangeTemplateInput & { topologyGraph?: ScenarioGraphDraft; vpcCidr?: string; publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'] } };
-      const updates = { ...input.updates };
-      assertNoCallerCompiledFields(updates);
-      if (updates.topologyGraph) {
-        const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
-        const metadata = { ...metadataFromTemplate(current), ...pickMetadata(updates) };
-        const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), updates.topologyGraph);
-        const compiled = compileTemplateTopology(topologyGraph, metadata);
-        delete updates.vpcCidr;
-        delete updates.publicEntryProtocols;
-        Object.assign(updates, compiled);
-      }
-      return redactTemplateSecrets(await context.client.updateRangeTemplate(input.templateId, updates, operation(input)));
+      const input = args as TemplateWriteInput & { updates: UpdateRangeTemplateInput };
+      return redactTemplateSecrets(await context.client.updateRangeTemplate(input.templateId, input.updates, operation(input)));
     },
   },
   {
     name: 'range_template_clone',
-    description: 'Clone a readable template into a new private draft.',
+    title: '复制靶场模板',
+    description: '将当前有权限读取的模板复制为一个归当前用户所有、已保存但未发布的可编辑模板。复制不会发布到平台。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCloneInputSchema,
     async call(context, args) {
@@ -120,51 +105,34 @@ export const templateTools: ToolDefinition[] = [
     },
   },
   {
-    name: 'range_template_validate',
-    description: 'Validate a saved template draft using the platform publish prechecks.',
+    name: 'range_template_topology_detect_and_save',
+    title: '检测并保存拓扑',
+    description: '对应平台“检测并保存”。将设计转换 Skill 产出的完整 topologyGraph 与当前模板元数据合并后编译、校验；仅在全部通过时保存。此操作不会发布到平台。',
     requiredScopes: ['templates:write'],
-    inputSchema: templateValidateInputSchema,
-    call(context, args) {
-      const input = args as TemplateWriteInput;
-      return context.client.validateRangeTemplate(input.templateId, operation(input));
-    },
-  },
-  {
-    name: 'range_template_topology_detect',
-    description: 'Compile and validate a complete topology graph in memory without saving it, or preflight the current template draft.',
-    requiredScopes: ['templates:write'],
-    inputSchema: templateDetectInputSchema,
+    annotations: { idempotentHint: true },
+    inputSchema: templateDetectAndSaveInputSchema,
     async call(context, args) {
-      const input = args as TemplateOperation & { templateId?: string; topologyGraph?: ScenarioGraphDraft } & Partial<TemplateAuthoringMetadata>;
-      const current = input.templateId ? await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId) : null;
-      const topologyGraph = input.topologyGraph ?? (current ? graphFromTemplate(current) : null);
-      if (!topologyGraph) {
-        throw new Error('templateId 或 topologyGraph 必须提供一个');
-      }
-      const metadata = { ...(current ? metadataFromTemplate(current) : {}), ...pickMetadata(input) } as TemplateAuthoringMetadata;
-      const compiled = compileTemplateTopology(topologyGraph, metadata);
-      return redactTemplateSecrets({ valid: true, ...compiled });
-    },
-  },
-  nodeTool('range_template_node_add', 'add-node', 'Add a node and save only after the complete resulting graph passes compilation.'),
-  nodeTool('range_template_node_update', 'update-node', 'Update one node and save only after the complete resulting graph passes compilation.'),
-  nodeTool('range_template_node_remove', 'remove-node', 'Remove one node and its visual edges, then save if the complete graph remains valid.'),
-  edgeTool('range_template_edge_add', 'add-edge', 'Add one manual router-to-switch or switch-to-ECS edge and save the validated graph.'),
-  edgeTool('range_template_edge_remove', 'remove-edge', 'Remove one manual edge and save the validated graph.'),
-  {
-    name: 'range_template_changeset_apply',
-    description: 'Apply ordered node and edge changes atomically in memory, then compile and save once. Use for changes with invalid intermediate states.',
-    requiredScopes: ['templates:write'],
-    inputSchema: templateChangesetInputSchema,
-    call(context, args) {
-      const input = args as TemplateWriteInput & { changes: TemplateGraphChangeset; vpcCidr?: string; publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'] };
-      return updateGraph(context, input, input.changes);
+      const input = args as TemplateWriteInput & {
+        topologyGraph: ScenarioGraphDraft;
+        primaryVpcCidr?: string;
+        secondaryVpcCidrs?: string[];
+        vpcCidr?: string;
+        publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
+      };
+      const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
+      const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
+      const compiled = compileTemplateTopology(topologyGraph, { ...metadataFromTemplate(current), ...pickMetadata(input) });
+      const template = await context.client.updateRangeTemplate(input.templateId, compiled, operation(input));
+      await context.client.validateRangeTemplate(input.templateId, operation(input));
+      return redactTemplateSecrets({ valid: true, template });
     },
   },
   {
     name: 'range_template_publish',
-    description: 'Publish a validated template. MCP requires the platform confirmation response before visibility changes.',
+    title: '发布模板到平台',
+    description: '对应平台“发布到平台”。校验当前已保存拓扑后生成可供使用的发布版本，并将模板设为平台可见，其他用户随后可查看和使用。调用前必须取得用户确认；平台要求时需携带 confirmationId。',
     requiredScopes: ['templates:publish'],
+    annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
@@ -173,8 +141,10 @@ export const templateTools: ToolDefinition[] = [
   },
   {
     name: 'range_template_unpublish',
-    description: 'Unpublish a template. MCP requires platform confirmation.',
+    title: '取消发布模板',
+    description: '对应平台“取消发布”。从平台列表隐藏模板并停止向其他用户提供使用，但不会删除模板及其已保存拓扑。调用前必须取得用户确认；平台要求时需携带 confirmationId。',
     requiredScopes: ['templates:publish'],
+    annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
@@ -182,29 +152,11 @@ export const templateTools: ToolDefinition[] = [
     },
   },
   {
-    name: 'range_template_share',
-    description: 'Share an owned template to the platform. MCP requires platform confirmation.',
-    requiredScopes: ['templates:publish'],
-    inputSchema: templateLifecycleInputSchema,
-    async call(context, args) {
-      const input = args as TemplateWriteInput;
-      return redactTemplateSecrets(await context.client.shareRangeTemplate(input.templateId, operation(input)));
-    },
-  },
-  {
-    name: 'range_template_unshare',
-    description: 'Remove a template from platform sharing. MCP requires platform confirmation.',
-    requiredScopes: ['templates:publish'],
-    inputSchema: templateLifecycleInputSchema,
-    async call(context, args) {
-      const input = args as TemplateWriteInput;
-      return redactTemplateSecrets(await context.client.unshareRangeTemplate(input.templateId, operation(input)));
-    },
-  },
-  {
     name: 'range_template_delete',
-    description: 'Delete an owned template after platform confirmation. Deletion is blocked while active range instances reference it.',
+    title: '删除靶场模板',
+    description: '删除当前用户拥有的靶场模板。活动中的编排实例仍引用该模板时会被平台拒绝；该操作不可恢复，调用前必须取得用户确认。',
     requiredScopes: ['templates:delete'],
+    annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
@@ -214,57 +166,8 @@ export const templateTools: ToolDefinition[] = [
   },
 ];
 
-function nodeTool(name: string, op: Extract<TemplateGraphChangeset[number], { op: 'add-node' | 'update-node' | 'remove-node' }>['op'], description: string): ToolDefinition {
-  const inputSchema = op === 'add-node'
-    ? templateNodeAddInputSchema
-    : op === 'update-node'
-      ? templateNodeUpdateInputSchema
-      : templateNodeRemoveInputSchema;
-
-  return {
-    name,
-    description,
-    requiredScopes: ['templates:write'],
-    inputSchema,
-    call(context, args) {
-      const input = args as TemplateWriteInput & { node?: TemplateNode; nodeId?: string; patch?: Partial<TemplateNode>; vpcCidr?: string; publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'] };
-      const change = op === 'add-node'
-        ? { op, node: required(input.node, 'node') }
-        : op === 'update-node'
-          ? { op, nodeId: required(input.nodeId, 'nodeId'), patch: required(input.patch, 'patch') }
-          : { op, nodeId: required(input.nodeId, 'nodeId') };
-      return updateGraph(context, input, [change] as TemplateGraphChangeset);
-    },
-  };
-}
-
-function edgeTool(name: string, op: 'add-edge' | 'remove-edge', description: string): ToolDefinition {
-  return {
-    name,
-    description,
-    requiredScopes: ['templates:write'],
-    inputSchema: op === 'add-edge' ? templateEdgeAddInputSchema : templateEdgeRemoveInputSchema,
-    call(context, args) {
-      const input = args as TemplateWriteInput & { edge?: ScenarioGraphEdge; edgeId?: string; vpcCidr?: string; publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'] };
-      const change = op === 'add-edge' ? { op, edge: required(input.edge, 'edge') } : { op, edgeId: required(input.edgeId, 'edgeId') };
-      return updateGraph(context, input, [change] as TemplateGraphChangeset);
-    },
-  };
-}
-
-async function updateGraph(
-  context: Parameters<ToolDefinition['call']>[0],
-  input: TemplateWriteInput & Partial<TemplateAuthoringMetadata>,
-  changes: TemplateGraphChangeset,
-) {
-  const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
-  const graph = applyTemplateChangeset(graphFromTemplate(current), changes);
-  const compiled = compileTemplateTopology(graph, { ...metadataFromTemplate(current), ...pickMetadata(input) });
-  return redactTemplateSecrets(await context.client.updateRangeTemplate(input.templateId, compiled, operation(input)));
-}
-
 function pickMetadata(input: Record<string, unknown>) {
-  const keys = ['name', 'slug', 'version', 'description', 'cloudProvider', 'iacType', 'modulePathOrRef', 'vpcCidr', 'defaultRegion', 'defaultZoneId', 'publicEntryProtocols'] as const;
+  const keys = ['name', 'slug', 'version', 'description', 'cloudProvider', 'iacType', 'modulePathOrRef', 'primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'defaultRegion', 'defaultZoneId', 'publicEntryProtocols'] as const;
   return Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
 }
 
@@ -274,20 +177,6 @@ async function requireTemplate(template: Promise<Record<string, unknown> | null>
     throw new Error(`模板不存在或无访问权限：${templateId}`);
   }
   return result;
-}
-
-function required<T>(value: T | undefined, name: string): T {
-  if (value === undefined) {
-    throw new Error(`${name} 是必填参数`);
-  }
-  return value;
-}
-
-function assertNoCallerCompiledFields(updates: Record<string, unknown>) {
-  const derivedField = ['topologySpec', 'scenarioTemplateSpec', 'compiledProvisionSpec', 'compiledSpec'].find((key) => key in updates);
-  if (derivedField) {
-    throw new Error(`${derivedField} 由 MCP 从 topologyGraph 自动生成；请勿手工传入`);
-  }
 }
 
 function redactTemplateSecrets<T>(value: T): T {

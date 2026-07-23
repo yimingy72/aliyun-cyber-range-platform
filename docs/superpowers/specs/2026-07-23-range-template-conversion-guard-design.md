@@ -10,8 +10,8 @@
 - 支持一个主 VPC CIDR 与显式声明的多个附加 VPC CIDR。
 - 要求每个交换机 CIDR 均归属于某个已配置的 VPC CIDR 块。
 - 拒绝调用方在创建模板时直接提交派生拓扑产物。
-- 将全部模板编排工具暴露给具备相应 scope 的 MCP 客户端。
-- 更新项目 Skill，使其先产出 `RangeDesign/v1`，再调用经过转换约束的 MCP 工具。
+- 将前端“靶场编排”和“编排实例”页面的实际操作暴露给具备相应 scope 的 MCP 客户端。
+- 更新项目 Skill，使其先产出 `RangeDesign/v1` 或完整实例拓扑，再调用经过转换约束的 MCP 工具。
 
 ## 数据模型
 
@@ -38,26 +38,31 @@
 - `compiledProvisionSpec`
 - `compiledSpec`
 
-API 创建模板时只接受拓扑图与创作元数据。服务端使用自身生成的模板标识运行共享转换器；控制器拒绝调用方提交任何派生字段，因此 REST、MCP 和 Web 前端都无法绕过此转换边界。
-
-MCP 的 `range_template_create` 只接收拓扑元数据和拓扑图，并在调用 API 前运行相同的转换器。其 schema 不暴露派生字段。
+MCP 的 `range_template_create` 只接收拓扑元数据和拓扑图，并在调用 API 前运行相同的转换器。其 schema 不暴露派生字段。MCP 的“检测并保存拓扑”与编排实例的保存、应用、同步也只接收完整拓扑图，并在服务端请求前生成派生规格。
 
 ## MCP 编排工具
 
-模板编排能力统一以 `range_template_*` 暴露：
+模板编排能力统一以 `range_template_*` 暴露，并且与页面功能一一对应：
 
 - `templates:read`：`range_template_list`、`range_template_get`。
 - `templates:write`：`range_template_create`、`range_template_update`、
-  `range_template_clone`、`range_template_validate`、
-  `range_template_topology_detect`、节点增删改、连线增删、以及
-  `range_template_changeset_apply`。
-- `templates:publish`：`range_template_publish`、`range_template_unpublish`、
-  `range_template_share`、`range_template_unshare`。
+  `range_template_clone`、`range_template_topology_detect_and_save`。
+- `templates:publish`：`range_template_publish`、`range_template_unpublish`。
 - `templates:delete`：`range_template_delete`。
+
+“检测并保存”是编辑器节点、连线、网络策略等本地交互的唯一 MCP 写入边界；不再暴露独立节点、连线、批量变更、预检或校验工具。平台没有单独的共享工具：`range_template_publish` 同时生成可使用的发布版本并设为平台可见，`range_template_unpublish` 隐藏模板但保留其已保存拓扑。
+
+编排实例能力统一以 `range_instance_*` 暴露：
+
+- `ranges:read`：列表、详情；访问入口另需 `instances:credentials:read`。
+- `ranges:create`：`range_instance_launch`。
+- `ranges:write`：实例拓扑保存；与 `ranges:control` 组合应用变更；与 `templates:write` 组合同步回模板。
+- `ranges:control`：失败重试和节点开机、关机、重启、打包镜像。
+- `ranges:destroy`：整套实例销毁；`ranges:delete`：删除创建失败记录。
 
 每个工具必须携带标准 MCP 定义：`name`、`title`、`description`、
 `inputSchema`、`outputSchema` 和 `annotations`。写操作的注解应标识其
-非只读属性；发布、共享和删除还应标识为破坏性操作。工具发现只返回当前
+非只读属性；删除、销毁和关机还应标识为破坏性操作。工具发现只返回当前
 授权 scope 允许的工具。
 
 ## 网络语义
@@ -74,7 +79,7 @@ MCP 的 `range_template_create` 只接收拓扑元数据和拓扑图，并在调
 
 1. 先产出或接收 `RangeDesign/v1`：其中包含明确的 VPC CIDR 块、交换机、主机、镜像选择器、共享 NAT、ACL、安全组和初始化配置。
 2. 使用只读的平台镜像工具解析镜像选择器。
-3. 创建模板时只能调用 `range_template_create`。
+3. 创建模板时只能调用 `range_template_create`；修改模板拓扑时只能调用 `range_template_topology_detect_and_save`。
 4. 不得手工编写或传递四份派生产物。
 
 ## 测试
