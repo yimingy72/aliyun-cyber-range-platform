@@ -625,7 +625,7 @@ export function RangeInstancesScreen({
                             {getDurationLabel(instance.createdAt, endedAt)}
                           </AdminDataTableCell>
                           <AdminDataTableCell column={actionsColumn}>
-                            <div className="flex justify-start">
+                            <div className="flex justify-start" data-slot="range-history-detail-action">
                               <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                                 查看详情
                               </Button>

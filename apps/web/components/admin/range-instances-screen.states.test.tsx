@@ -123,6 +123,27 @@ describe('RangeInstancesScreen list states', () => {
     );
   });
 
+  it('keeps the history list toolbar and marks its detail action as an outline button', async () => {
+    searchParamsState.value = 'view=history';
+    fetchRangeInstancesMock.mockResolvedValue([
+      {
+        id: 'range-history',
+        name: '已回收靶场',
+        templateNameSnapshot: '企业攻防靶场',
+        status: 'destroyed',
+        createdAt: '2026-07-22T08:00:00.000Z',
+      },
+    ]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect((await screen.findByRole('tab', { name: '实例历史' })).getAttribute('aria-selected')).toBe('true');
+    const detailAction = screen.getByRole('button', { name: '查看详情' });
+    expect(detailAction.getAttribute('data-variant')).toBe('outline');
+    expect(detailAction.closest('[data-slot="range-history-detail-action"]')).toBeTruthy();
+  });
+
   it('writes the selected list view to the URL', async () => {
     fetchRangeInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);

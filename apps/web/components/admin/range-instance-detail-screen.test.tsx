@@ -106,12 +106,17 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     expect((await screen.findAllByText('实例名')).length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: '节点目录' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '拓扑结构' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '实例详情' })).toBeTruthy();
+    expect(screen.getByRole('tablist', { name: '实例详情视图切换' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '节点目录' })).toBeTruthy();
     expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '更多操作' })).toBeTruthy();
     expect(screen.getAllByText('root / 暂无')).toHaveLength(2);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '拓扑结构' }));
+    expect(screen.getByRole('button', { name: '保存草稿' }).getAttribute('data-variant')).toBe('outline');
+    expect(screen.getByRole('button', { name: '应用变更' }).getAttribute('data-variant')).toBe('outline');
+    expect(screen.getByRole('button', { name: '更新编排拓扑' }).getAttribute('data-variant')).toBe('default');
     expect(screen.getByText('公网IP（DNAT IP）')).toBeTruthy();
     expect(screen.getByText('DNAT 已下发 1 条 / SNAT 已下发 2 条')).toBeTruthy();
   });
@@ -230,7 +235,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '拓扑结构' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
     fireEvent.click(screen.getByRole('button', { name: '应用变更' }));
 
     expect(await screen.findByText(/DNAT 公网端口 22 重复/)).toBeTruthy();
@@ -281,8 +286,8 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    const topologyButton = await screen.findByRole('button', { name: '拓扑结构' });
-    fireEvent.click(topologyButton);
+    const topologyButton = await screen.findByRole('tab', { name: '拓扑结构' });
+    fireEvent.mouseDown(topologyButton);
     await waitFor(() => expect(screen.getByText('拓扑画布')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     expect(screen.getByText('在线编排')).toBeTruthy();
@@ -429,7 +434,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '拓扑结构' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     const cpuInput = (await screen.findByLabelText('CPU')) as HTMLInputElement;
     fireEvent.change(cpuInput, { target: { value: '4' } });
@@ -493,8 +498,8 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByRole('button', { name: '拓扑结构' });
-    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    await screen.findByRole('tab', { name: '拓扑结构' });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '拓扑结构' }));
     await waitFor(() => expect(screen.getByLabelText('CPU')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
@@ -565,7 +570,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '拓扑结构' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
     fireEvent.click(screen.getByRole('button', { name: /checker/ }));
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: '更新编排拓扑' }));
@@ -688,7 +693,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.queryByRole('button', { name: '更新编排拓扑' })).toBeNull();
     expect(screen.queryByRole('button', { name: '关机' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '拓扑结构' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '拓扑结构' }));
     await waitFor(() => expect(screen.getByLabelText('名称')).toBeTruthy());
     expect((screen.getByLabelText('名称') as HTMLInputElement).disabled).toBe(true);
     expect(screen.getByLabelText('CPU').matches(':disabled')).toBe(true);

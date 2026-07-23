@@ -9,6 +9,9 @@ import {
   compileScenarioTemplateSpec,
 } from '@aliyun-cyber-range/scenario-runtime';
 
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
 import {
   applyRangeInstanceDraft,
   fetchRangeInstanceDetail,
@@ -25,6 +28,7 @@ import {
   type TemplateNode,
 } from '../../lib/scenario-graph';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
+import { AdminPageHeader } from './shared/admin-page-header';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
 import { useAdminSession } from './use-admin-session';
 
@@ -1116,20 +1120,18 @@ export function RangeInstanceDetailScreen({
 
   return (
     <main className="admin-screen range-instance-detail-screen">
-      <section className="template-workbench-shell">
-        <div className="template-workbench-list">
-          <div className="template-workbench-list-header">
-            <div className="template-workbench-list-header-copy">
-              <h2>实例详情</h2>
-            </div>
-          </div>
+      <section className="admin-workbench-surface range-instance-detail-workbench">
+        <AdminPageHeader
+          description="查看实例运行状态、节点目录与拓扑编排。"
+          title="实例详情"
+        />
 
-          {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
-          {successMessage ? <p className="admin-success">{successMessage}</p> : null}
+        {errorMessage ? <p className="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
+        {successMessage ? <p className="mt-4 text-sm text-emerald-700" role="status">{successMessage}</p> : null}
 
-          {detail ? (
-            <>
-              <section className="range-instance-overview-grid">
+        {detail ? (
+          <>
+            <section className="range-instance-overview-grid">
                 <div className="range-instance-overview-item">
                   <span>实例名</span>
                   <strong>{detail.name?.trim() || detail.id}</strong>
@@ -1168,90 +1170,96 @@ export function RangeInstanceDetailScreen({
                     <strong>只读历史</strong>
                   </div>
                 ) : null}
-              </section>
+            </section>
 
-              <div className="range-instance-detail-toolbar">
-                <div className="template-workbench-segmented" role="tablist" aria-label="实例详情视图切换">
-                  <button type="button" aria-pressed={activeTab === 'directory'} onClick={() => setActiveTab('directory')}>
+            <div className="range-instance-detail-toolbar">
+              <Tabs onValueChange={(value) => setActiveTab(value as WorkbenchTab)} value={activeTab}>
+                <TabsList aria-label="实例详情视图切换" variant="line">
+                  <TabsTrigger value="directory">
                     节点目录
-                  </button>
-                  <button type="button" aria-pressed={activeTab === 'topology'} onClick={() => setActiveTab('topology')}>
+                  </TabsTrigger>
+                  <TabsTrigger value="topology">
                     拓扑结构
-                  </button>
-                </div>
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
 
-                {activeTab === 'topology' && canOperateInstance ? (
-                  <div className="range-instance-workbench-actions">
-                    <button
-                      type="button"
-                      disabled={isSavingDraft || isSyncingTemplate}
-                      onClick={() => void handleSaveDraft()}
-                    >
+              {activeTab === 'topology' && canOperateInstance ? (
+                <div className="range-instance-workbench-actions">
+                  <Button
+                    disabled={isSavingDraft || isSyncingTemplate}
+                    onClick={() => void handleSaveDraft()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
                       {isSavingDraft ? '处理中...' : '保存草稿'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSavingDraft || isSyncingTemplate}
-                      onClick={() => void handleApplyDraft()}
-                    >
+                  </Button>
+                  <Button
+                    disabled={isSavingDraft || isSyncingTemplate}
+                    onClick={() => void handleApplyDraft()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
                       {isSavingDraft ? '处理中...' : '应用变更'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSavingDraft || isSyncingTemplate}
-                      onClick={() => void handleSyncTemplate()}
-                    >
+                  </Button>
+                  <Button
+                    disabled={isSavingDraft || isSyncingTemplate}
+                    onClick={() => void handleSyncTemplate()}
+                    size="sm"
+                    type="button"
+                  >
                       {isSyncingTemplate ? '处理中...' : '更新编排拓扑'}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-
-              <div
-                className={
-                  activeTab === 'directory'
-                    ? 'range-instance-detail-content is-directory'
-                    : 'range-instance-detail-content is-topology'
-                }
-              >
-                {activeTab === 'directory' ? (
-                  <div className="range-instance-detail-main">
-                    <RangeInstanceNodeDirectory
-                      nodes={displayedDirectoryNodes.map((node) => ({
-                        ...node,
-                        createdBy: detail.createdBy ?? 'admin',
-                        expiresAt: formatAdminDateTime(detail.expiresAt),
-                        createdAt: formatAdminDateTime(detail.createdAt),
-                      }))}
-                      onNodeAction={handleNodeAction}
-                      allowActions={canOperateInstance}
-                      pendingAction={pendingNodeAction}
-                    />
-                  </div>
-                ) : (
-                  <RangeInstanceTopologyWorkspace
-                    topologyGraph={draftGraph}
-                    nodes={topologyNodes}
-                    edges={topologyEdges}
-                    selectedNodeId={selectedNodeId}
-                    selectedNode={selectedTopologyNode}
-                    linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
-                    canOperateInstance={canOperateInstance}
-                    runtimeNodeStatus={selectedTopologyNode ? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
-                    statusMessage={topologyStatusMessage}
-                    onSelectNode={setSelectedNodeId}
-                    onMoveNode={handleMoveTopologyNode}
-                    onUpdateNode={handleUpdateTopologyNode}
-                  />
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="admin-workbench-empty">
-              <p>正在加载实例详情...</p>
+                  </Button>
+                </div>
+              ) : null}
             </div>
-          )}
-        </div>
+
+            <div
+              className={
+                activeTab === 'directory'
+                  ? 'range-instance-detail-content is-directory'
+                  : 'range-instance-detail-content is-topology'
+              }
+            >
+              {activeTab === 'directory' ? (
+                <div className="range-instance-detail-main">
+                  <RangeInstanceNodeDirectory
+                    nodes={displayedDirectoryNodes.map((node) => ({
+                      ...node,
+                      createdBy: detail.createdBy ?? 'admin',
+                      expiresAt: formatAdminDateTime(detail.expiresAt),
+                      createdAt: formatAdminDateTime(detail.createdAt),
+                    }))}
+                    onNodeAction={handleNodeAction}
+                    allowActions={canOperateInstance}
+                    pendingAction={pendingNodeAction}
+                  />
+                </div>
+              ) : (
+                <RangeInstanceTopologyWorkspace
+                  topologyGraph={draftGraph}
+                  nodes={topologyNodes}
+                  edges={topologyEdges}
+                  selectedNodeId={selectedNodeId}
+                  selectedNode={selectedTopologyNode}
+                  linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
+                  canOperateInstance={canOperateInstance}
+                  runtimeNodeStatus={selectedTopologyNode ? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
+                  statusMessage={topologyStatusMessage}
+                  onSelectNode={setSelectedNodeId}
+                  onMoveNode={handleMoveTopologyNode}
+                  onUpdateNode={handleUpdateTopologyNode}
+                />
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="admin-workbench-empty">
+            <p>正在加载实例详情...</p>
+          </div>
+        )}
       </section>
 
       {packImageDialog ? (
