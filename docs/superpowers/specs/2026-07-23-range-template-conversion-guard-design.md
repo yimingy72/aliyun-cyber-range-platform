@@ -10,6 +10,7 @@
 - 支持一个主 VPC CIDR 与显式声明的多个附加 VPC CIDR。
 - 要求每个交换机 CIDR 均归属于某个已配置的 VPC CIDR 块。
 - 拒绝调用方在创建模板时直接提交派生拓扑产物。
+- 将全部模板编排工具暴露给具备相应 scope 的 MCP 客户端。
 - 更新项目 Skill，使其先产出 `RangeDesign/v1`，再调用经过转换约束的 MCP 工具。
 
 ## 数据模型
@@ -41,6 +42,24 @@ API 创建模板时只接受拓扑图与创作元数据。服务端使用自身�
 
 MCP 的 `range_template_create` 只接收拓扑元数据和拓扑图，并在调用 API 前运行相同的转换器。其 schema 不暴露派生字段。
 
+## MCP 编排工具
+
+模板编排能力统一以 `range_template_*` 暴露：
+
+- `templates:read`：`range_template_list`、`range_template_get`。
+- `templates:write`：`range_template_create`、`range_template_update`、
+  `range_template_clone`、`range_template_validate`、
+  `range_template_topology_detect`、节点增删改、连线增删、以及
+  `range_template_changeset_apply`。
+- `templates:publish`：`range_template_publish`、`range_template_unpublish`、
+  `range_template_share`、`range_template_unshare`。
+- `templates:delete`：`range_template_delete`。
+
+每个工具必须携带标准 MCP 定义：`name`、`title`、`description`、
+`inputSchema`、`outputSchema` 和 `annotations`。写操作的注解应标识其
+非只读属性；发布、共享和删除还应标识为破坏性操作。工具发现只返回当前
+授权 scope 允许的工具。
+
 ## 网络语义
 
 - `primaryVpcCidr` 用于创建 VPC。
@@ -64,4 +83,6 @@ MCP 的 `range_template_create` 只接收拓扑元数据和拓扑图，并在调
 - 交换机 CIDR 不属于任何已配置 VPC CIDR 时被拒绝。
 - API 创建模板时，调用方提交派生字段会被拒绝。
 - MCP 的 `range_template_create` 会转换拓扑图，且无法接收原始派生字段。
+- MCP 工具列表测试验证全部编排工具会按 scope 暴露，且每项均含完整标准
+  定义与正确的行为注解。
 - 渲染器测试验证附加 CIDR 会到达 OpenTofu 的 `secondary_vpc_cidrs` 变量。
