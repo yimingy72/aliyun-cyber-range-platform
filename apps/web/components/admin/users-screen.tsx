@@ -257,8 +257,6 @@ export function UsersScreen({
     setLoadAttempt((current) => current + 1);
   };
 
-  const currentUserId = session.profile?.id ?? null;
-
   const handleSessionInvalidationForCurrentUser = (message: string) => {
     setActionSuccessMessage(message);
     session.logout();
@@ -319,7 +317,7 @@ export function UsersScreen({
       const updatedUser = await updateAdminUserRole(apiBaseUrl, session.token, user.id, { role });
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
 
-      if (updatedUser.id === currentUserId && updatedUser.role !== 'admin') {
+      if (updatedUser.isCurrentUser && updatedUser.role !== 'admin') {
         handleSessionInvalidationForCurrentUser(`已更新 ${updatedUser.username} 的角色，请重新登录。`);
         return;
       }
@@ -351,7 +349,7 @@ export function UsersScreen({
       const updatedUser = await updateAdminUserStatus(apiBaseUrl, session.token, user.id, { status });
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
 
-      if (updatedUser.id === currentUserId && updatedUser.status === 'disabled') {
+      if (updatedUser.isCurrentUser && updatedUser.status === 'disabled') {
         handleSessionInvalidationForCurrentUser(`已更新 ${updatedUser.username} 的状态，请重新登录。`);
         return;
       }
@@ -392,7 +390,7 @@ export function UsersScreen({
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
       closeResetPasswordDialog();
 
-      if (updatedUser.id === currentUserId) {
+      if (updatedUser.isCurrentUser) {
         handleSessionInvalidationForCurrentUser(`已重置 ${resetPasswordState.username} 的密码，请重新登录。`);
         return;
       }

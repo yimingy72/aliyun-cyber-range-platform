@@ -3,6 +3,7 @@ import { ImageCatalogService } from '../src/admin/image-catalog.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 
 const OWNER = { id: 'owner-1', username: 'owner', role: 'user' as const };
+const ADMIN = { id: 'admin-1', username: 'admin', role: 'admin' as const };
 
 function createAsset(): PlatformImageAssetRecord {
   const now = new Date('2026-07-20T00:00:00.000Z');
@@ -94,6 +95,39 @@ describe('ImageCatalogService import operation guard', () => {
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).not.toHaveBeenCalled();
   });
 
+  it('returns server-side image capabilities for an ordinary owner', async () => {
+    const { service, adminRepositoryMock, asset } = createService();
+    adminRepositoryMock.listPlatformImageAssets.mockResolvedValue([asset]);
+
+    const result = await (
+      service as unknown as {
+        listPlatformAssets(currentUser: typeof OWNER, view: 'mine'): Promise<{ items: Record<string, unknown>[] }>;
+      }
+    ).listPlatformAssets(OWNER, 'mine');
+
+    expect(adminRepositoryMock.listPlatformImageAssets).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerUserId: OWNER.id }),
+    );
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: asset.id,
+        canManage: true,
+        canChangeVisibility: false,
+      }),
+    ]);
+  });
+
+  it('rejects an ordinary owner changing image visibility through the generic update route', async () => {
+    const { service, adminRepositoryMock } = createService();
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+
+    await expect(
+      service.updatePlatformAsset('asset-1', { visibility: 'platform' }, OWNER),
+    ).rejects.toThrow('Admin access required');
+
+    expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();
+  });
+
   it('rejects asset operations when an active import has only persisted its Alibaba Cloud ImageId', async () => {
     const { service, adminRepositoryMock } = createService();
     adminRepositoryMock.hasActiveImageImportForArtifact.mockImplementation(async (input) => input.imageId === 'm-importing-image');
@@ -142,7 +176,7 @@ describe('ImageCatalogService import operation guard', () => {
     ]);
 
     await expect(
-      service.updatePlatformAsset('asset-1', { visibility: 'private' }, OWNER),
+      service.updatePlatformAsset('asset-1', { visibility: 'private' }, ADMIN),
     ).rejects.toThrow('已发布');
 
     expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();

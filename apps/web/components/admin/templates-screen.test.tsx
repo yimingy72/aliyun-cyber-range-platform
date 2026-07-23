@@ -497,6 +497,47 @@ describe('TemplatesScreen', () => {
     expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
   });
 
+  it('retains an ordinary owner in 我的拓扑 after publishing with a different OIDC subject', async () => {
+    sessionState.profile = {
+      id: 'oidc-subject-bob',
+      username: 'bob',
+      role: 'user',
+    };
+    const ownedTemplate = {
+      ...bootstrapPayload.rangeTemplates[1],
+      ownerUserId: 'platform-user-bob',
+      createdBy: 'bob',
+      canManage: true,
+    };
+    shareRangeTemplateMock.mockResolvedValue({
+      ...ownedTemplate,
+      visibility: 'platform',
+      status: 'published',
+      revision: 6,
+      canManage: true,
+    });
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'mine' ? [ownedTemplate] : [],
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    const row = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+    openTemplateActionMenu(row);
+    fireEvent.click(screen.getByRole('menuitem', { name: '发布到平台' }));
+
+    await waitFor(() => {
+      expect(shareRangeTemplateMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'template-2',
+        { expectedRevision: 5 },
+      );
+      expect(within(screen.getByRole('row', { name: /办公网横向移动靶场/ })).getByText('已发布')).toBeTruthy();
+    });
+  });
+
   it('clones published platform templates into 我的拓扑 when ordinary users click 进入编排', async () => {
     sessionState.profile = {
       id: 'user-bob',

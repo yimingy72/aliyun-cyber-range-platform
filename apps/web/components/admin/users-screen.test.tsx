@@ -409,6 +409,7 @@ describe('UsersScreen', () => {
     fetchAdminUsersMock.mockResolvedValue([adminUsersPayload[0]]);
     resetAdminUserPasswordMock.mockResolvedValue({
       ...adminUsersPayload[0],
+      isCurrentUser: true,
       updatedAt: '2026-07-10T05:00:00.000Z',
     });
 
@@ -454,6 +455,7 @@ describe('UsersScreen', () => {
     fetchAdminUsersMock.mockResolvedValue([adminUsersPayload[0]]);
     updateAdminUserRoleMock.mockResolvedValue({
       ...adminUsersPayload[0],
+      isCurrentUser: true,
       role: 'user',
       updatedAt: '2026-07-10T06:00:00.000Z',
     });
@@ -473,6 +475,45 @@ describe('UsersScreen', () => {
         'admin',
         { role: 'user' },
       );
+      expect(logoutMock).toHaveBeenCalled();
+      expect(replaceMock).toHaveBeenCalledWith('/admin/login');
+    });
+  });
+
+  it('logs the current admin out when the API identifies them by platform user ID', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'oidc-subject-admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    const currentAdmin = {
+      ...adminUsersPayload[0],
+      id: 'platform-user-admin',
+      isCurrentUser: true,
+    };
+    fetchAdminUsersMock.mockResolvedValue([currentAdmin]);
+    updateAdminUserRoleMock.mockResolvedValue({
+      ...currentAdmin,
+      role: 'user',
+      updatedAt: '2026-07-10T06:00:00.000Z',
+    });
+
+    render(<UsersScreen apiBaseUrl="http://localhost:3001" />);
+
+    const row = (await screen.findByText('admin')).closest('tr');
+    expect(row).toBeTruthy();
+
+    fireEvent.keyDown(within(row!).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '设为普通用户' }));
+
+    await waitFor(() => {
       expect(logoutMock).toHaveBeenCalled();
       expect(replaceMock).toHaveBeenCalledWith('/admin/login');
     });

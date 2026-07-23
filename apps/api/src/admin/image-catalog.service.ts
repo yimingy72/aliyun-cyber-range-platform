@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -36,6 +36,8 @@ type PlatformImageAssetsPayload = {
       createdBy: string;
       sourceSnapshotStatus: string | null;
       sourceSnapshotAvailable: boolean | null;
+      canManage: boolean;
+      canChangeVisibility: boolean;
     }
   >;
 };
@@ -119,7 +121,7 @@ export class ImageCatalogService {
   }
 
   async listPlatformAssets(
-    currentUserId: string,
+    currentUser: SessionUserProfile,
     view: PlatformImageView = 'platform',
   ): Promise<PlatformImageAssetsPayload> {
     const accountContext = await this.systemConfigService.getAccountContext();
@@ -127,7 +129,7 @@ export class ImageCatalogService {
       provider: accountContext.provider,
       accountUid: accountContext.accountUid,
       regionId: accountContext.defaultRegion,
-      ...(view === 'platform' ? { visibility: 'platform' as const } : { ownerUserId: currentUserId }),
+      ...(view === 'platform' ? { visibility: 'platform' as const } : { ownerUserId: currentUser.id }),
     };
 
     const items = await this.adminRepository.listPlatformImageAssets({
@@ -148,7 +150,7 @@ export class ImageCatalogService {
         const snapshot = item.sourceSnapshotId ? sourceSnapshotsById.get(item.sourceSnapshotId) ?? null : null;
 
         return {
-          ...this.toPlatformImageAssetView(item),
+          ...this.toPlatformImageAssetView(item, currentUser),
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
         };
@@ -156,7 +158,7 @@ export class ImageCatalogService {
     };
   }
 
-  async collectPlatformAsset(snapshotId: string, displayName: string) {
+  async collectPlatformAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile) {
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
 
     if (!snapshot) {
@@ -176,7 +178,7 @@ export class ImageCatalogService {
       visibility: 'platform',
     });
 
-    return this.withCreatorUsername(asset);
+    return this.withCreatorUsername(asset, currentUser);
   }
 
   async updatePlatformAsset(id: string, input: UpdatePlatformImageDto, currentUser: SessionUserProfile) {
@@ -188,13 +190,17 @@ export class ImageCatalogService {
       throw new BadRequestException('At least one platform image update field is required');
     }
 
+    if (nextVisibility !== undefined && currentUser.role !== 'admin') {
+      throw new ForbiddenException('Admin access required to change platform image visibility');
+    }
+
     if (nextVisibility === undefined) {
       const updatedAsset = await this.adminRepository.updatePlatformImageAsset(id, { displayName: nextDisplayName });
-      return this.withCreatorUsername(updatedAsset);
+      return this.withCreatorUsername(updatedAsset, currentUser);
     }
 
     if (nextVisibility === asset.visibility && nextDisplayName === asset.displayName) {
-      return this.withCreatorUsername(asset);
+      return this.withCreatorUsername(asset, currentUser);
     }
 
     if (!asset.ownerUserId) {
@@ -206,7 +212,7 @@ export class ImageCatalogService {
     }
 
     const updatedAsset = await this.recollectPlatformAssetWithVisibility(asset, nextDisplayName, nextVisibility);
-    return this.withCreatorUsername(updatedAsset);
+    return this.withCreatorUsername(updatedAsset, currentUser);
   }
 
   async setPlatformAssetEnabled(id: string, enabled: boolean, currentUser: SessionUserProfile) {
@@ -218,7 +224,7 @@ export class ImageCatalogService {
     }
 
     const updatedAsset = await this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
-    return this.withCreatorUsername(updatedAsset);
+    return this.withCreatorUsername(updatedAsset, currentUser);
   }
 
   async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
@@ -464,14 +470,36 @@ export class ImageCatalogService {
     return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
   }
 
-  private async withCreatorUsername<T extends PlatformImageAssetRecord>(asset: T) {
+  private async withCreatorUsername<T extends PlatformImageAssetRecord>(asset: T, currentUser?: SessionUserProfile) {
     const [normalizedAsset] = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, [asset]);
-    return this.toPlatformImageAssetView(normalizedAsset);
+    return this.toPlatformImageAssetView(normalizedAsset, currentUser);
   }
 
-  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(asset: T) {
+  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(
+    asset: T,
+    currentUser: SessionUserProfile,
+  ): Omit<T, 'defaultPassword'> & { canManage: boolean; canChangeVisibility: boolean };
+  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(
+    asset: T,
+    currentUser?: SessionUserProfile,
+  ): Omit<T, 'defaultPassword'> & Partial<{ canManage: boolean; canChangeVisibility: boolean }>;
+  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(
+    asset: T,
+    currentUser?: SessionUserProfile,
+  ) {
     const { defaultPassword: _defaultPassword, ...view } = asset;
-    return view;
+
+    if (!currentUser) {
+      return view;
+    }
+
+    const canManage = currentUser.role === 'admin' || asset.ownerUserId === currentUser.id;
+
+    return {
+      ...view,
+      canManage,
+      canChangeVisibility: currentUser.role === 'admin' && Boolean(asset.ownerUserId),
+    };
   }
 
   private async resolvePlatformAssetSnapshot(asset: PlatformImageAssetRecord): Promise<CloudImageSnapshotRecord | null> {

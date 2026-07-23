@@ -43,7 +43,9 @@ export class AdminUsersController {
   ) {
     this.assertAdmin(currentUser);
 
-    return this.mcpWrite(request, 'admin_user_update_role', { userId, ...body }, userId, () => this.adminUsersService.updateUserRole(userId, body.role));
+    return this.mcpWrite(request, 'admin_user_update_role', { userId, ...body }, userId, async () =>
+      this.withCurrentUser(await this.adminUsersService.updateUserRole(userId, body.role), currentUser),
+    );
   }
 
   @Patch(':userId/status')
@@ -55,7 +57,9 @@ export class AdminUsersController {
   ) {
     this.assertAdmin(currentUser);
 
-    return this.mcpWrite(request, 'admin_user_update_status', { userId, ...body }, userId, () => this.adminUsersService.updateUserStatus(userId, body.status));
+    return this.mcpWrite(request, 'admin_user_update_status', { userId, ...body }, userId, async () =>
+      this.withCurrentUser(await this.adminUsersService.updateUserStatus(userId, body.status), currentUser),
+    );
   }
 
   @Post(':userId/reset-password')
@@ -67,7 +71,9 @@ export class AdminUsersController {
   ) {
     this.assertAdmin(currentUser);
 
-    return this.mcpWrite(request, 'admin_user_reset_password', { userId, ...body }, userId, () => this.adminUsersService.resetUserPassword(userId, body.password));
+    return this.mcpWrite(request, 'admin_user_reset_password', { userId, ...body }, userId, async () =>
+      this.withCurrentUser(await this.adminUsersService.resetUserPassword(userId, body.password), currentUser),
+    );
   }
 
   private mcpWrite<TResult>(
@@ -101,5 +107,12 @@ export class AdminUsersController {
     if (currentUser.role !== 'admin') {
       throw new ForbiddenException('Admin access required');
     }
+  }
+
+  private withCurrentUser<T extends { id: string }>(user: T, currentUser: SessionUserProfile) {
+    return {
+      ...user,
+      isCurrentUser: user.id === currentUser.id,
+    };
   }
 }

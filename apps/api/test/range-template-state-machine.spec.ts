@@ -515,6 +515,36 @@ describe('RangeTemplatesService state machine', () => {
     expect(repository.publishRangeTemplateToPlatform).not.toHaveBeenCalled();
   });
 
+  it('returns management capability after publishing an owned template', async () => {
+    const template = createTemplate();
+    const repository = createRepository(template);
+    (repository as unknown as { getPlatformImageAssetById: jest.Mock }).getPlatformImageAssetById.mockResolvedValue({
+      id: 'asset-1',
+      imageId: 'image-1',
+      enabled: true,
+      visibility: 'platform',
+      ownerUserId: owner.id,
+    });
+    const service = new RangeTemplatesService(repository);
+
+    const result = await (
+      service as unknown as {
+        publishToPlatform(
+          id: string,
+          expectedRevision: number,
+          currentUser: typeof owner,
+        ): Promise<Record<string, unknown>>;
+      }
+    ).publishToPlatform(template.id, 3, owner);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'published',
+        canManage: true,
+      }),
+    );
+  });
+
   it('updates metadata through a revision-checked action without changing publication state', async () => {
     const template = createTemplate({
       visibility: 'platform',

@@ -160,6 +160,7 @@ describe('Admin users', () => {
       username,
       role: 'user',
       status: 'disabled',
+      isCurrentUser: false,
       createdAt: createResponse.body.createdAt,
       updatedAt: expect.any(String),
     });

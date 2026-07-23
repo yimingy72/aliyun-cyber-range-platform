@@ -955,6 +955,7 @@ describe('ImageCenterScreen', () => {
                 sourceSnapshotId: 'custom-snapshot-owner',
                 sourceScope: 'custom',
                 ownerUserId: 'owner-user',
+                canManage: true,
                 visibility: 'platform',
                 enabled: true,
               }),
@@ -1542,7 +1543,7 @@ describe('ImageCenterScreen', () => {
 
   it('still lets ordinary owners manage their own published image from 平台镜像', async () => {
     sessionState.profile = {
-      id: 'user-1',
+      id: 'oidc-subject-alice',
       username: 'alice',
       role: 'user',
     };
@@ -1554,7 +1555,8 @@ describe('ImageCenterScreen', () => {
                 id: 'owner-image-1',
                 imageId: 'm-owned-001',
                 displayName: 'Alice Shared Ubuntu',
-                ownerUserId: 'user-1',
+                ownerUserId: 'platform-user-alice',
+                canManage: true,
                 sourceSnapshotId: 'custom-snapshot-1',
                 sourceScope: 'custom',
                 enabled: true,
@@ -1567,7 +1569,8 @@ describe('ImageCenterScreen', () => {
                 id: 'owner-image-1',
                 imageId: 'm-owned-001',
                 displayName: 'Alice Shared Ubuntu',
-                ownerUserId: 'user-1',
+                ownerUserId: 'platform-user-alice',
+                canManage: true,
                 sourceSnapshotId: 'custom-snapshot-1',
                 sourceScope: 'custom',
                 enabled: true,
@@ -1577,6 +1580,7 @@ describe('ImageCenterScreen', () => {
                 imageId: 'm-platform-002',
                 displayName: 'Other Shared Ubuntu',
                 ownerUserId: 'user-2',
+                canManage: false,
                 sourceSnapshotId: 'public-snapshot-1',
                 sourceScope: 'public',
                 enabled: true,

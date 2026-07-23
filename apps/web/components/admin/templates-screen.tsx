@@ -374,11 +374,11 @@ export function TemplatesScreen({
     );
   }, [editingTemplateId, myTemplates, platformTemplates]);
 
-  function syncOwnedTemplate(savedScenario: Scenario) {
+  function syncOwnedTemplate(savedScenario: Scenario, options: { addToMyTemplates?: boolean } = {}) {
     setMyTemplates((previous) =>
-      savedScenario.ownerUserId === session.profile?.id
+      previous.some((scenario) => scenario.id === savedScenario.id) || options.addToMyTemplates
         ? upsertScenario(previous, savedScenario)
-        : removeScenario(previous, savedScenario.id),
+        : previous,
     );
     setPlatformTemplates((previous) =>
       savedScenario.visibility === 'platform' ? upsertScenario(previous, savedScenario) : removeScenario(previous, savedScenario.id),
@@ -603,7 +603,7 @@ export function TemplatesScreen({
 
     try {
       const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id);
-      syncOwnedTemplate(savedTemplate);
+      syncOwnedTemplate(savedTemplate, { addToMyTemplates: true });
       return savedTemplate;
     } catch (error: unknown) {
       return handleProtectedActionError(error, '编排复制失败，请稍后重试。');

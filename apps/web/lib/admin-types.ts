@@ -25,6 +25,7 @@ export type AdminUser = {
   username: string;
   role: AdminUserRole;
   status: AdminUserStatus;
+  isCurrentUser?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -517,6 +518,8 @@ export type PlatformImageAsset = {
   accountUid?: string | null;
   ownerUserId?: string | null;
   createdBy?: string | null;
+  canManage?: boolean;
+  canChangeVisibility?: boolean;
   visibility?: ResourceVisibility;
   accountScopeKey: string;
   regionId: string;

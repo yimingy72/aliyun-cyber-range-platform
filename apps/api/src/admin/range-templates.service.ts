@@ -309,7 +309,7 @@ export class RangeTemplatesService {
 
     try {
       const template = await this.adminRepository.publishRangeTemplateToPlatform(id, expectedRevision);
-      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+      return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
     } catch (error) {
       this.rethrowRevisionConflict(error);
     }

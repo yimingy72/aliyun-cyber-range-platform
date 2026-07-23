@@ -18,14 +18,14 @@ export class PlatformImagesController {
   @Get()
   @UseGuards(AdminAuthGuard)
   list(@Req() request: AuthenticatedAdminRequest, @Query() query: ListPlatformImagesDto) {
-    return this.imageCatalogService.listPlatformAssets(request.adminUser.id, query.view);
+    return this.imageCatalogService.listPlatformAssets(request.adminUser, query.view);
   }
 
   @Post()
   @UseGuards(AdminAuthGuard)
   collect(@Req() request: AuthenticatedAdminRequest, @Body() body: CollectPlatformImageDto) {
     return this.mcpWrite(request, 'platform_image_collect', body as unknown as Record<string, unknown>, body.snapshotId, () =>
-      this.imageCatalogService.collectPlatformAsset(body.snapshotId, body.displayName),
+      this.imageCatalogService.collectPlatformAsset(body.snapshotId, body.displayName, request.adminUser),
     );
   }
 

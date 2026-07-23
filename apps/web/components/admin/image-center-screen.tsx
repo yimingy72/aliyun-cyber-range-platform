@@ -458,9 +458,7 @@ export function ImageCenterScreen({
     setMyAssets((previous) =>
       previous.some((item) => item.id === nextAsset.id)
         ? replacePlatformAsset(previous, nextAsset)
-        : nextAsset.ownerUserId === session.profile?.id
-          ? upsertPlatformAsset(previous, nextAsset)
-          : previous,
+        : previous,
     );
   }
 
@@ -1265,7 +1263,7 @@ export function ImageCenterScreen({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        {canToggleVisibility && session.isAdmin ? (
+                        {canToggleVisibility ? (
                           <DropdownMenuItem
                             disabled={isPending || asset.sourceSnapshotAvailable === false}
                             onSelect={() =>
@@ -1581,8 +1579,9 @@ export function ImageCenterScreen({
                               {revalidationErrorRow}
                               {actionErrorRow}
                               {renderAssetRows(pagedPlatformAssets, columns, {
-                                allowManagement: (asset) => session.isAdmin || asset.ownerUserId === session.profile?.id,
-                                allowVisibilityToggle: (asset) => asset.ownerUserId === session.profile?.id,
+                                allowManagement: (asset) => asset.canManage ?? session.isAdmin,
+                                allowVisibilityToggle: (asset) =>
+                                  asset.canChangeVisibility ?? (session.isAdmin && Boolean(asset.ownerUserId)),
                               })}
                             </>
                           );
@@ -1595,7 +1594,7 @@ export function ImageCenterScreen({
                               {actionErrorRow}
                               {renderAssetRows(pagedMyAssets, columns, {
                                 allowManagement: true,
-                                allowVisibilityToggle: true,
+                                allowVisibilityToggle: (asset) => asset.canChangeVisibility ?? session.isAdmin,
                               })}
                             </>
                           );
