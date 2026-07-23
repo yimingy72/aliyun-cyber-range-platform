@@ -59,7 +59,7 @@ const activeInstanceColumns = [
   { id: 'expires-at', label: '到期时间', priority: 'detail' },
   { id: 'created-by', label: '创建人', priority: 'detail' },
   { id: 'credentials', label: '账号 / 密码', priority: 'detail' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ] as const satisfies readonly AdminDataColumn[];
 
 const historyInstanceColumns = [
@@ -1285,7 +1285,7 @@ export function SingleInstancesScreen({
     }
 
     return (
-      <div className="template-workbench-row-menu relative flex justify-end gap-1">
+      <div className="template-workbench-row-menu relative flex justify-start gap-1">
         {inlineActions.map((action) => (
           <Button
             disabled={isActionPending}
@@ -1540,7 +1540,7 @@ export function SingleInstancesScreen({
                                     <AdminDataTableCell column={columns[7]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[8]}>批次内实例</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[9]}>
-                                      <div className="flex justify-end gap-1">
+                                      <div className="flex justify-start gap-1">
                                         <Button onClick={() => handleBatchExport(group)} size="sm" type="button" variant="outline">
                                           导出
                                         </Button>

@@ -110,7 +110,7 @@ const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'description', label: '靶场描述', priority: 'detail' },
   { id: 'topology', label: '拓扑概览', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ];
 
 function readTemplateView(value: string | null): RangeTemplateView {
@@ -198,6 +198,7 @@ export function TemplatesScreen({
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingEditorTemplateId, setPendingEditorTemplateId] = useState<string | null>(null);
   const [searchName, setSearchName] = useState('');
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
@@ -617,13 +618,24 @@ export function TemplatesScreen({
   }
 
   async function handleOpenTemplateEditor(template: Scenario) {
+    if (pendingEditorTemplateId) {
+      return;
+    }
+
     if (canManageTemplate(template)) {
+      setPendingEditorTemplateId(template.id);
       router.push(`/admin/scenarios/${template.id}`);
       return;
     }
 
-    const savedTemplate = await cloneTemplateToOwnedScenario(template);
-    router.push(`/admin/scenarios/${savedTemplate.id}`);
+    setPendingEditorTemplateId(template.id);
+
+    try {
+      const savedTemplate = await cloneTemplateToOwnedScenario(template);
+      router.push(`/admin/scenarios/${savedTemplate.id}`);
+    } catch {
+      setPendingEditorTemplateId(null);
+    }
   }
 
   async function handleOpenGenerateInstance(template: Scenario) {
@@ -806,14 +818,14 @@ export function TemplatesScreen({
                           <StatusBadge status={isPublished ? 'published' : 'private'} />
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
-                          <div className="flex justify-end gap-1">
+                          <div className="flex justify-start gap-1">
                             <Button
-                              disabled={isSubmitting || !canEnterTemplate}
+                              disabled={isSubmitting || pendingEditorTemplateId !== null || !canEnterTemplate}
                               size="sm"
                               type="button"
                               onClick={() => void handleOpenTemplateEditor(template)}
                             >
-                              进入编排
+                              {pendingEditorTemplateId === template.id ? '正在进入编排...' : '进入编排'}
                             </Button>
                             {canConsumeTemplate ? (
                               <DropdownMenu>

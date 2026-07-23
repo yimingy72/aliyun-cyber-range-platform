@@ -92,14 +92,14 @@ const ASSET_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
   { id: 'createdBy', label: '创建人', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ];
 
 const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
   { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
   { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ];
 
 function createImageImportDraft(): ImageImportDialogDraft {
@@ -1242,7 +1242,7 @@ export function ImageCenterScreen({
             <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
           </AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
-            <div className="flex justify-end gap-1">
+            <div className="flex justify-start gap-1">
               {canCreate ? (
                 <Button
                   aria-label={`创建实例 ${asset.displayName}`}
@@ -1331,7 +1331,7 @@ export function ImageCenterScreen({
             <Badge variant={snapshot.isAvailable ? 'default' : 'secondary'}>{formatImageStatus(snapshot)}</Badge>
           </AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
-            <div className="flex justify-end gap-1">
+            <div className="flex justify-start gap-1">
               {session.isAdmin ? (
                 <Button
                   disabled={isCollected || isCollectPending}

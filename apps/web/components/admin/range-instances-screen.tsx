@@ -53,7 +53,7 @@ const RANGE_ACTIVE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'template', label: '所属靶场', priority: 'secondary' },
   { id: 'status', label: '状态', priority: 'primary' },
   { id: 'createdAt', label: '创建时间', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ];
 
 const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
@@ -63,7 +63,7 @@ const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'createdAt', label: '开启时间', priority: 'secondary' },
   { id: 'endedAt', label: '回收时间', priority: 'tertiary' },
   { id: 'duration', label: '运行时长', priority: 'detail' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ];
 
 function readRangeListMode(value: string | null): RangeListMode {
@@ -625,7 +625,7 @@ export function RangeInstancesScreen({
                             {getDurationLabel(instance.createdAt, endedAt)}
                           </AdminDataTableCell>
                           <AdminDataTableCell column={actionsColumn}>
-                            <div className="flex justify-end">
+                            <div className="flex justify-start">
                               <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                                 查看详情
                               </Button>
@@ -655,7 +655,7 @@ export function RangeInstancesScreen({
                           {getInstanceCreatedAt(instance)}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn}>
-                          <div className="flex justify-end gap-1">
+                          <div className="flex justify-start gap-1">
                             <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                               查看详情
                             </Button>

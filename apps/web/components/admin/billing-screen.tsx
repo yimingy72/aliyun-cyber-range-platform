@@ -104,6 +104,10 @@ function formatBillingLineSecondary(item: BillingLaunchGroup['items'][number]) {
   return item.productDetail?.trim() || item.productCode || '账单项';
 }
 
+function formatBillingGroupTitle(title: BillingLaunchGroup['title']) {
+  return title === '开启靶场实例' ? '靶场实例' : title;
+}
+
 function downloadCsv(contents: string, fileName: string) {
   const blob = new Blob([contents], { type: 'text/csv;charset=utf-8' });
   const url = window.URL.createObjectURL(blob);
@@ -564,7 +568,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                     />
                     <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">{groupTime}</span>
                     <span className="grid min-w-0 gap-1">
-                      <strong className="truncate text-sm font-medium text-foreground">{group.title}</strong>
+                      <strong className="truncate text-sm font-medium text-foreground">{formatBillingGroupTitle(group.title)}</strong>
                       <span className="truncate text-xs text-muted-foreground">
                         {[ownerName, group.instance?.name, `${group.resourceCount} 项资源`].filter(Boolean).join(' · ')}
                       </span>
@@ -575,7 +579,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                   </button>
 
                   {isExpanded ? (
-                    <div className="border-t border-border bg-muted/25 pl-10 sm:pl-[calc(2.25rem+9rem)]">
+                    <div className="border-t border-border bg-muted/25 pl-10 sm:pl-10">
                       {group.items.map((item) => (
                         <div
                           key={item.id}

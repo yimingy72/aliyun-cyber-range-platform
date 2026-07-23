@@ -69,10 +69,10 @@ const EMPTY_CREATE_USER_DRAFT: CreateAdminUserInput = {
 const USER_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'username', label: '用户名', priority: 'primary' },
   { id: 'role', label: '角色', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'primary' },
   { id: 'createdAt', label: '创建时间', priority: 'tertiary' },
   { id: 'updatedAt', label: '更新时间', priority: 'detail' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right' },
+  { id: 'status', label: '状态', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary' },
 ];
 
 function getUserRoleLabel(role: AdminUser['role']) {
@@ -482,7 +482,7 @@ export function UsersScreen({
             <div className="mt-4">
               <AdminDataTable columns={USER_COLUMNS} isRefreshing={isRefreshing} label="用户列表">
                 {(columns) => {
-                  const [usernameColumn, roleColumn, statusColumn, createdAtColumn, updatedAtColumn, actionsColumn] = columns;
+                  const [usernameColumn, roleColumn, createdAtColumn, updatedAtColumn, statusColumn, actionsColumn] = columns;
 
                   if (isBootstrapLoading) {
                     return <TableLoadingState columnCount={columns.length} label="正在加载用户列表" rowCount={5} />;
@@ -542,13 +542,13 @@ export function UsersScreen({
                           {user.username}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={roleColumn!}>{getUserRoleLabel(user.role)}</AdminDataTableCell>
+                        <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
+                        <AdminDataTableCell column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={statusColumn!}>
                           <StatusBadge status={user.status === 'active' ? 'enabled' : user.status} />
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
-                        <AdminDataTableCell column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
-                          <div className="flex justify-end gap-1">
+                          <div className="flex justify-start gap-1">
                             <Button
                               disabled={isSubmitting}
                               onClick={() =>

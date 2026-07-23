@@ -78,7 +78,9 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
                   </TabsTrigger>
                 ))}
               </TabsList>
-              {props.action}
+              <div className="flex min-w-[6.75rem] justify-end" data-testid="admin-list-toolbar-view-action">
+                {props.action}
+              </div>
             </>
           }
           search={search}

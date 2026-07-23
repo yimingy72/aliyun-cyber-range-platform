@@ -106,6 +106,19 @@ describe('UsersScreen', () => {
     expect(screen.getAllByText('管理员').length).toBeGreaterThan(0);
     expect(screen.getByText('普通用户')).toBeTruthy();
     expect(screen.getAllByText('已启用').length).toBeGreaterThan(0);
+
+    const table = screen.getByRole('table', { name: '用户列表' });
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((header) => header.textContent),
+    ).toEqual(['用户名', '角色', '创建时间', '更新时间', '状态', '操作']);
+
+    const actionsHeader = within(table).getByRole('columnheader', { name: '操作' });
+    const actionsCell = within(screen.getByRole('row', { name: /operator/ })).getByRole('button', { name: '禁用用户' }).parentElement;
+
+    expect(actionsHeader.className).not.toContain('text-right');
+    expect(actionsCell?.className).toContain('justify-start');
   });
 
   it('renders an empty user list inside the shared table body', async () => {

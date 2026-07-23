@@ -79,4 +79,28 @@ describe('AdminListToolbar', () => {
     expect(screen.queryByRole('tabpanel')).toBeNull();
     expect(screen.getByText('镜像列表')).toBeTruthy();
   });
+
+  it('reserves a stable view-action slot when a tabbed toolbar has no action', () => {
+    render(
+      <AdminListToolbar
+        activeView="platform"
+        onSearchChange={vi.fn()}
+        onViewChange={vi.fn()}
+        searchLabel="筛选镜像名"
+        searchPlaceholder="搜索镜像名"
+        searchValue=""
+        views={[
+          { value: 'platform', label: '平台镜像' },
+          { value: 'mine', label: '我的镜像' },
+        ]}
+      >
+        <div>镜像列表</div>
+      </AdminListToolbar>,
+    );
+
+    const actionSlot = screen.getByTestId('admin-list-toolbar-view-action');
+
+    expect(actionSlot.className).toContain('min-w-[6.75rem]');
+    expect(actionSlot.textContent).toBe('');
+  });
 });

@@ -223,6 +223,23 @@ afterEach(() => {
 });
 
 describe('TemplateEditorScreen', () => {
+  it('keeps the editor workspace shape while loading a routed template', () => {
+    fetchRangeTemplateByIdMock.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the route request pending to verify the destination loading frame.
+        }),
+    );
+
+    render(<TemplateEditorScreen templateId="template-1" />);
+
+    expect(screen.getByRole('status', { name: '正在加载靶场编排页' })).toBeTruthy();
+    expect(screen.getByTestId('template-editor-loading-grid')).toBeTruthy();
+    expect(screen.getByText('资源面板')).toBeTruthy();
+    expect(screen.getByText('拓扑画布')).toBeTruthy();
+    expect(screen.getByText('属性面板')).toBeTruthy();
+  });
+
   it('renders a topology editor workspace with palette, canvas, and property panel', () => {
     render(
       <TemplateEditorScreen

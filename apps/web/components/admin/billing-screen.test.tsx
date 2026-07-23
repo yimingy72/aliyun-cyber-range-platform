@@ -200,7 +200,8 @@ describe('BillingScreen', () => {
     expect(heading.closest('.admin-workbench-surface')).toBeTruthy();
     expect(screen.getByRole('region', { name: '费用明细' })).toBeTruthy();
     await screen.findByText('用户明细');
-    await screen.findByText('开启靶场实例');
+    await screen.findByText('靶场实例');
+    expect(screen.queryByText('开启靶场实例')).toBeNull();
     expect(screen.getByText(/02:03:42/)).toBeTruthy();
     expect(screen.getByText('账期')).toBeTruthy();
     expect(screen.queryByText('待确认归属')).toBeNull();
@@ -219,8 +220,11 @@ describe('BillingScreen', () => {
       expect.objectContaining({ limit: 500 }),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /开启靶场实例/ }));
+    fireEvent.click(screen.getByRole('button', { name: /靶场实例/ }));
     await screen.findByText('CNY');
+
+    const billingDate = screen.getByText('账期 2026-07-16');
+    expect(billingDate.parentElement?.parentElement?.className).toContain('sm:pl-10');
 
     fireEvent.keyDown(screen.getByRole('button', { name: '导出账单' }), { key: 'Enter' });
     await screen.findByRole('menuitem', { name: '导出平台账单' });
@@ -360,7 +364,7 @@ describe('BillingScreen', () => {
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByText('开启靶场实例');
+    await screen.findByText('靶场实例');
     const detailWorkspace = screen.getByRole('region', { name: '费用明细' });
 
     fireEvent.click(screen.getByRole('button', { name: '用户明细' }));
@@ -382,7 +386,7 @@ describe('BillingScreen', () => {
 
     const userBillingPanel = screen.getByLabelText('用户账单');
     fireEvent.click(within(userBillingPanel).getByRole('button', { name: /alice/i }));
-    await screen.findByText('开启靶场实例');
+    await screen.findByText('靶场实例');
 
     fireEvent.click(within(userBillingPanel).getByRole('button', { name: /alice/i }));
 

@@ -497,6 +497,22 @@ describe('TemplatesScreen', () => {
     });
   });
 
+  it('keeps the selected row in a pending state while entering an editable topology', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    const row = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+    const enterButton = within(row).getByRole('button', { name: '进入编排' });
+
+    fireEvent.click(enterButton);
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-2');
+    expect(enterButton.disabled).toBe(true);
+    expect(within(row).getByRole('button', { name: '正在进入编排...' })).toBeTruthy();
+  });
+
   it('lets admins edit a platform template they do not own without moving it into 我的拓扑', async () => {
     const sharedPlatformTemplate = {
       ...bootstrapPayload.rangeTemplates[0],
