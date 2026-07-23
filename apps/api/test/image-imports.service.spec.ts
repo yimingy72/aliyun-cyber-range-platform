@@ -219,8 +219,8 @@ describe('ImageImportsService', () => {
         regionId: CONTEXT.regionId,
         cloudResourceId: 'm-imported-image',
         cloudResourceType: 'image',
-        billingScope: 'user',
-        ownerUserId: USER.id,
+        billingScope: 'platform',
+        ownerUserId: null,
         platformImageAssetId: 'asset-1',
       }),
     );
@@ -228,8 +228,8 @@ describe('ImageImportsService', () => {
       expect.objectContaining({
         cloudResourceId: 'm-imported-image',
         cloudResourceType: 'snapshot',
-        billingScope: 'user',
-        ownerUserId: USER.id,
+        billingScope: 'platform',
+        ownerUserId: null,
         platformImageAssetId: 'asset-1',
       }),
     );

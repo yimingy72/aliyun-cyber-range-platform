@@ -70,12 +70,6 @@ function readNumber(line: RawBillLine, key: string) {
   return 0;
 }
 
-const SNAPSHOT_RELATED_RESOURCE_TYPES = new Set<BillingLedgerResourceRecord['cloudResourceType']>([
-  'snapshot',
-  'image',
-  'snapshot_region',
-]);
-
 @Injectable()
 export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
@@ -135,7 +129,6 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const ledgerResources = await this.adminRepository.listBillingLedgerResources();
       let importedLineItems = 0;
       let anomalyCount = 0;
-      let deferredCount = 0;
 
       for (const billingDate of dates) {
         const syncBatchId = `billing-sync:${billingDate}`;
@@ -147,26 +140,32 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         for (const line of items) {
           const classification = classifyBillLine(line);
 
-          if (classification.kind === 'deferred') {
-            deferredCount += 1;
-            await this.adminRepository.createBillingAnomaly({
-              syncBatchId,
-              sourceFingerprint: this.buildSourceFingerprint(
+          if (classification.kind === 'platform') {
+            await this.adminRepository.upsertBillingLineItems([
+              {
                 syncBatchId,
-                classification.cloudResourceType,
-                classification.cloudResourceId,
-                readString(line, 'BillingItem'),
-              ),
-              billCycle: billingDate.slice(0, 7),
-              billingDate,
-              cloudResourceId: classification.cloudResourceId,
-              cloudResourceType: classification.cloudResourceType,
-              pretaxAmount: readNumber(line, 'PretaxAmount'),
-              currency: readString(line, 'Currency') || 'CNY',
-              reason: this.resolveAnomalyReason(classification),
-              rawPayload: line,
-            });
-            anomalyCount += 1;
+                sourceFingerprint: this.buildSourceFingerprint(
+                  syncBatchId,
+                  classification.cloudResourceType,
+                  classification.cloudResourceId,
+                  readString(line, 'BillingItem'),
+                ),
+                billCycle: billingDate.slice(0, 7),
+                billingDate,
+                productCode: readString(line, 'ProductCode'),
+                productDetail: readString(line, 'ProductDetail') || null,
+                billItem: readString(line, 'BillingItem'),
+                cloudResourceId: classification.cloudResourceId,
+                cloudResourceType: classification.cloudResourceType,
+                pretaxAmount: readNumber(line, 'PretaxAmount'),
+                currency: readString(line, 'Currency') || 'CNY',
+                billingScope: 'platform',
+                ownerUserId: null,
+                matchedLedgerId: null,
+                rawPayload: line,
+              },
+            ]);
+            importedLineItems += 1;
             continue;
           }
 
@@ -227,7 +226,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         syncedDays: dates.length,
         importedLineItems,
         anomalyCount,
-        deferredCount,
+        deferredCount: 0,
       };
     } finally {
       this.isRunning = false;
@@ -243,19 +242,6 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     classification: ReturnType<typeof classifyBillLine>,
     billingDate: string,
   ) {
-    if (classification.kind === 'aggregated') {
-      if (classification.cloudResourceType === 'snapshot_region') {
-        return ledgerResources.some(
-          (item) =>
-            item.regionId === classification.cloudResourceId &&
-            SNAPSHOT_RELATED_RESOURCE_TYPES.has(item.cloudResourceType) &&
-            isLedgerActiveForBillingDate(item, billingDate),
-        );
-      }
-
-      return false;
-    }
-
     if (!classification.cloudResourceId) {
       return false;
     }
@@ -275,7 +261,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       return `该账单已识别为平台范围内的聚合费用，但当前缺少归属规则：${classification.cloudResourceType}`;
     }
 
-    if (classification.kind === 'unknown' || classification.kind === 'deferred') {
+    if (classification.kind === 'unknown') {
       return classification.reason;
     }
 

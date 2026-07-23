@@ -18,11 +18,10 @@ type AggregatedClassification = {
   cloudResourceType: BillingLedgerResourceType;
 };
 
-type DeferredClassification = {
-  kind: 'deferred';
+type PlatformClassification = {
+  kind: 'platform';
   cloudResourceId: string;
   cloudResourceType: BillingLedgerResourceType;
-  reason: string;
 };
 
 type UnknownClassification = {
@@ -35,15 +34,12 @@ type UnknownClassification = {
 export type BillLineClassification =
   | DirectClassification
   | AggregatedClassification
-  | DeferredClassification
+  | PlatformClassification
   | UnknownClassification;
 
 function normalizeText(value: string | undefined) {
   return value?.trim() ?? '';
 }
-
-const OSS_DEFERRED_REASON =
-  'OSS 账单暂不纳入当前版本的归属范围，待明确独立所有权边界后再处理。';
 
 export function classifyBillLine(line: RawBillLine): BillLineClassification {
   const productCode = normalizeText(line.ProductCode).toLowerCase();
@@ -76,7 +72,7 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
 
   if (productCode === 'snapshot' && billingItem === '快照链容量') {
     return {
-      kind: 'aggregated',
+      kind: 'platform',
       cloudResourceId: instanceId,
       cloudResourceType: 'snapshot_region',
     };
@@ -84,10 +80,9 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
 
   if (productCode === 'oss') {
     return {
-      kind: 'deferred',
+      kind: 'platform',
       cloudResourceId: instanceId,
       cloudResourceType: 'unknown',
-      reason: OSS_DEFERRED_REASON,
     };
   }
 

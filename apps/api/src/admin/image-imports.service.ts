@@ -382,7 +382,6 @@ export class ImageImportsService {
     ) {
       await this.syncImportedImageBillingLedger({
         imageId: job.imageId,
-        ownerUserId: job.ownerUserId,
         platformImageAssetId: linkedPlatformImageAsset.id,
         regionId: context.regionId,
         accountUid: context.accountUid,
@@ -423,7 +422,6 @@ export class ImageImportsService {
     await this.adminRepository.setPlatformImageAssetEnabled(platformImageAsset.id, false);
     await this.syncImportedImageBillingLedger({
       imageId: job.imageId,
-      ownerUserId: job.ownerUserId,
       platformImageAssetId: platformImageAsset.id,
       regionId: context.regionId,
       accountUid: context.accountUid,
@@ -442,7 +440,6 @@ export class ImageImportsService {
 
   private async syncImportedImageBillingLedger(input: {
     imageId: string;
-    ownerUserId: string;
     platformImageAssetId: string;
     regionId: string;
     accountUid: string;
@@ -458,8 +455,8 @@ export class ImageImportsService {
 
       if (existing) {
         await this.adminRepository.updateBillingLedgerResource(existing.id, {
-          billingScope: 'user',
-          ownerUserId: input.ownerUserId,
+          billingScope: 'platform',
+          ownerUserId: null,
           platformImageAssetId: input.platformImageAssetId,
           releasedAt: null,
         });
@@ -472,8 +469,8 @@ export class ImageImportsService {
         regionId: input.regionId,
         cloudResourceId: input.imageId,
         cloudResourceType,
-        billingScope: 'user',
-        ownerUserId: input.ownerUserId,
+        billingScope: 'platform',
+        ownerUserId: null,
         platformImageAssetId: input.platformImageAssetId,
         billingStartAt: input.billingStartAt,
         tagsSnapshot: {},

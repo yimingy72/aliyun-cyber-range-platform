@@ -3,7 +3,7 @@ import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('BillingSyncService', () => {
-  it('persists direct bill lines and surfaces aggregated and deferred OSS costs as anomalies', async () => {
+  it('attributes OSS and snapshot storage costs to the platform while retaining instance costs for the owner', async () => {
     const repository = createMemoryAdminRepository();
 
     const ledger = await repository.createBillingLedgerResource({
@@ -15,15 +15,6 @@ describe('BillingSyncService', () => {
       billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
       tagsSnapshot: {},
     });
-    await repository.createBillingLedgerResource({
-      regionId: 'cn-hangzhou',
-      cloudResourceId: 's-test-1',
-      cloudResourceType: 'snapshot',
-      billingScope: 'platform',
-      billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
-      tagsSnapshot: {},
-    });
-
     const service = new BillingSyncService(
       repository,
       {
@@ -63,9 +54,9 @@ describe('BillingSyncService', () => {
       }),
     ).resolves.toEqual({
       syncedDays: 1,
-      importedLineItems: 1,
-      anomalyCount: 2,
-      deferredCount: 1,
+      importedLineItems: 3,
+      anomalyCount: 0,
+      deferredCount: 0,
     });
 
     await expect(
@@ -73,33 +64,38 @@ describe('BillingSyncService', () => {
         startAt: '2026-07-16',
         endAt: '2026-07-16',
       }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        cloudResourceId: 'i-test-1',
-        cloudResourceType: 'ecs',
-        ownerUserId: 'user-1',
-        matchedLedgerId: ledger.id,
-      }),
-    ]);
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'i-test-1',
+          cloudResourceType: 'ecs',
+          billingScope: 'user',
+          ownerUserId: 'user-1',
+          matchedLedgerId: ledger.id,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'cn-hangzhou',
+          cloudResourceType: 'snapshot_region',
+          billingScope: 'platform',
+          ownerUserId: null,
+          matchedLedgerId: null,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'cn-hangzhou;standard-zrs',
+          cloudResourceType: 'unknown',
+          billingScope: 'platform',
+          ownerUserId: null,
+          matchedLedgerId: null,
+        }),
+      ]),
+    );
 
     await expect(
       repository.listBillingAnomalies({
         startAt: '2026-07-16',
         endAt: '2026-07-16',
       }),
-    ).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          cloudResourceId: 'cn-hangzhou',
-          cloudResourceType: 'snapshot_region',
-        }),
-        expect.objectContaining({
-          cloudResourceId: 'cn-hangzhou;standard-zrs',
-          cloudResourceType: 'unknown',
-          reason: expect.stringContaining('OSS'),
-        }),
-      ]),
-    );
+    ).resolves.toEqual([]);
   });
 
   it('ignores direct bill lines that are outside the platform ledger scope', async () => {

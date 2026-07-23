@@ -15,7 +15,7 @@ describe('classifyBillLine', () => {
     });
   });
 
-  it('classifies snapshot chain capacity as an aggregated regional charge', () => {
+  it('classifies snapshot chain capacity as a platform charge', () => {
     expect(
       classifyBillLine({
         ProductCode: 'snapshot',
@@ -23,7 +23,7 @@ describe('classifyBillLine', () => {
         InstanceID: 'cn-hangzhou',
       }),
     ).toEqual({
-      kind: 'aggregated',
+      kind: 'platform',
       cloudResourceId: 'cn-hangzhou',
       cloudResourceType: 'snapshot_region',
     });
@@ -43,7 +43,7 @@ describe('classifyBillLine', () => {
     });
   });
 
-  it('marks shared-account oss charges as deferred from v1 attribution', () => {
+  it('classifies OSS storage and traffic charges as platform costs', () => {
     expect(
       classifyBillLine({
         ProductCode: 'oss',
@@ -51,10 +51,9 @@ describe('classifyBillLine', () => {
         InstanceID: 'cn-hangzhou;standard-zrs',
       }),
     ).toEqual({
-      kind: 'deferred',
+      kind: 'platform',
       cloudResourceId: 'cn-hangzhou;standard-zrs',
       cloudResourceType: 'unknown',
-      reason: 'OSS 账单暂不纳入当前版本的归属范围，待明确独立所有权边界后再处理。',
     });
   });
 });
