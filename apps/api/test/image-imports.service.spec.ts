@@ -176,6 +176,8 @@ describe('ImageImportsService', () => {
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
       setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: false }),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const imageImportJob = {
       findUnique: jest.fn().mockResolvedValue(job),
@@ -211,6 +213,26 @@ describe('ImageImportsService', () => {
       }),
     );
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).toHaveBeenCalledWith('asset-1', false);
+    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloudAccountUid: CONTEXT.accountUid,
+        regionId: CONTEXT.regionId,
+        cloudResourceId: 'm-imported-image',
+        cloudResourceType: 'image',
+        billingScope: 'user',
+        ownerUserId: USER.id,
+        platformImageAssetId: 'asset-1',
+      }),
+    );
+    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloudResourceId: 'm-imported-image',
+        cloudResourceType: 'snapshot',
+        billingScope: 'user',
+        ownerUserId: USER.id,
+        platformImageAssetId: 'asset-1',
+      }),
+    );
     expect(result).not.toHaveProperty('defaultPassword');
     expect(String((global.fetch as jest.Mock).mock.calls[1][0])).not.toContain(CONTEXT.accessKeySecret);
   });
@@ -253,6 +275,8 @@ describe('ImageImportsService', () => {
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
       setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: true }),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const imageImportJob = {
       findUnique: jest.fn().mockResolvedValue(job),
@@ -290,6 +314,7 @@ describe('ImageImportsService', () => {
     expect(result).toEqual(expect.objectContaining({ status: 'available', imageId: job.imageId }));
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).toHaveBeenCalledWith('asset-1', true);
     expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledTimes(2);
     expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(
       expect.objectContaining({ method: 'DELETE' }),
     );
@@ -314,6 +339,8 @@ describe('ImageImportsService', () => {
         sourceSnapshotId: 'snapshot-1',
       }),
       setPlatformImageAssetEnabled: jest.fn().mockRejectedValue(new Error('asset update unavailable')),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const imageImportJob = {
       findUnique: jest.fn().mockResolvedValue(job),
@@ -387,6 +414,8 @@ describe('ImageImportsService', () => {
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'asset-1' }),
       setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'asset-1', enabled: false }),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const imageImportJob = {
       findUnique: jest.fn().mockResolvedValue(job),
@@ -479,6 +508,8 @@ describe('ImageImportsService', () => {
         imageId: job.imageId,
         sourceSnapshotId: 'snapshot-1',
       }),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
@@ -623,6 +654,8 @@ describe('ImageImportsService', () => {
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       collectPlatformImageAsset: jest.fn().mockResolvedValue({ id: 'recovered-asset-1' }),
       setPlatformImageAssetEnabled: jest.fn().mockResolvedValue({ id: 'recovered-asset-1', enabled: true }),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
@@ -734,6 +767,8 @@ describe('ImageImportsService', () => {
         imageId: 'm-image-21',
         sourceSnapshotId: 'snapshot-21',
       }),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
     };
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest.fn().mockResolvedValue(

@@ -141,10 +141,7 @@ export class RangesController {
       id,
       nodeId,
       action,
-      {
-        ...this.sanitizeNodeActionPayload(body),
-        ownerUserId: request.adminUser.id,
-      },
+      this.sanitizeNodeActionPayload(body),
       request.adminUser,
     );
   }

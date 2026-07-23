@@ -137,7 +137,7 @@ export class RangeInstanceNodeActionsService {
     const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
     const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
     const description = payload.description?.trim() || null;
-    const ownerUserId = payload.ownerUserId?.trim() || instance.ownerUserId || null;
+    const ownerUserId = instance.ownerUserId ?? instance.createdBy;
     const createImageResponse = await this.performAliyunRpcRequest<{
       ImageId?: string;
     }>({

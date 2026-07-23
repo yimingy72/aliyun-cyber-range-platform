@@ -147,7 +147,7 @@ export class SingleInstancesController {
     @Param('action') action: 'reboot' | 'open-vnc' | 'pack-image',
     @Body() body: Record<string, unknown>,
   ) {
-    const payload = { ownerUserId: request.adminUser.id, ...this.sanitizeActionPayload(body) };
+    const payload = this.sanitizeActionPayload(body);
     if (request.authContext.source === 'mcp' && action === 'open-vnc') {
       const metadata = readOperationRequestMetadata(request);
       return this.singleInstancesService.runAction(id, action, request.adminUser, payload).then((result) => {

@@ -49,6 +49,7 @@ describe('Range instance node actions API', () => {
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
+    process.env.PLATFORM_IMAGE_SECRET_KEY = 'node-action-test-image-secret';
 
     fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -251,7 +252,7 @@ describe('Range instance node actions API', () => {
         imageId: 'm-image-123',
         displayName: 'checker-snapshot',
         defaultHostName: 'checker-host',
-        defaultPassword: 'DefaultPass123!',
+        defaultPassword: expect.stringMatching(/^enc:v1:/),
         description: 'snapshot note',
         ownerUserId: 'admin',
         visibility: 'private',
@@ -307,7 +308,7 @@ describe('Range instance node actions API', () => {
         imageId: 'm-image-single-456',
         displayName: 'single-snapshot',
         defaultHostName: 'single-host',
-        defaultPassword: 'SinglePass123!',
+        defaultPassword: expect.stringMatching(/^enc:v1:/),
         description: 'single snapshot note',
         ownerUserId: 'admin',
         visibility: 'private',
@@ -332,6 +333,151 @@ describe('Range instance node actions API', () => {
     expect(createImageRequests[0]).toContain('PlatformScope');
     expect(createImageRequests[0]).toContain('RangeInstanceId');
     expect(createImageRequests[0]).toContain('BillingStartAt');
+  });
+
+  it('keeps a packed image and its billing ledger assigned to the instance owner when an admin performs the action', async () => {
+    const owner = await repository.createPlatformUser({
+      id: 'user-image-owner',
+      username: 'image-owner',
+      passwordHash: 'unused',
+      role: 'user',
+    });
+    const ownerInstance = await repository.createRangeInstance({
+      name: 'owner-node-action-single',
+      createdBy: owner.id,
+      ownerUserId: owner.id,
+      instanceMode: 'single',
+      status: 'running',
+      singleInstanceConfig: {
+        baseName: 'owner-node-action-single',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-owner',
+        hostName: 'single-ecs-owner',
+        platformImageAssetId: singlePlatformImageAssetId,
+        imageId: 'm-image-123',
+        imageDisplayName: 'Ubuntu',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: {
+          'single-ecs-owner': 'i-instance-owner-123',
+        },
+      },
+    });
+
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('CreateImage')) {
+        return new Response(JSON.stringify({ ImageId: 'm-image-owner-789' }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/instances/${ownerInstance.id}/actions/pack-image`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: 'owner-snapshot',
+        defaultPassword: 'OwnerPass123!',
+      })
+      .expect(201);
+
+    expect(response.body.platformImageAsset).toEqual(
+      expect.objectContaining({
+        imageId: 'm-image-owner-789',
+        ownerUserId: owner.id,
+        visibility: 'private',
+      }),
+    );
+    await expect(repository.listBillingLedgerResources()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'm-image-owner-789',
+          cloudResourceType: 'image',
+          ownerUserId: owner.id,
+          billingScope: 'user',
+          rangeInstanceId: ownerInstance.id,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'm-image-owner-789',
+          cloudResourceType: 'snapshot',
+          ownerUserId: owner.id,
+          billingScope: 'user',
+          rangeInstanceId: ownerInstance.id,
+        }),
+      ]),
+    );
+  });
+
+  it('keeps a range-node packed image assigned to the range owner when an admin performs the action', async () => {
+    const owner = await repository.createPlatformUser({
+      id: 'user-range-image-owner',
+      username: 'range-image-owner',
+      passwordHash: 'unused',
+      role: 'user',
+    });
+    const ownerRange = await repository.createRangeInstance({
+      name: 'owner-node-action-range',
+      createdBy: owner.id,
+      ownerUserId: owner.id,
+      status: 'running',
+      resourceSummary: {
+        mode: 'opentofu',
+        hostIds: {
+          'ecs-owner': 'i-instance-range-owner-123',
+        },
+      },
+    });
+
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('CreateImage')) {
+        return new Response(JSON.stringify({ ImageId: 'm-image-range-owner-790' }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/ranges/${ownerRange.id}/nodes/ecs-owner/actions/pack-image`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: 'range-owner-snapshot',
+        defaultPassword: 'RangeOwnerPass123!',
+      })
+      .expect(201);
+
+    expect(response.body.platformImageAsset).toEqual(
+      expect.objectContaining({
+        imageId: 'm-image-range-owner-790',
+        ownerUserId: owner.id,
+        visibility: 'private',
+      }),
+    );
+    await expect(repository.listBillingLedgerResources()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'm-image-range-owner-790',
+          cloudResourceType: 'image',
+          ownerUserId: owner.id,
+          billingScope: 'user',
+          rangeInstanceId: ownerRange.id,
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'm-image-range-owner-790',
+          cloudResourceType: 'snapshot',
+          ownerUserId: owner.id,
+          billingScope: 'user',
+          rangeInstanceId: ownerRange.id,
+        }),
+      ]),
+    );
   });
 
   it('rejects malformed metadata on a single instance row action with 400', async () => {

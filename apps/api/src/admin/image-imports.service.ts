@@ -370,6 +370,14 @@ export class ImageImportsService {
       linkedPlatformImageAsset.imageId === job.imageId &&
       linkedPlatformImageAsset.sourceSnapshotId === sourceSnapshot.id
     ) {
+      await this.syncImportedImageBillingLedger({
+        imageId: job.imageId,
+        ownerUserId: job.ownerUserId,
+        platformImageAssetId: linkedPlatformImageAsset.id,
+        regionId: context.regionId,
+        accountUid: context.accountUid,
+        billingStartAt: job.uploadCompletedAt ?? job.createdAt,
+      });
       return job;
     }
 
@@ -403,6 +411,14 @@ export class ImageImportsService {
       visibility: 'private',
     });
     await this.adminRepository.setPlatformImageAssetEnabled(platformImageAsset.id, false);
+    await this.syncImportedImageBillingLedger({
+      imageId: job.imageId,
+      ownerUserId: job.ownerUserId,
+      platformImageAssetId: platformImageAsset.id,
+      regionId: context.regionId,
+      accountUid: context.accountUid,
+      billingStartAt: syncedAt,
+    });
 
     return this.prisma.imageImportJob.update({
       where: { id: job.id },
@@ -412,6 +428,47 @@ export class ImageImportsService {
         errorMessage: null,
       },
     });
+  }
+
+  private async syncImportedImageBillingLedger(input: {
+    imageId: string;
+    ownerUserId: string;
+    platformImageAssetId: string;
+    regionId: string;
+    accountUid: string;
+    billingStartAt: Date;
+  }) {
+    for (const cloudResourceType of ['image', 'snapshot'] as const) {
+      const existing = await this.adminRepository.findBillingLedgerResource({
+        cloudProvider: 'alibaba_cloud',
+        regionId: input.regionId,
+        cloudResourceId: input.imageId,
+        cloudResourceType,
+      });
+
+      if (existing) {
+        await this.adminRepository.updateBillingLedgerResource(existing.id, {
+          billingScope: 'user',
+          ownerUserId: input.ownerUserId,
+          platformImageAssetId: input.platformImageAssetId,
+          releasedAt: null,
+        });
+        continue;
+      }
+
+      await this.adminRepository.createBillingLedgerResource({
+        cloudProvider: 'alibaba_cloud',
+        cloudAccountUid: input.accountUid,
+        regionId: input.regionId,
+        cloudResourceId: input.imageId,
+        cloudResourceType,
+        billingScope: 'user',
+        ownerUserId: input.ownerUserId,
+        platformImageAssetId: input.platformImageAssetId,
+        billingStartAt: input.billingStartAt,
+        tagsSnapshot: {},
+      });
+    }
   }
 
   private async resolveSnapshot(context: CloudAccountContextCredentials, imageId: string): Promise<CloudImageSnapshotRecord> {
