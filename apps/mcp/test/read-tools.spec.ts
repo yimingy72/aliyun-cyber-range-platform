@@ -58,6 +58,7 @@ function createAuthoringTemplate(topologyGraph = authoringGraph, topologySpec?: 
     cloudProvider: 'alibaba_cloud',
     iacType: 'opentofu',
     modulePathOrRef: 'modules/enterprise-range',
+    revision: 7,
     topologyGraph,
     ...(topologySpec ? { topologySpec } : {}),
   };
@@ -70,7 +71,7 @@ function createClientStub(): ClientStub {
     createRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-2' }),
     updateRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     cloneRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-2' }),
-    validateRangeTemplate: vi.fn().mockResolvedValue({ valid: true }),
+    saveRangeTemplateTopology: vi.fn().mockResolvedValue({ id: 'tpl-1', revision: 8 }),
     publishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     unpublishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
@@ -296,9 +297,10 @@ describe('tool registry', () => {
       topologyGraph: authoringGraph,
     });
 
-    expect(client.updateRangeTemplate).toHaveBeenCalledWith(
+    expect(client.saveRangeTemplateTopology).toHaveBeenCalledWith(
       'tpl-1',
       expect.objectContaining({
+        expectedRevision: 7,
         topologyGraph: authoringGraph,
         topologySpec: expect.objectContaining({
           publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'ssh', port: 22 }, { protocol: 'http', port: 80 }] },
@@ -306,10 +308,6 @@ describe('tool registry', () => {
         scenarioTemplateSpec: expect.any(Object),
         compiledProvisionSpec: expect.any(Object),
       }),
-      { idempotencyKey: undefined, confirmationId: undefined },
-    );
-    expect(client.validateRangeTemplate).toHaveBeenCalledWith(
-      'tpl-1',
       { idempotencyKey: undefined, confirmationId: undefined },
     );
   });
@@ -617,9 +615,10 @@ describe('tool registry', () => {
       topologyGraph: structuredClone(authoringGraph),
     });
 
-    expect(client.updateRangeTemplate).toHaveBeenCalledWith(
+    expect(client.saveRangeTemplateTopology).toHaveBeenCalledWith(
       'tpl-1',
       expect.objectContaining({
+        expectedRevision: 7,
         topologyGraph: expect.objectContaining({
           nodes: expect.arrayContaining([expect.objectContaining({ id: 'ecs-nginx', customPassword: 'SecretPass123!' })]),
         }),

@@ -99,18 +99,8 @@ export const templateCreateInputSchema = operationSchema.extend({
 export const templateUpdateInputSchema = templateWriteSchema.extend({
   updates: z.object({
     name: identifier.optional(),
-    slug: identifier.optional(),
-    version: identifier.optional(),
     description: z.string().optional(),
-    cloudProvider: z.literal('alibaba_cloud').optional(),
-    iacType: z.enum(['opentofu', 'terraform']).optional(),
-    modulePathOrRef: identifier.optional(),
-    defaultRegion: identifier.optional(),
-    defaultZoneId: identifier.optional(),
-    variableSchema: optionalRecord,
-    outputSchema: optionalRecord,
-    defaultNetworkPolicy: optionalRecord,
-  }).strict(),
+  }).strict().refine((updates) => updates.name !== undefined || updates.description !== undefined, '至少提供 name 或 description'),
 });
 export const templateCloneInputSchema = templateWriteSchema;
 export const templateDetectAndSaveInputSchema = templateWriteSchema.extend({

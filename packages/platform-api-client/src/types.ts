@@ -31,7 +31,19 @@ export type CreateRangeTemplateInput = Record<string, unknown> & {
   modulePathOrRef: string;
   topologySpec: Record<string, unknown>;
 };
-export type UpdateRangeTemplateInput = Record<string, unknown>;
+export type UpdateRangeTemplateInput = {
+  expectedRevision: number;
+  name?: string;
+  description?: string;
+};
+export type SaveRangeTemplateTopologyInput = {
+  expectedRevision: number;
+  topologySpec: Record<string, unknown>;
+  topologyGraph: Record<string, unknown>;
+  scenarioTemplateSpec: Record<string, unknown>;
+  compiledProvisionSpec: Record<string, unknown>;
+  compiledSpec: Record<string, unknown>;
+};
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
 export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
 export type ProvisionJob = Record<string, unknown> & { id: string };
@@ -132,9 +144,9 @@ export type PlatformApiClientLike = {
   createRangeTemplate(payload: CreateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;
   updateRangeTemplate(id: string, payload: UpdateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;
   cloneRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
-  validateRangeTemplate(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
-  publishRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
-  unpublishRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  saveRangeTemplateTopology(id: string, payload: SaveRangeTemplateTopologyInput, operation?: OperationRequest): Promise<RangeTemplate>;
+  publishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
+  unpublishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
   removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;

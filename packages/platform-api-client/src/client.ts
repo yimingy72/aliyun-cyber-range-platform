@@ -24,6 +24,7 @@ import type {
   SingleInstanceActionPayload,
   SingleInstanceListPayload,
   SaveRangeInstanceDraftInput,
+  SaveRangeTemplateTopologyInput,
   UpdateAdminUserRoleInput,
   UpdateAdminUserStatusInput,
   UpdateRangeTemplateInput,
@@ -87,16 +88,20 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.templateAction<RangeTemplate>(id, 'clone', operation);
   }
 
-  validateRangeTemplate(id: string, operation?: OperationRequest) {
-    return this.templateAction<Record<string, unknown>>(id, 'validate', operation);
+  saveRangeTemplateTopology(id: string, payload: SaveRangeTemplateTopologyInput, operation?: OperationRequest) {
+    return this.request<RangeTemplate>(`/admin/scenarios/${encodeURIComponent(id)}/validate-and-save`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      operation,
+    });
   }
 
-  publishRangeTemplate(id: string, operation?: OperationRequest) {
-    return this.templateAction<RangeTemplate>(id, 'publish', operation);
+  publishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest) {
+    return this.templateRevisionAction(id, 'share', expectedRevision, operation);
   }
 
-  unpublishRangeTemplate(id: string, operation?: OperationRequest) {
-    return this.templateAction<RangeTemplate>(id, 'unpublish', operation);
+  unpublishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest) {
+    return this.templateRevisionAction(id, 'unshare', expectedRevision, operation);
   }
 
   async removeRangeTemplate(id: string, operation?: OperationRequest) {
@@ -383,10 +388,18 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  private templateAction<T>(id: string, action: 'clone' | 'validate' | 'publish' | 'unpublish', operation?: OperationRequest) {
+  private templateAction<T>(id: string, action: 'clone', operation?: OperationRequest) {
     return this.request<T>(`/admin/scenarios/${encodeURIComponent(id)}/${action}`, {
       method: 'POST',
       body: '{}',
+      operation,
+    });
+  }
+
+  private templateRevisionAction(id: string, action: 'share' | 'unshare', expectedRevision: number, operation?: OperationRequest) {
+    return this.request<RangeTemplate>(`/admin/scenarios/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedRevision }),
       operation,
     });
   }

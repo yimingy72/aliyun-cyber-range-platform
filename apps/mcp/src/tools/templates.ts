@@ -85,12 +85,19 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_update',
     title: '更新靶场模板',
-    description: '更新前端“编辑信息”可修改的模板元数据，例如名称、描述、标识和版本。拓扑变更必须使用“检测并保存拓扑”，派生编译字段不接受调用方传入。',
+    description: '更新前端“编辑信息”可修改的模板名称或描述。拓扑变更必须使用“检测并保存拓扑”，派生编译字段不接受调用方传入。',
     requiredScopes: ['templates:write'],
     inputSchema: templateUpdateInputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput & { updates: UpdateRangeTemplateInput };
-      return redactTemplateSecrets(await context.client.updateRangeTemplate(input.templateId, input.updates, operation(input)));
+      const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
+      return redactTemplateSecrets(
+        await context.client.updateRangeTemplate(
+          input.templateId,
+          { ...input.updates, expectedRevision: readTemplateRevision(current) },
+          operation(input),
+        ),
+      );
     },
   },
   {
@@ -122,8 +129,11 @@ export const templateTools: ToolDefinition[] = [
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
       const compiled = compileTemplateTopology(topologyGraph, { ...metadataFromTemplate(current), ...pickMetadata(input) });
-      const template = await context.client.updateRangeTemplate(input.templateId, compiled, operation(input));
-      await context.client.validateRangeTemplate(input.templateId, operation(input));
+      const template = await context.client.saveRangeTemplateTopology(
+        input.templateId,
+        { ...compiled, expectedRevision: readTemplateRevision(current) },
+        operation(input),
+      );
       return redactTemplateSecrets({ valid: true, template });
     },
   },
@@ -136,7 +146,10 @@ export const templateTools: ToolDefinition[] = [
     inputSchema: templateLifecycleInputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
-      return redactTemplateSecrets(await context.client.publishRangeTemplate(input.templateId, operation(input)));
+      const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
+      return redactTemplateSecrets(
+        await context.client.publishRangeTemplate(input.templateId, readTemplateRevision(current), operation(input)),
+      );
     },
   },
   {
@@ -148,7 +161,10 @@ export const templateTools: ToolDefinition[] = [
     inputSchema: templateLifecycleInputSchema,
     async call(context, args) {
       const input = args as TemplateWriteInput;
-      return redactTemplateSecrets(await context.client.unpublishRangeTemplate(input.templateId, operation(input)));
+      const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
+      return redactTemplateSecrets(
+        await context.client.unpublishRangeTemplate(input.templateId, readTemplateRevision(current), operation(input)),
+      );
     },
   },
   {
@@ -169,6 +185,16 @@ export const templateTools: ToolDefinition[] = [
 function pickMetadata(input: Record<string, unknown>) {
   const keys = ['name', 'slug', 'version', 'description', 'cloudProvider', 'iacType', 'modulePathOrRef', 'primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'defaultRegion', 'defaultZoneId', 'publicEntryProtocols'] as const;
   return Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
+}
+
+function readTemplateRevision(template: Record<string, unknown>) {
+  const revision = template.revision;
+
+  if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 1) {
+    throw new Error('模板详情缺少有效 revision，无法安全写入');
+  }
+
+  return revision;
 }
 
 async function requireTemplate(template: Promise<Record<string, unknown> | null>, templateId: string) {

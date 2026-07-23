@@ -18,7 +18,7 @@ function createClientStub(): ClientStub {
     createRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-2' }),
     updateRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     cloneRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-2' }),
-    validateRangeTemplate: vi.fn().mockResolvedValue({ valid: true }),
+    saveRangeTemplateTopology: vi.fn().mockResolvedValue({ id: 'tpl-1', revision: 2 }),
     publishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     unpublishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),

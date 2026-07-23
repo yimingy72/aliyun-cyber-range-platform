@@ -28,7 +28,7 @@
 | 查看模板列表 | `range_template_list` | `templates:read` | `view=mine` 是自己的可编辑模板，`view=platform` 是已发布到平台的模板。 |
 | 查看模板详情 | `range_template_get` | `templates:read` | 返回拓扑但脱敏密码。 |
 | 新建模板 | `range_template_create` | `templates:write` | 必须传转换 Skill 产出的完整图。 |
-| 编辑信息 | `range_template_update` | `templates:write` | 只更新名称、描述、标识、版本、地域等页面信息，不接收拓扑或编译字段。 |
+| 编辑信息 | `range_template_update` | `templates:write` | 只更新前端实际提供的名称、描述，不接收拓扑或编译字段。 |
 | 复制模板 | `range_template_clone` | `templates:write` | 产生一份已保存未发布的可编辑模板。 |
 | 检测并保存 | `range_template_topology_detect_and_save` | `templates:write` | 对应编辑器“检测并保存”；完整图通过编译和发布前校验后才保存，不会发布。 |
 | 发布到平台 | `range_template_publish` | `templates:publish` | 生成可使用的发布结果并使模板对其他用户可见。 |
