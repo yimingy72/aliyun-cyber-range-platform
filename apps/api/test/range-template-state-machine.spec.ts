@@ -15,6 +15,10 @@ const owner = {
   role: 'user' as const,
 };
 
+type SystemConfigStub = {
+  getSnapshot: jest.Mock;
+};
+
 const topologySpec: RangeTemplateTopologySpec = {
   vpcCidr: '10.90.0.0/16',
   networkZones: [
@@ -255,6 +259,80 @@ function createRepository(template: ReturnType<typeof createTemplate>) {
 }
 
 describe('RangeTemplatesService state machine', () => {
+  it('injects the configured default region and zone when creating a template', async () => {
+    const template = createTemplate();
+    const repository = createRepository(template);
+    const systemConfig: SystemConfigStub = {
+      getSnapshot: jest.fn().mockResolvedValue({
+        provider: 'alibaba_cloud',
+        defaultRegion: 'cn-hangzhou',
+        defaultZoneId: 'cn-hangzhou-h',
+      }),
+    };
+    const service = new (
+      RangeTemplatesService as unknown as new (
+        repository: AdminRepository,
+        systemConfig: SystemConfigStub,
+      ) => RangeTemplatesService
+    )(repository, systemConfig);
+
+    await service.create(
+      {
+        name: '后端注入地域',
+        ...topologyPayload,
+      },
+      owner,
+    );
+
+    const createInput = repository.createRangeTemplate.mock.calls[0]![0] as Record<string, unknown>;
+    expect(systemConfig.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(createInput.scenarioTemplateSpec).toEqual(
+      expect.objectContaining({
+        topology: expect.objectContaining({
+          defaultRegion: 'cn-hangzhou',
+          defaultZoneId: 'cn-hangzhou-h',
+        }),
+      }),
+    );
+    expect(createInput.compiledProvisionSpec).toEqual(
+      expect.objectContaining({
+        topology: expect.objectContaining({
+          defaultRegion: 'cn-hangzhou',
+          defaultZoneId: 'cn-hangzhou-h',
+        }),
+      }),
+    );
+  });
+
+  it('rejects template persistence when backend placement defaults are not configured', async () => {
+    const template = createTemplate();
+    const repository = createRepository(template);
+    const systemConfig: SystemConfigStub = {
+      getSnapshot: jest.fn().mockResolvedValue({
+        provider: 'alibaba_cloud',
+        defaultRegion: '',
+        defaultZoneId: '',
+      }),
+    };
+    const service = new (
+      RangeTemplatesService as unknown as new (
+        repository: AdminRepository,
+        systemConfig: SystemConfigStub,
+      ) => RangeTemplatesService
+    )(repository, systemConfig);
+
+    await expect(
+      service.create(
+        {
+          name: '缺少基础配置',
+          ...topologyPayload,
+        },
+        owner,
+      ),
+    ).rejects.toThrow('平台基础配置缺少默认地域或可用区');
+    expect(repository.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
   it('creates complete same-name templates with server-owned unique slugs and internal defaults', async () => {
     const template = createTemplate();
     const repository = createRepository(template);

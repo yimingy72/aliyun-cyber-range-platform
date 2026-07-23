@@ -41,6 +41,13 @@ const switchNodeSchema = z.object({
   purpose: identifier,
   position: positionSchema.optional(),
 }).passthrough();
+const fixedImageStrategySchema = z.object({
+  mode: z.literal('fixed'),
+  imageId: identifier.describe('The Alibaba Cloud imageId resolved from the selected platform image asset.'),
+}).strict();
+const autoInstanceTypeStrategySchema = z.object({
+  mode: z.literal('auto'),
+}).strict();
 const ecsNodeSchema = z.object({
   id: identifier,
   kind: z.literal('ecs'),
@@ -49,13 +56,25 @@ const ecsNodeSchema = z.object({
   role: identifier,
   privateIp: identifier.describe('Must equal the first NIC privateIp.'),
   exposePublic: z.boolean(),
-  image: identifier,
+  image: identifier.describe('Human-readable image displayName copied from the selected platform image asset. It is not the image identity.'),
+  platformImageAssetId: identifier.describe('The unique enabled platform image asset selected by the conversion Skill.'),
+  imageId: identifier.describe('The Alibaba Cloud imageId resolved from platformImageAssetId.'),
+  imageStrategy: fixedImageStrategySchema,
+  instanceTypeStrategy: autoInstanceTypeStrategySchema,
   nics: z.array(nicSchema).min(1),
   position: positionSchema.optional(),
   customPassword: z.string().optional().describe('Sensitive. Only provide when explicitly requested; it is never returned by read tools.'),
-}).passthrough();
+}).passthrough().superRefine((node, context) => {
+  if (node.imageStrategy.imageId !== node.imageId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['imageStrategy', 'imageId'],
+      message: 'imageStrategy.imageId must equal the resolved imageId.',
+    });
+  }
+});
 
-const templateNodeSchema = z.union([routerNodeSchema, switchNodeSchema, ecsNodeSchema]);
+const templateNodeSchema = z.discriminatedUnion('kind', [routerNodeSchema, switchNodeSchema, ecsNodeSchema]);
 
 export const templateEdgeSchema = z.object({
   id: identifier,
@@ -74,8 +93,6 @@ const templateNetworkMetadataSchema = z.object({
   primaryVpcCidr: identifier.optional().describe('Primary IPv4 CIDR used to create the VPC.'),
   secondaryVpcCidrs: z.array(identifier).max(4).optional().describe('Additional, non-overlapping IPv4 CIDRs attached to the same VPC.'),
   vpcCidr: identifier.optional().describe('Deprecated alias for primaryVpcCidr.'),
-  defaultRegion: identifier.optional(),
-  defaultZoneId: identifier.optional(),
   publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
 });
 const templateWriteSchema = operationSchema.extend({ templateId: identifier });

@@ -430,6 +430,7 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
 
   const switchById = new Map(switches.map((node) => [node.id, node]));
   const hostById = new Map(hosts.map((node) => [node.id, node]));
+  const switchZoneKeys = new Set<string>();
   const nicIds = new Set<string>();
   const ipUsage = new Map<string, string>();
 
@@ -449,6 +450,10 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
       if (!node.zoneKey?.trim()) {
         throw new Error(`交换机缺少 zoneKey：${node.id}`);
       }
+      if (switchZoneKeys.has(node.zoneKey)) {
+        throw new Error(`交换机 zoneKey 重复：${node.zoneKey}`);
+      }
+      switchZoneKeys.add(node.zoneKey);
       if (!isCidr(node.cidr)) {
         throw new Error(`交换机 CIDR 无效：${node.id}`);
       }
@@ -526,7 +531,13 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
   if (entryHosts.length > 1) {
     throw new Error('只能指定一个公网入口 ECS');
   }
+  const entryHost = entryHosts[0]!;
+  if (!entryHost.exposePublic) {
+    throw new Error(`公网入口 ECS 必须设置 exposePublic=true：${entryHost.id}`);
+  }
 
+  const dnatExternalPorts = new Map<string, string>();
+  let entryDnatCount = 0;
   for (const switchNode of switches) {
     for (const mapping of switchNode.nat?.dnatMappings ?? []) {
       const targetHost = hostById.get(mapping.targetHostId);
@@ -539,10 +550,26 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
       if (mapping.protocol !== 'tcp' && mapping.protocol !== 'udp') {
         throw new Error(`DNAT 协议无效：${mapping.key}`);
       }
+      const externalPortKey = `${mapping.protocol}:${mapping.externalPort}`;
+      const existingMappingKey = dnatExternalPorts.get(externalPortKey);
+      if (existingMappingKey) {
+        throw new Error(`DNAT 公网协议和端口重复：${externalPortKey}（${existingMappingKey}、${mapping.key}）`);
+      }
+      dnatExternalPorts.set(externalPortKey, mapping.key);
       if (!(targetHost.nics ?? []).some((nic) => nic.switchId === switchNode.id)) {
         throw new Error(`DNAT 目标 ECS 未连接到交换机：${mapping.key}`);
       }
+      if (!targetHost.exposePublic) {
+        throw new Error(`DNAT 目标必须是公网入口 ECS：${mapping.key}`);
+      }
+      if (targetHost.id !== entryHost.id) {
+        throw new Error(`DNAT 目标必须是唯一公网入口 ECS：${mapping.key}`);
+      }
+      entryDnatCount += 1;
     }
+  }
+  if (entryDnatCount === 0) {
+    throw new Error(`公网入口 ECS 必须至少配置一条 DNAT：${entryHost.id}`);
   }
 
   const edgeIds = new Set<string>();

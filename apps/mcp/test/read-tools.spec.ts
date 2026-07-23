@@ -22,7 +22,8 @@ const authoringGraph: ScenarioGraphDraft = {
     },
     {
       id: 'ecs-nginx', kind: 'ecs', label: 'Nginx', zoneKey: 'dmz', role: 'entry', privateIp: '10.0.0.10', exposePublic: true,
-      image: 'img-nginx', dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
+      image: 'img-nginx', imageId: 'img-nginx', platformImageAssetId: 'asset-nginx',
+      dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
       imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
       nics: [{ id: 'nic-nginx', switchId: 'switch-dmz', privateIp: '10.0.0.10', secondaryIps: [], securityGroupRules: [{ key: 'http', direction: 'ingress', protocol: 'tcp', portRange: '80/80', sourceCidr: '0.0.0.0/0', policy: 'accept', priority: 1 }] }],
     },
@@ -377,13 +378,15 @@ describe('tool registry', () => {
       },
       {
         id: 'ecs-office', kind: 'ecs', label: '办公主机', zoneKey: 'office', role: 'workstation', privateIp: '192.168.0.10', exposePublic: false,
-        image: 'img-nginx', dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
+        image: 'img-nginx', imageId: 'img-nginx', platformImageAssetId: 'asset-nginx',
+        dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
         imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
         nics: [{ id: 'nic-office', switchId: 'switch-office', privateIp: '192.168.0.10', secondaryIps: [], securityGroupRules: [] }],
       },
       {
         id: 'ecs-server', kind: 'ecs', label: '服务主机', zoneKey: 'server', role: 'server', privateIp: '172.16.0.10', exposePublic: false,
-        image: 'img-nginx', dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
+        image: 'img-nginx', imageId: 'img-nginx', platformImageAssetId: 'asset-nginx',
+        dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
         imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
         nics: [{ id: 'nic-server', switchId: 'switch-server', privateIp: '172.16.0.10', secondaryIps: [], securityGroupRules: [] }],
       },
@@ -435,13 +438,35 @@ describe('tool registry', () => {
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
-  it('normalizes the documented minimum topology graph before creation', async () => {
+  it('requires a resolved platform image selection before creating a template', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
 
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: '最小靶场',
+        topologyGraph: minimalAuthoringGraph,
+      }),
+    ).rejects.toThrow('platformImageAssetId');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('accepts the frontend image display name while keeping image identity fields exact', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const graph = structuredClone(authoringGraph);
+    const host = graph.nodes.find((node) => node.id === 'ecs-nginx');
+
+    if (host?.kind !== 'ecs') {
+      throw new Error('Expected an ECS node');
+    }
+
+    host.image = '培训渗透靶机';
+    host.imageName = '培训渗透靶机';
+
     await registry.callTool('range_template_create', ['templates:write'], {
-      name: '最小靶场',
-      topologyGraph: minimalAuthoringGraph,
+      name: '前端镜像字段契约',
+      topologyGraph: graph,
     });
 
     expect(client.createRangeTemplate).toHaveBeenCalledWith(
@@ -449,20 +474,60 @@ describe('tool registry', () => {
         topologyGraph: expect.objectContaining({
           nodes: expect.arrayContaining([
             expect.objectContaining({
-              id: 'ecs-entry',
-              initScript: '',
-              dnatMappings: [],
-              networkInterfaces: [],
-              portGroups: [],
-              imageStrategy: { mode: 'fixed', imageId: 'm-entry-image' },
-              instanceTypeStrategy: { mode: 'auto' },
-              nics: [expect.objectContaining({ secondaryIps: [], securityGroupRules: [] })],
+              id: 'ecs-nginx',
+              image: '培训渗透靶机',
+              imageId: 'img-nginx',
+              platformImageAssetId: 'asset-nginx',
+              imageStrategy: { mode: 'fixed', imageId: 'img-nginx' },
             }),
           ]),
         }),
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
+  });
+
+  it('rejects a public entry ECS without a DNAT mapping before creating a template', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const invalidGraph = structuredClone(authoringGraph);
+    const switchNode = invalidGraph.nodes.find((node) => node.id === 'switch-dmz');
+
+    if (switchNode?.kind !== 'switch') {
+      throw new Error('Expected a switch node');
+    }
+
+    switchNode.nat = { snatEnabled: true, dnatMappings: [] };
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: '缺少入口 DNAT',
+        topologyGraph: invalidGraph,
+      }),
+    ).rejects.toThrow('公网入口 ECS 必须至少配置一条 DNAT：ecs-nginx');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate logical switch zone keys before creating a template', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const invalidGraph = structuredClone(authoringGraph);
+
+    invalidGraph.nodes.push({
+      id: 'switch-office', kind: 'switch', label: '办公网', zoneKey: 'dmz', cidr: '10.0.1.0/24', purpose: 'office',
+      nat: { snatEnabled: true, dnatMappings: [] }, aclRules: [],
+    });
+    invalidGraph.edges.push({
+      id: 'router-to-switch-office', fromNodeId: 'router-main', toNodeId: 'switch-office', relationType: 'manual',
+    });
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: '重复逻辑分区',
+        topologyGraph: invalidGraph,
+      }),
+    ).rejects.toThrow('交换机 zoneKey 重复：dmz');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
   it('rejects a topology without the required VPC router', async () => {
@@ -541,7 +606,8 @@ describe('tool registry', () => {
     const invalidGraph = structuredClone(authoringGraph);
     invalidGraph.nodes.push({
       id: 'ecs-duplicate', kind: 'ecs', label: 'Duplicate host', zoneKey: 'dmz', role: 'host', privateIp: '10.0.0.10', exposePublic: false,
-      image: 'img-nginx', dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
+      image: 'img-nginx', imageId: 'img-nginx', platformImageAssetId: 'asset-nginx',
+      dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
       imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
       nics: [{ id: 'nic-duplicate', switchId: 'switch-dmz', privateIp: '10.0.0.10', secondaryIps: [], securityGroupRules: [] }],
     });

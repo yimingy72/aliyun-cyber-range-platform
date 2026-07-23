@@ -4,22 +4,22 @@
 
 ## MCP 工具与参数
 
-日期窗口中的 `startAt` 与 `endAt` 均为 `YYYY-MM-DD`，必须同时提供或同时省略。`limit` 范围为 1–500。
+`startAt` 与 `endAt` 均为 `YYYY-MM-DD`，必须同时提供或同时省略。`limit` 范围为 1–500。
 
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
-| 费用概览 | `billing_summary_get` | — | 日期窗口 | `billing:read` |
-| 用户费用列表 | `billing_user_list` | — | 日期窗口、`limit` | `billing:read` |
-| 单个用户概览 | `billing_user_summary_get` | `userId` | 日期窗口、`limit` | `billing:read` |
-| 用户费用分组 | `billing_user_group_list` | — | `userId`、日期窗口、`limit` | `billing:read` |
-| 平台费用分组 | `billing_platform_group_list` | — | 日期窗口、`limit` | `billing:read` |
-| 用户费用明细 | `billing_user_item_list` | `userId` | 日期窗口、`limit` | `billing:read` |
-| 平台费用明细 | `billing_platform_item_list` | — | 日期窗口、`limit` | `billing:read` |
-| 异常列表 | `billing_anomaly_list` | — | 日期窗口、`limit` | `billing:read` |
-| 同步账单 | `billing_sync` | — | 日期窗口；不接受操作元数据 | `billing:sync` |
-| 导出平台费用 | `billing_export_platform_csv` | — | 日期窗口 | `billing:read` |
-| 导出用户费用 | `billing_export_users_csv` | — | 日期窗口 | `billing:read` |
-| 导出用户明细 | `billing_export_user_csv` | `userId` | 日期窗口 | `billing:read` |
+| 费用概览 | `billing_summary_get` | — | `startAt`、`endAt` | `billing:read` |
+| 用户费用列表 | `billing_user_list` | — | `startAt`、`endAt`、`limit` | `billing:read` |
+| 单个用户概览 | `billing_user_summary_get` | `userId` | `startAt`、`endAt`、`limit` | `billing:read` |
+| 用户费用分组 | `billing_user_group_list` | — | `userId`、`startAt`、`endAt`、`limit` | `billing:read` |
+| 平台费用分组 | `billing_platform_group_list` | — | `startAt`、`endAt`、`limit` | `billing:read` |
+| 用户费用明细 | `billing_user_item_list` | `userId` | `startAt`、`endAt`、`limit` | `billing:read` |
+| 平台费用明细 | `billing_platform_item_list` | — | `startAt`、`endAt`、`limit` | `billing:read` |
+| 异常列表 | `billing_anomaly_list` | — | `startAt`、`endAt`、`limit` | `billing:read` |
+| 同步账单 | `billing_sync` | — | `startAt`、`endAt`；不接受操作元数据 | `billing:sync` |
+| 导出平台费用 | `billing_export_platform_csv` | — | `startAt`、`endAt` | `billing:read` |
+| 导出用户费用 | `billing_export_users_csv` | — | `startAt`、`endAt` | `billing:read` |
+| 导出用户明细 | `billing_export_user_csv` | `userId` | `startAt`、`endAt` | `billing:read` |
 
 ## 操作规则
 
