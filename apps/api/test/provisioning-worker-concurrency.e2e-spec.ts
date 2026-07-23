@@ -17,6 +17,59 @@ function createSystemConfigServiceStub() {
 }
 
 describe('ProvisioningWorkerService concurrency', () => {
+  it('preserves the OpenTofu state directory when retrying a failed range create', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Retry state template',
+      slug: 'retry-state-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.91.0.0/16',
+        networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.91.10.0/24' }],
+        hosts: [{ key: 'entry', name: 'Entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.91.10.10' }],
+        publicEntry: { hostKey: 'entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+    });
+    const instance = await repository.createRangeInstance({
+      name: 'retry-state-range',
+      templateId: template.id,
+      status: 'pending_create',
+      allocatedCidr: '10.91.0.0/16',
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'retry',
+      triggeredBy: 'admin',
+      retryCount: 1,
+    });
+    await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
+
+    const create = jest.fn().mockResolvedValue({
+      accessEntry: {
+        hostRole: 'entry',
+        publicIp: null,
+        privateIp: '10.91.10.10',
+        ssh: null,
+      },
+      resourceSummary: { mode: 'opentofu', hostIds: { entry: 'i-retry-state' } },
+    });
+    const worker = new ProvisioningWorkerService(
+      repository,
+      { create, destroy: jest.fn() } as unknown as RangeProvisioner,
+      createSystemConfigServiceStub() as any,
+    );
+
+    await worker.process(job.id);
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rangeInstanceId: instance.id,
+        preserveWorkspaceState: true,
+      }),
+    );
+  });
+
   it('limits single-instance batch execution concurrency to three', async () => {
     const repository = createMemoryAdminRepository();
     const executor = new SingleInstanceBatchExecutionService(
@@ -396,7 +449,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 Destroy Retry',
@@ -471,7 +524,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 Destroy Verify',
@@ -564,7 +617,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 Destroy Missing VPC',
@@ -663,7 +716,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 Runtime Create',
@@ -785,7 +838,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 A',
@@ -908,7 +961,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       } as Record<string, unknown>,
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 B',
@@ -1100,7 +1153,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         ],
       } as Record<string, unknown>,
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 C',
@@ -1204,7 +1257,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       } as Record<string, unknown>,
       compiledSpec: null as unknown as Record<string, unknown>,
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 D',
@@ -1295,7 +1348,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
       } as Record<string, unknown>,
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 Runtime Update',

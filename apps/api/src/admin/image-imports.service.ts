@@ -43,6 +43,7 @@ type ImageImportJobRow = {
   taskId: string | null;
   sourceSnapshotId: string | null;
   platformImageAssetId: string | null;
+  cloudImageDeletedAt: Date | null;
   temporaryObjectDeletedAt: Date | null;
   errorMessage: string | null;
   createdAt: Date;
@@ -323,10 +324,19 @@ export class ImageImportsService {
       }),
       this.prisma.imageImportJob.findMany({
         where: {
-          temporaryObjectDeletedAt: null,
           OR: [
-            { status: { in: ['available', 'cancelled'] } },
-            { status: 'failed', imageId: { not: null } },
+            {
+              temporaryObjectDeletedAt: null,
+              OR: [
+                { status: { in: ['available', 'cancelled'] } },
+                { status: 'failed', imageId: { not: null } },
+              ],
+            },
+            {
+              cloudImageDeletedAt: null,
+              status: 'failed',
+              imageId: { not: null },
+            },
           ],
         },
         take: 20,
@@ -335,7 +345,7 @@ export class ImageImportsService {
     ]);
     await Promise.all(jobs.map((job) => this.refreshImport(job.id)));
     await Promise.all(expiredUploads.map((job) => this.cancelExpiredUpload(job)));
-    await Promise.all(terminalJobs.map((job) => this.cleanupTerminalObject(job)));
+    await Promise.all(terminalJobs.map((job) => this.cleanupTerminalArtifacts(job)));
     return jobs.length + expiredUploads.length + terminalJobs.length;
   }
 
@@ -678,6 +688,72 @@ export class ImageImportsService {
     }
   }
 
+  private async cleanupTerminalArtifacts(job: ImageImportJobRow) {
+    try {
+      const context = await this.cloudAccountContextsService.getCredentials(job.cloudAccountContextId, { requireReady: true });
+      const imageCleaned =
+        job.status === 'failed' && job.imageId && !job.cloudImageDeletedAt
+          ? await this.cleanupFailedCloudImage(context, job)
+          : job;
+
+      return this.cleanupTemporaryObject(context, imageCleaned);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '镜像导入终态资源清理失败。';
+      return this.prisma.imageImportJob.update({
+        where: { id: job.id },
+        data: { errorMessage: this.withTerminalCleanupError(job.errorMessage, message) },
+      });
+    }
+  }
+
+  private async cleanupFailedCloudImage(context: CloudAccountContextCredentials, job: ImageImportJobRow) {
+    if (job.status !== 'failed' || !job.imageId || job.cloudImageDeletedAt) {
+      return job;
+    }
+
+    try {
+      await this.performAliyunEcsRequest({
+        ...context,
+        action: 'DeleteImage',
+        parameters: {
+          ImageId: job.imageId,
+          Force: 'true',
+        },
+      });
+    } catch (error) {
+      if (!this.isAliyunImageAlreadyDeleted(error)) {
+        throw error;
+      }
+    }
+
+    const releasedAt = new Date();
+    const ledgerResources = await this.adminRepository.listBillingLedgerResources();
+    await Promise.all(
+      ledgerResources
+        .filter(
+          (item) =>
+            item.cloudResourceId === job.imageId &&
+            (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot') &&
+            item.releasedAt === null,
+        )
+        .map((item) => this.adminRepository.updateBillingLedgerResource(item.id, { releasedAt })),
+    );
+
+    if (job.sourceSnapshotId) {
+      await this.adminRepository.deletePlatformImageAssetsBySnapshotId(job.sourceSnapshotId);
+    } else if (job.platformImageAssetId) {
+      await this.adminRepository.deletePlatformImageAsset(job.platformImageAssetId);
+    }
+
+    return this.prisma.imageImportJob.update({
+      where: { id: job.id },
+      data: {
+        cloudImageDeletedAt: releasedAt,
+        errorMessage: this.withoutTerminalCleanupErrors(job.errorMessage),
+      },
+    });
+  }
+
   private async cleanupTemporaryObject(context: CloudAccountContextCredentials, job: ImageImportJobRow) {
     if (job.temporaryObjectDeletedAt) {
       return job;
@@ -727,15 +803,7 @@ export class ImageImportsService {
       data: { status, errorMessage },
     });
 
-    try {
-      return await this.cleanupTemporaryObject(context, terminal);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '临时 OSS 文件清理失败。';
-      return this.prisma.imageImportJob.update({
-        where: { id: terminal.id },
-        data: { errorMessage: this.withCleanupError(terminal.errorMessage, message) },
-      });
-    }
+    return this.cleanupTerminalArtifacts(terminal);
   }
 
   private async failTimedOutImport(job: ImageImportJobRow) {
@@ -746,7 +814,7 @@ export class ImageImportsService {
         errorMessage: `镜像导入超过最大等待时长（${this.readMaxImportDurationMs()} 毫秒）。`,
       },
     });
-    return this.cleanupTerminalObject(terminal);
+    return this.cleanupTerminalArtifacts(terminal);
   }
 
   private withCleanupError(existingMessage: string | null, cleanupMessage: string) {
@@ -761,6 +829,30 @@ export class ImageImportsService {
         .join('\n')
         .trim() || null
     );
+  }
+
+  private withTerminalCleanupError(existingMessage: string | null, cleanupMessage: string) {
+    return [this.withoutTerminalCleanupErrors(existingMessage), `镜像导入终态资源清理失败：${cleanupMessage}`]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  private withoutTerminalCleanupErrors(message: string | null) {
+    return (
+      message
+        ?.split('\n')
+        .filter(
+          (line) =>
+            !line.startsWith('临时 OSS 文件清理失败：') &&
+            !line.startsWith('镜像导入终态资源清理失败：'),
+        )
+        .join('\n')
+        .trim() || null
+    );
+  }
+
+  private isAliyunImageAlreadyDeleted(error: unknown) {
+    return error instanceof Error && /InvalidImageId\.NotFound|InvalidImageId\.NotFound/i.test(error.message);
   }
 
   private buildSnapshotStatus(image: AliyunImage) {

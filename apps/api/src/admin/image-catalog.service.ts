@@ -231,6 +231,18 @@ export class ImageCatalogService {
     const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
     await this.assertPlatformAssetNotImporting(asset);
     await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
+
+    if (asset.sourceScope === 'custom') {
+      const snapshot = await this.resolvePlatformAssetSnapshot(asset);
+
+      if (!snapshot) {
+        throw new ConflictException('自定义镜像的云端记录不可用，无法安全删除。请先同步镜像目录后重试。');
+      }
+
+      await this.deleteCustomSnapshot(snapshot.id);
+      return;
+    }
+
     await this.adminRepository.deletePlatformImageAsset(id);
   }
 
@@ -284,6 +296,7 @@ export class ImageCatalogService {
       action: 'DeleteImage',
       parameters: {
         ImageId: snapshot.imageId,
+        Force: 'true',
       },
     });
 

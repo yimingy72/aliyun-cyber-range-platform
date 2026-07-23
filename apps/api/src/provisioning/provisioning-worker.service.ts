@@ -213,6 +213,7 @@ export class ProvisioningWorkerService {
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
+          preserveWorkspaceState: job.jobType === 'retry',
           runtimeCredentials: instance.runtimeCredentials ?? undefined,
           topologyGraph,
           topologySpec,

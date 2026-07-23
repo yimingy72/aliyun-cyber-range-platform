@@ -192,6 +192,8 @@ export class SingleInstancesService {
   }
 
   async launch(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
+    this.assertFutureInstanceExpiration(input.expiresAt);
+
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile();
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
     const sharedPassword = input.password?.trim() || null;
@@ -401,6 +403,14 @@ export class SingleInstancesService {
     }
 
     return this.rangeInstanceNodeActionsService.runSingleInstanceAction(id, action, payload, currentUser);
+  }
+
+  private assertFutureInstanceExpiration(expiresAt: string) {
+    const expiration = new Date(expiresAt);
+
+    if (!Number.isFinite(expiration.getTime()) || expiration <= new Date()) {
+      throw new ConflictException('创建独立实例前必须设置未来的到期时间。');
+    }
   }
 
   private async requireSingleInstance(id: string, currentUser?: SessionUserProfile) {

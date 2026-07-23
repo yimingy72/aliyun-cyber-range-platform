@@ -3,6 +3,88 @@ import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('RangeInstancesService retry flow', () => {
+  it('rejects starting a draft range without a future expiration time', async () => {
+    const repository = createMemoryAdminRepository();
+    const dispatched: string[] = [];
+    const service = new RangeInstancesService(
+      repository,
+      new RangeTemplatesService(repository),
+      {} as never,
+      {
+        serialize: async <T>(handler: () => Promise<T>) => handler(),
+        getPool: () => [],
+        allocate: () => null,
+      } as never,
+      {
+        dispatch: (jobId: string) => dispatched.push(jobId),
+      } as never,
+    );
+    const instance = await repository.createRangeInstance({
+      name: 'unbounded-draft',
+      templateId: 'missing-template',
+      status: 'draft',
+    });
+
+    await expect(service.triggerCreate(instance.id, 'admin')).rejects.toThrow('到期时间');
+    expect(dispatched).toEqual([]);
+  });
+
+  it('rejects retrying a failed range without a future expiration time', async () => {
+    const repository = createMemoryAdminRepository();
+    const dispatched: string[] = [];
+    const service = new RangeInstancesService(
+      repository,
+      new RangeTemplatesService(repository),
+      {} as never,
+      {
+        serialize: async <T>(handler: () => Promise<T>) => handler(),
+        getPool: () => [],
+        allocate: () => null,
+      } as never,
+      {
+        dispatch: (jobId: string) => dispatched.push(jobId),
+      } as never,
+    );
+    const instance = await repository.createRangeInstance({
+      name: 'unbounded-retry',
+      templateId: 'missing-template',
+      status: 'create_failed',
+    });
+
+    await expect(service.triggerRetry(instance.id, 'admin')).rejects.toThrow('到期时间');
+    expect(dispatched).toEqual([]);
+  });
+
+  it('rejects launching a range with an expiration time in the past', async () => {
+    const repository = createMemoryAdminRepository();
+    const dispatched: string[] = [];
+    const service = new RangeInstancesService(
+      repository,
+      new RangeTemplatesService(repository),
+      {} as never,
+      {
+        serialize: async <T>(handler: () => Promise<T>) => handler(),
+        getPool: () => [],
+        allocate: () => null,
+      } as never,
+      {
+        dispatch: (jobId: string) => dispatched.push(jobId),
+      } as never,
+    );
+
+    await expect(
+      service.launch(
+        {
+          templateId: 'missing-template',
+          name: 'expired-range',
+          expiresAt: '2020-01-01T00:00:00.000Z',
+        },
+        { id: 'user-1', role: 'user' },
+      ),
+    ).rejects.toThrow('到期时间');
+    expect(dispatched).toEqual([]);
+  });
+
   it('blocks launching a legacy template that directly references an Alibaba Cloud image', async () => {
     const repository = createMemoryAdminRepository();
     const dispatched: string[] = [];
@@ -52,7 +134,7 @@ describe('RangeInstancesService retry flow', () => {
         {
           templateId: template.id,
           name: 'legacy-range',
-          expiresAt: '2026-07-22T00:00:00.000Z',
+          expiresAt: '2030-07-22T00:00:00.000Z',
         },
         { id: 'user-1', role: 'user' },
       ),
@@ -143,7 +225,7 @@ describe('RangeInstancesService retry flow', () => {
         edges: [],
       },
     });
-    await repository.publishRangeTemplate(template.id);
+    await repository.publishRangeTemplateToPlatform(template.id, template.revision);
 
     const instance = await repository.createRangeInstance({
       name: '重试实例',
@@ -151,6 +233,7 @@ describe('RangeInstancesService retry flow', () => {
       status: 'create_failed',
       allocatedCidr: '10.90.0.0/16',
       errorSummary: 'OpenTofu plan failed',
+      expiresAt: '2030-07-22T00:00:00.000Z',
     });
     const failedJob = await repository.createProvisionJob({
       rangeInstanceId: instance.id,
@@ -186,5 +269,28 @@ describe('RangeInstancesService retry flow', () => {
       }),
     );
     expect(dispatched).toEqual([retryJob.id]);
+
+    await repository.updateRangeInstance(instance.id, {
+      status: 'create_failed',
+      errorSummary: 'OpenTofu apply partially created cloud resources',
+    });
+
+    const destroyJob = await service.triggerDestroy(instance.id, 'admin');
+
+    expect(destroyJob).toEqual(
+      expect.objectContaining({
+        rangeInstanceId: instance.id,
+        jobType: 'destroy',
+        status: 'pending',
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        id: instance.id,
+        status: 'pending_destroy',
+        lastJobId: destroyJob.id,
+      }),
+    );
+    expect(dispatched).toEqual([retryJob.id, destroyJob.id]);
   });
 });

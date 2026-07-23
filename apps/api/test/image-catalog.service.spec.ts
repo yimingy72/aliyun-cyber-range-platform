@@ -4,6 +4,7 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 
 const OWNER = { id: 'owner-1', username: 'owner', role: 'user' as const };
 const ADMIN = { id: 'admin-1', username: 'admin', role: 'admin' as const };
+const originalFetch = global.fetch;
 
 function createAsset(): PlatformImageAssetRecord {
   const now = new Date('2026-07-20T00:00:00.000Z');
@@ -72,6 +73,8 @@ describe('ImageCatalogService import operation guard', () => {
         provider: 'alibaba_cloud',
         accountUid: '1234567890',
         defaultRegion: 'cn-hangzhou',
+        accessKeyId: 'test-access-key',
+        accessKeySecret: 'test-access-secret',
       }),
     };
     const service = new ImageCatalogService(
@@ -81,6 +84,10 @@ describe('ImageCatalogService import operation guard', () => {
 
     return { service, adminRepositoryMock, asset };
   }
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
 
   it('rejects enable and disable requests while the asset belongs to an active import', async () => {
     const { service, adminRepositoryMock } = createService();
@@ -145,6 +152,23 @@ describe('ImageCatalogService import operation guard', () => {
 
     await expect(service.removePlatformAsset('asset-1', OWNER)).rejects.toThrow('正在导入');
 
+    expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
+  });
+
+  it('deletes the custom cloud image and its snapshots when its owner removes the platform asset', async () => {
+    const { service, adminRepositoryMock } = createService();
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    await service.removePlatformAsset('asset-1', OWNER);
+
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=DeleteImage');
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Force=true');
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith('snapshot-1');
+    expect(adminRepositoryMock.reconcileImageSnapshots).toHaveBeenCalled();
     expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
   });
 

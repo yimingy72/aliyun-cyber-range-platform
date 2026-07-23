@@ -195,6 +195,26 @@ export class CloudAccountContextsService {
       );
     }
 
+    const activeContext = await this.prisma.cloudAccountContext.findFirst({
+      where: { isActive: true },
+      select: { id: true, accountUid: true },
+    });
+
+    if (activeContext && activeContext.id !== context.id) {
+      const unreleasedBillableResourceCount = await this.prisma.billingLedgerResource.count({
+        where: {
+          cloudAccountUid: activeContext.accountUid,
+          releasedAt: null,
+        },
+      });
+
+      if (unreleasedBillableResourceCount > 0) {
+        throw new ConflictException(
+          '当前阿里云账号仍有未释放的计费资源。请先删除相关镜像、快照或实例并完成台账关闭后再切换账号。',
+        );
+      }
+    }
+
     await this.prisma.$transaction([
       this.prisma.cloudAccountContext.updateMany({ data: { isActive: false } }),
       this.prisma.cloudAccountContext.update({ where: { id }, data: { isActive: true } }),

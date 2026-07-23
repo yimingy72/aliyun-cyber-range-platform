@@ -295,6 +295,7 @@ model ImageImportJob {
   taskId                String?
   sourceSnapshotId      String?
   platformImageAssetId  String?
+  cloudImageDeletedAt   DateTime?
   temporaryObjectDeletedAt DateTime?
   errorMessage          String?              @db.Text
   createdAt             DateTime             @default(now())

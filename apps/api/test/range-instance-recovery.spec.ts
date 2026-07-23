@@ -8,6 +8,7 @@ function createRangeInstanceRecord(
     id: 'range-1',
     name: '恢复实例',
     createdBy: 'admin',
+    ownerUserId: null,
     instanceMode: 'range',
     singleInstanceConfig: null,
     templateId: 'template-1',

@@ -149,6 +149,24 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
           if (classification.kind === 'deferred') {
             deferredCount += 1;
+            await this.adminRepository.createBillingAnomaly({
+              syncBatchId,
+              sourceFingerprint: this.buildSourceFingerprint(
+                syncBatchId,
+                classification.cloudResourceType,
+                classification.cloudResourceId,
+                readString(line, 'BillingItem'),
+              ),
+              billCycle: billingDate.slice(0, 7),
+              billingDate,
+              cloudResourceId: classification.cloudResourceId,
+              cloudResourceType: classification.cloudResourceType,
+              pretaxAmount: readNumber(line, 'PretaxAmount'),
+              currency: readString(line, 'Currency') || 'CNY',
+              reason: this.resolveAnomalyReason(classification),
+              rawPayload: line,
+            });
+            anomalyCount += 1;
             continue;
           }
 

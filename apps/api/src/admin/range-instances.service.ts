@@ -178,6 +178,8 @@ export class RangeInstancesService {
   }
 
   async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
+    this.assertFutureInstanceExpiration(input.expiresAt);
+
     const template = await this.adminRepository.getRangeTemplateById(input.templateId);
 
     if (!template) {
@@ -435,6 +437,8 @@ export class RangeInstancesService {
         this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
       }
 
+      this.assertFutureInstanceExpiration(instance.expiresAt);
+
       if (!instance.templateId) {
         throw new ConflictException('Range instance no longer references an active template');
       }
@@ -534,7 +538,7 @@ export class RangeInstancesService {
       throw new ConflictException('Range instance no longer references an active template');
     }
 
-    if (!['running', 'destroy_failed'].includes(instance.status)) {
+    if (!['running', 'create_failed', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Range instance cannot start a destroy job from the current status');
     }
 
@@ -552,6 +556,14 @@ export class RangeInstancesService {
     this.provisioningWorkerService.dispatch(job.id);
 
     return job;
+  }
+
+  private assertFutureInstanceExpiration(expiresAt: string | Date | null | undefined) {
+    const expiration = expiresAt instanceof Date ? expiresAt : expiresAt ? new Date(expiresAt) : null;
+
+    if (!expiration || !Number.isFinite(expiration.getTime()) || expiration <= new Date()) {
+      throw new ConflictException('创建靶场实例前必须设置未来的到期时间。');
+    }
   }
 
   async triggerRetry(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
@@ -579,6 +591,8 @@ export class RangeInstancesService {
     }
 
     if (instance.status === 'create_failed') {
+      this.assertFutureInstanceExpiration(instance.expiresAt);
+
       const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
 
       if (!template) {

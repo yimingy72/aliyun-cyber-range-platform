@@ -3,7 +3,7 @@ import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('BillingSyncService', () => {
-  it('persists direct bill lines, records only platform-related aggregated anomalies, and ignores deferred OSS lines', async () => {
+  it('persists direct bill lines and surfaces aggregated and deferred OSS costs as anomalies', async () => {
     const repository = createMemoryAdminRepository();
 
     const ledger = await repository.createBillingLedgerResource({
@@ -64,7 +64,7 @@ describe('BillingSyncService', () => {
     ).resolves.toEqual({
       syncedDays: 1,
       importedLineItems: 1,
-      anomalyCount: 1,
+      anomalyCount: 2,
       deferredCount: 1,
     });
 
@@ -87,12 +87,19 @@ describe('BillingSyncService', () => {
         startAt: '2026-07-16',
         endAt: '2026-07-16',
       }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        cloudResourceId: 'cn-hangzhou',
-        cloudResourceType: 'snapshot_region',
-      }),
-    ]);
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'cn-hangzhou',
+          cloudResourceType: 'snapshot_region',
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'cn-hangzhou;standard-zrs',
+          cloudResourceType: 'unknown',
+          reason: expect.stringContaining('OSS'),
+        }),
+      ]),
+    );
   });
 
   it('ignores direct bill lines that are outside the platform ledger scope', async () => {

@@ -510,6 +510,9 @@ describe('ImageImportsService', () => {
       }),
       findBillingLedgerResource: jest.fn().mockResolvedValue(null),
       createBillingLedgerResource: jest.fn().mockResolvedValue({ id: 'ledger-1' }),
+      listBillingLedgerResources: jest.fn().mockResolvedValue([]),
+      updateBillingLedgerResource: jest.fn().mockResolvedValue({}),
+      deletePlatformImageAssetsBySnapshotId: jest.fn().mockResolvedValue(undefined),
     };
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
@@ -524,7 +527,7 @@ describe('ImageImportsService', () => {
           },
         }),
       )
-      .mockResolvedValueOnce(createResponse({}, 204));
+      .mockResolvedValue(createResponse({}, 204));
     const service = new ImageImportsService(
       adminRepositoryMock as unknown as AdminRepository,
       { imageImportJob } as unknown as PrismaService,
@@ -539,6 +542,69 @@ describe('ImageImportsService', () => {
         errorMessage: expect.stringContaining('UnAvailable'),
         temporaryObjectDeletedAt: expect.any(Date),
       }),
+    );
+  });
+
+  it('deletes a timed-out cloud image and releases its billing ledger before cleaning the OSS object', async () => {
+    const job = createImportJob({
+      status: 'importing',
+      imageId: 'm-timeout-image',
+      sourceSnapshotId: 'snapshot-1',
+      platformImageAssetId: 'asset-1',
+      uploadCompletedAt: new Date(Date.now() - 2_000),
+    });
+    const imageLedger = {
+      id: 'ledger-image',
+      cloudResourceId: job.imageId,
+      cloudResourceType: 'image',
+      releasedAt: null,
+    };
+    const snapshotLedger = {
+      id: 'ledger-snapshot',
+      cloudResourceId: job.imageId,
+      cloudResourceType: 'snapshot',
+      releasedAt: null,
+    };
+    const adminRepositoryMock = {
+      listBillingLedgerResources: jest.fn().mockResolvedValue([imageLedger, snapshotLedger]),
+      updateBillingLedgerResource: jest.fn().mockResolvedValue({}),
+      deletePlatformImageAssetsBySnapshotId: jest.fn().mockResolvedValue(undefined),
+    };
+    const imageImportJob = {
+      findUnique: jest.fn().mockResolvedValue(job),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(job, data);
+        return { ...job };
+      }),
+    };
+    const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
+    const service = new ImageImportsService(
+      adminRepositoryMock as unknown as AdminRepository,
+      { imageImportJob } as unknown as PrismaService,
+      contextService as unknown as CloudAccountContextsService,
+    );
+    process.env.IMAGE_IMPORT_MAX_DURATION_MS = '1000';
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(createResponse({ RequestId: 'delete-image-ok' }))
+      .mockResolvedValueOnce(createResponse({}, 204));
+
+    const result = await service.refreshImport(job.id);
+
+    expect(result).toEqual(expect.objectContaining({ status: 'failed', imageId: job.imageId }));
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=DeleteImage');
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Force=true');
+    expect(adminRepositoryMock.updateBillingLedgerResource).toHaveBeenCalledWith(
+      imageLedger.id,
+      expect.objectContaining({ releasedAt: expect.any(Date) }),
+    );
+    expect(adminRepositoryMock.updateBillingLedgerResource).toHaveBeenCalledWith(
+      snapshotLedger.id,
+      expect.objectContaining({ releasedAt: expect.any(Date) }),
+    );
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith('snapshot-1');
+    expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(
+      expect.objectContaining({ method: 'DELETE' }),
     );
   });
 
@@ -561,6 +627,9 @@ describe('ImageImportsService', () => {
     const adminRepositoryMock = {
       getImageSnapshotById: jest.fn().mockResolvedValue({ id: 'snapshot-1' }),
       getPlatformImageAssetById: jest.fn().mockResolvedValue({ id: 'asset-1' }),
+      listBillingLedgerResources: jest.fn().mockResolvedValue([]),
+      updateBillingLedgerResource: jest.fn().mockResolvedValue({}),
+      deletePlatformImageAssetsBySnapshotId: jest.fn().mockResolvedValue(undefined),
     };
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
@@ -703,7 +772,7 @@ describe('ImageImportsService', () => {
         if (where.status === 'importing') {
           return [];
         }
-        if (where.temporaryObjectDeletedAt === null) {
+        if ('OR' in where) {
           return [job];
         }
         return [];

@@ -450,6 +450,40 @@ describe('CloudAccountContextsService', () => {
     await expect(service.activate('context-next')).rejects.toThrow('当前仍存在未销毁实例或执行中的资源任务');
   });
 
+  it('blocks an account switch while the active account still has unreleased billable resources', async () => {
+    const service = new CloudAccountContextsService({
+      cloudAccountContext: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'context-next',
+          displayName: 'Next Account',
+          provider: 'alibaba_cloud',
+          accountUid: '9876543210',
+          regionId: 'cn-shanghai',
+          zoneId: 'cn-shanghai-g',
+          accessKeyId: 'next-access-key',
+          accessKeySecret: 'next-access-secret',
+          imageImportBucket: 'cyber-range-image-next',
+          isActive: false,
+          status: 'ready',
+          bucketStatus: 'ready',
+          lastError: null,
+          lastVerifiedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'context-current',
+          accountUid: '1234567890',
+        }),
+      },
+      rangeInstance: { count: jest.fn().mockResolvedValue(0) },
+      provisionJob: { count: jest.fn().mockResolvedValue(0) },
+      billingLedgerResource: { count: jest.fn().mockResolvedValue(1) },
+    } as unknown as PrismaService);
+
+    await expect(service.activate('context-next')).rejects.toThrow('未释放的计费资源');
+  });
+
   it('reports an unavailable cloud account without attributing the failure to its import Bucket', async () => {
     const service = new CloudAccountContextsService({
       cloudAccountContext: {
