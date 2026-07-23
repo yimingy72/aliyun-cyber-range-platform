@@ -54,6 +54,26 @@ describe('AdminDataTable', () => {
     expect(screen.getByText('alpha')).toBeTruthy();
   });
 
+  it('wraps feature columns in the shared neutral table frame', () => {
+    render(
+      <AdminDataTable columns={instanceColumns} label="实例列表">
+        {(columns) => (
+          <TableRow>
+            <AdminDataTableCell column={columns[0]}>alpha</AdminDataTableCell>
+          </TableRow>
+        )}
+      </AdminDataTable>,
+    );
+
+    const table = screen.getByRole('table', { name: '实例列表' });
+    const frame = table.closest('[data-slot="admin-data-table-frame"]');
+
+    expect(frame?.className).toContain('rounded');
+    expect(frame?.className).toContain('border');
+    expect(frame?.className).toContain('bg-background');
+    expect(table.querySelector('thead')?.className).toContain('bg-muted/60');
+  });
+
   it('applies responsive priority and action alignment to feature-owned columns', () => {
     const columns = [
       { id: 'name', label: '实例名称', priority: 'primary' as const },

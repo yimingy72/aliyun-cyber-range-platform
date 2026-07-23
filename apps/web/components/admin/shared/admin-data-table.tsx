@@ -68,30 +68,32 @@ function columnPriorityColumnClassName(priority: AdminDataColumn['priority']) {
 
 export function AdminDataTable({ label, columns, children, isRefreshing = false }: AdminDataTableProps) {
   return (
-    <Table aria-busy={isRefreshing || undefined} aria-label={label} className="min-w-full">
-      <colgroup>
-        {columns.map((column) => (
-          <col className={columnPriorityColumnClassName(column.priority)} key={column.id} />
-        ))}
-      </colgroup>
-      <TableHeader>
-        <TableRow className="hover:bg-transparent">
+    <div className="overflow-hidden rounded border border-border bg-background" data-slot="admin-data-table-frame">
+      <Table aria-busy={isRefreshing || undefined} aria-label={label} className="min-w-full">
+        <colgroup>
           {columns.map((column) => (
-            <TableHead
-              className={cn(
-                'h-11 px-3',
-                columnPriorityClassName(column.priority),
-                column.align === 'right' && 'text-right',
-              )}
-              key={column.id}
-            >
-              {column.label}
-            </TableHead>
+            <col className={columnPriorityColumnClassName(column.priority)} key={column.id} />
           ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>{children(columns)}</TableBody>
-    </Table>
+        </colgroup>
+        <TableHeader className="bg-muted/60">
+          <TableRow className="hover:bg-transparent">
+            {columns.map((column) => (
+              <TableHead
+                className={cn(
+                  'h-11 px-3',
+                  columnPriorityClassName(column.priority),
+                  column.align === 'right' && 'text-right',
+                )}
+                key={column.id}
+              >
+                {column.label}
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>{children(columns)}</TableBody>
+      </Table>
+    </div>
   );
 }
 
