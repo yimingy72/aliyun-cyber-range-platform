@@ -6,6 +6,9 @@ import './globals.css';
 export const metadata: Metadata = {
   title: '云上综合靶场平台',
   description: '面向内部安全演练管理员的云上综合靶场编排与实例管理平台',
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 type RootLayoutProps = {
