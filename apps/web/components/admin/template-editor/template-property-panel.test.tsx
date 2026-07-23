@@ -80,9 +80,9 @@ describe('TemplatePropertyPanel', () => {
     render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
 
     expect(screen.queryByText('平台默认')).toBeNull();
-    expect((screen.getByLabelText('安全协议 1-1') as HTMLSelectElement).value).toBe('tcp');
+    expect(screen.getByRole('combobox', { name: '安全协议 1-1' }).textContent).toBe('tcp');
     expect((screen.getByLabelText('安全端口 1-1') as HTMLInputElement).value).toBe('22/22');
-    expect((screen.getByLabelText('安全协议 1-2') as HTMLSelectElement).value).toBe('tcp');
+    expect(screen.getByRole('combobox', { name: '安全协议 1-2' }).textContent).toBe('tcp');
     expect((screen.getByLabelText('安全端口 1-2') as HTMLInputElement).value).toBe('80/80');
     expect(screen.getAllByDisplayValue('0.0.0.0/0')).toHaveLength(2);
   });

@@ -1,6 +1,4 @@
 import React from 'react';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,29 +6,28 @@ const {
   createRangeInstanceMock,
   deleteRangeInstanceMock,
   fetchAdminBootstrapMock,
-  fetchRangeInstanceDetailMock,
-  fetchProvisionJobDetailMock,
   triggerRangeActionMock,
 } = vi.hoisted(() => ({
   createRangeInstanceMock: vi.fn(),
   deleteRangeInstanceMock: vi.fn(),
   fetchAdminBootstrapMock: vi.fn(),
-  fetchRangeInstanceDetailMock: vi.fn(),
-  fetchProvisionJobDetailMock: vi.fn(),
   triggerRangeActionMock: vi.fn(),
 }));
 
-const { pushMock, replaceMock, searchParamsState } = vi.hoisted(() => ({
-  pushMock: vi.fn(),
-  replaceMock: vi.fn(),
-  searchParamsState: { value: '' },
-}));
+const { pushMock, replaceMock, routerMock, searchParamsState } = vi.hoisted(() => {
+  const pushMock = vi.fn();
+  const replaceMock = vi.fn();
+
+  return {
+    pushMock,
+    replaceMock,
+    routerMock: { push: pushMock, replace: replaceMock },
+    searchParamsState: { value: '' },
+  };
+});
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    push: pushMock,
-    replace: replaceMock,
-  }),
+  useRouter: () => routerMock,
   useSearchParams: () => new URLSearchParams(searchParamsState.value),
 }));
 
@@ -44,11 +41,32 @@ vi.mock('./use-admin-session', () => ({
 }));
 
 vi.mock('../../lib/admin-api', () => ({
+  AdminApiError: class AdminApiError extends Error {
+    status = 500;
+  },
   createRangeInstance: createRangeInstanceMock,
   deleteRangeInstance: deleteRangeInstanceMock,
-  fetchAdminBootstrap: fetchAdminBootstrapMock,
-  fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
-  fetchProvisionJobDetail: fetchProvisionJobDetailMock,
+  fetchProvisionJobs: async () => {
+    const snapshot = await fetchAdminBootstrapMock();
+    return snapshot.provisionJobs;
+  },
+  fetchRangeInstances: async (
+    _apiBaseUrl: string,
+    _token: string,
+    options: { view: 'active' | 'history' },
+  ) => {
+    const snapshot = await fetchAdminBootstrapMock();
+    const templateNames = new Map(snapshot.rangeTemplates.map((template: { id: string; name: string }) => [template.id, template.name]));
+
+    return snapshot.rangeInstances
+      .filter((instance: { status: string }) => (options.view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed'))
+      .map((instance: { templateId?: string | null; templateNameSnapshot?: string | null }) => ({
+        ...instance,
+        templateNameSnapshot:
+          instance.templateNameSnapshot ??
+          (instance.templateId ? templateNames.get(instance.templateId) : null),
+      }));
+  },
   triggerRangeAction: triggerRangeActionMock,
 }));
 
@@ -59,8 +77,6 @@ describe('RangeInstancesScreen', () => {
     createRangeInstanceMock.mockReset();
     deleteRangeInstanceMock.mockReset();
     fetchAdminBootstrapMock.mockReset();
-    fetchRangeInstanceDetailMock.mockReset();
-    fetchProvisionJobDetailMock.mockReset();
     triggerRangeActionMock.mockReset();
     pushMock.mockReset();
     replaceMock.mockReset();
@@ -115,15 +131,15 @@ describe('RangeInstancesScreen', () => {
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByRole('heading', { name: '编排实例' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '实例列表' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '实例历史' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '实例列表' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '实例历史' })).toBeTruthy();
     expect(screen.getByLabelText('筛选实例名')).toBeTruthy();
     expect(screen.queryByText('1 条记录')).toBeNull();
     expect(screen.queryByText('运行期管理')).toBeNull();
     expect(screen.queryByText('管理由靶场编排生成的运行实例，重点关注状态、创建时间和实例生命周期动作。')).toBeNull();
-    expect(screen.getAllByText('实例名').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('实例名称').length).toBeGreaterThan(0);
     expect(screen.getByText('创建人')).toBeTruthy();
-    expect(screen.getAllByText('靶场名').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('所属靶场').length).toBeGreaterThan(0);
     expect(screen.getByText('状态')).toBeTruthy();
     expect(screen.getByText('创建时间')).toBeTruthy();
     expect(screen.getByText('操作')).toBeTruthy();
@@ -142,44 +158,29 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('创建实例')).toBeNull();
     expect(screen.queryByText('筛选条件')).toBeNull();
 
-    const activeActionHeader = screen.getByText('操作').closest('.template-workbench-column-cell');
-    const activeActionCell = screen.getByRole('button', { name: '查看详情' }).closest('.range-workbench-actions');
-    expect(Array.from(document.querySelector('.range-workbench-column-head')?.children ?? [])).toHaveLength(6);
-    expect(Array.from(screen.getByText('蓝队靶场 01').closest('.range-workbench-row')?.children ?? [])).toHaveLength(6);
-    expect(activeActionHeader?.className).toContain('workbench-action-cell');
-    expect(activeActionCell?.className).toContain('workbench-action-cell');
+    const activeTable = screen.getByRole('table', { name: '编排实例列表' });
+    expect(activeTable.querySelectorAll('thead th')).toHaveLength(6);
+    expect(screen.getByText('蓝队靶场 01').closest('tr')?.querySelectorAll('td')).toHaveLength(6);
 
     fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: '蓝队' } });
     expect(screen.getByText('蓝队靶场 01')).toBeTruthy();
     expect(screen.queryByText('红队靶场 02')).toBeNull();
 
     fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
 
-    expect(screen.queryByText('蓝队靶场 01')).toBeNull();
-    expect(screen.getByText('红队靶场 02')).toBeTruthy();
+    expect(await screen.findByText('红队靶场 02')).toBeTruthy();
     expect(screen.queryByText('已回收实例')).toBeNull();
     expect(screen.getByText('开启时间')).toBeTruthy();
     expect(screen.getByText('回收时间')).toBeTruthy();
     expect(screen.getByText('运行时长')).toBeTruthy();
-    expect(screen.queryByText('状态')).toBeNull();
     expect(screen.getByText('操作')).toBeTruthy();
     expect(screen.getByRole('button', { name: '查看详情' })).toBeTruthy();
 
-    const historyActionHeader = screen.getByText('操作').closest('.template-workbench-column-cell');
-    const historyActionCell = screen.getByRole('button', { name: '查看详情' }).closest('.range-workbench-actions');
-    expect(Array.from(document.querySelector('.range-history-column-head')?.children ?? [])).toHaveLength(7);
-    expect(Array.from(screen.getByText('红队靶场 02').closest('.range-history-row')?.children ?? [])).toHaveLength(7);
-    expect(historyActionHeader?.className).toContain('workbench-action-cell');
-    expect(historyActionCell?.className).toContain('workbench-action-cell');
-
-    const globalsCss = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
-    expect(globalsCss).toMatch(
-      /--range-grid-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
-    );
-    expect(globalsCss).toMatch(
-      /--range-history-grid-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
-    );
+    const historyTable = screen.getByRole('table', { name: '编排实例历史' });
+    expect(historyTable.querySelectorAll('thead th')).toHaveLength(7);
+    expect(Array.from(historyTable.querySelectorAll('thead th')).map((cell) => cell.textContent)).not.toContain('状态');
+    expect(screen.getByText('红队靶场 02').closest('tr')?.querySelectorAll('td')).toHaveLength(7);
   });
 
   it('navigates to the standalone detail workbench when clicking 查看详情', async () => {
@@ -245,8 +246,8 @@ describe('RangeInstancesScreen', () => {
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '实例历史' }));
-    fireEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '实例历史' }), { button: 0 });
+    fireEvent.click(await screen.findByRole('button', { name: '查看详情' }));
 
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-2');
   });
@@ -284,13 +285,13 @@ describe('RangeInstancesScreen', () => {
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByText('当前还没有可查看的靶场实例')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
-    expect(screen.getByText('红队靶场 02')).toBeTruthy();
+    expect(await screen.findByText('还没有编排实例')).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
+    expect(await screen.findByText('红队靶场 02')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '实例列表' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '实例列表' }), { button: 0 });
 
-    expect(screen.getByText('当前还没有可查看的靶场实例')).toBeTruthy();
+    expect(await screen.findByText('还没有编排实例')).toBeTruthy();
     expect(screen.getByText('实例会在靶场编排页生成后进入这里。')).toBeTruthy();
   });
 
