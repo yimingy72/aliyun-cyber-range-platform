@@ -2,6 +2,7 @@ export type RangeTemplateView = 'platform' | 'mine';
 export type PlatformImageView = 'platform' | 'mine';
 export type InstanceView = 'active' | 'history';
 export type InstanceMode = 'single' | 'range';
+export type ImageCatalogScope = 'public' | 'custom';
 
 export type OperationRequest = {
   idempotencyKey?: string;
@@ -45,6 +46,53 @@ export type SaveRangeTemplateTopologyInput = {
   compiledSpec: Record<string, unknown>;
 };
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
+export type ImageCatalogScopePayload = {
+  snapshots: Array<Record<string, unknown> & { id: string }>;
+  catalogItems: Array<Record<string, unknown> & { id: string }>;
+};
+export type ImageImportJob = Record<string, unknown> & {
+  id: string;
+  status: 'awaiting_upload' | 'importing' | 'available' | 'failed' | 'cancelled';
+};
+export type ImageImportJobListPayload = {
+  items: ImageImportJob[];
+};
+
+export type BillingWindowInput = {
+  startAt?: string;
+  endAt?: string;
+  limit?: number;
+};
+
+export type BillingGroupInput = BillingWindowInput & {
+  userId?: string;
+};
+
+export type BillingSummary = Record<string, unknown> & {
+  startAt: string;
+  endAt: string;
+  totalPretaxAmount: number;
+  platformPretaxAmount: number;
+  anomalyCount: number;
+};
+
+export type BillingUserSummary = Record<string, unknown> & {
+  userId: string;
+  username: string;
+  pretaxAmount: number;
+  itemCount: number;
+  launchCount: number;
+};
+
+export type BillingLaunchGroup = Record<string, unknown> & { id: string };
+export type BillingLineItem = Record<string, unknown> & { id: string };
+export type BillingAnomaly = Record<string, unknown> & { id: string };
+export type BillingSyncResult = {
+  syncedDays: number;
+  importedLineItems: number;
+  anomalyCount: number;
+  deferredCount: number;
+};
 export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
@@ -156,6 +204,11 @@ export type PlatformApiClientLike = {
   enablePlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
   disablePlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
   removePlatformImage(id: string, operation?: OperationRequest): Promise<void>;
+  listImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
+  syncImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
+  removeCustomImageSnapshot(snapshotId: string): Promise<void>;
+  listImageImportJobs(): Promise<ImageImportJobListPayload>;
+  retryImageImport(id: string): Promise<ImageImportJob>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
   getRangeInstance(id: string): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
@@ -179,6 +232,18 @@ export type PlatformApiClientLike = {
   getProvisionJob(id: string): Promise<ProvisionJob>;
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
+  getBillingSummary(input?: BillingWindowInput): Promise<BillingSummary>;
+  listBillingUsers(input?: BillingWindowInput): Promise<BillingUserSummary[]>;
+  getBillingUserSummary(userId: string, input?: BillingWindowInput): Promise<BillingUserSummary>;
+  listBillingUserGroups(input?: BillingGroupInput): Promise<BillingLaunchGroup[]>;
+  listBillingPlatformGroups(input?: BillingWindowInput): Promise<BillingLaunchGroup[]>;
+  listBillingUserItems(userId: string, input?: BillingWindowInput): Promise<BillingLineItem[]>;
+  listBillingPlatformItems(input?: BillingWindowInput): Promise<BillingLineItem[]>;
+  listBillingAnomalies(input?: BillingWindowInput): Promise<BillingAnomaly[]>;
+  syncBilling(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<BillingSyncResult>;
+  exportPlatformBillingCsv(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
+  exportBillingUsersCsv(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
+  exportBillingUserItemsCsv(userId: string, input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
   listAdminUsers(): Promise<AdminUser[]>;
   createAdminUser(payload: CreateAdminUserInput, operation?: OperationRequest): Promise<AdminUser>;
   updateAdminUserRole(id: string, payload: UpdateAdminUserRoleInput, operation?: OperationRequest): Promise<AdminUser>;

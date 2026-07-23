@@ -30,9 +30,20 @@ function createClientStub(): ClientStub {
     enablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: true }),
     disablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: false }),
     removePlatformImage: vi.fn().mockResolvedValue(undefined),
+    listImageCatalog: vi.fn().mockResolvedValue({ snapshots: [], catalogItems: [] }),
+    syncImageCatalog: vi.fn().mockResolvedValue({ snapshots: [], catalogItems: [] }),
+    removeCustomImageSnapshot: vi.fn().mockResolvedValue(undefined),
+    listImageImportJobs: vi.fn().mockResolvedValue({ items: [] }),
+    retryImageImport: vi.fn().mockResolvedValue({ id: 'import-1', status: 'importing' }),
     listRangeInstances: vi.fn().mockResolvedValue([{ id: 'range-1' }]),
     getRangeInstance: vi.fn().mockResolvedValue({ id: 'range-1' }),
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
+    saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
+    applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
+    retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    removeFailedRangeInstance: vi.fn().mockResolvedValue(undefined),
+    runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
     getSingleInstanceAccess: vi.fn().mockResolvedValue({ runtimeCredentials: {} }),
@@ -45,6 +56,18 @@ function createClientStub(): ClientStub {
     updateAdminUserRole: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', role: 'admin' }),
     updateAdminUserStatus: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', status: 'disabled' }),
     resetAdminUserPassword: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice' }),
+    getBillingSummary: vi.fn().mockResolvedValue({ totalPretaxAmount: 0 }),
+    listBillingUsers: vi.fn().mockResolvedValue([]),
+    getBillingUserSummary: vi.fn().mockResolvedValue({ userId: 'user-1', username: 'alice' }),
+    listBillingUserGroups: vi.fn().mockResolvedValue([]),
+    listBillingPlatformGroups: vi.fn().mockResolvedValue([]),
+    listBillingUserItems: vi.fn().mockResolvedValue([]),
+    listBillingPlatformItems: vi.fn().mockResolvedValue([]),
+    listBillingAnomalies: vi.fn().mockResolvedValue([]),
+    syncBilling: vi.fn().mockResolvedValue({ syncedDays: 0, importedLineItems: 0, anomalyCount: 0, deferredCount: 0 }),
+    exportPlatformBillingCsv: vi.fn().mockResolvedValue(''),
+    exportBillingUsersCsv: vi.fn().mockResolvedValue(''),
+    exportBillingUserItemsCsv: vi.fn().mockResolvedValue(''),
     launchRange: vi.fn().mockResolvedValue({ id: 'range-2' }),
     destroyRange: vi.fn().mockResolvedValue({ ok: true }),
     launchSingleInstances: vi.fn().mockResolvedValue({ batch: { id: 'batch-1' }, instances: [] }),
@@ -150,7 +173,7 @@ describe('mcp http e2e', () => {
     });
 
     expect(platformClient.getSingleInstance).toHaveBeenCalledWith('ins-1');
-    expect(result.structuredContent).toEqual({ id: 'ins-1' });
+    expect(result.structuredContent).toEqual({ result: { id: 'ins-1' } });
 
     const specificationResult = await appClient.callTool({
       name: 'single_instance_spec_check',
@@ -158,7 +181,7 @@ describe('mcp http e2e', () => {
     });
 
     expect(platformClient.getInstanceTypeAvailability).toHaveBeenCalledWith(2, 4);
-    expect(specificationResult.structuredContent).toMatchObject({ exactAvailable: true });
+    expect(specificationResult.structuredContent).toMatchObject({ result: { exactAvailable: true } });
 
     await transport.close();
     await appClient.close();

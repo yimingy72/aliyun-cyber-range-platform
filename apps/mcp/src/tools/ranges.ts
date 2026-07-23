@@ -16,7 +16,15 @@ import {
   rangeRetryInputSchema,
   rangeTopologyChangeInputSchema,
 } from './input-schemas';
+import {
+  actionOutputSchema,
+  removedOutputSchema,
+  resourceListOutputSchema,
+  resourceOutputSchema,
+  resultOutputSchema,
+} from './output-schemas';
 import type { ToolDefinition } from './tool-context';
+import * as z from 'zod/v4';
 
 const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
   idempotencyKey: args.idempotencyKey,
@@ -31,6 +39,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:read'],
     readOnlyHint: true,
     inputSchema: rangeListInputSchema,
+    outputSchema: resourceListOutputSchema,
     async call(context, args) {
       return redactRangeInstanceSecrets(
         await context.client.listRangeInstances((args as { view?: 'active' | 'history' }).view ?? 'active'),
@@ -44,6 +53,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:read'],
     readOnlyHint: true,
     inputSchema: rangeInstanceIdInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       return redactRangeInstanceSecrets(
         await context.client.getRangeInstance((args as { rangeInstanceId: string }).rangeInstanceId),
@@ -57,6 +67,12 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:read', 'instances:credentials:read'],
     readOnlyHint: true,
     inputSchema: rangeInstanceIdInputSchema,
+    outputSchema: resultOutputSchema(
+      z.object({
+        publicIp: z.string().nullable().optional().describe('公网访问地址。'),
+        privateIp: z.string().nullable().optional().describe('私网地址。'),
+      }).passthrough(),
+    ),
     call(context, args) {
       return context.client.getRangeInstanceAccess((args as { rangeInstanceId: string }).rangeInstanceId);
     },
@@ -68,6 +84,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:create'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: rangeLaunchInputSchema,
+    outputSchema: resourceOutputSchema,
     call(context, args) {
       const input = args as { templateId: string; name: string; expiresAt: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.launchRange(
@@ -83,6 +100,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:write'],
     annotations: { idempotentHint: false },
     inputSchema: rangeTopologyChangeInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
       const saved = await saveRangeInstanceTopology(context, input);
@@ -96,6 +114,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:write', 'ranges:control'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: rangeTopologyChangeInputSchema,
+    outputSchema: actionOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
       await saveRangeInstanceTopology(context, input);
@@ -109,6 +128,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:write', 'templates:write'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: rangeTopologyChangeInputSchema,
+    outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
       await saveRangeInstanceTopology(context, input);
@@ -122,6 +142,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:control'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: rangeRetryInputSchema,
+    outputSchema: actionOutputSchema,
     call(context, args) {
       const input = args as RangeOperationInput;
       return context.client.retryRangeInstance(input.rangeInstanceId, operation(input));
@@ -137,6 +158,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:read', 'instances:credentials:read'],
     readOnlyHint: true,
     inputSchema: rangeNodeOpenVncInputSchema,
+    outputSchema: actionOutputSchema,
     call(context, args) {
       const input = args as { rangeInstanceId: string; nodeId: string };
       return context.client.runRangeInstanceNodeAction(input.rangeInstanceId, input.nodeId, 'open-vnc');
@@ -149,6 +171,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:control', 'images:write'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: rangeNodeActionInputSchema,
+    outputSchema: actionOutputSchema,
     async call(context, args) {
       const input = args as RangeNodeActionInput;
       return redactRangeInstanceSecrets(
@@ -169,6 +192,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:destroy'],
     annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: rangeDestroyInputSchema,
+    outputSchema: actionOutputSchema,
     call(context, args) {
       const input = args as { rangeInstanceId: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.destroyRange(input.rangeInstanceId, operation(input));
@@ -181,6 +205,7 @@ export const rangeTools: ToolDefinition[] = [
     requiredScopes: ['ranges:delete'],
     annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: rangeDeleteFailedInputSchema,
+    outputSchema: removedOutputSchema('rangeInstanceId'),
     async call(context, args) {
       const input = args as RangeOperationInput;
       await context.client.removeFailedRangeInstance(input.rangeInstanceId, operation(input));
@@ -219,6 +244,7 @@ function nodeActionTool(
     requiredScopes: ['ranges:control'],
     annotations: { destructiveHint: action === 'stop', idempotentHint: false },
     inputSchema: rangeNodeActionInputSchema,
+    outputSchema: actionOutputSchema,
     call(context, args) {
       const input = args as RangeNodeActionInput;
       return context.client.runRangeInstanceNodeAction(

@@ -17,9 +17,9 @@
 
 1. **靶场设计 Skill** 输出完整 `RangeDesign/v1`：模板元数据、VPC、交换机、ECS、镜像选择器、NIC、ACL、安全组、共享 NAT、SNAT、DNAT 与初始化要求。
 2. **靶场拓扑转换 Skill** 查询可见镜像并精确解析 `imageId`，补齐平台默认值，输出完整 `topologyGraph`。
-3. **MCP 工具** 对完整图再次编译与校验，自动生成 `topologySpec`、`scenarioTemplateSpec` 和 `compiledProvisionSpec` 后再调用平台 API。
+3. **MCP 工具** 对完整图再次编译与校验，自动生成 `topologySpec`、`scenarioTemplateSpec`、`compiledProvisionSpec` 和 `compiledSpec` 后再调用平台 API。
 
-转换 Skill 不得手工构造或传递上述三份派生规格。缺镜像、IP、CIDR、连线、入口主机或 NAT 参数时，应将缺项返回给设计 Skill，不得猜测。
+转换 Skill 不得手工构造或传递上述派生规格。缺镜像、IP、CIDR、连线、入口主机或 NAT 参数时，应将缺项返回给设计 Skill，不得猜测。
 
 ## 页面功能与 MCP 工具
 

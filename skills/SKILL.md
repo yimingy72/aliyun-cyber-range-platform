@@ -31,12 +31,12 @@ description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶
 
 | 产品 | 用途 | MCP 工具域 | 参考文件 |
 |---|---|---|---|
-| `image-center` 镜像中心 | 查询、收录、重命名、启停、发布或删除平台镜像 | `platform_image_*` | [image-center.md](./references/products/image-center.md) |
+| `image-center` 镜像中心 | 管理平台镜像、云镜像目录与导入任务 | `platform_image_*`、`image_catalog_*`、`image_import_job_*` | [image-center.md](./references/products/image-center.md) |
 | `instance-management` 实例管理 | 基于平台镜像创建、查询、控制、打包和销毁独立靶机 | `single_instance_*` | [instance-management.md](./references/products/instance-management.md) |
 | `range-authoring` 靶场编排 | 设计转换、创建、检测并保存、发布和取消发布综合靶场模板 | `range_template_*` | [range-authoring.md](./references/products/range-authoring.md) |
 | `range-instances` 编排实例 | 启动、查看、修改、控制、访问和销毁整套靶场环境 | `range_instance_*` | [range-instances.md](./references/products/range-instances.md) |
 | `user-management` 用户管理 | 管理平台用户、角色、状态和密码 | `admin_user_*` | [user-management.md](./references/products/user-management.md) |
-| `billing` 账单费用 | 查看平台费用与成本信息 | 当前未暴露 MCP 工具 | [billing.md](./references/products/billing.md) |
+| `billing` 账单费用 | 查询、同步和导出平台费用与成本信息 | `billing_*` | [billing.md](./references/products/billing.md) |
 | `settings` 基础配置 | 查询和更新平台云配置 | `cloud_config_*` | [settings.md](./references/products/settings.md) |
 
 异步开通任务属于所有资源域的通用支撑能力：使用 `provision_job_get`，见 [全局运行时规则](./references/global-reference.md) 和 [错误处理](./references/error-handling.md)。
@@ -67,11 +67,12 @@ description: 通过 aliyun-cyber-range-platform MCP Server 管理云上综合靶
 
 | 产品 | 操作 | 风险 |
 |---|---|---|
-| 镜像中心 | 收录、重命名、启用/停用、发布/取消发布、删除镜像 | 创建或改变镜像资产的名称、可用性、可见性，或永久删除资产 |
+| 镜像中心 | 收录、重命名、启用/停用、发布/取消发布、删除镜像、删除自定义云镜像、重试导入 | 创建、改变或永久删除镜像资产，或再次提交云端导入 |
 | 实例管理 | 创建批次、销毁单台/整批、重启、打包镜像、导出 CSV、打开 VNC | 产生云资源、释放资源、改变运行态或暴露凭据 |
 | 靶场编排 | 发布到平台、取消发布、删除模板 | 改变平台可见性或删除可复用资产 |
 | 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、打包镜像、销毁整套靶场、获取访问凭据 | 创建或改变云资源、模板资产，或暴露敏感数据 |
 | 用户管理 | 创建用户、角色/状态变更、密码重置 | 改变访问权限或身份凭据 |
+| 账单费用 | 同步账单、导出费用 CSV | 刷新本地费用归属数据或导出业务费用数据 |
 | 基础配置 | 更新云配置 | 影响后续所有云资源操作，且可能涉及密钥 |
 
 保存用户明确要求的完整模板或实例拓扑不需要额外二次确认，但必须通过 MCP 编译校验；发布到平台、取消发布、应用实例变更、同步模板、节点控制、打包镜像和删除始终属于危险操作。

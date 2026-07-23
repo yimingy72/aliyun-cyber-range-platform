@@ -1,5 +1,13 @@
 import type {
   AdminUser,
+  BillingAnomaly,
+  BillingGroupInput,
+  BillingLaunchGroup,
+  BillingLineItem,
+  BillingSummary,
+  BillingSyncResult,
+  BillingUserSummary,
+  BillingWindowInput,
   CloudConfigSnapshot,
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
@@ -7,6 +15,10 @@ import type {
   InstanceMode,
   InstanceTypeAvailabilitySnapshot,
   InstanceView,
+  ImageCatalogScope,
+  ImageCatalogScopePayload,
+  ImageImportJob,
+  ImageImportJobListPayload,
   LaunchRangeInput,
   LaunchSingleInstancesInput,
   OperationRequest,
@@ -168,6 +180,34 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
+  listImageCatalog(scope: ImageCatalogScope) {
+    return this.request<ImageCatalogScopePayload>(`/admin/image-catalog/${scope}`);
+  }
+
+  syncImageCatalog(scope: ImageCatalogScope) {
+    return this.request<ImageCatalogScopePayload>(`/admin/image-catalog/${scope}/sync`, {
+      method: 'POST',
+      body: '{}',
+    });
+  }
+
+  async removeCustomImageSnapshot(snapshotId: string) {
+    await this.request<void>(`/admin/image-catalog/custom/${encodeURIComponent(snapshotId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  listImageImportJobs() {
+    return this.request<ImageImportJobListPayload>('/admin/image-imports');
+  }
+
+  retryImageImport(id: string) {
+    return this.request<ImageImportJob>(`/admin/image-imports/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      body: '{}',
+    });
+  }
+
   listRangeInstances(view: InstanceView = 'active') {
     return this.request<RangeInstance[]>(`/admin/ranges?view=${encodeURIComponent(view)}`);
   }
@@ -282,6 +322,57 @@ export class PlatformApiClient implements PlatformApiClientLike {
       body: JSON.stringify(payload),
       operation,
     });
+  }
+
+  getBillingSummary(input: BillingWindowInput = {}) {
+    return this.request<BillingSummary>(this.billingPath('summary', input));
+  }
+
+  listBillingUsers(input: BillingWindowInput = {}) {
+    return this.request<BillingUserSummary[]>(this.billingPath('users', input));
+  }
+
+  getBillingUserSummary(userId: string, input: BillingWindowInput = {}) {
+    return this.request<BillingUserSummary>(this.billingPath(`users/${encodeURIComponent(userId)}`, input));
+  }
+
+  listBillingUserGroups(input: BillingGroupInput = {}) {
+    return this.request<BillingLaunchGroup[]>(this.billingPath('user-groups', input));
+  }
+
+  listBillingPlatformGroups(input: BillingWindowInput = {}) {
+    return this.request<BillingLaunchGroup[]>(this.billingPath('platform/groups', input));
+  }
+
+  listBillingUserItems(userId: string, input: BillingWindowInput = {}) {
+    return this.request<BillingLineItem[]>(this.billingPath(`users/${encodeURIComponent(userId)}/items`, input));
+  }
+
+  listBillingPlatformItems(input: BillingWindowInput = {}) {
+    return this.request<BillingLineItem[]>(this.billingPath('platform/items', input));
+  }
+
+  listBillingAnomalies(input: BillingWindowInput = {}) {
+    return this.request<BillingAnomaly[]>(this.billingPath('anomalies', input));
+  }
+
+  syncBilling(input: Pick<BillingWindowInput, 'startAt' | 'endAt'> = {}) {
+    return this.request<BillingSyncResult>('/admin/billing/sync', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  exportPlatformBillingCsv(input: Pick<BillingWindowInput, 'startAt' | 'endAt'> = {}) {
+    return this.requestText(this.billingPath('export/platform.csv', input));
+  }
+
+  exportBillingUsersCsv(input: Pick<BillingWindowInput, 'startAt' | 'endAt'> = {}) {
+    return this.requestText(this.billingPath('export/users.csv', input));
+  }
+
+  exportBillingUserItemsCsv(userId: string, input: Pick<BillingWindowInput, 'startAt' | 'endAt'> = {}) {
+    return this.requestText(this.billingPath(`export/users/${encodeURIComponent(userId)}.csv`, input));
   }
 
   listAdminUsers() {
@@ -404,6 +495,29 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
+  private billingPath(path: string, input: BillingWindowInput | BillingGroupInput) {
+    const query = new URLSearchParams();
+
+    if (input.startAt) {
+      query.set('startAt', input.startAt);
+    }
+
+    if (input.endAt) {
+      query.set('endAt', input.endAt);
+    }
+
+    if (input.limit !== undefined) {
+      query.set('limit', String(input.limit));
+    }
+
+    if ('userId' in input && input.userId) {
+      query.set('userId', input.userId);
+    }
+
+    const search = query.toString();
+    return `/admin/billing/${path}${search ? `?${search}` : ''}`;
+  }
+
   private async request<T>(path: string, init?: { method?: string; body?: string; operation?: OperationRequest }) {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: init?.method ?? 'GET',
@@ -439,6 +553,32 @@ export class PlatformApiClient implements PlatformApiClientLike {
     }
 
     return JSON.parse(text) as T;
+  }
+
+  private async requestText(path: string) {
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      method: 'GET',
+      headers: this.buildHeaders(),
+    });
+
+    if (!response.ok) {
+      let details: unknown = null;
+
+      try {
+        details = await response.json();
+      } catch {
+        details = await response.text().catch(() => null);
+      }
+
+      const message =
+        details && typeof details === 'object' && 'message' in details && typeof (details as { message?: unknown }).message === 'string'
+          ? (details as { message: string }).message
+          : `Platform API request failed with status ${response.status}`;
+
+      throw new PlatformApiError(response.status, message, details);
+    }
+
+    return response.text();
   }
 
   private buildHeaders(operation?: OperationRequest) {

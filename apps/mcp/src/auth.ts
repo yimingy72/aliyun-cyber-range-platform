@@ -34,6 +34,8 @@ export const ADMIN_SCOPES = [
   ...END_USER_SCOPES,
   'users:read',
   'users:write',
+  'billing:read',
+  'billing:sync',
   'settings:read',
   'settings:write',
 ];

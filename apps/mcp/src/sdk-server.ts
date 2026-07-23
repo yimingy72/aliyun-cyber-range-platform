@@ -25,6 +25,8 @@ const allScopes = [
   'jobs:read',
   'users:read',
   'users:write',
+  'billing:read',
+  'billing:sync',
   'settings:read',
   'settings:write',
 ] as const;

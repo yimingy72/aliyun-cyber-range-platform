@@ -29,7 +29,11 @@
 
 ## 镜像写操作
 
-`platform_image_collect`、`platform_image_rename`、`platform_image_enable`、`platform_image_disable`、`platform_image_publish`、`platform_image_unpublish` 和 `platform_image_remove` 都是危险操作。每一项均先取得用户确认；服务端返回确认要求时再走本文件的二阶段调用。
+`platform_image_collect`、`platform_image_rename`、`platform_image_enable`、`platform_image_disable`、`platform_image_publish`、`platform_image_unpublish`、`platform_image_remove`、`image_catalog_custom_delete` 和 `image_import_job_retry` 都是危险操作。每一项均先取得用户确认；服务端返回确认要求时再走本文件的二阶段调用。
+
+## 账单同步与导出
+
+`billing_sync` 会刷新平台本地账单归属数据，执行前先展示日期范围并取得用户确认。账单 CSV 导出不会改变数据，但只有用户明确要求导出时才调用；不要在普通摘要中粘贴 CSV 内容。
 
 ## 拓扑编辑与编排实例
 
