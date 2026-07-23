@@ -428,7 +428,7 @@ export function UsersScreen({
   if (!session.isAdmin) {
     return (
       <div className="admin-screen">
-        <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+        <section className="admin-workbench-surface">
           <AdminPageHeader description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理" />
           <div className="py-16 text-center">
             <strong className="text-sm font-medium text-foreground">只有管理员可以访问用户管理页。</strong>
@@ -456,7 +456,7 @@ export function UsersScreen({
         </p>
       ) : null}
 
-      <section className="admin-workbench-panel users-workbench-panel rounded-md border border-border bg-card p-4 shadow-sm">
+      <section className="admin-workbench-surface users-workbench-panel">
         <AdminPageHeader description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理" />
 
         <div className="mt-4">
@@ -479,7 +479,7 @@ export function UsersScreen({
             searchPlaceholder="搜索用户名"
             searchValue={searchName}
           >
-            <div className="mt-4 overflow-hidden rounded-md border border-border bg-background">
+            <div className="mt-4">
               <AdminDataTable columns={USER_COLUMNS} isRefreshing={isRefreshing} label="用户列表">
                 {(columns) => {
                   const [usernameColumn, roleColumn, statusColumn, createdAtColumn, updatedAtColumn, actionsColumn] = columns;

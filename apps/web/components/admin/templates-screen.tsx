@@ -702,7 +702,7 @@ export function TemplatesScreen({
       {actionErrorMessage ? <p className="admin-error">{actionErrorMessage}</p> : null}
       {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
 
-      <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+      <section className="admin-workbench-surface">
         <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
         <div className="mt-4">
           <AdminListToolbar

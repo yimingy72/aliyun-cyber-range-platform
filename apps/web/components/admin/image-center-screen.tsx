@@ -1422,7 +1422,7 @@ export function ImageCenterScreen({
 
   return (
     <div className="admin-screen image-center-screen">
-      <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+      <section className="admin-workbench-surface">
         <AdminPageHeader description="收录、导入和维护演练镜像资产。" title="镜像中心" />
         {imageImportSuccessMessage ? <p className="mt-4 text-sm text-emerald-700" aria-live="polite">{imageImportSuccessMessage}</p> : null}
 
@@ -1510,7 +1510,7 @@ export function ImageCenterScreen({
                     </div>
                   ) : null}
 
-                  <div className="overflow-hidden rounded-md border border-border">
+                  <div>
                     <AdminDataTable columns={activeColumns} isRefreshing={isRefreshing} label={activeTabTitle}>
                       {(columns) => {
                         const actionErrorRow = actionErrorMessage ? (

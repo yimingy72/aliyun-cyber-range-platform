@@ -514,7 +514,7 @@ export function RangeInstancesScreen({
     <div className="admin-screen">
       {actionErrorMessage ? <p className="admin-error" role="alert">{actionErrorMessage}</p> : null}
 
-      <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+      <section className="admin-workbench-surface">
         <AdminPageHeader description="查看靶场实例状态和生命周期。" title="编排实例" />
 
         <div className="mt-4">
