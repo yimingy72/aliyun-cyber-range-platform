@@ -1,11 +1,6 @@
 # 靶场编排
 
-本模块严格对应前端“靶场编排”页面。页面对用户呈现的状态只有两类：
-
-- **已保存未发布**：模板和拓扑已保存，创建者仍可编辑，其他用户不可在平台模板列表中使用。
-- **已发布到平台**：模板对其他用户可见且可用于生成编排实例。
-
-“版本”“草稿”“编译规格”是后端实现细节，不得作为用户操作、MCP 工具名或对外流程步骤。平台没有“共享/取消共享”功能；“发布到平台/取消发布”是唯一的模板可见性操作。
+管理综合靶场模板及其完整拓扑。模板要么已保存未发布，要么已发布到平台；发布与取消发布是唯一的可见性操作。
 
 ## MCP 工具与参数
 
@@ -13,7 +8,7 @@
 
 除非行内说明，写工具可按运行时 schema 接收 `idempotencyKey` 和 `confirmationId`。
 
-| 前端功能 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
 | 查看模板列表 | `range_template_list` | — | `view: platform\|mine`，默认 `platform` | `templates:read` |
 | 查看模板详情 | `range_template_get` | `templateId` | — | `templates:read` |
@@ -25,7 +20,7 @@
 | 取消发布 | `range_template_unpublish` | `templateId` | 操作元数据 | `templates:publish` |
 | 删除模板 | `range_template_delete` | `templateId` | 操作元数据 | `templates:delete` |
 
-`range_template_topology_detect_and_save` 对应编辑器“检测并保存”：完整图编译和校验通过后才保存，但不会发布。MCP 不暴露“共享/取消共享”、独立“预检”、独立“校验”、节点增删改、连线增删或批量变更；这些是编辑器内部交互。Agent 修改拓扑时，始终重新生成完整图再调用“检测并保存”。
+`range_template_topology_detect_and_save` 会编译并校验完整图后保存，但不会发布。拓扑修改始终重新生成完整图；没有“共享/取消共享”、独立预检或节点补丁工具。
 
 ## 设计转换流程
 
@@ -191,7 +186,7 @@ connections:
 }
 ```
 
-## 页面流程
+## 模板操作
 
 1. 首次创建：由转换 Skill 输出完整图，调用 `range_template_create`。
 2. 编辑拓扑：从完整修改结果重新生成图，调用 `range_template_topology_detect_and_save`。

@@ -1,6 +1,6 @@
 # 编排实例
 
-本模块严格对应前端“编排实例”列表和详情页面，管理由模板启动的一整套综合靶场环境。它不是“实例管理”页面的独立训练主机；用户给出平台镜像、CPU、内存、数量时，应路由到 [实例管理](./instance-management.md)。
+管理由模板启动的一整套综合靶场环境。基于平台镜像、CPU、内存和数量创建独立训练主机时，路由到 [实例管理](./instance-management.md)。
 
 ## MCP 工具与参数
 
@@ -8,7 +8,7 @@
 
 除非行内说明，写工具可按运行时 schema 接收 `idempotencyKey` 和 `confirmationId`。
 
-| 前端功能 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
 | 实例列表/实例历史 | `range_instance_list` | — | `view: active\|history`，默认 `active` | `ranges:read` |
 | 查看详情 | `range_instance_get` | `rangeInstanceId` | — | `ranges:read` |
@@ -26,11 +26,9 @@
 | 关闭/销毁 | `range_instance_destroy` | `rangeInstanceId` | 操作元数据 | `ranges:destroy` |
 | 删除创建失败记录 | `range_instance_delete_failed` | `rangeInstanceId` | 操作元数据 | `ranges:delete` |
 
-页面“重置”目前未实现实际执行能力，MCP 也不得虚构对应工具。
-
 ## 实例拓扑转换 Skill
 
-实例详情页的“保存变更”“应用变更”“更新编排拓扑”必须经过：
+保存、应用或同步实例拓扑必须经过：
 
 ```text
 实例详情 + 用户明确的修改 -> 实例拓扑转换 Skill -> range_instance_topology_*
@@ -44,7 +42,7 @@
 
 转换 Skill 必须输出完整 `topologyGraph`，而不是节点补丁或派生部署规格。MCP 从当前实例读取模板元数据并重新编译内部规格；调用方不能提交这些内部字段。用户只需查看、访问、节点开关机或销毁时，不进入转换 Skill。
 
-## 页面流程
+## 操作流程
 
 ### 生成实例
 

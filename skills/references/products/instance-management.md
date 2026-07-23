@@ -1,6 +1,6 @@
 # 实例管理
 
-管理基于平台镜像创建的独立训练靶机和批次。它不同于基于靶场模板启动整套环境；后者见 [编排实例](./range-instances.md)。
+管理基于平台镜像创建的独立训练靶机和批次。基于模板启动整套环境时，路由到 [编排实例](./range-instances.md)。
 
 ## MCP 工具与参数
 
@@ -21,44 +21,12 @@
 | 打包镜像 | `single_instance_pack_image` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control` |
 | 导出凭据 CSV | `single_instance_batch_export_csv` | `batchId` | `view: active\|history` | `instances:read`、`instances:credentials:read` |
 
-## 产品内意图路由
+## 操作规则
 
-| 用户意图 | 工具与流程 | 参数约束 |
-|---|---|---|
-| “查实例、批次或历史记录” | `single_instance_list` / `single_instance_get` | `view` 为 `active` 或 `history`；详情需要 `singleInstanceId`。创建者/管理员的详情可能含自身运行时凭据，按敏感输出处理。 |
-| “看密码、SSH、VNC、导出凭据” | `get_access`、`open_vnc` 或 CSV 导出 | 必须有明确的凭据请求及 `instances:credentials:read`；属于敏感输出。 |
-| “创建一台/一批靶机” | [创建独立靶机](#创建独立靶机) | 镜像、CPU、内存、数量和最终到期时间必须明确；先做规格校验。 |
-| “销毁、重试、重启” | [生命周期与状态](#生命周期与状态) | 区分单台 `singleInstanceId` 与整批 `batchId`；`retry` 不等于重启。 |
-| “将实例打成镜像” | `single_instance_pack_image` | 要求 `singleInstanceId`；这是创建私有镜像资产，不是导出文件。 |
-
-## 创建独立靶机
-
-1. 用 `platform_image_list` 选择调用者可见且启用的平台镜像。
-2. 向用户确认镜像 ID、CPU、内存、数量、到期时间和影响范围；不要从历史实例或云厂商习惯推断。`quantity` 为 1–99，系统盘省略时服务端默认 40 GiB。当前 MCP schema 要求带时区的 ISO-8601 `expiresAt`；用户未给到期时间时必须先澄清，不能自行计算或假定默认值。
-3. 以完全相同的 CPU/内存调用 `single_instance_spec_check`。只有 `exactAvailable: true` 才能立即创建；校验失败、报错、超时或规格改变时均停止。
-4. 取得危险操作确认后调用 `single_instance_batch_launch`。若服务端要求确认，按入口 Skill 的二阶段流程使用同一业务参数和返回的 `confirmationId` 重试。
-5. 返回批次/实例/作业 ID 仅代表受理；查询实例或 `provision_job_get` 至终态。
-
-### 创建参数与规格边界
-
-`single_instance_spec_check(cpu, memory)` 校验默认地域、可用区、VPC、按量付费与系统盘类型下的精确 X86 规格；成功不预留库存，也不保证镜像兼容性或配额。当前候选组合为：
-
-| CPU | 内存 | 候选实例族 |
-|---:|---:|---|
-| 2 核 | 2 GiB | `ecs.e-c1m1.large`、`ecs.u1-c1m1.large`、`ecs.t6-c1m1.large` |
-| 2 核 | 4 GiB | `ecs.e-c1m2.large`、`ecs.u1-c1m2.large` |
-| 4 核 | 8 GiB | `ecs.e-c1m2.xlarge`、`ecs.u1-c1m2.xlarge` |
-| 8 核 | 16 GiB | `ecs.e-c1m2.2xlarge`、`ecs.u1-c1m2.2xlarge` |
-
-不要使用表外组合或绕过校验。`systemDiskSize` 显式传入时必须是整数且至少 20 GiB；`hostName`、`password` 和 `remark` 仅在用户明确要求时传入。密码是敏感输入，创建响应或后续摘要中不得回显。
-
-## 生命周期与状态
-
-- `retry` 只用于创建或销毁失败的实例；先刷新状态，不能把它当成普通重启。
-- `reboot` 只对运行中的单台实例使用；它不接受镜像或创建参数。`displayName`、`defaultHostName`、`defaultPassword`、`description` 等可选动作字段仅在用户明确要求时传入。
-- 销毁需确认范围是单台还是整个 `batchId`，并跟踪销毁终态。
-- `single_instance_pack_image` 会从单实例创建私有镜像资产；它不是简单导出，且可能涉及默认凭据。
-
-## 敏感访问与导出
-
-`get_access`、VNC、凭据 CSV 和打包镜像可能返回秘密。仅在用户明确要求访问数据且 scope 足够时调用，并遵守入口要求的敏感输出规则。
+- 查询状态使用 `list`/`get`；密码、SSH、VNC 和 CSV 必须有用户明确请求并具备 `instances:credentials:read`。
+- 创建前先从 `platform_image_list` 选择可见且启用的 `platformImageAssetId`，再用完全相同的 CPU/内存调用 `single_instance_spec_check`。仅 `exactAvailable: true` 可创建。
+- `expiresAt` 必填，必须是带时区的 ISO-8601 未来时间；不得猜测默认到期时间。`quantity` 为 1–99；省略 `systemDiskSize` 时服务端默认 40 GiB。
+- 当前候选规格仅为 2c2g、2c4g、4c8g、8c16g。规格校验不预留库存，CPU 或内存变化后必须重新校验。
+- 经确认调用 `single_instance_batch_launch` 后，用实例详情或 `provision_job_get` 跟踪终态。
+- `retry` 仅处理创建或销毁失败；`reboot` 仅针对运行中的单台实例。销毁前确认单台 `singleInstanceId` 或整批 `batchId`。
+- `single_instance_pack_image` 会创建私有镜像资产；`open_vnc`、访问凭据和 CSV 按敏感输出规则处理。
