@@ -1,23 +1,20 @@
-# Range Template Conversion Guard Design
+# 靶场模板转换约束设计
 
-## Goal
+## 目标
 
-Make the topology design the only writable source for template creation. Every
-template creation path compiles and validates the topology before persisting
-derived deployment artifacts.
+将靶场拓扑设计作为创建模板时唯一可写的事实源。每一条模板创建路径都必须先将拓扑转换并校验为部署规格，再持久化派生产物。
 
-## Scope
+## 范围
 
-- Share the topology-to-template converter between the MCP server and API.
-- Support one primary VPC CIDR plus explicit secondary VPC CIDRs.
-- Require each vSwitch CIDR to be contained by one configured VPC CIDR block.
-- Reject caller-supplied derived topology artifacts on template creation.
-- Teach the project Skill to produce a `RangeDesign/v1` and invoke the
-  conversion-backed MCP tool.
+- 在 MCP Server 与 API 之间共享“拓扑图转换为模板规格”的转换器。
+- 支持一个主 VPC CIDR 与显式声明的多个附加 VPC CIDR。
+- 要求每个交换机 CIDR 均归属于某个已配置的 VPC CIDR 块。
+- 拒绝调用方在创建模板时直接提交派生拓扑产物。
+- 更新项目 Skill，使其先产出 `RangeDesign/v1`，再调用经过转换约束的 MCP 工具。
 
-## Data Model
+## 数据模型
 
-The canonical network declaration is:
+网络的规范化声明为：
 
 ```ts
 {
@@ -26,20 +23,13 @@ The canonical network declaration is:
 }
 ```
 
-`topologySpec.vpcCidr` remains the primary CIDR for compatibility. The
-secondary CIDRs are stored in `scenarioTemplateSpec.topology` and
-`compiledProvisionSpec.topology`, then forwarded to the provisioning plan and
-OpenTofu renderer as `secondary_vpc_cidrs`.
+为兼容现有模板，`topologySpec.vpcCidr` 继续保存主 CIDR。附加 CIDR 存放于 `scenarioTemplateSpec.topology` 与 `compiledProvisionSpec.topology`，再通过 `secondary_vpc_cidrs` 传递给 OpenTofu 渲染变量。
 
-The existing enterprise range module already attaches the secondary blocks
-before it creates vSwitches. Making them explicit removes the current implicit
-dependency on its default `172.16.0.0/16` and `192.168.0.0/16` values.
+现有企业靶场 OpenTofu 模块已经会先为 VPC 绑定附加 CIDR，再创建交换机。将其变为显式数据后，便不再依赖模块中默认的 `172.16.0.0/16` 和 `192.168.0.0/16`。
 
-## Conversion Boundary
+## 转换边界
 
-`compileTemplateTopology` moves into `@aliyun-cyber-range/scenario-runtime`.
-It receives the topology graph and authoring metadata, normalizes defaults,
-validates all graph relationships, and produces:
+`compileTemplateTopology` 将迁入 `@aliyun-cyber-range/scenario-runtime`。它接收拓扑图和模板创作元数据，规范化默认值、校验全部图关系，并生成：
 
 - `topologyGraph`
 - `topologySpec`
@@ -47,43 +37,31 @@ validates all graph relationships, and produces:
 - `compiledProvisionSpec`
 - `compiledSpec`
 
-The API creates templates from a `topologyGraph` and authoring metadata only.
-It invokes the shared converter using server-owned identity values. The
-controller rejects caller-supplied derived fields so REST, MCP, and the web UI
-cannot bypass the conversion boundary.
+API 创建模板时只接受拓扑图与创作元数据。服务端使用自身生成的模板标识运行共享转换器；控制器拒绝调用方提交任何派生字段，因此 REST、MCP 和 Web 前端都无法绕过此转换边界。
 
-The MCP `range_template_create` continues to accept only topology metadata and
-the graph. It invokes the same converter before calling the API. Its schema
-does not expose derived fields.
+MCP 的 `range_template_create` 只接收拓扑元数据和拓扑图，并在调用 API 前运行相同的转换器。其 schema 不暴露派生字段。
 
-## Network Semantics
+## 网络语义
 
-- `primaryVpcCidr` creates the VPC.
-- `secondaryVpcCidrs` creates additional VPC IPv4 CIDR blocks.
-- A vSwitch must be inside the primary CIDR or any secondary CIDR.
-- A range has one shared NAT gateway.
-- SNAT and DNAT use distinct EIPs. Each enabled vSwitch receives one SNAT
-  entry, and DNAT external ports are unique because the range shares one DNAT
-  EIP.
+- `primaryVpcCidr` 用于创建 VPC。
+- `secondaryVpcCidrs` 用于为该 VPC 创建附加 IPv4 CIDR 块。
+- 每个交换机必须属于主 CIDR 或任一附加 CIDR。
+- 一个靶场使用一台共享 NAT 网关。
+- SNAT 与 DNAT 使用不同的 EIP。每个开启 SNAT 的交换机创建一条 SNAT 规则；DNAT 因共享一个 DNAT EIP，外部端口必须唯一。
 
-## Skill Contract
+## Skill 契约
 
-The operations Skill directs agents to:
+操作 Skill 要求 Agent：
 
-1. Produce or accept a `RangeDesign/v1` with explicit VPC blocks, vSwitches,
-   hosts, image selectors, shared NAT, ACLs, security groups, and bootstrap
-   configuration.
-2. Resolve image selectors through the read-only platform image tool.
-3. Call only `range_template_create` for template creation.
-4. Never hand-author or pass the four derived artifacts.
+1. 先产出或接收 `RangeDesign/v1`：其中包含明确的 VPC CIDR 块、交换机、主机、镜像选择器、共享 NAT、ACL、安全组和初始化配置。
+2. 使用只读的平台镜像工具解析镜像选择器。
+3. 创建模板时只能调用 `range_template_create`。
+4. 不得手工编写或传递四份派生产物。
 
-## Tests
+## 测试
 
-- Unit test that a graph with `10.0.0.0/24`, `172.16.0.0/24`, and
-  `192.168.0.0/24` vSwitches compiles with the matching primary and secondary
-  VPC CIDRs.
-- Unit test that a vSwitch outside all configured VPC CIDRs is rejected.
-- API test that caller-supplied derived fields are rejected during create.
-- MCP test that `range_template_create` compiles the graph and cannot receive
-  raw derived fields.
-- Renderer test that `secondary_vpc_cidrs` reaches the OpenTofu variables.
+- 图中含 `10.0.0.0/24`、`172.16.0.0/24`、`192.168.0.0/24` 三个交换机时，使用匹配的主/附加 VPC CIDR 能成功转换。
+- 交换机 CIDR 不属于任何已配置 VPC CIDR 时被拒绝。
+- API 创建模板时，调用方提交派生字段会被拒绝。
+- MCP 的 `range_template_create` 会转换拓扑图，且无法接收原始派生字段。
+- 渲染器测试验证附加 CIDR 会到达 OpenTofu 的 `secondary_vpc_cidrs` 变量。
