@@ -183,6 +183,7 @@ describe('AdminWorkspaceShell', () => {
 
     const navigationDialog = await screen.findByRole('dialog');
 
+    expect(within(navigationDialog).getByTestId('platform-brand-mark').className).toContain('size-6');
     expect(within(navigationDialog).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe(
       '/admin/scenarios',
     );
@@ -202,10 +203,13 @@ describe('AdminWorkspaceShell', () => {
 
     await screen.findByText('workspace content');
 
+    const sidebarBrand = screen.getByTestId('admin-sidebar-brand');
+
     const navigation = screen.getByRole('navigation');
     const navigationLinks = within(navigation).getAllByRole('link').map((link) => link.getAttribute('href'));
 
     expect(screen.getByText('综合靶场平台')).toBeTruthy();
+    expect(within(sidebarBrand).getByTestId('platform-brand-mark').getAttribute('src')).toBe('/brand/platform-mark.svg');
     expect(within(navigation).getByRole('link', { name: /镜像中心/i }).getAttribute('href')).toBe('/admin/image-center');
     expect(within(navigation).getByRole('link', { name: /实例管理/i }).getAttribute('href')).toBe('/admin/instances');
     expect(within(navigation).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe('/admin/scenarios');

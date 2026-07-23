@@ -17,6 +17,7 @@ import {
 import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../lib/admin-oidc-config';
 import { writeAdminSession } from '../../lib/admin-auth-storage';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
+import { PlatformBrand } from './platform-brand';
 import { useAdminSession } from './use-admin-session';
 
 type AdminWorkspaceShellProps = {
@@ -260,8 +261,8 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   return (
     <div className="admin-workspace">
       <aside className="admin-sidebar bg-card text-card-foreground">
-        <div className="border-b border-border px-5 py-5">
-          <strong className="text-sm font-semibold">综合靶场平台</strong>
+        <div className="border-b border-border px-5 py-[18px]" data-testid="admin-sidebar-brand">
+          <PlatformBrand />
         </div>
         <AdminNavigation className="px-3 pb-4" items={visibleNavigationItems} pathname={pathname} />
       </aside>
@@ -280,7 +281,9 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
                 side="left"
               >
                 <SheetHeader className="border-b border-border px-5 py-4">
-                  <SheetTitle>综合靶场平台</SheetTitle>
+                  <SheetTitle className="leading-none">
+                    <PlatformBrand compact />
+                  </SheetTitle>
                 </SheetHeader>
                 <AdminNavigation
                   className="px-3 py-4"
