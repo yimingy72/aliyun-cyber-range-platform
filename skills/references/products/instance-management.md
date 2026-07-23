@@ -2,19 +2,24 @@
 
 管理基于平台镜像创建的独立训练靶机和批次。它不同于基于靶场模板启动整套环境；后者见 [编排实例](./range-instances.md)。
 
-## 工具与权限
+## MCP 工具与参数
 
-| 操作 | MCP 工具 | Scope |
-|---|---|---|
-| 查询单实例/批次 | `single_instance_list`、`single_instance_get` | `instances:read` |
-| 查询访问凭据 | `single_instance_get_access` | `instances:read` + `instances:credentials:read` |
-| 校验规格 | `single_instance_spec_check` | `instances:read` |
-| 创建批次 | `single_instance_batch_launch` | `instances:read` + `instances:create` |
-| 销毁单台/整批 | `single_instance_destroy`、`single_instance_batch_destroy` | `instances:destroy` |
-| 重试/重启 | `single_instance_retry`、`single_instance_reboot` | `instances:control` |
-| 打开 VNC | `single_instance_open_vnc` | `instances:control` + `instances:credentials:read` |
-| 打包镜像 | `single_instance_pack_image` | `instances:control` |
-| 导出凭据 CSV | `single_instance_batch_export_csv` | `instances:read` + `instances:credentials:read` |
+除非行内说明，写工具可按运行时 schema 接收 `idempotencyKey` 和 `confirmationId`。
+
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+|---|---|---|---|---|
+| 查询单实例/批次 | `single_instance_list` | — | `view: active\|history`，默认 `active` | `instances:read` |
+| 查询单实例详情 | `single_instance_get` | `singleInstanceId` | — | `instances:read` |
+| 查询访问凭据 | `single_instance_get_access` | `singleInstanceId` | — | `instances:read`、`instances:credentials:read` |
+| 校验规格 | `single_instance_spec_check` | 正整数 `cpu`、`memory`（GiB） | — | `instances:read` |
+| 创建批次 | `single_instance_batch_launch` | `name`、`platformImageAssetId`、`cpu`、`memory`、`quantity`（1–99）、带时区 `expiresAt` | `hostName`、`systemDiskSize`（整数且至少 20）、敏感 `password`、`remark`、操作元数据 | `instances:read`、`instances:create` |
+| 销毁单台 | `single_instance_destroy` | `singleInstanceId` | 操作元数据 | `instances:destroy` |
+| 销毁整批 | `single_instance_batch_destroy` | `batchId` | 操作元数据 | `instances:destroy` |
+| 重试失败任务 | `single_instance_retry` | `singleInstanceId` | 操作元数据 | `instances:control` |
+| 重启 | `single_instance_reboot` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control` |
+| 打开 VNC | `single_instance_open_vnc` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description` | `instances:control`、`instances:credentials:read` |
+| 打包镜像 | `single_instance_pack_image` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control` |
+| 导出凭据 CSV | `single_instance_batch_export_csv` | `batchId` | `view: active\|history` | `instances:read`、`instances:credentials:read` |
 
 ## 产品内意图路由
 
@@ -29,9 +34,9 @@
 ## 创建独立靶机
 
 1. 用 `platform_image_list` 选择调用者可见且启用的平台镜像。
-2. 向用户确认镜像 ID、CPU、内存、数量、到期时间和影响范围；不要从历史实例或云厂商习惯推断。`quantity` 为 1–99，系统盘省略时服务端默认 40 GiB。用户未给到期时间时，Skill 计算当前时间加 8 小时并将得到的 ISO-8601 `expiresAt` 显式传入；这不是服务端默认值，确认摘要必须展示该实际到期时间。
+2. 向用户确认镜像 ID、CPU、内存、数量、到期时间和影响范围；不要从历史实例或云厂商习惯推断。`quantity` 为 1–99，系统盘省略时服务端默认 40 GiB。当前 MCP schema 要求带时区的 ISO-8601 `expiresAt`；用户未给到期时间时必须先澄清，不能自行计算或假定默认值。
 3. 以完全相同的 CPU/内存调用 `single_instance_spec_check`。只有 `exactAvailable: true` 才能立即创建；校验失败、报错、超时或规格改变时均停止。
-4. 取得危险操作确认后调用 `single_instance_batch_launch`。若服务端要求确认，按 [confirmation.md](../confirmation.md) 的二阶段流程重试。
+4. 取得危险操作确认后调用 `single_instance_batch_launch`。若服务端要求确认，按入口 Skill 的二阶段流程使用同一业务参数和返回的 `confirmationId` 重试。
 5. 返回批次/实例/作业 ID 仅代表受理；查询实例或 `provision_job_get` 至终态。
 
 ### 创建参数与规格边界
@@ -56,4 +61,4 @@
 
 ## 敏感访问与导出
 
-`get_access`、VNC、凭据 CSV 和打包镜像可能返回秘密。仅在用户明确要求访问数据且 scope 足够时调用；详细规则见 [sensitive-outputs.md](../sensitive-outputs.md)。
+`get_access`、VNC、凭据 CSV 和打包镜像可能返回秘密。仅在用户明确要求访问数据且 scope 足够时调用，并遵守入口要求的敏感输出规则。

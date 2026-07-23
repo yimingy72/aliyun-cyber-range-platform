@@ -2,12 +2,12 @@
 
 管理平台的云配置。该产品只限管理员，且配置中可能包含脱敏密钥或影响后续所有云资源操作的默认值。
 
-## 工具与权限
+## MCP 工具与参数
 
-| 操作 | MCP 工具 | Scope |
-|---|---|---|
-| 查询配置 | `cloud_config_get` | `settings:read` |
-| 更新配置 | `cloud_config_update` | `settings:write` |
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+|---|---|---|---|---|
+| 查询配置 | `cloud_config_get` | — | — | `settings:read` |
+| 更新配置 | `cloud_config_update` | 至少一个 `defaultRegion`、`defaultZoneId`、`accessKeyId`、敏感 `accessKeySecret` | 操作元数据 | `settings:write` |
 
 ## 产品内意图路由
 
@@ -24,4 +24,4 @@
 3. 展示配置变更摘要并取得危险操作确认；只传用户要求的字段，不覆盖未提及字段。
 4. 调用 `cloud_config_update` 后重新查询并核对非敏感字段。
 
-不得在对话、日志或 Skill 文件中保存 AccessKey、Secret、Token 或其它密钥。详见 [sensitive-outputs.md](../sensitive-outputs.md)。
+不得在对话、日志或 Skill 文件中保存 AccessKey、Secret、Token 或其它密钥，并遵守入口要求的敏感输出规则。

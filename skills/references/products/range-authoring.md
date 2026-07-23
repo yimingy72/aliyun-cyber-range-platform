@@ -1,89 +1,201 @@
 # 靶场编排
 
-本产品严格对应前端“靶场编排”页面。页面对用户呈现的状态只有两类：
+本模块严格对应前端“靶场编排”页面。页面对用户呈现的状态只有两类：
 
 - **已保存未发布**：模板和拓扑已保存，创建者仍可编辑，其他用户不可在平台模板列表中使用。
 - **已发布到平台**：模板对其他用户可见且可用于生成编排实例。
 
-“版本”“草稿”“编译规格”是后端实现细节，不得把它们作为用户操作、MCP 工具名或对外流程步骤。平台没有单独的“共享/取消共享”功能；“发布到平台/取消发布”就是唯一的可见性操作。
+“版本”“草稿”“编译规格”是后端实现细节，不得作为用户操作、MCP 工具名或对外流程步骤。平台没有“共享/取消共享”功能；“发布到平台/取消发布”是唯一的模板可见性操作。
 
-## 设计转换 Skill
+## MCP 工具与参数
 
-创建或修改拓扑必须经过以下链路：
+创建或替换模板拓扑必须先经过本文件的“设计转换流程”。转换 Skill 只能传完整 `topologyGraph` 与下表接受的元数据，绝不能传 `topologySpec`、`scenarioTemplateSpec`、`compiledProvisionSpec` 或 `compiledSpec`。
+
+除非行内说明，写工具可按运行时 schema 接收 `idempotencyKey` 和 `confirmationId`。
+
+| 前端功能 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+|---|---|---|---|---|
+| 查看模板列表 | `range_template_list` | — | `view: platform\|mine`，默认 `platform` | `templates:read` |
+| 查看模板详情 | `range_template_get` | `templateId` | — | `templates:read` |
+| 新建模板 | `range_template_create` | `name`、`slug`、`version`、`cloudProvider: alibaba_cloud`、`iacType: opentofu\|terraform`、`modulePathOrRef`、完整 `topologyGraph` | `description`、`primaryVpcCidr`、`secondaryVpcCidrs`、已废弃别名 `vpcCidr`、`defaultRegion`、`defaultZoneId`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
+| 编辑信息 | `range_template_update` | `templateId`、`updates`（至少一个 `name` 或 `description`） | 操作元数据 | `templates:write` |
+| 复制模板 | `range_template_clone` | `templateId` | 操作元数据 | `templates:write` |
+| 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、完整 `topologyGraph` | 任意部分模板元数据、`primaryVpcCidr`、`secondaryVpcCidrs`、`vpcCidr`、`publicEntryProtocols`、操作元数据 | `templates:write` |
+| 发布到平台 | `range_template_publish` | `templateId` | 操作元数据 | `templates:publish` |
+| 取消发布 | `range_template_unpublish` | `templateId` | 操作元数据 | `templates:publish` |
+| 删除模板 | `range_template_delete` | `templateId` | 操作元数据 | `templates:delete` |
+
+`range_template_topology_detect_and_save` 对应编辑器“检测并保存”：完整图编译和校验通过后才保存，但不会发布。MCP 不暴露“共享/取消共享”、独立“预检”、独立“校验”、节点增删改、连线增删或批量变更；这些是编辑器内部交互。Agent 修改拓扑时，始终重新生成完整图再调用“检测并保存”。
+
+## 设计转换流程
+
+创建或修改模板拓扑必须经过：
 
 ```text
-靶场设计 Skill -> 靶场拓扑转换 Skill -> 靶场编排 MCP 工具
+靶场设计 Skill -> RangeDesign/v1 -> 靶场拓扑转换 Skill -> 靶场编排 MCP 工具
 ```
 
-1. **靶场设计 Skill** 输出完整 `RangeDesign/v1`：模板元数据、VPC、交换机、ECS、镜像选择器、NIC、ACL、安全组、共享 NAT、SNAT、DNAT 与初始化要求。
-2. **靶场拓扑转换 Skill** 查询可见镜像并精确解析 `imageId`，补齐平台默认值，输出完整 `topologyGraph`。
-3. **MCP 工具** 对完整图再次编译与校验，自动生成 `topologySpec`、`scenarioTemplateSpec`、`compiledProvisionSpec` 和 `compiledSpec` 后再调用平台 API。
+1. **靶场设计 Skill** 输出本文件定义的完整 `RangeDesign/v1`。
+2. **靶场拓扑转换 Skill** 查询当前调用者可见的镜像，解析精确 `imageId`，补齐平台默认值，输出完整 `topologyGraph`。
+3. **MCP 工具** 重新编译与校验完整图，自动生成内部派生规格后调用平台 API。
 
-转换 Skill 不得手工构造或传递上述派生规格。缺镜像、IP、CIDR、连线、入口主机或 NAT 参数时，应将缺项返回给设计 Skill，不得猜测。
+缺少镜像、IP、CIDR、连线、入口主机或 NAT 参数时，转换 Skill 必须返回缺项给设计 Skill，不得猜测。
 
-## 页面功能与 MCP 工具
+## RangeDesign/v1 固定输出
 
-| 前端功能 | MCP 工具 | Scope | 说明 |
-|---|---|---|---|
-| 查看模板列表 | `range_template_list` | `templates:read` | `view=mine` 是自己的可编辑模板，`view=platform` 是已发布到平台的模板。 |
-| 查看模板详情 | `range_template_get` | `templates:read` | 返回拓扑但脱敏密码。 |
-| 新建模板 | `range_template_create` | `templates:write` | 必须传转换 Skill 产出的完整图。 |
-| 编辑信息 | `range_template_update` | `templates:write` | 只更新前端实际提供的名称、描述，不接收拓扑或编译字段。 |
-| 复制模板 | `range_template_clone` | `templates:write` | 产生一份已保存未发布的可编辑模板。 |
-| 检测并保存 | `range_template_topology_detect_and_save` | `templates:write` | 对应编辑器“检测并保存”；完整图通过编译和发布前校验后才保存，不会发布。 |
-| 发布到平台 | `range_template_publish` | `templates:publish` | 生成可使用的发布结果并使模板对其他用户可见。 |
-| 取消发布 | `range_template_unpublish` | `templates:publish` | 从平台列表隐藏模板，保留模板和已保存拓扑。 |
-| 删除模板 | `range_template_delete` | `templates:delete` | 活动编排实例仍引用时会被拒绝。 |
+设计 Skill 必须输出全部必填字段和全部数组；没有内容时使用空数组。可选标量字段仅在有明确业务含义时输出。
 
-MCP 不暴露“共享/取消共享”、独立“预检”、独立“校验”、节点增删改、连线增删或批量变更。它们是前端编辑器内部交互；Agent 修改拓扑时应由转换 Skill 输出完整图，再调用“检测并保存”。
+```yaml
+schemaVersion: RangeDesign/v1
 
-## 转换 Skill 输入
+template:
+  name: "<模板名称>"
+  slug: "<小写、连字符分隔的逻辑标识>"
+  version: "v1.0.0"
+  description: "<用途、验证目标与安全边界>"
+  cloudProvider: alibaba_cloud
+  iacType: opentofu
+  modulePathOrRef: infra/opentofu/modules/alicloud-enterprise-range
+  defaultRegion: "<由转换 Skill 通过 cloud_config_get 解析>"
+  defaultZoneId: "<由转换 Skill 通过 cloud_config_get 解析>"
+  publicEntryProtocols:
+    - protocol: tcp
+      port: 80
 
-`RangeDesign/v1` 至少包含：
+vpc:
+  primaryVpcCidr: 10.0.0.0/16
+  secondaryVpcCidrs: []
+  sharedNat:
+    natGatewayKey: nat-gw-shared-1
+    snatEipKey: eip-snat-shared-1
+    dnatEipKey: eip-dnat-public-1
 
-| 设计部分 | 必填内容 | 转换结果 |
+router:
+  key: router-egress-1
+  label: "出口路由器"
+  routeRole: egress
+  egressType: internet
+  bindEip: false
+
+switches:
+  - key: sw-dmz
+    label: "DMZ 交换机"
+    zoneKey: zone-main
+    cidr: 10.0.10.0/24
+    purpose: dmz
+    snatEnabled: true
+    aclRules:
+      - key: dmz-in-http
+        direction: inbound
+        protocol: tcp
+        portRange: "80/80"
+        sourceCidr: 0.0.0.0/0
+        policy: allow
+        priority: 10
+        description: "允许公网 HTTP"
+    dnatMappings:
+      - key: dnat-web-80
+        targetEcsKey: ecs-web
+        externalPort: 80
+        internalPort: 80
+        protocol: tcp
+        description: "公网 80 转发到 Web ECS"
+
+ecs:
+  - key: ecs-web
+    label: "Web ECS"
+    role: public-web
+    zoneKey: zone-main
+    cpu: 2
+    memoryGiB: 4
+    imageSelector:
+      displayName: "<可见且启用的平台镜像精确显示名称>"
+      match: exact-enabled-platform-image
+    privateIp: 10.0.10.10
+    exposePublic: true
+    initScript: ""
+    portGroups: []
+    nics:
+      - key: nic-web-1
+        switchKey: sw-dmz
+        zoneKey: zone-main
+        privateIp: 10.0.10.10
+        secondaryIps: []
+        securityGroupRulesMode: custom
+        securityGroupRules:
+          - key: sg-web-http
+            direction: ingress
+            protocol: tcp
+            portRange: "80/80"
+            sourceCidr: 0.0.0.0/0
+            policy: accept
+            priority: 10
+            description: "允许 HTTP"
+
+connections:
+  - key: edge-router-dmz
+    from: router-egress-1
+    to: sw-dmz
+  - key: edge-dmz-web
+    from: sw-dmz
+    to: ecs-web
+```
+
+`defaultRegion`、`defaultZoneId` 可以在设计阶段保留“由转换 Skill 读取”的占位文字；转换 Skill 必须调用 `cloud_config_get` 替换它们，未解析占位文字不得调用 MCP 写工具。
+
+### 设计字段与约束
+
+| 部分 | 必须表达的事实 | 约束 |
 |---|---|---|
-| 模板 | `name`、`slug`、`version`、`iacType`、`modulePathOrRef` | 创建参数；`cloudProvider` 固定为 `alibaba_cloud`。 |
-| VPC | `primaryVpcCidr`，可选 `secondaryVpcCidrs` | 同一 VPC 的主/附加 IPv4 CIDR。 |
-| Router | 唯一逻辑键、名称 | 一个 `router` 节点。 |
-| 交换机 | 键、名称、`zoneKey`、CIDR、用途、ACL、SNAT、DNAT | `switch` 节点。交换机 CIDR 必须属于主 CIDR 或任一附加 CIDR。 |
-| ECS | 键、名称、角色、`zoneKey`、私网 IP、镜像名称、入口标记 | 精确解析的 `imageId` 写入 `ecs.image`。 |
-| NIC | 键、所属交换机、主/辅助 IP、安全组规则 | ECS `nics[]` 与对应 `switch -> ecs` 连线。 |
-| 连接 | Router 到每个交换机、交换机到每个 ECS | `manual` 边。 |
-| NAT | 一个共享 NAT 网关、独立 SNAT EIP、独立 DNAT EIP | SNAT 按交换机规则生成，DNAT 写在目标交换机。 |
+| `template` | 名称、逻辑标识、版本、描述、云厂商、IaC、模块、默认地域/可用区和入口协议 | `cloudProvider` 固定 `alibaba_cloud`；`iacType` 为 `opentofu` 或 `terraform`；入口协议覆盖每个 DNAT 协议和外部端口。 |
+| `vpc` | 一个主 CIDR、零到四个附加 CIDR、一个共享 NAT 逻辑标识 | 一个 VPC 可使用不连续 CIDR；所有 CIDR 不重叠。SNAT 与 DNAT 使用同一 NAT 网关、不同 EIP。 |
+| `router` | 唯一路由器的键、名称和出口意图 | 每份设计恰好一个 Router。 |
+| `switches` | 交换机 CIDR、可用区、用途、ACL、SNAT、DNAT | CIDR 必须落在主或附加 VPC CIDR 内且互不重叠；`aclRules`、`dnatMappings` 始终存在，可为空数组。 |
+| `ecs` | 计算规格、角色、镜像选择、主 IP、初始化需求、所有 NIC 和安全组 | 每台 ECS 至少一个 NIC；ECS `privateIp` 等于第一个 NIC 的 `privateIp`。 |
+| `nics` | NIC 键、所属交换机、IP、辅助 IP 与安全组 | 每张 NIC 都有对应 `switch -> ecs` 连接。自定义规则时显式 `securityGroupRulesMode: custom`。 |
+| `connections` | Router 到每个 Switch、Switch 到每台 ECS 的完整连线 | 使用 `{ key, from, to }`；键、来源和目标必须唯一且可解析。 |
 
-一个 VPC 可以拥有多个不连续 CIDR，例如 `10.0.0.0/16`、`172.16.0.0/16`、`192.168.0.0/16`。SNAT 在同一 VPC 内共享 NAT 网关和 SNAT EIP；DNAT 使用另一张独立 EIP，DNAT 外部端口全局不可重复。
+1. 交换机 CIDR、ECS 主/辅助 IP 必须属于对应 VPC 或交换机；IP 不可重复，不能使用网络或广播地址。
+2. 开启 `snatEnabled` 的交换机共用 `vpc.sharedNat.natGatewayKey` 和 `snatEipKey`。DNAT 使用 `dnatEipKey`，绝不能与 SNAT EIP 相同。
+3. `externalPort + protocol` 在同一 VPC 内全局唯一；DNAT 目标必须是存在的 ECS 且 `exposePublic: true`。
+4. ACL 必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `allow` 或 `drop`。
+5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。
+6. 设计中只能有一个公网入口 ECS。它应有至少一个 DNAT 映射；没有公网入口时所有 ECS 必须 `exposePublic: false` 且 DNAT 为空。
+7. 不输出 `customPassword`，除非用户明确要求设置该 ECS 的初始密码。
 
 ## 转换 Skill 输出与校验
 
-输出固定为：
+转换 Skill 必须按顺序：
+
+1. 调用 `cloud_config_get` 解析并校验默认地域、可用区。
+2. 调用 `platform_image_list`，将每个 `imageSelector.displayName` 精确解析为唯一、已启用的 `platformImageAssetId` 和阿里云 `imageId`；无匹配、重名或停用时停止。
+3. 校验 VPC、CIDR、IP、NAT、ACL、安全组、连线和公网入口；缺项或歧义返回给设计 Skill。
+4. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
+5. ECS 节点写入精确 `image`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`dnatMappings`、`portGroups` 与 `initScript`。
+6. Switch 节点写入 `nat: { snatEnabled, dnatMappings }` 与完整 ACL。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
+
+最小结果形状：
 
 ```ts
 {
   schemaVersion: '2.0.0',
-  nodes: [...],
-  edges: [...]
+  nodes: [
+    { id: 'router-egress-1', kind: 'router', label: '出口路由器', ... },
+    { id: 'sw-dmz', kind: 'switch', label: 'DMZ 交换机', zoneKey: 'zone-main', cidr: '10.0.10.0/24', ... },
+    { id: 'ecs-web', kind: 'ecs', label: 'Web ECS', image: 'm-...', platformImageAssetId: '...', nics: [...], ... },
+  ],
+  edges: [
+    { id: 'edge-router-dmz', fromNodeId: 'router-egress-1', toNodeId: 'sw-dmz', relationType: 'manual' },
+    { id: 'edge-dmz-web', fromNodeId: 'sw-dmz', toNodeId: 'ecs-web', relationType: 'manual' },
+  ],
 }
 ```
 
-转换前至少校验：
+## 页面流程
 
-1. 恰好一个 Router，至少一个交换机与 ECS；节点、NIC、边和逻辑键均唯一。
-2. 每个交换机 CIDR 位于 VPC 的主或附加 CIDR 内，所有交换机 CIDR 不重叠。
-3. 每个私网 IP 位于所属交换机 CIDR 内，IP 不重复且不是网络或广播地址。
-4. 每个交换机都有 `router -> switch` 边；每张 NIC 都有对应 `switch -> ecs` 边。
-5. 必须且只能有一个入口 ECS；DNAT 目标与端口合法，SNAT/DNAT 不使用同一 EIP。
-6. 业务镜像名称必须唯一解析为当前调用者可见的 `imageId`。无匹配、重名或不可用时停止。
+1. 首次创建：由转换 Skill 输出完整图，调用 `range_template_create`。
+2. 编辑拓扑：从完整修改结果重新生成图，调用 `range_template_topology_detect_and_save`。
+3. 用户明确要求开放给其他用户时，确认模板 ID 和影响范围后调用 `range_template_publish`。
+4. 用户明确要求隐藏模板时，调用 `range_template_unpublish`；它不删除模板及已保存拓扑。
 
-平台默认值由转换 Skill 补齐：Router 的 VPC 路由属性、Switch 的空 ACL/NAT、ECS 的初始化脚本/端口组/策略、NIC 的空辅助 IP 与安全组规则。除非用户明确提供，不能填充 `customPassword`。
-
-## 推荐流程
-
-1. 先用镜像查询工具解析每个业务镜像。
-2. 由转换 Skill 生成完整 `topologyGraph` 并做前置校验。
-3. 首次创建调用 `range_template_create`。
-4. 在编辑器中发生拓扑调整后，由转换 Skill 从完整修改结果重新生成图，调用 `range_template_topology_detect_and_save`。
-5. 用户明确要求开放给其他用户时，确认模板 ID、影响范围后调用 `range_template_publish`。
-6. 用户明确要求隐藏模板时，调用 `range_template_unpublish`；它不删除模板。
-
-发布、取消发布和删除需要用户确认。发布不会创建一套靶场；基于模板实际创建云资源应进入 [编排实例](./range-instances.md)。
+发布、取消发布和删除需要入口规定的危险操作确认。发布不会创建一套靶场；实际创建云资源应进入 [编排实例](./range-instances.md)。

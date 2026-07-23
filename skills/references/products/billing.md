@@ -2,27 +2,27 @@
 
 严格对应前端“账单费用”页面，仅管理员可见、可调用。账单数据来自平台已同步的阿里云 BSS 数据和本地资源归属台账；不能用实例价格、云厂商 CLI 或猜测值代替账单工具。
 
-## 工具与权限
+## MCP 工具与参数
 
-| 前端功能 | MCP 工具 | Scope | 说明 |
-|---|---|---|---|
-| 费用概览 | `billing_summary_get` | `billing:read` | 总费用、平台费用、异常数、按资源类型和日期汇总。 |
-| 用户费用列表 | `billing_user_list` | `billing:read` | 按费用降序返回用户汇总。 |
-| 单个用户概览 | `billing_user_summary_get` | `billing:read` | 指定用户的费用、条目数和启动次数。 |
-| 用户费用分组 | `billing_user_group_list` | `billing:read` | 按启动记录和未归属项分组，可选按用户过滤。 |
-| 平台费用分组 | `billing_platform_group_list` | `billing:read` | 平台归属资源的费用分组。 |
-| 用户费用明细 | `billing_user_item_list` | `billing:read` | 指定用户的原始费用条目。 |
-| 平台费用明细 | `billing_platform_item_list` | `billing:read` | 平台归属资源的原始费用条目。 |
-| 异常列表 | `billing_anomaly_list` | `billing:read` | 未能正常归属的账单条目及原因。 |
-| 同步账单 | `billing_sync` | `billing:sync` | 从阿里云 BSS 刷新日期范围内的本地账单。 |
-| 导出平台费用 | `billing_export_platform_csv` | `billing:read` | 平台费用概览 CSV。 |
-| 导出用户费用 | `billing_export_users_csv` | `billing:read` | 用户费用汇总 CSV。 |
-| 导出用户明细 | `billing_export_user_csv` | `billing:read` | 指定用户的费用条目 CSV。 |
+日期窗口中的 `startAt` 与 `endAt` 均为 `YYYY-MM-DD`，必须同时提供或同时省略。`limit` 范围为 1–500。
+
+| 前端功能 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+|---|---|---|---|---|
+| 费用概览 | `billing_summary_get` | — | 日期窗口 | `billing:read` |
+| 用户费用列表 | `billing_user_list` | — | 日期窗口、`limit` | `billing:read` |
+| 单个用户概览 | `billing_user_summary_get` | `userId` | 日期窗口、`limit` | `billing:read` |
+| 用户费用分组 | `billing_user_group_list` | — | `userId`、日期窗口、`limit` | `billing:read` |
+| 平台费用分组 | `billing_platform_group_list` | — | 日期窗口、`limit` | `billing:read` |
+| 用户费用明细 | `billing_user_item_list` | `userId` | 日期窗口、`limit` | `billing:read` |
+| 平台费用明细 | `billing_platform_item_list` | — | 日期窗口、`limit` | `billing:read` |
+| 异常列表 | `billing_anomaly_list` | — | 日期窗口、`limit` | `billing:read` |
+| 同步账单 | `billing_sync` | — | 日期窗口；不接受操作元数据 | `billing:sync` |
+| 导出平台费用 | `billing_export_platform_csv` | — | 日期窗口 | `billing:read` |
+| 导出用户费用 | `billing_export_users_csv` | — | 日期窗口 | `billing:read` |
+| 导出用户明细 | `billing_export_user_csv` | `userId` | 日期窗口 | `billing:read` |
 
 ## 参数约束
 
-- 所有费用查询和导出都可传 `startAt`、`endAt`，格式为 `YYYY-MM-DD`；两者必须同时提供或同时省略。查询省略时使用平台默认统计窗口。
-- 分组、明细和用户列表可传 `limit`，范围为 1–500。
 - `billing_user_*` 需要准确 `userId`；先从 `billing_user_list` 或 `admin_user_list` 获取，不能用用户名代替。
 - `billing_sync` 省略日期范围时同步最近 7 天；传入日期范围时按该范围同步。同步会刷新本地归属数据，但不创建、修改或销毁云资源。
 - 所有工具的结构化结果在 `result` 下，具体字段以运行时 `outputSchema` 为准。

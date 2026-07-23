@@ -1,22 +1,26 @@
 # 镜像中心
 
-管理可供独立靶机和靶场拓扑使用的平台镜像资产、阿里云镜像目录及镜像导入任务。进入本产品前先读取 [全局运行时规则](../global-reference.md)；所有镜像写操作都必须读取 [危险操作确认](../confirmation.md) 并完成用户确认及服务端要求的二阶段确认。
+管理可供独立靶机和靶场拓扑使用的平台镜像资产、阿里云镜像目录及镜像导入任务。进入本模块前已读取入口 Skill；所有写操作均遵循入口的用户确认与平台二阶段确认规则。
 
-## 工具与权限
+## MCP 工具与参数
 
-| 前端功能 | MCP 工具 | Scope | 要点 |
-|---|---|---|---|
-| 查询平台镜像 | `platform_image_list` | `images:read` | `view` 为 `platform` 或 `mine`，默认平台视图。 |
-| 收录云快照 | `platform_image_collect` | `images:write` | 需要准确 `snapshotId` 和 `displayName`。 |
-| 重命名 | `platform_image_rename` | `images:write` | 需要 `platformImageAssetId` 与新名称。 |
-| 启用 / 停用 | `platform_image_enable` / `platform_image_disable` | `images:write` | 停用会阻止后续新建使用该镜像。 |
-| 平台发布 / 取消发布 | `platform_image_publish` / `platform_image_unpublish` | `images:write` | 改变镜像可见性。 |
-| 删除平台镜像资产 | `platform_image_remove` | `images:write` | 永久删除平台镜像资产。 |
-| 查询公共或自定义目录 | `image_catalog_list` | `images:read` | `scope` 为 `public` 或 `custom`。 |
-| 同步镜像目录 | `image_catalog_sync` | `images:read` | 从阿里云刷新目录缓存，不创建或删除云镜像。 |
-| 删除自定义云镜像 | `image_catalog_custom_delete` | `images:write` | 永久删除云端自定义镜像及关联资产。 |
-| 查询导入任务 | `image_import_job_list` | `images:read` | 仅返回任务状态，不返回上传凭据。 |
-| 重试导入任务 | `image_import_job_retry` | `images:write` | 仅重新提交失败的云端导入任务。 |
+除非行内说明，写工具可按运行时 schema 接收 `idempotencyKey` 和 `confirmationId`。
+
+| 前端功能 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+|---|---|---|---|---|
+| 查询平台镜像 | `platform_image_list` | — | `view: platform\|mine`，默认 `platform` | `images:read` |
+| 收录云快照 | `platform_image_collect` | `snapshotId`、`displayName` | 操作元数据 | `images:write` |
+| 重命名 | `platform_image_rename` | `platformImageAssetId`、`displayName` | 操作元数据 | `images:write` |
+| 启用 | `platform_image_enable` | `platformImageAssetId` | 操作元数据 | `images:write` |
+| 停用 | `platform_image_disable` | `platformImageAssetId` | 操作元数据 | `images:write` |
+| 平台发布 | `platform_image_publish` | `platformImageAssetId` | 操作元数据 | `images:write` |
+| 取消平台发布 | `platform_image_unpublish` | `platformImageAssetId` | 操作元数据 | `images:write` |
+| 删除平台镜像资产 | `platform_image_remove` | `platformImageAssetId` | 操作元数据 | `images:write` |
+| 查询公共或自定义目录 | `image_catalog_list` | `scope: public\|custom` | — | `images:read` |
+| 同步镜像目录 | `image_catalog_sync` | `scope: public\|custom` | — | `images:read` |
+| 删除自定义云镜像 | `image_catalog_custom_delete` | `snapshotId` | 不接受操作元数据 | `images:write` |
+| 查询导入任务 | `image_import_job_list` | — | — | `images:read` |
+| 重试导入任务 | `image_import_job_retry` | `imageImportJobId` | 不接受操作元数据 | `images:write` |
 
 ## 产品内意图路由
 
