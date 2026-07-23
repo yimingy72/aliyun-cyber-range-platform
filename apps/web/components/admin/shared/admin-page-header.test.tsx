@@ -28,4 +28,15 @@ describe('AdminPageHeader', () => {
     expect(screen.queryByText('管理可复用的靶场拓扑。')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
   });
+
+  it('keeps the primary command in a stable right-aligned header action slot', () => {
+    render(<AdminPageHeader action={<button type="button">创建实例</button>} title="实例管理" />);
+
+    const header = screen.getByRole('heading', { level: 1 }).closest('header');
+    const actionSlot = screen.getByRole('button', { name: '创建实例' }).parentElement;
+
+    expect(header?.getAttribute('data-slot')).toBe('admin-page-header');
+    expect(actionSlot?.getAttribute('data-slot')).toBe('admin-page-header-actions');
+    expect(actionSlot?.className).toContain('sm:justify-end');
+  });
 });

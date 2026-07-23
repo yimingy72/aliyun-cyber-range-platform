@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Skeleton } from '../ui/skeleton';
+import { AdminPageHeader } from './shared/admin-page-header';
 import { useAdminSession } from './use-admin-session';
 
 type BillingScreenProps = {
@@ -368,64 +369,63 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
   return (
     <div className="admin-screen admin-workbench-screen gap-3">
-      <header className="flex flex-col gap-4 border-b border-border px-1 pb-3 xl:flex-row xl:items-center xl:justify-between">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-6 gap-y-3">
-          <div className="min-w-36">
-            <h1 className="font-heading text-xl font-semibold text-foreground">账单费用</h1>
-            <p className="mt-1 text-sm text-muted-foreground">查看平台开通与公共资源的费用明细。</p>
-          </div>
-          <dl aria-label="账单概览" className="flex flex-wrap items-stretch border-l border-border">
-            <div className="grid min-w-36 gap-1 border-r border-border px-4">
-              <dt className="text-xs font-medium text-muted-foreground">平台总应付</dt>
-              <dd className="text-base font-semibold tabular-nums text-foreground">
-                {summary ? formatMoney(summary.totalPretaxAmount) : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
-              </dd>
-            </div>
-            <div className="grid min-w-36 gap-1 px-4">
-              <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
-              <dd className="text-base font-semibold tabular-nums text-foreground">
-                {summary ? formatMoney(summary.platformPretaxAmount) : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
-              </dd>
-            </div>
-          </dl>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button type="button" variant="outline">
-                <Download aria-hidden="true" />
-                导出账单
-                <ChevronDown aria-hidden="true" />
+      <section className="admin-workbench-surface">
+        <AdminPageHeader
+          action={
+            <>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline">
+                    <Download aria-hidden="true" />
+                    导出账单
+                    <ChevronDown aria-hidden="true" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuItem onSelect={() => void handleExport('platform')}>导出平台账单</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void handleExport('users')}>导出用户汇总</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!selectedUserId} onSelect={() => void handleExport('user')}>
+                    导出当前用户
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button disabled={isSyncing} onClick={() => void handleSync()} type="button">
+                <RefreshCw aria-hidden="true" className={isSyncing ? 'animate-spin' : undefined} />
+                {isSyncing ? '正在同步...' : '立即同步'}
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onSelect={() => void handleExport('platform')}>导出平台账单</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void handleExport('users')}>导出用户汇总</DropdownMenuItem>
-              <DropdownMenuItem disabled={!selectedUserId} onSelect={() => void handleExport('user')}>
-                导出当前用户
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button disabled={isSyncing} onClick={() => void handleSync()} type="button">
-            <RefreshCw aria-hidden="true" className={isSyncing ? 'animate-spin' : undefined} />
-            {isSyncing ? '正在同步...' : '立即同步'}
-          </Button>
-        </div>
-      </header>
+            </>
+          }
+          description="查看平台开通与公共资源的费用明细。"
+          title="账单费用"
+        />
+
+        <dl aria-label="账单概览" className="mt-4 flex flex-wrap items-stretch border-l border-border">
+          <div className="grid min-w-36 gap-1 border-r border-border px-4">
+            <dt className="text-xs font-medium text-muted-foreground">平台总应付</dt>
+            <dd className="text-base font-semibold tabular-nums text-foreground">
+              {summary ? formatMoney(summary.totalPretaxAmount) : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
+            </dd>
+          </div>
+          <div className="grid min-w-36 gap-1 px-4">
+            <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
+            <dd className="text-base font-semibold tabular-nums text-foreground">
+              {summary ? formatMoney(summary.platformPretaxAmount) : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
+            </dd>
+          </div>
+        </dl>
 
       {errorMessage ? (
-        <p className="border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
+        <p className="mt-4 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
           {errorMessage}
         </p>
       ) : null}
       {syncMessage ? (
-        <p className="border border-emerald-700/20 bg-emerald-700/5 px-3 py-2 text-sm text-emerald-800" role="status">
+        <p className="mt-4 border border-emerald-700/20 bg-emerald-700/5 px-3 py-2 text-sm text-emerald-800" role="status">
           {syncMessage}
         </p>
       ) : null}
 
-      <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_17rem]">
+      <div className="mt-4 grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_17rem]">
         <section aria-busy={isLoadingGroups || undefined} aria-label="费用明细" className="min-w-0">
           <div className="flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
@@ -643,6 +643,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           </div>
         </aside>
       </div>
+      </section>
     </div>
   );
 }

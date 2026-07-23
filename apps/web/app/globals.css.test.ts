@@ -132,6 +132,16 @@ describe('design system CSS transition contract', () => {
 describe('admin page scroll ownership', () => {
   const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
 
+  it('defines one compact surface and responsive inset for admin list workbenches', () => {
+    const surface = getRuleBlock(stylesheet, '.admin-workbench-surface');
+    const narrowScreenRules = getAtRuleBlock(stylesheet, '@media (max-width: 640px)');
+
+    expect(surface).toContain('border-radius: 6px');
+    expect(surface).toContain('background: var(--card)');
+    expect(surface).toContain('padding: 16px');
+    expect(getRuleBlock(narrowScreenRules, '.admin-workbench-surface')).toContain('padding: 12px');
+  });
+
   it('keeps the workspace inset while hiding the sidebar below the desktop breakpoint', () => {
     const narrowScreenRules = getAtRuleBlock(stylesheet, '@media (max-width: 1023px)');
 

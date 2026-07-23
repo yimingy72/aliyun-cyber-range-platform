@@ -174,7 +174,7 @@ export function SettingsScreen({
 
   return (
     <div className="admin-screen">
-      <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+      <section className="admin-workbench-surface">
         <AdminPageHeader
           action={(
             <Button

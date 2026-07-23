@@ -35,6 +35,7 @@ import {
 } from './admin-pagination';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminPageHeader } from './shared/admin-page-header';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
@@ -1411,20 +1412,20 @@ export function SingleInstancesScreen({
         </p>
       ) : null}
 
-      <section>
-        <article className="admin-workbench-panel range-workbench-shell overflow-hidden">
-          <header className="flex min-h-16 items-center border-b border-border px-5">
-            <h2 className="font-heading text-lg font-medium text-foreground">实例管理</h2>
-          </header>
+      <section className="admin-workbench-surface">
+        <AdminPageHeader
+          action={
+            <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+              <Plus aria-hidden="true" data-icon="inline-start" />
+              创建实例
+            </Button>
+          }
+          description="创建并管理训练实例、批次与生命周期。"
+          title="实例管理"
+        />
 
-          <div className="space-y-4 p-5">
+        <div className="mt-4 space-y-4">
             <AdminListToolbar
-              action={
-                <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
-                  <Plus aria-hidden="true" data-icon="inline-start" />
-                  创建实例
-                </Button>
-              }
               activeView={listMode}
               onSearchChange={setSearchName}
               onViewChange={(nextView) => setListModeWithUrl(nextView === 'history' ? 'history' : 'active')}
@@ -1436,7 +1437,7 @@ export function SingleInstancesScreen({
                 { value: 'history', label: '实例历史' },
               ]}
             >
-              <div className="overflow-hidden rounded-lg border border-border bg-background">
+              <div>
                 <AdminDataTable
                   columns={tableColumns}
                   isRefreshing={isBootstrapLoading || (isRefreshing && hasCurrentViewSnapshot)}
@@ -1620,8 +1621,7 @@ export function SingleInstancesScreen({
             {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
               <p className="text-sm text-muted-foreground">请先前往镜像中心收录或启用至少一个平台镜像。</p>
             ) : null}
-          </div>
-        </article>
+        </div>
       </section>
 
       {false ? (
