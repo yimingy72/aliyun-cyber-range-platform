@@ -1413,20 +1413,17 @@ export function SingleInstancesScreen({
       ) : null}
 
       <section className="admin-workbench-surface">
-        <AdminPageHeader
-          action={
-            <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
-              <Plus aria-hidden="true" data-icon="inline-start" />
-              创建实例
-            </Button>
-          }
-          description="创建并管理训练实例、批次与生命周期。"
-          title="实例管理"
-        />
+        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" />
 
         <div className="mt-4 space-y-4">
             <AdminListToolbar
               activeView={listMode}
+              action={
+                <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+                  <Plus aria-hidden="true" data-icon="inline-start" />
+                  创建实例
+                </Button>
+              }
               onSearchChange={setSearchName}
               onViewChange={(nextView) => setListModeWithUrl(nextView === 'history' ? 'history' : 'active')}
               searchLabel="筛选实例名"

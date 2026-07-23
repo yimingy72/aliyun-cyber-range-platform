@@ -65,7 +65,7 @@ const userGroups = [
   {
     id: 'job-range',
     kind: 'range_launch',
-    title: '开启靶场实例',
+    title: '开启编排实例',
     completedAt: '2026-07-16T02:03:42.000Z',
     billingPeriodStart: '2026-07-16',
     billingPeriodEnd: '2026-07-16',
@@ -181,7 +181,17 @@ describe('BillingScreen', () => {
       { userId: 'user-1', username: 'alice', pretaxAmount: 8.4, itemCount: 1, launchCount: 1 },
       { userId: 'user-2', username: 'bob', pretaxAmount: 0.0, itemCount: 0, launchCount: 0 },
     ]);
-    fetchBillingUserGroupsMock.mockResolvedValue(userGroups);
+    fetchBillingUserGroupsMock.mockResolvedValue([
+      ...userGroups,
+      {
+        ...userGroups[0],
+        id: 'job-single',
+        kind: 'single_launch',
+        title: '开启靶场实例',
+        completedAt: '2026-07-16T03:04:05.000Z',
+        instance: { id: 'single-1', name: 'single-lab', batchId: 'batch-single' },
+      },
+    ]);
     fetchPlatformBillingGroupsMock.mockResolvedValue(platformGroups);
     triggerBillingSyncMock.mockResolvedValue({
       syncedDays: 1,
@@ -200,8 +210,11 @@ describe('BillingScreen', () => {
     expect(heading.closest('.admin-workbench-surface')).toBeTruthy();
     expect(screen.getByRole('region', { name: '费用明细' })).toBeTruthy();
     await screen.findByText('用户明细');
-    await screen.findByText('靶场实例');
-    expect(screen.queryByText('开启靶场实例')).toBeNull();
+    const rangeGroupButtons = await screen.findAllByRole('button', { name: /编排实例/ });
+    expect(rangeGroupButtons).toHaveLength(1);
+    expect(rangeGroupButtons[0]?.textContent).toContain('CNY');
+    expect(screen.getByRole('button', { name: /单实例/ })).toBeTruthy();
+    expect(screen.queryByText('开启编排实例')).toBeNull();
     expect(screen.getByText(/02:03:42/)).toBeTruthy();
     expect(screen.getByText('账期')).toBeTruthy();
     expect(screen.queryByText('待确认归属')).toBeNull();
@@ -220,11 +233,17 @@ describe('BillingScreen', () => {
       expect.objectContaining({ limit: 500 }),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /靶场实例/ }));
-    await screen.findByText('CNY');
+    fireEvent.click(rangeGroupButtons[0]!);
 
-    const billingDate = screen.getByText('账期 2026-07-16');
+    const billingDate = await screen.findByText('账期 2026-07-16');
     expect(billingDate.parentElement?.parentElement?.className).toContain('sm:pl-10');
+    const billingDescription = screen.getByText('云服务器配置 · 云服务器ECS-按量付费');
+    expect(billingDescription.getAttribute('data-slot')).toBe('billing-line-description');
+    expect(billingDescription.closest('[data-slot="billing-line-resource"]')).toBeNull();
+    expect(billingDescription.parentElement?.className).toContain(
+      'sm:grid-cols-[8.5rem_minmax(0,1fr)_minmax(0,1fr)_22ch]',
+    );
+    expect(billingDescription.className).toContain('sm:col-start-3');
 
     fireEvent.keyDown(screen.getByRole('button', { name: '导出账单' }), { key: 'Enter' });
     await screen.findByRole('menuitem', { name: '导出平台账单' });
@@ -364,7 +383,7 @@ describe('BillingScreen', () => {
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByText('靶场实例');
+    await screen.findByText('编排实例');
     const detailWorkspace = screen.getByRole('region', { name: '费用明细' });
 
     fireEvent.click(screen.getByRole('button', { name: '用户明细' }));
@@ -386,7 +405,7 @@ describe('BillingScreen', () => {
 
     const userBillingPanel = screen.getByLabelText('用户账单');
     fireEvent.click(within(userBillingPanel).getByRole('button', { name: /alice/i }));
-    await screen.findByText('靶场实例');
+    await screen.findByText('编排实例');
 
     fireEvent.click(within(userBillingPanel).getByRole('button', { name: /alice/i }));
 

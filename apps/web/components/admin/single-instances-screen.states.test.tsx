@@ -138,7 +138,9 @@ describe('SingleInstancesScreen list states', () => {
 
     expect(heading.closest('[data-slot="admin-page-header"]')).toBeTruthy();
     expect(heading.closest('.admin-workbench-surface')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
+    const createButton = screen.getByRole('button', { name: '创建实例' });
+    expect(createButton.closest('[data-testid="admin-list-toolbar-view-action"]')).toBeTruthy();
+    expect(createButton.closest('[data-slot="admin-page-header-actions"]')).toBeNull();
     expect(await screen.findByRole('tab', { name: '实例历史', selected: true })).toBeTruthy();
     expect(screen.getByRole('table', { name: '实例历史' })).toBeTruthy();
     expect(screen.getByText('结束时间')).toBeTruthy();

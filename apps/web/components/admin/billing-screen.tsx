@@ -104,8 +104,16 @@ function formatBillingLineSecondary(item: BillingLaunchGroup['items'][number]) {
   return item.productDetail?.trim() || item.productCode || '账单项';
 }
 
-function formatBillingGroupTitle(title: BillingLaunchGroup['title']) {
-  return title === '开启靶场实例' ? '靶场实例' : title;
+function formatBillingGroupTitle(group: Pick<BillingLaunchGroup, 'kind' | 'title'>) {
+  if (group.kind === 'single_launch') {
+    return '单实例';
+  }
+
+  if (group.kind === 'range_launch') {
+    return '编排实例';
+  }
+
+  return group.title;
 }
 
 function downloadCsv(contents: string, fileName: string) {
@@ -568,13 +576,14 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                     />
                     <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">{groupTime}</span>
                     <span className="grid min-w-0 gap-1">
-                      <strong className="truncate text-sm font-medium text-foreground">{formatBillingGroupTitle(group.title)}</strong>
+                      <strong className="truncate text-sm font-medium text-foreground">{formatBillingGroupTitle(group)}</strong>
                       <span className="truncate text-xs text-muted-foreground">
                         {[ownerName, group.instance?.name, `${group.resourceCount} 项资源`].filter(Boolean).join(' · ')}
                       </span>
                     </span>
-                    <span className="text-right text-sm font-semibold tabular-nums text-foreground">
+                    <span className="inline-flex items-baseline justify-end gap-1 text-right text-sm font-semibold tabular-nums text-foreground">
                       {formatMoney(group.pretaxAmount, group.currency)}
+                      <span className="font-medium text-muted-foreground">{group.currency}</span>
                     </span>
                   </button>
 
@@ -583,16 +592,19 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                       {group.items.map((item) => (
                         <div
                           key={item.id}
-                          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border/70 px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[8.5rem_minmax(0,1fr)_minmax(0,1fr)_auto]"
+                          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border/70 px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[8.5rem_minmax(0,1fr)_minmax(0,1fr)_22ch]"
                         >
                           <span className="text-muted-foreground">账期 {item.billingDate.slice(0, 10)}</span>
                           <span className="min-w-0 truncate text-foreground">
                             <strong className="font-medium">{formatResourceType(item.cloudResourceType)}</strong> · {item.cloudResourceId}
                           </span>
-                          <span className="min-w-0 truncate text-muted-foreground">
+                          <span
+                            className="min-w-0 truncate text-left text-muted-foreground sm:col-start-3"
+                            data-slot="billing-line-description"
+                          >
                             {item.billItem} · {formatBillingLineSecondary(item)}
                           </span>
-                          <span className="inline-flex items-baseline justify-end gap-1 text-right font-semibold tabular-nums text-foreground">
+                          <span className="col-start-2 inline-flex items-baseline justify-end gap-1 text-right font-semibold tabular-nums text-foreground sm:col-start-4">
                             {formatMoney(item.pretaxAmount, item.currency)}
                             <span className="font-medium text-muted-foreground">{item.currency}</span>
                           </span>
