@@ -22,7 +22,7 @@
 
 `range_template_topology_detect_and_save` 会编译并校验完整图后保存，但不会发布。拓扑修改始终重新生成完整图；没有“共享/取消共享”、独立预检或节点补丁工具。
 
-创建时平台会生成 `slug`、版本、云厂商、IaC 类型和模块路径。它们不是 `RangeDesign/v1` 输出字段，也不是 `range_template_create` 参数；调用方传入会被 MCP 拒绝。
+创建时平台会生成 `slug`、版本、云厂商、IaC 类型和模块路径。它们不是新的 `RangeDesign/v1` 输出字段，也不是 `range_template_create` 参数；旧设计中存在这些字段时，转换 Skill 仅兼容读取并丢弃，调用方不得传给 MCP。
 
 ## 设计转换流程
 

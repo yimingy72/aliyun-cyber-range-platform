@@ -15,7 +15,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 严格按以下顺序执行：
 
-1. **解析设计**：将用户输入解析为一份完整 YAML `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。
+1. **解析设计**：将用户输入解析为一份完整 YAML `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。旧设计中的 `template.slug`、版本、云厂商、IaC 和模块路径仅兼容读取，转换时丢弃，绝不传给 MCP。
 2. **解析失败即停止**：出现截断字段、无效 YAML、缺失字段、未知图节点、重复 IP 或歧义镜像名时，只返回精确缺项/错误路径，请求修正设计；不得查询资源、猜测补全、试探调用、克隆模板或改用其他 MCP 工具。
 3. **读取靶场编排参考**：完整阅读 [靶场编排](./references/products/range-authoring.md)，再调用 `cloud_config_get` 与 `platform_image_list` 解析默认地域/可用区和镜像。
 4. **转换与创建**：由转换 Skill 生成完整 `topologyGraph`，并以 `range_template_create` 的运行时 schema 传入名称、描述、网络元数据和拓扑。
