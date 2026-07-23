@@ -132,6 +132,16 @@ export class RangeInstancesService {
   }
 
   async prepareDestroyConfirmation(id: string, currentUser?: AuthenticatedUser) {
+    return this.prepareActionConfirmation(id, 'destroy', currentUser, true);
+  }
+
+  async prepareActionConfirmation(
+    id: string,
+    action: string,
+    currentUser?: AuthenticatedUser,
+    destructive = false,
+    details: Record<string, unknown> = {},
+  ) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -144,8 +154,8 @@ export class RangeInstancesService {
 
     return {
       targetId: instance.id,
-      targetSnapshot: { status: instance.status, name: instance.name },
-      summary: { targetName: instance.name || instance.id, destructive: true },
+      targetSnapshot: { status: instance.status, name: instance.name, action, ...details },
+      summary: { targetName: instance.name || instance.id, action, destructive },
     };
   }
 
@@ -187,7 +197,7 @@ export class RangeInstancesService {
     }
 
     const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
-    const allowTemplateFallback = !this.isSharedTemplateConsumer(template, currentUser);
+    const allowTemplateFallback = !this.isPlatformTemplateConsumer(template, currentUser);
 
     if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
@@ -679,7 +689,7 @@ export class RangeInstancesService {
     throw new ForbiddenException('Range instance access denied');
   }
 
-  private isSharedTemplateConsumer(
+  private isPlatformTemplateConsumer(
     template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
     currentUser?: AuthenticatedUser,
   ) {

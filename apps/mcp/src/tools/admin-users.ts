@@ -1,4 +1,11 @@
 import type { ToolDefinition } from './tool-context';
+import {
+  adminUserCreateInputSchema,
+  adminUserListInputSchema,
+  adminUserResetPasswordInputSchema,
+  adminUserRoleInputSchema,
+  adminUserStatusInputSchema,
+} from './input-schemas';
 
 const operation = (args: { idempotencyKey?: string; confirmationId?: string }) => ({
   idempotencyKey: args.idempotencyKey,
@@ -11,6 +18,7 @@ export const adminUserTools: ToolDefinition[] = [
     description: 'List admin platform users.',
     requiredScopes: ['users:read'],
     readOnlyHint: true,
+    inputSchema: adminUserListInputSchema,
     call(context) {
       return context.client.listAdminUsers();
     },
@@ -19,6 +27,7 @@ export const adminUserTools: ToolDefinition[] = [
     name: 'admin_user_create',
     description: 'Create a platform user.',
     requiredScopes: ['users:write'],
+    inputSchema: adminUserCreateInputSchema,
     call(context, args) {
       const input = args as { username: string; password: string; role: 'admin' | 'user'; idempotencyKey?: string; confirmationId?: string };
       return context.client.createAdminUser(input, operation(input));
@@ -28,6 +37,7 @@ export const adminUserTools: ToolDefinition[] = [
     name: 'admin_user_update_role',
     description: 'Update a platform user role.',
     requiredScopes: ['users:write'],
+    inputSchema: adminUserRoleInputSchema,
     call(context, args) {
       const input = args as { userId: string; role: 'admin' | 'user'; idempotencyKey?: string; confirmationId?: string };
       return context.client.updateAdminUserRole(input.userId, { role: input.role }, operation(input));
@@ -37,6 +47,7 @@ export const adminUserTools: ToolDefinition[] = [
     name: 'admin_user_update_status',
     description: 'Update a platform user status.',
     requiredScopes: ['users:write'],
+    inputSchema: adminUserStatusInputSchema,
     call(context, args) {
       const input = args as { userId: string; status: 'active' | 'disabled'; idempotencyKey?: string; confirmationId?: string };
       return context.client.updateAdminUserStatus(input.userId, { status: input.status }, operation(input));
@@ -46,6 +57,7 @@ export const adminUserTools: ToolDefinition[] = [
     name: 'admin_user_reset_password',
     description: 'Reset a platform user password.',
     requiredScopes: ['users:write'],
+    inputSchema: adminUserResetPasswordInputSchema,
     call(context, args) {
       const input = args as { userId: string; password: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.resetAdminUserPassword(input.userId, { password: input.password }, operation(input));

@@ -34,6 +34,81 @@ describe('PlatformApiClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('maps template save and publish lifecycle requests to the editor API', async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init });
+      return new Response(JSON.stringify({ id: 'tpl-1', visibility: 'platform', revision: 8 }), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
+
+    await expect(
+      (client as unknown as {
+        saveRangeTemplateTopology: (
+          id: string,
+          payload: Record<string, unknown>,
+          operation: { idempotencyKey: string; confirmationId: string },
+        ) => Promise<unknown>;
+      }).saveRangeTemplateTopology(
+        'tpl-1',
+        {
+          expectedRevision: 7,
+          topologySpec: { vpcCidr: '10.0.0.0/16' },
+          topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          scenarioTemplateSpec: {},
+          compiledProvisionSpec: {},
+          compiledSpec: {},
+        },
+        { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' },
+      ),
+    ).resolves.toMatchObject({ id: 'tpl-1', revision: 8 });
+    await expect(
+      (client as unknown as {
+        publishRangeTemplate: (id: string, expectedRevision: number, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown>;
+      }).publishRangeTemplate('tpl-1', 8, { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' }),
+    ).resolves.toMatchObject({ id: 'tpl-1', revision: 8 });
+    await expect(
+      (client as unknown as {
+        unpublishRangeTemplate: (id: string, expectedRevision: number, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown>;
+      }).unpublishRangeTemplate('tpl-1', 8, { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' }),
+    ).resolves.toMatchObject({ id: 'tpl-1', revision: 8 });
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        input: 'https://platform.example/admin/scenarios/tpl-1/validate-and-save',
+        init: expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            expectedRevision: 7,
+            topologySpec: { vpcCidr: '10.0.0.0/16' },
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+            scenarioTemplateSpec: {},
+            compiledProvisionSpec: {},
+            compiledSpec: {},
+          }),
+          headers: expect.objectContaining({
+            'x-idempotency-key': 'idem-1',
+            'x-confirmation-id': 'confirm-1',
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        input: 'https://platform.example/admin/scenarios/tpl-1/share',
+        init: expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ expectedRevision: 8 }),
+        }),
+      }),
+      expect.objectContaining({
+        input: 'https://platform.example/admin/scenarios/tpl-1/unshare',
+        init: expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ expectedRevision: 8 }),
+        }),
+      }),
+    ]);
+  });
+
   it('maps range launch and operation headers', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/ranges/launch');

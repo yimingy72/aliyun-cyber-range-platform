@@ -25,6 +25,7 @@ COPY apps/mcp/package.json apps/mcp/package.json
 COPY apps/api/package.json apps/api/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/platform-api-client/package.json packages/platform-api-client/package.json
+COPY packages/scenario-runtime/package.json packages/scenario-runtime/package.json
 
 RUN pnpm install --frozen-lockfile --filter @aliyun-cyber-range/mcp...
 

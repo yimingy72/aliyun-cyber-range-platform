@@ -5,6 +5,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   resource_name_prefix: string;
   zone_id: string;
   vpc_cidr: string;
+  secondary_vpc_cidrs: string[];
   entry_host_key: string;
   network_zones: Array<{
     key: string;
@@ -151,6 +152,7 @@ export class AlibabaCloudOpenTofuRenderer {
       resource_name_prefix: plan.resourceNamePrefix,
       zone_id: input.zoneId,
       vpc_cidr: plan.network.vpcCidr,
+      secondary_vpc_cidrs: plan.network.secondaryVpcCidrs,
       entry_host_key: plan.entryHostKey,
       network_zones: plan.networkZones.map((zone) => ({
         key: zone.key,

@@ -17,6 +17,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         },
         network: {
           vpcCidr: '10.90.0.0/16',
+          secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
           dmzCidr: '10.90.10.0/24',
           officeCidr: '10.90.20.0/24',
           serverCidr: '10.90.30.0/24',
@@ -101,6 +102,9 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       internetMaxBandwidthOut: 50,
       systemDiskCategory: 'cloud_essd',
       systemDiskSize: 40,
+      tags: {
+        range_instance_id: 'range-instance-1',
+      },
     });
 
     expect(variables).not.toHaveProperty('selected_zone_id');
@@ -110,6 +114,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         resource_name_prefix: 'range-demo',
         zone_id: 'cn-hangzhou-h',
         vpc_cidr: '10.90.0.0/16',
+        secondary_vpc_cidrs: ['172.16.0.0/16', '192.168.0.0/16'],
         entry_host_key: 'dmz-entry',
         instance_type: 'ecs.e-c1m1.large',
         image_id: 'ubuntu_24_04_x64_20G_alibase_20260615.vhd',

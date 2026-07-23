@@ -5,12 +5,14 @@
 ## 敏感工具
 
 - `range_instance_get_access`
+- `range_instance_node_open_vnc`
 - `single_instance_get_access`
 - `single_instance_open_vnc`
 - `single_instance_batch_export_csv`
-- 返回或接收默认密码时的 `single_instance_pack_image`
+- 返回或接收默认密码时的 `single_instance_pack_image`、`range_instance_node_pack_image`
 - `admin_user_create` 和 `admin_user_reset_password`
 - `cloud_config_update`
+- `range_template_get`、`range_template_topology_detect_and_save` 和模板写操作不会回显 `customPassword`；`range_instance_get` 也会移除运行凭据。不要把这些字段当作可读取的访问数据。
 
 ## 规则
 

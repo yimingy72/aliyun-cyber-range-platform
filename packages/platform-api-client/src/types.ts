@@ -24,6 +24,26 @@ export type RangeAccessPayload = {
 };
 
 export type RangeTemplate = Record<string, unknown> & { id: string };
+export type CreateRangeTemplateInput = Record<string, unknown> & {
+  name: string;
+  slug: string;
+  version: string;
+  modulePathOrRef: string;
+  topologySpec: Record<string, unknown>;
+};
+export type UpdateRangeTemplateInput = {
+  expectedRevision: number;
+  name?: string;
+  description?: string;
+};
+export type SaveRangeTemplateTopologyInput = {
+  expectedRevision: number;
+  topologySpec: Record<string, unknown>;
+  topologyGraph: Record<string, unknown>;
+  scenarioTemplateSpec: Record<string, unknown>;
+  compiledProvisionSpec: Record<string, unknown>;
+  compiledSpec: Record<string, unknown>;
+};
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
 export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
 export type ProvisionJob = Record<string, unknown> & { id: string };
@@ -60,6 +80,19 @@ export type LaunchRangeInput = {
   templateId: string;
   name: string;
   expiresAt: string;
+};
+
+export type SaveRangeInstanceDraftInput = {
+  draftTopologyGraph: Record<string, unknown>;
+  draftScenarioTemplateSpec: Record<string, unknown>;
+  draftCompiledProvisionSpec: Record<string, unknown>;
+};
+
+export type RangeInstanceNodeActionPayload = {
+  displayName?: string;
+  defaultHostName?: string;
+  defaultPassword?: string;
+  description?: string;
 };
 
 export type LaunchSingleInstancesInput = {
@@ -108,6 +141,13 @@ export type ResetAdminUserPasswordInput = {
 export type PlatformApiClientLike = {
   listRangeTemplates(view?: RangeTemplateView): Promise<RangeTemplate[]>;
   getRangeTemplate(id: string): Promise<RangeTemplate | null>;
+  createRangeTemplate(payload: CreateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;
+  updateRangeTemplate(id: string, payload: UpdateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;
+  cloneRangeTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  saveRangeTemplateTopology(id: string, payload: SaveRangeTemplateTopologyInput, operation?: OperationRequest): Promise<RangeTemplate>;
+  publishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
+  unpublishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
+  removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;
   renamePlatformImage(id: string, displayName: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
@@ -119,6 +159,18 @@ export type PlatformApiClientLike = {
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
   getRangeInstance(id: string): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
+  saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
+  applyRangeInstanceDraft(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
+  syncRangeInstanceTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
+  retryRangeInstance(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
+  removeFailedRangeInstance(id: string, operation?: OperationRequest): Promise<void>;
+  runRangeInstanceNodeAction(
+    rangeInstanceId: string,
+    nodeId: string,
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+    payload?: RangeInstanceNodeActionPayload,
+    operation?: OperationRequest,
+  ): Promise<Record<string, unknown>>;
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;

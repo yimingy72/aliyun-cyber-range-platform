@@ -9,6 +9,7 @@ export function buildRootWrapperFiles(moduleSource: string) {
       '  resource_name_prefix    = var.resource_name_prefix',
       '  zone_id                 = var.zone_id',
       '  vpc_cidr                = var.vpc_cidr',
+      '  secondary_vpc_cidrs     = var.secondary_vpc_cidrs',
       '  entry_host_key          = var.entry_host_key',
       '  network_zones           = var.network_zones',
       '  hosts                   = var.hosts',
@@ -51,6 +52,12 @@ variable "resource_name_prefix" {
 variable "vpc_cidr" {
   type        = string
   description = "CIDR block assigned to the example VPC."
+}
+
+variable "secondary_vpc_cidrs" {
+  type        = list(string)
+  description = "Additional IPv4 CIDR blocks attached to the example VPC."
+  default     = []
 }
 
 variable "dmz_cidr" {

@@ -11,11 +11,17 @@ let oidcJwtVerifier: OidcJwtVerifier | null = null;
 
 export const END_USER_SCOPES = [
   'templates:read',
+  'templates:write',
+  'templates:publish',
+  'templates:delete',
   'images:read',
   'images:write',
   'ranges:read',
   'ranges:create',
+  'ranges:write',
+  'ranges:control',
   'ranges:destroy',
+  'ranges:delete',
   'instances:read',
   'instances:create',
   'instances:destroy',

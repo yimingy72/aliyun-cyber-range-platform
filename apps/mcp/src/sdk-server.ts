@@ -1,5 +1,4 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as z from 'zod/v4';
 
 import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
@@ -7,11 +6,17 @@ import { createToolRegistry } from './server';
 
 const allScopes = [
   'templates:read',
+  'templates:write',
+  'templates:publish',
+  'templates:delete',
   'images:read',
   'images:write',
   'ranges:read',
   'ranges:create',
+  'ranges:write',
+  'ranges:control',
   'ranges:destroy',
+  'ranges:delete',
   'instances:read',
   'instances:create',
   'instances:destroy',
@@ -35,12 +40,11 @@ export function createSdkServer(client: PlatformApiClientLike, scopes: string[] 
     server.registerTool(
       tool.name,
       {
-        title: tool.name,
+        title: tool.title,
         description: tool.description,
-        inputSchema: tool.inputSchema ?? z.object({}).passthrough(),
-        annotations: {
-          readOnlyHint: tool.annotations.readOnlyHint,
-        },
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        annotations: tool.annotations,
       },
       async (args, extra) => {
         const authScopes = pickScopes(extra.authInfo);

@@ -116,16 +116,34 @@ export class RangesController {
 
   @Post(':id/retry')
   triggerRetry(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    if (request.authContext.source === 'mcp') {
+      return this.confirmedMcpAction(request, 'range_instance_retry', id, { rangeInstanceId: id }, false, async () => {
+        const job = await this.rangeInstancesService.triggerRetry(id, request.adminUser);
+        return { rangeInstanceId: id, jobId: job.id };
+      });
+    }
     return this.rangeInstancesService.triggerRetry(id, request.adminUser);
   }
 
   @Post(':id/apply')
   applyDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    if (request.authContext.source === 'mcp') {
+      return this.confirmedMcpAction(request, 'range_instance_topology_apply', id, { rangeInstanceId: id }, false, async () => {
+        const job = await this.rangeInstancesService.applyDraft(id, request.adminUser);
+        return { rangeInstanceId: id, jobId: job.id };
+      });
+    }
     return this.rangeInstancesService.applyDraft(id, request.adminUser);
   }
 
   @Post(':id/sync-template')
   syncTemplate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+    if (request.authContext.source === 'mcp') {
+      return this.confirmedMcpAction(request, 'range_instance_sync_template', id, { rangeInstanceId: id }, false, async () => {
+        const template = await this.rangeInstancesService.syncTemplate(id, request.adminUser);
+        return { rangeInstanceId: id, templateId: template.id };
+      });
+    }
     return this.rangeInstancesService.syncTemplate(id, request.adminUser);
   }
 
@@ -137,13 +155,75 @@ export class RangesController {
     @Param('action') action: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.rangeInstanceNodeActionsService.run(
-      id,
-      nodeId,
-      action,
-      this.sanitizeNodeActionPayload(body),
-      request.adminUser,
-    );
+    const payload = {
+      ...this.sanitizeNodeActionPayload(body),
+      ownerUserId: request.adminUser.id,
+    };
+
+    if (request.authContext.source === 'mcp' && action === 'open-vnc') {
+      const metadata = readOperationRequestMetadata(request);
+      return this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser).then((result) => {
+        void this.operationControlService.audit({
+          operationId: `request:${metadata.requestId}`,
+          requestId: metadata.requestId,
+          actorUserId: request.adminUser.id,
+          source: 'mcp',
+          oauthClientId: request.authContext.oauthClientId,
+          toolName: 'range_instance_node_open_vnc',
+          phase: 'succeeded',
+          targetType: 'range_instance_node',
+          targetId: `${id}:${nodeId}`,
+        });
+        return result;
+      });
+    }
+
+    if (request.authContext.source === 'mcp') {
+      return this.confirmedMcpAction(
+        request,
+        `range_instance_node_${action}`,
+        id,
+        { rangeInstanceId: id, nodeId, action, ...payload },
+        action === 'stop',
+        async () => {
+          const result = await this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser);
+          return { rangeInstanceId: id, nodeId, ...result };
+        },
+        { nodeId },
+      );
+    }
+
+    return this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser);
+  }
+
+  private confirmedMcpAction<TResult extends Record<string, unknown>>(
+    request: AuthenticatedAdminRequest,
+    toolName: string,
+    rangeInstanceId: string,
+    argumentsValue: Record<string, unknown>,
+    destructive: boolean,
+    execute: () => Promise<TResult>,
+    details: Record<string, unknown> = {},
+  ) {
+    const metadata = readOperationRequestMetadata(request);
+    const nodeId = typeof argumentsValue.nodeId === 'string' ? `:${argumentsValue.nodeId}` : '';
+    return this.operationControlService.executeConfirmed({
+      context: request.authContext,
+      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${rangeInstanceId}${nodeId}` },
+      toolName,
+      arguments: argumentsValue,
+      targetType: 'range_instance',
+      targetId: rangeInstanceId,
+      resolveConfirmation: () =>
+        this.rangeInstancesService.prepareActionConfirmation(
+          rangeInstanceId,
+          toolName,
+          request.adminUser,
+          destructive,
+          details,
+        ),
+      execute,
+    });
   }
 
   private sanitizeNodeActionPayload(body: Record<string, unknown>) {
