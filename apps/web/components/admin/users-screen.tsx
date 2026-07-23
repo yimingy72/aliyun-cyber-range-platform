@@ -40,6 +40,7 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { AdminSelectField } from './shared/admin-select-field';
 import {
   AdminDataTable,
   AdminDataTableCell,
@@ -656,21 +657,23 @@ export function UsersScreen({
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="create-user-role">角色</Label>
-              <select
-                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                id="create-user-role"
-                value={createDraft.role}
-                onChange={(event) =>
+              <Label>角色</Label>
+              <AdminSelectField
+                ariaLabel="角色"
+                className="w-full"
+                disabled={isSubmitting}
+                onValueChange={(value) =>
                   setCreateDraft((currentValue) => ({
                     ...currentValue,
-                    role: event.target.value as AdminUser['role'],
+                    role: value as AdminUser['role'],
                   }))
                 }
-              >
-                <option value="user">普通用户</option>
-                <option value="admin">管理员</option>
-              </select>
+                options={[
+                  { label: '普通用户', value: 'user' },
+                  { label: '管理员', value: 'admin' },
+                ]}
+                value={createDraft.role}
+              />
             </div>
           </div>
           <DialogFooter>

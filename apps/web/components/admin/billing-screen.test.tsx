@@ -267,7 +267,8 @@ describe('BillingScreen', () => {
       expect(fetchBillingUserGroupsMock.mock.calls.length).toBeGreaterThan(initialGroupRequestCount);
     });
 
-    fireEvent.change(screen.getByLabelText('筛选用户'), { target: { value: 'user-1' } });
+    fireEvent.click(screen.getByRole('combobox', { name: '筛选用户' }));
+    fireEvent.click(screen.getByRole('option', { name: 'alice' }));
 
     await waitFor(() => {
       expect(fetchBillingUserGroupsMock).toHaveBeenLastCalledWith(
@@ -281,7 +282,7 @@ describe('BillingScreen', () => {
 
     await screen.findByText('未关联平台启动的费用');
     expect(fetchPlatformBillingGroupsMock).toHaveBeenCalled();
-    expect((screen.getByLabelText('筛选用户') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByRole('combobox', { name: '筛选用户' }).hasAttribute('disabled')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: /alice/i }));
 

@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Skeleton } from '../ui/skeleton';
+import { AdminSelectField } from './shared/admin-select-field';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { useAdminSession } from './use-admin-session';
 
@@ -478,19 +479,15 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
               <label className="grid min-w-36 gap-1">
                 <span className="text-xs font-medium text-muted-foreground">筛选用户</span>
-                <select
-                  className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
+                <AdminSelectField
+                  ariaLabel="筛选用户"
+                  className="min-w-36"
                   disabled={detailView === 'platform'}
-                  onChange={(event) => selectUser(event.target.value)}
+                  emptyOptionLabel="全部用户"
+                  onValueChange={selectUser}
+                  options={users.map((user) => ({ label: user.username, value: user.userId }))}
                   value={selectedUserId}
-                >
-                  <option value="">全部用户</option>
-                  {users.map((user) => (
-                    <option key={user.userId} value={user.userId}>
-                      {user.username}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
 
               <div className="grid gap-1">

@@ -52,6 +52,7 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { AdminSelectField } from './shared/admin-select-field';
 import {
   AdminDataTable,
   AdminDataTableCell,
@@ -1685,10 +1686,18 @@ export function ImageCenterScreen({
                   </label>
                   <label>
                     <span>操作系统</span>
-                    <select aria-label="上传镜像操作系统" value={imageImportDraft.osType} onChange={(event) => updateImageImportDraft({ osType: event.target.value as 'linux' | 'windows' })}>
-                      <option value="linux">Linux</option>
-                      <option value="windows">Windows</option>
-                    </select>
+                    <AdminSelectField
+                      ariaLabel="上传镜像操作系统"
+                      className="h-[46px] w-full"
+                      onValueChange={(value) =>
+                        updateImageImportDraft({ osType: value as ImageImportDialogDraft['osType'] })
+                      }
+                      options={[
+                        { label: 'Linux', value: 'linux' },
+                        { label: 'Windows', value: 'windows' },
+                      ]}
+                      value={imageImportDraft.osType}
+                    />
                   </label>
                   <label>
                     <span>系统版本 / 平台</span>
@@ -1696,25 +1705,49 @@ export function ImageCenterScreen({
                   </label>
                   <label>
                     <span>架构</span>
-                    <select aria-label="上传镜像架构" value={imageImportDraft.architecture} onChange={(event) => updateImageImportDraft({ architecture: event.target.value as 'x86_64' | 'arm64' })}>
-                      <option value="x86_64">x86_64</option>
-                      <option value="arm64">arm64</option>
-                    </select>
+                    <AdminSelectField
+                      ariaLabel="上传镜像架构"
+                      className="h-[46px] w-full"
+                      onValueChange={(value) =>
+                        updateImageImportDraft({ architecture: value as ImageImportDialogDraft['architecture'] })
+                      }
+                      options={[
+                        { label: 'x86_64', value: 'x86_64' },
+                        { label: 'arm64', value: 'arm64' },
+                      ]}
+                      value={imageImportDraft.architecture}
+                    />
                   </label>
                   <label>
                     <span>启动模式</span>
-                    <select aria-label="上传镜像启动模式" value={imageImportDraft.bootMode} onChange={(event) => updateImageImportDraft({ bootMode: event.target.value as 'BIOS' | 'UEFI' })}>
-                      <option value="BIOS">BIOS</option>
-                      <option value="UEFI">UEFI</option>
-                    </select>
+                    <AdminSelectField
+                      ariaLabel="上传镜像启动模式"
+                      className="h-[46px] w-full"
+                      onValueChange={(value) =>
+                        updateImageImportDraft({ bootMode: value as ImageImportDialogDraft['bootMode'] })
+                      }
+                      options={[
+                        { label: 'BIOS', value: 'BIOS' },
+                        { label: 'UEFI', value: 'UEFI' },
+                      ]}
+                      value={imageImportDraft.bootMode}
+                    />
                   </label>
                   <label>
                     <span>镜像格式</span>
-                    <select aria-label="上传镜像格式" value={imageImportDraft.imageFormat} onChange={(event) => updateImageImportDraft({ imageFormat: event.target.value as 'qcow2' | 'raw' | 'vhd' })}>
-                      <option value="qcow2">QCOW2</option>
-                      <option value="raw">RAW</option>
-                      <option value="vhd">VHD</option>
-                    </select>
+                    <AdminSelectField
+                      ariaLabel="上传镜像格式"
+                      className="h-[46px] w-full"
+                      onValueChange={(value) =>
+                        updateImageImportDraft({ imageFormat: value as ImageImportDialogDraft['imageFormat'] })
+                      }
+                      options={[
+                        { label: 'QCOW2', value: 'qcow2' },
+                        { label: 'RAW', value: 'raw' },
+                        { label: 'VHD', value: 'vhd' },
+                      ]}
+                      value={imageImportDraft.imageFormat}
+                    />
                   </label>
                   <label>
                     <span>系统盘大小（GiB）</span>

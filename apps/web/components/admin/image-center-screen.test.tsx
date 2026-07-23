@@ -462,13 +462,17 @@ describe('ImageCenterScreen', () => {
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
     fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
 
-    expect(screen.getByRole('dialog', { name: '上传本地镜像' })).toBeTruthy();
-    expect(screen.getByLabelText('系统盘镜像文件')).toBeTruthy();
-    expect(screen.getByLabelText('上传镜像名')).toBeTruthy();
-    expect(screen.getByLabelText('上传镜像默认主机名')).toBeTruthy();
-    expect(screen.getByLabelText('上传镜像默认登录密码')).toBeTruthy();
-    expect(screen.getByLabelText('上传镜像备注')).toBeTruthy();
-    expect(screen.getByLabelText('上传镜像架构')).toBeTruthy();
+    const dialog = screen.getByRole('dialog', { name: '上传本地镜像' });
+    expect(dialog.querySelector('select[aria-label]')).toBeNull();
+    expect(within(dialog).getByLabelText('系统盘镜像文件')).toBeTruthy();
+    expect(within(dialog).getByLabelText('上传镜像名')).toBeTruthy();
+    expect(within(dialog).getByLabelText('上传镜像默认主机名')).toBeTruthy();
+    expect(within(dialog).getByLabelText('上传镜像默认登录密码')).toBeTruthy();
+    expect(within(dialog).getByLabelText('上传镜像备注')).toBeTruthy();
+    expect(within(dialog).getByRole('combobox', { name: '上传镜像操作系统' })).toBeTruthy();
+    expect(within(dialog).getByRole('combobox', { name: '上传镜像架构' })).toBeTruthy();
+    expect(within(dialog).getByRole('combobox', { name: '上传镜像启动模式' })).toBeTruthy();
+    expect(within(dialog).getByRole('combobox', { name: '上传镜像格式' })).toBeTruthy();
     expect(screen.getByText('文件会直接上传到当前云账号的私有 OSS Bucket，再由阿里云导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。')).toBeTruthy();
   });
 
@@ -598,6 +602,15 @@ describe('ImageCenterScreen', () => {
       fireEvent.change(screen.getByLabelText('系统盘镜像文件'), {
         target: { files: [new File(['disk'], 'ubuntu.qcow2', { type: 'application/octet-stream' })] },
       });
+      fireEvent.click(screen.getByRole('combobox', { name: '上传镜像操作系统' }));
+      fireEvent.click(screen.getByRole('option', { name: 'Windows' }));
+      fireEvent.click(screen.getByRole('combobox', { name: '上传镜像架构' }));
+      fireEvent.click(screen.getByRole('option', { name: 'arm64' }));
+      fireEvent.click(screen.getByRole('combobox', { name: '上传镜像启动模式' }));
+      fireEvent.click(screen.getByRole('option', { name: 'UEFI' }));
+      fireEvent.click(screen.getByRole('combobox', { name: '上传镜像格式' }));
+      fireEvent.click(screen.getByRole('option', { name: 'RAW' }));
+      expect(screen.getByRole('combobox', { name: '上传镜像格式' }).textContent).toContain('RAW');
       const submitButton = screen.getByRole('button', { name: '上传并导入' });
       fireEvent.submit(submitButton.closest('form') as HTMLFormElement);
 
@@ -608,6 +621,9 @@ describe('ImageCenterScreen', () => {
           expect.objectContaining({
             cloudContextId: 'cloud-context-1',
             displayName: 'ubuntu',
+            osType: 'windows',
+            architecture: 'arm64',
+            bootMode: 'UEFI',
             imageFormat: 'qcow2',
             sourceFileName: 'ubuntu.qcow2',
             sourceSizeBytes: 4,

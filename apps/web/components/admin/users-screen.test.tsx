@@ -189,7 +189,7 @@ describe('UsersScreen', () => {
     createAdminUserMock.mockResolvedValue({
       id: 'user-2',
       username: 'range-ops',
-      role: 'user',
+      role: 'admin',
       status: 'active',
       createdAt: '2026-07-10T03:00:00.000Z',
       updatedAt: '2026-07-10T03:00:00.000Z',
@@ -291,16 +291,15 @@ describe('UsersScreen', () => {
     fireEvent.change(within(dialog).getByLabelText('初始密码'), {
       target: { value: ' Password123! ' },
     });
-    fireEvent.change(within(dialog).getByLabelText('角色'), {
-      target: { value: 'user' },
-    });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: '角色' }));
+    fireEvent.click(screen.getByRole('option', { name: '管理员' }));
     fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
 
     await waitFor(() => {
       expect(createAdminUserMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', {
         username: 'range-ops',
         password: ' Password123! ',
-        role: 'user',
+        role: 'admin',
       });
     });
 
