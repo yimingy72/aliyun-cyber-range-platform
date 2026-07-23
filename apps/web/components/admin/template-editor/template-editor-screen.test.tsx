@@ -278,6 +278,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('拓扑画布')).toBeTruthy();
     expect(screen.getByText('属性面板')).toBeTruthy();
     expect(screen.getByText('已发布').getAttribute('data-slot')).toBe('badge');
+    expect(screen.getByRole('button', { name: '删除选中' }).getAttribute('data-variant')).toBe('destructive');
     expect(screen.getByRole('button', { name: '检测与保存' }).getAttribute('data-variant')).toBe('outline');
     expect(screen.getByRole('button', { name: '发布到平台' }).getAttribute('data-variant')).toBe('default');
   });

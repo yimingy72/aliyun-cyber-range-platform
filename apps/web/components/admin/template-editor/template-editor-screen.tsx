@@ -1842,13 +1842,14 @@ function buildDraftUpdatePayload(
             {template.status === 'published' ? '已发布' : '私有'}
           </Badge>
         </div>
-        <div className="admin-inline-actions">
+        <div className="template-editor-toolbar-actions">
           <Button
+            className="border border-destructive/40 bg-card hover:bg-destructive/10 hover:text-destructive"
             disabled={(!selectedNodeId && !selectedEdgeId) || isSubmitting}
             onClick={handleDeleteSelectedNode}
             size="sm"
             type="button"
-            variant="outline"
+            variant="destructive"
           >
             删除选中
           </Button>

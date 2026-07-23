@@ -1288,10 +1288,11 @@ body {
   opacity: 0.82;
 }
 
-.template-editor-toolbar .admin-inline-actions {
-  margin-top: 0;
+.template-editor-toolbar-actions {
+  display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .template-editor-grid {

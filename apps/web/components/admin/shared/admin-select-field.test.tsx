@@ -40,6 +40,7 @@ describe('AdminSelectField', () => {
     );
 
     expect(screen.getByRole('combobox', { name: '筛选用户' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('combobox', { name: '筛选用户' }).className).toContain('bg-card');
     expect(document.querySelector('select')).toBeNull();
   });
 });
