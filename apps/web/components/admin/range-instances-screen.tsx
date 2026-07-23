@@ -1,9 +1,10 @@
 'use client';
 
-import React from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
+import { Button } from '@/components/ui/button';
+import { TableCell, TableRow } from '@/components/ui/table';
 import {
   deleteRangeInstance,
   fetchProvisionJobs,
@@ -22,6 +23,11 @@ import {
   PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
+import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
+import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminPageHeader } from './shared/admin-page-header';
+import { StatusBadge } from './shared/status-badge';
+import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
 
 type RangeInstancesScreenProps = {
@@ -39,84 +45,45 @@ type ExtendedProvisionJob = ProvisionJob & {
 
 type RangeListMode = 'active' | 'history';
 
-function getStatusLabel(status: string) {
-  if (status === 'draft') {
-    return '草稿';
+type RangeListRecord<T> = Record<RangeListMode, T>;
+
+const RANGE_ACTIVE_COLUMNS: readonly AdminDataColumn[] = [
+  { id: 'name', label: '实例名称', priority: 'primary' },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary' },
+  { id: 'template', label: '所属靶场', priority: 'secondary' },
+  { id: 'status', label: '状态', priority: 'primary' },
+  { id: 'createdAt', label: '创建时间', priority: 'secondary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
+];
+
+const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
+  { id: 'name', label: '实例名称', priority: 'primary' },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary' },
+  { id: 'template', label: '所属靶场', priority: 'secondary' },
+  { id: 'createdAt', label: '开启时间', priority: 'secondary' },
+  { id: 'endedAt', label: '回收时间', priority: 'tertiary' },
+  { id: 'duration', label: '运行时长', priority: 'detail' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '8rem' },
+];
+
+function readRangeListMode(value: string | null): RangeListMode {
+  return value === 'history' ? 'history' : 'active';
+}
+
+function getRangeColumn(columns: readonly AdminDataColumn[], id: string) {
+  const column = columns.find((item) => item.id === id);
+
+  if (!column) {
+    throw new Error(`Missing range instance column: ${id}`);
   }
 
-  if (status === 'pending_create') {
-    return '待创建';
-  }
-
-  if (status === 'creating') {
-    return '创建中';
-  }
-
-  if (status === 'running') {
-    return '运行中';
-  }
-
-  if (status === 'create_failed') {
-    return '创建失败';
-  }
-
-  if (status === 'pending_destroy') {
-    return '待销毁';
-  }
-
-  if (status === 'destroying') {
-    return '销毁中';
-  }
-
-  if (status === 'destroy_failed') {
-    return '销毁失败';
-  }
-
-  if (status === 'destroyed') {
-    return '已销毁';
-  }
-
-  if (status === 'pending') {
-    return '处理中';
-  }
-
-  if (status === 'failed') {
-    return '失败';
-  }
-
-  if (status === 'succeeded') {
-    return '成功';
-  }
-
-  return status;
+  return column;
 }
 
 function getInstanceTemplateLabel(
   instance: ExtendedRangeInstance,
 ) {
   return instance.templateNameSnapshot?.trim() || '未知靶场';
-}
-
-function getStatusTone(status: string) {
-  if (status === 'running' || status === 'succeeded') {
-    return 'success';
-  }
-
-  if (status === 'create_failed' || status === 'destroy_failed' || status === 'failed') {
-    return 'danger';
-  }
-
-  if (
-    status === 'pending_create' ||
-    status === 'creating' ||
-    status === 'pending_destroy' ||
-    status === 'destroying' ||
-    status === 'pending'
-  ) {
-    return 'warning';
-  }
-
-  return 'neutral';
 }
 
 function getActionTrigger(instance: RangeInstance, action: 'create' | 'destroy') {
@@ -192,13 +159,32 @@ export function RangeInstancesScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: RangeInstancesScreenProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const session = useAdminSession();
-  const [instances, setInstances] = useState<ExtendedRangeInstance[]>([]);
-  const [jobs, setJobs] = useState<ExtendedProvisionJob[]>([]);
-  const [listMode, setListMode] = useState<RangeListMode>('active');
+  const [instancesByView, setInstancesByView] = useState<RangeListRecord<ExtendedRangeInstance[]>>({
+    active: [],
+    history: [],
+  });
+  const [jobsByView, setJobsByView] = useState<RangeListRecord<ExtendedProvisionJob[]>>({
+    active: [],
+    history: [],
+  });
+  const [listMode, setListMode] = useState<RangeListMode>(() => readRangeListMode(searchParams.get('view')));
   const [searchName, setSearchName] = useState('');
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [listErrors, setListErrors] = useState<RangeListRecord<string | null>>({
+    active: null,
+    history: null,
+  });
+  const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
+  const [loadedViews, setLoadedViews] = useState<RangeListRecord<boolean>>({
+    active: false,
+    history: false,
+  });
+  const [loadingViews, setLoadingViews] = useState<RangeListRecord<boolean>>({
+    active: true,
+    history: true,
+  });
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
   const [removedInstanceIds, setRemovedInstanceIds] = useState<string[]>([]);
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
@@ -215,8 +201,10 @@ export function RangeInstancesScreen({
         : Promise.resolve([] as ProvisionJob[]),
     ]);
 
-    setInstances(nextInstances as ExtendedRangeInstance[]);
-    setJobs(nextJobs as ExtendedProvisionJob[]);
+    return {
+      instances: nextInstances as ExtendedRangeInstance[],
+      jobs: nextJobs as ExtendedProvisionJob[],
+    };
   }
 
   useEffect(() => {
@@ -225,28 +213,47 @@ export function RangeInstancesScreen({
     }
 
     if (!session.token) {
-      setInstances([]);
-      setJobs([]);
-      setErrorMessage(null);
-      setIsLoading(false);
+      setInstancesByView({ active: [], history: [] });
+      setJobsByView({ active: [], history: [] });
+      setListErrors({ active: null, history: null });
+      setActionErrorMessage(null);
+      setLoadedViews({ active: false, history: false });
+      setLoadingViews({ active: false, history: false });
       return;
     }
 
     const token = session.token;
     let isActive = true;
 
-    setErrorMessage(null);
-    setIsLoading(true);
-    setInstances([]);
-    setJobs([]);
+    setListErrors((current) => ({
+      ...current,
+      [listMode]: null,
+    }));
+    setLoadingViews((current) => ({
+      ...current,
+      [listMode]: true,
+    }));
 
-    void (async () => {
-      try {
+    void reloadRangeInstanceRows(token, listMode)
+      .then((nextSnapshot) => {
         if (!isActive) {
           return;
         }
-        await reloadRangeInstanceRows(token, listMode);
-      } catch (error: unknown) {
+
+        setInstancesByView((current) => ({
+          ...current,
+          [listMode]: nextSnapshot.instances,
+        }));
+        setJobsByView((current) => ({
+          ...current,
+          [listMode]: nextSnapshot.jobs,
+        }));
+        setLoadedViews((current) => ({
+          ...current,
+          [listMode]: true,
+        }));
+      })
+      .catch((error: unknown) => {
         if (!isActive) {
           return;
         }
@@ -257,68 +264,64 @@ export function RangeInstancesScreen({
           return;
         }
 
-        setErrorMessage('靶场实例加载失败，请刷新页面后重试。');
-      } finally {
+        setListErrors((current) => ({
+          ...current,
+          [listMode]: '靶场实例加载失败，请刷新页面后重试。',
+        }));
+      })
+      .finally(() => {
         if (!isActive) {
           return;
         }
 
-        setIsLoading(false);
-      }
-    })();
+        setLoadingViews((current) => ({
+          ...current,
+          [listMode]: false,
+        }));
+      });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, listMode, router, session.isReady, session.token]);
+  }, [apiBaseUrl, listMode, loadAttempt, router, session.isReady, session.token]);
+
+  const currentJobs = jobsByView[listMode];
+  const currentInstances = instancesByView[listMode];
+  const isListLoading = loadingViews[listMode];
+  const hasLoadedList = loadedViews[listMode];
+  const listErrorMessage = listErrors[listMode];
 
   const jobsByInstanceId = useMemo(() => {
     const map = new Map<string, ExtendedProvisionJob>();
 
-    for (const job of jobs) {
+    for (const job of currentJobs) {
       if (!map.has(job.rangeInstanceId)) {
         map.set(job.rangeInstanceId, job as ExtendedProvisionJob);
       }
     }
 
     return map;
-  }, [jobs]);
+  }, [currentJobs]);
 
   const visibleInstances = useMemo(() => {
-    return instances.filter(
+    return currentInstances.filter(
       (instance) => !removedInstanceIds.includes(instance.id),
     );
-  }, [instances, removedInstanceIds]);
+  }, [currentInstances, removedInstanceIds]);
 
-  const activeInstances = useMemo(() => {
-    return visibleInstances.filter((instance) => instance.status !== 'destroyed');
-  }, [visibleInstances]);
-
-  const historyInstances = useMemo(() => {
-    return visibleInstances.filter((instance) => instance.status === 'destroyed');
-  }, [visibleInstances]);
-
-  const filteredActiveInstances = useMemo(() => {
+  const visibleListInstances = useMemo(() => {
     const keyword = searchName.trim().toLowerCase();
+    const matchingModeInstances = visibleInstances.filter((instance) =>
+      listMode === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed',
+    );
 
     if (!keyword) {
-      return activeInstances;
+      return matchingModeInstances;
     }
 
-    return activeInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
-  }, [activeInstances, searchName]);
+    return matchingModeInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
+  }, [listMode, searchName, visibleInstances]);
 
-  const filteredHistoryInstances = useMemo(() => {
-    const keyword = searchName.trim().toLowerCase();
-
-    if (!keyword) {
-      return historyInstances;
-    }
-
-    return historyInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
-  }, [historyInstances, searchName]);
-
-  const visibleListInstances = listMode === 'history' ? filteredHistoryInstances : filteredActiveInstances;
   const activePagination = getPagination(visibleListInstances.length, listPages[listMode], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedVisibleListInstances = visibleListInstances.slice(activePagination.startIndex, activePagination.endIndex);
@@ -363,20 +366,34 @@ export function RangeInstancesScreen({
   }
 
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstance) {
-    setInstances((current) =>
-      current.some((item) => item.id === instance.id)
-        ? current.map((item) => (item.id === instance.id ? { ...item, ...instance } : item))
-        : [instance, ...current],
-    );
+    setInstancesByView((current) => {
+      const currentInstances = current[listMode];
+
+      return {
+        ...current,
+        [listMode]: currentInstances.some((item) => item.id === instance.id)
+          ? currentInstances.map((item) => (item.id === instance.id ? { ...item, ...instance } : item))
+          : [instance, ...currentInstances],
+      };
+    });
   }
 
   function upsertJobInSnapshot(job: ExtendedProvisionJob) {
-    setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+    setJobsByView((current) => ({
+      ...current,
+      [listMode]: [job, ...current[listMode].filter((item) => item.id !== job.id)],
+    }));
   }
 
   function removeInstanceFromSnapshot(instanceId: string) {
-    setInstances((current) => current.filter((item) => item.id !== instanceId));
-    setJobs((current) => current.filter((item) => item.rangeInstanceId !== instanceId));
+    setInstancesByView((current) => ({
+      ...current,
+      [listMode]: current[listMode].filter((item) => item.id !== instanceId),
+    }));
+    setJobsByView((current) => ({
+      ...current,
+      [listMode]: current[listMode].filter((item) => item.rangeInstanceId !== instanceId),
+    }));
   }
 
   function handleViewDetail(instanceId: string) {
@@ -388,7 +405,7 @@ export function RangeInstancesScreen({
       return;
     }
 
-    setErrorMessage(null);
+    setActionErrorMessage(null);
     setIsSubmittingAction('destroy');
 
     try {
@@ -408,7 +425,7 @@ export function RangeInstancesScreen({
         return;
       }
 
-      setErrorMessage('实例生命周期操作失败，请稍后重试。');
+      setActionErrorMessage('实例生命周期操作失败，请稍后重试。');
     } finally {
       setIsSubmittingAction(null);
     }
@@ -419,7 +436,7 @@ export function RangeInstancesScreen({
       return;
     }
 
-    setErrorMessage(null);
+    setActionErrorMessage(null);
     setIsSubmittingAction('create');
 
     try {
@@ -433,7 +450,7 @@ export function RangeInstancesScreen({
         return;
       }
 
-      setErrorMessage('删除失败实例失败，请稍后重试。');
+      setActionErrorMessage('删除失败实例失败，请稍后重试。');
     } finally {
       setIsSubmittingAction(null);
     }
@@ -454,178 +471,229 @@ export function RangeInstancesScreen({
     );
   }
 
-  const isBootstrapLoading = isLoading && instances.length === 0;
+  const isInitialLoading = !hasLoadedList && !listErrorMessage;
+  const isRefreshing = isListLoading && hasLoadedList;
+  const shouldShowTableError = Boolean(listErrorMessage && !hasLoadedList);
+  const columns = listMode === 'history' ? RANGE_HISTORY_COLUMNS : RANGE_ACTIVE_COLUMNS;
+
+  function setListModeWithUrl(nextListMode: RangeListMode) {
+    if (nextListMode === listMode) {
+      return;
+    }
+
+    setListMode(nextListMode);
+
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    if (nextListMode === 'history') {
+      nextSearchParams.set('view', 'history');
+    } else {
+      nextSearchParams.delete('view');
+    }
+
+    const nextQuery = nextSearchParams.toString();
+    window.history.replaceState(
+      null,
+      '',
+      nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname,
+    );
+  }
+
+  function retryListLoad() {
+    setLoadingViews((current) => ({
+      ...current,
+      [listMode]: true,
+    }));
+    setListErrors((current) => ({
+      ...current,
+      [listMode]: null,
+    }));
+    setLoadAttempt((current) => current + 1);
+  }
 
   return (
-    <div className="admin-screen admin-workbench-screen">
-      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+    <div className="admin-screen">
+      {actionErrorMessage ? <p className="admin-error" role="alert">{actionErrorMessage}</p> : null}
 
-      <section>
-        <article className="admin-workbench-panel range-workbench-shell">
-          <div className="template-workbench-list-header range-workbench-header">
-            <div className="template-workbench-list-header-copy">
-              <h2>编排实例</h2>
-            </div>
-          </div>
+      <section className="admin-workbench-surface">
+        <AdminPageHeader description="查看靶场实例状态和生命周期。" title="编排实例" />
 
-          <div className="template-workbench-controls range-workbench-controls">
-            <div className="template-workbench-search-grid">
-              <label className="template-workbench-search-field">
-                <span className="sr-only">实例名搜索</span>
-                <input
-                  aria-label="筛选实例名"
-                  value={searchName}
-                  onChange={(event) => setSearchName(event.target.value)}
-                  placeholder="搜索实例名"
-                />
-              </label>
-            </div>
-
-            <div className="template-workbench-segmented range-workbench-segmented" role="tablist" aria-label="靶场实例视图切换">
-              <button type="button" aria-pressed={listMode === 'active'} onClick={() => setListMode('active')}>
-                实例列表
-              </button>
-              <button type="button" aria-pressed={listMode === 'history'} onClick={() => setListMode('history')}>
-                实例历史
-              </button>
-            </div>
-          </div>
-
-          {listMode === 'history' ? (
-            <div className="range-history-column-head">
-              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
-              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
-              <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
-              <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
-              <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
-              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
-            </div>
-          ) : (
-            <div className="range-workbench-column-head">
-              <div className="template-workbench-column-cell"><strong>实例名</strong></div>
-              <div className="template-workbench-column-cell"><strong>创建人</strong></div>
-              <div className="template-workbench-column-cell"><strong>靶场名</strong></div>
-              <div className="template-workbench-column-cell"><strong>状态</strong></div>
-              <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
-              <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
-            </div>
-          )}
-
-          {isBootstrapLoading ? (
-            <div className="admin-workbench-empty" aria-hidden="true" />
-          ) : visibleListInstances.length ? (
-            listMode === 'history' ? (
-              <div className="range-history-rows">
-                {pagedVisibleListInstances.map((instance) => {
-                  const recentJob = jobsByInstanceId.get(instance.id);
-                  const endedAt = recentJob?.finishedAt ?? recentJob?.startedAt ?? null;
-
-                  return (
-                    <article key={instance.id} className="range-history-row">
-                      <div className="range-workbench-main">
-                        <strong>{getInstanceDisplayName(instance)}</strong>
-                      </div>
-
-                      <div className="template-workbench-column-cell">
-                        <strong>{instance.createdBy?.trim() || 'admin'}</strong>
-                      </div>
-
-                      <div className="range-workbench-scenario">
-                        <strong>{getInstanceTemplateLabel(instance)}</strong>
-                      </div>
-
-                      <div className="range-history-time">
-                        <span>{formatAdminDateTime(instance.createdAt)}</span>
-                      </div>
-
-                      <div className="range-history-time">
-                        <span>{getEndedAtLabel(recentJob)}</span>
-                      </div>
-
-                      <div className="range-history-time">
-                        <span>{getDurationLabel(instance.createdAt, endedAt)}</span>
-                      </div>
-
-                      <div className="range-workbench-actions workbench-action-cell">
-                        <button type="button" onClick={() => void handleViewDetail(instance.id)}>
-                          查看详情
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="range-workbench-rows">
-                {pagedVisibleListInstances.map((instance) => {
-                  const actionLabel = getInstanceActionLabel(instance);
-
-                  return (
-                    <article key={instance.id} className="range-workbench-row">
-                      <div className="range-workbench-main">
-                        <strong>{getInstanceDisplayName(instance)}</strong>
-                      </div>
-
-                      <div className="template-workbench-column-cell">
-                        <strong>{instance.createdBy?.trim() || 'admin'}</strong>
-                      </div>
-
-                      <div className="range-workbench-scenario">
-                        <strong>{getInstanceTemplateLabel(instance)}</strong>
-                      </div>
-
-                      <div className="range-workbench-status-cell">
-                        <span className={`admin-pill admin-pill-${getStatusTone(instance.status)}`}>{getStatusLabel(instance.status)}</span>
-                      </div>
-
-                      <div className="range-workbench-created-at">
-                        <span>{getInstanceCreatedAt(instance, null)}</span>
-                      </div>
-
-                      <div className="range-workbench-actions workbench-action-cell">
-                        <button type="button" onClick={() => void handleViewDetail(instance.id)}>
-                          查看详情
-                        </button>
-                        {actionLabel ? (
-                          <button
-                            type="button"
-                            disabled={isSubmittingAction !== null}
-                            onClick={() =>
-                              void (instance.status === 'create_failed'
-                                ? handleDeleteFailedInstance(instance)
-                                : handleListDestroyAction(instance))
-                            }
-                          >
-                            {isSubmittingAction !== null ? '处理中...' : actionLabel}
-                          </button>
-                        ) : null}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )
-          ) : (
-            <div className="admin-workbench-empty">
-              <strong>{listMode === 'history' ? '当前还没有已回收实例' : '当前还没有可查看的靶场实例'}</strong>
-              <p>{listMode === 'history' ? '实例完成销毁后，会自动沉淀到这里。' : '实例会在靶场编排页生成后进入这里。'}</p>
-            </div>
-          )}
-          {visibleListInstances.length ? (
-            <AdminPaginationControls
-              label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
-              pageSizeMode={pageSizeMode}
-              pagination={activePagination}
-              visiblePages={visiblePages}
-              jumpPageValue={jumpPageValue}
-              onPageSizeChange={handlePageSizeChange}
-              onPreviousPage={() =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: activePagination.page - 1,
-                }))
+        <div className="mt-4">
+          <AdminListToolbar
+            activeView={listMode}
+            onSearchChange={setSearchName}
+            onViewChange={(value) => {
+              if (value === 'active' || value === 'history') {
+                setListModeWithUrl(value);
               }
+            }}
+            searchLabel="筛选实例名"
+            searchPlaceholder="搜索实例名"
+            searchValue={searchName}
+            views={[
+              { value: 'active', label: '实例列表' },
+              { value: 'history', label: '实例历史' },
+            ]}
+          >
+            <div className="mt-4">
+              <AdminDataTable
+                columns={columns}
+                isRefreshing={isRefreshing}
+                label={listMode === 'history' ? '编排实例历史' : '编排实例列表'}
+              >
+                {(tableColumns) => {
+                  if (isInitialLoading) {
+                    return (
+                      <TableLoadingState
+                        columnCount={tableColumns.length}
+                        label="正在加载编排实例"
+                        rowCount={5}
+                      />
+                    );
+                  }
+
+                  if (shouldShowTableError && listErrorMessage) {
+                    return (
+                      <AdminDataTableState
+                        columns={tableColumns}
+                        description={listErrorMessage}
+                        onRetry={retryListLoad}
+                        title="无法加载编排实例"
+                        variant="error"
+                      />
+                    );
+                  }
+
+                  const retainedErrorRow = listErrorMessage && hasLoadedList ? (
+                    <TableRow className="hover:bg-transparent" key="retained-list-error">
+                      <TableCell className="px-3 py-2" colSpan={tableColumns.length}>
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-sm" role="alert">
+                          <span className="text-destructive">
+                            {listErrorMessage} 正在显示上次成功加载的列表。
+                          </span>
+                          <Button onClick={retryListLoad} size="sm" type="button" variant="outline">
+                            重试加载
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : null;
+
+                  if (!visibleListInstances.length) {
+                    return retainedErrorRow ?? (
+                      <AdminDataTableState
+                        columns={tableColumns}
+                        description={
+                          listMode === 'history'
+                            ? '实例完成销毁后，会自动沉淀到这里。'
+                            : '实例会在靶场编排页生成后进入这里。'
+                        }
+                        title={listMode === 'history' ? '还没有已回收实例' : '还没有编排实例'}
+                        variant="empty"
+                      />
+                    );
+                  }
+
+                  const rows = pagedVisibleListInstances.map((instance) => {
+                    const nameColumn = getRangeColumn(tableColumns, 'name');
+                    const createdByColumn = getRangeColumn(tableColumns, 'createdBy');
+                    const templateColumn = getRangeColumn(tableColumns, 'template');
+                    const createdAtColumn = getRangeColumn(tableColumns, 'createdAt');
+                    const actionsColumn = getRangeColumn(tableColumns, 'actions');
+
+                    if (listMode === 'history') {
+                      const recentJob = jobsByInstanceId.get(instance.id);
+                      const endedAt = recentJob?.finishedAt ?? recentJob?.startedAt ?? null;
+
+                      return (
+                        <TableRow key={instance.id}>
+                          <AdminDataTableCell className="font-medium" column={nameColumn}>
+                            {getInstanceDisplayName(instance)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={createdByColumn}>
+                            {instance.createdBy?.trim() || 'admin'}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={templateColumn}>
+                            {getInstanceTemplateLabel(instance)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={createdAtColumn}>
+                            {formatAdminDateTime(instance.createdAt)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'endedAt')}>
+                            {getEndedAtLabel(recentJob)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'duration')}>
+                            {getDurationLabel(instance.createdAt, endedAt)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={actionsColumn}>
+                            <div className="flex justify-start">
+                              <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
+                                查看详情
+                              </Button>
+                            </div>
+                          </AdminDataTableCell>
+                        </TableRow>
+                      );
+                    }
+
+                    const actionLabel = getInstanceActionLabel(instance);
+
+                    return (
+                      <TableRow key={instance.id}>
+                        <AdminDataTableCell className="font-medium" column={nameColumn}>
+                          {getInstanceDisplayName(instance)}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={createdByColumn}>
+                          {instance.createdBy?.trim() || 'admin'}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={templateColumn}>
+                          {getInstanceTemplateLabel(instance)}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
+                          <StatusBadge status={instance.status} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={createdAtColumn}>
+                          {getInstanceCreatedAt(instance)}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={actionsColumn}>
+                          <div className="flex justify-start gap-1">
+                            <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
+                              查看详情
+                            </Button>
+                            {actionLabel ? (
+                              <Button
+                                disabled={isSubmittingAction !== null}
+                                onClick={() =>
+                                  void (instance.status === 'create_failed'
+                                    ? handleDeleteFailedInstance(instance)
+                                    : handleListDestroyAction(instance))
+                                }
+                                size="sm"
+                                type="button"
+                                variant="destructive"
+                              >
+                                {isSubmittingAction !== null ? '处理中...' : actionLabel}
+                              </Button>
+                            ) : null}
+                          </div>
+                        </AdminDataTableCell>
+                      </TableRow>
+                    );
+                  });
+
+                  return retainedErrorRow ? [retainedErrorRow, ...rows] : rows;
+                }}
+              </AdminDataTable>
+            </div>
+          </AdminListToolbar>
+        </div>
+
+        {visibleListInstances.length ? (
+          <div className="mt-4">
+            <AdminPaginationControls
+              jumpPageValue={jumpPageValue}
+              label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
+              onJumpPage={handleJumpToPage}
+              onJumpPageValueChange={setJumpPageValue}
               onNextPage={() =>
                 setListPages((current) => ({
                   ...current,
@@ -638,11 +706,19 @@ export function RangeInstancesScreen({
                   [listMode]: pageNumber,
                 }))
               }
-              onJumpPageValueChange={setJumpPageValue}
-              onJumpPage={handleJumpToPage}
+              onPageSizeChange={handlePageSizeChange}
+              onPreviousPage={() =>
+                setListPages((current) => ({
+                  ...current,
+                  [listMode]: activePagination.page - 1,
+                }))
+              }
+              pageSizeMode={pageSizeMode}
+              pagination={activePagination}
+              visiblePages={visiblePages}
             />
-          ) : null}
-        </article>
+          </div>
+        ) : null}
       </section>
     </div>
   );

@@ -1,12 +1,23 @@
 import React from 'react';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminSessionPayload } from '../../lib/admin-types';
 
-const { replaceMock, pathnameState, storageEventState } = vi.hoisted(() => ({
+const { replaceMock, pathnameState, sessionOverrideState, storageEventState } = vi.hoisted(() => ({
   replaceMock: vi.fn(),
   pathnameState: { value: '/admin/scenarios' },
+  sessionOverrideState: {
+    value: null as {
+      token: string | null;
+      refreshToken: string | null;
+      profile: AdminSessionPayload['profile'] | null;
+      isAdmin: boolean;
+      isReady: boolean;
+      login: (session: AdminSessionPayload) => void;
+      logout: () => void;
+    } | null,
+  },
   storageEventState: { broadcast: false, queue: [] as Array<{ key: string; oldValue: string | null; newValue: string | null; snapshot: Array<[string, string]> }>, scheduled: false },
 }));
 
@@ -115,6 +126,15 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
+vi.mock('./use-admin-session', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./use-admin-session')>();
+
+  return {
+    ...actual,
+    useAdminSession: () => sessionOverrideState.value ?? actual.useAdminSession(),
+  };
+});
+
 import { clearAdminSession, writeAdminSession } from '../../lib/admin-auth-storage';
 import { AdminWorkspaceShell } from './admin-workspace-shell';
 
@@ -134,6 +154,7 @@ describe('AdminWorkspaceShell', () => {
   beforeEach(() => {
     replaceMock.mockReset();
     pathnameState.value = '/admin/scenarios';
+    sessionOverrideState.value = null;
     storageEventState.broadcast = false;
     storageEventState.queue = [];
     storageEventState.scheduled = false;
@@ -146,6 +167,28 @@ describe('AdminWorkspaceShell', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('opens the compact navigation drawer', async () => {
+    writeAdminSession(createSession());
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    fireEvent.click(screen.getByRole('button', { name: '打开导航' }));
+
+    const navigationDialog = await screen.findByRole('dialog');
+
+    expect(within(navigationDialog).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe(
+      '/admin/scenarios',
+    );
+    expect(within(navigationDialog).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe(
+      '/admin/settings/cloud',
+    );
   });
 
   it('shows the admin navigation, including 用户管理 and 账单费用, for admin sessions', async () => {
@@ -181,6 +224,9 @@ describe('AdminWorkspaceShell', () => {
     ]);
     expect(screen.getByText('admin / admin')).toBeTruthy();
     expect(screen.queryByText('运营后台')).toBeNull();
+
+    const identity = screen.getByLabelText('当前登录用户');
+    expect(identity.parentElement?.className).toContain('ml-auto');
   });
 
   it('hides 用户管理 for regular users and shows their identity in the topbar', async () => {
@@ -237,6 +283,28 @@ describe('AdminWorkspaceShell', () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it('renders a stable recovery skeleton while the protected session is hydrating', () => {
+    sessionOverrideState.value = {
+      token: null,
+      refreshToken: null,
+      profile: null,
+      isAdmin: false,
+      isReady: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+    };
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    expect(screen.getByLabelText('正在恢复管理会话')).toBeTruthy();
+    expect(screen.queryByText('workspace content')).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it('redirects unauthenticated users on non-login routes', async () => {
     render(
       <AdminWorkspaceShell>
@@ -247,6 +315,37 @@ describe('AdminWorkspaceShell', () => {
     await waitFor(() => {
       expect(replaceMock).toHaveBeenCalledWith('/admin/login');
     });
+  });
+
+  it('renders a stable renewal skeleton while an expiring valid session is refreshing', async () => {
+    sessionOverrideState.value = {
+      token: createJwt({ exp: Math.floor(Date.now() / 1000) + 30 }),
+      refreshToken: 'refresh-token-1',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: vi.fn(),
+    };
+    fetchMock.mockReturnValue(new Promise<Response>(() => undefined));
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByLabelText('正在续期管理会话')).toBeTruthy();
+    expect(screen.queryByText('workspace content')).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it('does not redirect when another tab rewrites the stored session', async () => {

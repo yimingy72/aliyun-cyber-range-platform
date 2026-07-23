@@ -11,6 +11,11 @@ import type {
   PlatformImageAssetListPayload,
 } from '../../lib/admin-types';
 
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+  configurable: true,
+  value: () => undefined,
+});
+
 const {
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
@@ -359,23 +364,72 @@ afterEach(() => {
 });
 
 describe('ImageCenterScreen', () => {
+  it('keeps the active tab table frame and domain headers when the platform image list is empty', async () => {
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine' ? myImagesPayload : ({ items: [] } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('当前没有平台镜像。')).toBeTruthy();
+
+    const table = screen.getByRole('table', { name: '平台镜像' });
+    expect(within(table).getByRole('columnheader', { name: '镜像名' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '镜像 ID' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
+    expect(within(table).getByText('当前没有平台镜像。')).toBeTruthy();
+  });
+
+  it('only renders nested cloud tab panels for cloud source views', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    const platformPanel = await screen.findByRole('tabpanel', { name: '平台镜像' });
+    expect(within(platformPanel).queryByRole('tabpanel')).toBeNull();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+
+    const minePanel = await screen.findByRole('tabpanel', { name: '我的镜像' });
+    expect(within(minePanel).queryByRole('tabpanel')).toBeNull();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
+
+    const cloudPanel = await screen.findByRole('tabpanel', { name: '云上镜像来源' });
+    expect(within(cloudPanel).getByRole('tabpanel', { name: '阿里云自定义镜像' })).toBeTruthy();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(2);
+  });
+
   it('renders 平台镜像 / 我的镜像 / 云上镜像来源 and loads all payloads', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('button', { name: '平台镜像' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '我的镜像' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '云上镜像来源' })).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: '平台镜像' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '我的镜像' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '云上镜像来源' })).toBeTruthy();
     expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '我的镜像' }));
+    const platformWidths = Array.from(screen.getByRole('table', { name: '平台镜像' }).querySelectorAll('col')).map((column) =>
+      column.getAttribute('style'),
+    );
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
     expect(screen.getByText('test')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
-    expect(await screen.findByRole('button', { name: '阿里云自定义镜像' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '阿里云公共镜像' })).toBeTruthy();
+    const mineWidths = Array.from(screen.getByRole('table', { name: '我的镜像' }).querySelectorAll('col')).map((column) =>
+      column.getAttribute('style'),
+    );
+
+    expect(mineWidths).toEqual(platformWidths);
+    expect(platformWidths.at(-1) ?? '').toContain('width: 11rem');
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
+    expect(await screen.findByRole('tab', { name: '阿里云自定义镜像' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '阿里云公共镜像' })).toBeTruthy();
 
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'platform');
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
@@ -390,13 +444,13 @@ describe('ImageCenterScreen', () => {
     expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledTimes(0);
     expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledTimes(0);
 
-    fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
 
     await waitFor(() => {
       expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     await waitFor(() => {
       expect(fetchPublicImageCatalogScopeMock).toHaveBeenCalledTimes(1);
     });
@@ -405,7 +459,7 @@ describe('ImageCenterScreen', () => {
   it('opens an accessible local image upload form from 我的镜像', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
     fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
 
     expect(screen.getByRole('dialog', { name: '上传本地镜像' })).toBeTruthy();
@@ -436,7 +490,7 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
     const uploadButton = await screen.findByRole('button', { name: '上传镜像' });
     expect((uploadButton as HTMLButtonElement).disabled).toBe(true);
@@ -461,7 +515,7 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
     const uploadButton = await screen.findByRole('button', { name: '上传镜像' });
     expect((uploadButton as HTMLButtonElement).disabled).toBe(true);
@@ -539,7 +593,7 @@ describe('ImageCenterScreen', () => {
 
     try {
       render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
-      fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+      fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
       fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
       fireEvent.change(screen.getByLabelText('系统盘镜像文件'), {
         target: { files: [new File(['disk'], 'ubuntu.qcow2', { type: 'application/octet-stream' })] },
@@ -609,7 +663,7 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
     expect(await screen.findByText('当前没有我的镜像。')).toBeTruthy();
     expect(screen.queryByText('CentOS6.10-阿里云基础镜像')).toBeNull();
@@ -643,9 +697,9 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
-    await screen.findByText('My Ubuntu 22.04');
+    await screen.findAllByText('My Ubuntu 22.04');
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain('asset update unavailable');
     });
@@ -679,9 +733,9 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
-    await screen.findByText('My Ubuntu 22.04');
+    await screen.findAllByText('My Ubuntu 22.04');
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain('临时 OSS 文件清理失败');
     });
@@ -714,13 +768,88 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByText('Current Import')).toBeTruthy();
 
     resolveInitialJobs?.({ items: [] });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(screen.getByText('Current Import')).toBeTruthy();
+  });
+
+  it('keeps my image rows during a failed import poll and exposes an in-table retry', async () => {
+    let rejectPoll: ((error: Error) => void) | undefined;
+    let mineRequestCount = 0;
+    const importingJob = {
+      id: 'image-import-job-poll-failure',
+      cloudAccountContextId: 'cloud-context-1',
+      ownerUserId: 'admin-user',
+      displayName: 'Polling Ubuntu',
+      osType: 'linux' as const,
+      architecture: 'x86_64' as const,
+      bootMode: 'BIOS' as const,
+      imageFormat: 'qcow2' as const,
+      systemDiskSize: 40,
+      sourceFileName: 'polling-ubuntu.qcow2',
+      sourceContentType: 'application/octet-stream',
+      sourceSizeBytes: 4096,
+      uploadExpiresAt: '2026-07-20T00:30:00.000Z',
+      status: 'importing' as const,
+      imageId: 'm-owned-001',
+      platformImageAssetId: 'my-image-1',
+      errorMessage: null,
+    };
+
+    fetchImageImportJobsMock
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValue({ items: [importingJob] });
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') => {
+      if (view !== 'mine') {
+        return platformImagesPayload;
+      }
+
+      mineRequestCount += 1;
+      if (mineRequestCount === 1) {
+        return myImagesPayload;
+      }
+
+      if (mineRequestCount === 2) {
+        return new Promise<PlatformImageAssetListPayload>((_resolve, reject) => {
+          rejectPoll = reject;
+        });
+      }
+
+      return myImagesPayload;
+    });
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
+
+    const table = await screen.findByRole('table', { name: '我的镜像' });
+    expect(await within(table).findByText('My Ubuntu 22.04')).toBeTruthy();
+
+    await waitFor(() => {
+      expect(rejectPoll).toBeTypeOf('function');
+      expect(table.getAttribute('aria-busy')).toBe('true');
+    });
+
+    rejectPoll?.(new Error('镜像轮询刷新失败'));
+
+    await waitFor(() => {
+      expect(within(table).getByText('My Ubuntu 22.04')).toBeTruthy();
+      expect(within(table).getByText('镜像轮询刷新失败')).toBeTruthy();
+      expect(within(table).getByRole('button', { name: '重试加载我的镜像' })).toBeTruthy();
+      expect((within(table).getByRole('cell', { name: /镜像轮询刷新失败/ }) as HTMLTableCellElement).colSpan).toBe(5);
+      expect(table.getAttribute('aria-busy')).toBeNull();
+    });
+
+    fireEvent.click(within(table).getByRole('button', { name: '重试加载我的镜像' }));
+
+    await waitFor(() => {
+      expect(mineRequestCount).toBe(3);
+      expect(within(table).queryByText('镜像轮询刷新失败')).toBeNull();
+    });
   });
 
   it('offers a retry action when ImportImage failed before an Alibaba Cloud ImageId was returned', async () => {
@@ -746,7 +875,7 @@ describe('ImageCenterScreen', () => {
     retryImageImportMock.mockResolvedValue({ ...failedJob, status: 'importing', errorMessage: null });
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
     fireEvent.click(await screen.findByRole('button', { name: '重试导入' }));
 
@@ -766,7 +895,7 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
     expect(await screen.findByText('Exporting Ubuntu 22.04')).toBeTruthy();
     expect(screen.getByText('65%')).toBeTruthy();
@@ -778,17 +907,18 @@ describe('ImageCenterScreen', () => {
   it('keeps 我的镜像 rows compact by moving rename enable and delete into 更多操作', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建实例 My Ubuntu 22.04' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重命名 My Ubuntu 22.04' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
 
-    expect(screen.getByRole('button', { name: '重命名' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '禁用' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '发布到平台' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
   });
 
   it('keeps 平台镜像 rows compact for owner-backed assets', async () => {
@@ -823,11 +953,11 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重命名 Owned Platform Image' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
 
-    expect(screen.getByRole('button', { name: '重命名' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '禁用' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
   });
 
   it('routes 创建实例 from image rows into the single instance screen with a preselected image', async () => {
@@ -845,8 +975,8 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
@@ -861,7 +991,7 @@ describe('ImageCenterScreen', () => {
     const collectedButton = await screen.findByRole('button', { name: '已收录 Blue Team Ubuntu 22.04' });
     expect((collectedButton as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.click(screen.getByRole('button', { name: '平台镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '平台镜像' }));
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
   });
 
@@ -882,8 +1012,8 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     expect(await screen.findByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' })).toBeTruthy();
   });
 
@@ -905,8 +1035,8 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     expect(await screen.findByText('Alibaba Cloud Linux 3')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '同步公共镜像' }));
@@ -945,12 +1075,12 @@ describe('ImageCenterScreen', () => {
     );
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    const platformTab = await screen.findByRole('button', { name: '平台镜像' });
+    const platformTab = await screen.findByRole('tab', { name: '平台镜像' });
     fireEvent.click(platformTab);
 
-    const enabledRow = (await screen.findByText('Blue Team Ubuntu 22.04')).closest('article') as HTMLElement;
-    fireEvent.click(within(enabledRow).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '重命名' }));
+    const enabledRow = (await screen.findByText('Blue Team Ubuntu 22.04')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(enabledRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '重命名' }));
     const renameDialog = screen.getByRole('dialog', { name: '编辑镜像名称' });
     fireEvent.change(within(renameDialog).getByLabelText('镜像名'), {
       target: { value: 'Blue Team Ubuntu 22.04 Renamed' },
@@ -968,9 +1098,9 @@ describe('ImageCenterScreen', () => {
 
     expect(await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).toBeTruthy();
 
-    const renamedRow = (await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).closest('article') as HTMLElement;
-    fireEvent.click(within(renamedRow).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '禁用' }));
+    const renamedRow = (await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(renamedRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '禁用' }));
 
     await waitFor(() => {
       expect(disablePlatformImageMock).toHaveBeenCalledWith(
@@ -980,9 +1110,9 @@ describe('ImageCenterScreen', () => {
       );
     });
 
-    const disabledRow = (await screen.findByText('Disabled Platform Image')).closest('article') as HTMLElement;
-    fireEvent.click(within(disabledRow).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '启用' }));
+    const disabledRow = (await screen.findByText('Disabled Platform Image')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(disabledRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '启用' }));
 
     await waitFor(() => {
       expect(enablePlatformImageMock).toHaveBeenCalledWith(
@@ -992,9 +1122,9 @@ describe('ImageCenterScreen', () => {
       );
     });
 
-    const enabledRowAgain = (await screen.findByText('Disabled Platform Image')).closest('article') as HTMLElement;
-    fireEvent.click(within(enabledRowAgain).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    const enabledRowAgain = (await screen.findByText('Disabled Platform Image')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(enabledRowAgain).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
     const removeDialog = screen.getByRole('dialog', { name: '确认删除镜像' });
     fireEvent.click(within(removeDialog).getByRole('button', { name: '确认删除' }));
 
@@ -1050,12 +1180,12 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
-    expect(await screen.findByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '回退为私有 My Published Ubuntu 22.04' })).toBeTruthy();
+    const privateImageRow = (await screen.findByText('My Ubuntu 22.04')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(privateImageRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
 
-    fireEvent.click(screen.getByRole('button', { name: '发布到平台 My Ubuntu 22.04' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '发布到平台' }));
     await waitFor(() => {
       expect(publishPlatformImageMock).toHaveBeenCalledWith(
         'http://localhost:3001',
@@ -1064,7 +1194,10 @@ describe('ImageCenterScreen', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '回退为私有 My Published Ubuntu 22.04' }));
+    const publishedImageRow = screen.getByText('My Published Ubuntu 22.04').closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(publishedImageRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: '回退为私有' }));
     await waitFor(() => {
       expect(unpublishPlatformImageMock).toHaveBeenCalledWith(
         'http://localhost:3001',
@@ -1124,18 +1257,18 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    const ownedRow = (await screen.findByText('Owned Platform Image')).closest('article') as HTMLElement;
+    const ownedRow = (await screen.findByText('Owned Platform Image')).closest('tr') as HTMLElement;
     expect(within(ownedRow).queryByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeNull();
 
-    const otherRow = screen.getByText('Other Platform Image').closest('article') as HTMLElement;
+    const otherRow = screen.getByText('Other Platform Image').closest('tr') as HTMLElement;
     expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Platform Image' })).toBeNull();
   });
 
   it('deletes a custom image from the cloud tab', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '删除 Blue Team Ubuntu 22.04' }));
@@ -1187,7 +1320,8 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
 
     const pageSizeSelector = screen.getByRole('combobox', { name: '每页条数' });
-    fireEvent.change(pageSizeSelector, { target: { value: '50' } });
+    fireEvent.keyDown(pageSizeSelector, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '50 条' }));
 
     expect(await screen.findByText('Platform Asset 3')).toBeTruthy();
   });
@@ -1221,14 +1355,15 @@ describe('ImageCenterScreen', () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
-    fireEvent.change(screen.getByRole('combobox', { name: '每页条数' }), { target: { value: '50' } });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '50 条' }));
     fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
 
     expect(await screen.findByText('Platform Asset 51')).toBeTruthy();
     expect(screen.queryByText('Platform Asset 1')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     expect(await screen.findByText('Custom 1')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
     expect(await screen.findByText('Custom 51')).toBeTruthy();
@@ -1248,8 +1383,8 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     expect(await screen.findByText('Public 1')).toBeTruthy();
 
     fireEvent.change(screen.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '3' } });
@@ -1265,18 +1400,18 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     fireEvent.click(await screen.findByRole('button', { name: '同步公共镜像' }));
 
     await waitFor(() => {
       expect(logoutMock).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     fireEvent.click(await screen.findByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
 
     await waitFor(() => {
@@ -1309,8 +1444,8 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     fireEvent.click(screen.getByRole('button', { name: '同步公共镜像' }));
 
     resolvePublicScope?.(publicScopePayload);
@@ -1325,17 +1460,17 @@ describe('ImageCenterScreen', () => {
   it('filters the active tab by image name or image id', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '云上镜像来源' }));
-    fireEvent.click(screen.getByRole('button', { name: '阿里云自定义镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
-    fireEvent.change(screen.getByRole('textbox', { name: '筛选镜像名' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选镜像名' }), {
       target: { value: 'm-custom-001' },
     });
 
     expect(screen.getByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '阿里云公共镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     expect(screen.queryByText('Alibaba Cloud Linux 3')).toBeNull();
   });
 
@@ -1375,9 +1510,9 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('button', { name: '平台镜像' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '我的镜像' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '云上镜像来源' })).toBeNull();
+    expect(await screen.findByRole('tab', { name: '平台镜像' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '我的镜像' })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: '云上镜像来源' })).toBeNull();
     expect(fetchCustomImageCatalogScopeMock).not.toHaveBeenCalled();
     expect(fetchPublicImageCatalogScopeMock).not.toHaveBeenCalled();
 
@@ -1385,7 +1520,7 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByRole('button', { name: /禁用 Shared Ubuntu 22\.04/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /删除 Shared Ubuntu 22\.04/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '我的镜像' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByRole('button', { name: '更多操作' })).toBeTruthy();
   });
 
@@ -1436,16 +1571,16 @@ describe('ImageCenterScreen', () => {
 
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '平台镜像' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '平台镜像' }));
 
-    const ownedRow = (await screen.findByText('Alice Shared Ubuntu')).closest('article') as HTMLElement;
+    const ownedRow = (await screen.findByText('Alice Shared Ubuntu')).closest('tr') as HTMLElement;
     expect(within(ownedRow).queryByRole('button', { name: '重命名 Alice Shared Ubuntu' })).toBeNull();
-    fireEvent.click(within(ownedRow).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '重命名' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '禁用' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
+    fireEvent.keyDown(within(ownedRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
 
-    const otherRow = screen.getByText('Other Shared Ubuntu').closest('article') as HTMLElement;
+    const otherRow = screen.getByText('Other Shared Ubuntu').closest('tr') as HTMLElement;
     expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Shared Ubuntu' })).toBeNull();
   });
 });

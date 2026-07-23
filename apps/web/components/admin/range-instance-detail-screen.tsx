@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -24,9 +25,7 @@ import {
   type TemplateNode,
 } from '../../lib/scenario-graph';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
-import { TemplateCanvas } from './template-editor/template-canvas';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
-import { TemplatePropertyPanel } from './template-editor/template-property-panel';
 import { useAdminSession } from './use-admin-session';
 
 type RangeInstanceDetailScreenProps = {
@@ -36,6 +35,35 @@ type RangeInstanceDetailScreenProps = {
 
 type WorkbenchTab = 'directory' | 'topology';
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
+
+function TopologyWorkspaceLoading() {
+  return (
+    <>
+      <div className="range-instance-detail-main range-instance-topology-main" aria-busy="true">
+        <div className="admin-workbench-empty">
+          <p>正在加载拓扑...</p>
+        </div>
+      </div>
+
+      <aside className="template-editor-panel template-property-panel" aria-busy="true">
+        <div className="admin-section-header template-property-panel-header">
+          <h2>属性面板</h2>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+const RangeInstanceTopologyWorkspace = dynamic(
+  () =>
+    import('./range-instance-topology-workspace').then(
+      ({ RangeInstanceTopologyWorkspace: Component }) => Component,
+    ),
+  {
+    ssr: false,
+    loading: TopologyWorkspaceLoading,
+  },
+);
 
 type WorkbenchNode = {
   id: string;
@@ -1186,14 +1214,8 @@ export function RangeInstanceDetailScreen({
                     : 'range-instance-detail-content is-topology'
                 }
               >
-                <div
-                  className={
-                    activeTab === 'topology'
-                      ? 'range-instance-detail-main range-instance-topology-main'
-                      : 'range-instance-detail-main'
-                  }
-                >
-                  {activeTab === 'directory' ? (
+                {activeTab === 'directory' ? (
+                  <div className="range-instance-detail-main">
                     <RangeInstanceNodeDirectory
                       nodes={displayedDirectoryNodes.map((node) => ({
                         ...node,
@@ -1205,33 +1227,23 @@ export function RangeInstanceDetailScreen({
                       allowActions={canOperateInstance}
                       pendingAction={pendingNodeAction}
                     />
-                  ) : (
-                    <TemplateCanvas
-                      topologyGraph={draftGraph}
-                      nodes={topologyNodes}
-                      edges={topologyEdges}
-                      selectedNodeId={selectedNodeId}
-                      pendingLinkSourceNodeId={null}
-                      statusMessage={topologyStatusMessage}
-                      onSelectNode={setSelectedNodeId}
-                      onOpenNode={setSelectedNodeId}
-                      onMoveNode={handleMoveTopologyNode}
-                      onBoardClick={() => undefined}
-                    />
-                  )}
-                </div>
-
-                {activeTab === 'topology' ? (
-                  <TemplatePropertyPanel
+                  </div>
+                ) : (
+                  <RangeInstanceTopologyWorkspace
+                    topologyGraph={draftGraph}
+                    nodes={topologyNodes}
+                    edges={topologyEdges}
+                    selectedNodeId={selectedNodeId}
                     selectedNode={selectedTopologyNode}
-                    allNodes={topologyNodes}
                     linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
-                    onUpdateNode={handleUpdateTopologyNode}
-                    readOnly={!canOperateInstance}
-                    instanceDetailMode
+                    canOperateInstance={canOperateInstance}
                     runtimeNodeStatus={selectedTopologyNode ? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
+                    statusMessage={topologyStatusMessage}
+                    onSelectNode={setSelectedNodeId}
+                    onMoveNode={handleMoveTopologyNode}
+                    onUpdateNode={handleUpdateTopologyNode}
                   />
-                ) : null}
+                )}
               </div>
             </>
           ) : (

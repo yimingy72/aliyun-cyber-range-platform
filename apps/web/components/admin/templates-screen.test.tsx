@@ -1,6 +1,4 @@
 import React from 'react';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminApiError } from '../../lib/admin-api';
@@ -16,6 +14,7 @@ const {
   deleteRangeTemplateMock,
   pushMock,
   replaceMock,
+  routerMock,
   sessionState,
 } = vi.hoisted(() => ({
   cloneRangeTemplateMock: vi.fn(),
@@ -28,6 +27,10 @@ const {
   deleteRangeTemplateMock: vi.fn(),
   pushMock: vi.fn(),
   replaceMock: vi.fn(),
+  routerMock: {
+    push: vi.fn(),
+    replace: vi.fn(),
+  },
   sessionState: {
     profile: {
       id: 'admin-user',
@@ -54,10 +57,7 @@ vi.mock('../../lib/admin-api', async () => {
 });
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    push: pushMock,
-    replace: replaceMock,
-  }),
+  useRouter: () => routerMock,
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
@@ -145,6 +145,8 @@ beforeEach(() => {
   deleteRangeTemplateMock.mockReset();
   pushMock.mockReset();
   replaceMock.mockReset();
+  routerMock.push = pushMock;
+  routerMock.replace = replaceMock;
   window.history.replaceState(null, '', '/admin/scenarios');
   sessionState.profile = {
     id: 'admin-user',
@@ -157,6 +159,24 @@ afterEach(() => {
   cleanup();
 });
 
+function openTemplateActionMenu(row: HTMLElement) {
+  fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作' }), {
+    key: 'Enter',
+  });
+}
+
+function selectTemplateView(view: 'mine' | 'platform') {
+  const selectedTab = screen.getByRole('tab', { selected: true });
+
+  if (selectedTab.textContent === (view === 'mine' ? '我的拓扑' : '平台拓扑')) {
+    return;
+  }
+
+  fireEvent.keyDown(selectedTab, {
+    key: view === 'platform' ? 'ArrowRight' : 'ArrowLeft',
+  });
+}
+
 describe('TemplatesScreen', () => {
   it('renders the scenario workbench as the default admin home surface', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
@@ -165,25 +185,29 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('heading', { name: '靶场编排' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '靶场编排', level: 1 })).toBeTruthy();
     await screen.findByText('企业攻防靶场');
 
-    expect(screen.getByRole('button', { name: '平台拓扑' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '我的拓扑' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '新建靶场' })).toBeTruthy();
+    expect(screen.getByRole('tablist', { name: '筛选靶场名视图' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '平台拓扑' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '我的拓扑' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '新建拓扑' })).toBeTruthy();
     expect(screen.queryByRole('tablist', { name: '靶场编排状态筛选' })).toBeNull();
     expect(screen.queryByRole('button', { name: '全部编排' })).toBeNull();
     expect(screen.queryByRole('button', { name: '已发布' })).toBeNull();
     expect(screen.queryByRole('button', { name: '私有' })).toBeNull();
-    expect(screen.getByRole('textbox', { name: '筛选靶场名' })).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: '筛选靶场名' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: '筛选靶场标识' })).toBeNull();
-    expect(screen.getByText('靶场列表')).toBeTruthy();
-    expect(screen.getByText('靶场')).toBeTruthy();
-    expect(screen.getByText('创建人')).toBeTruthy();
-    expect(screen.getByText('靶场描述')).toBeTruthy();
-    expect(screen.getByText('拓扑概览')).toBeTruthy();
-    expect(screen.getByText('状态')).toBeTruthy();
-    expect(screen.getByText('操作')).toBeTruthy();
+    expect(screen.getByRole('table', { name: '靶场列表' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '靶场' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '靶场描述' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '拓扑概览' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '操作' })).toBeTruthy();
+    expect(
+      Array.from(screen.getByRole('table', { name: '靶场列表' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
+    ).toContain('width: 12rem');
     expect(screen.queryByText('模板')).toBeNull();
     expect(screen.queryByText('状态与版本 / 操作')).toBeNull();
     expect(screen.queryByText('名称 / 标识 / 描述')).toBeNull();
@@ -209,42 +233,162 @@ describe('TemplatesScreen', () => {
     expect(screen.getAllByText('admin').length).toBeGreaterThan(0);
     expect(screen.queryByText('已发布 v1.0.0')).toBeNull();
 
-    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(publishedRow).toBeTruthy();
-    expect(within(publishedRow!).getByText('已发布')).toBeTruthy();
-    expect(Array.from(document.querySelector('.template-workbench-column-head')?.children ?? [])).toHaveLength(6);
-    expect(Array.from(publishedRow?.children ?? [])).toHaveLength(6);
-    expect(screen.getByText('操作').closest('.template-workbench-column-cell')?.className).toContain('workbench-action-cell');
-    expect(within(publishedRow!).getByRole('button', { name: '进入编排' }).closest('.template-workbench-actions')?.className).toContain(
-      'workbench-action-cell',
-    );
+    const publishedRow = screen.getByRole('row', { name: /企业攻防靶场/ });
+    expect(within(publishedRow).getByText('已发布').getAttribute('data-status')).toBe('published');
 
-    const globalsCss = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
-    expect(globalsCss).toMatch(
-      /\.template-workbench-column-head\s*\{[\s\S]*grid-template-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
-    );
-    expect(globalsCss).toMatch(
-      /\.template-workbench-row\s*\{[\s\S]*grid-template-columns:\s*minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\)\s+minmax\([^)]+\);/m,
-    );
-
-    const listTitle = screen.getByText('靶场列表');
-    const searchField = screen.getByRole('textbox', { name: '筛选靶场名' });
-    const viewTabs = screen.getByRole('tablist', { name: '靶场编排视图' });
-    const controlsActions = viewTabs.closest('.template-workbench-controls-actions');
-    const shell = listTitle.closest('.template-workbench-shell');
-    expect(shell).toBeTruthy();
-    expect(shell?.contains(searchField)).toBe(true);
-    expect(controlsActions).toBeTruthy();
-    expect(controlsActions?.contains(screen.getByRole('button', { name: '新建靶场' }))).toBe(true);
-    expect(controlsActions?.lastElementChild).toBe(screen.getByRole('button', { name: '新建靶场' }));
-    expect(globalsCss).toMatch(
-      /\.template-workbench-controls-actions\s*\{[\s\S]*margin-left:\s*auto;/m,
-    );
+    const searchField = screen.getByRole('searchbox', { name: '筛选靶场名' });
 
     fireEvent.change(searchField, { target: { value: '办公网' } });
 
     expect(screen.queryByText('企业攻防靶场')).toBeNull();
     expect(screen.getByText('办公网横向移动靶场')).toBeTruthy();
+  });
+
+  it('keeps the current view columns around an in-table empty state', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue([]);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('当前筛选条件下没有靶场')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '我的拓扑', selected: true })).toBeTruthy();
+
+    const table = screen.getByRole('table', { name: '靶场列表' });
+    expect(within(table).getByRole('columnheader', { name: '靶场' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '靶场描述' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '拓扑概览' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
+
+    const stateCell = screen.getByText('当前筛选条件下没有靶场').closest('td');
+    expect(stateCell?.getAttribute('colspan')).toBe('6');
+    expect(stateCell?.className).toContain('h-56');
+  });
+
+  it('keeps table headers visible while the initial view is loading', async () => {
+    fetchRangeTemplatesMock.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the first request pending so the loading frame remains observable.
+        }),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByRole('status', { name: '正在加载靶场列表' })).toBeTruthy();
+
+    const table = screen.getByRole('table', { name: '靶场列表' });
+    expect(table.getAttribute('aria-busy')).toBe('true');
+    expect(within(table).getByRole('columnheader', { name: '靶场' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '靶场描述' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '拓扑概览' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
+  });
+
+  it('keeps URL-backed views lazy across mine and platform template fetches', async () => {
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : [bootstrapPayload.rangeTemplates[1]],
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('办公网横向移动靶场')).toBeTruthy();
+    expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
+    expect(fetchRangeTemplatesMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
+
+    selectTemplateView('platform');
+
+    expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
+    expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(2);
+    expect(fetchRangeTemplatesMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', 'platform');
+    expect(window.location.search).toBe('?view=platform');
+  });
+
+  it('shows a table-body skeleton before empty state when opening an unloaded platform view', async () => {
+    fetchRangeTemplatesMock.mockImplementation(
+      (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+        view === 'platform'
+          ? new Promise(() => {
+              // Keep the platform request pending after the view switch.
+            })
+          : Promise.resolve([bootstrapPayload.rangeTemplates[1]]),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    selectTemplateView('platform');
+
+    expect(await screen.findByRole('tab', { name: '平台拓扑', selected: true })).toBeTruthy();
+    expect(await screen.findByRole('status', { name: '正在加载靶场列表' })).toBeTruthy();
+    expect(screen.queryByText('当前筛选条件下没有靶场')).toBeNull();
+    expect(screen.queryByText('无法加载靶场列表')).toBeNull();
+  });
+
+  it('replaces a failed view with a table-body skeleton immediately when retrying', async () => {
+    fetchRangeTemplatesMock
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockImplementationOnce(
+        () =>
+          new Promise(() => {
+            // Keep the retry request pending so the transient table state is observable.
+          }),
+      );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    const retryButton = await screen.findByRole('button', { name: '重试加载' });
+    fireEvent.click(retryButton);
+
+    expect(await screen.findByRole('status', { name: '正在加载靶场列表' })).toBeTruthy();
+    expect(screen.queryByText('无法加载靶场列表')).toBeNull();
+    expect(screen.queryByText('当前筛选条件下没有靶场')).toBeNull();
+  });
+
+  it('keeps table headers and full column span when an active view fails', async () => {
+    fetchRangeTemplatesMock.mockRejectedValue(new Error('network unavailable'));
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('无法加载靶场列表')).toBeTruthy();
+
+    const table = screen.getByRole('table', { name: '靶场列表' });
+    expect(within(table).getByRole('columnheader', { name: '靶场' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '靶场描述' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '拓扑概览' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
+    expect(screen.getByText('无法加载靶场列表').closest('td')?.getAttribute('colspan')).toBe('6');
+  });
+
+  it('keeps low-frequency template actions inside the action menu', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+    fireEvent.keyDown(screen.getAllByRole('button', { name: '更多操作' })[0]!, {
+      key: 'Enter',
+    });
+
+    expect(screen.getByRole('menuitem', { name: '编辑信息' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
+  });
+
+  it('retries the active template view after a load failure', async () => {
+    fetchRangeTemplatesMock
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValueOnce(bootstrapPayload.rangeTemplates);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '重试加载' }));
+
+    expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
+    expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the selected topology view after refresh without navigating away', async () => {
@@ -255,10 +399,10 @@ describe('TemplatesScreen', () => {
     const firstRender = render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
     await screen.findByText('办公网横向移动靶场');
-    fireEvent.click(screen.getByRole('button', { name: '平台拓扑' }));
+    selectTemplateView('platform');
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '平台拓扑' }).getAttribute('aria-pressed')).toBe('true');
+      expect(screen.getByRole('tab', { name: '平台拓扑' }).getAttribute('aria-selected')).toBe('true');
       expect(window.location.search).toBe('?view=platform');
     });
     expect(pushMock).not.toHaveBeenCalled();
@@ -267,9 +411,9 @@ describe('TemplatesScreen', () => {
     firstRender.unmount();
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(screen.getByRole('button', { name: '平台拓扑' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('tab', { name: '平台拓扑' }).getAttribute('aria-selected')).toBe('true');
     expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
-    expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
+    expect(screen.queryByRole('row', { name: /办公网横向移动靶场/ })).toBeNull();
     expect(pushMock).not.toHaveBeenCalled();
     expect(replaceMock).not.toHaveBeenCalled();
   });
@@ -281,24 +425,26 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('button', { name: '平台拓扑' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '我的拓扑' })).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: '平台拓扑' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '我的拓扑' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '平台拓扑' }));
-    expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
-    expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
-    expect(screen.getByRole('button', { name: '新建靶场' })).toBeTruthy();
+    selectTemplateView('platform');
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: '平台拓扑' }).getAttribute('aria-selected')).toBe('true');
+      expect(screen.queryByRole('row', { name: /办公网横向移动靶场/ })).toBeNull();
+    });
+    expect(screen.getByRole('row', { name: /企业攻防靶场/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '新建拓扑' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '我的拓扑' }));
+    selectTemplateView('mine');
     expect(await screen.findByText('办公网横向移动靶场')).toBeTruthy();
 
-    const privateRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(privateRow).toBeTruthy();
-    fireEvent.click(within(privateRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '发布到平台' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '取消发布' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '回退为私有' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
+    const privateRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+    openTemplateActionMenu(privateRow);
+    expect(screen.getByRole('menuitem', { name: '发布到平台' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '取消发布' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '回退为私有' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '发布版本' })).toBeNull();
   });
 
   it('still lets admins manage templates from the 平台拓扑 view', async () => {
@@ -308,16 +454,17 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '平台拓扑' }));
-    const row = (await screen.findByText('企业攻防靶场')).closest('.template-workbench-row');
-    expect(row).toBeTruthy();
+    await screen.findByRole('tab', { name: '平台拓扑' });
+    selectTemplateView('platform');
+    await screen.findByText('企业攻防靶场');
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    openTemplateActionMenu(row);
 
-    expect(screen.getByRole('button', { name: '编辑信息' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '取消发布' })).toBeNull();
-    expect(screen.getByRole('button', { name: '回退为私有' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除模板' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '编辑信息' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '取消发布' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: '回退为私有' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
   });
 
   it('clones published platform templates into 我的拓扑 when ordinary users click 进入编排', async () => {
@@ -339,17 +486,34 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '平台拓扑' }));
-    const row = (await screen.findByText('企业攻防靶场')).closest('.template-workbench-row');
-    expect(row).toBeTruthy();
-    expect((within(row!).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(false);
+    await screen.findByRole('tab', { name: '平台拓扑' });
+    selectTemplateView('platform');
+    await screen.findByText('企业攻防靶场');
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
+    expect((within(row).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(false);
 
-    fireEvent.click(within(row!).getByRole('button', { name: '进入编排' }));
+    fireEvent.click(within(row).getByRole('button', { name: '进入编排' }));
 
     await waitFor(() => {
       expect(cloneRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1');
       expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-clone-1');
     });
+  });
+
+  it('keeps the selected row in a pending state while entering an editable topology', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    const row = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+    const enterButton = within(row).getByRole('button', { name: '进入编排' });
+
+    fireEvent.click(enterButton);
+
+    expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-2');
+    expect(enterButton.disabled).toBe(true);
+    expect(within(row).getByRole('button', { name: '正在进入编排...' })).toBeTruthy();
   });
 
   it('lets admins edit a platform template they do not own without moving it into 我的拓扑', async () => {
@@ -369,12 +533,13 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '平台拓扑' }));
-    const row = (await screen.findByText('企业攻防靶场')).closest('.template-workbench-row');
-    expect(row).toBeTruthy();
+    await screen.findByRole('tab', { name: '平台拓扑' });
+    selectTemplateView('platform');
+    await screen.findByText('企业攻防靶场');
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+    openTemplateActionMenu(row);
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
 
     const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
     fireEvent.change(within(editDialog).getByLabelText('靶场描述'), {
@@ -393,9 +558,12 @@ describe('TemplatesScreen', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '我的拓扑' }));
-    expect(screen.queryByText('企业攻防靶场')).toBeNull();
-    expect(await screen.findByText('办公网横向移动靶场')).toBeTruthy();
+    selectTemplateView('mine');
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: '我的拓扑' }).getAttribute('aria-selected')).toBe('true');
+      expect(screen.queryByRole('row', { name: /企业攻防靶场/ })).toBeNull();
+    });
+    expect(screen.getByRole('row', { name: /办公网横向移动靶场/ })).toBeTruthy();
   });
 
   it("does not render another user's unpublished platform template in 平台拓扑 for ordinary users", async () => {
@@ -410,7 +578,8 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '平台拓扑' }));
+    await screen.findByRole('tab', { name: '平台拓扑' });
+    selectTemplateView('platform');
     expect(screen.queryByText('办公网横向移动靶场')).toBeNull();
   });
 
@@ -420,9 +589,9 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByRole('button', { name: '新建靶场' });
+    await screen.findByRole('button', { name: '新建拓扑' });
 
-    fireEvent.click(screen.getByRole('button', { name: '新建靶场' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '新建拓扑' })[0]!);
 
     const dialog = screen.getByRole('dialog', { name: '创建靶场' });
 
@@ -454,14 +623,12 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('企业攻防靶场');
 
-    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(row).toBeTruthy();
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByText('企业攻防靶场').closest('.template-workbench-row')?.className.includes('is-menu-open')).toBe(true);
-    expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '取消发布' })).toBeNull();
-    expect(screen.getByRole('button', { name: '回退为私有' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
+    openTemplateActionMenu(row);
+    expect(screen.queryByRole('menuitem', { name: '发布版本' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '取消发布' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: '回退为私有' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
     const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
     expect(within(editDialog).queryByLabelText('编排标识')).toBeNull();
     expect(within(editDialog).queryByLabelText('编排版本')).toBeNull();
@@ -485,11 +652,48 @@ describe('TemplatesScreen', () => {
     });
     expect(screen.getByText('靶场信息已保存。')).toBeTruthy();
 
-    const privateRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(privateRow).toBeTruthy();
-    fireEvent.click(within(privateRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '发布到平台' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
+    const privateRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+    openTemplateActionMenu(privateRow);
+    expect(screen.getByRole('menuitem', { name: '发布到平台' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '发布版本' })).toBeNull();
+  });
+
+  it('keeps the edit dialog open while a save request is pending', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    let resolveUpdate: ((template: (typeof bootstrapPayload.rangeTemplates)[number]) => void) | undefined;
+    updateRangeTemplateMock.mockImplementation(
+      () =>
+        new Promise<(typeof bootstrapPayload.rangeTemplates)[number]>((resolve) => {
+          resolveUpdate = resolve;
+        }),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('企业攻防靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /企业攻防靶场/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
+
+    const dialog = screen.getByRole('dialog', { name: '编辑靶场' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存信息' }));
+
+    await waitFor(() => {
+      expect((within(dialog).getByRole('button', { name: '取消编辑' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((within(dialog).getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    fireEvent.pointerDown(document.body);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+
+    expect(screen.getByRole('dialog', { name: '编辑靶场' })).toBeTruthy();
+
+    resolveUpdate?.(bootstrapPayload.rangeTemplates[0]!);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '编辑靶场' })).toBeNull();
+    });
   });
 
   it('dismisses the success banner when the user clicks another button', async () => {
@@ -505,11 +709,10 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('企业攻防靶场');
 
-    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(row).toBeTruthy();
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+    openTemplateActionMenu(row);
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
 
     const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
     fireEvent.change(within(editDialog).getByLabelText('靶场描述'), {
@@ -521,7 +724,7 @@ describe('TemplatesScreen', () => {
       expect(screen.getByText('靶场信息已保存。')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '我的拓扑' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建拓扑' }));
 
     expect(screen.queryByText('靶场信息已保存。')).toBeNull();
   });
@@ -535,21 +738,19 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('办公网横向移动靶场');
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
+    const draftRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
 
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+    openTemplateActionMenu(draftRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
 
     const draftDialog = screen.getByRole('dialog', { name: '编辑靶场' });
     expect(within(draftDialog).queryByLabelText('状态')).toBeNull();
     fireEvent.click(within(draftDialog).getByRole('button', { name: '取消编辑' }));
 
-    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(publishedRow).toBeTruthy();
+    const publishedRow = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '编辑信息' }));
+    openTemplateActionMenu(publishedRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
 
     const publishedDialog = screen.getByRole('dialog', { name: '编辑靶场' });
     expect(within(publishedDialog).queryByLabelText('状态')).toBeNull();
@@ -570,14 +771,13 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('企业攻防靶场');
 
-    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(publishedRow).toBeTruthy();
+    const publishedRow = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '回退为私有' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '发布版本' })).toBeNull();
+    openTemplateActionMenu(publishedRow);
+    expect(screen.getByRole('menuitem', { name: '回退为私有' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '发布版本' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '回退为私有' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '回退为私有' }));
 
     await waitFor(() => {
       expect(unshareRangeTemplateMock).toHaveBeenCalledWith(
@@ -589,7 +789,7 @@ describe('TemplatesScreen', () => {
     });
 
     await waitFor(() => {
-      expect(within(publishedRow!).getByText('私有')).toBeTruthy();
+      expect(within(publishedRow).getByText('私有')).toBeTruthy();
     });
     expect(screen.getByText('已回退为私有。')).toBeTruthy();
   });
@@ -603,15 +803,14 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('企业攻防靶场');
 
-    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(row).toBeTruthy();
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
+    openTemplateActionMenu(row);
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除模板' }));
 
-    const dialog = screen.getByRole('dialog', { name: '确认删除靶场' });
+    const dialog = screen.getByRole('dialog', { name: '删除靶场' });
     expect(
-      within(dialog).getByText('如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。'),
+      within(dialog).getByText(/如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。/),
     ).toBeTruthy();
   });
 
@@ -625,12 +824,11 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('企业攻防靶场');
 
-    const row = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(row).toBeTruthy();
+    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
 
-    fireEvent.click(within(row!).getByRole('button', { name: '更多操作' }));
+    openTemplateActionMenu(row);
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除模板' }));
     fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
-    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
     await waitFor(() => {
       expect(
@@ -658,10 +856,9 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('企业攻防靶场');
 
-    const publishedRow = screen.getByText('企业攻防靶场').closest('.template-workbench-row');
-    expect(publishedRow).toBeTruthy();
-    fireEvent.click(within(publishedRow!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '复制模板' }));
+    const publishedRow = screen.getByRole('row', { name: /企业攻防靶场/ });
+    openTemplateActionMenu(publishedRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '复制模板' }));
 
     await waitFor(() => {
       expect(cloneRangeTemplateMock).toHaveBeenCalledWith(
@@ -687,11 +884,10 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('办公网横向移动靶场');
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
+    const draftRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
 
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '生成实例' }));
+    openTemplateActionMenu(draftRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
 
     const dialog = screen.getByRole('dialog', { name: '生成实例' });
     expect(within(dialog).getByLabelText('实例名')).toBeTruthy();
@@ -720,6 +916,56 @@ describe('TemplatesScreen', () => {
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-100');
   });
 
+  it('keeps the launch dialog open while an instance request is pending', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    let resolveLaunch: ((instance: { id: string; name: string; status: string; templateId: string }) => void) | undefined;
+    launchRangeInstanceMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveLaunch = resolve;
+        }),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+
+    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.change(within(dialog).getByLabelText('实例名'), {
+      target: { value: '办公网横向移动靶场-待提交实例' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('到期时间'), {
+      target: { value: '2026-07-09T20:30' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+
+    await waitFor(() => {
+      expect((within(dialog).getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((within(dialog).getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    fireEvent.pointerDown(document.body);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+
+    expect(screen.getByRole('dialog', { name: '生成实例' })).toBeTruthy();
+
+    resolveLaunch?.({
+      id: 'range-101',
+      name: '办公网横向移动靶场 实例',
+      templateId: 'template-2',
+      status: 'pending_create',
+    });
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-101');
+      expect(screen.queryByRole('dialog', { name: '生成实例' })).toBeNull();
+    });
+  });
+
   it('requires confirmation before deleting a template', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
@@ -729,16 +975,46 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('办公网横向移动靶场');
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
+    const draftRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
 
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    openTemplateActionMenu(draftRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除模板' }));
+
+    expect(screen.getByRole('dialog', { name: '删除靶场' })).toBeTruthy();
+    expect(
+      screen.getByText(/如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。/),
+    ).toBeTruthy();
+  });
+
+  it('keeps deletion confirmation pending until the request settles', async () => {
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
+    );
+    let resolveDelete: (() => void) | undefined;
+    deleteRangeTemplateMock.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除模板' }));
     fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
 
-    expect(screen.getByRole('dialog', { name: '确认删除靶场' })).toBeTruthy();
-    expect(
-      screen.getByText('如果存在未销毁实例，必须先销毁这些实例后才能删除模板；已销毁实例历史会保留。'),
-    ).toBeTruthy();
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: '删除模板' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    resolveDelete?.();
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '删除靶场' })).toBeNull();
+    });
   });
 
   it('shows a dedicated conflict message when template deletion is blocked by linked instances', async () => {
@@ -753,12 +1029,11 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('办公网横向移动靶场');
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
+    const draftRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
 
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
+    openTemplateActionMenu(draftRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除模板' }));
     fireEvent.click(screen.getByRole('button', { name: '删除模板' }));
-    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
     await waitFor(() => {
       expect(screen.getByText('当前模板仍有关联的未销毁实例，请先销毁这些实例后再删除模板。已销毁实例历史会继续保留。')).toBeTruthy();
@@ -780,10 +1055,9 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('办公网横向移动靶场');
 
-    const draftRow = screen.getByText('办公网横向移动靶场').closest('.template-workbench-row');
-    expect(draftRow).toBeTruthy();
-    fireEvent.click(within(draftRow!).getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
+    const draftRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+    openTemplateActionMenu(draftRow);
+    fireEvent.click(screen.getByRole('menuitem', { name: '发布到平台' }));
 
     await waitFor(() => {
       expect(shareRangeTemplateMock).toHaveBeenCalledWith(

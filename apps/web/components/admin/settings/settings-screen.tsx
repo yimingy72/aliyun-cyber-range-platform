@@ -6,20 +6,13 @@ import { useRouter } from 'next/navigation';
 import { fetchCloudConfig, saveCloudConfig } from '../../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../../lib/admin-screen';
 import type { CloudConfigSnapshot } from '../../../lib/admin-types';
+import { Button } from '../../ui/button';
 import { useAdminSession } from '../use-admin-session';
+import { AdminPageHeader } from '../shared/admin-page-header';
 import { CloudConfigPanel } from './cloud-config-panel';
 
 type SettingsScreenProps = {
   apiBaseUrl?: string;
-};
-
-const emptyCloudConfig: CloudConfigSnapshot = {
-  provider: 'alibaba_cloud',
-  defaultRegion: '',
-  defaultZoneId: '',
-  accessKeyId: '',
-  accessKeySecret: '',
-  imageImportBucket: '',
 };
 
 export function SettingsScreen({
@@ -28,19 +21,21 @@ export function SettingsScreen({
   const router = useRouter();
   const session = useAdminSession();
   const { isAdmin, isReady, logout, token } = session;
-  const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot>(emptyCloudConfig);
+  const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot | null>(null);
   const [cloudConfigErrorMessage, setCloudConfigErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveErrorMessage, setCloudConfigSaveErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveSuccessMessage, setCloudConfigSaveSuccessMessage] = useState<string | null>(null);
   const [isLoadingCloudConfig, setIsLoadingCloudConfig] = useState(false);
   const [isSavingCloudConfig, setIsSavingCloudConfig] = useState(false);
+  const [cloudConfigLoadAttempt, setCloudConfigLoadAttempt] = useState(0);
+
   useEffect(() => {
     if (!isReady) {
       return;
     }
 
     if (!token) {
-      setCloudConfig(emptyCloudConfig);
+      setCloudConfig(null);
       setCloudConfigErrorMessage(null);
       setCloudConfigSaveErrorMessage(null);
       setCloudConfigSaveSuccessMessage(null);
@@ -50,7 +45,7 @@ export function SettingsScreen({
     }
 
     if (!isAdmin) {
-      setCloudConfig(emptyCloudConfig);
+      setCloudConfig(null);
       setCloudConfigErrorMessage(null);
       setCloudConfigSaveErrorMessage(null);
       setCloudConfigSaveSuccessMessage(null);
@@ -98,19 +93,25 @@ export function SettingsScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isAdmin, isReady, router, token]);
+  }, [apiBaseUrl, cloudConfigLoadAttempt, isAdmin, isReady, router, token]);
 
   const handleFieldChange = (field: keyof CloudConfigSnapshot, value: string) => {
-    setCloudConfig((currentValue) => ({
-      ...currentValue,
-      [field]: value,
-    }));
+    setCloudConfig((currentValue) => {
+      if (!currentValue) {
+        return currentValue;
+      }
+
+      return {
+        ...currentValue,
+        [field]: value,
+      };
+    });
     setCloudConfigSaveErrorMessage(null);
     setCloudConfigSaveSuccessMessage(null);
   };
 
   const handleSaveCloudConfig = async () => {
-    if (!token) {
+    if (!token || !cloudConfig) {
       return;
     }
 
@@ -133,6 +134,14 @@ export function SettingsScreen({
     } finally {
       setIsSavingCloudConfig(false);
     }
+  };
+
+  const retryCloudConfigLoad = () => {
+    setCloudConfigErrorMessage(null);
+    setCloudConfigSaveErrorMessage(null);
+    setCloudConfigSaveSuccessMessage(null);
+    setIsLoadingCloudConfig(true);
+    setCloudConfigLoadAttempt((currentAttempt) => currentAttempt + 1);
   };
 
   if (!isReady) {
@@ -161,19 +170,37 @@ export function SettingsScreen({
     );
   }
 
-  return (
-    <div className="admin-screen admin-workbench-screen">
-      {cloudConfigErrorMessage ? <p className="admin-error">{cloudConfigErrorMessage}</p> : null}
+  const isInitialCloudConfigLoad = cloudConfig === null && cloudConfigErrorMessage === null;
 
-      <CloudConfigPanel
-        value={cloudConfig}
-        isLoading={isLoadingCloudConfig}
-        isSaving={isSavingCloudConfig}
-        saveErrorMessage={cloudConfigSaveErrorMessage}
-        saveSuccessMessage={cloudConfigSaveSuccessMessage}
-        onChange={handleFieldChange}
-        onSubmit={handleSaveCloudConfig}
-      />
+  return (
+    <div className="admin-screen">
+      <section className="admin-workbench-surface">
+        <AdminPageHeader
+          action={(
+            <Button
+              disabled={isInitialCloudConfigLoad || cloudConfig === null || isSavingCloudConfig}
+              form="cloud-config-form"
+              type="submit"
+            >
+              {isSavingCloudConfig ? '正在保存...' : '保存云配置'}
+            </Button>
+          )}
+          description="管理阿里云默认地域、访问凭据和镜像导入存储。"
+          title="云配置"
+        />
+
+        <CloudConfigPanel
+          loadErrorMessage={cloudConfigErrorMessage}
+          isLoading={isInitialCloudConfigLoad || (isLoadingCloudConfig && cloudConfig === null)}
+          isSaving={isSavingCloudConfig}
+          saveErrorMessage={cloudConfigSaveErrorMessage}
+          saveSuccessMessage={cloudConfigSaveSuccessMessage}
+          value={cloudConfig}
+          onChange={handleFieldChange}
+          onRetry={retryCloudConfigLoad}
+          onSubmit={handleSaveCloudConfig}
+        />
+      </section>
     </div>
   );
 }

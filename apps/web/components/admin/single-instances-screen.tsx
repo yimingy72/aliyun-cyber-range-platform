@@ -3,6 +3,7 @@
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Plus } from 'lucide-react';
 
 import {
   AdminApiError,
@@ -32,7 +33,14 @@ import {
   PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
+import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
+import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminPageHeader } from './shared/admin-page-header';
+import { StatusBadge } from './shared/status-badge';
+import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
+import { Button } from '@/components/ui/button';
+import { TableRow } from '@/components/ui/table';
 
 type SingleInstancesScreenProps = {
   apiBaseUrl?: string;
@@ -40,6 +48,30 @@ type SingleInstancesScreenProps = {
 };
 
 type ListMode = 'active' | 'history';
+
+const activeInstanceColumns = [
+  { id: 'name', label: '实例 / 批次', priority: 'primary' },
+  { id: 'image', label: '镜像', priority: 'secondary' },
+  { id: 'specification', label: '规格', priority: 'secondary' },
+  { id: 'public-ip', label: '公网 IP', priority: 'tertiary' },
+  { id: 'status', label: '状态', priority: 'secondary' },
+  { id: 'created-at', label: '创建时间', priority: 'detail' },
+  { id: 'expires-at', label: '到期时间', priority: 'detail' },
+  { id: 'created-by', label: '创建人', priority: 'detail' },
+  { id: 'credentials', label: '账号 / 密码', priority: 'detail' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '13rem' },
+] as const satisfies readonly AdminDataColumn[];
+
+const historyInstanceColumns = [
+  { id: 'name', label: '实例 / 批次', priority: 'primary' },
+  { id: 'image', label: '镜像', priority: 'secondary' },
+  { id: 'summary', label: '规格 / 汇总', priority: 'secondary' },
+  { id: 'public-ip', label: '公网 IP', priority: 'tertiary' },
+  { id: 'started-at', label: '开启时间', priority: 'detail' },
+  { id: 'ended-at', label: '结束时间', priority: 'secondary' },
+  { id: 'duration', label: '运行时长', priority: 'detail' },
+  { id: 'created-by', label: '创建人', priority: 'detail' },
+] as const satisfies readonly AdminDataColumn[];
 
 type CreateDialogState = {
   name: string;
@@ -199,6 +231,10 @@ function getSpecLabel(instance: RangeInstance) {
   }
 
   return `${cpu} 核 / ${memory} G`;
+}
+
+function getBatchSpecLabel(group: SingleInstanceBatchGroup) {
+  return `${group.batch.quantity} 台 · ${group.batch.cpu} 核 / ${group.batch.memory} G`;
 }
 
 function getPublicIp(instance: RangeInstance) {
@@ -473,6 +509,9 @@ export function SingleInstancesScreen({
   const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
   const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadedListMode, setLoadedListMode] = useState<ListMode | null>(null);
+  const [listErrorMessage, setListErrorMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -488,11 +527,13 @@ export function SingleInstancesScreen({
   const [listPages, setListPages] = useState<Record<ListMode, number>>({ active: 1, history: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const instanceTypeAvailabilityRequestRef = useRef(0);
+  const listRequestIdRef = useRef(0);
+  const loadedListModeRef = useRef<ListMode | null>(null);
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const consumedPrefillRef = useRef<string | null>(null);
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
-  async function reloadSingleInstanceRows(token: string, nextListMode: ListMode) {
+  async function fetchSingleInstanceRows(token: string, nextListMode: ListMode) {
     const [nextPayload, nextJobs] = await Promise.all([
       fetchSingleInstances(apiBaseUrl, token, {
         view: nextListMode === 'history' ? 'history' : 'active',
@@ -506,11 +547,50 @@ export function SingleInstancesScreen({
     const batchInstanceIds = normalizedPayload.batches.flatMap((group) => group.instances.map((instance) => instance.id));
     const trackedInstanceIds = new Set([...singleInstances.map((instance) => instance.id), ...batchInstanceIds]);
 
-    setBatchGroups(normalizedPayload.batches);
-    setInstances(singleInstances);
-    setJobs(nextJobs.filter((job) => trackedInstanceIds.has(job.rangeInstanceId)));
+    return {
+      batchGroups: normalizedPayload.batches,
+      instances: singleInstances,
+      jobs: nextJobs.filter((job) => trackedInstanceIds.has(job.rangeInstanceId)),
+    };
+  }
 
-    return normalizedPayload;
+  async function refreshSingleInstanceRows(token: string, nextListMode: ListMode) {
+    const requestId = listRequestIdRef.current + 1;
+    const hasCurrentSnapshot = loadedListModeRef.current === nextListMode;
+    listRequestIdRef.current = requestId;
+    setListErrorMessage(null);
+
+    if (hasCurrentSnapshot) {
+      setIsRefreshing(true);
+    } else {
+      setIsLoading(true);
+    }
+
+    try {
+      const nextRows = await fetchSingleInstanceRows(token, nextListMode);
+
+      if (requestId !== listRequestIdRef.current) {
+        return nextRows;
+      }
+
+      setBatchGroups(nextRows.batchGroups);
+      setInstances(nextRows.instances);
+      setJobs(nextRows.jobs);
+      loadedListModeRef.current = nextListMode;
+      setLoadedListMode(nextListMode);
+      return nextRows;
+    } catch (error: unknown) {
+      if (requestId === listRequestIdRef.current && !isUnauthorizedError(error)) {
+        setListErrorMessage('实例管理数据加载失败，请稍后重试。');
+      }
+
+      throw error;
+    } finally {
+      if (requestId === listRequestIdRef.current) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
+    }
   }
 
   useEffect(() => {
@@ -518,25 +598,18 @@ export function SingleInstancesScreen({
       setBatchGroups([]);
       setInstances([]);
       setJobs([]);
+      loadedListModeRef.current = null;
+      setLoadedListMode(null);
+      setListErrorMessage(null);
       setErrorMessage(null);
       setIsLoading(false);
+      setIsRefreshing(false);
       return;
     }
 
     let isActive = true;
 
-    setBatchGroups([]);
-    setInstances([]);
-    setJobs([]);
-    setErrorMessage(null);
-    setIsLoading(true);
-
-    void reloadSingleInstanceRows(session.token, listMode)
-      .then(() => {
-        if (!isActive) {
-          return;
-        }
-      })
+    void refreshSingleInstanceRows(session.token, listMode)
       .catch((error: unknown) => {
         if (!isActive) {
           return;
@@ -545,24 +618,14 @@ export function SingleInstancesScreen({
         if (isUnauthorizedError(error)) {
           session.logout();
           router.replace('/admin/login');
-          return;
         }
-
-        setErrorMessage('实例管理数据加载失败，请稍后重试。');
-        setHasLoadedPlatformImages(true);
-      })
-      .finally(() => {
-        if (!isActive) {
-          return;
-        }
-
-        setIsLoading(false);
       });
 
     return () => {
       isActive = false;
+      listRequestIdRef.current += 1;
     };
-  }, [apiBaseUrl, listMode, session.isReady, session.token]);
+  }, [apiBaseUrl, listMode, router, session.isReady, session.token]);
 
   useEffect(() => {
     if (!session.isReady) {
@@ -618,7 +681,7 @@ export function SingleInstancesScreen({
 
     const token = session.token;
     const timer = window.setInterval(() => {
-      void reloadSingleInstanceRows(token, listMode).catch((error: unknown) => {
+      void refreshSingleInstanceRows(token, listMode).catch((error: unknown) => {
         if (isUnauthorizedError(error)) {
           session.logout();
           router.replace('/admin/login');
@@ -629,7 +692,7 @@ export function SingleInstancesScreen({
     return () => {
       window.clearInterval(timer);
     };
-  }, [listMode, pollIntervalMs, router, session, session.isReady, session.token]);
+  }, [listMode, loadedListMode, pollIntervalMs, router, session, session.isReady, session.token]);
 
   useEffect(() => {
     return () => {
@@ -767,6 +830,11 @@ export function SingleInstancesScreen({
   }
 
   function setListModeWithUrl(nextMode: ListMode) {
+    if (loadedListModeRef.current !== nextMode) {
+      setListErrorMessage(null);
+      setIsLoading(true);
+    }
+
     setListMode(nextMode);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
@@ -897,7 +965,7 @@ export function SingleInstancesScreen({
 
     try {
       await launchSingleInstances(apiBaseUrl, session.token, payload);
-      await reloadSingleInstanceRows(session.token, listMode);
+      await refreshSingleInstanceRows(session.token, listMode);
       setIsCreateOpen(false);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
@@ -955,7 +1023,7 @@ export function SingleInstancesScreen({
           ? `镜像打包完成，已保存到我的镜像：${packImageDialog.displayName}`
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
-      await reloadSingleInstanceRows(session.token, listMode);
+      await refreshSingleInstanceRows(session.token, listMode);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -1005,7 +1073,7 @@ export function SingleInstancesScreen({
 
       if (action === 'delete-record') {
         await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
-        await reloadSingleInstanceRows(session.token, listMode);
+        await refreshSingleInstanceRows(session.token, listMode);
         return;
       }
 
@@ -1040,7 +1108,7 @@ export function SingleInstancesScreen({
         return;
       }
 
-      await reloadSingleInstanceRows(session.token, listMode);
+      await refreshSingleInstanceRows(session.token, listMode);
     } catch (error: unknown) {
       openedWindow?.close();
       if (isUnauthorizedError(error)) {
@@ -1089,7 +1157,7 @@ export function SingleInstancesScreen({
 
     try {
       await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId);
-      await reloadSingleInstanceRows(session.token, listMode);
+      await refreshSingleInstanceRows(session.token, listMode);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -1099,6 +1167,19 @@ export function SingleInstancesScreen({
 
       setErrorMessage('批量关闭失败，请稍后重试。');
     }
+  }
+
+  function handleListRetry() {
+    if (!session.token) {
+      return;
+    }
+
+    void refreshSingleInstanceRows(session.token, listMode).catch((error: unknown) => {
+      if (isUnauthorizedError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+      }
+    });
   }
 
   function handleBatchExport(group: SingleInstanceBatchGroup) {
@@ -1125,7 +1206,8 @@ export function SingleInstancesScreen({
   const visibleBatchGroups = (listMode === 'history' ? historyBatchGroups : activeBatchGroups).filter((group) =>
     normalizedSearchName ? group.batch.name.trim().toLowerCase().includes(normalizedSearchName) : true,
   );
-  const currentItemsCount = visibleBatchGroups.length + visibleInstances.length;
+  const hasCurrentViewSnapshot = loadedListMode === listMode;
+  const currentItemsCount = hasCurrentViewSnapshot ? visibleBatchGroups.length + visibleInstances.length : 0;
   const activePagination = getPagination(currentItemsCount, listPages[listMode], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedBatchGroups = visibleBatchGroups.slice(activePagination.startIndex, activePagination.endIndex);
@@ -1133,8 +1215,8 @@ export function SingleInstancesScreen({
     Math.max(0, activePagination.startIndex - visibleBatchGroups.length),
     Math.max(0, activePagination.endIndex - visibleBatchGroups.length),
   );
-  const hasVisibleContent = visibleBatchGroups.length > 0 || visibleInstances.length > 0;
-  const isBootstrapLoading = isLoading && batchGroups.length === 0 && instances.length === 0;
+  const hasVisibleContent = hasCurrentViewSnapshot && (visibleBatchGroups.length > 0 || visibleInstances.length > 0);
+  const isBootstrapLoading = !hasCurrentViewSnapshot && !listErrorMessage;
 
   useEffect(() => {
     if (listPages[listMode] !== activePagination.page) {
@@ -1175,6 +1257,133 @@ export function SingleInstancesScreen({
     }));
   }
 
+  function renderCredentials(instance: RangeInstance) {
+    return (
+      <div className="flex min-w-40 items-center gap-1.5" title={formatFullCredential(instance)}>
+        <span className="truncate">{formatMaskedCredential(instance)}</span>
+        <Button
+          aria-label="复制密码"
+          className="shrink-0"
+          onClick={() => void handleCopyPassword(instance)}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          <Copy aria-hidden="true" />
+        </Button>
+      </div>
+    );
+  }
+
+  function renderInstanceActions(instance: RangeInstance, actions: MenuAction[]) {
+    const inlineActions = actions.filter(isPrimaryInlineAction);
+    const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
+    const isActionPending = pendingActionInstanceId === instance.id;
+
+    if (!actions.length) {
+      return null;
+    }
+
+    return (
+      <div className="template-workbench-row-menu relative flex justify-start gap-1">
+        {inlineActions.map((action) => (
+          <Button
+            disabled={isActionPending}
+            key={action}
+            onClick={() => void handleAction(instance, action)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {getActionLabel(action, instance.status)}
+          </Button>
+        ))}
+        {menuActions.length ? (
+          <>
+            <Button
+              aria-label="更多操作"
+              disabled={isActionPending}
+              onClick={(event) => toggleActionMenu(instance.id, event.currentTarget)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <MoreHorizontal aria-hidden="true" />
+            </Button>
+            {menuInstanceId === instance.id ? (
+              <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
+                {menuActions.map((action) => (
+                  <Button
+                    disabled={isActionPending}
+                    key={action}
+                    onClick={() => void handleAction(instance, action)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {getActionLabel(action, instance.status)}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderActiveInstanceCells(
+    instance: RangeInstance,
+    columns: readonly AdminDataColumn[],
+    { indented = false, canPackImage = true }: { indented?: boolean; canPackImage?: boolean } = {},
+  ) {
+    const actions = getAvailableActions(instance.status).filter((action) => action !== 'pack-image' || canPackImage);
+
+    return (
+      <>
+        <AdminDataTableCell className={indented ? 'pl-10' : undefined} column={columns[0]}>
+          <strong>{instance.name?.trim() || instance.id}</strong>
+        </AdminDataTableCell>
+        <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[4]}>
+          <StatusBadge status={instance.status} />
+        </AdminDataTableCell>
+        <AdminDataTableCell column={columns[5]}>{formatDateTime(instance.createdAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[6]}>{formatDateTime(instance.expiresAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || '暂无'}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[8]}>{renderCredentials(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[9]}>{renderInstanceActions(instance, actions)}</AdminDataTableCell>
+      </>
+    );
+  }
+
+  function renderHistoryInstanceCells(
+    instance: RangeInstance,
+    columns: readonly AdminDataColumn[],
+    { indented = false }: { indented?: boolean } = {},
+  ) {
+    const lifecycle = lifecycleByInstanceId.get(instance.id);
+    const startedAt = readJobTimestamp(lifecycle?.createJob, 'start') ?? instance.createdAt ?? null;
+    const endedAt = readJobTimestamp(lifecycle?.destroyJob, 'end') ?? null;
+
+    return (
+      <>
+        <AdminDataTableCell className={indented ? 'pl-10' : undefined} column={columns[0]}>
+          <strong>{instance.name?.trim() || instance.id}</strong>
+        </AdminDataTableCell>
+        <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[4]}>{formatDateTime(startedAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[5]}>{formatDateTime(endedAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[6]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+      </>
+    );
+  }
+
   if (!session.isReady) {
     return null;
   }
@@ -1189,10 +1398,230 @@ export function SingleInstancesScreen({
     );
   }
 
+  const tableColumns = listMode === 'history' ? historyInstanceColumns : activeInstanceColumns;
+  const tableLabel = listMode === 'history' ? '实例历史' : '实例列表';
+  const tableLoadingLabel = `正在加载${tableLabel}`;
+  const emptyTitle = listMode === 'history' ? '暂无实例历史' : '暂无实例';
+  const emptyDescription = normalizedSearchName ? '没有找到匹配的实例或批次。' : '当前视图还没有可查看的实例。';
+
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen">
-      {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
+      {errorMessage ? (
+        <p className="mb-3 text-sm text-destructive" role="alert">
+          {errorMessage}
+        </p>
+      ) : null}
 
+      <section className="admin-workbench-surface">
+        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" />
+
+        <div className="mt-4 space-y-4">
+            <AdminListToolbar
+              activeView={listMode}
+              action={
+                <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+                  <Plus aria-hidden="true" data-icon="inline-start" />
+                  创建实例
+                </Button>
+              }
+              onSearchChange={setSearchName}
+              onViewChange={(nextView) => setListModeWithUrl(nextView === 'history' ? 'history' : 'active')}
+              searchLabel="筛选实例名"
+              searchPlaceholder="搜索实例名"
+              searchValue={searchName}
+              views={[
+                { value: 'active', label: '实例列表' },
+                { value: 'history', label: '实例历史' },
+              ]}
+            >
+              <div>
+                <AdminDataTable
+                  columns={tableColumns}
+                  isRefreshing={isBootstrapLoading || (isRefreshing && hasCurrentViewSnapshot)}
+                  label={tableLabel}
+                >
+                  {(columns) => {
+                    if (isBootstrapLoading) {
+                      return <TableLoadingState columnCount={columns.length} label={tableLoadingLabel} rowCount={5} />;
+                    }
+
+                    if (listErrorMessage && !hasCurrentViewSnapshot) {
+                      return (
+                        <AdminDataTableState
+                          columns={columns}
+                          description="请检查网络连接后重试。"
+                          onRetry={handleListRetry}
+                          title={listErrorMessage}
+                          variant="error"
+                        />
+                      );
+                    }
+
+                    const retainedSnapshotError =
+                      listErrorMessage && hasCurrentViewSnapshot ? (
+                        <AdminDataTableState
+                          columns={columns}
+                          description="已保留最近一次加载的实例数据。请重试刷新以获取最新状态。"
+                          onRetry={handleListRetry}
+                          title={listErrorMessage}
+                          variant="error"
+                        />
+                      ) : null;
+
+                    if (retainedSnapshotError && !hasVisibleContent) {
+                      return retainedSnapshotError;
+                    }
+
+                    if (!hasVisibleContent) {
+                      return (
+                        <AdminDataTableState
+                          columns={columns}
+                          description={emptyDescription}
+                          title={emptyTitle}
+                          variant="empty"
+                        />
+                      );
+                    }
+
+                    const listRows = (
+                      <>
+                        {pagedBatchGroups.map((group) => {
+                          const isExpanded = expandedBatchIds.includes(group.batch.id);
+                          const isHistoryGroup = listMode === 'history';
+
+                          return (
+                            <React.Fragment key={group.batch.id}>
+                              <TableRow className="bg-muted/20 hover:bg-muted/30">
+                                <AdminDataTableCell column={columns[0]}>
+                                  <div className="flex min-w-44 items-center gap-2">
+                                    <Button
+                                      aria-label={`${isExpanded ? '收起' : '展开'}批次 ${group.batch.name}`}
+                                      onClick={() =>
+                                        setExpandedBatchIds((current) =>
+                                          current.includes(group.batch.id)
+                                            ? current.filter((id) => id !== group.batch.id)
+                                            : [...current, group.batch.id],
+                                        )
+                                      }
+                                      size="icon-xs"
+                                      type="button"
+                                      variant="ghost"
+                                    >
+                                      {isExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                                    </Button>
+                                    <div className="min-w-0">
+                                      <span className="block text-xs text-muted-foreground">批次</span>
+                                      <strong className="block truncate">{group.batch.name}</strong>
+                                    </div>
+                                  </div>
+                                </AdminDataTableCell>
+                                <AdminDataTableCell column={columns[1]}>{group.batch.imageDisplayName}</AdminDataTableCell>
+                                <AdminDataTableCell column={columns[2]}>
+                                  {isHistoryGroup ? `${getBatchSpecLabel(group)} · ${formatBatchSummary(group.instances)}` : getBatchSpecLabel(group)}
+                                </AdminDataTableCell>
+                                <AdminDataTableCell column={columns[3]}>批次实例</AdminDataTableCell>
+                                {isHistoryGroup ? (
+                                  <>
+                                    <AdminDataTableCell column={columns[4]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[6]}>
+                                      {formatDuration(group.batch.createdAt, group.batch.expiresAt)}
+                                    </AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[7]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+                                  </>
+                                ) : (
+                                  <>
+                                    <AdminDataTableCell column={columns[4]}>{formatBatchSummary(group.instances)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[6]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[7]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[8]}>批次内实例</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[9]}>
+                                      <div className="flex justify-start gap-1">
+                                        <Button onClick={() => handleBatchExport(group)} size="sm" type="button" variant="outline">
+                                          导出
+                                        </Button>
+                                        <Button onClick={() => void handleBatchDestroy(group.batch.id)} size="sm" type="button" variant="destructive">
+                                          关闭
+                                        </Button>
+                                      </div>
+                                    </AdminDataTableCell>
+                                  </>
+                                )}
+                              </TableRow>
+                              {isExpanded
+                                ? group.instances.map((instance) => (
+                                    <TableRow className="bg-muted/10 hover:bg-muted/20" key={instance.id}>
+                                      {isHistoryGroup
+                                        ? renderHistoryInstanceCells(instance, columns, { indented: true })
+                                        : renderActiveInstanceCells(instance, columns, {
+                                            indented: true,
+                                            canPackImage: group.batch.quantity <= 1,
+                                          })}
+                                    </TableRow>
+                                  ))
+                                : null}
+                            </React.Fragment>
+                          );
+                        })}
+                        {pagedInstances.map((instance) => (
+                          <TableRow key={instance.id}>
+                            {listMode === 'history'
+                              ? renderHistoryInstanceCells(instance, columns)
+                              : renderActiveInstanceCells(instance, columns)}
+                          </TableRow>
+                        ))}
+                      </>
+                    );
+                    return (
+                      <>
+                        {retainedSnapshotError}
+                        {listRows}
+                      </>
+                    );
+                  }}
+                </AdminDataTable>
+              </div>
+
+              {hasVisibleContent ? (
+                <AdminPaginationControls
+                  jumpPageValue={jumpPageValue}
+                  label={`${tableLabel} 分页`}
+                  onJumpPage={handleJumpToPage}
+                  onJumpPageValueChange={setJumpPageValue}
+                  onNextPage={() =>
+                    setListPages((current) => ({
+                      ...current,
+                      [listMode]: activePagination.page + 1,
+                    }))
+                  }
+                  onPageSelect={(pageNumber) =>
+                    setListPages((current) => ({
+                      ...current,
+                      [listMode]: pageNumber,
+                    }))
+                  }
+                  onPageSizeChange={handlePageSizeChange}
+                  onPreviousPage={() =>
+                    setListPages((current) => ({
+                      ...current,
+                      [listMode]: activePagination.page - 1,
+                    }))
+                  }
+                  pageSizeMode={pageSizeMode}
+                  pagination={activePagination}
+                  visiblePages={visiblePages}
+                />
+              ) : null}
+            </AdminListToolbar>
+
+            {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
+              <p className="text-sm text-muted-foreground">请先前往镜像中心收录或启用至少一个平台镜像。</p>
+            ) : null}
+        </div>
+      </section>
+
+      {false ? (
       <section>
         <article className="admin-workbench-panel range-workbench-shell">
           <div className="template-workbench-list-header range-workbench-header">
@@ -1591,6 +2020,7 @@ export function SingleInstancesScreen({
           ) : null}
         </article>
       </section>
+      ) : null}
 
       {isCreateOpen ? (
         <SingleInstanceDialog title="创建实例" onClose={() => setIsCreateOpen(false)}>

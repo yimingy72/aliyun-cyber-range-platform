@@ -223,6 +223,23 @@ afterEach(() => {
 });
 
 describe('TemplateEditorScreen', () => {
+  it('keeps the editor workspace shape while loading a routed template', () => {
+    fetchRangeTemplateByIdMock.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the route request pending to verify the destination loading frame.
+        }),
+    );
+
+    render(<TemplateEditorScreen templateId="template-1" />);
+
+    expect(screen.getByRole('status', { name: '正在加载靶场编排页' })).toBeTruthy();
+    expect(screen.getByTestId('template-editor-loading-grid')).toBeTruthy();
+    expect(screen.getByText('资源面板')).toBeTruthy();
+    expect(screen.getByText('拓扑画布')).toBeTruthy();
+    expect(screen.getByText('属性面板')).toBeTruthy();
+  });
+
   it('renders a topology editor workspace with palette, canvas, and property panel', () => {
     render(
       <TemplateEditorScreen
@@ -332,7 +349,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    const imageCombobox = screen.getByRole('combobox', { name: '镜像名' });
+    const imageCombobox = await screen.findByRole('combobox', { name: '镜像名' });
     expect(imageCombobox).toBeTruthy();
     fireEvent.change(imageCombobox, { target: { value: '我的渗透靶机' } });
     expect(await screen.findByRole('option', { name: '我的渗透靶机' })).toBeTruthy();
@@ -368,7 +385,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    expect((screen.getByRole('combobox', { name: '镜像名' }) as HTMLInputElement).value).toBe('');
+    expect((await screen.findByRole('combobox', { name: '镜像名' }) as HTMLInputElement).value).toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
 
@@ -376,7 +393,7 @@ describe('TemplateEditorScreen', () => {
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
   });
 
-  it('supports only router, switch and ecs nodes in the phase-one topology editor', () => {
+  it('supports only router, switch and ecs nodes in the phase-one topology editor', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -429,12 +446,12 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
 
-    expect(screen.getByLabelText('交换机名称')).toBeTruthy();
+    expect(await screen.findByLabelText('交换机名称')).toBeTruthy();
     expect(screen.getAllByText('交换机 1').length).toBeGreaterThan(0);
     expect(screen.queryByLabelText('区域标识')).toBeNull();
   });
 
-  it('uses per-kind naming, keeps router singleton, and assigns the new default switch cidr sequence', () => {
+  it('uses per-kind naming, keeps router singleton, and assigns the new default switch cidr sequence', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -478,7 +495,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     expect(screen.queryByText('子网信息配置')).toBeNull();
-    expect((screen.getByLabelText('CIDR 第一段') as HTMLInputElement).value).toBe('10');
+    expect((await screen.findByLabelText('CIDR 第一段') as HTMLInputElement).value).toBe('10');
     expect((screen.getByLabelText('CIDR 第二段') as HTMLInputElement).value).toBe('0');
     expect((screen.getByLabelText('CIDR 第三段') as HTMLInputElement).value).toBe('0');
     expect((screen.getByLabelText('CIDR 前缀') as HTMLInputElement).value).toBe('24');
