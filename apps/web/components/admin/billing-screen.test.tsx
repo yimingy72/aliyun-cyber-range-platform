@@ -195,7 +195,10 @@ describe('BillingScreen', () => {
 
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByRole('heading', { name: '账单费用' });
+    const heading = await screen.findByRole('heading', { level: 1, name: '账单费用' });
+    expect(heading.closest('[data-slot="admin-page-header"]')).toBeTruthy();
+    expect(heading.closest('.admin-workbench-surface')).toBeTruthy();
+    expect(screen.getByRole('region', { name: '费用明细' })).toBeTruthy();
     await screen.findByText('用户明细');
     await screen.findByText('开启靶场实例');
     expect(screen.getByText(/02:03:42/)).toBeTruthy();
