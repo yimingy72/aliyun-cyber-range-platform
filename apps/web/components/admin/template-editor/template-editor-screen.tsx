@@ -6,6 +6,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+
 import {
   AdminApiError,
   createRangeTemplate,
@@ -80,7 +83,7 @@ function TemplateEditorLoadingState() {
       <span aria-label="正在加载靶场编排页" className="sr-only" role="status">
         正在加载靶场编排页
       </span>
-      <div className="template-editor-toolbar admin-panel">
+      <div className="template-editor-toolbar admin-workbench-surface">
         <div className="template-editor-toolbar-copy">
           <h1>正在加载靶场编排页...</h1>
           <p className="template-editor-toolbar-status">正在读取当前拓扑</p>
@@ -1777,7 +1780,7 @@ function buildDraftUpdatePayload(
     }
 
     if (template.id === 'new' || graphSignature !== lastPersistedGraphRef.current) {
-      setStatusMessage('请先点击“检测&保存”，再发布到平台。');
+      setStatusMessage('请先点击“检测与保存”，再发布到平台。');
       return;
     }
 
@@ -1832,38 +1835,40 @@ function buildDraftUpdatePayload(
 
   return (
     <section className="template-editor-screen">
-      <div className="template-editor-toolbar admin-panel">
+      <div className="template-editor-toolbar admin-workbench-surface">
         <div className="template-editor-toolbar-copy">
           <h1>{template.name ?? template.slug}</h1>
-          <p className="template-editor-toolbar-status">
+          <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
             {template.status === 'published' ? '已发布' : '私有'}
-          </p>
+          </Badge>
         </div>
         <div className="admin-inline-actions">
-          <button
-            type="button"
-            className="template-editor-toolbar-button is-danger"
+          <Button
             disabled={(!selectedNodeId && !selectedEdgeId) || isSubmitting}
             onClick={handleDeleteSelectedNode}
+            size="sm"
+            type="button"
+            variant="outline"
           >
             删除选中
-          </button>
-          <button
-            type="button"
-            className="template-editor-toolbar-button is-neutral"
+          </Button>
+          <Button
             disabled={isSubmitting}
             onClick={() => void handleDetectTopology()}
-          >
-            检测&保存
-          </button>
-          <button
+            size="sm"
             type="button"
-            className="template-editor-toolbar-button is-primary"
+            variant="outline"
+          >
+            检测与保存
+          </Button>
+          <Button
             disabled={isSubmitting}
             onClick={() => void handlePublishTemplate()}
+            size="sm"
+            type="button"
           >
             发布到平台
-          </button>
+          </Button>
         </div>
       </div>
 

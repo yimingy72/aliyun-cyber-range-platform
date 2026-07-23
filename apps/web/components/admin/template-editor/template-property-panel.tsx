@@ -14,6 +14,7 @@ import {
   findDuplicateDnatExternalPorts,
   getEffectiveSecurityGroupRules,
 } from '../../../lib/scenario-graph';
+import { AdminSelectField } from '../shared/admin-select-field';
 export type {
   EcsTemplateNode,
   RouterTemplateNode,
@@ -117,6 +118,34 @@ function PropertyField({ label, hint, className, children }: PropertyFieldProps)
       {children}
       {hint ? <small className="template-property-field-hint">{hint}</small> : null}
     </label>
+  );
+}
+
+function PropertySelect({
+  ariaLabel,
+  disabled,
+  emptyOptionLabel,
+  onValueChange,
+  options,
+  value,
+}: {
+  ariaLabel: string;
+  disabled?: boolean;
+  emptyOptionLabel?: string;
+  onValueChange: (value: string) => void;
+  options: readonly { label: string; value: string }[];
+  value: string;
+}) {
+  return (
+    <AdminSelectField
+      ariaLabel={ariaLabel}
+      className="w-full"
+      disabled={disabled}
+      emptyOptionLabel={emptyOptionLabel}
+      onValueChange={onValueChange}
+      options={options}
+      value={value}
+    />
   );
 }
 
@@ -569,33 +598,26 @@ function renderHostFields(
               </div>
               <div className="template-property-card-grid">
                 <PropertyField label="交换机标识" className="template-property-field-full">
-                  <select
-                    aria-label={`交换机标识 ${index + 1}`}
+                  <PropertySelect
+                    ariaLabel={`交换机标识 ${index + 1}`}
                     disabled={instanceDetailMode}
                     value={nic.switchId}
-                    onChange={(event) => {
-                      const nextSwitch = switchById.get(event.target.value) ?? null;
-
+                    emptyOptionLabel="未连接交换机"
+                    onValueChange={(nextValue) => {
                       onUpdateNode(selectedNode.id, {
                         ...selectedNode,
                         nics: nicItems.map((item) =>
                           item.id === nic.id
                             ? {
                                 ...item,
-                                switchId: event.target.value,
+                                switchId: nextValue,
                               }
                             : item,
                         ),
                       });
                     }}
-                  >
-                    <option value="">未连接交换机</option>
-                    {switchOptions.map((switchNode) => (
-                      <option key={switchNode.id} value={switchNode.id}>
-                        {switchNode.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={switchOptions.map((switchNode) => ({ label: switchNode.label, value: switchNode.id }))}
+                  />
                 </PropertyField>
                 <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
                   <input
@@ -662,42 +684,44 @@ function renderHostFields(
                 </div>
                 <div className="template-property-card-grid">
                   <PropertyField label="方向">
-                    <select
-                      aria-label={`安全方向 ${index + 1}-${ruleIndex + 1}`}
+                    <PropertySelect
+                      ariaLabel={`安全方向 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.direction}
-                      onChange={(event) =>
+                      onValueChange={(nextValue) =>
                         updateNicSecurityGroupRules(nic.id, (rules) =>
                           rules.map((securityRule) =>
                             securityRule.key === rule.key
-                              ? { ...securityRule, direction: event.target.value as typeof securityRule.direction }
+                              ? { ...securityRule, direction: nextValue as typeof securityRule.direction }
                               : securityRule,
                           ),
                         )
                       }
-                    >
-                      <option value="ingress">ingress</option>
-                      <option value="egress">egress</option>
-                    </select>
+                      options={[
+                        { label: 'ingress', value: 'ingress' },
+                        { label: 'egress', value: 'egress' },
+                      ]}
+                    />
                   </PropertyField>
                   <PropertyField label="协议">
-                    <select
-                      aria-label={`安全协议 ${index + 1}-${ruleIndex + 1}`}
+                    <PropertySelect
+                      ariaLabel={`安全协议 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.protocol}
-                      onChange={(event) =>
+                      onValueChange={(nextValue) =>
                         updateNicSecurityGroupRules(nic.id, (rules) =>
                           rules.map((securityRule) =>
                             securityRule.key === rule.key
-                              ? { ...securityRule, protocol: event.target.value }
+                              ? { ...securityRule, protocol: nextValue }
                               : securityRule,
                           ),
                         )
                       }
-                    >
-                      <option value="tcp">tcp</option>
-                      <option value="udp">udp</option>
-                      <option value="icmp">icmp</option>
-                      <option value="all">all</option>
-                    </select>
+                      options={[
+                        { label: 'tcp', value: 'tcp' },
+                        { label: 'udp', value: 'udp' },
+                        { label: 'icmp', value: 'icmp' },
+                        { label: 'all', value: 'all' },
+                      ]}
+                    />
                   </PropertyField>
                   <PropertyField label="端口范围">
                     <input
@@ -715,22 +739,23 @@ function renderHostFields(
                     />
                   </PropertyField>
                   <PropertyField label="安全策略">
-                    <select
-                      aria-label={`安全策略 ${index + 1}-${ruleIndex + 1}`}
+                    <PropertySelect
+                      ariaLabel={`安全策略 ${index + 1}-${ruleIndex + 1}`}
                       value={rule.policy}
-                      onChange={(event) =>
+                      onValueChange={(nextValue) =>
                         updateNicSecurityGroupRules(nic.id, (rules) =>
                           rules.map((securityRule) =>
                             securityRule.key === rule.key
-                              ? { ...securityRule, policy: event.target.value as typeof securityRule.policy }
+                              ? { ...securityRule, policy: nextValue as typeof securityRule.policy }
                               : securityRule,
                           ),
                         )
                       }
-                    >
-                      <option value="accept">accept</option>
-                      <option value="drop">drop</option>
-                    </select>
+                      options={[
+                        { label: 'accept', value: 'accept' },
+                        { label: 'drop', value: 'drop' },
+                      ]}
+                    />
                   </PropertyField>
                   <PropertyField label="安全优先级">
                     <input
@@ -996,40 +1021,42 @@ function renderSwitchFields(
             </div>
             <div className="template-property-card-grid template-property-card-grid-compact">
               <PropertyField label="方向">
-                <select
-                  aria-label={`ACL 方向 ${index + 1}`}
+                <PropertySelect
+                  ariaLabel={`ACL 方向 ${index + 1}`}
                   value={rule.direction}
-                  onChange={(event) =>
+                  onValueChange={(nextValue) =>
                     onUpdateNode(selectedNode.id, {
                       ...selectedNode,
                       aclRules: aclRules.map((item) =>
-                        item.key === rule.key ? { ...item, direction: event.target.value as typeof item.direction } : item,
+                        item.key === rule.key ? { ...item, direction: nextValue as typeof item.direction } : item,
                       ),
                     })
                   }
-                >
-                  <option value="inbound">inbound</option>
-                  <option value="outbound">outbound</option>
-                </select>
+                  options={[
+                    { label: 'inbound', value: 'inbound' },
+                    { label: 'outbound', value: 'outbound' },
+                  ]}
+                />
               </PropertyField>
               <PropertyField label="协议">
-                <select
-                  aria-label={`ACL 协议 ${index + 1}`}
+                <PropertySelect
+                  ariaLabel={`ACL 协议 ${index + 1}`}
                   value={rule.protocol}
-                  onChange={(event) =>
+                  onValueChange={(nextValue) =>
                     onUpdateNode(selectedNode.id, {
                       ...selectedNode,
                       aclRules: aclRules.map((item) =>
-                        item.key === rule.key ? { ...item, protocol: event.target.value } : item,
+                        item.key === rule.key ? { ...item, protocol: nextValue } : item,
                       ),
                     })
                   }
-                >
-                  <option value="tcp">tcp</option>
-                  <option value="udp">udp</option>
-                  <option value="icmp">icmp</option>
-                  <option value="all">all</option>
-                </select>
+                  options={[
+                    { label: 'tcp', value: 'tcp' },
+                    { label: 'udp', value: 'udp' },
+                    { label: 'icmp', value: 'icmp' },
+                    { label: 'all', value: 'all' },
+                  ]}
+                />
               </PropertyField>
               <PropertyField label="端口范围">
                 <input
@@ -1046,21 +1073,22 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="ACL 策略">
-                <select
-                  aria-label={`ACL 策略 ${index + 1}`}
+                <PropertySelect
+                  ariaLabel={`ACL 策略 ${index + 1}`}
                   value={rule.policy}
-                  onChange={(event) =>
+                  onValueChange={(nextValue) =>
                     onUpdateNode(selectedNode.id, {
                       ...selectedNode,
                       aclRules: aclRules.map((item) =>
-                        item.key === rule.key ? { ...item, policy: event.target.value as typeof item.policy } : item,
+                        item.key === rule.key ? { ...item, policy: nextValue as typeof item.policy } : item,
                       ),
                     })
                   }
-                >
-                  <option value="allow">allow</option>
-                  <option value="drop">drop</option>
-                </select>
+                  options={[
+                    { label: 'allow', value: 'allow' },
+                    { label: 'drop', value: 'drop' },
+                  ]}
+                />
               </PropertyField>
               <PropertyField label="ACL 优先级">
                 <input
@@ -1158,28 +1186,23 @@ function renderSwitchFields(
             </div>
             <div className="template-property-card-grid template-property-card-grid-compact">
               <PropertyField label="目标主机" className="template-property-field-full">
-                <select
-                  aria-label={`DNAT 目标主机 ${index + 1}`}
+                <PropertySelect
+                  ariaLabel={`DNAT 目标主机 ${index + 1}`}
                   value={mapping.targetHostId}
-                  onChange={(event) =>
+                  emptyOptionLabel="未选择"
+                  onValueChange={(nextValue) =>
                     onUpdateNode(selectedNode.id, {
                       ...selectedNode,
                       nat: {
                         snatEnabled: selectedNode.nat?.snatEnabled ?? false,
                         dnatMappings: dnatMappings.map((item) =>
-                          item.key === mapping.key ? { ...item, targetHostId: event.target.value } : item,
+                          item.key === mapping.key ? { ...item, targetHostId: nextValue } : item,
                         ),
                       },
                     })
                   }
-                >
-                  <option value="">未选择</option>
-                  {hostOptions.map((host) => (
-                    <option key={host.id} value={host.id}>
-                      {host.label}
-                    </option>
-                  ))}
-                </select>
+                  options={hostOptions.map((host) => ({ label: host.label, value: host.id }))}
+                />
               </PropertyField>
               <PropertyField label="公网端口">
                 <input
@@ -1231,24 +1254,25 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="协议">
-                <select
-                  aria-label={`DNAT 协议 ${index + 1}`}
+                <PropertySelect
+                  ariaLabel={`DNAT 协议 ${index + 1}`}
                   value={mapping.protocol}
-                  onChange={(event) =>
+                  onValueChange={(nextValue) =>
                     onUpdateNode(selectedNode.id, {
                       ...selectedNode,
                       nat: {
                         snatEnabled: selectedNode.nat?.snatEnabled ?? false,
                         dnatMappings: dnatMappings.map((item) =>
-                          item.key === mapping.key ? { ...item, protocol: event.target.value as typeof item.protocol } : item,
+                          item.key === mapping.key ? { ...item, protocol: nextValue as typeof item.protocol } : item,
                         ),
                       },
                     })
                   }
-                >
-                  <option value="tcp">tcp</option>
-                  <option value="udp">udp</option>
-                </select>
+                  options={[
+                    { label: 'tcp', value: 'tcp' },
+                    { label: 'udp', value: 'udp' },
+                  ]}
+                />
               </PropertyField>
             </div>
           </div>

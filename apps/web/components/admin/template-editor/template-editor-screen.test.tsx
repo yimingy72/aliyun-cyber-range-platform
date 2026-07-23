@@ -49,8 +49,10 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 import { AdminApiError } from '../../../lib/admin-api';
+import type { TemplateNode } from '../../../lib/scenario-graph';
 import { buildScenarioTemplateSpecFromTopologyGraph } from '../../../lib/topology-graph-to-scenario-template';
 import { TemplateEditorScreen as ActualTemplateEditorScreen } from './template-editor-screen';
+import { TemplatePropertyPanel } from './template-property-panel';
 
 function normalizeTemplateFixture(template: React.ComponentProps<typeof ActualTemplateEditorScreen>['template']) {
   const legacyTemplate = template as
@@ -72,6 +74,11 @@ function normalizeTemplateFixture(template: React.ComponentProps<typeof ActualTe
 
 function TemplateEditorScreen(props: React.ComponentProps<typeof ActualTemplateEditorScreen>) {
   return <ActualTemplateEditorScreen {...props} template={normalizeTemplateFixture(props.template)} />;
+}
+
+function selectAdminOption(controlName: string, optionName: string) {
+  fireEvent.click(screen.getByRole('combobox', { name: controlName }));
+  fireEvent.click(screen.getByRole('option', { name: optionName }));
 }
 
 vi.mock('../use-admin-session', () => ({
@@ -270,8 +277,63 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('资源面板')).toBeTruthy();
     expect(screen.getByText('拓扑画布')).toBeTruthy();
     expect(screen.getByText('属性面板')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '检测&保存' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '发布到平台' })).toBeTruthy();
+    expect(screen.getByText('已发布').getAttribute('data-slot')).toBe('badge');
+    expect(screen.getByRole('button', { name: '检测与保存' }).getAttribute('data-variant')).toBe('outline');
+    expect(screen.getByRole('button', { name: '发布到平台' }).getAttribute('data-variant')).toBe('default');
+  });
+
+  it('maps an unconnected nic switch option to an empty business value', () => {
+    const onUpdateNode = vi.fn();
+    const selectedNode = {
+      id: 'ecs-1',
+      kind: 'ecs',
+      label: 'ECS 1',
+      zoneKey: 'core',
+      role: 'host',
+      privateIp: '10.0.0.11',
+      exposePublic: false,
+      image: 'ubuntu_22_04_x64_20G_alibase',
+      dnatMappings: [],
+      networkInterfaces: [{ zoneKey: 'core', privateIp: '10.0.0.11' }],
+      portGroups: [],
+      nics: [
+        {
+          id: 'ecs-1-nic-1',
+          switchId: 'switch-1',
+          privateIp: '10.0.0.11',
+          secondaryIps: [],
+          securityGroupRules: [],
+        },
+      ],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'ubuntu_22_04_x64_20G_alibase' },
+      instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+    } satisfies TemplateNode;
+    const switchNode = {
+      id: 'switch-1',
+      kind: 'switch',
+      label: '交换机 1',
+      zoneKey: 'core',
+      cidr: '10.0.0.0/24',
+      purpose: 'business-zone',
+    } satisfies TemplateNode;
+
+    render(
+      <TemplatePropertyPanel
+        allNodes={[selectedNode, switchNode]}
+        onUpdateNode={onUpdateNode}
+        selectedNode={selectedNode}
+      />,
+    );
+
+    selectAdminOption('交换机标识 1', '未连接交换机');
+
+    expect(onUpdateNode).toHaveBeenLastCalledWith(
+      'ecs-1',
+      expect.objectContaining({
+        nics: [expect.objectContaining({ switchId: '' })],
+      }),
+    );
   });
 
   it('loads platform image assets and the current user\'s own image assets for ecs image options', async () => {
@@ -387,7 +449,7 @@ describe('TemplateEditorScreen', () => {
 
     expect((await screen.findByRole('combobox', { name: '镜像名' }) as HTMLInputElement).value).toBe('');
 
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     expect(await screen.findByText(/ECS 1 请选择镜像/)).toBeTruthy();
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
@@ -682,7 +744,7 @@ describe('TemplateEditorScreen', () => {
     const privateIpInput = screen.getByLabelText('私网 IP 1') as HTMLInputElement;
     expect(privateIpInput.value).toBe('');
 
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(privateIpInput, { target: { value: '192.168.1.10' } });
     expect(privateIpInput.value).toBe('192.168.1.10');
     expect(screen.getByText('私网 IP 不在 10.0.0.0/24 网段内')).toBeTruthy();
@@ -729,7 +791,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
     });
@@ -882,11 +944,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'password-host-2' } });
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.22' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(
@@ -931,11 +993,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'detect-blocked-host' } });
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.23' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(
@@ -980,7 +1042,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'publish-blocked-host' } });
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.24' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'abcdefgh' } });
 
@@ -1155,7 +1217,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    expect((screen.getByLabelText('交换机标识 1') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByRole('combobox', { name: '交换机标识 1' }).textContent).toContain('未连接交换机');
   });
 
   it('clears invalid nic and dnat references when deleting a node', async () => {
@@ -1187,11 +1249,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-1' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
 
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: '添加 DNAT 规则' }));
-    fireEvent.change(screen.getByLabelText('DNAT 目标主机 1'), { target: { value: 'ecs-2' } });
+    selectAdminOption('DNAT 目标主机 1', 'ECS 1');
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
@@ -1845,12 +1907,12 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '4' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
@@ -1986,7 +2048,7 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
@@ -2084,7 +2146,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByRole('button', { name: '保存属性' })).toBeNull();
   });
 
-  it('blocks incomplete topologies during 检测&保存', () => {
+  it('blocks incomplete topologies during 检测与保存', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -2111,7 +2173,7 @@ describe('TemplateEditorScreen', () => {
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
@@ -2209,7 +2271,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
@@ -2717,7 +2779,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'persisted-instance-type-host' } });
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     expect(screen.getByDisplayValue('persisted-instance-type-host')).toBeTruthy();
     await waitFor(() => {
@@ -2795,12 +2857,12 @@ describe('TemplateEditorScreen', () => {
       target: { value: 'Ubuntu 24.04 LTS' },
     });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.18' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '8' } });
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'catalog-backed-host' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
@@ -2908,9 +2970,9 @@ describe('TemplateEditorScreen', () => {
     });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
@@ -3058,9 +3120,9 @@ describe('TemplateEditorScreen', () => {
     });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'new-edge-host' } });
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(createRangeTemplateMock).toHaveBeenCalledTimes(1);
@@ -3114,7 +3176,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
 
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
-    expect(screen.getByText('请先点击“检测&保存”，再发布到平台。')).toBeTruthy();
+    expect(screen.getByText('请先点击“检测与保存”，再发布到平台。')).toBeTruthy();
   });
 
   it('warns when the current topology is already published', async () => {
@@ -3270,7 +3332,7 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
       expect(
@@ -3358,9 +3420,9 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-publish' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
     });
@@ -3420,9 +3482,9 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-fail' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
-    fireEvent.change(screen.getByLabelText('交换机标识 1'), { target: { value: 'switch-2' } });
+    selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
-    fireEvent.click(screen.getByRole('button', { name: '检测&保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
     });
