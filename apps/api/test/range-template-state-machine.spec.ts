@@ -311,6 +311,7 @@ describe('RangeTemplatesService state machine', () => {
         id: template.id,
         revision: 3,
         status: 'private',
+        canManage: true,
       }),
     );
     expect(result).not.toHaveProperty('version');
@@ -330,6 +331,7 @@ describe('RangeTemplatesService state machine', () => {
         id: template.id,
         revision: 3,
         status: 'private',
+        canManage: true,
         topologyGraph: topologyPayload.topologyGraph,
       }),
     );

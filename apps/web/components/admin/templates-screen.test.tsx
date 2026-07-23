@@ -467,6 +467,36 @@ describe('TemplatesScreen', () => {
     expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
   });
 
+  it('uses the server management capability for an ordinary user whose OIDC subject differs from the platform user ID', async () => {
+    sessionState.profile = {
+      id: 'oidc-subject-bob',
+      username: 'bob',
+      role: 'user',
+    };
+    const ownedTemplate = {
+      ...bootstrapPayload.rangeTemplates[1],
+      ownerUserId: 'platform-user-bob',
+      createdBy: 'bob',
+      canManage: true,
+    };
+    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
+      view === 'mine' ? [ownedTemplate] : [],
+    );
+
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('办公网横向移动靶场');
+    const row = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+
+    expect((within(row).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(false);
+
+    openTemplateActionMenu(row);
+
+    expect(screen.getByRole('menuitem', { name: '编辑信息' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '发布到平台' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
+  });
+
   it('clones published platform templates into 我的拓扑 when ordinary users click 进入编排', async () => {
     sessionState.profile = {
       id: 'user-bob',

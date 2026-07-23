@@ -52,6 +52,7 @@ export type RangeTemplate = {
   name?: string | null;
   createdBy?: string | null;
   ownerUserId?: string | null;
+  canManage?: boolean;
   visibility?: ResourceVisibility;
   status: 'private' | 'published';
   revision: number;

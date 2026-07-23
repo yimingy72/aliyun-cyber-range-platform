@@ -706,7 +706,7 @@ export function TemplatesScreen({
   const isActiveViewLoading = !loadedViews[activeView] && !errorMessage;
 
   function canManageTemplate(template: Scenario) {
-    return session.isAdmin || template.ownerUserId === session.profile?.id;
+    return template.canManage ?? session.isAdmin;
   }
 
   return (

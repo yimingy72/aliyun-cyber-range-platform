@@ -68,7 +68,7 @@ export class RangeTemplatesService {
       return Boolean(template.currentPublishedVersionId);
     });
 
-    return this.withCreatorUsernames(visibleTemplates.map((template) => toRangeTemplateListItem(template)));
+    return this.withCreatorUsernames(visibleTemplates.map((template) => toRangeTemplateListItem(template, currentUser)));
   }
 
   async getById(id: string, currentUser?: AuthenticatedUser) {
@@ -85,7 +85,7 @@ export class RangeTemplatesService {
     this.assertTemplateReadable(existingTemplate, currentUser);
 
     if (!this.isSharedTemplateConsumer(existingTemplate, currentUser)) {
-      return this.toPublicTemplateView(await this.withCreatorUsername(existingTemplate));
+      return this.toPublicTemplateView(await this.withCreatorUsername(existingTemplate), undefined, currentUser);
     }
 
     const sourceVersion = await this.resolveTemplateConsumptionVersion(existingTemplate, currentUser);
@@ -97,6 +97,7 @@ export class RangeTemplatesService {
     return this.toPublicTemplateView(
       await this.withCreatorUsername(existingTemplate),
       sourceVersion,
+      currentUser,
     );
   }
 
@@ -128,7 +129,7 @@ export class RangeTemplatesService {
       visibility: 'private',
     });
 
-    return this.toPublicTemplateView(await this.withCreatorUsername(template));
+    return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
   }
 
   async clone(id: string, currentUser?: AuthenticatedUser) {
@@ -209,7 +210,7 @@ export class RangeTemplatesService {
         undefined,
     });
 
-    return this.toPublicTemplateView(await this.withCreatorUsername(template));
+    return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
   }
 
   async validateAndSave(
@@ -240,7 +241,7 @@ export class RangeTemplatesService {
         ...topology,
         expectedRevision: input.expectedRevision,
       });
-      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+      return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
     } catch (error) {
       this.rethrowRevisionConflict(error);
     }
@@ -263,7 +264,7 @@ export class RangeTemplatesService {
 
     try {
       const template = await this.adminRepository.updateRangeTemplateMetadata(id, input);
-      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+      return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
     } catch (error) {
       this.rethrowRevisionConflict(error);
     }
@@ -282,7 +283,7 @@ export class RangeTemplatesService {
 
     try {
       const template = await this.adminRepository.unshareRangeTemplate(id, expectedRevision);
-      return this.toPublicTemplateView(await this.withCreatorUsername(template));
+      return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
     } catch (error) {
       this.rethrowRevisionConflict(error);
     }
@@ -549,6 +550,7 @@ export class RangeTemplatesService {
   private toPublicTemplateView(
     template: ExistingRangeTemplate & { createdBy?: string },
     topologyOverride?: RangeTemplateVersionRecord,
+    currentUser?: AuthenticatedUser,
   ) {
     const topology =
       topologyOverride ??
@@ -565,6 +567,7 @@ export class RangeTemplatesService {
       cloudProvider: template.cloudProvider,
       iacType: template.iacType,
       visibility: template.visibility,
+      ...(currentUser ? { canManage: this.isTemplateOwnerOrAdmin(template, currentUser) } : {}),
       status:
         template.visibility === 'platform' && Boolean(template.currentPublishedVersionId)
           ? ('published' as const)
@@ -1233,7 +1236,7 @@ export class RangeTemplatesService {
   }
 }
 
-function toRangeTemplateListItem(template: ExistingRangeTemplate) {
+function toRangeTemplateListItem(template: ExistingRangeTemplate, currentUser?: AuthenticatedUser) {
   const externallyPublished =
     template.visibility === 'platform' && Boolean(template.currentPublishedVersionId);
   const visibleVersion =
@@ -1259,6 +1262,9 @@ function toRangeTemplateListItem(template: ExistingRangeTemplate) {
     cloudProvider: template.cloudProvider,
     iacType: template.iacType,
     visibility: template.visibility,
+    ...(currentUser
+      ? { canManage: currentUser.role === 'admin' || template.ownerUserId === currentUser.id }
+      : {}),
     status: externallyPublished ? ('published' as const) : ('private' as const),
     revision: template.revision,
     createdAt: template.createdAt,
