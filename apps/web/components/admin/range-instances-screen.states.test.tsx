@@ -96,6 +96,9 @@ describe('RangeInstancesScreen list states', () => {
     expect(screen.getByText('还没有编排实例').closest('td')).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: '所属靶场' })).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(
+      Array.from(screen.getByRole('table', { name: '编排实例列表' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
+    ).toContain('width: 12rem');
   });
 
   it('reads the history view from the URL before the first fetch settles', async () => {
@@ -110,6 +113,9 @@ describe('RangeInstancesScreen list states', () => {
     expect((await screen.findByRole('tab', { name: '实例历史' })).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByRole('columnheader', { name: '回收时间' })).toBeTruthy();
     expect(screen.queryByRole('columnheader', { name: '状态' })).toBeNull();
+    expect(
+      Array.from(screen.getByRole('table', { name: '编排实例历史' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
+    ).toContain('width: 8rem');
     expect(fetchRangeInstancesMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',

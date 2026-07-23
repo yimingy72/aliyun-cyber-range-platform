@@ -107,6 +107,31 @@ describe('AdminDataTable', () => {
     expect(tableColumns[3].className).toContain('hidden xl:table-column');
   });
 
+  it('applies feature-owned column widths through the shared colgroup', () => {
+    const columns = [
+      { id: 'name', label: '实例名称', priority: 'primary' as const, width: '28%' },
+      { id: 'actions', label: '操作', priority: 'primary' as const, width: '12rem' },
+    ];
+
+    render(
+      <AdminDataTable columns={columns} label="实例列表">
+        {(tableColumns) => (
+          <TableRow>
+            <AdminDataTableCell column={tableColumns[0]}>alpha</AdminDataTableCell>
+            <AdminDataTableCell column={tableColumns[1]}>查看详情</AdminDataTableCell>
+          </TableRow>
+        )}
+      </AdminDataTable>,
+    );
+
+    const table = screen.getByRole('table', { name: '实例列表' });
+    const tableColumns = table.querySelectorAll('col');
+
+    expect(table.className).toContain('table-fixed');
+    expect(tableColumns[0].getAttribute('style') ?? '').toContain('width: 28%');
+    expect(tableColumns[1].getAttribute('style') ?? '').toContain('width: 12rem');
+  });
+
   it('uses explicit static Tailwind utilities for responsive colgroup priorities', () => {
     const source = readFileSync(resolve(process.cwd(), 'components/admin/shared/admin-data-table.tsx'), 'utf8');
 

@@ -161,7 +161,10 @@ describe('SingleInstancesScreen list states', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('实例管理数据加载失败，请稍后重试。')).toBeTruthy();
-    expect(screen.getByRole('table', { name: '实例列表' })).toBeTruthy();
+    const table = screen.getByRole('table', { name: '实例列表' });
+
+    expect(table).toBeTruthy();
+    expect(Array.from(table.querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '').toContain('width: 13rem');
     fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
 
     expect(await screen.findByText('web-lab-01')).toBeTruthy();

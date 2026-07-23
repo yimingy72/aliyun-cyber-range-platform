@@ -205,6 +205,9 @@ describe('TemplatesScreen', () => {
     expect(screen.getByRole('columnheader', { name: '拓扑概览' })).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: '操作' })).toBeTruthy();
+    expect(
+      Array.from(screen.getByRole('table', { name: '靶场列表' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
+    ).toContain('width: 12rem');
     expect(screen.queryByText('模板')).toBeNull();
     expect(screen.queryByText('状态与版本 / 操作')).toBeNull();
     expect(screen.queryByText('名称 / 标识 / 描述')).toBeNull();

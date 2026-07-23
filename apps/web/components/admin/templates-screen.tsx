@@ -110,7 +110,7 @@ const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'description', label: '靶场描述', priority: 'detail' },
   { id: 'topology', label: '拓扑概览', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
 ];
 
 function readTemplateView(value: string | null): RangeTemplateView {

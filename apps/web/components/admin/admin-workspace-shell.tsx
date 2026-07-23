@@ -291,7 +291,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
               </SheetContent>
             </Sheet>
 
-            <div className="admin-topbar-meta">
+            <div className="admin-topbar-meta ml-auto">
               {session.profile ? (
                 <div className="admin-topbar-badge-group" aria-label="当前登录用户">
                   <span className="admin-topbar-badge">

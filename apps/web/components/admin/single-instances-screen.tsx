@@ -59,7 +59,7 @@ const activeInstanceColumns = [
   { id: 'expires-at', label: '到期时间', priority: 'detail' },
   { id: 'created-by', label: '创建人', priority: 'detail' },
   { id: 'credentials', label: '账号 / 密码', priority: 'detail' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '13rem' },
 ] as const satisfies readonly AdminDataColumn[];
 
 const historyInstanceColumns = [

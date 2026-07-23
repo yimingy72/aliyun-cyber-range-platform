@@ -412,9 +412,20 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
 
+    const platformWidths = Array.from(screen.getByRole('table', { name: '平台镜像' }).querySelectorAll('col')).map((column) =>
+      column.getAttribute('style'),
+    );
+
     fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
     expect(screen.getByText('test')).toBeTruthy();
+
+    const mineWidths = Array.from(screen.getByRole('table', { name: '我的镜像' }).querySelectorAll('col')).map((column) =>
+      column.getAttribute('style'),
+    );
+
+    expect(mineWidths).toEqual(platformWidths);
+    expect(platformWidths.at(-1) ?? '').toContain('width: 11rem');
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
     expect(await screen.findByRole('tab', { name: '阿里云自定义镜像' })).toBeTruthy();
@@ -899,11 +910,12 @@ describe('ImageCenterScreen', () => {
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建实例 My Ubuntu 22.04' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重命名 My Ubuntu 22.04' })).toBeNull();
 
     fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
 
+    expect(screen.getByRole('menuitem', { name: '发布到平台' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
@@ -1170,10 +1182,10 @@ describe('ImageCenterScreen', () => {
 
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
 
-    expect(await screen.findByRole('button', { name: '发布到平台 My Ubuntu 22.04' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '回退为私有 My Published Ubuntu 22.04' })).toBeTruthy();
+    const privateImageRow = (await screen.findByText('My Ubuntu 22.04')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(privateImageRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
 
-    fireEvent.click(screen.getByRole('button', { name: '发布到平台 My Ubuntu 22.04' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '发布到平台' }));
     await waitFor(() => {
       expect(publishPlatformImageMock).toHaveBeenCalledWith(
         'http://localhost:3001',
@@ -1182,7 +1194,10 @@ describe('ImageCenterScreen', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '回退为私有 My Published Ubuntu 22.04' }));
+    const publishedImageRow = screen.getByText('My Published Ubuntu 22.04').closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(publishedImageRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: '回退为私有' }));
     await waitFor(() => {
       expect(unpublishPlatformImageMock).toHaveBeenCalledWith(
         'http://localhost:3001',

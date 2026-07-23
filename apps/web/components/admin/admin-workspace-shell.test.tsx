@@ -224,6 +224,9 @@ describe('AdminWorkspaceShell', () => {
     ]);
     expect(screen.getByText('admin / admin')).toBeTruthy();
     expect(screen.queryByText('运营后台')).toBeNull();
+
+    const identity = screen.getByLabelText('当前登录用户');
+    expect(identity.parentElement?.className).toContain('ml-auto');
   });
 
   it('hides 用户管理 for regular users and shows their identity in the topbar', async () => {

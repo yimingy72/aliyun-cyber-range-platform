@@ -12,6 +12,7 @@ export type AdminDataColumn = {
   label: string;
   priority: 'primary' | 'secondary' | 'tertiary' | 'detail';
   align?: 'left' | 'right';
+  width?: string;
 };
 
 interface AdminDataTableProps {
@@ -69,10 +70,14 @@ function columnPriorityColumnClassName(priority: AdminDataColumn['priority']) {
 export function AdminDataTable({ label, columns, children, isRefreshing = false }: AdminDataTableProps) {
   return (
     <div className="overflow-hidden rounded border border-border bg-background" data-slot="admin-data-table-frame">
-      <Table aria-busy={isRefreshing || undefined} aria-label={label} className="min-w-full">
+      <Table aria-busy={isRefreshing || undefined} aria-label={label} className="min-w-full table-fixed">
         <colgroup>
           {columns.map((column) => (
-            <col className={columnPriorityColumnClassName(column.priority)} key={column.id} />
+            <col
+              className={columnPriorityColumnClassName(column.priority)}
+              key={column.id}
+              style={column.width ? { width: column.width } : undefined}
+            />
           ))}
         </colgroup>
         <TableHeader className="bg-muted/60">

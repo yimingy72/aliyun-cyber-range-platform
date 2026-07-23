@@ -72,7 +72,7 @@ const USER_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'createdAt', label: '创建时间', priority: 'tertiary' },
   { id: 'updatedAt', label: '更新时间', priority: 'detail' },
   { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
 ];
 
 function getUserRoleLabel(role: AdminUser['role']) {

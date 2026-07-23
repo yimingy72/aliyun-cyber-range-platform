@@ -119,6 +119,7 @@ describe('UsersScreen', () => {
 
     expect(actionsHeader.className).not.toContain('text-right');
     expect(actionsCell?.className).toContain('justify-start');
+    expect(Array.from(table.querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '').toContain('width: 11rem');
   });
 
   it('renders an empty user list inside the shared table body', async () => {

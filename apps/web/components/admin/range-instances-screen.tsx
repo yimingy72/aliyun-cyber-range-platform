@@ -53,7 +53,7 @@ const RANGE_ACTIVE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'template', label: '所属靶场', priority: 'secondary' },
   { id: 'status', label: '状态', priority: 'primary' },
   { id: 'createdAt', label: '创建时间', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
 ];
 
 const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
@@ -63,7 +63,7 @@ const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'createdAt', label: '开启时间', priority: 'secondary' },
   { id: 'endedAt', label: '回收时间', priority: 'tertiary' },
   { id: 'duration', label: '运行时长', priority: 'detail' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '8rem' },
 ];
 
 function readRangeListMode(value: string | null): RangeListMode {

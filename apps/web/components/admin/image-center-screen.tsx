@@ -92,14 +92,14 @@ const ASSET_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
   { id: 'createdBy', label: '创建人', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
 ];
 
 const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
   { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
   { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
 ];
 
 function createImageImportDraft(): ImageImportDialogDraft {
@@ -1256,22 +1256,6 @@ export function ImageCenterScreen({
               ) : null}
               {canManageAsset ? (
                 <>
-                  {canToggleVisibility && session.isAdmin && !isImportingAsset ? (
-                    <Button
-                      disabled={isPending || asset.sourceSnapshotAvailable === false}
-                      aria-label={`${asset.visibility === 'platform' ? '回退为私有' : '发布到平台'} ${asset.displayName}`}
-                      onClick={() =>
-                        void (asset.visibility === 'platform'
-                          ? handleUnpublishPlatformAsset(asset)
-                          : handlePublishPlatformAsset(asset))
-                      }
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
-                    </Button>
-                  ) : null}
                   {!isImportingAsset ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -1280,6 +1264,18 @@ export function ImageCenterScreen({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        {canToggleVisibility && session.isAdmin ? (
+                          <DropdownMenuItem
+                            disabled={isPending || asset.sourceSnapshotAvailable === false}
+                            onSelect={() =>
+                              void (asset.visibility === 'platform'
+                                ? handleUnpublishPlatformAsset(asset)
+                                : handlePublishPlatformAsset(asset))
+                            }
+                          >
+                            {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
+                          </DropdownMenuItem>
+                        ) : null}
                         <DropdownMenuItem onSelect={() => openRenameDialog(asset)}>重命名</DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => void handleTogglePlatformAsset(asset)}>
                           {asset.enabled ? '禁用' : '启用'}
