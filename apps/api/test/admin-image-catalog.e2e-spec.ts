@@ -485,7 +485,78 @@ describe('Admin image catalog APIs', () => {
       .expect({ items: [{ id: tagResponse.body.id, name: 'Web' }] });
   });
 
-  it('GET /admin/image-catalog/custom auto-syncs latest image status and progress before returning rows', async () => {
+  it('GET /admin/image-catalog scopes return cached rows without calling Alibaba Cloud', async () => {
+    repository = createMemoryAdminRepository();
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-cached-custom-image',
+          sourceImageName: 'Cached Custom Image',
+          status: 'Creating 40%',
+          isAvailable: false,
+          lastSyncedAt: new Date('2026-07-24T00:00:00.000Z'),
+        },
+      ],
+    });
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'public',
+      snapshots: [
+        {
+          imageId: 'm-cached-public-image',
+          sourceImageName: 'Cached Public Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-24T00:00:00.000Z'),
+        },
+      ],
+    });
+    global.fetch = jest.fn();
+
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+
+    const customResponse = await request(app.getHttpServer())
+      .get('/admin/image-catalog/custom')
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    const publicResponse = await request(app.getHttpServer())
+      .get('/admin/image-catalog/public')
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(customResponse.body).toEqual({
+      snapshots: [
+        expect.objectContaining({
+          imageId: 'm-cached-custom-image',
+          sourceImageName: 'Cached Custom Image',
+          status: 'Creating 40%',
+          isAvailable: false,
+        }),
+      ],
+      catalogItems: [],
+    });
+    expect(publicResponse.body).toEqual({
+      snapshots: [
+        expect.objectContaining({
+          imageId: 'm-cached-public-image',
+          sourceImageName: 'Cached Public Image',
+          status: 'Available',
+          isAvailable: true,
+        }),
+      ],
+      catalogItems: [],
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('POST /admin/image-catalog/custom/sync refreshes latest image status and progress', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockImplementation(async (input) => {
       const url = String(input);
@@ -518,9 +589,9 @@ describe('Admin image catalog APIs', () => {
     const adminToken = await loginAs(app);
 
     const response = await request(app.getHttpServer())
-      .get('/admin/image-catalog/custom')
+      .post('/admin/image-catalog/custom/sync')
       .set('authorization', `Bearer ${adminToken}`)
-      .expect(200);
+      .expect(201);
 
     expect(response.body).toEqual({
       snapshots: [

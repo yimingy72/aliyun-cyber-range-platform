@@ -114,11 +114,11 @@ export class ImageCatalogService {
   ) {}
 
   listPublic() {
-    return this.syncScope('public', 'system');
+    return this.listScope('public');
   }
 
   listCustom() {
-    return this.syncScope('custom', 'self');
+    return this.listScope('custom');
   }
 
   syncPublicImages() {
