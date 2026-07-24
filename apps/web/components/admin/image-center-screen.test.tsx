@@ -512,24 +512,25 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByText('Alice Linux')).toBeTruthy();
   });
 
-  it('lets admins create and assign image tags from the management dialog', async () => {
+  it('lets admins create and assign image tags from the inline tag dropdown', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     const imageRow = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr') as HTMLElement;
-    fireEvent.keyDown(within(imageRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-    fireEvent.click(screen.getByRole('menuitem', { name: '管理标签' }));
+    fireEvent.keyDown(within(imageRow).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), {
+      key: 'ArrowDown',
+    });
 
-    const dialog = screen.getByRole('dialog', { name: '管理镜像标签' });
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: '选择标签 关键资产' }));
-    fireEvent.change(within(dialog).getByLabelText('新标签名称'), { target: { value: '渗透测试' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '新建标签' }));
+    const menu = screen.getByRole('menu');
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    fireEvent.change(within(menu).getByLabelText('新标签名称 Alibaba Cloud Linux 3'), { target: { value: '渗透测试' } });
+    fireEvent.click(within(menu).getByRole('button', { name: '新建标签 Alibaba Cloud Linux 3' }));
 
     await waitFor(() => {
       expect(createPlatformImageTagMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', '渗透测试');
     });
 
-    expect(within(dialog).getByRole('checkbox', { name: '选择标签 渗透测试' })).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: '保存标签' }));
+    expect(within(menu).getByRole('menuitemcheckbox', { name: '渗透测试' })).toBeTruthy();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
 
     await waitFor(() => {
       expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
@@ -541,6 +542,56 @@ describe('ImageCenterScreen', () => {
     });
 
     expect(await screen.findByText('渗透测试')).toBeTruthy();
+  });
+
+  it('only lets ordinary owners edit tags from 我的镜像 and does not expose tag creation', async () => {
+    sessionState.profile = {
+      id: 'owner-user',
+      username: 'owner',
+      role: 'user',
+    };
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      ({
+        items: [
+          createPlatformImageAsset({
+            id: 'owner-image-1',
+            imageId: 'm-owner-001',
+            displayName: 'Owner Ubuntu',
+            ownerUserId: 'owner-user',
+            createdBy: 'owner',
+            canManage: true,
+            visibility: 'platform',
+          }),
+        ],
+      } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    const platformRow = (await screen.findByText('Owner Ubuntu')).closest('tr') as HTMLElement;
+    expect(within(platformRow).queryByRole('button', { name: '编辑标签 Owner Ubuntu' })).toBeNull();
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+    const myImageRow = (await screen.findByText('Owner Ubuntu')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(myImageRow).getByRole('button', { name: '编辑标签 Owner Ubuntu' }), {
+      key: 'ArrowDown',
+    });
+
+    const menu = screen.getByRole('menu');
+    expect(within(menu).queryByLabelText('新标签名称 Owner Ubuntu')).toBeNull();
+    expect(within(menu).queryByRole('button', { name: '新建标签 Owner Ubuntu' })).toBeNull();
+
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
+
+    await waitFor(() => {
+      expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'owner-image-1',
+        ['tag-critical'],
+      );
+    });
   });
 
   it('lazy-loads cloud image source tabs only when they are opened', async () => {

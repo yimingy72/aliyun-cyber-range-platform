@@ -3,16 +3,20 @@
 import React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
+import { ChevronDown, MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
 import { TableCell, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -281,6 +285,180 @@ function removeSnapshot(scopePayload: ImageCatalogScopePayload | null, snapshotI
   } satisfies ImageCatalogScopePayload;
 }
 
+function ImageTagBadges({ tags }: { tags: PlatformImageTag[] }) {
+  if (tags.length === 0) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  return (
+    <span className="flex flex-wrap gap-1">
+      {tags.map((tag) => (
+        <Badge key={tag.id} variant="outline">
+          {tag.name}
+        </Badge>
+      ))}
+    </span>
+  );
+}
+
+function ImageTagsDropdown({
+  asset,
+  availableTags,
+  canCreateTags,
+  canManage,
+  onCreateTag,
+  onSave,
+}: {
+  asset: PlatformImageAsset;
+  availableTags: PlatformImageTag[];
+  canCreateTags: boolean;
+  canManage: boolean;
+  onCreateTag: (name: string) => Promise<PlatformImageTag>;
+  onSave: (asset: PlatformImageAsset, tagIds: string[]) => Promise<void>;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(asset.tags.map((tag) => tag.id));
+  const [newTagName, setNewTagName] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+
+  useEffect(() => {
+    setSelectedTagIds(asset.tags.map((tag) => tag.id));
+  }, [asset.id, asset.tags]);
+
+  if (!canManage) {
+    return <ImageTagBadges tags={asset.tags} />;
+  }
+
+  const hasChanges =
+    selectedTagIds.length !== asset.tags.length ||
+    selectedTagIds.some((tagId) => !asset.tags.some((tag) => tag.id === tagId));
+
+  function toggleTag(tagId: string, checked: boolean) {
+    setSelectedTagIds((current) =>
+      checked ? (current.includes(tagId) ? current : [...current, tagId]) : current.filter((currentTagId) => currentTagId !== tagId),
+    );
+  }
+
+  async function handleCreateTag() {
+    const name = newTagName.trim();
+
+    if (!name) {
+      setErrorMessage('请填写标签名称。');
+      return;
+    }
+
+    try {
+      setErrorMessage('');
+      setIsCreating(true);
+      const tag = await onCreateTag(name);
+      setSelectedTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
+      setNewTagName('');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '镜像标签创建失败');
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
+  async function handleSave() {
+    try {
+      setErrorMessage('');
+      setIsSaving(true);
+      await onSave(asset, selectedTagIds);
+      setIsOpen(false);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '镜像标签保存失败');
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <DropdownMenu onOpenChange={setIsOpen} open={isOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={`编辑标签 ${asset.displayName}`}
+          className="h-auto min-h-7 max-w-56 justify-between gap-2 px-2 py-1 text-left whitespace-normal"
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          <span className="min-w-0 flex-1">
+            <ImageTagBadges tags={asset.tags} />
+          </span>
+          <ChevronDown aria-hidden="true" className="shrink-0" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuLabel>设置标签</DropdownMenuLabel>
+        <div className="max-h-44 overflow-y-auto py-1">
+          {availableTags.length > 0 ? (
+            availableTags.map((tag) => (
+              <DropdownMenuCheckboxItem
+                checked={selectedTagIds.includes(tag.id)}
+                disabled={isSaving || isCreating}
+                key={tag.id}
+                onCheckedChange={(checked) => toggleTag(tag.id, checked)}
+                onSelect={(event) => event.preventDefault()}
+              >
+                {tag.name}
+              </DropdownMenuCheckboxItem>
+            ))
+          ) : (
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">暂无可用标签。</p>
+          )}
+        </div>
+        {canCreateTags ? (
+          <>
+            <DropdownMenuSeparator />
+            <div className="flex gap-2 p-2" onKeyDown={(event) => event.stopPropagation()}>
+              <Input
+                aria-label={`新标签名称 ${asset.displayName}`}
+                disabled={isSaving || isCreating}
+                maxLength={32}
+                onChange={(event) => {
+                  setNewTagName(event.currentTarget.value);
+                  setErrorMessage('');
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleCreateTag();
+                  }
+                }}
+                placeholder="新建标签"
+                value={newTagName}
+              />
+              <Button
+                aria-label={`新建标签 ${asset.displayName}`}
+                disabled={isSaving || isCreating}
+                onClick={() => void handleCreateTag()}
+                size="sm"
+                type="button"
+              >
+                新建
+              </Button>
+            </div>
+          </>
+        ) : null}
+        {errorMessage ? <p className="px-2 pb-1 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={!hasChanges || isSaving || isCreating}
+          onSelect={(event) => {
+            event.preventDefault();
+            void handleSave();
+          }}
+        >
+          保存标签
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ImageCenterDialog({
   title,
   children,
@@ -375,10 +553,6 @@ export function ImageCenterScreen({
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
-  const [taggingAsset, setTaggingAsset] = useState<PlatformImageAsset | null>(null);
-  const [taggingTagIds, setTaggingTagIds] = useState<string[]>([]);
-  const [newTagName, setNewTagName] = useState('');
-  const [taggingErrorMessage, setTaggingErrorMessage] = useState('');
   const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
   const [cloudContexts, setCloudContexts] = useState<CloudAccountContext[]>([]);
   const [imageImportJobs, setImageImportJobs] = useState<ImageImportJob[]>([]);
@@ -984,81 +1158,52 @@ export function ImageCenterScreen({
     setRenameDraft('');
   }
 
-  function openTaggingDialog(asset: PlatformImageAsset) {
-    setTaggingAsset(asset);
-    setTaggingTagIds(asset.tags.map((tag) => tag.id));
-    setNewTagName('');
-    setTaggingErrorMessage('');
-  }
-
-  function closeTaggingDialog() {
-    setTaggingAsset(null);
-    setTaggingTagIds([]);
-    setNewTagName('');
-    setTaggingErrorMessage('');
-  }
-
-  function toggleTaggingTag(tagId: string, checked: boolean) {
-    setTaggingTagIds((current) =>
-      checked ? (current.includes(tagId) ? current : [...current, tagId]) : current.filter((currentTagId) => currentTagId !== tagId),
-    );
-  }
-
-  async function handleCreatePlatformImageTag() {
+  async function createPlatformImageTagForAsset(name: string) {
     if (!session.token || !session.isAdmin) {
-      return;
-    }
-
-    const name = newTagName.trim();
-
-    if (!name) {
-      setTaggingErrorMessage('请填写标签名称。');
-      return;
+      throw new Error('仅管理员可以新建镜像标签。');
     }
 
     const actionKey = 'create:platform-image-tag';
 
     try {
-      setTaggingErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
       const tag = await createPlatformImageTag(apiBaseUrl, session.token, name);
       setAvailablePlatformImageTags((current) =>
         [...current.filter((item) => item.id !== tag.id), tag].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
       );
-      setTaggingTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
-      setNewTagName('');
+      return tag;
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
-        return;
       }
 
-      setTaggingErrorMessage(error instanceof Error ? error.message : '镜像标签创建失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像标签创建失败');
+      throw error;
     } finally {
       endAction(actionKey);
     }
   }
 
-  async function handleSavePlatformImageTags() {
-    if (!taggingAsset || !session.token) {
-      return;
+  async function savePlatformImageTags(asset: PlatformImageAsset, tagIds: string[]) {
+    if (!session.token) {
+      throw new Error('登录已失效。');
     }
 
-    const actionKey = `tags:platform:${taggingAsset.id}`;
+    const actionKey = `tags:platform:${asset.id}`;
 
     try {
-      setTaggingErrorMessage('');
+      setActionErrorMessage('');
       beginAction(actionKey);
-      const nextAsset = await setPlatformImageTags(apiBaseUrl, session.token, taggingAsset.id, taggingTagIds);
+      const nextAsset = await setPlatformImageTags(apiBaseUrl, session.token, asset.id, tagIds);
       syncAssetAcrossViews(nextAsset);
-      closeTaggingDialog();
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
-        return;
       }
 
-      setTaggingErrorMessage(error instanceof Error ? error.message : '镜像标签保存失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像标签保存失败');
+      throw error;
     } finally {
       endAction(actionKey);
     }
@@ -1332,6 +1477,7 @@ export function ImageCenterScreen({
         typeof options.allowVisibilityToggle === 'function'
           ? options.allowVisibilityToggle(asset)
           : options.allowVisibilityToggle ?? false;
+      const canManageTags = session.isAdmin ? activeTab === 'platform' : activeTab === 'mine' && canManageAsset;
       const isImportingAsset =
         importingAssetIds.has(asset.id) ||
         importingAssetIds.has(asset.imageId) ||
@@ -1354,17 +1500,14 @@ export function ImageCenterScreen({
           </AdminDataTableCell>
           <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={tagsColumn!}>
-            {asset.tags.length > 0 ? (
-              <div className="flex flex-wrap gap-1">
-                {asset.tags.map((tag) => (
-                  <Badge key={tag.id} variant="outline">
-                    {tag.name}
-                  </Badge>
-                ))}
-              </div>
-            ) : (
-              <span className="text-muted-foreground">-</span>
-            )}
+            <ImageTagsDropdown
+              asset={asset}
+              availableTags={platformImageTags}
+              canCreateTags={session.isAdmin && activeTab === 'platform'}
+              canManage={canManageTags}
+              onCreateTag={createPlatformImageTagForAsset}
+              onSave={savePlatformImageTags}
+            />
           </AdminDataTableCell>
           <AdminDataTableCell column={statusColumn!}>
             <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
@@ -1404,7 +1547,6 @@ export function ImageCenterScreen({
                             {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
                           </DropdownMenuItem>
                         ) : null}
-                        <DropdownMenuItem onSelect={() => openTaggingDialog(asset)}>管理标签</DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => openRenameDialog(asset)}>重命名</DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => void handleTogglePlatformAsset(asset)}>
                           {asset.enabled ? '禁用' : '启用'}
@@ -1925,77 +2067,6 @@ export function ImageCenterScreen({
                   </button>
                 </div>
               </form>
-            </ImageCenterDialog>
-          ) : null}
-
-          {taggingAsset ? (
-            <ImageCenterDialog title="管理镜像标签">
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  {platformImageTags.length > 0 ? (
-                    platformImageTags.map((tag) => (
-                      <label className="flex items-center gap-2 text-sm" key={tag.id}>
-                        <input
-                          aria-label={`选择标签 ${tag.name}`}
-                          checked={taggingTagIds.includes(tag.id)}
-                          disabled={pendingActionKeys.includes(`tags:platform:${taggingAsset.id}`)}
-                          onChange={(event) => toggleTaggingTag(tag.id, event.currentTarget.checked)}
-                          type="checkbox"
-                        />
-                        <span>{tag.name}</span>
-                      </label>
-                    ))
-                  ) : (
-                    <p className="text-sm text-muted-foreground">暂无可用标签。</p>
-                  )}
-                </div>
-                {session.isAdmin ? (
-                  <div className="flex flex-wrap gap-2">
-                    <input
-                      aria-label="新标签名称"
-                      className="min-w-40 flex-1"
-                      disabled={pendingActionKeys.includes('create:platform-image-tag')}
-                      maxLength={32}
-                      onChange={(event) => {
-                        setNewTagName(event.currentTarget.value);
-                        setTaggingErrorMessage('');
-                      }}
-                      placeholder="新建标签"
-                      value={newTagName}
-                    />
-                    <button
-                      disabled={pendingActionKeys.includes('create:platform-image-tag')}
-                      onClick={() => void handleCreatePlatformImageTag()}
-                      type="button"
-                    >
-                      新建标签
-                    </button>
-                  </div>
-                ) : null}
-                {taggingErrorMessage ? <p className="admin-error" role="alert">{taggingErrorMessage}</p> : null}
-              </div>
-              <div className="template-workbench-dialog-actions">
-                <button
-                  disabled={
-                    pendingActionKeys.includes(`tags:platform:${taggingAsset.id}`) ||
-                    pendingActionKeys.includes('create:platform-image-tag')
-                  }
-                  onClick={() => void handleSavePlatformImageTags()}
-                  type="button"
-                >
-                  保存标签
-                </button>
-                <button
-                  disabled={
-                    pendingActionKeys.includes(`tags:platform:${taggingAsset.id}`) ||
-                    pendingActionKeys.includes('create:platform-image-tag')
-                  }
-                  onClick={closeTaggingDialog}
-                  type="button"
-                >
-                  取消
-                </button>
-              </div>
             </ImageCenterDialog>
           ) : null}
 
