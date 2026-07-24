@@ -767,13 +767,6 @@ export function TemplatesScreen({
                   if (!pagedTemplates.length) {
                     return (
                       <AdminDataTableState
-                        action={
-                          activeView === 'mine' ? (
-                            <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
-                              新建拓扑
-                            </Button>
-                          ) : undefined
-                        }
                         columns={columns}
                         description={
                           activeView === 'mine'

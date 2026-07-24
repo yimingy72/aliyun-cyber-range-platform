@@ -263,6 +263,7 @@ describe('TemplatesScreen', () => {
     const stateCell = screen.getByText('当前筛选条件下没有靶场').closest('td');
     expect(stateCell?.getAttribute('colspan')).toBe('6');
     expect(stateCell?.className).toContain('h-56');
+    expect(within(stateCell as HTMLElement).queryByRole('button', { name: '新建拓扑' })).toBeNull();
   });
 
   it('keeps table headers visible while the initial view is loading', async () => {
@@ -660,9 +661,7 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    await screen.findByRole('button', { name: '新建拓扑' });
-
-    fireEvent.click(screen.getAllByRole('button', { name: '新建拓扑' })[0]!);
+    fireEvent.click(await screen.findByRole('button', { name: '新建拓扑' }));
 
     const dialog = screen.getByRole('dialog', { name: '创建靶场' });
 
