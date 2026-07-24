@@ -2,6 +2,28 @@ import { BillingService } from '../src/admin/billing.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('BillingService', () => {
+  it('includes platform users without billing items in the user list', async () => {
+    const repository = createMemoryAdminRepository();
+    const service = new BillingService(repository);
+
+    await repository.createPlatformUser({
+      id: 'user-2',
+      username: 'new-user',
+      passwordHash: 'hash',
+      role: 'user',
+    });
+
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
+      {
+        userId: 'user-2',
+        username: 'new-user',
+        pretaxAmount: 0,
+        itemCount: 0,
+        launchCount: 0,
+      },
+    ]);
+  });
+
   it('builds summary and user totals from normalized bill items', async () => {
     const repository = createMemoryAdminRepository();
     const service = new BillingService(repository);
