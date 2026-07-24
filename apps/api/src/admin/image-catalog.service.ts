@@ -9,12 +9,14 @@ import {
   type CloudImageSnapshotRecord,
   type ImageCatalogItemRecord,
   type PlatformImageAssetRecord,
+  type PlatformImageTagRecord,
   type ResourceVisibility,
   type UpsertImageSnapshotInput,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachOwnerUsernamesAsCreatedBy } from './creator-display';
 import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-image.dto';
+import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/platform-image-tag.dto';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
@@ -30,9 +32,16 @@ type ImageCatalogScopePayload = {
   >;
 };
 
+type PlatformImageTagView = Pick<PlatformImageTagRecord, 'id' | 'name'>;
+type PlatformImageAssetView = Omit<PlatformImageAssetRecord, 'defaultPassword' | 'tags'> & {
+  tags: PlatformImageTagView[];
+  createdBy?: string;
+  canManage?: boolean;
+  canChangeVisibility?: boolean;
+};
 type PlatformImageAssetsPayload = {
   items: Array<
-    Omit<PlatformImageAssetRecord, 'defaultPassword'> & {
+    PlatformImageAssetView & {
       createdBy: string;
       sourceSnapshotStatus: string | null;
       sourceSnapshotAvailable: boolean | null;
@@ -148,14 +157,68 @@ export class ImageCatalogService {
     return {
       items: itemsWithCreatedBy.map((item) => {
         const snapshot = item.sourceSnapshotId ? sourceSnapshotsById.get(item.sourceSnapshotId) ?? null : null;
+        const assetView = this.toPlatformImageAssetView(item, currentUser);
 
         return {
-          ...this.toPlatformImageAssetView(item, currentUser),
+          ...assetView,
+          createdBy: assetView.createdBy ?? 'admin',
+          canManage: assetView.canManage ?? false,
+          canChangeVisibility: assetView.canChangeVisibility ?? false,
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
         };
       }),
     };
+  }
+
+  async listPlatformImageTags() {
+    const tags = await this.adminRepository.listPlatformImageTags();
+
+    return {
+      items: tags.map((tag) => this.toPlatformImageTagView(tag)),
+    };
+  }
+
+  async createPlatformImageTag(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
+    if (currentUser.role !== 'admin') {
+      throw new ForbiddenException('Admin access required to create platform image tags');
+    }
+
+    const name = input.name.trim();
+    const normalizedName = this.normalizePlatformImageTagName(name);
+    const existingTags = await this.adminRepository.listPlatformImageTags();
+
+    if (existingTags.some((tag) => tag.normalizedName === normalizedName)) {
+      throw new ConflictException('镜像标签已存在');
+    }
+
+    try {
+      const tag = await this.adminRepository.createPlatformImageTag({
+        name,
+        normalizedName,
+        createdByUserId: currentUser.id,
+      });
+      return this.toPlatformImageTagView(tag);
+    } catch (error) {
+      if (this.isPlatformImageTagUniqueViolation(error)) {
+        throw new ConflictException('镜像标签已存在');
+      }
+
+      throw error;
+    }
+  }
+
+  async setPlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    const tagIds = [...new Set(input.tagIds)];
+    const tags = await this.adminRepository.listPlatformImageTagsByIds(tagIds);
+
+    if (tags.length !== tagIds.length) {
+      throw new BadRequestException('镜像标签不存在');
+    }
+
+    const updatedAsset = await this.adminRepository.replacePlatformImageAssetTags(id, tagIds);
+    return this.withCreatorUsername(updatedAsset, currentUser);
   }
 
   async collectPlatformAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile) {
@@ -487,36 +550,48 @@ export class ImageCatalogService {
     return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
   }
 
-  private async withCreatorUsername<T extends PlatformImageAssetRecord>(asset: T, currentUser?: SessionUserProfile) {
+  private async withCreatorUsername(asset: PlatformImageAssetRecord, currentUser?: SessionUserProfile) {
     const [normalizedAsset] = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, [asset]);
     return this.toPlatformImageAssetView(normalizedAsset, currentUser);
   }
 
-  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(
-    asset: T,
-    currentUser: SessionUserProfile,
-  ): Omit<T, 'defaultPassword'> & { canManage: boolean; canChangeVisibility: boolean };
-  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(
-    asset: T,
+  private toPlatformImageAssetView(
+    asset: PlatformImageAssetRecord & { createdBy?: string },
     currentUser?: SessionUserProfile,
-  ): Omit<T, 'defaultPassword'> & Partial<{ canManage: boolean; canChangeVisibility: boolean }>;
-  private toPlatformImageAssetView<T extends PlatformImageAssetRecord & { createdBy?: string }>(
-    asset: T,
-    currentUser?: SessionUserProfile,
-  ) {
-    const { defaultPassword: _defaultPassword, ...view } = asset;
+  ): PlatformImageAssetView {
+    const { defaultPassword: _defaultPassword, tags, ...view } = asset;
+    const tagViews = tags.map((tag) => this.toPlatformImageTagView(tag));
 
     if (!currentUser) {
-      return view;
+      return {
+        ...view,
+        tags: tagViews,
+      };
     }
 
     const canManage = currentUser.role === 'admin' || asset.ownerUserId === currentUser.id;
 
     return {
       ...view,
+      tags: tagViews,
       canManage,
       canChangeVisibility: currentUser.role === 'admin' && Boolean(asset.ownerUserId),
     };
+  }
+
+  private toPlatformImageTagView(tag: PlatformImageTagRecord): PlatformImageTagView {
+    return {
+      id: tag.id,
+      name: tag.name,
+    };
+  }
+
+  private normalizePlatformImageTagName(name: string) {
+    return name.normalize('NFKC').toLocaleLowerCase();
+  }
+
+  private isPlatformImageTagUniqueViolation(error: unknown) {
+    return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'P2002';
   }
 
   private async resolvePlatformAssetSnapshot(asset: PlatformImageAssetRecord): Promise<CloudImageSnapshotRecord | null> {

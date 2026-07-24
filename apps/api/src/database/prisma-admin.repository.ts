@@ -10,6 +10,7 @@ import {
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreatePlatformImageTagInput,
   CreateBillingAnomalyInput,
   CreateBillingLedgerResourceInput,
   CreateBillingLineItemInput,
@@ -34,6 +35,7 @@ import {
   OperationConfirmationRecord,
   PlatformUserRecord,
   PlatformImageAssetRecord,
+  PlatformImageTagRecord,
   ProvisionJobRecord,
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
@@ -146,6 +148,32 @@ function toIdempotentOperationRecord(record: {
   return {
     ...record,
     result: (record.result ?? null) as Record<string, unknown> | null,
+  };
+}
+
+const platformImageAssetTagInclude = {
+  tags: {
+    include: {
+      tag: true,
+    },
+    orderBy: {
+      tag: {
+        name: 'asc',
+      },
+    },
+  },
+} as const;
+
+type PlatformImageAssetWithTags = Omit<PlatformImageAssetRecord, 'tags'> & {
+  tags: Array<{ tag: PlatformImageTagRecord }>;
+};
+
+function toPlatformImageAssetRecord(record: PlatformImageAssetWithTags): PlatformImageAssetRecord {
+  const { tags, ...asset } = record;
+
+  return {
+    ...asset,
+    tags: tags.map((entry) => entry.tag),
   };
 }
 
@@ -1181,7 +1209,7 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async listPlatformImageAssets(filter: ListPlatformImageAssetsFilter = {}): Promise<PlatformImageAssetRecord[]> {
-    return this.prisma.platformImageAsset.findMany({
+    const assets = await this.prisma.platformImageAsset.findMany({
       where: {
         ...(filter.provider !== undefined ? { provider: filter.provider } : {}),
         ...(filter.accountUid !== undefined ? { accountUid: filter.accountUid } : {}),
@@ -1204,15 +1232,21 @@ export class PrismaAdminRepository implements AdminRepository {
       orderBy: {
         createdAt: 'desc',
       },
-    }) as Promise<PlatformImageAssetRecord[]>;
+      include: platformImageAssetTagInclude,
+    });
+
+    return assets.map((asset) => toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags));
   }
 
   async getPlatformImageAssetById(id: string): Promise<PlatformImageAssetRecord | null> {
-    return this.prisma.platformImageAsset.findUnique({
+    const asset = await this.prisma.platformImageAsset.findUnique({
       where: {
         id,
       },
-    }) as Promise<PlatformImageAssetRecord | null>;
+      include: platformImageAssetTagInclude,
+    });
+
+    return asset ? toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags) : null;
   }
 
   async collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord> {
@@ -1222,7 +1256,7 @@ export class PrismaAdminRepository implements AdminRepository {
       },
     });
 
-    return this.prisma.platformImageAsset.upsert({
+    const asset = await this.prisma.platformImageAsset.upsert({
       where: {
         provider_accountScopeKey_regionId_imageId: {
           provider: snapshot.provider,
@@ -1259,29 +1293,89 @@ export class PrismaAdminRepository implements AdminRepository {
         visibility: input.visibility ?? 'private',
         enabled: true,
       },
-    }) as Promise<PlatformImageAssetRecord>;
+      include: platformImageAssetTagInclude,
+    });
+
+    return toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags);
   }
 
   async updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord> {
-    return this.prisma.platformImageAsset.update({
+    const asset = await this.prisma.platformImageAsset.update({
       where: {
         id,
       },
       data: {
         displayName: input.displayName,
       },
-    }) as Promise<PlatformImageAssetRecord>;
+      include: platformImageAssetTagInclude,
+    });
+
+    return toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags);
   }
 
   async setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord> {
-    return this.prisma.platformImageAsset.update({
+    const asset = await this.prisma.platformImageAsset.update({
       where: {
         id,
       },
       data: {
         enabled,
       },
-    }) as Promise<PlatformImageAssetRecord>;
+      include: platformImageAssetTagInclude,
+    });
+
+    return toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags);
+  }
+
+  async listPlatformImageTags(): Promise<PlatformImageTagRecord[]> {
+    return this.prisma.platformImageTag.findMany({
+      orderBy: {
+        name: 'asc',
+      },
+    }) as Promise<PlatformImageTagRecord[]>;
+  }
+
+  async listPlatformImageTagsByIds(ids: string[]): Promise<PlatformImageTagRecord[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    return this.prisma.platformImageTag.findMany({
+      where: {
+        id: {
+          in: ids,
+        },
+      },
+    }) as Promise<PlatformImageTagRecord[]>;
+  }
+
+  async createPlatformImageTag(input: CreatePlatformImageTagInput): Promise<PlatformImageTagRecord> {
+    return this.prisma.platformImageTag.create({
+      data: input,
+    }) as Promise<PlatformImageTagRecord>;
+  }
+
+  async replacePlatformImageAssetTags(id: string, tagIds: string[]): Promise<PlatformImageAssetRecord> {
+    const asset = await this.prisma.platformImageAsset.update({
+      where: {
+        id,
+      },
+      data: {
+        tags: {
+          deleteMany: {},
+          create: tagIds.map((tagId) => ({
+            tag: {
+              connect: {
+                id: tagId,
+              },
+            },
+          })),
+        },
+      },
+      include: platformImageAssetTagInclude,
+    });
+
+    return toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags);
   }
 
   async hasActiveImageImportForArtifact(input: {

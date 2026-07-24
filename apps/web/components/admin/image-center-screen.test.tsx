@@ -20,6 +20,7 @@ const {
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
   fetchPlatformImagesMock,
+  fetchPlatformImageTagsMock,
   fetchCloudAccountContextsMock,
   fetchImageImportJobsMock,
   createImageImportMock,
@@ -28,12 +29,14 @@ const {
   syncPublicImagesMock,
   syncCustomImagesMock,
   collectPlatformImageMock,
+  createPlatformImageTagMock,
   renamePlatformImageMock,
   publishPlatformImageMock,
   unpublishPlatformImageMock,
   enablePlatformImageMock,
   disablePlatformImageMock,
   removePlatformImageMock,
+  setPlatformImageTagsMock,
   deleteCustomImageSnapshotMock,
   logoutMock,
   pushMock,
@@ -42,6 +45,7 @@ const {
   fetchPublicImageCatalogScopeMock: vi.fn(),
   fetchCustomImageCatalogScopeMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
+  fetchPlatformImageTagsMock: vi.fn(),
   fetchCloudAccountContextsMock: vi.fn(),
   fetchImageImportJobsMock: vi.fn(),
   createImageImportMock: vi.fn(),
@@ -50,12 +54,14 @@ const {
   syncPublicImagesMock: vi.fn(),
   syncCustomImagesMock: vi.fn(),
   collectPlatformImageMock: vi.fn(),
+  createPlatformImageTagMock: vi.fn(),
   renamePlatformImageMock: vi.fn(),
   publishPlatformImageMock: vi.fn(),
   unpublishPlatformImageMock: vi.fn(),
   enablePlatformImageMock: vi.fn(),
   disablePlatformImageMock: vi.fn(),
   removePlatformImageMock: vi.fn(),
+  setPlatformImageTagsMock: vi.fn(),
   deleteCustomImageSnapshotMock: vi.fn(),
   logoutMock: vi.fn(),
   pushMock: vi.fn(),
@@ -76,6 +82,7 @@ vi.mock('../../lib/admin-api', async () => {
     fetchPublicImageCatalogScope: fetchPublicImageCatalogScopeMock,
     fetchCustomImageCatalogScope: fetchCustomImageCatalogScopeMock,
     fetchPlatformImages: fetchPlatformImagesMock,
+    fetchPlatformImageTags: fetchPlatformImageTagsMock,
     fetchCloudAccountContexts: fetchCloudAccountContextsMock,
     fetchImageImportJobs: fetchImageImportJobsMock,
     createImageImport: createImageImportMock,
@@ -84,12 +91,14 @@ vi.mock('../../lib/admin-api', async () => {
     syncPublicImages: syncPublicImagesMock,
     syncCustomImages: syncCustomImagesMock,
     collectPlatformImage: collectPlatformImageMock,
+    createPlatformImageTag: createPlatformImageTagMock,
     renamePlatformImage: renamePlatformImageMock,
     publishPlatformImage: publishPlatformImageMock,
     unpublishPlatformImage: unpublishPlatformImageMock,
     enablePlatformImage: enablePlatformImageMock,
     disablePlatformImage: disablePlatformImageMock,
     removePlatformImage: removePlatformImageMock,
+    setPlatformImageTags: setPlatformImageTagsMock,
     deleteCustomImageSnapshot: deleteCustomImageSnapshotMock,
   };
 });
@@ -157,6 +166,7 @@ function createPlatformImageAsset(
     sourceScope: 'custom',
     sourceSnapshotId: null,
     enabled: true,
+    tags: [],
     createdAt: '2026-07-03T00:00:00.000Z',
     updatedAt: '2026-07-03T00:00:00.000Z',
     ...overrides,
@@ -245,6 +255,7 @@ beforeEach(() => {
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
   fetchPlatformImagesMock.mockReset();
+  fetchPlatformImageTagsMock.mockReset();
   fetchCloudAccountContextsMock.mockReset();
   fetchImageImportJobsMock.mockReset();
   createImageImportMock.mockReset();
@@ -253,12 +264,14 @@ beforeEach(() => {
   syncPublicImagesMock.mockReset();
   syncCustomImagesMock.mockReset();
   collectPlatformImageMock.mockReset();
+  createPlatformImageTagMock.mockReset();
   renamePlatformImageMock.mockReset();
   publishPlatformImageMock.mockReset();
   unpublishPlatformImageMock.mockReset();
   enablePlatformImageMock.mockReset();
   disablePlatformImageMock.mockReset();
   removePlatformImageMock.mockReset();
+  setPlatformImageTagsMock.mockReset();
   deleteCustomImageSnapshotMock.mockReset();
   logoutMock.mockReset();
   pushMock.mockReset();
@@ -288,6 +301,9 @@ beforeEach(() => {
     },
   ]);
   fetchImageImportJobsMock.mockResolvedValue({ items: [] });
+  fetchPlatformImageTagsMock.mockResolvedValue({
+    items: [{ id: 'tag-critical', name: '关键资产' }],
+  });
   syncPublicImagesMock.mockResolvedValue(publicScopePayload);
   syncCustomImagesMock.mockResolvedValue(customScopePayload);
   collectPlatformImageMock.mockResolvedValue(
@@ -355,6 +371,22 @@ beforeEach(() => {
     }),
   );
   removePlatformImageMock.mockResolvedValue(undefined);
+  createPlatformImageTagMock.mockResolvedValue({ id: 'tag-new', name: '渗透测试' });
+  setPlatformImageTagsMock.mockResolvedValue(
+    createPlatformImageAsset({
+      id: 'platform-image-1',
+      imageId: 'aliyun-linux-3',
+      displayName: 'Alibaba Cloud Linux 3',
+      createdBy: 'admin',
+      sourceSnapshotId: 'public-snapshot-1',
+      sourceScope: 'public',
+      enabled: true,
+      tags: [
+        { id: 'tag-critical', name: '关键资产' },
+        { id: 'tag-new', name: '渗透测试' },
+      ],
+    }),
+  );
   deleteCustomImageSnapshotMock.mockResolvedValue(undefined);
 
 });
@@ -377,6 +409,7 @@ describe('ImageCenterScreen', () => {
     expect(within(table).getByRole('columnheader', { name: '镜像名' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '镜像 ID' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '标签' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
     expect(within(table).getByText('当前没有平台镜像。')).toBeTruthy();
@@ -435,6 +468,79 @@ describe('ImageCenterScreen', () => {
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
     expect(fetchCustomImageCatalogScopeMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token');
     expect(fetchPublicImageCatalogScopeMock).not.toHaveBeenCalled();
+  });
+
+  it('filters platform images by creator and existing tag', async () => {
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine'
+        ? myImagesPayload
+        : ({
+            items: [
+              createPlatformImageAsset({
+                id: 'platform-image-alice',
+                imageId: 'm-alice',
+                displayName: 'Alice Linux',
+                createdBy: 'alice',
+                tags: [{ id: 'tag-critical', name: '关键资产' }],
+              }),
+              createPlatformImageAsset({
+                id: 'platform-image-bob',
+                imageId: 'm-bob',
+                displayName: 'Bob Linux',
+                createdBy: 'bob',
+                tags: [],
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('Alice Linux')).toBeTruthy();
+    expect(screen.getByText('关键资产')).toBeTruthy();
+    expect(screen.getByText('Bob Linux')).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '按创建人筛选' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: 'alice' }));
+
+    expect(screen.getByText('Alice Linux')).toBeTruthy();
+    expect(screen.queryByText('Bob Linux')).toBeNull();
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '按标签筛选' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '关键资产' }));
+
+    expect(screen.getByText('Alice Linux')).toBeTruthy();
+  });
+
+  it('lets admins create and assign image tags from the management dialog', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    const imageRow = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(imageRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '管理标签' }));
+
+    const dialog = screen.getByRole('dialog', { name: '管理镜像标签' });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: '选择标签 关键资产' }));
+    fireEvent.change(within(dialog).getByLabelText('新标签名称'), { target: { value: '渗透测试' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '新建标签' }));
+
+    await waitFor(() => {
+      expect(createPlatformImageTagMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', '渗透测试');
+    });
+
+    expect(within(dialog).getByRole('checkbox', { name: '选择标签 渗透测试' })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存标签' }));
+
+    await waitFor(() => {
+      expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'platform-image-1',
+        ['tag-critical', 'tag-new'],
+      );
+    });
+
+    expect(await screen.findByText('渗透测试')).toBeTruthy();
   });
 
   it('lazy-loads cloud image source tabs only when they are opened', async () => {

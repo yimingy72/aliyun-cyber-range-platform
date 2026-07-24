@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   collectPlatformImage,
   completeImageImport,
+  createPlatformImageTag,
   createImageImport,
   deleteCustomImageSnapshot,
   disablePlatformImage,
@@ -26,12 +27,14 @@ import {
   fetchCustomImageCatalogScope,
   fetchCloudAccountContexts,
   fetchImageImportJobs,
+  fetchPlatformImageTags,
   fetchPlatformImages,
   fetchPublicImageCatalogScope,
   publishPlatformImage,
   removePlatformImage,
   renamePlatformImage,
   retryImageImport,
+  setPlatformImageTags,
   syncCustomImages,
   syncPublicImages,
   unpublishPlatformImage,
@@ -43,6 +46,7 @@ import type {
   CloudAccountContext,
   ImageImportJob,
   PlatformImageAsset,
+  PlatformImageTag,
 } from '../../lib/admin-types';
 import {
   AdminPaginationControls,
@@ -92,6 +96,7 @@ const ASSET_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
   { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
   { id: 'createdBy', label: '创建人', priority: 'tertiary' },
+  { id: 'tags', label: '标签', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'secondary' },
   { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
 ];
@@ -249,6 +254,10 @@ function matchesPlatformAssetSearch(asset: PlatformImageAsset, keyword: string) 
   return asset.displayName.toLowerCase().includes(normalizedKeyword) || asset.imageId.toLowerCase().includes(normalizedKeyword);
 }
 
+function getPlatformAssetCreator(asset: PlatformImageAsset) {
+  return asset.createdBy?.trim() || 'admin';
+}
+
 function buildCollectedImageIdSet(items: PlatformImageAsset[]) {
   return new Set(items.filter((item) => item.enabled).map((item) => item.imageId));
 }
@@ -339,6 +348,9 @@ export function ImageCenterScreen({
   const [searchName, setSearchName] = useState('');
   const [platformAssets, setPlatformAssets] = useState<PlatformImageAsset[]>([]);
   const [myAssets, setMyAssets] = useState<PlatformImageAsset[]>([]);
+  const [platformImageTags, setAvailablePlatformImageTags] = useState<PlatformImageTag[]>([]);
+  const [platformCreatedByFilter, setPlatformCreatedByFilter] = useState('');
+  const [platformTagFilter, setPlatformTagFilter] = useState('');
   const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(null);
   const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
   const [loadedTabs, setLoadedTabs] = useState<Record<ActiveTab, boolean>>({
@@ -363,6 +375,10 @@ export function ImageCenterScreen({
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [taggingAsset, setTaggingAsset] = useState<PlatformImageAsset | null>(null);
+  const [taggingTagIds, setTaggingTagIds] = useState<string[]>([]);
+  const [newTagName, setNewTagName] = useState('');
+  const [taggingErrorMessage, setTaggingErrorMessage] = useState('');
   const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
   const [cloudContexts, setCloudContexts] = useState<CloudAccountContext[]>([]);
   const [imageImportJobs, setImageImportJobs] = useState<ImageImportJob[]>([]);
@@ -372,6 +388,7 @@ export function ImageCenterScreen({
   const [imageImportProgress, setImageImportProgress] = useState<number | null>(null);
   const platformRequestVersionRef = useRef(0);
   const mineRequestVersionRef = useRef(0);
+  const platformImageTagsRequestVersionRef = useRef(0);
   const imageImportJobsRequestVersionRef = useRef(0);
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
@@ -580,24 +597,31 @@ export function ImageCenterScreen({
     if (!session.isReady || !session.token) {
       setCloudContexts([]);
       setImageImportJobs([]);
+      setAvailablePlatformImageTags([]);
       return;
     }
 
     let isActive = true;
     const imageImportJobsRequestVersion = imageImportJobsRequestVersionRef.current + 1;
     imageImportJobsRequestVersionRef.current = imageImportJobsRequestVersion;
+    const platformImageTagsRequestVersion = platformImageTagsRequestVersionRef.current + 1;
+    platformImageTagsRequestVersionRef.current = platformImageTagsRequestVersion;
 
     Promise.all([
       fetchCloudAccountContexts(apiBaseUrl, session.token),
       fetchImageImportJobs(apiBaseUrl, session.token),
+      fetchPlatformImageTags(apiBaseUrl, session.token),
     ])
-      .then(([contextsPayload, jobsPayload]) => {
+      .then(([contextsPayload, jobsPayload, tagsPayload]) => {
         if (!isActive) {
           return;
         }
         setCloudContexts(contextsPayload);
         if (imageImportJobsRequestVersionRef.current === imageImportJobsRequestVersion) {
           setImageImportJobs(jobsPayload.items);
+        }
+        if (platformImageTagsRequestVersionRef.current === platformImageTagsRequestVersion) {
+          setAvailablePlatformImageTags(tagsPayload.items);
         }
       })
       .catch((error) => {
@@ -653,6 +677,9 @@ export function ImageCenterScreen({
     if (!session.token) {
       setPlatformAssets([]);
       setMyAssets([]);
+      setAvailablePlatformImageTags([]);
+      setPlatformCreatedByFilter('');
+      setPlatformTagFilter('');
       setPublicScope(null);
       setCustomScope(null);
       const resetLoadedTabs = { platform: false, mine: false, custom: false, public: false };
@@ -957,6 +984,86 @@ export function ImageCenterScreen({
     setRenameDraft('');
   }
 
+  function openTaggingDialog(asset: PlatformImageAsset) {
+    setTaggingAsset(asset);
+    setTaggingTagIds(asset.tags.map((tag) => tag.id));
+    setNewTagName('');
+    setTaggingErrorMessage('');
+  }
+
+  function closeTaggingDialog() {
+    setTaggingAsset(null);
+    setTaggingTagIds([]);
+    setNewTagName('');
+    setTaggingErrorMessage('');
+  }
+
+  function toggleTaggingTag(tagId: string, checked: boolean) {
+    setTaggingTagIds((current) =>
+      checked ? (current.includes(tagId) ? current : [...current, tagId]) : current.filter((currentTagId) => currentTagId !== tagId),
+    );
+  }
+
+  async function handleCreatePlatformImageTag() {
+    if (!session.token || !session.isAdmin) {
+      return;
+    }
+
+    const name = newTagName.trim();
+
+    if (!name) {
+      setTaggingErrorMessage('请填写标签名称。');
+      return;
+    }
+
+    const actionKey = 'create:platform-image-tag';
+
+    try {
+      setTaggingErrorMessage('');
+      beginAction(actionKey);
+      const tag = await createPlatformImageTag(apiBaseUrl, session.token, name);
+      setAvailablePlatformImageTags((current) =>
+        [...current.filter((item) => item.id !== tag.id), tag].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
+      );
+      setTaggingTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
+      setNewTagName('');
+    } catch (error) {
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        return;
+      }
+
+      setTaggingErrorMessage(error instanceof Error ? error.message : '镜像标签创建失败');
+    } finally {
+      endAction(actionKey);
+    }
+  }
+
+  async function handleSavePlatformImageTags() {
+    if (!taggingAsset || !session.token) {
+      return;
+    }
+
+    const actionKey = `tags:platform:${taggingAsset.id}`;
+
+    try {
+      setTaggingErrorMessage('');
+      beginAction(actionKey);
+      const nextAsset = await setPlatformImageTags(apiBaseUrl, session.token, taggingAsset.id, taggingTagIds);
+      syncAssetAcrossViews(nextAsset);
+      closeTaggingDialog();
+    } catch (error) {
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        return;
+      }
+
+      setTaggingErrorMessage(error instanceof Error ? error.message : '镜像标签保存失败');
+    } finally {
+      endAction(actionKey);
+    }
+  }
+
   function closeConfirmDialog() {
     setConfirmState(null);
   }
@@ -1121,7 +1228,15 @@ export function ImageCenterScreen({
     }
   }
 
-  const filteredPlatformAssets = platformAssets.filter((asset) => matchesPlatformAssetSearch(asset, searchName));
+  const platformCreators = [...new Set(platformAssets.map(getPlatformAssetCreator))].sort((left, right) =>
+    left.localeCompare(right, 'zh-CN'),
+  );
+  const filteredPlatformAssets = platformAssets.filter(
+    (asset) =>
+      matchesPlatformAssetSearch(asset, searchName) &&
+      (!platformCreatedByFilter || getPlatformAssetCreator(asset) === platformCreatedByFilter) &&
+      (!platformTagFilter || asset.tags.some((tag) => tag.id === platformTagFilter)),
+  );
   const filteredMyAssets = myAssets.filter((asset) => matchesPlatformAssetSearch(asset, searchName));
   const filteredCustomSnapshots = (customScope?.snapshots ?? []).filter((snapshot) => matchesSnapshotSearch(snapshot, searchName));
   const filteredPublicSnapshots = (publicScope?.snapshots ?? []).filter((snapshot) => matchesSnapshotSearch(snapshot, searchName));
@@ -1202,12 +1317,13 @@ export function ImageCenterScreen({
     },
   ) {
     return items.map((asset) => {
-      const [nameColumn, imageIdColumn, createdByColumn, statusColumn, actionsColumn] = columns;
+      const [nameColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
+      const taggingActionKey = `tags:platform:${asset.id}`;
       const removeActionKey = `remove:platform:${asset.id}`;
-      const isPending = [renameActionKey, toggleActionKey, visibilityActionKey, removeActionKey].some((key) =>
+      const isPending = [renameActionKey, toggleActionKey, visibilityActionKey, taggingActionKey, removeActionKey].some((key) =>
         pendingActionKeys.includes(key),
       );
       const canManageAsset =
@@ -1236,7 +1352,20 @@ export function ImageCenterScreen({
           <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
             {asset.imageId}
           </AdminDataTableCell>
-          <AdminDataTableCell column={createdByColumn!}>{asset.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+          <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
+          <AdminDataTableCell column={tagsColumn!}>
+            {asset.tags.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {asset.tags.map((tag) => (
+                  <Badge key={tag.id} variant="outline">
+                    {tag.name}
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <span className="text-muted-foreground">-</span>
+            )}
+          </AdminDataTableCell>
           <AdminDataTableCell column={statusColumn!}>
             <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
           </AdminDataTableCell>
@@ -1275,6 +1404,7 @@ export function ImageCenterScreen({
                             {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
                           </DropdownMenuItem>
                         ) : null}
+                        <DropdownMenuItem onSelect={() => openTaggingDialog(asset)}>管理标签</DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => openRenameDialog(asset)}>重命名</DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => void handleTogglePlatformAsset(asset)}>
                           {asset.enabled ? '禁用' : '启用'}
@@ -1482,6 +1612,32 @@ export function ImageCenterScreen({
                 onTabChange={setActiveTab}
               >
                 <div className="space-y-4">
+                  {activeTab === 'platform' ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <AdminSelectField
+                        ariaLabel="按创建人筛选"
+                        className="w-full sm:w-44"
+                        emptyOptionLabel="全部创建人"
+                        onValueChange={(value) => {
+                          setPlatformCreatedByFilter(value);
+                          setPage('platform', 1);
+                        }}
+                        options={platformCreators.map((creator) => ({ label: creator, value: creator }))}
+                        value={platformCreatedByFilter}
+                      />
+                      <AdminSelectField
+                        ariaLabel="按标签筛选"
+                        className="w-full sm:w-44"
+                        emptyOptionLabel="全部标签"
+                        onValueChange={(value) => {
+                          setPlatformTagFilter(value);
+                          setPage('platform', 1);
+                        }}
+                        options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
+                        value={platformTagFilter}
+                      />
+                    </div>
+                  ) : null}
                   {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
                     <div className="image-import-job-list" aria-live="polite">
                       {visibleImageImportJobs.slice(0, 3).map((job) => (
@@ -1769,6 +1925,77 @@ export function ImageCenterScreen({
                   </button>
                 </div>
               </form>
+            </ImageCenterDialog>
+          ) : null}
+
+          {taggingAsset ? (
+            <ImageCenterDialog title="管理镜像标签">
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  {platformImageTags.length > 0 ? (
+                    platformImageTags.map((tag) => (
+                      <label className="flex items-center gap-2 text-sm" key={tag.id}>
+                        <input
+                          aria-label={`选择标签 ${tag.name}`}
+                          checked={taggingTagIds.includes(tag.id)}
+                          disabled={pendingActionKeys.includes(`tags:platform:${taggingAsset.id}`)}
+                          onChange={(event) => toggleTaggingTag(tag.id, event.currentTarget.checked)}
+                          type="checkbox"
+                        />
+                        <span>{tag.name}</span>
+                      </label>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground">暂无可用标签。</p>
+                  )}
+                </div>
+                {session.isAdmin ? (
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      aria-label="新标签名称"
+                      className="min-w-40 flex-1"
+                      disabled={pendingActionKeys.includes('create:platform-image-tag')}
+                      maxLength={32}
+                      onChange={(event) => {
+                        setNewTagName(event.currentTarget.value);
+                        setTaggingErrorMessage('');
+                      }}
+                      placeholder="新建标签"
+                      value={newTagName}
+                    />
+                    <button
+                      disabled={pendingActionKeys.includes('create:platform-image-tag')}
+                      onClick={() => void handleCreatePlatformImageTag()}
+                      type="button"
+                    >
+                      新建标签
+                    </button>
+                  </div>
+                ) : null}
+                {taggingErrorMessage ? <p className="admin-error" role="alert">{taggingErrorMessage}</p> : null}
+              </div>
+              <div className="template-workbench-dialog-actions">
+                <button
+                  disabled={
+                    pendingActionKeys.includes(`tags:platform:${taggingAsset.id}`) ||
+                    pendingActionKeys.includes('create:platform-image-tag')
+                  }
+                  onClick={() => void handleSavePlatformImageTags()}
+                  type="button"
+                >
+                  保存标签
+                </button>
+                <button
+                  disabled={
+                    pendingActionKeys.includes(`tags:platform:${taggingAsset.id}`) ||
+                    pendingActionKeys.includes('create:platform-image-tag')
+                  }
+                  onClick={closeTaggingDialog}
+                  type="button"
+                >
+                  取消
+                </button>
+              </div>
             </ImageCenterDialog>
           ) : null}
 

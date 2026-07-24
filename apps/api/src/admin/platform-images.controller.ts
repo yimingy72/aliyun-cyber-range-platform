@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { CollectPlatformImageDto, ListPlatformImagesDto, UpdatePlatformImageDto } from './dto/platform-image.dto';
+import { SetPlatformImageTagsDto } from './dto/platform-image-tag.dto';
 import { ImageCatalogService } from './image-catalog.service';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
@@ -35,6 +36,13 @@ export class PlatformImagesController {
     return this.mcpWrite(request, 'platform_image_rename', { platformImageAssetId: id, ...body }, id, () =>
       this.imageCatalogService.updatePlatformAsset(id, body, request.adminUser),
     );
+  }
+
+  @Put(':id/tags')
+  @HttpCode(200)
+  @UseGuards(AdminAuthGuard)
+  setTags(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: SetPlatformImageTagsDto) {
+    return this.imageCatalogService.setPlatformAssetTags(id, body, request.adminUser);
   }
 
   @Post(':id/enable')

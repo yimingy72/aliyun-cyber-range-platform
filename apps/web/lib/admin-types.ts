@@ -512,6 +512,11 @@ export type ImageCatalogItem = {
   updatedAt?: string | null;
 };
 
+export type PlatformImageTag = {
+  id: string;
+  name: string;
+};
+
 export type PlatformImageAsset = {
   id: string;
   provider: 'alibaba_cloud';
@@ -532,6 +537,7 @@ export type PlatformImageAsset = {
   defaultHostName?: string | null;
   description?: string | null;
   enabled: boolean;
+  tags: PlatformImageTag[];
   createdAt?: string | null;
   updatedAt?: string | null;
 };
@@ -543,6 +549,10 @@ export type ImageCatalogScopePayload = {
 
 export type PlatformImageAssetListPayload = {
   items: PlatformImageAsset[];
+};
+
+export type PlatformImageTagListPayload = {
+  items: PlatformImageTag[];
 };
 
 export type CloudAccountContext = {

@@ -4,6 +4,7 @@ import request from 'supertest';
 
 import { hashPassword } from '../src/admin/admin-user-auth';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
+import { OidcAdminBootstrapService } from '../src/oidc-admin-bootstrap.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
@@ -49,6 +50,8 @@ async function createApp(repository: AdminRepository) {
     .useValue(repository)
     .overrideProvider(SystemConfigService)
     .useValue(createSystemConfigServiceStub())
+    .overrideProvider(OidcAdminBootstrapService)
+    .useValue({ onModuleInit: jest.fn() })
     .compile();
 
   const app = moduleRef.createNestApplication();
@@ -389,6 +392,97 @@ describe('Admin image catalog APIs', () => {
         }),
       ],
     });
+  });
+
+  it('allows admins to create image tags and only owners or admins to assign existing tags', async () => {
+    repository = createMemoryAdminRepository();
+
+    await repository.createPlatformUser({
+      id: 'tag-owner-1',
+      username: 'tag-owner',
+      passwordHash: hashPassword('owner-password'),
+      role: 'user',
+      status: 'active',
+    });
+    await repository.createPlatformUser({
+      id: 'tag-viewer-1',
+      username: 'tag-viewer',
+      passwordHash: hashPassword('viewer-password'),
+      role: 'user',
+      status: 'active',
+    });
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-tagged-owner-image',
+          sourceImageName: 'Taggable Owner Image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-06T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-tagged-owner-image',
+    });
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id,
+      displayName: 'Taggable Owner Image',
+      ownerUserId: 'tag-owner-1',
+      visibility: 'platform',
+    });
+
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+    const ownerToken = await loginAs(app, 'tag-owner', 'owner-password');
+    const viewerToken = await loginAs(app, 'tag-viewer', 'viewer-password');
+
+    const tagResponse = await request(app.getHttpServer())
+      .post('/admin/platform-image-tags')
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Web' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/admin/platform-image-tags')
+      .set('authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Owner-created tag' })
+      .expect(403);
+
+    const ownerUpdateResponse = await request(app.getHttpServer())
+      .put(`/admin/platform-images/${asset.id}/tags`)
+      .set('authorization', `Bearer ${ownerToken}`)
+      .send({ tagIds: [tagResponse.body.id] })
+      .expect(200);
+
+    expect(ownerUpdateResponse.body.tags).toEqual([{ id: tagResponse.body.id, name: 'Web' }]);
+
+    await request(app.getHttpServer())
+      .put(`/admin/platform-images/${asset.id}/tags`)
+      .set('authorization', `Bearer ${viewerToken}`)
+      .send({ tagIds: [tagResponse.body.id] })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .put(`/admin/platform-images/${asset.id}/tags`)
+      .set('authorization', `Bearer ${ownerToken}`)
+      .send({ tagIds: ['missing-tag'] })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .get('/admin/platform-image-tags')
+      .set('authorization', `Bearer ${ownerToken}`)
+      .expect(200)
+      .expect({ items: [{ id: tagResponse.body.id, name: 'Web' }] });
   });
 
   it('GET /admin/image-catalog/custom auto-syncs latest image status and progress before returning rows', async () => {

@@ -109,7 +109,15 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
+    if (/^\/admin\/platform-images\/[^/]+\/tags$/.test(pathname) && method === 'PUT') {
+      return true;
+    }
+
     if (/^\/admin\/platform-images\/[^/]+\/(enable|disable)$/.test(pathname) && method === 'POST') {
+      return true;
+    }
+
+    if (pathname === '/admin/platform-image-tags' && method === 'GET') {
       return true;
     }
 

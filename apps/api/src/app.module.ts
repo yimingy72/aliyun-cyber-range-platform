@@ -16,6 +16,7 @@ import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
 import { BillingSyncService } from './admin/billing-sync.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
+import { PlatformImageTagsController } from './admin/platform-image-tags.controller';
 import { AdminUsersController } from './admin/admin-users.controller';
 import { AdminUsersService } from './admin/admin-users.service';
 import { KeycloakAdminService } from './admin/keycloak-admin.service';
@@ -77,6 +78,7 @@ function resolveProjectRootDir() {
     ImageImportsController,
     BillingController,
     PlatformImagesController,
+    PlatformImageTagsController,
     SingleInstancesController,
   ],
   providers: [

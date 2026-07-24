@@ -25,6 +25,7 @@ function createAsset(): PlatformImageAssetRecord {
     ownerUserId: OWNER.id,
     visibility: 'private',
     enabled: false,
+    tags: [],
     createdAt: now,
     updatedAt: now,
   };

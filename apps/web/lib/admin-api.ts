@@ -14,6 +14,8 @@ import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
   PlatformImageAssetListPayload,
+  PlatformImageTag,
+  PlatformImageTagListPayload,
   CloudAccountContext,
   CreateImageImportInput,
   ImageImportJob,
@@ -953,6 +955,34 @@ export async function fetchPlatformImages(apiBaseUrl: string, token: string, vie
   });
 
   return readJson<PlatformImageAssetListPayload>(response);
+}
+
+export async function fetchPlatformImageTags(apiBaseUrl: string, token: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-image-tags`, {
+    headers: createAdminHeaders(token),
+  });
+
+  return readJson<PlatformImageTagListPayload>(response);
+}
+
+export async function createPlatformImageTag(apiBaseUrl: string, token: string, name: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-image-tags`, {
+    method: 'POST',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify({ name }),
+  });
+
+  return readJson<PlatformImageTag>(response);
+}
+
+export async function setPlatformImageTags(apiBaseUrl: string, token: string, id: string, tagIds: string[]) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${encodeURIComponent(id)}/tags`, {
+    method: 'PUT',
+    headers: createAdminHeaders(token),
+    body: JSON.stringify({ tagIds }),
+  });
+
+  return readJson<PlatformImageAsset>(response);
 }
 
 export async function fetchCloudAccountContexts(apiBaseUrl: string, token: string) {

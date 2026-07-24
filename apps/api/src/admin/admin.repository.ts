@@ -425,6 +425,16 @@ export type PlatformImageAssetRecord = {
   ownerUserId: string | null;
   visibility: ResourceVisibility;
   enabled: boolean;
+  tags: PlatformImageTagRecord[];
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type PlatformImageTagRecord = {
+  id: string;
+  name: string;
+  normalizedName: string;
+  createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -664,6 +674,12 @@ export type CollectPlatformImageAssetInput = {
   visibility?: ResourceVisibility;
 };
 
+export type CreatePlatformImageTagInput = {
+  name: string;
+  normalizedName: string;
+  createdByUserId: string;
+};
+
 export type CreatePlatformUserInput = {
   id: string;
   username: string;
@@ -888,6 +904,10 @@ export interface AdminRepository {
   collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord>;
   updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord>;
   setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord>;
+  listPlatformImageTags(): Promise<PlatformImageTagRecord[]>;
+  listPlatformImageTagsByIds(ids: string[]): Promise<PlatformImageTagRecord[]>;
+  createPlatformImageTag(input: CreatePlatformImageTagInput): Promise<PlatformImageTagRecord>;
+  replacePlatformImageAssetTags(id: string, tagIds: string[]): Promise<PlatformImageAssetRecord>;
   hasActiveImageImportForArtifact(input: {
     platformImageAssetId?: string | null;
     sourceSnapshotId?: string | null;

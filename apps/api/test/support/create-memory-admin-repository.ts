@@ -6,6 +6,7 @@ import {
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CreatePlatformImageTagInput,
   CreateBillingAnomalyInput,
   CreateBillingLedgerResourceInput,
   CreateBillingLineItemInput,
@@ -27,6 +28,7 @@ import {
   OperationConfirmationRecord,
   PlatformUserRecord,
   PlatformImageAssetRecord,
+  PlatformImageTagRecord,
   ProvisionJobRecord,
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
@@ -61,6 +63,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const imageSnapshots: CloudImageSnapshotRecord[] = [];
   const imageCatalogItems: ImageCatalogItemRecord[] = [];
   const platformImageAssets: PlatformImageAssetRecord[] = [];
+  const platformImageTags: PlatformImageTagRecord[] = [];
   const singleInstanceNetworkProfiles: SingleInstanceNetworkProfileRecord[] = [];
   const billingLedgerResources: BillingLedgerResourceRecord[] = [];
   const billingLineItems: BillingLineItemRecord[] = [];
@@ -968,6 +971,30 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async listPlatformImageTags() {
+      return cloneList(platformImageTags.slice().sort((left, right) => left.name.localeCompare(right.name)));
+    },
+    async listPlatformImageTagsByIds(ids: string[]) {
+      const requestedIds = new Set(ids);
+      return cloneList(platformImageTags.filter((tag) => requestedIds.has(tag.id)));
+    },
+    async createPlatformImageTag(input: CreatePlatformImageTagInput) {
+      if (platformImageTags.some((tag) => tag.normalizedName === input.normalizedName)) {
+        throw new Error(`Platform image tag unique constraint failed: normalizedName (${input.normalizedName})`);
+      }
+
+      const record: PlatformImageTagRecord = {
+        id: nextId(),
+        name: input.name,
+        normalizedName: input.normalizedName,
+        createdByUserId: input.createdByUserId,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      platformImageTags.push(record);
+
+      return clone(record);
+    },
     async listPlatformImageAssets(filter: ListPlatformImageAssetsFilter = {}) {
       return cloneList(
         platformImageAssets
@@ -1031,6 +1058,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         ownerUserId: input.ownerUserId ?? null,
         visibility: input.visibility ?? 'private',
         enabled: true,
+        tags: [],
         createdAt: now(),
         updatedAt: now(),
       };
@@ -1056,6 +1084,18 @@ export function createMemoryAdminRepository(): AdminRepository {
         enabled,
         updatedAt: now(),
       });
+
+      return clone(record);
+    },
+    async replacePlatformImageAssetTags(id: string, tagIds: string[]) {
+      const record = findPlatformImageAssetOrThrow(id);
+      const tagIdsSet = new Set(tagIds);
+
+      record.tags = platformImageTags
+        .filter((tag) => tagIdsSet.has(tag.id))
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((tag) => clone(tag));
+      record.updatedAt = now();
 
       return clone(record);
     },

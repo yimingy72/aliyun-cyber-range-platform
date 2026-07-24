@@ -178,6 +178,7 @@ model PlatformUser {
   createdAt                 DateTime              @default(now())
   updatedAt                 DateTime              @updatedAt
   platformImageAssets       PlatformImageAsset[]
+  createdImageTags          PlatformImageTag[]     @relation("PlatformImageTagCreator")
   rangeTemplates            RangeTemplate[]
   rangeInstances            RangeInstance[]
   singleInstanceBatches     SingleInstanceBatch[]
@@ -350,12 +351,37 @@ model PlatformImageAsset {
   updatedAt        DateTime            @updatedAt
   sourceSnapshot   CloudImageSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
   ownerUser        PlatformUser?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  tags             PlatformImageAssetTag[]
 
   @@unique([provider, accountScopeKey, regionId, imageId])
   @@index([provider, accountScopeKey, regionId])
   @@index([sourceSnapshotId])
   @@index([ownerUserId])
   @@index([visibility, enabled])
+}
+
+model PlatformImageTag {
+  id              String                  @id @default(cuid())
+  name            String
+  normalizedName  String                  @unique
+  createdByUserId String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  createdByUser   PlatformUser?           @relation("PlatformImageTagCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  imageAssets     PlatformImageAssetTag[]
+
+  @@index([createdByUserId])
+}
+
+model PlatformImageAssetTag {
+  platformImageAssetId String
+  tagId                String
+  createdAt            DateTime           @default(now())
+  platformImageAsset   PlatformImageAsset @relation(fields: [platformImageAssetId], references: [id], onDelete: Cascade)
+  tag                  PlatformImageTag   @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([platformImageAssetId, tagId])
+  @@index([tagId, platformImageAssetId])
 }
 
 model RangeTemplate {
