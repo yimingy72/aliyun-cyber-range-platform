@@ -236,7 +236,8 @@ export class ImageCatalogService {
       const snapshot = await this.resolvePlatformAssetSnapshot(asset);
 
       if (!snapshot) {
-        throw new ConflictException('自定义镜像的云端记录不可用，无法安全删除。请先同步镜像目录后重试。');
+        await this.adminRepository.deletePlatformImageAsset(id);
+        return;
       }
 
       await this.deleteCustomSnapshot(snapshot.id);

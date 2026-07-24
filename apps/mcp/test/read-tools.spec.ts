@@ -1002,6 +1002,24 @@ describe('tool registry', () => {
     );
   });
 
+  it('keeps admin-user operation metadata out of the user payload', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('admin_user_create', ['users:write'], {
+      username: 'mcp-test-user',
+      password: 'TestPassword123!',
+      role: 'user',
+      idempotencyKey: 'user-create-1',
+      confirmationId: 'confirm-1',
+    });
+
+    expect(client.createAdminUser).toHaveBeenCalledWith(
+      { username: 'mcp-test-user', password: 'TestPassword123!', role: 'user' },
+      { idempotencyKey: 'user-create-1', confirmationId: 'confirm-1' },
+    );
+  });
+
   it('returns a structured confirmation requirement', async () => {
     const client = createClientStub();
     (client.launchRange as ReturnType<typeof vi.fn>).mockRejectedValue(
