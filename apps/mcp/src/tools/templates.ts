@@ -35,8 +35,6 @@ type CreateInput = TemplateOperation & {
   primaryVpcCidr?: string;
   secondaryVpcCidrs?: string[];
   vpcCidr?: string;
-  defaultRegion?: string;
-  defaultZoneId?: string;
   publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
   topologyGraph: ScenarioGraphDraft;
   variableSchema?: Record<string, unknown>;
@@ -87,7 +85,7 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_create',
     title: '创建靶场模板',
-    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。仅传名称、描述、网络元数据和拓扑；slug、版本、云厂商、IaC 与模块路径由平台生成。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。必须有且仅有一个 exposePublic=true 的入口 ECS，且该 ECS 必须是至少一条 DNAT 的目标。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述、网络元数据和拓扑；slug、版本、云厂商、IaC 与模块路径由平台生成。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     outputSchema: resourceOutputSchema,
@@ -159,7 +157,10 @@ export const templateTools: ToolDefinition[] = [
       };
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
-      const compiled = compileTemplateTopology(topologyGraph, { ...metadataFromTemplate(current), ...pickTopologyMetadata(input) });
+      const compiled = compileTemplateTopology(topologyGraph, {
+        ...metadataFromTemplate(withServerOwnedMetadata(current)),
+        ...pickTopologyMetadata(input),
+      });
       const template = await context.client.saveRangeTemplateTopology(
         input.templateId,
         { ...compiled, expectedRevision: readTemplateRevision(current) },
@@ -225,9 +226,28 @@ function metadataForTemplateCreation(input: CreateInput): TemplateAuthoringMetad
   };
 }
 
+function withServerOwnedMetadata(template: Record<string, unknown>) {
+  const scenarioTemplateSpec = readRecord(template.scenarioTemplateSpec);
+  const scenarioMetadata = readRecord(scenarioTemplateSpec?.metadata);
+
+  return {
+    ...template,
+    version: readNonEmptyString(template.version) ?? readNonEmptyString(scenarioMetadata?.version) ?? internalCreateMetadata.version,
+    modulePathOrRef: readNonEmptyString(template.modulePathOrRef) ?? internalCreateMetadata.modulePathOrRef,
+  };
+}
+
 function pickTopologyMetadata(input: Record<string, unknown>) {
-  const keys = ['primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'defaultRegion', 'defaultZoneId', 'publicEntryProtocols'] as const;
+  const keys = ['primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'publicEntryProtocols'] as const;
   return Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
+}
+
+function readRecord(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readNonEmptyString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function readTemplateRevision(template: Record<string, unknown>) {

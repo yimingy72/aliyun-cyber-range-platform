@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import { PlatformApiClient, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
 import { createHttpApp } from '../src/http-app';
 
@@ -182,6 +182,94 @@ describe('mcp http e2e', () => {
 
     expect(platformClient.getInstanceTypeAvailability).toHaveBeenCalledWith(2, 4);
     expect(specificationResult.structuredContent).toMatchObject({ result: { exactAvailable: true } });
+
+    await transport.close();
+    await appClient.close();
+  });
+
+  it('returns the published template after a confirmed publish response', async () => {
+    const platformClient = new PlatformApiClient({
+      baseUrl: 'https://platform.example',
+      token: 'token-1',
+      fetch: vi.fn(async (input: string) => {
+        if (input.endsWith('/admin/scenarios/tpl-1')) {
+          return new Response(JSON.stringify({ id: 'tpl-1', revision: 1 }), { status: 200 });
+        }
+
+        if (input.endsWith('/admin/scenarios/tpl-1/share')) {
+          return new Response(
+            JSON.stringify({
+              operationId: 'operation-publish-1',
+              result: {
+                result: {
+                  id: 'tpl-1',
+                  visibility: 'platform',
+                  status: 'published',
+                  revision: 2,
+                },
+              },
+            }),
+            { status: 200 },
+          );
+        }
+
+        throw new Error(`Unexpected platform request: ${input}`);
+      }) as typeof fetch,
+    });
+    const auth: AuthInfo = {
+      token: 'token-1',
+      clientId: 'alice',
+      scopes: ['templates:read', 'templates:publish'],
+    };
+
+    server = createHttpApp(
+      {
+        host: '127.0.0.1',
+        port: 0,
+        platformApiBaseUrl: 'https://platform.example',
+        platformApiToken: 'token-1',
+      },
+      {
+        authenticateRequest: async () => auth,
+        client: platformClient,
+      },
+    );
+
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected server address');
+    }
+
+    const appClient = new Client({ name: 'test-client', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), {
+      requestInit: {
+        headers: {
+          Authorization: 'Bearer token-1',
+        },
+      },
+    });
+
+    await appClient.connect(transport);
+
+    const result = await appClient.callTool({
+      name: 'range_template_publish',
+      arguments: {
+        templateId: 'tpl-1',
+        confirmationId: 'confirmation-1',
+      },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual({
+      result: {
+        id: 'tpl-1',
+        visibility: 'platform',
+        status: 'published',
+        revision: 2,
+      },
+    });
 
     await transport.close();
     await appClient.close();

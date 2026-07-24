@@ -695,7 +695,9 @@ function buildAclDefinitionsFromCompiledSpec(compiledSpec: RangeTemplateCompiled
       resource.config.direction,
       `compiledSpec.resources[${resource.id}].config.direction`,
     ),
-    policy: requireValue(resource.config.policy, `compiledSpec.resources[${resource.id}].config.policy`),
+    policy: normalizeNetworkAclPolicy(
+      requireValue(resource.config.policy, `compiledSpec.resources[${resource.id}].config.policy`),
+    ),
     protocol: requireValue(
       resource.config.protocol,
       `compiledSpec.resources[${resource.id}].config.protocol`,
@@ -731,13 +733,17 @@ function buildAclDefinitionsFromCompiledProvisionSpec(compiledProvisionSpec: Com
       name: typeof record.name === 'string' ? record.name : record.key,
       zoneKey: record.zoneKey,
       direction: typeof record.direction === 'string' ? record.direction : 'inbound',
-      policy: typeof record.policy === 'string' ? record.policy : 'accept',
+      policy: normalizeNetworkAclPolicy(typeof record.policy === 'string' ? record.policy : 'accept'),
       protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
       portRange: typeof record.portRange === 'string' ? record.portRange : '22/22',
       sourceCidr: typeof record.sourceCidr === 'string' ? record.sourceCidr : '0.0.0.0/0',
       priority: typeof record.priority === 'number' ? record.priority : 1,
     }];
   });
+}
+
+function normalizeNetworkAclPolicy(policy: string) {
+  return policy === 'allow' ? 'accept' : policy;
 }
 
 function buildSnatEntriesFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {

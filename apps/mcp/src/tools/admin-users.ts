@@ -35,7 +35,10 @@ export const adminUserTools: ToolDefinition[] = [
     outputSchema: resourceOutputSchema,
     call(context, args) {
       const input = args as { username: string; password: string; role: 'admin' | 'user'; idempotencyKey?: string; confirmationId?: string };
-      return context.client.createAdminUser(input, operation(input));
+      return context.client.createAdminUser(
+        { username: input.username, password: input.password, role: input.role },
+        operation(input),
+      );
     },
   },
   {

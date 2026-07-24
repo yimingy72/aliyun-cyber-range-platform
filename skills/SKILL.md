@@ -15,11 +15,11 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 严格按以下顺序执行：
 
-1. **解析设计**：将用户输入解析为一份完整 YAML `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。旧设计中的 `template.slug`、版本、云厂商、IaC 和模块路径仅兼容读取，转换时丢弃，绝不传给 MCP。
+1. **解析设计**：将用户输入按拒绝重复映射键的 YAML 解析器解析为完整 `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；每个数组项必须有自己的 `-` 列表标记。`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。旧设计中的 `template.slug`、版本、云厂商、IaC 和模块路径仅兼容读取，转换时丢弃，绝不传给 MCP。
 2. **解析失败即停止**：出现截断字段、无效 YAML、缺失字段、未知图节点、重复 IP 或歧义镜像名时，只返回精确缺项/错误路径，请求修正设计；不得查询资源、猜测补全、试探调用、克隆模板或改用其他 MCP 工具。
-3. **读取靶场编排参考**：完整阅读 [靶场编排](./references/products/range-authoring.md)，再调用 `cloud_config_get` 与 `platform_image_list` 解析默认地域/可用区和镜像。
-4. **转换与创建**：由转换 Skill 生成完整 `topologyGraph`，并以 `range_template_create` 的运行时 schema 传入名称、描述、网络元数据和拓扑。
-5. **不做参数试错**：`slug`、版本、云厂商、IaC 类型、模块路径和所有派生规格均由平台管理，绝不能作为创建参数。创建 schema 或服务端返回校验错误时，停止并报告契约问题；不得通过删改字段、克隆或检测保存绕过。
+3. **读取靶场编排参考**：完整阅读 [靶场编排](./references/products/range-authoring.md)，只调用 `platform_image_list` 解析镜像。不得为了模板创建调用 `cloud_config_get`。
+4. **转换与创建**：仅调用一次 `platform_image_list` 解析所有镜像；由转换 Skill 生成完整 `topologyGraph`，并以 `range_template_create` 的运行时 schema 传入名称、描述、网络元数据和拓扑。默认地域与可用区由后端基础配置注入，转换结果和 MCP 入参都不得包含它们。
+5. **不做参数试错**：`slug`、版本、云厂商、IaC 类型、模块路径和所有派生规格均由平台管理，绝不能作为创建参数。每份转换回执只允许一次 `range_template_create`；创建 schema、编译器或服务端返回校验错误时，立即停止并报告原始错误与转换回执，不得通过删改字段、克隆、收录镜像或检测保存绕过。
 
 ## 严格禁止（NEVER DO）
 

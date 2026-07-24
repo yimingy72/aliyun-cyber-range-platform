@@ -8,6 +8,17 @@ const operationSchema = z.object({
 });
 
 const positionSchema = z.object({ x: z.number(), y: z.number() });
+const aclRuleSchema = z.object({
+  key: identifier,
+  direction: z.enum(['inbound', 'outbound']),
+  protocol: identifier,
+  portRange: identifier,
+  sourceCidr: identifier,
+  destinationCidr: identifier.optional(),
+  policy: z.enum(['allow', 'drop']),
+  priority: z.number().int(),
+  description: z.string().optional(),
+}).strict();
 const securityRuleSchema = z.object({
   key: identifier,
   direction: z.enum(['ingress', 'egress']),
@@ -18,6 +29,18 @@ const securityRuleSchema = z.object({
   priority: z.number().int().optional(),
   description: z.string().optional(),
 }).passthrough();
+const dnatMappingSchema = z.object({
+  key: identifier,
+  targetHostId: identifier.describe('与本交换机连接且唯一 exposePublic=true 的公网入口 ECS ID。'),
+  externalPort: z.number().int().min(1).max(65535),
+  internalPort: z.number().int().min(1).max(65535),
+  protocol: z.enum(['tcp', 'udp']),
+  description: z.string().optional(),
+}).strict();
+const switchNatSchema = z.object({
+  snatEnabled: z.boolean().describe('所有开启 SNAT 的交换机共享由编译器派生的 SNAT EIP。'),
+  dnatMappings: z.array(dnatMappingSchema).describe('唯一权威的公网 DNAT 定义；不得把公网 NAT 映射写在 ECS 节点上。'),
+}).strict();
 const nicSchema = z.object({
   id: identifier,
   switchId: identifier.describe('The real network attachment. It must have a matching switch-to-ECS graph edge.'),
@@ -39,8 +62,17 @@ const switchNodeSchema = z.object({
   zoneKey: identifier,
   cidr: identifier.describe('IPv4 CIDR contained by the template VPC CIDR and not overlapping another switch.'),
   purpose: identifier,
+  aclRules: z.array(aclRuleSchema).describe('交换机 ACL 规则；没有规则时传 []。'),
+  nat: switchNatSchema.describe('交换机级共享 NAT 配置；即使 SNAT 和 DNAT 均关闭也必须传入。'),
   position: positionSchema.optional(),
 }).passthrough();
+const fixedImageStrategySchema = z.object({
+  mode: z.literal('fixed'),
+  imageId: identifier.describe('The Alibaba Cloud imageId resolved from the selected platform image asset.'),
+}).strict();
+const autoInstanceTypeStrategySchema = z.object({
+  mode: z.literal('auto'),
+}).strict();
 const ecsNodeSchema = z.object({
   id: identifier,
   kind: z.literal('ecs'),
@@ -49,13 +81,25 @@ const ecsNodeSchema = z.object({
   role: identifier,
   privateIp: identifier.describe('Must equal the first NIC privateIp.'),
   exposePublic: z.boolean(),
-  image: identifier,
+  image: identifier.describe('Human-readable image displayName copied from the selected platform image asset. It is not the image identity.'),
+  platformImageAssetId: identifier.describe('The unique enabled platform image asset selected by the conversion Skill.'),
+  imageId: identifier.describe('The Alibaba Cloud imageId resolved from platformImageAssetId.'),
+  imageStrategy: fixedImageStrategySchema,
+  instanceTypeStrategy: autoInstanceTypeStrategySchema,
   nics: z.array(nicSchema).min(1),
   position: positionSchema.optional(),
   customPassword: z.string().optional().describe('Sensitive. Only provide when explicitly requested; it is never returned by read tools.'),
-}).passthrough();
+}).passthrough().superRefine((node, context) => {
+  if (node.imageStrategy.imageId !== node.imageId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['imageStrategy', 'imageId'],
+      message: 'imageStrategy.imageId must equal the resolved imageId.',
+    });
+  }
+});
 
-const templateNodeSchema = z.union([routerNodeSchema, switchNodeSchema, ecsNodeSchema]);
+const templateNodeSchema = z.discriminatedUnion('kind', [routerNodeSchema, switchNodeSchema, ecsNodeSchema]);
 
 export const templateEdgeSchema = z.object({
   id: identifier,
@@ -74,8 +118,6 @@ const templateNetworkMetadataSchema = z.object({
   primaryVpcCidr: identifier.optional().describe('Primary IPv4 CIDR used to create the VPC.'),
   secondaryVpcCidrs: z.array(identifier).max(4).optional().describe('Additional, non-overlapping IPv4 CIDRs attached to the same VPC.'),
   vpcCidr: identifier.optional().describe('Deprecated alias for primaryVpcCidr.'),
-  defaultRegion: identifier.optional(),
-  defaultZoneId: identifier.optional(),
   publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
 });
 const templateWriteSchema = operationSchema.extend({ templateId: identifier });

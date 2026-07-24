@@ -172,6 +172,35 @@ describe('ImageCatalogService import operation guard', () => {
     expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
   });
 
+  it('removes a custom asset whose re-synced snapshot is not linked back to that asset', async () => {
+    const { service, adminRepositoryMock, asset } = createService();
+    asset.sourceSnapshotId = null;
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    await service.removePlatformAsset('asset-1', OWNER);
+
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith('snapshot-1');
+    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
+  });
+
+  it('removes an unreferenced custom asset when its cloud snapshot is already unavailable', async () => {
+    const { service, adminRepositoryMock } = createService();
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+    adminRepositoryMock.getImageSnapshotById.mockResolvedValue(null);
+    adminRepositoryMock.listImageSnapshots.mockResolvedValue([]);
+    global.fetch = jest.fn();
+
+    await expect(service.removePlatformAsset('asset-1', OWNER)).resolves.toBeUndefined();
+
+    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
+  });
+
   it('rejects custom image deletion while its import is still active', async () => {
     const { service, adminRepositoryMock } = createService();
 

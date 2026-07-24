@@ -24,10 +24,11 @@
 
 ## 意图与规则
 
-- “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须使用其云镜像 `imageId`。
-- 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止，不可用显示名称或资产 ID 代替 ECS 节点的 `image`。
+- “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须同时写入资产 `id`（`platformImageAssetId`）和其云镜像 `imageId`。
+- 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
 - “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，再经确认调用 `platform_image_collect`。
 - `enable`/`disable` 控制能否用于后续创建；`publish`/`unpublish` 控制其他用户能否看见。两者不可混用，且都不销毁已有资源。
+- 发布或取消发布前，必须检查资产返回的 `canChangeVisibility`。只有 owner-backed 资产可切换可见性；从公共或自定义云镜像目录收录的资产可能已固定为 `platform` 且 `canChangeVisibility: false`，此时不得调用发布/取消发布工具或重试，应如实说明平台限制。
 - 删除平台资产前确认其未被已发布拓扑引用；删除自定义云镜像会删除云端镜像及关联资产。
 - 导入任务仅对 `failed` 状态使用 `image_import_job_retry`。`available` 后才可稳定使用。
 - 本地 QCOW2、RAW、VHD 上传不由 MCP 提供：JSON 工具不能承载二进制，预签名上传地址也不能作为普通工具结果处理。通过平台上传后，用导入任务工具跟踪。

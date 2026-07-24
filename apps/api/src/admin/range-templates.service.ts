@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -13,6 +13,7 @@ import {
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
+import { SystemConfigService } from './system-config.service';
 
 type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
@@ -42,7 +43,10 @@ const INTERNAL_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-enterpris
 
 @Injectable()
 export class RangeTemplatesService {
-  constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
+  constructor(
+    @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
+    @Optional() private readonly systemConfigService?: SystemConfigService,
+  ) {}
 
   async list(currentUser?: AuthenticatedUser, viewText?: string) {
     const templates = await this.adminRepository.listRangeTemplates();
@@ -104,7 +108,7 @@ export class RangeTemplatesService {
   async create(input: CreateRangeTemplateRequest, currentUser?: AuthenticatedUser) {
     const actorId = currentUser?.id ?? 'admin';
     const slug = this.buildServerTemplateSlug(input.name);
-    const topology = this.normalizeTopologyMetadata(input, {
+    const topology = await this.normalizeTopologyMetadata(input, {
       name: input.name,
       slug,
       version: INTERNAL_TEMPLATE_VERSION,
@@ -228,7 +232,7 @@ export class RangeTemplatesService {
       this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
-    const topology = this.normalizeTopologyMetadata(input, {
+    const topology = await this.normalizeTopologyMetadata(input, {
       name: existingTemplate.name,
       slug: existingTemplate.slug,
       version: existingTemplate.version,
@@ -444,15 +448,22 @@ export class RangeTemplatesService {
     return `${base}-${randomUUID().slice(0, 8)}`;
   }
 
-  private normalizeTopologyMetadata(
+  private async normalizeTopologyMetadata(
     input: TemplateTopologyPayload,
     identity: { name: string; slug: string; version: string },
-  ): TemplateTopologyPayload {
+  ): Promise<TemplateTopologyPayload> {
+    const systemDefaults = this.systemConfigService ? await this.getTemplatePlacementDefaults() : null;
     const scenarioMetadata =
       input.scenarioTemplateSpec.metadata &&
       typeof input.scenarioTemplateSpec.metadata === 'object' &&
       !Array.isArray(input.scenarioTemplateSpec.metadata)
         ? input.scenarioTemplateSpec.metadata as Record<string, unknown>
+        : {};
+    const scenarioTopology =
+      input.scenarioTemplateSpec.topology &&
+      typeof input.scenarioTemplateSpec.topology === 'object' &&
+      !Array.isArray(input.scenarioTemplateSpec.topology)
+        ? input.scenarioTemplateSpec.topology as Record<string, unknown>
         : {};
     const compiledIdentity =
       input.compiledProvisionSpec.identity &&
@@ -460,12 +471,28 @@ export class RangeTemplatesService {
       !Array.isArray(input.compiledProvisionSpec.identity)
         ? input.compiledProvisionSpec.identity as Record<string, unknown>
         : {};
+    const compiledTopology =
+      input.compiledProvisionSpec.topology &&
+      typeof input.compiledProvisionSpec.topology === 'object' &&
+      !Array.isArray(input.compiledProvisionSpec.topology)
+        ? input.compiledProvisionSpec.topology as Record<string, unknown>
+        : {};
+    const placementDefaults = systemDefaults
+      ? {
+          defaultRegion: systemDefaults.defaultRegion,
+          defaultZoneId: systemDefaults.defaultZoneId,
+        }
+      : {};
 
     return {
       topologySpec: input.topologySpec,
       topologyGraph: input.topologyGraph,
       scenarioTemplateSpec: {
         ...input.scenarioTemplateSpec,
+        topology: {
+          ...scenarioTopology,
+          ...placementDefaults,
+        },
         metadata: {
           ...scenarioMetadata,
           name: identity.name,
@@ -477,6 +504,10 @@ export class RangeTemplatesService {
       },
       compiledProvisionSpec: {
         ...input.compiledProvisionSpec,
+        topology: {
+          ...compiledTopology,
+          ...placementDefaults,
+        },
         identity: {
           ...compiledIdentity,
           templateSlug: identity.slug,
@@ -487,6 +518,16 @@ export class RangeTemplatesService {
       },
       compiledSpec: input.compiledSpec,
     };
+  }
+
+  private async getTemplatePlacementDefaults() {
+    const snapshot = await this.systemConfigService!.getSnapshot();
+
+    if (!snapshot.defaultRegion || !snapshot.defaultZoneId) {
+      throw new BadRequestException('平台基础配置缺少默认地域或可用区，无法创建或保存模板拓扑');
+    }
+
+    return snapshot;
   }
 
   private getCurrentDraftTemplateEcsImageValidationInput(
