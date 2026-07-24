@@ -93,7 +93,7 @@ export class PlatformImagesController {
     const metadata = readOperationRequestMetadata(request);
     return this.operationControlService.executeConfirmed({
       context: request.authContext,
-      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${targetId}` },
+      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${targetId}:${metadata.requestId}` },
       toolName,
       arguments: argumentsValue,
       targetType: 'platform_image',

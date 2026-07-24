@@ -241,6 +241,9 @@ export class ImageCatalogService {
       }
 
       await this.deleteCustomSnapshot(snapshot.id);
+      if (asset.sourceSnapshotId !== snapshot.id) {
+        await this.adminRepository.deletePlatformImageAsset(id);
+      }
       return;
     }
 
