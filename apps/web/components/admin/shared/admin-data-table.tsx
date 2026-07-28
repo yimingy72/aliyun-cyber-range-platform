@@ -1,6 +1,6 @@
 'use client';
 
-import { type ComponentProps, type ReactNode } from 'react';
+import { type ComponentProps, type ReactNode, useCallback, useLayoutEffect, useState } from 'react';
 import { CircleAlert, Inbox } from 'lucide-react';
 
 import { AsyncContentState } from '@/components/admin/shared/async-content-state';
@@ -74,6 +74,40 @@ function columnPriorityColumnClassName(priority: AdminDataColumn['priority']) {
   return undefined;
 }
 
+function useTextOverflow() {
+  const [element, setElement] = useState<HTMLSpanElement | null>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  const textRef = useCallback((nextElement: HTMLSpanElement | null) => {
+    setElement(nextElement);
+  }, []);
+
+  const updateOverflow = useCallback(() => {
+    const nextIsOverflowing = element !== null && element.scrollWidth > element.clientWidth;
+
+    setIsOverflowing((current) => (current === nextIsOverflowing ? current : nextIsOverflowing));
+  }, [element]);
+
+  useLayoutEffect(() => {
+    if (!element) {
+      return;
+    }
+
+    updateOverflow();
+
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(updateOverflow);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, [element, updateOverflow]);
+
+  return { isOverflowing, textRef };
+}
+
 export function AdminDataTable({ label, columns, children, isRefreshing = false }: AdminDataTableProps) {
   return (
     <TooltipProvider>
@@ -112,14 +146,23 @@ export function AdminDataTable({ label, columns, children, isRefreshing = false 
 }
 
 export function AdminDataTableText({ children, className, tooltipContent }: AdminDataTableTextProps) {
+  const { isOverflowing, textRef } = useTextOverflow();
+  const text = (
+    <span className={cn('block min-w-0 truncate', className)} ref={textRef}>
+      {children}
+    </span>
+  );
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn('block min-w-0 truncate', className)}>{children}</span>
+        {text}
       </TooltipTrigger>
-      <TooltipContent className="max-w-sm break-all whitespace-normal" sideOffset={6}>
-        {tooltipContent ?? children}
-      </TooltipContent>
+      {isOverflowing ? (
+        <TooltipContent className="max-w-sm break-all whitespace-normal" sideOffset={6}>
+          {tooltipContent ?? children}
+        </TooltipContent>
+      ) : null}
     </Tooltip>
   );
 }

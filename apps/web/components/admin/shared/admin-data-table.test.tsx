@@ -1,24 +1,55 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TableRow } from '@/components/ui/table';
 
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState } from './admin-data-table';
 
-afterEach(cleanup);
-
 class ResizeObserverMock {
-  disconnect() {}
+  private static readonly observers = new Set<ResizeObserverMock>();
+  private observedElement: Element | null = null;
 
-  observe() {}
+  constructor(private readonly callback: ResizeObserverCallback) {
+    ResizeObserverMock.observers.add(this);
+  }
 
-  unobserve() {}
+  disconnect() {
+    ResizeObserverMock.observers.delete(this);
+  }
+
+  observe(element: Element) {
+    this.observedElement = element;
+  }
+
+  unobserve(element: Element) {
+    if (this.observedElement === element) {
+      this.observedElement = null;
+    }
+  }
+
+  static notify(element: Element) {
+    for (const observer of ResizeObserverMock.observers) {
+      if (observer.observedElement === element) {
+        observer.callback([], observer as unknown as ResizeObserver);
+      }
+    }
+  }
+
+  static reset() {
+    ResizeObserverMock.observers.clear();
+  }
 }
 
 vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+
+afterEach(() => {
+  cleanup();
+  ResizeObserverMock.reset();
+  vi.useRealTimers();
+});
 
 const instanceColumns = [
   { id: 'name', label: '实例名称', priority: 'primary' as const },
@@ -179,6 +210,37 @@ describe('AdminDataTable', () => {
     expect(screen.getByRole('cell', { name: '更多操作' }).className).toContain('text-right');
   });
 
+  it('does not show a tooltip when a fixed-column value fits in full', async () => {
+    vi.useFakeTimers();
+
+    const columns = [{ id: 'creator', label: '创建人', priority: 'primary' as const }];
+
+    render(
+      <AdminDataTable columns={columns} label="实例列表">
+        {(tableColumns) => (
+          <TableRow>
+            <AdminDataTableCell column={tableColumns[0]}>admin</AdminDataTableCell>
+          </TableRow>
+        )}
+      </AdminDataTable>,
+    );
+
+    const value = screen.getByText('admin');
+
+    Object.defineProperties(value, {
+      clientWidth: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 80 },
+    });
+    act(() => ResizeObserverMock.notify(value));
+
+    fireEvent.pointerMove(value);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
   it('truncates long values in fixed columns and reveals the full value with the shared tooltip', async () => {
     const columns = [{ id: 'name', label: '实例名称', priority: 'primary' as const }];
     const longName = 'Ubuntu-综合场景-四层拓扑-2026-07-27-实例名称非常非常长';
@@ -198,6 +260,12 @@ describe('AdminDataTable', () => {
     expect(value.tagName).toBe('SPAN');
     expect(value.className).toContain('min-w-0');
     expect(value.className).toContain('truncate');
+
+    Object.defineProperties(value, {
+      clientWidth: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 320 },
+    });
+    act(() => ResizeObserverMock.notify(value));
 
     fireEvent.pointerMove(value);
 
