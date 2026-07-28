@@ -16,6 +16,7 @@ type ResourceEntry = {
 };
 
 type TopologyFlowResourceRailProps = {
+  initialExpanded?: boolean;
   onAddNode: (kind: TopologyResourceKind) => void;
   onDragStart?: (event: React.DragEvent<HTMLButtonElement>, kind: TopologyResourceKind) => void;
 };
@@ -42,10 +43,11 @@ const resourceEntries: readonly ResourceEntry[] = [
 ];
 
 export function TopologyFlowResourceRail({
+  initialExpanded = false,
   onAddNode,
   onDragStart,
 }: TopologyFlowResourceRailProps) {
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(initialExpanded);
 
   function handleDragStart(event: React.DragEvent<HTMLButtonElement>, kind: TopologyResourceKind) {
     event.dataTransfer.effectAllowed = 'move';

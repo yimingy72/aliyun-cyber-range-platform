@@ -34,6 +34,14 @@ describe('TopologyFlowResourceRail', () => {
     expect(screen.queryByTestId('topology-resource-palette')).toBeNull();
   });
 
+  it('允许新建拓扑默认展开资源面板', () => {
+    render(<TopologyFlowResourceRail initialExpanded onAddNode={vi.fn()} />);
+
+    expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: '关闭资源面板' })).toBeTruthy();
+    expect(screen.getByTestId('topology-resource-palette')).toBeTruthy();
+  });
+
   it('点击 ECS 主机时请求添加 ecs 节点', () => {
     const onAddNode = vi.fn();
     render(<TopologyFlowResourceRail onAddNode={onAddNode} />);

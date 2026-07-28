@@ -151,6 +151,17 @@ describe('TopologyFlowCanvas', () => {
     });
   });
 
+  it('新建空拓扑自动展开资源面板，并使用较保守的初始适应视图', () => {
+    const canvasProps = createCanvasProps();
+    render(<TopologyFlowCanvas {...canvasProps} nodes={[]} />);
+
+    expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('true');
+    expect(flowState.props?.fitViewOptions).toMatchObject({
+      maxZoom: 1.2,
+      padding: 0.45,
+    });
+  });
+
   it('declares the scoped immersive workbench layout contract', () => {
     const styles = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
 
@@ -394,7 +405,38 @@ describe('TopologyFlowCanvas', () => {
 
   it('点击资源时将画布容器中心转换为世界坐标', () => {
     const canvasProps = createCanvasProps();
-    render(<TopologyFlowCanvas {...canvasProps} />);
+    render(<TopologyFlowCanvas {...canvasProps} nodes={[]} />);
+    const canvas = screen.getByTestId('topology-flow-canvas');
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      bottom: 430,
+      height: 400,
+      left: 20,
+      right: 620,
+      toJSON: () => ({}),
+      top: 30,
+      width: 600,
+      x: 20,
+      y: 30,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /ECS 主机/ }));
+
+    expect(flowState.screenToFlowPosition).toHaveBeenCalledWith({ x: 320, y: 230 });
+    expect(canvasProps.onAddNode).toHaveBeenCalledWith('ecs', { x: 280, y: 250 });
+  });
+
+  it('点击资源时避开画布中心已有节点', () => {
+    const canvasProps = createCanvasProps();
+    render(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        nodes={nodes.map((node) => (
+          node.id === 'switch-1'
+            ? { ...node, position: { x: 280, y: 250 } }
+            : { ...node, position: { x: -1000, y: -1000 } }
+        ))}
+      />,
+    );
     const canvas = screen.getByTestId('topology-flow-canvas');
     vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
       bottom: 430,
@@ -411,8 +453,41 @@ describe('TopologyFlowCanvas', () => {
     fireEvent.click(screen.getByRole('button', { name: '打开资源面板' }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 主机/ }));
 
-    expect(flowState.screenToFlowPosition).toHaveBeenCalledWith({ x: 320, y: 230 });
-    expect(canvasProps.onAddNode).toHaveBeenCalledWith('ecs', { x: 280, y: 250 });
+    expect(canvasProps.onAddNode).toHaveBeenCalledWith('ecs', { x: 520, y: 250 });
+  });
+
+  it('连续添加多个资源时持续寻找未占用位置', () => {
+    const canvasProps = createCanvasProps();
+    const activeNodes: TemplateNode[] = [];
+    const { rerender } = render(<TopologyFlowCanvas {...canvasProps} nodes={activeNodes} />);
+    const canvas = screen.getByTestId('topology-flow-canvas');
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      bottom: 430,
+      height: 400,
+      left: 20,
+      right: 620,
+      toJSON: () => ({}),
+      top: 30,
+      width: 600,
+      x: 20,
+      y: 30,
+    });
+
+    const placements: Array<{ x: number; y: number }> = [];
+
+    for (let index = 0; index < 11; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /ECS 主机/ }));
+      const position = canvasProps.onAddNode.mock.calls.at(-1)?.[1];
+      placements.push(position);
+      activeNodes.push({
+        ...nodes[1]!,
+        id: `ecs-placement-${index + 1}`,
+        position,
+      });
+      rerender(<TopologyFlowCanvas {...canvasProps} nodes={[...activeNodes]} />);
+    }
+
+    expect(new Set(placements.map((position) => `${position.x}:${position.y}`)).size).toBe(11);
   });
 
   it('展开资源面板不提交或重置画布视口', () => {

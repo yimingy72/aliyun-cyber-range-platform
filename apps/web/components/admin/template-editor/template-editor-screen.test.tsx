@@ -3363,6 +3363,62 @@ describe('TemplateEditorScreen', () => {
     expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios/template-created');
   });
 
+  it('keeps a new topology draft cache valid across consecutive refreshes', async () => {
+    window.sessionStorage.setItem(
+      'template-editor:new-template',
+      JSON.stringify({ name: '缓存拓扑', description: '刷新后恢复' }),
+    );
+
+    const firstRender = render(<TemplateEditorScreen templateId="new" />);
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+
+    await waitFor(() => {
+      const draft = JSON.parse(window.sessionStorage.getItem('template-editor:new-template') ?? '{}');
+      expect(draft.draftId).toEqual(expect.any(String));
+      expect(window.localStorage.getItem(`template-editor:topology-cache:new:${draft.draftId}:0`)).toBeTruthy();
+    });
+    firstRender.unmount();
+
+    const secondRender = render(<TemplateEditorScreen templateId="new" />);
+    expect(screen.getByRole('button', { name: /交换机 1 10\.0\.0\.0\/24/ })).toBeTruthy();
+    secondRender.unmount();
+
+    render(<TemplateEditorScreen templateId="new" />);
+    expect(screen.getByRole('button', { name: /交换机 1 10\.0\.0\.0\/24/ })).toBeTruthy();
+  });
+
+  it('does not restore a different new topology draft cache', () => {
+    window.sessionStorage.setItem(
+      'template-editor:new-template',
+      JSON.stringify({ draftId: 'draft-b', name: '草稿 B', description: '' }),
+    );
+    window.localStorage.setItem(
+      'template-editor:topology-cache:new:0',
+      JSON.stringify({
+        persistedGraphSignature: JSON.stringify({ nodes: [], edges: [] }),
+        topologyGraph: {
+          schemaVersion: '2.0.0',
+          nodes: [{
+            id: 'switch-draft-a',
+            kind: 'switch',
+            label: '草稿 A 交换机',
+            zoneKey: 'draft-a',
+            cidr: '10.91.0.0/24',
+            purpose: 'business-zone',
+            position: { x: 240, y: 180 },
+            aclRules: [],
+            nat: { snatEnabled: false, dnatMappings: [] },
+          }],
+          edges: [],
+        },
+      }),
+    );
+
+    render(<TemplateEditorScreen templateId="new" />);
+
+    expect(screen.queryByRole('button', { name: /草稿 A 交换机/ })).toBeNull();
+  });
+
   it('blocks publishing when the canvas has unsaved topology changes', async () => {
     render(
       <TemplateEditorScreen

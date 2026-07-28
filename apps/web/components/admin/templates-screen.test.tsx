@@ -678,9 +678,10 @@ describe('TemplatesScreen', () => {
 
     expect(createRangeTemplateMock).not.toHaveBeenCalled();
     expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/new');
-    expect(JSON.parse(window.sessionStorage.getItem('template-editor:new-template') ?? '{}')).toEqual({
+    expect(JSON.parse(window.sessionStorage.getItem('template-editor:new-template') ?? '{}')).toMatchObject({
       name: '企业攻防靶场 V2',
       description: '用于综合渗透训练的企业网络靶场',
+      draftId: expect.any(String),
     });
   });
 

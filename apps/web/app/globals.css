@@ -3972,6 +3972,11 @@ body {
   background: #13795b;
 }
 
+.topology-flow-node[data-connect-mode='false'] .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .topology-flow-canvas .react-flow__panel {
   z-index: 4;
 }

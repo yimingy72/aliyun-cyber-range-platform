@@ -74,6 +74,16 @@ type TopologyCachePayload = {
   persistedGraphSignature: string;
 };
 
+type NewTemplateSession = {
+  draftId?: unknown;
+  name?: unknown;
+  description?: unknown;
+};
+
+type NewTemplateDraft = RangeTemplate & {
+  draftId: string;
+};
+
 function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
   if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
     return false;
@@ -225,7 +235,13 @@ function readFinalInstanceType(node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'i
 }
 
 function readTopologyCacheKey(template: RangeTemplate | null | undefined, fallbackTemplateId?: string) {
-  const resolvedTemplateId = template?.id ?? fallbackTemplateId ?? null;
+  const draftId =
+    template?.id === 'new' && typeof (template as Partial<NewTemplateDraft>).draftId === 'string'
+      ? (template as NewTemplateDraft).draftId
+      : null;
+  const resolvedTemplateId = draftId
+    ? `new:${draftId}`
+    : template?.id ?? fallbackTemplateId ?? null;
   const revision = template?.revision ?? null;
 
   if (!resolvedTemplateId || revision === null) {
@@ -328,16 +344,22 @@ function readTemplateTopologyGraph(template: RangeTemplate | null) {
   return topologyGraph && typeof topologyGraph === 'object' ? topologyGraph : null;
 }
 
-function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTemplateId?: string) {
-  const persistedTopologyGraph = readTemplateTopologyGraph(template);
-  const currentPersistedGraphSignature = readGraphSignature(
-    persistedTopologyGraph && typeof persistedTopologyGraph === 'object' && Array.isArray((persistedTopologyGraph as { nodes?: unknown }).nodes)
-      ? readNodesFromRawTopologyGraph(persistedTopologyGraph)
+function readPersistedTopologyGraphSignature(template: RangeTemplate | null) {
+  const topologyGraph = readTemplateTopologyGraph(template);
+
+  return readGraphSignature(
+    topologyGraph && Array.isArray((topologyGraph as { nodes?: unknown }).nodes)
+      ? readNodesFromRawTopologyGraph(topologyGraph)
       : [],
-    persistedTopologyGraph && typeof persistedTopologyGraph === 'object' && Array.isArray((persistedTopologyGraph as { edges?: unknown }).edges)
-      ? readEdgesFromRawTopologyGraph(persistedTopologyGraph)
+    topologyGraph && Array.isArray((topologyGraph as { edges?: unknown }).edges)
+      ? readEdgesFromRawTopologyGraph(topologyGraph)
       : [],
   );
+}
+
+function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTemplateId?: string) {
+  const persistedTopologyGraph = readTemplateTopologyGraph(template);
+  const currentPersistedGraphSignature = readPersistedTopologyGraphSignature(template);
 
   return (
     readTopologyGraphFromCache(readTopologyCacheKey(template, fallbackTemplateId), currentPersistedGraphSignature) ??
@@ -810,8 +832,16 @@ function buildScenarioTemplateMetadata(template: RangeTemplate): ScenarioTemplat
   };
 }
 
-function readNewTemplateSession(): RangeTemplate {
-  let seed: { name?: unknown; description?: unknown } = {};
+function createNewTemplateDraftId() {
+  if (typeof window !== 'undefined' && typeof window.crypto?.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+
+  return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function readNewTemplateSession(): NewTemplateDraft {
+  let seed: NewTemplateSession = {};
 
   if (typeof window !== 'undefined') {
     try {
@@ -821,7 +851,20 @@ function readNewTemplateSession(): RangeTemplate {
     }
   }
 
+  const draftId =
+    typeof seed.draftId === 'string' && seed.draftId.trim().length > 0
+      ? seed.draftId
+      : createNewTemplateDraftId();
+
+  if (typeof window !== 'undefined' && seed.draftId !== draftId) {
+    window.sessionStorage.setItem(
+      NEW_TEMPLATE_SESSION_KEY,
+      JSON.stringify({ ...seed, draftId }),
+    );
+  }
+
   return {
+    draftId,
     id: 'new',
     name: typeof seed.name === 'string' && seed.name.trim() ? seed.name.trim() : '未命名拓扑',
     description: typeof seed.description === 'string' ? seed.description.trim() : '',
@@ -1119,12 +1162,11 @@ export function TemplateEditorScreen({
   );
   const topologyCacheKey = useMemo(() => readTopologyCacheKey(template, templateId), [template, templateId]);
   const graphSignature = useMemo(() => readGraphSignature(nodes, edges), [edges, nodes]);
-  const lastPersistedGraphRef = useRef(
-    readGraphSignature(
-      readNodesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
-      readEdgesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
-    ),
-  );
+  const lastPersistedGraphRef = useRef('');
+
+  if (!lastPersistedGraphRef.current) {
+    lastPersistedGraphRef.current = readPersistedTopologyGraphSignature(template);
+  }
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const historyRef = useRef<TopologyHistory | null>(null);
 
@@ -1144,7 +1186,7 @@ export function TemplateEditorScreen({
     setViewport(nextViewport);
     setSelection({ nodeIds: [], edgeIds: [] });
     setIsPropertyPanelOpen(false);
-    lastPersistedGraphRef.current = readGraphSignature(nextNodes, nextEdges);
+    lastPersistedGraphRef.current = readPersistedTopologyGraphSignature(nextTemplate);
     historyRef.current = createTopologyHistory({
       nodes: nextNodes,
       edges: nextEdges,

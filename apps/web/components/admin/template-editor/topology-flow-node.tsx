@@ -71,18 +71,17 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
   return (
     <div
       className="topology-flow-node"
+      data-connect-mode={connectMode ? 'true' : 'false'}
       data-kind={topologyNode.kind}
       data-selected={selected ? 'true' : 'false'}
       data-testid="topology-flow-node"
     >
-      {connectMode ? (
-        <Handle
-          data-testid="topology-flow-target-handle"
-          isConnectable={isConnectable}
-          position={Position.Left}
-          type="target"
-        />
-      ) : null}
+      <Handle
+        data-testid="topology-flow-target-handle"
+        isConnectable={connectMode && isConnectable}
+        position={Position.Left}
+        type="target"
+      />
       <img
         alt=""
         aria-hidden="true"
@@ -94,14 +93,12 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
         <strong>{topologyNode.label}</strong>
         <span>{readNodeMeta(topologyNode)}</span>
       </span>
-      {connectMode ? (
-        <Handle
-          data-testid="topology-flow-source-handle"
-          isConnectable={isConnectable}
-          position={Position.Right}
-          type="source"
-        />
-      ) : null}
+      <Handle
+        data-testid="topology-flow-source-handle"
+        isConnectable={connectMode && isConnectable}
+        position={Position.Right}
+        type="source"
+      />
     </div>
   );
 });

@@ -115,16 +115,18 @@ describe('TopologyFlowNode', () => {
     expect(screen.getByTestId('topology-flow-node-icon').getAttribute('src')).toBe(iconSrc);
   });
 
-  it('在同一节点切换到连线模式时刷新 Handle，并显示 source 和 target Handle', () => {
+  it('始终保留连线锚点，并在同一节点切换到连线模式时刷新 Handle', () => {
     const { rerender } = renderFlowNode(ecsNode, false);
 
-    expect(screen.queryByTestId('topology-flow-source-handle')).toBeNull();
-    expect(screen.queryByTestId('topology-flow-target-handle')).toBeNull();
+    expect(screen.getByTestId('topology-flow-node').getAttribute('data-connect-mode')).toBe('false');
+    expect(screen.getByTestId('topology-flow-source-handle')).toBeTruthy();
+    expect(screen.getByTestId('topology-flow-target-handle')).toBeTruthy();
     expect(updateNodeInternals).not.toHaveBeenCalled();
 
     rerender(createFlowNode(ecsNode, true));
 
     expect(updateNodeInternals).toHaveBeenCalledWith('ecs-web');
+    expect(screen.getByTestId('topology-flow-node').getAttribute('data-connect-mode')).toBe('true');
     expect(screen.getByTestId('topology-flow-source-handle')).toBeTruthy();
     expect(screen.getByTestId('topology-flow-target-handle')).toBeTruthy();
   });

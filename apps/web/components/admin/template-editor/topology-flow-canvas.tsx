@@ -43,6 +43,13 @@ const topologyNodeTypes = {
   'topology-ecs': TopologyFlowNode,
 } satisfies NodeTypes;
 
+const topologyFitViewOptions = {
+  maxZoom: 1.2,
+  padding: 0.45,
+} as const;
+const resourceNodeFootprint = { height: 96, width: 208 };
+const resourcePlacementStep = { x: 240, y: 144 };
+
 type NodePositionCommit = {
   id: string;
   position: XYPosition;
@@ -75,6 +82,66 @@ function hasSameViewport(
 ) {
   return left === right
     || (left?.x === right?.x && left?.y === right?.y && left?.zoom === right?.zoom);
+}
+
+function doesResourcePlacementOverlap(
+  position: XYPosition,
+  existingPosition: XYPosition,
+) {
+  return position.x < existingPosition.x + resourceNodeFootprint.width
+    && position.x + resourceNodeFootprint.width > existingPosition.x
+    && position.y < existingPosition.y + resourceNodeFootprint.height
+    && position.y + resourceNodeFootprint.height > existingPosition.y;
+}
+
+function findResourceInsertionPosition(nodes: TemplateNode[], preferredPosition: XYPosition) {
+  const existingPositions = nodes.flatMap((node) => node.position ? [node.position] : []);
+
+  for (let ring = 0; ring <= existingPositions.length + 1; ring += 1) {
+    const cardinalOffsets = ring === 0
+      ? [{ column: 0, row: 0 }]
+      : [
+          { column: ring, row: 0 },
+          { column: 0, row: ring },
+          { column: -ring, row: 0 },
+          { column: 0, row: -ring },
+        ];
+
+    for (const { column, row } of cardinalOffsets) {
+      const candidate = {
+        x: preferredPosition.x + column * resourcePlacementStep.x,
+        y: preferredPosition.y + row * resourcePlacementStep.y,
+      };
+
+      if (!existingPositions.some((position) => doesResourcePlacementOverlap(candidate, position))) {
+        return candidate;
+      }
+    }
+
+    for (let row = -ring; row <= ring; row += 1) {
+      for (let column = -ring; column <= ring; column += 1) {
+        if (
+          ring === 0
+          || (Math.abs(row) !== ring && Math.abs(column) !== ring)
+          || row === 0
+          || column === 0
+        ) {
+          continue;
+        }
+
+        const candidate = {
+          x: preferredPosition.x + column * resourcePlacementStep.x,
+          y: preferredPosition.y + row * resourcePlacementStep.y,
+        };
+
+        if (!existingPositions.some((position) => doesResourcePlacementOverlap(candidate, position))) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  return preferredPosition;
 }
 
 function TopologyFlowCanvasInner({
@@ -130,7 +197,7 @@ function TopologyFlowCanvasInner({
     }
 
     pendingExternalViewportRef.current = null;
-    void fitView({ duration: 180, padding: 0.2 });
+    void fitView({ duration: 180, ...topologyFitViewOptions });
   }, [fitView, setViewport, viewport]);
 
   function handleConnect(connection: Connection) {
@@ -166,7 +233,10 @@ function TopologyFlowCanvasInner({
       return;
     }
 
-    onAddNode(kind, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+    onAddNode(
+      kind,
+      findResourceInsertionPosition(nodes, screenToFlowPosition({ x: event.clientX, y: event.clientY })),
+    );
   }
 
   function handleResourceAddNode(kind: TopologyResourceKind) {
@@ -177,10 +247,11 @@ function TopologyFlowCanvasInner({
       return;
     }
 
-    onAddNode(kind, screenToFlowPosition({
+    const preferredPosition = screenToFlowPosition({
       x: bounds.left + bounds.width / 2,
       y: bounds.top + bounds.height / 2,
-    }));
+    });
+    onAddNode(kind, findResourceInsertionPosition(nodes, preferredPosition));
   }
 
   function handleMoveEnd(nextViewport: TopologyViewport) {
@@ -229,7 +300,7 @@ function TopologyFlowCanvasInner({
 
     if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'f') {
       event.preventDefault();
-      fitView({ duration: 180, padding: 0.2 });
+      fitView({ duration: 180, ...topologyFitViewOptions });
     }
   }
 
@@ -304,7 +375,7 @@ function TopologyFlowCanvasInner({
         <button
           aria-label="适应视图"
           className="topology-flow-tool-button"
-          onClick={() => fitView({ duration: 180, padding: 0.2 })}
+          onClick={() => fitView({ duration: 180, ...topologyFitViewOptions })}
           title="适应视图"
           type="button"
         >
@@ -322,13 +393,14 @@ function TopologyFlowCanvasInner({
           <Focus aria-hidden="true" />
         </button>
       </div>
-      <TopologyFlowResourceRail onAddNode={handleResourceAddNode} />
+      <TopologyFlowResourceRail initialExpanded={nodes.length === 0} onAddNode={handleResourceAddNode} />
       <div className="topology-flow-canvas" data-testid="topology-flow-canvas" ref={canvasRef}>
         <ReactFlow
           defaultViewport={viewport ?? undefined}
           deleteKeyCode={null}
           edges={flowEdges}
           fitView={!viewport}
+          fitViewOptions={topologyFitViewOptions}
           minZoom={0.25}
           nodes={flowNodes}
           nodeTypes={topologyNodeTypes}
