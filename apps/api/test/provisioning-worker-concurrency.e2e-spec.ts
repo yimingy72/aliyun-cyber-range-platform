@@ -70,6 +70,58 @@ describe('ProvisioningWorkerService concurrency', () => {
     );
   });
 
+  it('destroys partially created range resources when a create job fails', async () => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Failed create cleanup template',
+      slug: 'failed-create-cleanup-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.92.0.0/16',
+        networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.92.10.0/24' }],
+        hosts: [{ key: 'entry', name: 'Entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.92.10.10' }],
+        publicEntry: { hostKey: 'entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+    });
+    const instance = await repository.createRangeInstance({
+      name: 'failed-create-cleanup-range',
+      templateId: template.id,
+      status: 'pending_create',
+      allocatedCidr: '10.92.0.0/16',
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+    await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
+
+    const create = jest.fn().mockRejectedValue(new Error('OpenTofu apply partially created resources.'));
+    const destroy = jest.fn().mockResolvedValue(undefined);
+    const worker = new ProvisioningWorkerService(
+      repository,
+      { create, destroy } as unknown as RangeProvisioner,
+      createSystemConfigServiceStub() as any,
+    );
+
+    await worker.process(job.id);
+
+    expect(destroy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rangeInstanceId: instance.id,
+        templateModulePath: template.modulePathOrRef,
+        allocatedCidr: instance.allocatedCidr,
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'create_failed',
+        errorSummary: 'OpenTofu apply partially created resources.',
+      }),
+    );
+  });
+
   it('limits single-instance batch execution concurrency to three', async () => {
     const repository = createMemoryAdminRepository();
     const executor = new SingleInstanceBatchExecutionService(
@@ -178,6 +230,126 @@ describe('ProvisioningWorkerService concurrency', () => {
         expect.objectContaining({
           name: '4层网络靶场-test-01',
           status: 'creating',
+        }),
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('deletes tagged ECS resources when a single-instance create request fails', async () => {
+    const repository = createMemoryAdminRepository();
+    const requestedUrls: string[] = [];
+    const requestBodies: string[] = [];
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+      requestedUrls.push(url);
+      requestBodies.push(body);
+
+      if (body.includes('Action=RunInstances')) {
+        return new Response(JSON.stringify({ Code: 'InternalError' }), { status: 500 });
+      }
+
+      if (url.includes('Action=DescribeInstances')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-single-create-uncertain',
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (body.includes('Action=DeleteInstances')) {
+        return new Response(JSON.stringify({ RequestId: 'delete-ok' }), { status: 200 });
+      }
+
+      throw new Error(`Unexpected Aliyun request: ${url} ${body}`);
+    });
+
+    try {
+      const profile = await repository.upsertSingleInstanceNetworkProfile({
+        provider: 'alibaba_cloud',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        vpcId: 'vpc-single-cleanup',
+        vpcCidr: '10.200.0.0/16',
+        vswitchIds: ['vsw-single-cleanup'],
+        vswitchCidrs: ['10.200.1.0/24'],
+        securityGroupId: 'sg-single-cleanup',
+        securityGroupName: 'default-open-all',
+      });
+      const batch = await repository.createSingleInstanceBatch({
+        name: 'single-cleanup',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        quantity: 1,
+        createdBy: 'admin',
+        expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1_000),
+      });
+      const instance = await repository.createRangeInstance({
+        name: 'single-cleanup',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        singleInstanceBatchId: batch.id,
+        status: 'pending_create',
+        expiresAt: batch.expiresAt?.toISOString(),
+        runtimeCredentials: {
+          'single-ecs-1': {
+            username: 'root',
+            password: 'Aa123456!',
+          },
+        },
+        singleInstanceConfig: {
+          baseName: batch.name,
+          quantityIndex: 1,
+          hostKey: 'single-ecs-1',
+          hostName: 'single-cleanup-host',
+          platformImageAssetId: batch.platformImageAssetId,
+          imageId: batch.imageId,
+          imageDisplayName: batch.imageDisplayName,
+          cpu: batch.cpu,
+          memory: batch.memory,
+          systemDiskSize: batch.systemDiskSize,
+          assignedVswitchId: profile.vswitchIds[0],
+        },
+      });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id,
+        jobType: 'create',
+        triggeredBy: 'admin',
+      });
+      const executor = new SingleInstanceBatchExecutionService(
+        repository,
+        createSystemConfigServiceStub() as any,
+      );
+
+      await executor.executeCreateBatch([{ instance, job }]);
+
+      const describeUrl = requestedUrls.find((url) => url.includes('Action=DescribeInstances'));
+      expect(describeUrl).toBeDefined();
+      const describeRequest = new URL(describeUrl!);
+      expect(describeRequest.searchParams.get('Tag.1.Key')).toBe('RangeInstanceId');
+      expect(describeRequest.searchParams.get('Tag.1.Value')).toBe(instance.id);
+      expect(requestBodies).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Action=DeleteInstances'),
+          expect.stringContaining('InstanceId.1=i-single-create-uncertain'),
+        ]),
+      );
+      await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+        expect.objectContaining({
+          status: 'create_failed',
         }),
       );
     } finally {

@@ -129,9 +129,12 @@ export class SingleInstanceBatchExecutionService {
       const orderedItems = items.slice().sort(compareByQuantityIndex);
 
       await processWithConcurrency(orderedItems, CREATE_ITEM_CONCURRENCY, async (item) => {
+        let createRequestStarted = false;
+
         try {
           const autoReleaseTime = resolveAliyunAutoReleaseTime(item.instance.expiresAt);
           const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim() || null;
+          createRequestStarted = true;
           const runResponse = await this.performAliyunRpcRequest<AliyunRunInstancesResponse>({
             accessKeyId: accountContext.accessKeyId,
             accessKeySecret: accountContext.accessKeySecret,
@@ -179,8 +182,16 @@ export class SingleInstanceBatchExecutionService {
             accountContext,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown single-instance batch create error';
-          await this.markCreateFailure([item], message);
+          const createFailureMessage =
+            error instanceof Error ? error.message : 'Unknown single-instance batch create error';
+          const cleanupFailureMessage = createRequestStarted
+            ? await this.cleanupFailedSingleInstanceCreate(item, accountContext)
+            : null;
+          await this.markCreateFailure(
+            [item],
+            appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage),
+            createRequestStarted && !cleanupFailureMessage,
+          );
         }
       });
     });
@@ -461,18 +472,78 @@ export class SingleInstanceBatchExecutionService {
     });
   }
 
-  private async markCreateFailure(items: SingleInstanceExecutionItem[], message: string) {
+  private async markCreateFailure(
+    items: SingleInstanceExecutionItem[],
+    message: string,
+    clearRecoveredResourceState = false,
+  ) {
     for (const item of items) {
       await this.adminRepository.updateRangeInstance(item.instance.id, {
         status: 'create_failed',
         errorSummary: message,
+        ...(clearRecoveredResourceState
+          ? {
+              accessEntry: null,
+              resourceSummary: null,
+            }
+          : {}),
       });
+      if (clearRecoveredResourceState) {
+        await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
+      }
       await this.adminRepository.updateProvisionJob(item.job.id, {
         status: 'failed',
         finishedAt: new Date(),
         errorSummary: message,
       });
     }
+  }
+
+  private async cleanupFailedSingleInstanceCreate(
+    item: SingleInstanceExecutionItem,
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+  ) {
+    try {
+      const instanceIds = await this.findSingleInstanceIdsByRangeInstanceTag({
+        accessKeyId: accountContext.accessKeyId,
+        accessKeySecret: accountContext.accessKeySecret,
+        regionId: accountContext.defaultRegion,
+        rangeInstanceId: item.instance.id,
+      });
+
+      if (instanceIds.length > 0) {
+        await this.deleteInstancesWithRetry({
+          accessKeyId: accountContext.accessKeyId,
+          accessKeySecret: accountContext.accessKeySecret,
+          regionId: accountContext.defaultRegion,
+          instanceIds,
+        });
+      }
+
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';
+    }
+  }
+
+  private async findSingleInstanceIdsByRangeInstanceTag(input: {
+    accessKeyId: string;
+    accessKeySecret: string;
+    regionId: string;
+    rangeInstanceId: string;
+  }) {
+    const response = await this.performAliyunRpcRequest<AliyunDescribeInstancesResponse>({
+      accessKeyId: input.accessKeyId,
+      accessKeySecret: input.accessKeySecret,
+      regionId: input.regionId,
+      action: 'DescribeInstances',
+      parameters: {
+        'Tag.1.Key': 'RangeInstanceId',
+        'Tag.1.Value': input.rangeInstanceId,
+      },
+    });
+
+    return normalizeInstanceDetails(response).map((detail) => detail.instanceId);
   }
 
   private async markDestroyFailure(items: SingleInstanceExecutionItem[], message: string) {
@@ -624,6 +695,12 @@ function resolveAliyunInstanceName(name: string) {
     : `${ALIYUN_INSTANCE_NAME_PREFIX}${sanitized || 'instance'}`;
 
   return Array.from(prefixed).slice(0, ALIYUN_INSTANCE_NAME_MAX_LENGTH).join('');
+}
+
+function appendCleanupFailureMessage(createFailureMessage: string, cleanupFailureMessage: string | null) {
+  return cleanupFailureMessage
+    ? `${createFailureMessage}\nAutomatic cleanup failed: ${cleanupFailureMessage}`
+    : createFailureMessage;
 }
 
 function compareByQuantityIndex(left: SingleInstanceExecutionItem, right: SingleInstanceExecutionItem) {

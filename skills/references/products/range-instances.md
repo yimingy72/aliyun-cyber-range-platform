@@ -70,6 +70,7 @@
 
 ### 失败与回收
 
+- 编排创建进入 OpenTofu 后发生失败时，平台会立即在同一 workspace 执行销毁，回收已部分创建的 VPC、交换机、ACL、EIP、NAT 和 ECS。自动回收失败时，任务错误会同时保留创建失败和回收失败原因。
 - 创建或销毁失败：先读取详情确认状态，再用 `range_instance_retry`。
 - 创建失败且用户明确希望移除记录：使用 `range_instance_delete_failed`。
 - 释放运行环境：使用 `range_instance_destroy`。它回收整套资源，不是节点关机的替代。

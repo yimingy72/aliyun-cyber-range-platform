@@ -28,5 +28,6 @@
 - `expiresAt` 必填，必须是带时区的 ISO-8601 未来时间；不得猜测默认到期时间。`quantity` 为 1–99；省略 `systemDiskSize` 时服务端默认 40 GiB。
 - 当前候选规格仅为 2c2g、2c4g、4c8g、8c16g。规格校验不预留库存，CPU 或内存变化后必须重新校验。
 - 经确认调用 `single_instance_batch_launch` 后，用实例详情或 `provision_job_get` 跟踪终态。
+- 单实例创建请求失败后，平台会按该实例的 `RangeInstanceId` 云标签查询并回收可能已经落地的 ECS；共享 VPC、交换机和安全组不会被删除。若自动回收失败，失败任务会保留创建错误和回收错误。
 - `retry` 仅处理创建或销毁失败；`reboot` 仅针对运行中的单台实例。销毁前确认单台 `singleInstanceId` 或整批 `batchId`。
 - `single_instance_pack_image` 会创建私有镜像资产；`open_vnc`、访问凭据和 CSV 按敏感输出规则处理。

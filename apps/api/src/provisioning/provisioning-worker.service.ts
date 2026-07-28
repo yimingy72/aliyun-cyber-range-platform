@@ -18,6 +18,7 @@ import { SingleInstanceBatchExecutionService } from '../admin/single-instance-ba
 import { SystemConfigService } from '../admin/system-config.service';
 import {
   RANGE_PROVISIONER,
+  type RangeProvisionDestroyInput,
   type RangeProvisionStepEvent,
   type RangeProvisionStepReporter,
   RangeProvisioner,
@@ -115,6 +116,7 @@ export class ProvisioningWorkerService {
       errorSummary: null,
     });
     const reportStep = this.createStepReporter(job.id);
+    let failedCreateCleanupInput: RangeProvisionDestroyInput | null = null;
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
@@ -208,24 +210,28 @@ export class ProvisioningWorkerService {
           });
         });
 
-        const result = await this.rangeProvisioner.create({
+        const billingTags = buildBillingTags({
+          billingScope: instance.ownerUserId ? 'user' : 'platform',
+          ownerUserId: instance.ownerUserId,
+          rangeInstanceId: instance.id,
+          singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
+          billingStartAt: new Date(),
+        });
+        failedCreateCleanupInput = {
           rangeInstanceId: instance.id,
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
-          preserveWorkspaceState: job.jobType === 'retry',
           runtimeCredentials: instance.runtimeCredentials ?? undefined,
           topologyGraph,
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
-          billingTags: buildBillingTags({
-            billingScope: instance.ownerUserId ? 'user' : 'platform',
-            ownerUserId: instance.ownerUserId,
-            rangeInstanceId: instance.id,
-            singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
-            billingStartAt: new Date(),
-          }),
+          billingTags,
+        };
+        const result = await this.rangeProvisioner.create({
+          ...failedCreateCleanupInput,
+          preserveWorkspaceState: job.jobType === 'retry',
           reportStep,
         });
 
@@ -350,7 +356,15 @@ export class ProvisioningWorkerService {
       });
       await this.finalizeDispatchedOperation(job, 'succeeded');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown provisioning error';
+      const createFailureMessage = error instanceof Error ? error.message : 'Unknown provisioning error';
+      const cleanupFailureMessage = failedCreateCleanupInput
+        ? await this.cleanupFailedRangeCreate({
+            instance,
+            cleanupInput: failedCreateCleanupInput,
+            reportStep,
+          })
+        : null;
+      const message = appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage);
 
       await this.failJob(job, instance, message);
     }
@@ -1239,6 +1253,29 @@ export class ProvisioningWorkerService {
     await this.finalizeDispatchedOperation(job, 'failed', 'PROVISIONING_FAILED');
   }
 
+  private async cleanupFailedRangeCreate(input: {
+    instance: RangeInstanceRecord;
+    cleanupInput: RangeProvisionDestroyInput;
+    reportStep: RangeProvisionStepReporter;
+  }) {
+    try {
+      await this.runWorkerStep(input.reportStep, 'cleanup_failed_create_resources', async () => {
+        await this.rangeProvisioner.destroy({
+          ...input.cleanupInput,
+          reportStep: undefined,
+        });
+      });
+      await this.adminRepository.updateRangeInstance(input.instance.id, {
+        accessEntry: null,
+        resourceSummary: null,
+      });
+      await releaseRangeInstanceBillingLedger(this.adminRepository, input.instance.id, new Date());
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';
+    }
+  }
+
   private async finalizeDispatchedOperation(
     job: ProvisionJobRecord,
     status: 'succeeded' | 'failed',
@@ -1387,6 +1424,12 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
       instance.resourceSummary?.hostIds &&
       !instance.accessEntry?.publicIp,
   );
+}
+
+function appendCleanupFailureMessage(createFailureMessage: string, cleanupFailureMessage: string | null) {
+  return cleanupFailureMessage
+    ? `${createFailureMessage}\nAutomatic cleanup failed: ${cleanupFailureMessage}`
+    : createFailureMessage;
 }
 
 function sleep(ms: number) {
