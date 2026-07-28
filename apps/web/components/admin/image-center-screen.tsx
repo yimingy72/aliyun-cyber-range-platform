@@ -65,6 +65,7 @@ import {
   AdminDataTable,
   AdminDataTableCell,
   AdminDataTableState,
+  AdminDataTableText,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -291,9 +292,9 @@ function ImageTagBadges({ tags }: { tags: PlatformImageTag[] }) {
   }
 
   return (
-    <span className="flex flex-wrap gap-1">
+    <span className="flex min-w-0 gap-1 overflow-hidden">
       {tags.map((tag) => (
-        <Badge key={tag.id} variant="outline">
+        <Badge className="max-w-32 truncate" key={tag.id} variant="outline">
           {tag.name}
         </Badge>
       ))}
@@ -380,12 +381,12 @@ function ImageTagsDropdown({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label={`编辑标签 ${asset.displayName}`}
-          className="h-auto min-h-7 max-w-56 justify-between gap-2 px-2 py-1 text-left whitespace-normal"
+          className="h-7 max-w-56 justify-between gap-2 px-2 text-left whitespace-nowrap"
           size="sm"
           type="button"
           variant="outline"
         >
-          <span className="min-w-0 flex-1">
+          <span className="min-w-0 flex-1 overflow-hidden">
             <ImageTagBadges tags={asset.tags} />
           </span>
           <ChevronDown aria-hidden="true" className="shrink-0" />
@@ -1477,7 +1478,7 @@ export function ImageCenterScreen({
         typeof options.allowVisibilityToggle === 'function'
           ? options.allowVisibilityToggle(asset)
           : options.allowVisibilityToggle ?? false;
-      const canManageTags = session.isAdmin ? activeTab === 'platform' : activeTab === 'mine' && canManageAsset;
+      const canManageTags = (activeTab === 'platform' && session.isAdmin) || (activeTab === 'mine' && canManageAsset);
       const isImportingAsset =
         importingAssetIds.has(asset.id) ||
         importingAssetIds.has(asset.imageId) ||
@@ -1489,7 +1490,7 @@ export function ImageCenterScreen({
         <TableRow key={asset.id}>
           <AdminDataTableCell className="font-medium" column={nameColumn!}>
             <div className="flex min-w-48 flex-col gap-1">
-              <span>{asset.displayName}</span>
+              <AdminDataTableText>{asset.displayName}</AdminDataTableText>
               <span className="text-xs text-muted-foreground">
                 来源：{asset.sourceScope === 'custom' ? '阿里云自定义镜像' : '阿里云公共镜像'}
               </span>
@@ -1587,7 +1588,7 @@ export function ImageCenterScreen({
         <TableRow key={snapshot.id}>
           <AdminDataTableCell className="font-medium" column={nameColumn!}>
             <div className="flex min-w-48 flex-col gap-1">
-              <span>{snapshot.sourceImageName}</span>
+              <AdminDataTableText>{snapshot.sourceImageName}</AdminDataTableText>
               <span className="text-xs text-muted-foreground">平台：{snapshot.platform || '-'}</span>
             </div>
           </AdminDataTableCell>

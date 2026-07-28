@@ -3056,11 +3056,12 @@ body {
   max-width: 260px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: #1f2f49;
-  color: #ffffff;
+  border: 1px solid #c7ddf7;
+  background: #edf5ff;
+  color: #29486d;
   font-size: 12px;
   line-height: 1.5;
-  box-shadow: 0 10px 24px rgba(16, 24, 40, 0.16);
+  box-shadow: 0 10px 24px rgba(41, 72, 109, 0.16);
 }
 
 .single-instance-credential-cell:hover .single-instance-credential-tooltip {
@@ -3080,6 +3081,12 @@ body {
 
 .single-instance-copy-button:hover {
   background: #f4f7fb;
+}
+
+.single-instance-copy-button.is-copied {
+  border-color: #8cb7eb;
+  background: #e3f0ff;
+  color: #1b5fa8;
 }
 
 .single-instance-dialog-backdrop {

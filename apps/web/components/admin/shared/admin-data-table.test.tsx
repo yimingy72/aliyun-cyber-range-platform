@@ -10,6 +10,16 @@ import { AdminDataTable, AdminDataTableCell, AdminDataTableState } from './admin
 
 afterEach(cleanup);
 
+class ResizeObserverMock {
+  disconnect() {}
+
+  observe() {}
+
+  unobserve() {}
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+
 const instanceColumns = [
   { id: 'name', label: '实例名称', priority: 'primary' as const },
   { id: 'image', label: '镜像', priority: 'secondary' as const },
@@ -169,7 +179,7 @@ describe('AdminDataTable', () => {
     expect(screen.getByRole('cell', { name: '更多操作' }).className).toContain('text-right');
   });
 
-  it('contains long values within fixed columns and allows them to wrap', () => {
+  it('truncates long values in fixed columns and reveals the full value with the shared tooltip', async () => {
     const columns = [{ id: 'name', label: '实例名称', priority: 'primary' as const }];
     const longName = 'Ubuntu-综合场景-四层拓扑-2026-07-27-实例名称非常非常长';
 
@@ -183,12 +193,17 @@ describe('AdminDataTable', () => {
       </AdminDataTable>,
     );
 
-    const cell = screen.getByRole('cell', { name: longName });
+    const value = screen.getByText(longName);
 
-    expect(cell.className).toContain('min-w-0');
-    expect(cell.className).toContain('overflow-hidden');
-    expect(cell.className).toContain('break-words');
-    expect(cell.className).toContain('whitespace-normal');
+    expect(value.tagName).toBe('SPAN');
+    expect(value.className).toContain('min-w-0');
+    expect(value.className).toContain('truncate');
+
+    fireEvent.pointerMove(value);
+
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip.textContent).toContain(longName);
+    expect(tooltip.className).toContain('bg-sky-50');
   });
 
   it('derives an in-table state colspan from its feature columns', () => {

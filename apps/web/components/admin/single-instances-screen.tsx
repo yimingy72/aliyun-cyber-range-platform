@@ -3,7 +3,7 @@
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Plus } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Copy, MoreHorizontal, Plus } from 'lucide-react';
 
 import {
   AdminApiError,
@@ -33,7 +33,13 @@ import {
   PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
+import {
+  AdminDataTable,
+  AdminDataTableCell,
+  AdminDataTableState,
+  AdminDataTableText,
+  type AdminDataColumn,
+} from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { StatusBadge } from './shared/status-badge';
@@ -1258,18 +1264,31 @@ export function SingleInstancesScreen({
   }
 
   function renderCredentials(instance: RangeInstance) {
+    const isCopied = copiedPasswordInstanceId === instance.id;
+
     return (
-      <div className="flex min-w-40 items-center gap-1.5" title={formatFullCredential(instance)}>
-        <span className="truncate">{formatMaskedCredential(instance)}</span>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <AdminDataTableText
+          className="flex-1 text-muted-foreground"
+          tooltipContent={
+            <span className="flex flex-col gap-1">
+              <span className="font-medium text-sky-900">账号信息</span>
+              <span>{formatFullCredential(instance)}</span>
+            </span>
+          }
+        >
+          {formatMaskedCredential(instance)}
+        </AdminDataTableText>
         <Button
           aria-label="复制密码"
-          className="shrink-0"
+          className={`shrink-0 transition-colors ${isCopied ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-sky-100 hover:text-sky-900'}`}
           onClick={() => void handleCopyPassword(instance)}
           size="icon-xs"
+          title={isCopied ? '已复制密码' : '复制密码'}
           type="button"
           variant="ghost"
         >
-          <Copy aria-hidden="true" />
+          {isCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         </Button>
       </div>
     );
@@ -1342,7 +1361,7 @@ export function SingleInstancesScreen({
     return (
       <>
         <AdminDataTableCell className={indented ? 'pl-10' : undefined} column={columns[0]}>
-          <strong>{instance.name?.trim() || instance.id}</strong>
+          <AdminDataTableText className="font-semibold">{instance.name?.trim() || instance.id}</AdminDataTableText>
         </AdminDataTableCell>
         <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
@@ -1371,7 +1390,7 @@ export function SingleInstancesScreen({
     return (
       <>
         <AdminDataTableCell className={indented ? 'pl-10' : undefined} column={columns[0]}>
-          <strong>{instance.name?.trim() || instance.id}</strong>
+          <AdminDataTableText className="font-semibold">{instance.name?.trim() || instance.id}</AdminDataTableText>
         </AdminDataTableCell>
         <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
@@ -1789,7 +1808,12 @@ export function SingleInstancesScreen({
                                   <div className="single-instance-credential-cell">
                                     <span className="single-instance-credential-mask">{formatMaskedCredential(instance)}</span>
                                     <span className="single-instance-credential-tooltip">{formatFullCredential(instance)}</span>
-                                    <button type="button" aria-label="复制密码" className="single-instance-copy-button" onClick={() => void handleCopyPassword(instance)}>
+                                    <button
+                                      type="button"
+                                      aria-label="复制密码"
+                                      className={`single-instance-copy-button${copiedPasswordInstanceId === instance.id ? ' is-copied' : ''}`}
+                                      onClick={() => void handleCopyPassword(instance)}
+                                    >
                                       {copiedPasswordInstanceId === instance.id ? '已复制' : '复制'}
                                     </button>
                                   </div>
@@ -1937,7 +1961,12 @@ export function SingleInstancesScreen({
                         <div className="single-instance-credential-cell">
                           <span className="single-instance-credential-mask">{formatMaskedCredential(instance)}</span>
                           <span className="single-instance-credential-tooltip">{formatFullCredential(instance)}</span>
-                          <button type="button" aria-label="复制密码" className="single-instance-copy-button" onClick={() => void handleCopyPassword(instance)}>
+                          <button
+                            type="button"
+                            aria-label="复制密码"
+                            className={`single-instance-copy-button${copiedPasswordInstanceId === instance.id ? ' is-copied' : ''}`}
+                            onClick={() => void handleCopyPassword(instance)}
+                          >
                             {copiedPasswordInstanceId === instance.id ? '已复制' : '复制'}
                           </button>
                         </div>

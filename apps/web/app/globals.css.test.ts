@@ -186,4 +186,12 @@ describe('admin page scroll ownership', () => {
     expect(credentialTooltip).toContain('bottom: calc(100% + 8px)');
     expect(credentialTooltip).not.toContain('top: calc(100% + 8px)');
   });
+
+  it('uses the light-blue platform treatment for single-instance credential tooltips', () => {
+    const credentialTooltip = getRuleBlock(stylesheet, '.single-instance-credential-tooltip');
+
+    expect(credentialTooltip).toContain('background: #edf5ff');
+    expect(credentialTooltip).toContain('border: 1px solid #c7ddf7');
+    expect(credentialTooltip).not.toContain('background: #1f2f49');
+  });
 });

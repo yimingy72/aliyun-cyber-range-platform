@@ -85,6 +85,16 @@ vi.mock('../../lib/admin-api', () => ({
 
 import { SingleInstancesScreen } from './single-instances-screen';
 
+class ResizeObserverMock {
+  disconnect() {}
+
+  observe() {}
+
+  unobserve() {}
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+
 function formatExpectedDateTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',
@@ -1197,6 +1207,21 @@ describe('SingleInstancesScreen', () => {
     writeTextMock.mockResolvedValue(undefined);
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    const table = await screen.findByRole('table', { name: '实例列表' });
+    const credentialCell = within(table).getByRole('cell', { name: 'root / ****** 复制密码' });
+    const credentialValue = within(credentialCell).getByText('root / ******');
+    expect(credentialValue.className).toContain('truncate');
+
+    fireEvent.pointerMove(credentialValue);
+    expect((await screen.findByRole('tooltip')).textContent).toContain('root / super-secret-password');
+
+    const tableCopyButton = within(credentialCell).getByRole('button', { name: '复制密码' });
+    fireEvent.click(tableCopyButton);
+
+    await waitFor(() => {
+      expect(tableCopyButton.className).toContain('bg-primary');
+    });
 
     const row = (await screen.findByText('running-lab')).closest('article');
     expect(row).toBeTruthy();

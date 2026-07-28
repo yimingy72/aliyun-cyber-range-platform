@@ -594,6 +594,49 @@ describe('ImageCenterScreen', () => {
     });
   });
 
+  it('lets administrators edit tags on their own images from 我的镜像 without exposing tag creation', async () => {
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      ({
+        items: [
+          createPlatformImageAsset({
+            id: 'admin-image-1',
+            imageId: 'm-admin-001',
+            displayName: 'Admin Private Ubuntu',
+            ownerUserId: 'admin-user',
+            createdBy: 'admin',
+            canManage: true,
+            visibility: view === 'mine' ? 'private' : 'platform',
+          }),
+        ],
+      } satisfies PlatformImageAssetListPayload),
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
+
+    const myImageRow = (await screen.findByText('Admin Private Ubuntu')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(myImageRow).getByRole('button', { name: '编辑标签 Admin Private Ubuntu' }), {
+      key: 'ArrowDown',
+    });
+
+    const menu = screen.getByRole('menu');
+    expect(within(menu).queryByLabelText('新标签名称 Admin Private Ubuntu')).toBeNull();
+    expect(within(menu).queryByRole('button', { name: '新建标签 Admin Private Ubuntu' })).toBeNull();
+
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
+
+    await waitFor(() => {
+      expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'admin-image-1',
+        ['tag-critical'],
+      );
+    });
+  });
+
   it('lazy-loads cloud image source tabs only when they are opened', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
