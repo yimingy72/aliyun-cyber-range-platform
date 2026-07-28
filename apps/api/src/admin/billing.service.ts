@@ -74,6 +74,10 @@ function sumPretax(items: Array<{ pretaxAmount: number }>) {
   return items.reduce((total, item) => total + item.pretaxAmount, 0);
 }
 
+function isTrackedBillingLineItem(item: BillingLineItemRecord) {
+  return Boolean(item.matchedLedgerId);
+}
+
 function resolveListLimit(input: BillingWindowInput, fallback: number) {
   if (!Number.isFinite(input.limit) || !input.limit) {
     return fallback;
@@ -109,14 +113,15 @@ export class BillingService {
       }),
     ]);
 
-    const resourceTypeTotals = this.groupByResourceType(lineItems);
-    const dailyTotals = this.groupByBillingDate(lineItems);
+    const trackedLineItems = lineItems.filter(isTrackedBillingLineItem);
+    const resourceTypeTotals = this.groupByResourceType(trackedLineItems);
+    const dailyTotals = this.groupByBillingDate(trackedLineItems);
 
     return {
       startAt: window.startAtText,
       endAt: window.endAtText,
-      totalPretaxAmount: sumPretax(lineItems),
-      platformPretaxAmount: sumPretax(lineItems.filter((item) => item.billingScope === 'platform')),
+      totalPretaxAmount: sumPretax(trackedLineItems),
+      platformPretaxAmount: sumPretax(trackedLineItems.filter((item) => item.billingScope === 'platform')),
       anomalyCount: anomalies.length,
       resourceTypeTotals,
       dailyTotals,
@@ -126,7 +131,7 @@ export class BillingService {
   async listUsers(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
     const limit = resolveListLimit(input, 100);
-    const [platformUsers, lineItems] = await Promise.all([
+    const [platformUsers, fetchedLineItems] = await Promise.all([
       this.adminRepository.listPlatformUsers(),
       this.adminRepository.listBillingLineItems({
         startAt: window.startAt,
@@ -134,6 +139,7 @@ export class BillingService {
         billingScope: 'user',
       }),
     ]);
+    const lineItems = fetchedLineItems.filter(isTrackedBillingLineItem);
 
     const groups = await this.groupBillingLineItems(lineItems);
     const launchCountsByUserId = new Map<string, number>();
@@ -184,12 +190,12 @@ export class BillingService {
 
   async getUserSummary(userId: string, input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const items = await this.adminRepository.listBillingLineItems({
+    const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
       ownerUserId: userId,
       billingScope: 'user',
-    });
+    })).filter(isTrackedBillingLineItem);
     const user = await this.adminRepository.getPlatformUserById(userId);
     const launchCount = (await this.groupBillingLineItems(items)).filter((group) => group.kind !== 'unmatched').length;
 
@@ -205,12 +211,12 @@ export class BillingService {
   async listUserGroups(input: BillingGroupInput) {
     const window = resolveBillingWindow(input);
     const limit = resolveListLimit(input, 100);
-    const items = await this.adminRepository.listBillingLineItems({
+    const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
       billingScope: 'user',
       ...(input.userId ? { ownerUserId: input.userId } : {}),
-    });
+    })).filter(isTrackedBillingLineItem);
 
     const groups = (await this.groupBillingLineItems(items)).slice(0, limit);
     return this.attachOwnerUsernames(groups);
@@ -219,11 +225,11 @@ export class BillingService {
   async listPlatformGroups(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
     const limit = resolveListLimit(input, 100);
-    const items = await this.adminRepository.listBillingLineItems({
+    const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
       billingScope: 'platform',
-    });
+    })).filter(isTrackedBillingLineItem);
 
     const groups = (await this.groupBillingLineItems(items)).slice(0, limit);
     return this.attachOwnerUsernames(groups);
@@ -233,12 +239,12 @@ export class BillingService {
     const window = resolveBillingWindow(input);
     const limit = resolveListLimit(input, 100);
 
-    const items = await this.adminRepository.listBillingLineItems({
+    const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
       ownerUserId: userId,
       billingScope: 'user',
-    });
+    })).filter(isTrackedBillingLineItem);
 
     return items
       .slice()
@@ -250,11 +256,11 @@ export class BillingService {
     const window = resolveBillingWindow(input);
     const limit = resolveListLimit(input, 100);
 
-    const items = await this.adminRepository.listBillingLineItems({
+    const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
       billingScope: 'platform',
-    });
+    })).filter(isTrackedBillingLineItem);
 
     return items
       .slice()

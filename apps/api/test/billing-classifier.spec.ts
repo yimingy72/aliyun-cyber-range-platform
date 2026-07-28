@@ -15,7 +15,7 @@ describe('classifyBillLine', () => {
     });
   });
 
-  it('classifies snapshot chain capacity as a platform charge', () => {
+  it('classifies snapshot chain capacity as an account-level aggregate', () => {
     expect(
       classifyBillLine({
         ProductCode: 'snapshot',
@@ -23,7 +23,7 @@ describe('classifyBillLine', () => {
         InstanceID: 'cn-hangzhou',
       }),
     ).toEqual({
-      kind: 'platform',
+      kind: 'aggregated',
       cloudResourceId: 'cn-hangzhou',
       cloudResourceType: 'snapshot_region',
     });
@@ -43,7 +43,7 @@ describe('classifyBillLine', () => {
     });
   });
 
-  it('classifies OSS storage and traffic charges as platform costs', () => {
+  it('classifies OSS storage and traffic charges as account-level aggregates', () => {
     expect(
       classifyBillLine({
         ProductCode: 'oss',
@@ -51,7 +51,7 @@ describe('classifyBillLine', () => {
         InstanceID: 'cn-hangzhou;standard-zrs',
       }),
     ).toEqual({
-      kind: 'platform',
+      kind: 'aggregated',
       cloudResourceId: 'cn-hangzhou;standard-zrs',
       cloudResourceType: 'unknown',
     });

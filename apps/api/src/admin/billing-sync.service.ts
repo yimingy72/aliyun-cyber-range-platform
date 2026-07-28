@@ -140,35 +140,6 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         for (const line of items) {
           const classification = classifyBillLine(line);
 
-          if (classification.kind === 'platform') {
-            await this.adminRepository.upsertBillingLineItems([
-              {
-                syncBatchId,
-                sourceFingerprint: this.buildSourceFingerprint(
-                  syncBatchId,
-                  classification.cloudResourceType,
-                  classification.cloudResourceId,
-                  readString(line, 'BillingItem'),
-                ),
-                billCycle: billingDate.slice(0, 7),
-                billingDate,
-                productCode: readString(line, 'ProductCode'),
-                productDetail: readString(line, 'ProductDetail') || null,
-                billItem: readString(line, 'BillingItem'),
-                cloudResourceId: classification.cloudResourceId,
-                cloudResourceType: classification.cloudResourceType,
-                pretaxAmount: readNumber(line, 'PretaxAmount'),
-                currency: readString(line, 'Currency') || 'CNY',
-                billingScope: 'platform',
-                ownerUserId: null,
-                matchedLedgerId: null,
-                rawPayload: line,
-              },
-            ]);
-            importedLineItems += 1;
-            continue;
-          }
-
           if (classification.kind === 'direct') {
             const matchedLedger = this.findActiveLedgerResource(
               ledgerResources,
@@ -202,7 +173,10 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             }
           }
 
-          if (!this.isPlatformScopedAnomaly(ledgerResources, classification, billingDate)) {
+          if (
+            classification.kind !== 'aggregated' &&
+            !this.isPlatformScopedAnomaly(ledgerResources, classification, billingDate)
+          ) {
             continue;
           }
 
@@ -258,7 +232,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       | ReturnType<typeof classifyBillLine>,
   ) {
     if (classification.kind === 'aggregated') {
-      return `该账单已识别为平台范围内的聚合费用，但当前缺少归属规则：${classification.cloudResourceType}`;
+      return `该账单是云账号或地域级聚合费用，无法关联到平台资源，因此不计入平台费用：${classification.cloudResourceType}`;
     }
 
     if (classification.kind === 'unknown') {

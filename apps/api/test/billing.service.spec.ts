@@ -44,6 +44,14 @@ describe('BillingService', () => {
       billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
       tagsSnapshot: {},
     });
+    const platformLedger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'eip-1',
+      cloudResourceType: 'eip',
+      billingScope: 'platform',
+      billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
 
     await repository.upsertBillingLineItems([
       {
@@ -74,6 +82,23 @@ describe('BillingService', () => {
         cloudResourceId: 'eip-1',
         cloudResourceType: 'eip',
         pretaxAmount: 0.5,
+        currency: 'CNY',
+        billingScope: 'platform',
+        ownerUserId: null,
+        matchedLedgerId: platformLedger.id,
+        rawPayload: {},
+      },
+      {
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'unmatched-platform-charge',
+        billCycle: '2026-07',
+        billingDate: '2026-07-16',
+        productCode: 'oss',
+        productDetail: '对象存储OSS',
+        billItem: '标准存储容量',
+        cloudResourceId: 'cn-hangzhou;standard-zrs',
+        cloudResourceType: 'unknown',
+        pretaxAmount: 99,
         currency: 'CNY',
         billingScope: 'platform',
         ownerUserId: null,
@@ -270,20 +295,14 @@ describe('BillingService', () => {
         pretaxAmount: 8.4,
         resourceCount: 1,
       }),
-      expect.objectContaining({
-        kind: 'unmatched',
-        title: '未关联平台启动的费用',
-        completedAt: null,
-        pretaxAmount: 0.5,
-      }),
     ]);
 
     await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
       {
         userId: 'user-1',
         username: 'alice',
-        pretaxAmount: 18.1,
-        itemCount: 3,
+        pretaxAmount: 17.6,
+        itemCount: 2,
         launchCount: 2,
       },
     ]);

@@ -18,12 +18,6 @@ type AggregatedClassification = {
   cloudResourceType: BillingLedgerResourceType;
 };
 
-type PlatformClassification = {
-  kind: 'platform';
-  cloudResourceId: string;
-  cloudResourceType: BillingLedgerResourceType;
-};
-
 type UnknownClassification = {
   kind: 'unknown';
   cloudResourceId: string;
@@ -34,7 +28,6 @@ type UnknownClassification = {
 export type BillLineClassification =
   | DirectClassification
   | AggregatedClassification
-  | PlatformClassification
   | UnknownClassification;
 
 function normalizeText(value: string | undefined) {
@@ -72,7 +65,7 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
 
   if (productCode === 'snapshot' && billingItem === '快照链容量') {
     return {
-      kind: 'platform',
+      kind: 'aggregated',
       cloudResourceId: instanceId,
       cloudResourceType: 'snapshot_region',
     };
@@ -80,7 +73,7 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
 
   if (productCode === 'oss') {
     return {
-      kind: 'platform',
+      kind: 'aggregated',
       cloudResourceId: instanceId,
       cloudResourceType: 'unknown',
     };

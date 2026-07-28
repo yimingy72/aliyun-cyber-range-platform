@@ -46,6 +46,14 @@ describe('Admin billing', () => {
       billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
       tagsSnapshot: { CreatedBy: 'cyber-range-platform' },
     });
+    const platformLedger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'eip-1',
+      cloudResourceType: 'eip',
+      billingScope: 'platform',
+      billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
+      tagsSnapshot: { CreatedBy: 'cyber-range-platform' },
+    });
 
     await repository.upsertBillingLineItems([
       {
@@ -78,7 +86,7 @@ describe('Admin billing', () => {
         pretaxAmount: 0.5,
         currency: 'CNY',
         billingScope: 'platform',
-        matchedLedgerId: null,
+        matchedLedgerId: platformLedger.id,
         rawPayload: {},
       },
     ]);
@@ -153,13 +161,20 @@ describe('Admin billing', () => {
       .expect(200)
       .expect([
         {
-        userId: 'user-1',
-        username: 'alice',
-        pretaxAmount: 1.25,
-        itemCount: 1,
-        launchCount: 0,
-      },
-    ]);
+          userId: 'user-1',
+          username: 'alice',
+          pretaxAmount: 1.25,
+          itemCount: 1,
+          launchCount: 0,
+        },
+        {
+          userId: 'admin',
+          username: 'admin',
+          pretaxAmount: 0,
+          itemCount: 0,
+          launchCount: 0,
+        },
+      ]);
 
     const userGroupsResponse = await request(app.getHttpServer())
       .get('/admin/billing/user-groups?startAt=2026-07-16&endAt=2026-07-16')
