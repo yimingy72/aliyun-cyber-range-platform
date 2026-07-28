@@ -16,6 +16,7 @@ import {
 } from '../../lib/admin-oidc';
 import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../lib/admin-oidc-config';
 import { writeAdminSession } from '../../lib/admin-auth-storage';
+import { AdminContentTransition } from './admin-content-transition';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { PlatformBrand } from './platform-brand';
 import { useAdminSession } from './use-admin-session';
@@ -33,8 +34,9 @@ interface AdminNavigationItem {
 
 type AdminNavigationProps = {
   items: readonly AdminNavigationItem[];
-  onNavigate?: () => void;
+  onNavigate: (href: string) => void;
   pathname: string;
+  pendingHref: string | null;
   className?: string;
 };
 
@@ -89,24 +91,34 @@ function isNavigationItemActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function AdminNavigation({ items, onNavigate, pathname, className }: AdminNavigationProps) {
+function AdminNavigation({ items, onNavigate, pathname, pendingHref, className }: AdminNavigationProps) {
   return (
     <nav aria-label="后台导航" className={cn('grid content-start gap-1.5', className)}>
       {items.map((item) => {
         const isActive = isNavigationItemActive(pathname, item.href);
+        const isPending = pendingHref === item.href;
 
         return (
           <Link
             key={item.href}
+            aria-busy={isPending || undefined}
             aria-current={isActive ? 'page' : undefined}
             className={cn(
-              'flex min-h-10 items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-sm transition-colors',
+              'flex min-h-10 items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-sm transition-[background-color,border-color,color,transform] duration-150 active:translate-y-px',
               isActive
                 ? 'border-[#dbe6f8] bg-[#eaf1ff] text-[#1d56a7]'
                 : 'text-[#32425d] hover:border-[#ebf0f6] hover:bg-[#f7f9fc]',
+              isPending && 'pointer-events-none opacity-75',
             )}
+            data-pending={isPending || undefined}
             href={item.href}
-            onClick={() => onNavigate?.()}
+            onClick={(event) => {
+              if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                return;
+              }
+
+              onNavigate(item.href);
+            }}
           >
             <span
               className={cn(
@@ -133,6 +145,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const isLoginRoute = pathname === '/admin/login';
   const isCallbackRoute = pathname === '/admin/callback';
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
   const [isRenewingSession, setIsRenewingSession] = useState(false);
   const renewalTimeoutRef = useRef<number | null>(null);
   const renewingRef = useRef(false);
@@ -185,6 +198,18 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
       router.replace('/admin/login');
     }
   }, [isCallbackRoute, isLoginRoute, isRenewingSession, router, session.isReady, session.token]);
+
+  useEffect(() => {
+    setPendingHref((current) => (current && isNavigationItemActive(pathname, current) ? null : current));
+  }, [pathname]);
+
+  function handleNavigate(href: string) {
+    setIsNavigationOpen(false);
+
+    if (!isNavigationItemActive(pathname, href)) {
+      setPendingHref(href);
+    }
+  }
 
   useEffect(() => {
     if (renewalTimeoutRef.current !== null) {
@@ -264,7 +289,13 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         <div className="border-b border-border px-5 py-[18px]" data-testid="admin-sidebar-brand">
           <PlatformBrand />
         </div>
-        <AdminNavigation className="px-3 pb-4" items={visibleNavigationItems} pathname={pathname} />
+        <AdminNavigation
+          className="px-3 pb-4"
+          items={visibleNavigationItems}
+          onNavigate={handleNavigate}
+          pathname={pathname}
+          pendingHref={pendingHref}
+        />
       </aside>
 
       <div className="admin-main-shell">
@@ -288,8 +319,9 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
                 <AdminNavigation
                   className="px-3 py-4"
                   items={visibleNavigationItems}
-                  onNavigate={() => setIsNavigationOpen(false)}
+                  onNavigate={handleNavigate}
                   pathname={pathname}
+                  pendingHref={pendingHref}
                 />
               </SheetContent>
             </Sheet>
@@ -318,7 +350,9 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         </header>
 
         <div className="admin-main-content-shell">
-          <section className="admin-main-content">{children}</section>
+          <section className="admin-main-content">
+            <AdminContentTransition pathname={pathname}>{children}</AdminContentTransition>
+          </section>
         </div>
       </div>
     </div>
