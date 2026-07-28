@@ -3,6 +3,147 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { TopologyFlowCanvas } from './topology-flow-canvas';
+
+type TopologyFlowCanvasMockProps = React.ComponentProps<typeof TopologyFlowCanvas>;
+
+function TopologyFlowCanvasMock({
+  edges,
+  nodes,
+  onAddNode,
+  onConnect,
+  onDeleteSelection,
+  onLayoutAll,
+  onLayoutSelection,
+  onPositionsCommit,
+  onRedo,
+  onSelectionChange,
+  onUndo,
+  onViewportCommit,
+  viewport,
+}: TopologyFlowCanvasMockProps) {
+  const [pendingNodeId, setPendingNodeId] = React.useState<string | null>(null);
+
+  function selectNode(nodeId: string) {
+    if (pendingNodeId) {
+      onConnect({ source: pendingNodeId, target: nodeId });
+      setPendingNodeId(null);
+    } else {
+      setPendingNodeId(nodeId);
+    }
+
+    onSelectionChange({ nodeIds: [nodeId], edgeIds: [] });
+  }
+
+  function readNodeAccessibleName(node: (typeof nodes)[number]) {
+    if (node.kind === 'router') {
+      return `${node.label} VPC 根节点`;
+    }
+
+    if (node.kind === 'switch') {
+      return `${node.label} ${node.cidr}`;
+    }
+
+    return `${node.label} ${node.privateIp || node.nics?.[0]?.privateIp || node.networkInterfaces[0]?.privateIp || ''}`;
+  }
+
+  return (
+    <section data-testid="topology-flow-canvas" data-viewport={JSON.stringify(viewport)}>
+      <button onClick={() => onAddNode('router')} type="button">路由器 router</button>
+      <button onClick={() => onAddNode('switch')} type="button">交换机 switch</button>
+      <button onClick={() => onAddNode('ecs')} type="button">虚拟主机 virtual client</button>
+      <button
+        onClick={() => {
+          const source = nodes.find((node) => node.kind === 'switch');
+          const target = nodes.find((node) => node.kind === 'ecs');
+
+          if (source && target) {
+            onConnect({ source: source.id, target: target.id });
+          }
+        }}
+        type="button"
+      >
+        flow connect valid
+      </button>
+      <button
+        onClick={() => {
+          const node = nodes.find((candidate) => candidate.kind === 'ecs');
+
+          if (node) {
+            onConnect({ source: node.id, target: node.id });
+          }
+        }}
+        type="button"
+      >
+        flow connect invalid
+      </button>
+      <button onClick={onDeleteSelection} type="button">flow delete selection</button>
+      <button
+        onClick={() =>
+          onPositionsCommit(nodes.map((node, index) => ({
+            id: node.id,
+            position: { x: 180 + index * 120, y: 220 + index * 80 },
+          })))
+        }
+        type="button"
+      >
+        flow commit positions
+      </button>
+      <button onClick={() => onViewportCommit({ x: -80, y: 40, zoom: 1.2 })} type="button">
+        flow commit viewport
+      </button>
+      <button onClick={onLayoutAll} type="button">flow layout all</button>
+      <button onClick={onLayoutSelection} type="button">flow layout selection</button>
+      <button onClick={onUndo} type="button">flow undo</button>
+      <button onClick={onRedo} type="button">flow redo</button>
+      <button
+        onClick={() => {
+          setPendingNodeId(null);
+          onSelectionChange({ nodeIds: [], edgeIds: [] });
+        }}
+        type="button"
+      >
+        flow clear selection
+      </button>
+      <button
+        onClick={() => onSelectionChange({ nodeIds: nodes.slice(0, 2).map((node) => node.id), edgeIds: [] })}
+        type="button"
+      >
+        flow select multiple nodes
+      </button>
+      {nodes.map((node) => (
+        <button
+          aria-label={readNodeAccessibleName(node)}
+          data-world-x={node.position?.x}
+          data-world-y={node.position?.y}
+          key={node.id}
+          onClick={() => selectNode(node.id)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setPendingNodeId(null);
+            onSelectionChange({ nodeIds: [node.id], edgeIds: [] });
+          }}
+          style={node.position ? { left: node.position.x, top: node.position.y } : undefined}
+          type="button"
+        >
+          {readNodeAccessibleName(node)}
+        </button>
+      ))}
+      {edges.map((edge) => (
+        <button
+          aria-label={`选择连线 ${edge.id}`}
+          data-testid={`topology-flow-edge-${edge.id}`}
+          key={edge.id}
+          onClick={() => onSelectionChange({ nodeIds: [], edgeIds: [edge.id] })}
+          type="button"
+        >
+          {edge.label ?? `${edge.fromNodeId} -> ${edge.toNodeId}`}
+        </button>
+      ))}
+    </section>
+  );
+}
+
 const {
   fetchRangeTemplatesMock,
   fetchRangeTemplateByIdMock,
@@ -47,6 +188,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({
     replace: replaceMock,
   }),
+}));
+vi.mock('./topology-flow-canvas', () => ({
+  TopologyFlowCanvas: TopologyFlowCanvasMock,
 }));
 import { AdminApiError } from '../../../lib/admin-api';
 import type { TemplateNode } from '../../../lib/scenario-graph';
@@ -247,7 +391,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('属性面板')).toBeTruthy();
   });
 
-  it('renders a topology editor workspace with palette, canvas, and property panel', () => {
+  it('renders the topology-flow editor workspace instead of the retired template canvas', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -274,9 +418,8 @@ describe('TemplateEditorScreen', () => {
     );
 
     expect(screen.getByText('企业攻防靶场')).toBeTruthy();
-    expect(screen.getByText('资源面板')).toBeTruthy();
-    expect(screen.getByText('拓扑画布')).toBeTruthy();
-    expect(screen.getByText('属性面板')).toBeTruthy();
+    expect(screen.getByTestId('topology-flow-canvas')).toBeTruthy();
+    expect(screen.queryByTestId('template-canvas-board')).toBeNull();
     expect(screen.getByText('已发布').getAttribute('data-slot')).toBe('badge');
     expect(screen.getByRole('button', { name: '删除选中' }).getAttribute('data-variant')).toBe('destructive');
     expect(screen.getByRole('button', { name: '检测与保存' }).getAttribute('data-variant')).toBe('outline');
@@ -485,17 +628,12 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByRole('button', { name: '编辑模式' })).toBeNull();
     expect(screen.queryByRole('button', { name: '连线模式' })).toBeNull();
 
-    expect(screen.getByText('主机设备')).toBeTruthy();
-    expect(screen.getByText('网络设备')).toBeTruthy();
-    expect(screen.getByText('虚拟主机')).toBeTruthy();
-    expect(screen.getByText('路由器')).toBeTruthy();
-    expect(screen.getByText('交换机')).toBeTruthy();
     expect(screen.queryByText('点击添加')).toBeNull();
     expect(screen.queryByText('点击添加节点，无需拖动。')).toBeNull();
     expect(screen.queryByRole('button', { name: '生成第一阶段骨架' })).toBeNull();
-    expect(screen.getByTestId('template-node-palette-icon-ecs')).toBeTruthy();
-    expect(screen.getByTestId('template-node-palette-icon-router')).toBeTruthy();
-    expect(screen.getByTestId('template-node-palette-icon-switch')).toBeTruthy();
+    expect(screen.queryByTestId('template-node-palette-icon-ecs')).toBeNull();
+    expect(screen.queryByTestId('template-node-palette-icon-router')).toBeNull();
+    expect(screen.queryByTestId('template-node-palette-icon-switch')).toBeNull();
     expect(screen.queryByText('NAT 网关')).toBeNull();
     expect(screen.queryByText('EIP')).toBeNull();
 
@@ -510,7 +648,6 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
 
     expect(await screen.findByLabelText('交换机名称')).toBeTruthy();
-    expect(screen.getAllByText('交换机 1').length).toBeGreaterThan(0);
     expect(screen.queryByLabelText('区域标识')).toBeNull();
   });
 
@@ -785,7 +922,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    expect(screen.getByTestId('template-canvas-edge-edge-switch-2-ecs-1')).toBeTruthy();
+    expect(screen.getByTestId('topology-flow-edge-edge-switch-2-ecs-1')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-2' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
@@ -1094,11 +1231,11 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
-    expect(screen.getByTestId('template-canvas-edge-edge-switch-2-ecs-3')).toBeTruthy();
+    expect(screen.getByTestId('topology-flow-edge-edge-switch-2-ecs-3')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /Router/ }));
-    expect(screen.getByTestId('template-canvas-edge-edge-router-1-switch-2')).toBeTruthy();
+    expect(screen.getByTestId('topology-flow-edge-edge-router-1-switch-2')).toBeTruthy();
   });
 
   it('deletes the selected node and removes its related persisted edges', () => {
@@ -1132,13 +1269,13 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    expect(screen.getByTestId('template-canvas-edge-edge-switch-1-ecs-2')).toBeTruthy();
+    expect(screen.getByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
 
     expect(screen.queryByRole('button', { name: /ECS 1/ })).toBeNull();
-    expect(screen.queryByTestId('template-canvas-edge-edge-switch-1-ecs-2')).toBeNull();
+    expect(screen.queryByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeNull();
   });
 
   it('deletes a selected edge through the delete action', () => {
@@ -1172,11 +1309,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    const edge = screen.getByTestId('template-canvas-edge-edge-switch-1-ecs-2');
+    const edge = screen.getByTestId('topology-flow-edge-edge-switch-1-ecs-2');
     fireEvent.click(edge);
     fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
 
-    expect(screen.queryByTestId('template-canvas-edge-edge-switch-1-ecs-2')).toBeNull();
+    expect(screen.queryByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeNull();
   });
 
   it('clears the ecs nic switch binding when deleting a selected switch-to-ecs edge', () => {
@@ -1210,11 +1347,11 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
-    const edge = screen.getByTestId('template-canvas-edge-edge-switch-1-ecs-2');
+    const edge = screen.getByTestId('topology-flow-edge-edge-switch-1-ecs-2');
     fireEvent.click(edge);
     fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
 
-    expect(screen.queryByTestId('template-canvas-edge-edge-switch-1-ecs-2')).toBeNull();
+    expect(screen.queryByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
@@ -1296,7 +1433,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
     expect(screen.getByText('第一阶段仅允许 Router -> Switch 或 Switch -> ECS 连线')).toBeTruthy();
-    expect(screen.queryByTestId('template-canvas-edge-edge-switch-1-ecs-2')).toBeNull();
+    expect(screen.queryByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeNull();
   });
 
   it('renders node-specific property drawer sections for ecs, switch, and router nodes', () => {
@@ -1393,10 +1530,9 @@ describe('TemplateEditorScreen', () => {
 
     expect(screen.getByLabelText('交换机名称')).toBeTruthy();
     expect(screen.queryByText('当前节点')).toBeNull();
-    expect(screen.getAllByText('交换机 1').length).toBeGreaterThan(0);
   });
 
-  it('shows orchestration status messages inside the canvas workspace', () => {
+  it('keeps addition feedback while selections are managed by the flow canvas', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -1425,7 +1561,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     expect(screen.getByText('已添加ECS 1，可继续补充属性和关系。')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    expect(screen.getByText('已选择连线起点，请点击目标节点完成连接。')).toBeTruthy();
+    expect(screen.queryByText('已选择连线起点，请点击目标节点完成连接。')).toBeNull();
   });
 
   it('creates new ECS nodes with 2 CPU and 2 GB memory', () => {
@@ -1460,7 +1596,7 @@ describe('TemplateEditorScreen', () => {
     expect((screen.getByLabelText('内存') as HTMLInputElement).value).toBe('2');
   });
 
-  it('clears pending link state when clicking the empty canvas board', () => {
+  it('clears the selected property panel when the flow canvas clears its selection', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -1488,9 +1624,9 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    expect(screen.getByText('已选择连线起点，请点击目标节点完成连接。')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('template-canvas-board'));
-    expect(screen.queryByText('已选择连线起点，请点击目标节点完成连接。')).toBeNull();
+    expect(screen.getByLabelText('主机名')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'flow clear selection' }));
+    expect(screen.queryByLabelText('主机名')).toBeNull();
   });
 
   it('adds structured nic, acl, and dnat cards from the property panel actions', () => {
@@ -1830,8 +1966,8 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
-    expect(screen.getByTestId('template-canvas-board')).toBeTruthy();
-    expect(screen.queryByTestId(/template-canvas-edge/)).toBeNull();
+    expect(screen.getByTestId('topology-flow-canvas')).toBeTruthy();
+    expect(screen.queryByTestId(/topology-flow-edge/)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /边界主机/ }));
 
@@ -3343,7 +3479,7 @@ describe('TemplateEditorScreen', () => {
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
   });
 
-  it('updates node positions in the local topology state when dragging', () => {
+  it('updates node positions in the local topology state after the flow canvas commits a drag batch', () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -3370,13 +3506,10 @@ describe('TemplateEditorScreen', () => {
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
-    const node = screen.getByRole('button', { name: /ECS 1/ });
-    fireEvent.mouseDown(node, { clientX: 620, clientY: 220, button: 0 });
-    fireEvent.mouseMove(window, { clientX: 700, clientY: 260 });
-    fireEvent.mouseUp(window);
+    fireEvent.click(screen.getByRole('button', { name: 'flow commit positions' }));
 
-    expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('left: 700px');
-    expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('top: 196px');
+    expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('left: 180px');
+    expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('top: 220px');
   });
 
   it('publishes the saved private topology to the platform', async () => {
@@ -3527,5 +3660,140 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByRole('button', { name: /^EIP/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /ACL/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /安全组规则/i })).toBeNull();
+  });
+
+  it('commits valid flow edits to history and the save payload without persisting before detection', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          revision: 3,
+          status: 'private',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: null,
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: null,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow connect valid' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow commit positions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow commit viewport' }));
+
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'flow undo' }));
+    expect(screen.getByTestId('topology-flow-canvas').getAttribute('data-viewport')).toBe('null');
+    fireEvent.click(screen.getByRole('button', { name: 'flow redo' }));
+    expect(screen.getByTestId('topology-flow-canvas').getAttribute('data-viewport')).toBe('{"x":-80,"y":40,"zoom":1.2}');
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+
+    fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
+    fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+
+    await waitFor(() => {
+      expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1);
+    });
+
+    const payload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3] as {
+      topologyGraph?: { edges?: unknown[]; viewport?: unknown };
+    };
+    expect(payload.topologyGraph?.edges).toEqual([
+      expect.objectContaining({ fromNodeId: 'switch-2', toNodeId: 'ecs-1' }),
+    ]);
+    expect(payload.topologyGraph?.viewport).toEqual({ x: -80, y: 40, zoom: 1.2 });
+  });
+
+  it('rejects invalid flow connections without creating a history entry', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          revision: 3,
+          status: 'private',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: null,
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: null,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow connect valid' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow connect invalid' }));
+
+    expect(screen.getByText('不能将节点连接到自己')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'flow undo' }));
+
+    expect(screen.queryByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeNull();
+  });
+
+  it('uses the same bulk delete callback for the flow canvas and restores the property panel on a new single selection', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          revision: 3,
+          status: 'private',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: null,
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: null,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow select multiple nodes' }));
+
+    expect(screen.queryByLabelText('主机名')).toBeNull();
+    expect(screen.getByRole('button', { name: '删除选中' }).hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'flow delete selection' }));
+
+    expect(screen.queryByRole('button', { name: /ECS 1/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /交换机 1/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
+    expect(screen.getByLabelText('交换机名称')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '收起节点属性' }));
+    expect(screen.queryByLabelText('交换机名称')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
+    expect(screen.getByLabelText('交换机名称')).toBeTruthy();
   });
 });

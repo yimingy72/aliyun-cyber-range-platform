@@ -44,6 +44,28 @@ function createEcsNodeWithPlatformDefaults(): TemplateNode {
 }
 
 describe('TemplatePropertyPanel', () => {
+  it('renders an accessible collapse action only when the editor provides one', () => {
+    const onClose = vi.fn();
+    const node = createEcsNodeWithPlatformDefaults();
+
+    const { rerender } = render(
+      <TemplatePropertyPanel
+        allNodes={[node]}
+        onClose={onClose}
+        onUpdateNode={vi.fn()}
+        selectedNode={node}
+      />,
+    );
+
+    const closeButton = screen.getByRole('button', { name: '收起节点属性' });
+    expect(closeButton.getAttribute('title')).toBe('收起节点属性');
+    fireEvent.click(closeButton);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    rerender(<TemplatePropertyPanel allNodes={[node]} onUpdateNode={vi.fn()} selectedNode={node} />);
+    expect(screen.queryByRole('button', { name: '收起节点属性' })).toBeNull();
+  });
+
   it('shows the platform default SSH and HTTP rules without a status label', () => {
     const node: TemplateNode = {
       id: 'ecs-1',

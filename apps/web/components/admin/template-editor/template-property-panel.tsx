@@ -1,6 +1,7 @@
 'use client';
 
 import React, { type ReactNode, useEffect, useRef, useState } from 'react';
+import { PanelRightClose } from 'lucide-react';
 import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
 import type {
@@ -32,6 +33,7 @@ type TemplatePropertyPanelProps = {
   readOnly?: boolean;
   instanceDetailMode?: boolean;
   runtimeNodeStatus?: string | null;
+  onClose?: () => void;
 };
 
 type PropertyFieldProps = {
@@ -1386,6 +1388,7 @@ export function TemplatePropertyPanel({
   readOnly = false,
   instanceDetailMode = false,
   runtimeNodeStatus = null,
+  onClose,
 }: TemplatePropertyPanelProps) {
   const shellRef = useRef<HTMLDivElement | null>(null);
 
@@ -1399,6 +1402,17 @@ export function TemplatePropertyPanel({
     <aside className="template-editor-panel template-property-panel">
       <div className="admin-section-header template-property-panel-header">
         <h2>属性面板</h2>
+        {onClose ? (
+          <button
+            aria-label="收起节点属性"
+            className="template-property-panel-close"
+            onClick={onClose}
+            title="收起节点属性"
+            type="button"
+          >
+            <PanelRightClose aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
 
       <div ref={shellRef} className="template-property-shell">
