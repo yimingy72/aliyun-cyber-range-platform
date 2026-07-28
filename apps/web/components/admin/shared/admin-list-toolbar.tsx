@@ -18,6 +18,7 @@ interface AdminListToolbarBaseProps {
   searchPlaceholder: string;
   children: ReactNode;
   action?: ReactNode;
+  searchControls?: ReactNode;
 }
 
 type AdminListToolbarProps =
@@ -37,9 +38,12 @@ function SearchField({
   searchPlaceholder,
   searchValue,
   onSearchChange,
-}: Pick<AdminListToolbarBaseProps, 'searchLabel' | 'searchPlaceholder' | 'searchValue' | 'onSearchChange'>) {
+  compact,
+}: Pick<AdminListToolbarBaseProps, 'searchLabel' | 'searchPlaceholder' | 'searchValue' | 'onSearchChange'> & {
+  compact?: boolean;
+}) {
   return (
-    <div className="relative w-full sm:max-w-xs">
+    <div className={compact ? 'relative w-full sm:w-52' : 'relative w-full sm:max-w-xs'}>
       <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
       <Input
         aria-label={searchLabel}
@@ -63,7 +67,12 @@ function ToolbarLayout({ search, controls }: { search: ReactNode; controls?: Rea
 }
 
 export function AdminListToolbar(props: AdminListToolbarProps) {
-  const search = <SearchField {...props} />;
+  const search = (
+    <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="admin-list-toolbar-search-controls">
+      <SearchField {...props} compact={Boolean(props.searchControls)} />
+      {props.searchControls}
+    </div>
+  );
 
   if (props.views) {
     return (

@@ -66,6 +66,7 @@ describe('AdminListToolbar', () => {
       <AdminListToolbar
         action={<button type="button">创建实例</button>}
         onSearchChange={vi.fn()}
+        searchControls={<button type="button">全部标签</button>}
         searchLabel="筛选镜像名"
         searchPlaceholder="搜索镜像名"
         searchValue=""
@@ -78,6 +79,10 @@ describe('AdminListToolbar', () => {
     expect(screen.queryByRole('tablist')).toBeNull();
     expect(screen.queryByRole('tabpanel')).toBeNull();
     expect(screen.getByText('镜像列表')).toBeTruthy();
+    const searchControls = screen.getByTestId('admin-list-toolbar-search-controls');
+
+    expect(searchControls.contains(screen.getByRole('searchbox', { name: '筛选镜像名' }))).toBe(true);
+    expect(searchControls.contains(screen.getByRole('button', { name: '全部标签' }))).toBe(true);
   });
 
   it('reserves a stable view-action slot when a tabbed toolbar has no action', () => {

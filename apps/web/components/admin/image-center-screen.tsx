@@ -1710,6 +1710,34 @@ export function ImageCenterScreen({
               { label: '我的镜像', value: 'mine' },
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
             ]}
+            searchControls={
+              activeTab === 'platform' ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <AdminSelectField
+                    ariaLabel="按创建人筛选"
+                    className="w-full sm:w-44"
+                    emptyOptionLabel="全部创建人"
+                    onValueChange={(value) => {
+                      setPlatformCreatedByFilter(value);
+                      setPage('platform', 1);
+                    }}
+                    options={platformCreators.map((creator) => ({ label: creator, value: creator }))}
+                    value={platformCreatedByFilter}
+                  />
+                  <AdminSelectField
+                    ariaLabel="按标签筛选"
+                    className="w-full sm:w-44"
+                    emptyOptionLabel="全部标签"
+                    onValueChange={(value) => {
+                      setPlatformTagFilter(value);
+                      setPage('platform', 1);
+                    }}
+                    options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
+                    value={platformTagFilter}
+                  />
+                </div>
+              ) : undefined
+            }
             action={
               activeTab === 'mine' ? (
                 <Button
@@ -1754,32 +1782,6 @@ export function ImageCenterScreen({
                 onTabChange={setActiveTab}
               >
                 <div className="space-y-4">
-                  {activeTab === 'platform' ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <AdminSelectField
-                        ariaLabel="按创建人筛选"
-                        className="w-full sm:w-44"
-                        emptyOptionLabel="全部创建人"
-                        onValueChange={(value) => {
-                          setPlatformCreatedByFilter(value);
-                          setPage('platform', 1);
-                        }}
-                        options={platformCreators.map((creator) => ({ label: creator, value: creator }))}
-                        value={platformCreatedByFilter}
-                      />
-                      <AdminSelectField
-                        ariaLabel="按标签筛选"
-                        className="w-full sm:w-44"
-                        emptyOptionLabel="全部标签"
-                        onValueChange={(value) => {
-                          setPlatformTagFilter(value);
-                          setPage('platform', 1);
-                        }}
-                        options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
-                        value={platformTagFilter}
-                      />
-                    </div>
-                  ) : null}
                   {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
                     <div className="image-import-job-list" aria-live="polite">
                       {visibleImageImportJobs.slice(0, 3).map((job) => (
