@@ -44,7 +44,10 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
 
   for (const hostId of hostIds) {
     specs.push({ cloudResourceId: hostId, cloudResourceType: 'ecs' });
-    specs.push({ cloudResourceId: hostId, cloudResourceType: 'disk' });
+  }
+
+  for (const diskId of collectResourceIds(resourceSummary.systemDiskIds)) {
+    specs.push({ cloudResourceId: diskId, cloudResourceType: 'disk' });
   }
 
   const eipIds = [
@@ -74,6 +77,27 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
 export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBillingLedgerInput) {
   const billingScope = resolveBillingScope(input.instance);
   const ledgerSpecs = buildLedgerSpecs(input.resourceSummary);
+  const hostIds = collectResourceIds(input.resourceSummary?.hostIds);
+  const systemDiskIds = new Set(collectResourceIds(input.resourceSummary?.systemDiskIds));
+
+  for (const hostId of hostIds) {
+    if (systemDiskIds.has(hostId)) {
+      continue;
+    }
+
+    const legacyDiskLedger = await input.repository.findBillingLedgerResource({
+      cloudProvider: input.instance.cloudProvider,
+      regionId: input.regionId,
+      cloudResourceId: hostId,
+      cloudResourceType: 'disk',
+    });
+
+    if (legacyDiskLedger && legacyDiskLedger.rangeInstanceId === input.instance.id && !legacyDiskLedger.releasedAt) {
+      await input.repository.updateBillingLedgerResource(legacyDiskLedger.id, {
+        releasedAt: input.billingStartAt,
+      });
+    }
+  }
 
   for (const spec of ledgerSpecs) {
     const existing = await input.repository.findBillingLedgerResource({

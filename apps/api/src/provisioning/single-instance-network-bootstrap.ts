@@ -113,6 +113,8 @@ export class SingleInstanceNetworkBootstrapService {
       vswitchCidrs,
       tags: buildBillingTags({
         billingScope: 'platform',
+        platformResourceType: 'single_instance_network',
+        platformNetworkProfileKey: `${input.regionId}:${input.zoneId}`,
         billingStartAt: new Date(),
       }),
     });

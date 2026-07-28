@@ -62,6 +62,22 @@ describe('Range instance node actions API', () => {
         return new Response(JSON.stringify({ ImageId: 'm-image-123' }), { status: 200 });
       }
 
+      if (url.includes('DescribeImages')) {
+        return new Response(
+          JSON.stringify({
+            Images: {
+              Image: {
+                ImageId: 'm-image-123',
+                DiskDeviceMappings: {
+                  DiskDeviceMapping: [{ SnapshotId: 's-image-123' }],
+                },
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
@@ -258,6 +274,12 @@ describe('Range instance node actions API', () => {
         visibility: 'private',
       }),
     );
+    const snapshotTagRequest = fetchMock.mock.calls
+      .map(([input]) => String(input))
+      .find((url) => url.includes('Action=TagResources') && url.includes('ResourceType=snapshot'));
+    expect(snapshotTagRequest).toContain('ResourceId.1=s-image-123');
+    expect(snapshotTagRequest).toContain('PlatformManaged');
+    expect(snapshotTagRequest).toContain('PlatformResourceType');
   });
 
   it('opens a VNC URL for a single instance row action', async () => {

@@ -1,17 +1,21 @@
 locals {
   common_tags = merge(
-    {
-      managed_by = "aliyun-cyber-range-platform"
-      module     = "alicloud-single-instance-network"
-    },
     var.tags,
+    {
+      managed_by         = "aliyun-cyber-range-platform"
+      module             = "alicloud-single-instance-network"
+      PlatformManaged    = "true"
+      PlatformTagVersion = "1"
+    },
   )
 }
 
 resource "alicloud_vpc" "default" {
   vpc_name   = "${var.resource_name_prefix}-vpc"
   cidr_block = var.vpc_cidr
-  tags       = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "vpc"
+  })
 }
 
 resource "alicloud_vswitch" "default" {
@@ -21,14 +25,18 @@ resource "alicloud_vswitch" "default" {
   zone_id      = var.zone_id
   cidr_block   = var.vswitch_cidrs[count.index]
   vswitch_name = format("%s-vsw-%02d", var.resource_name_prefix, count.index + 1)
-  tags         = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "vswitch"
+  })
 }
 
 resource "alicloud_security_group" "default" {
   security_group_name = var.security_group_name
   description         = "Security group shared by persisted single-instance ECS hosts."
   vpc_id              = alicloud_vpc.default.id
-  tags                = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "security_group"
+  })
 }
 
 resource "alicloud_security_group_rule" "open_all_ingress" {

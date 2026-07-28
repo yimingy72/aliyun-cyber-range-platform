@@ -133,6 +133,11 @@ enum ImageImportJobStatus {
   cancelled
 }
 
+enum CloudResourceDriftSeverity {
+  warning
+  critical
+}
+
 model SystemCloudConfig {
   id              String   @id
   provider        String
@@ -568,6 +573,27 @@ model ProvisionJobStepLog {
 
   @@index([jobId])
   @@index([status])
+}
+
+model CloudResourceDrift {
+  id                String                     @id @default(cuid())
+  cloudProvider     CloudProvider              @default(alibaba_cloud)
+  regionId          String
+  cloudResourceType String
+  cloudResourceId   String
+  rangeInstanceId   String?
+  severity          CloudResourceDriftSeverity @default(critical)
+  reason            String
+  tagsSnapshot      Json                       @default("{}")
+  firstSeenAt       DateTime                   @default(now())
+  lastSeenAt        DateTime
+  resolvedAt        DateTime?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  @@unique([cloudProvider, regionId, cloudResourceType, cloudResourceId])
+  @@index([severity, resolvedAt, lastSeenAt])
+  @@index([rangeInstanceId])
 }
 
 model BillingLedgerResource {

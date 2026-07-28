@@ -34,6 +34,12 @@ output "resource_summary" {
     subnet_ids = {
       for zone_key, zone in alicloud_vswitch.zones : zone_key => zone.id
     }
+    network_acl_ids = {
+      for zone_key, acl in alicloud_network_acl.zone_acls : zone_key => acl.id
+    }
+    security_group_ids = {
+      for host_key, security_group in alicloud_security_group.hosts : host_key => security_group.id
+    }
     host_ids = {
       for host_key, host in alicloud_instance.hosts : host_key => host.id
     }
@@ -59,8 +65,8 @@ output "resource_summary" {
       instance_type_policies = var.runtime_selections.instance_type_policies
       attempted_zones        = try(var.runtime_selections.attempted_zones, [])
     }
-    selected_zone_id      = var.zone_id
-    attempted_zones       = try(var.runtime_selections.attempted_zones, [])
+    selected_zone_id       = var.zone_id
+    attempted_zones        = try(var.runtime_selections.attempted_zones, [])
     resolved_instance_type = var.instance_type
     resolved_image_id      = var.image_id
     resolved_image_ids = {

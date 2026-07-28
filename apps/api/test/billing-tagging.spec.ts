@@ -16,6 +16,8 @@ describe('buildBillingTags', () => {
       }),
     ).toEqual({
       CreatedBy: 'cyber-range-platform',
+      PlatformManaged: 'true',
+      PlatformTagVersion: '1',
       PlatformScope: 'user',
       PlatformUserId: 'user-1',
       RangeInstanceId: 'range-1',
@@ -34,6 +36,8 @@ describe('buildBillingTags', () => {
       }),
     ).toEqual({
       CreatedBy: 'cyber-range-platform',
+      PlatformManaged: 'true',
+      PlatformTagVersion: '1',
       PlatformScope: 'platform',
       BillingStartAt: '2026-07-16',
     });

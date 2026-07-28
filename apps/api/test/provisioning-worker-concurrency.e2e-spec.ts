@@ -17,6 +17,44 @@ function createSystemConfigServiceStub() {
 }
 
 describe('ProvisioningWorkerService concurrency', () => {
+  it('requeues a stale running provision job when the worker restarts', async () => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({
+      name: 'interrupted-range',
+      status: 'creating',
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'admin',
+    });
+    await repository.updateProvisionJob(job.id, {
+      status: 'running',
+      startedAt: new Date('2026-07-28T00:00:00.000Z'),
+    });
+    const worker = new ProvisioningWorkerService(
+      repository,
+      { create: jest.fn(), destroy: jest.fn() } as unknown as RangeProvisioner,
+      createSystemConfigServiceStub() as any,
+    );
+
+    const recovered = await (
+      worker as unknown as {
+        recoverInterruptedJobs(now: Date): Promise<number>;
+      }
+    ).recoverInterruptedJobs(new Date('2026-07-28T00:10:00.000Z'));
+
+    expect(recovered).toBe(1);
+    await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'pending',
+        retryCount: 1,
+        startedAt: null,
+        finishedAt: null,
+      }),
+    );
+  });
+
   it('preserves the OpenTofu state directory when retrying a failed range create', async () => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({
@@ -148,17 +186,45 @@ describe('ProvisioningWorkerService concurrency', () => {
   it('normalizes numeric-prefixed platform names before submitting single instances to Aliyun', async () => {
     const repository = createMemoryAdminRepository();
     const requestBodies: string[] = [];
-    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
-      requestBodies.push(body);
-      return new Response(
-        JSON.stringify({
-          InstanceIdSets: {
-            InstanceIdSet: ['i-numeric-name-01'],
-          },
-        }),
-        { status: 200 },
-      );
+
+      if (body.includes('Action=RunInstances')) {
+        requestBodies.push(body);
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-numeric-name-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-numeric-name-01',
+                  BlockDeviceMappings: {
+                    BlockDeviceMapping: [{ DiskId: 'd-numeric-name-01' }],
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (body.includes('Action=TagResources')) {
+        return new Response(JSON.stringify({ RequestId: 'tag-ok' }), { status: 200 });
+      }
+
+      throw new Error(`Unexpected Aliyun request: ${url} ${body}`);
     });
 
     try {
@@ -232,6 +298,108 @@ describe('ProvisioningWorkerService concurrency', () => {
           status: 'creating',
         }),
       );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('tags the ECS system disk before persisting a single-instance create', async () => {
+    const repository = createMemoryAdminRepository();
+    const tagResourceBodies: string[] = [];
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = typeof init?.body === 'string' ? init.body : '';
+
+      if (body.includes('Action=RunInstances')) {
+        return new Response(
+          JSON.stringify({
+            InstanceIdSets: {
+              InstanceIdSet: ['i-system-disk-tags-01'],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes('Action=DescribeInstances')) {
+        return new Response(
+          JSON.stringify({
+            Instances: {
+              Instance: [
+                {
+                  InstanceId: 'i-system-disk-tags-01',
+                  BlockDeviceMappings: {
+                    BlockDeviceMapping: [{ DiskId: 'd-system-disk-tags-01' }],
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (body.includes('Action=TagResources')) {
+        tagResourceBodies.push(body);
+        return new Response(JSON.stringify({ RequestId: 'tag-ok' }), { status: 200 });
+      }
+
+      throw new Error(`Unexpected Aliyun request: ${url} ${body}`);
+    });
+
+    try {
+      const profile = await repository.upsertSingleInstanceNetworkProfile({
+        provider: 'alibaba_cloud',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        vpcId: 'vpc-system-disk-tags',
+        vpcCidr: '10.200.0.0/16',
+        vswitchIds: ['vsw-system-disk-tags'],
+        vswitchCidrs: ['10.200.1.0/24'],
+        securityGroupId: 'sg-system-disk-tags',
+        securityGroupName: 'default-open-all',
+      });
+      const instance = await repository.createRangeInstance({
+        name: 'system-disk-tags',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        status: 'pending_create',
+        runtimeCredentials: {
+          'single-ecs-1': {
+            username: 'root',
+            password: 'Aa123456!',
+          },
+        },
+        singleInstanceConfig: {
+          baseName: 'system-disk-tags',
+          quantityIndex: 1,
+          hostKey: 'single-ecs-1',
+          hostName: 'system-disk-tags-host',
+          platformImageAssetId: 'platform-image-1',
+          imageId: 'm-123',
+          imageDisplayName: 'Ubuntu 24.04',
+          cpu: 2,
+          memory: 2,
+          systemDiskSize: 40,
+          assignedVswitchId: profile.vswitchIds[0],
+        },
+      });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id,
+        jobType: 'create',
+        triggeredBy: 'admin',
+      });
+      const executor = new SingleInstanceBatchExecutionService(
+        repository,
+        createSystemConfigServiceStub() as any,
+      );
+
+      await executor.executeCreateBatch([{ instance, job }]);
+
+      expect(tagResourceBodies).toEqual([expect.stringContaining('ResourceType=disk')]);
+      expect(tagResourceBodies[0]).toContain('ResourceId.1=d-system-disk-tags-01');
+      expect(tagResourceBodies[0]).toContain('PlatformManaged');
+      expect(tagResourceBodies[0]).toContain('PlatformResourceType');
     } finally {
       fetchMock.mockRestore();
     }

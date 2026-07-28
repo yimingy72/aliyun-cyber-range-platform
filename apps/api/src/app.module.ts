@@ -44,6 +44,10 @@ import { CidrPoolService } from './provisioning/cidr-pool.service';
 import { DryRunRangeProvisioner } from './provisioning/dry-run-range-provisioner';
 import { createRangeProvisionerFromEnv } from './provisioning/open-tofu-range-provisioner';
 import { ProvisioningWorkerService } from './provisioning/provisioning-worker.service';
+import {
+  AliyunEcsResourceClient,
+  PlatformResourceReconciliationService,
+} from './provisioning/platform-resource-reconciliation.service';
 import { RANGE_PROVISIONER } from './provisioning/provisioning.types';
 import { SingleInstanceNetworkBootstrapService } from './provisioning/single-instance-network-bootstrap';
 
@@ -104,6 +108,8 @@ function resolveProjectRootDir() {
     SystemConfigService,
     CidrPoolService,
     SingleInstanceNetworkBootstrapService,
+    AliyunEcsResourceClient,
+    PlatformResourceReconciliationService,
     ProvisioningWorkerService,
     OidcAdminBootstrapService,
     OperationControlService,

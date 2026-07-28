@@ -1,10 +1,12 @@
 locals {
   common_tags = merge(
-    {
-      managed_by = "aliyun-cyber-range-platform"
-      module     = "alicloud-vpc-single-ecs"
-    },
     var.tags,
+    {
+      managed_by         = "aliyun-cyber-range-platform"
+      module             = "alicloud-vpc-single-ecs"
+      PlatformManaged    = "true"
+      PlatformTagVersion = "1"
+    },
   )
   reuse_existing_vpc            = trimspace(var.existing_vpc_id) != ""
   reuse_existing_vswitch        = trimspace(var.existing_vswitch_id) != ""
@@ -17,7 +19,9 @@ resource "alicloud_vpc" "range" {
   count      = local.reuse_existing_vpc ? 0 : 1
   vpc_name   = "${var.resource_name_prefix}-vpc"
   cidr_block = var.vpc_cidr
-  tags       = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "vpc"
+  })
 }
 
 resource "alicloud_vswitch" "range" {
@@ -26,7 +30,9 @@ resource "alicloud_vswitch" "range" {
   zone_id      = var.zone_id
   cidr_block   = var.vswitch_cidr
   vswitch_name = "${var.resource_name_prefix}-vsw"
-  tags         = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "vswitch"
+  })
 }
 
 resource "alicloud_security_group" "range" {
@@ -34,7 +40,9 @@ resource "alicloud_security_group" "range" {
   security_group_name = "${var.resource_name_prefix}-sg"
   description         = "Security group for the first single-host cyber range."
   vpc_id              = local.reuse_existing_vpc ? var.existing_vpc_id : alicloud_vpc.range[0].id
-  tags                = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "security_group"
+  })
 }
 
 resource "alicloud_security_group_rule" "ssh_ingress" {
@@ -78,5 +86,8 @@ resource "alicloud_instance" "range" {
   internet_max_bandwidth_out = var.internet_max_bandwidth_out
   system_disk_category       = var.system_disk_category
   system_disk_size           = var.system_disk_size
-  tags                       = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "ecs"
+    PlatformHostKey      = var.host_key
+  })
 }

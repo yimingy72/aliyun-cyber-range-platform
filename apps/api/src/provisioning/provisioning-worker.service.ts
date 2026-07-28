@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -17,6 +17,10 @@ import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
 import {
+  AliyunEcsResourceClient,
+  PlatformResourceReconciliationService,
+} from './platform-resource-reconciliation.service';
+import {
   RANGE_PROVISIONER,
   type RangeProvisionDestroyInput,
   type RangeProvisionStepEvent,
@@ -25,6 +29,8 @@ import {
 } from './provisioning.types';
 
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_INTERRUPTED_JOB_STALE_AFTER_MS = 5 * 60 * 1_000;
+const DEFAULT_PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS = 5 * 60 * 1_000;
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_VPC_API_VERSION = '2016-04-28';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -35,20 +41,30 @@ const SINGLE_INSTANCE_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-vp
 
 @Injectable()
 export class ProvisioningWorkerService {
+  private readonly logger = new Logger(ProvisioningWorkerService.name);
   private readonly activeSingleBatchIds = new Set<string>();
   private readonly activeTasks = new Set<Promise<void>>();
   private rangeTaskActive = false;
   private readonly singleInstanceBatchExecutionService: SingleInstanceBatchExecutionService;
+  private readonly platformResourceReconciliationService: PlatformResourceReconciliationService;
+  private nextResourceReconciliationAt = 0;
 
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     @Inject(RANGE_PROVISIONER) private readonly rangeProvisioner: RangeProvisioner,
     private readonly systemConfigService: SystemConfigService,
     singleInstanceBatchExecutionService?: SingleInstanceBatchExecutionService,
+    platformResourceReconciliationService?: PlatformResourceReconciliationService,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
       new SingleInstanceBatchExecutionService(this.adminRepository, this.systemConfigService);
+    this.platformResourceReconciliationService =
+      platformResourceReconciliationService ??
+      new PlatformResourceReconciliationService(
+        this.adminRepository,
+        new AliyunEcsResourceClient(this.systemConfigService),
+      );
   }
 
   dispatch(jobId: string) {
@@ -56,8 +72,13 @@ export class ProvisioningWorkerService {
   }
 
   async runLoop(): Promise<void> {
+    await this.recoverInterruptedJobs(new Date());
+    await this.reconcilePlatformResourcesSafely(new Date());
+
     while (true) {
-      await this.processExpiredInstances(new Date());
+      const now = new Date();
+      await this.processExpiredInstances(now);
+      await this.reconcilePlatformResourcesIfDue(now);
       const started = await this.startEligiblePendingJobs();
 
       if (started > 0) {
@@ -70,6 +91,35 @@ export class ProvisioningWorkerService {
       }
 
       await sleep(readWorkerPollIntervalMs());
+    }
+  }
+
+  async recoverInterruptedJobs(now: Date): Promise<number> {
+    return this.adminRepository.requeueInterruptedProvisionJobs(
+      new Date(now.getTime() - readInterruptedJobStaleAfterMs()),
+    );
+  }
+
+  async reconcilePlatformResources(now: Date) {
+    return this.platformResourceReconciliationService.reconcile(now);
+  }
+
+  private async reconcilePlatformResourcesIfDue(now: Date) {
+    if (now.getTime() < this.nextResourceReconciliationAt) {
+      return;
+    }
+
+    await this.reconcilePlatformResourcesSafely(now);
+  }
+
+  private async reconcilePlatformResourcesSafely(now: Date) {
+    this.nextResourceReconciliationAt = now.getTime() + readPlatformResourceReconciliationIntervalMs();
+
+    try {
+      await this.reconcilePlatformResources(now);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Platform cloud resource reconciliation failed: ${message}`);
     }
   }
 
@@ -130,6 +180,7 @@ export class ProvisioningWorkerService {
           runtimeConfig,
           reportStep,
         });
+        this.nextResourceReconciliationAt = 0;
         return;
       }
 
@@ -215,6 +266,7 @@ export class ProvisioningWorkerService {
           ownerUserId: instance.ownerUserId,
           rangeInstanceId: instance.id,
           singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
+          platformResourceType: 'range',
           billingStartAt: new Date(),
         });
         failedCreateCleanupInput = {
@@ -289,6 +341,7 @@ export class ProvisioningWorkerService {
             ownerUserId: instance.ownerUserId,
             rangeInstanceId: instance.id,
             singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
+            platformResourceType: 'range',
             billingStartAt: new Date(),
           }),
           reportStep,
@@ -355,6 +408,7 @@ export class ProvisioningWorkerService {
         errorSummary: null,
       });
       await this.finalizeDispatchedOperation(job, 'succeeded');
+      this.nextResourceReconciliationAt = 0;
     } catch (error) {
       const createFailureMessage = error instanceof Error ? error.message : 'Unknown provisioning error';
       const cleanupFailureMessage = failedCreateCleanupInput
@@ -1413,6 +1467,26 @@ function readWorkerPollIntervalMs() {
   return Number.isFinite(configuredValue) && configuredValue > 0
     ? configuredValue
     : DEFAULT_WORKER_POLL_INTERVAL_MS;
+}
+
+function readInterruptedJobStaleAfterMs() {
+  const configuredValue = Number(
+    process.env.PROVISIONING_WORKER_INTERRUPTED_JOB_STALE_AFTER_MS ?? DEFAULT_INTERRUPTED_JOB_STALE_AFTER_MS,
+  );
+
+  return Number.isFinite(configuredValue) && configuredValue > 0
+    ? configuredValue
+    : DEFAULT_INTERRUPTED_JOB_STALE_AFTER_MS;
+}
+
+function readPlatformResourceReconciliationIntervalMs() {
+  const configuredValue = Number(
+    process.env.PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS ?? DEFAULT_PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS,
+  );
+
+  return Number.isFinite(configuredValue) && configuredValue > 0
+    ? configuredValue
+    : DEFAULT_PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS;
 }
 
 function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null) {

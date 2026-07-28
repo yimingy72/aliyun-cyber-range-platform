@@ -23,6 +23,9 @@ describe('billing-ledger-sync', () => {
         hostIds: {
           dmz: 'i-dmz',
         },
+        systemDiskIds: {
+          dmz: 'd-dmz',
+        },
         eipAllocationIds: {
           entry: 'eip-1',
         },
@@ -44,7 +47,7 @@ describe('billing-ledger-sync', () => {
           rangeInstanceId: instance.id,
         }),
         expect.objectContaining({
-          cloudResourceId: 'i-dmz',
+          cloudResourceId: 'd-dmz',
           cloudResourceType: 'disk',
         }),
         expect.objectContaining({
@@ -106,6 +109,7 @@ describe('billing-ledger-sync', () => {
       resourceSummary: {
         mode: 'opentofu',
         hostIds: { dmz: 'i-existing' },
+        systemDiskIds: { dmz: 'd-existing' },
       },
       sourceProvisionJobId: 'job-create',
       billingStartAt: initialStartAt,
@@ -118,6 +122,7 @@ describe('billing-ledger-sync', () => {
       resourceSummary: {
         mode: 'opentofu',
         hostIds: { dmz: 'i-existing' },
+        systemDiskIds: { dmz: 'd-existing' },
         eipAllocationIds: { entry: 'eip-new' },
       },
       sourceProvisionJobId: 'job-update',
@@ -133,7 +138,7 @@ describe('billing-ledger-sync', () => {
           billingStartAt: initialStartAt,
         }),
         expect.objectContaining({
-          cloudResourceId: 'i-existing',
+          cloudResourceId: 'd-existing',
           cloudResourceType: 'disk',
           sourceProvisionJobId: 'job-create',
           billingStartAt: initialStartAt,

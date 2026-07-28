@@ -108,9 +108,29 @@ describe('ImageCatalogService import operation guard', () => {
 
   it('tags collected platform images and creates platform billing ledgers', async () => {
     const { service, adminRepositoryMock } = createService();
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
+    global.fetch = jest.fn().mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('Action=DescribeImages')) {
+        return {
+          ok: true,
+          json: async () => ({
+            Images: {
+              Image: {
+                ImageId: 'm-importing-image',
+                DiskDeviceMappings: {
+                  DiskDeviceMapping: [{ SnapshotId: 's-importing-image-01' }],
+                },
+              },
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
     });
 
     await service.collectPlatformAsset('snapshot-1', 'Platform Ubuntu', ADMIN);
@@ -129,7 +149,7 @@ describe('ImageCatalogService import operation guard', () => {
     );
     expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
       expect.objectContaining({
-        cloudResourceId: 'm-importing-image',
+        cloudResourceId: 's-importing-image-01',
         cloudResourceType: 'snapshot',
         billingScope: 'platform',
       }),

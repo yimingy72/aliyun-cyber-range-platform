@@ -37,6 +37,7 @@ export type BillingLedgerResourceType =
   | 'snapshot_region'
   | 'oss_bucket'
   | 'unknown';
+export type CloudResourceDriftSeverity = 'warning' | 'critical';
 
 export type RangeTemplateNetworkZone = {
   key: string;
@@ -157,7 +158,10 @@ export type RangeResourceSummary = {
   outputFilePath?: string;
   vpcId?: string | null;
   subnetIds?: Record<string, string> | null;
+  networkAclIds?: Record<string, string> | null;
+  securityGroupIds?: Record<string, string> | null;
   hostIds?: Record<string, string> | null;
+  systemDiskIds?: Record<string, string> | null;
   secondaryNetworkInterfaceIds?: Record<string, string> | null;
   natGatewayIds?: Record<string, string> | null;
   snatEntryIds?: Record<string, string> | null;
@@ -510,6 +514,35 @@ export type BillingAnomalyRecord = {
   rawPayload: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type CloudResourceDriftRecord = {
+  id: string;
+  cloudProvider: CloudProvider;
+  regionId: string;
+  cloudResourceType: string;
+  cloudResourceId: string;
+  rangeInstanceId: string | null;
+  severity: CloudResourceDriftSeverity;
+  reason: string;
+  tagsSnapshot: Record<string, unknown>;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  resolvedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type UpsertCloudResourceDriftInput = {
+  cloudProvider?: CloudProvider;
+  regionId: string;
+  cloudResourceType: string;
+  cloudResourceId: string;
+  rangeInstanceId?: string | null;
+  severity: CloudResourceDriftSeverity;
+  reason: string;
+  tagsSnapshot?: Record<string, unknown>;
+  observedAt: Date;
 };
 
 export type UpsertSingleInstanceNetworkProfileInput = {
@@ -890,10 +923,19 @@ export interface AdminRepository {
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   getProvisionJobById(id: string): Promise<ProvisionJobRecord | null>;
   claimProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
+  requeueInterruptedProvisionJobs(staleBefore: Date): Promise<number>;
   updateProvisionJob(id: string, input: UpdateProvisionJobInput): Promise<ProvisionJobRecord>;
   listProvisionJobStepLogs(jobId: string): Promise<ProvisionJobStepLogRecord[]>;
   createProvisionJobStepLog(input: CreateProvisionJobStepLogInput): Promise<ProvisionJobStepLogRecord>;
   updateProvisionJobStepLog(id: string, input: UpdateProvisionJobStepLogInput): Promise<ProvisionJobStepLogRecord>;
+  upsertCloudResourceDrift(input: UpsertCloudResourceDriftInput): Promise<CloudResourceDriftRecord>;
+  resolveCloudResourceDrift(input: {
+    cloudProvider?: CloudProvider;
+    regionId: string;
+    cloudResourceType: string;
+    cloudResourceId: string;
+    resolvedAt: Date;
+  }): Promise<void>;
   listImageSnapshots(filter: ListImageSnapshotsFilter): Promise<CloudImageSnapshotRecord[]>;
   getImageSnapshotById(id: string): Promise<CloudImageSnapshotRecord | null>;
   upsertImageSnapshots(input: UpsertImageSnapshotsInput): Promise<void>;

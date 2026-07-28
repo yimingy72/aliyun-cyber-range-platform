@@ -433,6 +433,7 @@ describe('single instances', () => {
 
   it('submits billing tags to aliyun when launching a single instance', async () => {
     const runInstancesBodies: string[] = [];
+    const tagResourceBodies: string[] = [];
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -449,6 +450,11 @@ describe('single instances', () => {
         );
       }
 
+      if (body.includes('Action=TagResources')) {
+        tagResourceBodies.push(body);
+        return new Response(JSON.stringify({ RequestId: 'tag-ok' }), { status: 200 });
+      }
+
       if (url.includes('Action=DescribeInstances') && url.includes('i-billing-tags-01')) {
         return new Response(
           JSON.stringify({
@@ -461,6 +467,9 @@ describe('single instances', () => {
                   Status: 'Running',
                   VpcAttributes: { PrivateIpAddress: { IpAddress: ['10.200.1.77'] } },
                   PublicIpAddress: { IpAddress: ['47.100.77.10'] },
+                  BlockDeviceMappings: {
+                    BlockDeviceMapping: [{ DiskId: 'd-billing-tags-01' }],
+                  },
                 },
               ],
             },
@@ -495,6 +504,12 @@ describe('single instances', () => {
     expect(runInstancesBodies[0]).toContain('PlatformScope');
     expect(runInstancesBodies[0]).toContain('RangeInstanceId');
     expect(runInstancesBodies[0]).toContain('BillingStartAt');
+    expect(tagResourceBodies).toEqual([
+      expect.stringContaining('ResourceType=disk'),
+    ]);
+    expect(tagResourceBodies[0]).toContain('ResourceId.1=d-billing-tags-01');
+    expect(tagResourceBodies[0]).toContain('PlatformResourceType');
+    expect(tagResourceBodies[0]).toContain('PlatformManaged');
   });
 
   it('uses the image defaultHostName when launch request leaves hostName empty', async () => {

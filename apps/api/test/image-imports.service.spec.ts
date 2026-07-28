@@ -195,7 +195,21 @@ describe('ImageImportsService', () => {
           'content-type': 'application/octet-stream',
         }),
       )
-      .mockResolvedValueOnce(createResponse({ ImageId: 'm-imported-image', TaskId: 'task-1' }, 200));
+      .mockResolvedValueOnce(createResponse({ ImageId: 'm-imported-image', TaskId: 'task-1' }, 200))
+      .mockResolvedValueOnce(createResponse({}))
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: 'm-imported-image',
+              DiskDeviceMappings: {
+                DiskDeviceMapping: [{ SnapshotId: 's-imported-image-01' }],
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({}));
     const service = new ImageImportsService(
       adminRepositoryMock as unknown as AdminRepository,
       { imageImportJob } as unknown as PrismaService,
@@ -226,7 +240,7 @@ describe('ImageImportsService', () => {
     );
     expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
       expect.objectContaining({
-        cloudResourceId: 'm-imported-image',
+        cloudResourceId: 's-imported-image-01',
         cloudResourceType: 'snapshot',
         billingScope: 'platform',
         ownerUserId: null,
@@ -288,6 +302,7 @@ describe('ImageImportsService', () => {
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
       .fn()
+      .mockResolvedValueOnce(createResponse({}))
       .mockResolvedValueOnce(
         createResponse({
           Images: {
@@ -298,6 +313,27 @@ describe('ImageImportsService', () => {
               Platform: 'Ubuntu',
               Architecture: 'x86_64',
               Status: 'Available',
+              DiskDeviceMappings: {
+                DiskDeviceMapping: [{ SnapshotId: 's-imported-image-01' }],
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({}))
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: job.imageId,
+              ImageName: job.displayName,
+              OSType: 'linux',
+              Platform: 'Ubuntu',
+              Architecture: 'x86_64',
+              Status: 'Available',
+              DiskDeviceMappings: {
+                DiskDeviceMapping: [{ SnapshotId: 's-imported-image-01' }],
+              },
             },
           },
         }),
@@ -315,7 +351,7 @@ describe('ImageImportsService', () => {
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).toHaveBeenCalledWith('asset-1', true);
     expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();
     expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledTimes(2);
-    expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(
+    expect((global.fetch as jest.Mock).mock.calls[4][1]).toEqual(
       expect.objectContaining({ method: 'DELETE' }),
     );
   });
@@ -373,7 +409,7 @@ describe('ImageImportsService', () => {
     const result = await service.refreshImport(job.id);
 
     expect(result).toEqual(expect.objectContaining({ status: 'importing', errorMessage: 'asset update unavailable' }));
-    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(3);
   });
 
   it('stores Alibaba Cloud creating progress on the snapshot while the import is still running', async () => {
@@ -517,6 +553,17 @@ describe('ImageImportsService', () => {
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
       .fn()
+      .mockResolvedValueOnce(createResponse({}))
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: job.imageId,
+              Status: 'UnAvailable',
+            },
+          },
+        }),
+      )
       .mockResolvedValueOnce(
         createResponse({
           Images: {
@@ -729,6 +776,17 @@ describe('ImageImportsService', () => {
     const contextService = { getCredentials: jest.fn().mockResolvedValue(CONTEXT) };
     global.fetch = jest
       .fn()
+      .mockResolvedValueOnce(createResponse({}))
+      .mockResolvedValueOnce(
+        createResponse({
+          Images: {
+            Image: {
+              ImageId: job.imageId,
+              Status: 'Available',
+            },
+          },
+        }),
+      )
       .mockResolvedValueOnce(
         createResponse({
           Images: {

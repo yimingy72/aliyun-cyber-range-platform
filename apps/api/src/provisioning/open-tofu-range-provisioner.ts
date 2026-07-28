@@ -87,6 +87,8 @@ type OpenTofuOutputs = {
   resource_summary?: OpenTofuOutputValue<{
     vpc_id?: string;
     subnet_ids?: Record<string, string>;
+    network_acl_ids?: Record<string, string>;
+    security_group_ids?: Record<string, string>;
     host_ids?: Record<string, string>;
     secondary_network_interface_ids?: Record<string, string>;
     nat_gateway_ids?: Record<string, string>;
@@ -415,6 +417,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         outputFilePath: workspace.outputsFilePath,
         vpcId: resourceSummary?.vpc_id ?? null,
         subnetIds: resourceSummary?.subnet_ids ?? null,
+        networkAclIds: resourceSummary?.network_acl_ids ?? null,
+        securityGroupIds: resourceSummary?.security_group_ids ?? null,
         hostIds: resourceSummary?.host_ids ?? null,
         secondaryNetworkInterfaceIds: resourceSummary?.secondary_network_interface_ids ?? null,
         natGatewayIds: resourceSummary?.nat_gateway_ids ?? null,

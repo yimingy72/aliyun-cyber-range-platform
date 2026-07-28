@@ -6,6 +6,10 @@ type BuildBillingTagsInput = {
   rangeInstanceId?: string | null;
   singleInstanceBatchId?: string | null;
   platformImageAssetId?: string | null;
+  platformResourceType?: string | null;
+  platformHostKey?: string | null;
+  platformImageImportJobId?: string | null;
+  platformNetworkProfileKey?: string | null;
   billingStartAt: string | Date;
 };
 
@@ -27,6 +31,8 @@ function normalizeBillingStartAt(value: string | Date) {
 export function buildBillingTags(input: BuildBillingTagsInput) {
   const tags: Record<string, string> = {
     CreatedBy: 'cyber-range-platform',
+    PlatformManaged: 'true',
+    PlatformTagVersion: '1',
     PlatformScope: input.billingScope,
     BillingStartAt: normalizeBillingStartAt(input.billingStartAt),
   };
@@ -35,6 +41,10 @@ export function buildBillingTags(input: BuildBillingTagsInput) {
   const rangeInstanceId = normalizeOptional(input.rangeInstanceId);
   const singleInstanceBatchId = normalizeOptional(input.singleInstanceBatchId);
   const platformImageAssetId = normalizeOptional(input.platformImageAssetId);
+  const platformResourceType = normalizeOptional(input.platformResourceType);
+  const platformHostKey = normalizeOptional(input.platformHostKey);
+  const platformImageImportJobId = normalizeOptional(input.platformImageImportJobId);
+  const platformNetworkProfileKey = normalizeOptional(input.platformNetworkProfileKey);
 
   if (ownerUserId) {
     tags.PlatformUserId = ownerUserId;
@@ -50,6 +60,22 @@ export function buildBillingTags(input: BuildBillingTagsInput) {
 
   if (platformImageAssetId) {
     tags.PlatformImageAssetId = platformImageAssetId;
+  }
+
+  if (platformResourceType) {
+    tags.PlatformResourceType = platformResourceType;
+  }
+
+  if (platformHostKey) {
+    tags.PlatformHostKey = platformHostKey;
+  }
+
+  if (platformImageImportJobId) {
+    tags.PlatformImageImportJobId = platformImageImportJobId;
+  }
+
+  if (platformNetworkProfileKey) {
+    tags.PlatformNetworkProfileKey = platformNetworkProfileKey;
   }
 
   return tags;

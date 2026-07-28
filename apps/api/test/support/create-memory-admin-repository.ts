@@ -3,6 +3,7 @@ import {
   BillingAnomalyRecord,
   BillingLedgerResourceRecord,
   BillingLineItemRecord,
+  CloudResourceDriftRecord,
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
@@ -42,6 +43,7 @@ import {
   SingleInstanceBatchRecord,
   TemplateRevisionConflictError,
   UpsertImageSnapshotsInput,
+  UpsertCloudResourceDriftInput,
   UpsertSingleInstanceNetworkProfileInput,
   UpdateBillingLedgerResourceInput,
   UpdateIdempotentOperationInput,
@@ -68,6 +70,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const billingLedgerResources: BillingLedgerResourceRecord[] = [];
   const billingLineItems: BillingLineItemRecord[] = [];
   const billingAnomalies: BillingAnomalyRecord[] = [];
+  const cloudResourceDrifts: CloudResourceDriftRecord[] = [];
   const operationConfirmations: OperationConfirmationRecord[] = [];
   const idempotentOperations: IdempotentOperationRecord[] = [];
   const operationAuditEvents: OperationAuditEventRecord[] = [];
@@ -791,6 +794,24 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async requeueInterruptedProvisionJobs(staleBefore: Date) {
+      const interruptedJobs = provisionJobs.filter(
+        (job) => job.status === 'running' && job.startedAt !== null && job.startedAt <= staleBefore,
+      );
+
+      for (const job of interruptedJobs) {
+        Object.assign(job, {
+          status: 'pending',
+          startedAt: null,
+          finishedAt: null,
+          errorSummary: null,
+          retryCount: job.retryCount + 1,
+          updatedAt: now(),
+        });
+      }
+
+      return interruptedJobs.length;
+    },
     async updateProvisionJob(id: string, input: UpdateProvisionJobInput) {
       const record = provisionJobs.find((job) => job.id === id)!;
 
@@ -841,6 +862,64 @@ export function createMemoryAdminRepository(): AdminRepository {
       });
 
       return clone(record);
+    },
+    async upsertCloudResourceDrift(input: UpsertCloudResourceDriftInput) {
+      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const existing = cloudResourceDrifts.find(
+        (record) =>
+          record.cloudProvider === cloudProvider &&
+          record.regionId === input.regionId &&
+          record.cloudResourceType === input.cloudResourceType &&
+          record.cloudResourceId === input.cloudResourceId,
+      );
+
+      if (existing) {
+        Object.assign(existing, {
+          rangeInstanceId: input.rangeInstanceId ?? null,
+          severity: input.severity,
+          reason: input.reason,
+          tagsSnapshot: clone(input.tagsSnapshot ?? {}),
+          lastSeenAt: new Date(input.observedAt),
+          resolvedAt: null,
+          updatedAt: now(),
+        });
+        return clone(existing);
+      }
+
+      const record: CloudResourceDriftRecord = {
+        id: nextId(),
+        cloudProvider,
+        regionId: input.regionId,
+        cloudResourceType: input.cloudResourceType,
+        cloudResourceId: input.cloudResourceId,
+        rangeInstanceId: input.rangeInstanceId ?? null,
+        severity: input.severity,
+        reason: input.reason,
+        tagsSnapshot: clone(input.tagsSnapshot ?? {}),
+        firstSeenAt: new Date(input.observedAt),
+        lastSeenAt: new Date(input.observedAt),
+        resolvedAt: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      cloudResourceDrifts.unshift(record);
+      return clone(record);
+    },
+    async resolveCloudResourceDrift(input) {
+      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const record = cloudResourceDrifts.find(
+        (item) =>
+          item.cloudProvider === cloudProvider &&
+          item.regionId === input.regionId &&
+          item.cloudResourceType === input.cloudResourceType &&
+          item.cloudResourceId === input.cloudResourceId &&
+          item.resolvedAt === null,
+      );
+
+      if (record) {
+        record.resolvedAt = new Date(input.resolvedAt);
+        record.updatedAt = now();
+      }
     },
     async listImageSnapshots(filter: ListImageSnapshotsFilter) {
       return cloneList(

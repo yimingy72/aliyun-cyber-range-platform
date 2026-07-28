@@ -24,6 +24,11 @@ const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
+type AliyunImage = {
+  DiskDeviceMappings?: {
+    DiskDeviceMapping?: Array<{ SnapshotId?: string }> | { SnapshotId?: string };
+  };
+};
 
 @Injectable()
 export class RangeInstanceNodeActionsService {
@@ -154,6 +159,8 @@ export class RangeInstanceNodeActionsService {
               billingScope: ownerUserId ? 'user' : 'platform',
               ownerUserId,
               rangeInstanceId,
+              platformResourceType: 'image',
+              platformHostKey: nodeId,
               billingStartAt: new Date(),
             }),
           ),
@@ -204,8 +211,18 @@ export class RangeInstanceNodeActionsService {
       ownerUserId,
       visibility: 'private',
     });
+    const snapshotIds = await this.tagPackedImageAndSnapshots({
+      accountContext,
+      imageId,
+      ownerUserId,
+      rangeInstanceId,
+      platformImageAssetId: platformImageAsset.id,
+      hostKey: nodeId,
+      billingStartAt: syncedAt,
+    });
     await this.syncPackedImageBillingLedger({
       imageId,
+      snapshotIds,
       ownerUserId,
       rangeInstanceId,
       platformImageAssetId: platformImageAsset.id,
@@ -383,8 +400,79 @@ export class RangeInstanceNodeActionsService {
     return (await response.json()) as ResponsePayload;
   }
 
+  private async tagPackedImageAndSnapshots(input: {
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+    imageId: string;
+    ownerUserId: string | null;
+    rangeInstanceId: string;
+    platformImageAssetId: string;
+    hostKey: string;
+    billingStartAt: Date;
+  }) {
+    const imageTags = buildBillingTags({
+      billingScope: input.ownerUserId ? 'user' : 'platform',
+      ownerUserId: input.ownerUserId,
+      rangeInstanceId: input.rangeInstanceId,
+      platformImageAssetId: input.platformImageAssetId,
+      platformResourceType: 'image',
+      platformHostKey: input.hostKey,
+      billingStartAt: input.billingStartAt,
+    });
+    await this.tagEcsResources(input.accountContext, 'image', [input.imageId], imageTags);
+    const image = await this.describeImage(input.accountContext, input.imageId);
+    const snapshotIds = extractImageSnapshotIds(image);
+
+    if (snapshotIds.length > 0) {
+      await this.tagEcsResources(input.accountContext, 'snapshot', snapshotIds, {
+        ...imageTags,
+        PlatformResourceType: 'snapshot',
+      });
+    }
+
+    return snapshotIds;
+  }
+
+  private async describeImage(
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+    imageId: string,
+  ) {
+    const response = await this.performAliyunRpcRequest<{
+      Images?: { Image?: AliyunImage | AliyunImage[] };
+    }>({
+      accessKeyId: accountContext.accessKeyId,
+      accessKeySecret: accountContext.accessKeySecret,
+      regionId: accountContext.defaultRegion,
+      action: 'DescribeImages',
+      parameters: {
+        ImageId: imageId,
+      },
+    });
+    const images = response.Images?.Image;
+    return Array.isArray(images) ? images[0] ?? null : images ?? null;
+  }
+
+  private async tagEcsResources(
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+    resourceType: 'image' | 'snapshot',
+    resourceIds: string[],
+    tags: Record<string, string>,
+  ) {
+    await this.performAliyunRpcRequest({
+      accessKeyId: accountContext.accessKeyId,
+      accessKeySecret: accountContext.accessKeySecret,
+      regionId: accountContext.defaultRegion,
+      action: 'TagResources',
+      parameters: {
+        ResourceType: resourceType,
+        ...buildAliyunArrayParameters('ResourceId', resourceIds),
+        ...buildAliyunTagParameters(tags),
+      },
+    });
+  }
+
   private async syncPackedImageBillingLedger(input: {
     imageId: string;
+    snapshotIds: string[];
     ownerUserId: string | null;
     rangeInstanceId: string;
     platformImageAssetId: string;
@@ -393,13 +481,37 @@ export class RangeInstanceNodeActionsService {
     billingStartAt: Date;
   }) {
     const billingScope = input.ownerUserId ? 'user' : 'platform';
+    const tagsSnapshot = buildBillingTags({
+      billingScope,
+      ownerUserId: input.ownerUserId,
+      rangeInstanceId: input.rangeInstanceId,
+      platformImageAssetId: input.platformImageAssetId,
+      billingStartAt: input.billingStartAt,
+    });
+    const legacySnapshotLedger = await this.adminRepository.findBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud',
+      regionId: input.regionId,
+      cloudResourceId: input.imageId,
+      cloudResourceType: 'snapshot',
+    });
 
-    for (const cloudResourceType of ['image', 'snapshot'] as const) {
+    if (legacySnapshotLedger && !input.snapshotIds.includes(input.imageId)) {
+      await this.adminRepository.updateBillingLedgerResource(legacySnapshotLedger.id, {
+        releasedAt: input.billingStartAt,
+      });
+    }
+
+    const resources: Array<{ cloudResourceId: string; cloudResourceType: 'image' | 'snapshot' }> = [
+      { cloudResourceId: input.imageId, cloudResourceType: 'image' },
+      ...input.snapshotIds.map((cloudResourceId) => ({ cloudResourceId, cloudResourceType: 'snapshot' as const })),
+    ];
+
+    for (const resource of resources) {
       const existing = await this.adminRepository.findBillingLedgerResource({
         cloudProvider: 'alibaba_cloud',
         regionId: input.regionId,
-        cloudResourceId: input.imageId,
-        cloudResourceType,
+        cloudResourceId: resource.cloudResourceId,
+        cloudResourceType: resource.cloudResourceType,
       });
 
       if (existing) {
@@ -409,6 +521,7 @@ export class RangeInstanceNodeActionsService {
           rangeInstanceId: input.rangeInstanceId,
           platformImageAssetId: input.platformImageAssetId,
           releasedAt: null,
+          tagsSnapshot,
         });
         continue;
       }
@@ -417,14 +530,14 @@ export class RangeInstanceNodeActionsService {
         cloudProvider: 'alibaba_cloud',
         cloudAccountUid: input.accountUid,
         regionId: input.regionId,
-        cloudResourceId: input.imageId,
-        cloudResourceType,
+        cloudResourceId: resource.cloudResourceId,
+        cloudResourceType: resource.cloudResourceType,
         billingScope,
         ownerUserId: input.ownerUserId,
         rangeInstanceId: input.rangeInstanceId,
         platformImageAssetId: input.platformImageAssetId,
         billingStartAt: input.billingStartAt,
-        tagsSnapshot: {},
+        tagsSnapshot,
       });
     }
   }
@@ -432,6 +545,16 @@ export class RangeInstanceNodeActionsService {
 
 function isNodeActionName(value: string): value is NodeActionName {
   return value === 'start' || value === 'stop' || value === 'reboot' || value === 'open-vnc' || value === 'pack-image';
+}
+
+function extractImageSnapshotIds(image: AliyunImage | null) {
+  const mappings = image?.DiskDeviceMappings?.DiskDeviceMapping;
+  const entries = Array.isArray(mappings) ? mappings : mappings ? [mappings] : [];
+  return [...new Set(entries.map((entry) => entry.SnapshotId?.trim() ?? '').filter(Boolean))];
+}
+
+function buildAliyunArrayParameters(prefix: string, values: string[]) {
+  return Object.fromEntries(values.map((value, index) => [`${prefix}.${index + 1}`, value]));
 }
 
 function buildAliyunWebTerminalUrl(input: {

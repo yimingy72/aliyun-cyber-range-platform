@@ -1,10 +1,12 @@
 locals {
   common_tags = merge(
-    {
-      managed_by = "aliyun-cyber-range-platform"
-      module     = "alicloud-enterprise-range"
-    },
     var.tags,
+    {
+      managed_by         = "aliyun-cyber-range-platform"
+      module             = "alicloud-enterprise-range"
+      PlatformManaged    = "true"
+      PlatformTagVersion = "1"
+    },
   )
 
   normalized_network_zones = length(var.network_zones) > 0 ? var.network_zones : [
@@ -338,7 +340,9 @@ check "bootstrap_script_type_consistency_per_host" {
 resource "alicloud_vpc" "range" {
   vpc_name   = "${var.resource_name_prefix}-vpc"
   cidr_block = var.vpc_cidr
-  tags       = local.common_tags
+  tags = merge(local.common_tags, {
+    PlatformResourceType = "vpc"
+  })
 }
 
 resource "alicloud_vpc_ipv4_cidr_block" "secondary" {
@@ -357,8 +361,9 @@ resource "alicloud_vswitch" "zones" {
   vswitch_name = "${var.resource_name_prefix}-${each.key}"
   depends_on   = [alicloud_vpc_ipv4_cidr_block.secondary]
   tags = merge(local.common_tags, {
-    network_zone = each.key
-    purpose      = each.value.purpose
+    network_zone         = each.key
+    purpose              = each.value.purpose
+    PlatformResourceType = "vswitch"
   })
 }
 
@@ -401,8 +406,9 @@ resource "alicloud_network_acl" "zone_acls" {
   }
 
   tags = merge(local.common_tags, {
-    zone_key       = each.key
-    acl_rule_count = tostring(length(each.value.rules))
+    zone_key             = each.key
+    acl_rule_count       = tostring(length(each.value.rules))
+    PlatformResourceType = "network_acl"
   })
 }
 
@@ -413,7 +419,8 @@ resource "alicloud_security_group" "hosts" {
   description         = "Security group for ${each.value.name}."
   vpc_id              = alicloud_vpc.range.id
   tags = merge(local.common_tags, {
-    host_key = each.key
+    host_key             = each.key
+    PlatformResourceType = "security_group"
   })
 }
 
@@ -458,9 +465,11 @@ resource "alicloud_instance" "hosts" {
   }
 
   tags = merge(local.common_tags, {
-    host_key = each.key
-    role     = each.value.role
-    entry    = tostring(each.key == local.resolved_entry_host_key)
+    host_key             = each.key
+    role                 = each.value.role
+    entry                = tostring(each.key == local.resolved_entry_host_key)
+    PlatformResourceType = "ecs"
+    PlatformHostKey      = each.key
   })
 }
 
@@ -477,9 +486,11 @@ resource "alicloud_network_interface" "secondary" {
   primary_ip_address = each.value.private_ip
   security_group_ids = [alicloud_security_group.hosts[each.value.host_key].id]
   tags = merge(local.common_tags, {
-    host_key     = each.value.host_key
-    zone_key     = each.value.zone_key
-    device_index = tostring(each.value.device_index)
+    host_key             = each.value.host_key
+    zone_key             = each.value.zone_key
+    device_index         = tostring(each.value.device_index)
+    PlatformResourceType = "network_interface"
+    PlatformHostKey      = each.value.host_key
   })
 }
 
@@ -499,8 +510,9 @@ resource "alicloud_nat_gateway" "gateways" {
   nat_type         = "Enhanced"
   payment_type     = "PayAsYouGo"
   tags = merge(local.common_tags, {
-    nat_gateway_key = each.key
-    zone_key        = each.value.zone_key
+    nat_gateway_key      = each.key
+    zone_key             = each.value.zone_key
+    PlatformResourceType = "nat_gateway"
   })
 }
 
@@ -512,9 +524,10 @@ resource "alicloud_eip_address" "addresses" {
   payment_type         = "PayAsYouGo"
   bandwidth            = tostring(each.value.bandwidth_mbps)
   tags = merge(local.common_tags, {
-    eip_key          = each.key
-    bind_target_type = each.value.bind_target_type
-    bind_target_key  = each.value.bind_target_key
+    eip_key              = each.key
+    bind_target_type     = each.value.bind_target_type
+    bind_target_key      = each.value.bind_target_key
+    PlatformResourceType = "eip"
   })
 }
 

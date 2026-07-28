@@ -7,6 +7,8 @@ import {
   BillingAnomalyRecord,
   BillingLedgerResourceRecord,
   BillingLineItemRecord,
+  CloudProvider,
+  CloudResourceDriftRecord,
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
@@ -46,6 +48,7 @@ import {
   SaveRangeTemplateTopologyInput,
   TemplateRevisionConflictError,
   UpsertImageSnapshotsInput,
+  UpsertCloudResourceDriftInput,
   UpdateBillingLedgerResourceInput,
   UpdateIdempotentOperationInput,
   UpdatePlatformUserInput,
@@ -107,6 +110,28 @@ function toBillingAnomalyRecord(
     ...record,
     pretaxAmount: Number(record.pretaxAmount),
     rawPayload: (record.rawPayload ?? {}) as Record<string, unknown>,
+  };
+}
+
+function toCloudResourceDriftRecord(record: {
+  id: string;
+  cloudProvider: CloudResourceDriftRecord['cloudProvider'];
+  regionId: string;
+  cloudResourceType: string;
+  cloudResourceId: string;
+  rangeInstanceId: string | null;
+  severity: CloudResourceDriftRecord['severity'];
+  reason: string;
+  tagsSnapshot: Prisma.JsonValue;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  resolvedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): CloudResourceDriftRecord {
+  return {
+    ...record,
+    tagsSnapshot: (record.tagsSnapshot ?? {}) as Record<string, unknown>,
   };
 }
 
@@ -1022,6 +1047,28 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.getProvisionJobById(id);
   }
 
+  async requeueInterruptedProvisionJobs(staleBefore: Date): Promise<number> {
+    const result = await this.prisma.provisionJob.updateMany({
+      where: {
+        status: 'running',
+        startedAt: {
+          lte: staleBefore,
+        },
+      },
+      data: {
+        status: 'pending',
+        startedAt: null,
+        finishedAt: null,
+        errorSummary: null,
+        retryCount: {
+          increment: 1,
+        },
+      },
+    });
+
+    return result.count;
+  }
+
   async updateProvisionJob(id: string, input: UpdateProvisionJobInput): Promise<ProvisionJobRecord> {
     return this.prisma.provisionJob.update({
       where: {
@@ -1080,6 +1127,66 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.finishedAt !== undefined ? { finishedAt: input.finishedAt } : {}),
       },
     }) as Promise<ProvisionJobStepLogRecord>;
+  }
+
+  async upsertCloudResourceDrift(input: UpsertCloudResourceDriftInput): Promise<CloudResourceDriftRecord> {
+    const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+    const tagsSnapshot = input.tagsSnapshot ?? {};
+    const record = await this.prisma.cloudResourceDrift.upsert({
+      where: {
+        cloudProvider_regionId_cloudResourceType_cloudResourceId: {
+          cloudProvider,
+          regionId: input.regionId,
+          cloudResourceType: input.cloudResourceType,
+          cloudResourceId: input.cloudResourceId,
+        },
+      },
+      create: {
+        cloudProvider,
+        regionId: input.regionId,
+        cloudResourceType: input.cloudResourceType,
+        cloudResourceId: input.cloudResourceId,
+        rangeInstanceId: input.rangeInstanceId ?? null,
+        severity: input.severity,
+        reason: input.reason,
+        tagsSnapshot: tagsSnapshot as Prisma.InputJsonValue,
+        firstSeenAt: input.observedAt,
+        lastSeenAt: input.observedAt,
+        resolvedAt: null,
+      },
+      update: {
+        rangeInstanceId: input.rangeInstanceId ?? null,
+        severity: input.severity,
+        reason: input.reason,
+        tagsSnapshot: tagsSnapshot as Prisma.InputJsonValue,
+        lastSeenAt: input.observedAt,
+        resolvedAt: null,
+      },
+    });
+
+    return toCloudResourceDriftRecord(record);
+  }
+
+  async resolveCloudResourceDrift(input: {
+    cloudProvider?: CloudProvider;
+    regionId: string;
+    cloudResourceType: string;
+    cloudResourceId: string;
+    resolvedAt: Date;
+  }): Promise<void> {
+    const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+    await this.prisma.cloudResourceDrift.updateMany({
+      where: {
+        cloudProvider,
+        regionId: input.regionId,
+        cloudResourceType: input.cloudResourceType,
+        cloudResourceId: input.cloudResourceId,
+        resolvedAt: null,
+      },
+      data: {
+        resolvedAt: input.resolvedAt,
+      },
+    });
   }
 
   async listImageSnapshots(filter: ListImageSnapshotsFilter): Promise<CloudImageSnapshotRecord[]> {

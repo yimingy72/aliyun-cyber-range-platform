@@ -381,8 +381,10 @@ export class ImageImportsService {
       linkedPlatformImageAsset.imageId === job.imageId &&
       linkedPlatformImageAsset.sourceSnapshotId === sourceSnapshot.id
     ) {
+      const snapshotIds = await this.tagImportedImageAndSnapshots(context, job, linkedPlatformImageAsset.id);
       await this.syncImportedImageBillingLedger({
         imageId: job.imageId,
+        snapshotIds,
         platformImageAssetId: linkedPlatformImageAsset.id,
         regionId: context.regionId,
         accountUid: context.accountUid,
@@ -421,8 +423,10 @@ export class ImageImportsService {
       visibility: 'private',
     });
     await this.adminRepository.setPlatformImageAssetEnabled(platformImageAsset.id, false);
+    const snapshotIds = await this.tagImportedImageAndSnapshots(context, job, platformImageAsset.id);
     await this.syncImportedImageBillingLedger({
       imageId: job.imageId,
+      snapshotIds,
       platformImageAssetId: platformImageAsset.id,
       regionId: context.regionId,
       accountUid: context.accountUid,
@@ -441,6 +445,7 @@ export class ImageImportsService {
 
   private async syncImportedImageBillingLedger(input: {
     imageId: string;
+    snapshotIds: string[];
     platformImageAssetId: string;
     regionId: string;
     accountUid: string;
@@ -451,13 +456,30 @@ export class ImageImportsService {
       platformImageAssetId: input.platformImageAssetId,
       billingStartAt: input.billingStartAt,
     });
+    const legacySnapshotLedger = await this.adminRepository.findBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud',
+      regionId: input.regionId,
+      cloudResourceId: input.imageId,
+      cloudResourceType: 'snapshot',
+    });
 
-    for (const cloudResourceType of ['image', 'snapshot'] as const) {
+    if (legacySnapshotLedger && !input.snapshotIds.includes(input.imageId)) {
+      await this.adminRepository.updateBillingLedgerResource(legacySnapshotLedger.id, {
+        releasedAt: input.billingStartAt,
+      });
+    }
+
+    const resources: Array<{ cloudResourceId: string; cloudResourceType: 'image' | 'snapshot' }> = [
+      { cloudResourceId: input.imageId, cloudResourceType: 'image' },
+      ...input.snapshotIds.map((cloudResourceId) => ({ cloudResourceId, cloudResourceType: 'snapshot' as const })),
+    ];
+
+    for (const resource of resources) {
       const existing = await this.adminRepository.findBillingLedgerResource({
         cloudProvider: 'alibaba_cloud',
         regionId: input.regionId,
-        cloudResourceId: input.imageId,
-        cloudResourceType,
+        cloudResourceId: resource.cloudResourceId,
+        cloudResourceType: resource.cloudResourceType,
       });
 
       if (existing) {
@@ -475,8 +497,8 @@ export class ImageImportsService {
         cloudProvider: 'alibaba_cloud',
         cloudAccountUid: input.accountUid,
         regionId: input.regionId,
-        cloudResourceId: input.imageId,
-        cloudResourceType,
+        cloudResourceId: resource.cloudResourceId,
+        cloudResourceType: resource.cloudResourceType,
         billingScope: 'platform',
         ownerUserId: null,
         platformImageAssetId: input.platformImageAssetId,
@@ -505,6 +527,8 @@ export class ImageImportsService {
   private async importImage(context: CloudAccountContextCredentials, job: ImageImportJobRow) {
     const billingTags = buildBillingTags({
       billingScope: 'platform',
+      platformResourceType: 'image',
+      platformImageImportJobId: job.id,
       billingStartAt: new Date(),
     });
     const parameters: Record<string, string> = {
@@ -523,7 +547,6 @@ export class ImageImportsService {
         ...billingTags,
         CyberRangeOwnerUserId: job.ownerUserId,
         CyberRangeCloudContextId: job.cloudAccountContextId,
-        CyberRangeImageImportJobId: job.id,
       }),
     };
 
@@ -556,6 +579,53 @@ export class ImageImportsService {
     }
 
     return Array.isArray(images) ? images[0] ?? null : images;
+  }
+
+  private async tagImportedImageAndSnapshots(
+    context: CloudAccountContextCredentials,
+    job: ImageImportJobRow,
+    platformImageAssetId: string,
+  ) {
+    if (!job.imageId) {
+      throw new Error('镜像导入任务缺少阿里云 ImageId。');
+    }
+
+    const imageTags = buildBillingTags({
+      billingScope: 'platform',
+      platformImageAssetId,
+      platformResourceType: 'image',
+      platformImageImportJobId: job.id,
+      billingStartAt: job.uploadCompletedAt ?? job.createdAt,
+    });
+    await this.tagEcsResources(context, 'image', [job.imageId], imageTags);
+    const image = await this.describeImage(context, job.imageId);
+    const snapshotIds = extractImageSnapshotIds(image);
+
+    if (snapshotIds.length > 0) {
+      await this.tagEcsResources(context, 'snapshot', snapshotIds, {
+        ...imageTags,
+        PlatformResourceType: 'snapshot',
+      });
+    }
+
+    return snapshotIds;
+  }
+
+  private async tagEcsResources(
+    context: CloudAccountContextCredentials,
+    resourceType: 'image' | 'snapshot',
+    resourceIds: string[],
+    tags: Record<string, string>,
+  ) {
+    await this.performAliyunEcsRequest({
+      ...context,
+      action: 'TagResources',
+      parameters: {
+        ResourceType: resourceType,
+        ...buildAliyunArrayParameters('ResourceId', resourceIds),
+        ...buildAliyunTagParameters(tags),
+      },
+    });
   }
 
   private async performAliyunEcsRequest<ResponsePayload>(input: CloudAccountContextCredentials & {
@@ -896,4 +966,17 @@ type AliyunImage = {
   Architecture?: string;
   Status?: string;
   Progress?: string;
+  DiskDeviceMappings?: {
+    DiskDeviceMapping?: Array<{ SnapshotId?: string }> | { SnapshotId?: string };
+  };
 };
+
+function extractImageSnapshotIds(image: AliyunImage | null) {
+  const mappings = image?.DiskDeviceMappings?.DiskDeviceMapping;
+  const entries = Array.isArray(mappings) ? mappings : mappings ? [mappings] : [];
+  return [...new Set(entries.map((entry) => entry.SnapshotId?.trim() ?? '').filter(Boolean))];
+}
+
+function buildAliyunArrayParameters(prefix: string, values: string[]) {
+  return Object.fromEntries(values.map((value, index) => [`${prefix}.${index + 1}`, value]));
+}

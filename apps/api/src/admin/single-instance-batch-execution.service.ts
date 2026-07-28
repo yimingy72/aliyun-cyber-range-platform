@@ -56,6 +56,9 @@ type AliyunInstanceDetail = {
   InstanceName?: string;
   HostName?: string;
   Status?: string;
+  BlockDeviceMappings?: {
+    BlockDeviceMapping?: Array<{ DiskId?: string }> | { DiskId?: string };
+  };
   VpcAttributes?: {
     PrivateIpAddress?: {
       IpAddress?: string[] | string;
@@ -162,6 +165,8 @@ export class SingleInstanceBatchExecutionService {
                   ownerUserId: item.instance.ownerUserId,
                   rangeInstanceId: item.instance.id,
                   singleInstanceBatchId: item.instance.singleInstanceBatchId ?? null,
+                  platformResourceType: 'ecs',
+                  platformHostKey: item.instance.singleInstanceConfig!.hostKey,
                   billingStartAt: new Date(),
                 }),
               ),
@@ -174,9 +179,36 @@ export class SingleInstanceBatchExecutionService {
             throw new Error(`RunInstances returned ${instanceIds.length} instance ids for a single-instance request.`);
           }
 
+          const [instanceDetail] = await this.waitForInstancesVisible({
+            regionId: accountContext.defaultRegion,
+            instanceIds,
+            requireDiskIds: true,
+          });
+
+          if (!instanceDetail || instanceDetail.diskIds.length === 0) {
+            throw new Error('Created ECS instance has no visible disks to tag.');
+          }
+
+          const hostKey = item.instance.singleInstanceConfig!.hostKey;
+          await this.tagAliyunResources({
+            accountContext,
+            resourceType: 'disk',
+            resourceIds: instanceDetail.diskIds,
+            tags: buildBillingTags({
+              billingScope: item.instance.ownerUserId ? 'user' : 'platform',
+              ownerUserId: item.instance.ownerUserId,
+              rangeInstanceId: item.instance.id,
+              singleInstanceBatchId: item.instance.singleInstanceBatchId ?? null,
+              platformResourceType: 'disk',
+              platformHostKey: hostKey,
+              billingStartAt: new Date(),
+            }),
+          });
+
           await this.markCreateSubmitted({
             item,
             instanceId: instanceIds[0],
+            systemDiskIds: instanceDetail.diskIds,
             profile,
             resolvedInstanceType,
             accountContext,
@@ -373,6 +405,7 @@ export class SingleInstanceBatchExecutionService {
     regionId: string;
     instanceIds: string[];
     requirePublicIp?: boolean;
+    requireDiskIds?: boolean;
   }) {
     let lastVisibleDetails: NormalizedInstanceDetail[] = [];
 
@@ -383,7 +416,10 @@ export class SingleInstanceBatchExecutionService {
       if (visibleDetails.length >= input.instanceIds.length) {
         lastVisibleDetails = visibleDetails;
 
-        if (!input.requirePublicIp || visibleDetails.every((detail) => Boolean(detail.publicIp))) {
+        if (
+          (!input.requirePublicIp || visibleDetails.every((detail) => Boolean(detail.publicIp))) &&
+          (!input.requireDiskIds || visibleDetails.every((detail) => detail.diskIds.length > 0))
+        ) {
           return visibleDetails;
         }
       }
@@ -427,6 +463,7 @@ export class SingleInstanceBatchExecutionService {
   private async markCreateSubmitted(input: {
     item: SingleInstanceExecutionItem;
     instanceId: string;
+    systemDiskIds: string[];
     profile: Awaited<ReturnType<AdminRepository['getSingleInstanceNetworkProfile']>>;
     resolvedInstanceType: string;
     accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
@@ -441,6 +478,7 @@ export class SingleInstanceBatchExecutionService {
       hostIds: {
         [hostKey]: input.instanceId,
       },
+      systemDiskIds: input.systemDiskIds.length > 0 ? { [hostKey]: input.systemDiskIds[0] } : null,
       resolvedInstanceType: input.resolvedInstanceType,
       resolvedImageId: input.item.instance.singleInstanceConfig?.imageId ?? null,
     };
@@ -586,6 +624,30 @@ export class SingleInstanceBatchExecutionService {
     };
   }
 
+  private async tagAliyunResources(input: {
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+    resourceType: 'disk';
+    resourceIds: string[];
+    tags: Record<string, string>;
+  }) {
+    if (input.resourceIds.length === 0) {
+      return;
+    }
+
+    await this.performAliyunRpcRequest({
+      accessKeyId: input.accountContext.accessKeyId,
+      accessKeySecret: input.accountContext.accessKeySecret,
+      regionId: input.accountContext.defaultRegion,
+      action: 'TagResources',
+      method: 'POST',
+      parameters: {
+        ResourceType: input.resourceType,
+        ...buildAliyunArrayParameters('ResourceId', input.resourceIds),
+        ...buildAliyunTagParameters(input.tags),
+      },
+    });
+  }
+
   private async performAliyunRpcRequest<ResponsePayload>(input: {
     accessKeyId: string;
     accessKeySecret: string;
@@ -667,6 +729,7 @@ type NormalizedInstanceDetail = {
   instanceId: string;
   instanceName: string;
   hostName: string;
+  diskIds: string[];
   privateIp: string | null;
   publicIp: string | null;
   status: string | null;
@@ -738,12 +801,20 @@ function normalizeInstanceDetails(response: AliyunDescribeInstancesResponse): No
         instanceId,
         instanceName: instance.InstanceName?.trim() || '',
         hostName: instance.HostName?.trim() || '',
+        diskIds: normalizeDiskIds(instance.BlockDeviceMappings?.BlockDeviceMapping),
         privateIp: normalizeStringArray(instance.VpcAttributes?.PrivateIpAddress?.IpAddress)[0] ?? null,
         publicIp: normalizeStringArray(instance.PublicIpAddress?.IpAddress)[0] ?? null,
         status: instance.Status?.trim() || null,
       },
     ];
   });
+}
+
+function normalizeDiskIds(
+  value: Array<{ DiskId?: string }> | { DiskId?: string } | null | undefined,
+) {
+  const mappings = Array.isArray(value) ? value : value ? [value] : [];
+  return mappings.map((mapping) => mapping.DiskId?.trim() ?? '').filter(Boolean);
 }
 
 function resolveHostInstanceId(instance: RangeInstanceRecord) {
