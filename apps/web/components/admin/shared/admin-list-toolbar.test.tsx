@@ -83,6 +83,8 @@ describe('AdminListToolbar', () => {
 
     expect(searchControls.contains(screen.getByRole('searchbox', { name: '筛选镜像名' }))).toBe(true);
     expect(searchControls.contains(screen.getByRole('button', { name: '全部标签' }))).toBe(true);
+    expect(searchControls.className).toContain('sm:shrink-0');
+    expect(searchControls.parentElement?.className).toContain('sm:flex-wrap');
   });
 
   it('reserves a stable view-action slot when a tabbed toolbar has no action', () => {

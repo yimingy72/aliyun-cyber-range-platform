@@ -512,6 +512,43 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByText('Alice Linux')).toBeTruthy();
   });
 
+  it('filters 我的镜像 by existing tag', async () => {
+    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
+      view === 'mine'
+        ? ({
+            items: [
+              createPlatformImageAsset({
+                id: 'my-image-critical',
+                imageId: 'm-my-critical',
+                displayName: 'My Critical Ubuntu',
+                createdBy: 'admin',
+                tags: [{ id: 'tag-critical', name: '关键资产' }],
+              }),
+              createPlatformImageAsset({
+                id: 'my-image-base',
+                imageId: 'm-my-base',
+                displayName: 'My Base Ubuntu',
+                createdBy: 'admin',
+                tags: [],
+              }),
+            ],
+          } satisfies PlatformImageAssetListPayload)
+        : platformImagesPayload,
+    );
+
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
+    expect(await screen.findByText('My Critical Ubuntu')).toBeTruthy();
+    expect(screen.getByText('My Base Ubuntu')).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '按标签筛选' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '关键资产' }));
+
+    expect(screen.getByText('My Critical Ubuntu')).toBeTruthy();
+    expect(screen.queryByText('My Base Ubuntu')).toBeNull();
+  });
+
   it('lets admins create and assign image tags from the inline tag dropdown', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 

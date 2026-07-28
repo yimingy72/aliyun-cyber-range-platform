@@ -59,7 +59,7 @@ function SearchField({
 
 function ToolbarLayout({ search, controls }: { search: ReactNode; controls?: ReactNode }) {
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       {search}
       {controls ? <div className="flex flex-wrap items-center gap-2">{controls}</div> : null}
     </div>
@@ -68,7 +68,7 @@ function ToolbarLayout({ search, controls }: { search: ReactNode; controls?: Rea
 
 export function AdminListToolbar(props: AdminListToolbarProps) {
   const search = (
-    <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="admin-list-toolbar-search-controls">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0" data-testid="admin-list-toolbar-search-controls">
       <SearchField {...props} compact={Boolean(props.searchControls)} />
       {props.searchControls}
     </div>

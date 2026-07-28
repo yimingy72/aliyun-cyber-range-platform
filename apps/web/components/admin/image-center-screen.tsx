@@ -530,6 +530,7 @@ export function ImageCenterScreen({
   const [platformImageTags, setAvailablePlatformImageTags] = useState<PlatformImageTag[]>([]);
   const [platformCreatedByFilter, setPlatformCreatedByFilter] = useState('');
   const [platformTagFilter, setPlatformTagFilter] = useState('');
+  const [myTagFilter, setMyTagFilter] = useState('');
   const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(null);
   const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
   const [loadedTabs, setLoadedTabs] = useState<Record<ActiveTab, boolean>>({
@@ -1383,7 +1384,9 @@ export function ImageCenterScreen({
       (!platformCreatedByFilter || getPlatformAssetCreator(asset) === platformCreatedByFilter) &&
       (!platformTagFilter || asset.tags.some((tag) => tag.id === platformTagFilter)),
   );
-  const filteredMyAssets = myAssets.filter((asset) => matchesPlatformAssetSearch(asset, searchName));
+  const filteredMyAssets = myAssets.filter(
+    (asset) => matchesPlatformAssetSearch(asset, searchName) && (!myTagFilter || asset.tags.some((tag) => tag.id === myTagFilter)),
+  );
   const filteredCustomSnapshots = (customScope?.snapshots ?? []).filter((snapshot) => matchesSnapshotSearch(snapshot, searchName));
   const filteredPublicSnapshots = (publicScope?.snapshots ?? []).filter((snapshot) => matchesSnapshotSearch(snapshot, searchName));
 
@@ -1713,10 +1716,10 @@ export function ImageCenterScreen({
             ]}
             searchControls={
               activeTab === 'platform' ? (
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-[11rem_11rem]">
                   <AdminSelectField
                     ariaLabel="按创建人筛选"
-                    className="w-full sm:w-44"
+                    className="w-full"
                     emptyOptionLabel="全部创建人"
                     onValueChange={(value) => {
                       setPlatformCreatedByFilter(value);
@@ -1727,7 +1730,7 @@ export function ImageCenterScreen({
                   />
                   <AdminSelectField
                     ariaLabel="按标签筛选"
-                    className="w-full sm:w-44"
+                    className="w-full"
                     emptyOptionLabel="全部标签"
                     onValueChange={(value) => {
                       setPlatformTagFilter(value);
@@ -1737,6 +1740,18 @@ export function ImageCenterScreen({
                     value={platformTagFilter}
                   />
                 </div>
+              ) : activeTab === 'mine' ? (
+                <AdminSelectField
+                  ariaLabel="按标签筛选"
+                  className="w-full sm:w-44"
+                  emptyOptionLabel="全部标签"
+                  onValueChange={(value) => {
+                    setMyTagFilter(value);
+                    setPage('mine', 1);
+                  }}
+                  options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
+                  value={myTagFilter}
+                />
               ) : undefined
             }
             action={
