@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TopologyFlowCanvas } from './topology-flow-canvas';
@@ -10,28 +10,60 @@ import type { TemplateNode } from '../../../lib/scenario-graph';
 const flowState = vi.hoisted(() => ({
   props: null as Record<string, any> | null,
   fitView: vi.fn(),
+  nodeChanges: vi.fn(),
   screenToFlowPosition: vi.fn(({ x, y }: { x: number; y: number }) => ({ x: x - 40, y: y + 20 })),
+  setViewport: vi.fn(),
 }));
 
-vi.mock('@xyflow/react', () => ({
-  Background: () => <div data-testid="flow-background" />,
-  Controls: () => <div data-testid="flow-controls" />,
-  Handle: () => null,
-  MiniMap: () => <div data-testid="flow-mini-map" />,
-  Position: { Left: 'left', Right: 'right' },
-  ReactFlow: ({ children, ...props }: { children: React.ReactNode }) => {
-    flowState.props = props;
-    return <div data-testid="react-flow">{children}</div>;
-  },
-  ReactFlowProvider: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="react-flow-provider">{children}</div>
-  ),
-  useReactFlow: () => ({
-    fitView: flowState.fitView,
-    screenToFlowPosition: flowState.screenToFlowPosition,
-  }),
-  useUpdateNodeInternals: () => vi.fn(),
-}));
+vi.mock('@xyflow/react', async () => {
+  const ReactModule = await import('react');
+
+  return {
+    Background: () => <div data-testid="flow-background" />,
+    Controls: () => <div data-testid="flow-controls" />,
+    Handle: () => null,
+    MiniMap: () => <div data-testid="flow-mini-map" />,
+    Position: { Left: 'left', Right: 'right' },
+    ReactFlow: ({ children, ...props }: { children: React.ReactNode }) => {
+      flowState.props = props;
+      return <div data-testid="react-flow">{children}</div>;
+    },
+    ReactFlowProvider: ({ children }: { children: React.ReactNode }) => (
+      <div data-testid="react-flow-provider">{children}</div>
+    ),
+    useNodesState: (initialNodes: Array<Record<string, any>>) => {
+      const [localNodes, setLocalNodes] = ReactModule.useState(initialNodes);
+
+      function onNodesChange(changes: Array<Record<string, any>>) {
+        flowState.nodeChanges(changes);
+        setLocalNodes((currentNodes) => currentNodes.map((node) => {
+          const change = changes.find((item) => item.id === node.id);
+          if (!change) {
+            return node;
+          }
+
+          if (change.type === 'position' && change.position) {
+            return { ...node, position: change.position };
+          }
+
+          if (change.type === 'select') {
+            return { ...node, selected: change.selected };
+          }
+
+          return node;
+        }));
+      }
+
+      return [localNodes, setLocalNodes, onNodesChange];
+    },
+    useReactFlow: () => ({
+      fitView: flowState.fitView,
+      screenToFlowPosition: flowState.screenToFlowPosition,
+      setViewport: flowState.setViewport,
+    }),
+    useUpdateNodeInternals: () => vi.fn(),
+  };
+});
 
 const nodes: TemplateNode[] = [
   {
@@ -91,7 +123,9 @@ afterEach(() => {
   cleanup();
   flowState.props = null;
   flowState.fitView.mockReset();
+  flowState.nodeChanges.mockReset();
   flowState.screenToFlowPosition.mockClear();
+  flowState.setViewport.mockReset();
 });
 
 describe('TopologyFlowCanvas', () => {
@@ -105,7 +139,9 @@ describe('TopologyFlowCanvas', () => {
     expect(screen.getByTestId('flow-controls')).toBeTruthy();
     expect(screen.getByTestId('flow-mini-map')).toBeTruthy();
     expect(flowState.props).toMatchObject({
+      multiSelectionKeyCode: 'Shift',
       onlyRenderVisibleElements: true,
+      panActivationKeyCode: 'Space',
       panOnDrag: [1],
       selectionOnDrag: true,
     });
@@ -139,6 +175,31 @@ describe('TopologyFlowCanvas', () => {
       { id: 'switch-1', position: { x: 120, y: 80 } },
       { id: 'ecs-1', position: { x: 440, y: 210 } },
     ]);
+  });
+
+  it('使用本地受控节点状态处理拖动和选择，并在外部节点或连线模式变更时同步', async () => {
+    const canvasProps = createCanvasProps();
+    const { rerender } = render(<TopologyFlowCanvas {...canvasProps} />);
+
+    flowState.props?.onNodesChange([{
+      id: 'switch-1',
+      position: { x: 260, y: 140 },
+      type: 'position',
+    }]);
+
+    await waitFor(() => expect(flowState.props?.nodes[0].position).toEqual({ x: 260, y: 140 }));
+    expect(flowState.nodeChanges).toHaveBeenCalledOnce();
+    expect(canvasProps.onPositionsCommit).not.toHaveBeenCalled();
+
+    const externalNodes = nodes.map((node) => node.id === 'switch-1'
+      ? { ...node, position: { x: 320, y: 180 } }
+      : node);
+    rerender(<TopologyFlowCanvas {...canvasProps} nodes={externalNodes} />);
+
+    await waitFor(() => expect(flowState.props?.nodes[0].position).toEqual({ x: 320, y: 180 }));
+
+    fireEvent.click(screen.getByRole('button', { name: '连线模式' }));
+    await waitFor(() => expect(flowState.props?.nodes[0].data.connectMode).toBe(true));
   });
 
   it('把选中的节点和边上报给编辑器', () => {
@@ -206,6 +267,15 @@ describe('TopologyFlowCanvas', () => {
 
     expect(screen.getByTestId('topology-flow-workbench').getAttribute('data-connect-mode')).toBe('true');
     expect(flowState.props?.nodes[0].data.connectMode).toBe(true);
+    expect(screen.getByRole('button', { name: '选择模式' }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('button', { name: '连线模式' }).getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换专注模式' }));
+    expect(screen.getByRole('button', { name: '切换专注模式' }).getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: '选择模式' }));
+    expect(screen.getByRole('button', { name: '选择模式' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: '连线模式' }).getAttribute('aria-pressed')).toBe('false');
 
     fireEvent.click(screen.getByRole('button', { name: '全部自动布局' }));
     fireEvent.click(screen.getByRole('button', { name: '选中自动布局' }));
@@ -223,6 +293,49 @@ describe('TopologyFlowCanvas', () => {
       expect(button.getAttribute('title')).toBe(name);
       expect(button.getAttribute('aria-label')).toBe(name);
     }
+  });
+
+  it('外部视口变更时同步画布，用户移动结束后不会形成视口反馈循环', async () => {
+    const canvasProps = createCanvasProps();
+    const { rerender } = render(<TopologyFlowCanvas {...canvasProps} />);
+
+    flowState.props?.onMoveEnd(null, { x: -20, y: 10, zoom: 1.4 });
+    expect(canvasProps.onViewportCommit).toHaveBeenCalledOnce();
+    expect(flowState.setViewport).not.toHaveBeenCalled();
+
+    rerender(<TopologyFlowCanvas {...canvasProps} viewport={{ x: -20, y: 10, zoom: 1.4 }} />);
+    expect(flowState.setViewport).not.toHaveBeenCalled();
+
+    rerender(<TopologyFlowCanvas {...canvasProps} viewport={{ x: 80, y: -40, zoom: 0.8 }} />);
+    await waitFor(() => expect(flowState.setViewport).toHaveBeenCalledWith({ x: 80, y: -40, zoom: 0.8 }));
+    flowState.props?.onMoveEnd(null, { x: 80, y: -40, zoom: 0.8 });
+    expect(canvasProps.onViewportCommit).toHaveBeenCalledOnce();
+
+    rerender(<TopologyFlowCanvas {...canvasProps} viewport={null} />);
+    await waitFor(() => expect(flowState.fitView).toHaveBeenCalled());
+  });
+
+  it('点击资源时将画布容器中心转换为世界坐标', () => {
+    const canvasProps = createCanvasProps();
+    render(<TopologyFlowCanvas {...canvasProps} />);
+    const canvas = screen.getByTestId('topology-flow-canvas');
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      bottom: 430,
+      height: 400,
+      left: 20,
+      right: 620,
+      toJSON: () => ({}),
+      top: 30,
+      width: 600,
+      x: 20,
+      y: 30,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '打开资源面板' }));
+    fireEvent.click(screen.getByRole('button', { name: /ECS 主机/ }));
+
+    expect(flowState.screenToFlowPosition).toHaveBeenCalledWith({ x: 320, y: 230 });
+    expect(canvasProps.onAddNode).toHaveBeenCalledWith('ecs', { x: 280, y: 250 });
   });
 
   it('展开资源面板不提交或重置画布视口', () => {

@@ -7,6 +7,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
   useReactFlow,
   type Connection,
   type NodeTypes,
@@ -67,6 +68,14 @@ function isTopologyResourceKind(value: string): value is TopologyResourceKind {
   return value === 'router' || value === 'switch' || value === 'ecs';
 }
 
+function hasSameViewport(
+  left: TopologyViewport | null,
+  right: TopologyViewport | null,
+) {
+  return left === right
+    || (left?.x === right?.x && left?.y === right?.y && left?.zoom === right?.zoom);
+}
+
 function TopologyFlowCanvasInner({
   edges,
   nodes,
@@ -84,12 +93,43 @@ function TopologyFlowCanvasInner({
 }: TopologyFlowCanvasProps) {
   const [connectMode, setConnectMode] = React.useState(false);
   const [focusMode, setFocusMode] = React.useState(false);
-  const { fitView, screenToFlowPosition } = useReactFlow();
-  const flowNodes = React.useMemo(
+  const canvasRef = React.useRef<HTMLDivElement>(null);
+  const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
+  const externalFlowNodes = React.useMemo(
     () => toFlowNodes(nodes, connectMode),
     [connectMode, nodes],
   );
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(externalFlowNodes);
   const flowEdges = React.useMemo(() => toFlowEdges(edges), [edges]);
+  const syncedFlowNodesRef = React.useRef(externalFlowNodes);
+  const knownViewportRef = React.useRef<TopologyViewport | null>(viewport);
+  const pendingExternalViewportRef = React.useRef<TopologyViewport | null>(null);
+
+  React.useEffect(() => {
+    if (syncedFlowNodesRef.current === externalFlowNodes) {
+      return;
+    }
+
+    syncedFlowNodesRef.current = externalFlowNodes;
+    setFlowNodes(externalFlowNodes);
+  }, [externalFlowNodes, setFlowNodes]);
+
+  React.useEffect(() => {
+    if (hasSameViewport(knownViewportRef.current, viewport)) {
+      return;
+    }
+
+    knownViewportRef.current = viewport;
+
+    if (viewport) {
+      pendingExternalViewportRef.current = viewport;
+      void setViewport(viewport);
+      return;
+    }
+
+    pendingExternalViewportRef.current = null;
+    void fitView({ duration: 180, padding: 0.2 });
+  }, [fitView, setViewport, viewport]);
 
   function handleConnect(connection: Connection) {
     if (connection.source && connection.target) {
@@ -113,6 +153,35 @@ function TopologyFlowCanvasInner({
     }
 
     onAddNode(kind, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+  }
+
+  function handleResourceAddNode(kind: TopologyResourceKind) {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+
+    if (!bounds) {
+      onAddNode(kind);
+      return;
+    }
+
+    onAddNode(kind, screenToFlowPosition({
+      x: bounds.left + bounds.width / 2,
+      y: bounds.top + bounds.height / 2,
+    }));
+  }
+
+  function handleMoveEnd(nextViewport: TopologyViewport) {
+    knownViewportRef.current = nextViewport;
+
+    if (
+      pendingExternalViewportRef.current
+      && hasSameViewport(pendingExternalViewportRef.current, nextViewport)
+    ) {
+      pendingExternalViewportRef.current = null;
+      return;
+    }
+
+    pendingExternalViewportRef.current = null;
+    onViewportCommit(nextViewport);
   }
 
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
@@ -155,6 +224,7 @@ function TopologyFlowCanvasInner({
       <div className="topology-flow-toolbar" data-testid="topology-flow-toolbar">
         <button
           aria-label="选择模式"
+          aria-pressed={!connectMode}
           className="topology-flow-tool-button"
           data-active={!connectMode ? 'true' : 'false'}
           onClick={() => setConnectMode(false)}
@@ -165,6 +235,7 @@ function TopologyFlowCanvasInner({
         </button>
         <button
           aria-label="连线模式"
+          aria-pressed={connectMode}
           className="topology-flow-tool-button"
           data-active={connectMode ? 'true' : 'false'}
           onClick={() => setConnectMode(true)}
@@ -220,6 +291,7 @@ function TopologyFlowCanvasInner({
         </button>
         <button
           aria-label="切换专注模式"
+          aria-pressed={focusMode}
           className="topology-flow-tool-button"
           data-active={focusMode ? 'true' : 'false'}
           onClick={() => setFocusMode((value) => !value)}
@@ -229,8 +301,8 @@ function TopologyFlowCanvasInner({
           <Focus aria-hidden="true" />
         </button>
       </div>
-      <TopologyFlowResourceRail onAddNode={onAddNode} />
-      <div className="topology-flow-canvas" data-testid="topology-flow-canvas">
+      <TopologyFlowResourceRail onAddNode={handleResourceAddNode} />
+      <div className="topology-flow-canvas" data-testid="topology-flow-canvas" ref={canvasRef}>
         <ReactFlow
           defaultViewport={viewport ?? undefined}
           deleteKeyCode={null}
@@ -242,11 +314,14 @@ function TopologyFlowCanvasInner({
           onConnect={handleConnect}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
-          onMoveEnd={(_event, nextViewport) => onViewportCommit(nextViewport)}
+          onMoveEnd={(_event, nextViewport) => handleMoveEnd(nextViewport)}
           onNodeDragStop={(_event, _node, movedNodes) => {
             onPositionsCommit(movedNodes.map((node) => ({ id: node.id, position: node.position })));
           }}
+          onNodesChange={onNodesChange}
           onSelectionChange={handleSelectionChange}
+          multiSelectionKeyCode="Shift"
+          panActivationKeyCode="Space"
           panOnDrag={[1]}
           selectionOnDrag
         >
