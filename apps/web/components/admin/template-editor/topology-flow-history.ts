@@ -6,10 +6,18 @@ export type TopologyHistory = {
   future: TopologySnapshot[];
 };
 
+function cloneTopologySnapshot(snapshot: TopologySnapshot): TopologySnapshot {
+  return structuredClone(snapshot);
+}
+
+function cloneTopologySnapshots(snapshots: TopologySnapshot[]): TopologySnapshot[] {
+  return snapshots.map(cloneTopologySnapshot);
+}
+
 export function createTopologyHistory(present: TopologySnapshot): TopologyHistory {
   return {
     past: [],
-    present,
+    present: cloneTopologySnapshot(present),
     future: [],
   };
 }
@@ -18,8 +26,8 @@ export function pushTopologySnapshot(history: TopologyHistory, next: TopologySna
   return JSON.stringify(history.present) === JSON.stringify(next)
     ? history
     : {
-      past: [...history.past, history.present],
-      present: next,
+      past: [...cloneTopologySnapshots(history.past), cloneTopologySnapshot(history.present)],
+      present: cloneTopologySnapshot(next),
       future: [],
     };
 }
@@ -29,9 +37,9 @@ export function undoTopology(history: TopologyHistory): TopologyHistory {
 
   return previous
     ? {
-      past: history.past.slice(0, -1),
-      present: previous,
-      future: [history.present, ...history.future],
+      past: cloneTopologySnapshots(history.past.slice(0, -1)),
+      present: cloneTopologySnapshot(previous),
+      future: [cloneTopologySnapshot(history.present), ...cloneTopologySnapshots(history.future)],
     }
     : history;
 }
@@ -41,9 +49,9 @@ export function redoTopology(history: TopologyHistory): TopologyHistory {
 
   return next
     ? {
-      past: [...history.past, history.present],
-      present: next,
-      future: history.future.slice(1),
+      past: [...cloneTopologySnapshots(history.past), cloneTopologySnapshot(history.present)],
+      present: cloneTopologySnapshot(next),
+      future: cloneTopologySnapshots(history.future.slice(1)),
     }
     : history;
 }
