@@ -14,14 +14,19 @@ describe('TopologyFlowResourceRail', () => {
     render(<TopologyFlowResourceRail onAddNode={vi.fn()} />);
 
     expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('false');
-    expect(screen.getByRole('button', { name: '打开资源面板' }).getAttribute('title')).toBe('打开资源面板');
+    const openButton = screen.getByRole('button', { name: '打开资源面板' });
+    expect(openButton.getAttribute('title')).toBe('打开资源面板');
+    expect(openButton.getAttribute('aria-expanded')).toBe('false');
+    expect(openButton.getAttribute('aria-controls')).toBe('topology-resource-palette');
     expect(screen.queryByTestId('topology-resource-palette')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '打开资源面板' }));
+    fireEvent.click(openButton);
 
     expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('true');
-    expect(screen.getByTestId('topology-resource-palette')).toBeTruthy();
+    const palette = screen.getByTestId('topology-resource-palette');
+    expect(palette.getAttribute('id')).toBe('topology-resource-palette');
     expect(screen.getByRole('button', { name: '关闭资源面板' }).getAttribute('title')).toBe('关闭资源面板');
+    expect(screen.getByRole('button', { name: '关闭资源面板' }).getAttribute('aria-expanded')).toBe('true');
 
     fireEvent.click(screen.getByRole('button', { name: '关闭资源面板' }));
 
@@ -54,5 +59,16 @@ describe('TopologyFlowResourceRail', () => {
 
     expect(dataTransfer.effectAllowed).toBe('move');
     expect(dataTransfer.setData).toHaveBeenCalledWith('application/x-topology-node-kind', 'ecs');
+  });
+
+  it('通过 aria-describedby 保留资源描述', () => {
+    render(<TopologyFlowResourceRail onAddNode={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '打开资源面板' }));
+
+    const ecsButton = screen.getByRole('button', { name: /ECS 主机/ });
+    const descriptionId = ecsButton.getAttribute('aria-describedby');
+
+    expect(descriptionId).toBe('topology-resource-description-ecs');
+    expect(document.getElementById(descriptionId ?? '')?.textContent).toBe('虚拟计算节点');
   });
 });

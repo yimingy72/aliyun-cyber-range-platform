@@ -7,6 +7,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TopologyFlowNode } from './topology-flow-node';
 import type { TemplateNode } from '../../../lib/scenario-graph';
 
+const updateNodeInternals = vi.hoisted(() => vi.fn());
+
+vi.mock('@xyflow/react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@xyflow/react')>();
+
+  return {
+    ...actual,
+    useUpdateNodeInternals: () => updateNodeInternals,
+  };
+});
+
 class TestResizeObserver {
   observe() {}
 
@@ -24,6 +35,7 @@ vi.stubGlobal('cancelAnimationFrame', () => {});
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
 });
 
 const routerNode: TemplateNode = {
@@ -68,8 +80,8 @@ const ecsNode: TemplateNode = {
   instanceTypeStrategy: { mode: 'auto' },
 };
 
-function renderFlowNode(topologyNode: TemplateNode, connectMode: boolean) {
-  render(
+function createFlowNode(topologyNode: TemplateNode, connectMode: boolean) {
+  return (
     <div style={{ height: 400, width: 640 }}>
       <ReactFlow
         nodes={[{
@@ -83,6 +95,10 @@ function renderFlowNode(topologyNode: TemplateNode, connectMode: boolean) {
       />
     </div>,
   );
+}
+
+function renderFlowNode(topologyNode: TemplateNode, connectMode: boolean) {
+  return render(createFlowNode(topologyNode, connectMode));
 }
 
 describe('TopologyFlowNode', () => {
@@ -99,16 +115,43 @@ describe('TopologyFlowNode', () => {
     expect(screen.getByTestId('topology-flow-node-icon').getAttribute('src')).toBe(iconSrc);
   });
 
-  it('只在连线模式显示 source 和 target Handle', () => {
-    renderFlowNode(ecsNode, false);
+  it('在同一节点切换到连线模式时刷新 Handle，并显示 source 和 target Handle', () => {
+    const { rerender } = renderFlowNode(ecsNode, false);
 
     expect(screen.queryByTestId('topology-flow-source-handle')).toBeNull();
     expect(screen.queryByTestId('topology-flow-target-handle')).toBeNull();
+    expect(updateNodeInternals).not.toHaveBeenCalled();
 
-    cleanup();
-    renderFlowNode(ecsNode, true);
+    rerender(createFlowNode(ecsNode, true));
 
+    expect(updateNodeInternals).toHaveBeenCalledWith('ecs-web');
     expect(screen.getByTestId('topology-flow-source-handle')).toBeTruthy();
     expect(screen.getByTestId('topology-flow-target-handle')).toBeTruthy();
+  });
+
+  it('忽略损坏缓存中的 NIC、网络接口和私网 IP', () => {
+    const malformedNode = {
+      ...ecsNode,
+      nics: [null, { privateIp: 42 }, { privateIp: '' }],
+      networkInterfaces: [undefined, { privateIp: false }, { privateIp: '10.70.10.20' }],
+      privateIp: 80,
+    } as unknown as TemplateNode;
+
+    renderFlowNode(malformedNode, false);
+
+    expect(screen.getByText('Web ECS')).toBeTruthy();
+    expect(screen.getByText('10.70.10.20')).toBeTruthy();
+  });
+
+  it('在损坏缓存不存在有效私网 IP 时保持可渲染', () => {
+    const malformedNode = {
+      ...ecsNode,
+      nics: [null, { privateIp: null }],
+      networkInterfaces: [undefined, { privateIp: 80 }],
+      privateIp: null,
+    } as unknown as TemplateNode;
+
+    expect(() => renderFlowNode(malformedNode, false)).not.toThrow();
+    expect(screen.getByText('Web ECS')).toBeTruthy();
   });
 });

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, type NodeProps, useUpdateNodeInternals } from '@xyflow/react';
 
 import type { TopologyFlowNode as TopologyFlowNodeModel } from './topology-flow-types';
 import type { TemplateNode } from '../../../lib/scenario-graph';
@@ -17,6 +17,26 @@ function readNodeIcon(kind: TemplateNode['kind']) {
   }
 }
 
+function readFirstPrivateIp(value: unknown) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const privateIp = (item as { privateIp?: unknown }).privateIp;
+
+    if (typeof privateIp === 'string' && privateIp.trim().length > 0) {
+      return privateIp;
+    }
+  }
+
+  return null;
+}
+
 function readNodeMeta(node: TemplateNode) {
   switch (node.kind) {
     case 'router':
@@ -24,18 +44,29 @@ function readNodeMeta(node: TemplateNode) {
     case 'switch':
       return node.cidr;
     case 'ecs':
-      return node.nics?.find((nic) => nic.privateIp.trim().length > 0)?.privateIp
-        ?? node.networkInterfaces.find((networkInterface) => networkInterface.privateIp.trim().length > 0)?.privateIp
-        ?? node.privateIp;
+      return readFirstPrivateIp(node.nics)
+        ?? readFirstPrivateIp(node.networkInterfaces)
+        ?? (typeof node.privateIp === 'string' ? node.privateIp : '');
   }
 }
 
 export const TopologyFlowNode = React.memo(function TopologyFlowNode({
+  id,
   data,
   selected,
   isConnectable,
 }: NodeProps<TopologyFlowNodeModel>) {
   const { topologyNode, connectMode } = data;
+  const updateNodeInternals = useUpdateNodeInternals();
+  const previousConnectMode = React.useRef(connectMode);
+
+  React.useEffect(() => {
+    if (previousConnectMode.current !== connectMode) {
+      updateNodeInternals(id);
+    }
+
+    previousConnectMode.current = connectMode;
+  }, [connectMode, id, updateNodeInternals]);
 
   return (
     <div
