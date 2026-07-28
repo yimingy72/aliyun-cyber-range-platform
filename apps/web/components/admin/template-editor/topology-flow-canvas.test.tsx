@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -145,6 +147,24 @@ describe('TopologyFlowCanvas', () => {
       panOnDrag: [1],
       selectionOnDrag: true,
     });
+  });
+
+  it('declares the scoped immersive workbench layout contract', () => {
+    const styles = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+
+    expect(styles).toContain('@import url("@xyflow/react/dist/style.css");');
+    expect(styles).toMatch(
+      /\.template-editor-grid\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/,
+    );
+    expect(styles).toMatch(
+      /\.topology-flow-workbench\s*\{[\s\S]*?min-height:\s*680px;/,
+    );
+    expect(styles).toContain(
+      '.template-editor-grid:has(.topology-flow-workbench[data-focus-mode=\'true\']) > .template-property-panel',
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)\s*\{[\s\S]*?\.template-editor-grid > \.template-property-panel\s*\{[\s\S]*?bottom:\s*0;/,
+    );
   });
 
   it('仅在视口动作结束后提交视口，并把有效连线交给编辑器', () => {
@@ -307,16 +327,23 @@ describe('TopologyFlowCanvas', () => {
     const canvasProps = createCanvasProps();
     const { rerender } = render(<TopologyFlowCanvas {...canvasProps} />);
     const initialNodeTypes = flowState.props?.nodeTypes;
+    const workbench = screen.getByTestId('topology-flow-workbench');
 
     fireEvent.click(screen.getByRole('button', { name: '连线模式' }));
 
-    expect(screen.getByTestId('topology-flow-workbench').getAttribute('data-connect-mode')).toBe('true');
+    expect(workbench.getAttribute('data-connect-mode')).toBe('true');
+    expect(workbench.getAttribute('data-focus-mode')).toBe('false');
     expect(flowState.props?.nodes[0].data.connectMode).toBe(true);
     expect(screen.getByRole('button', { name: '选择模式' }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByRole('button', { name: '连线模式' }).getAttribute('aria-pressed')).toBe('true');
 
     fireEvent.click(screen.getByRole('button', { name: '切换专注模式' }));
     expect(screen.getByRole('button', { name: '切换专注模式' }).getAttribute('aria-pressed')).toBe('true');
+    expect(workbench.getAttribute('data-focus-mode')).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换专注模式' }));
+    expect(screen.getByRole('button', { name: '切换专注模式' }).getAttribute('aria-pressed')).toBe('false');
+    expect(workbench.getAttribute('data-focus-mode')).toBe('false');
 
     fireEvent.click(screen.getByRole('button', { name: '选择模式' }));
     expect(screen.getByRole('button', { name: '选择模式' }).getAttribute('aria-pressed')).toBe('true');
