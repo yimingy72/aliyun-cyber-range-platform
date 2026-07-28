@@ -1,4 +1,9 @@
-import { buildAliyunTagParameters, buildBillingTags } from '../src/admin/billing-tagging';
+import {
+  buildAliyunTagParameters,
+  buildBillingTags,
+  parseAliyunBillingTags,
+  parsePlatformBillingTags,
+} from '../src/admin/billing-tagging';
 
 describe('buildBillingTags', () => {
   it('builds stable tags for user-owned resources', () => {
@@ -45,6 +50,34 @@ describe('buildBillingTags', () => {
       'Tag.1.Value': 'cyber-range-platform',
       'Tag.2.Key': 'PlatformScope',
       'Tag.2.Value': 'user',
+    });
+  });
+
+  it('parses platform billing tags from BSS bill text', () => {
+    const value =
+      'key:RangeInstanceId value:range-1; key:CreatedBy value:cyber-range-platform; key:PlatformUserId value:user-1; key:BillingStartAt value:2026-07-16; key:PlatformScope value:user';
+
+    expect(parseAliyunBillingTags(value)).toEqual({
+      RangeInstanceId: 'range-1',
+      CreatedBy: 'cyber-range-platform',
+      PlatformUserId: 'user-1',
+      BillingStartAt: '2026-07-16',
+      PlatformScope: 'user',
+    });
+    expect(parsePlatformBillingTags(value)).toEqual({
+      billingScope: 'user',
+      ownerUserId: 'user-1',
+      rangeInstanceId: 'range-1',
+      singleInstanceBatchId: null,
+      platformImageAssetId: null,
+      billingStartAt: '2026-07-16',
+      tags: {
+        RangeInstanceId: 'range-1',
+        CreatedBy: 'cyber-range-platform',
+        PlatformUserId: 'user-1',
+        BillingStartAt: '2026-07-16',
+        PlatformScope: 'user',
+      },
     });
   });
 });

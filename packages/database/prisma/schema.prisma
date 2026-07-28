@@ -114,6 +114,7 @@ enum BillingLedgerResourceType {
   image
   snapshot
   snapshot_region
+  oss_bucket
   unknown
 }
 

@@ -6,6 +6,7 @@ import { ADMIN_REPOSITORY, type AdminRepository, type CloudImageSnapshotRecord }
 import type { SessionUserProfile } from './admin-user-auth';
 import { CloudAccountContextsService, type CloudAccountContextCredentials } from './cloud-account-contexts.service';
 import { CreateImageImportDto } from './dto/image-import.dto';
+import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { PrismaService } from '../database/prisma.service';
@@ -445,6 +446,12 @@ export class ImageImportsService {
     accountUid: string;
     billingStartAt: Date;
   }) {
+    const tagsSnapshot = buildBillingTags({
+      billingScope: 'platform',
+      platformImageAssetId: input.platformImageAssetId,
+      billingStartAt: input.billingStartAt,
+    });
+
     for (const cloudResourceType of ['image', 'snapshot'] as const) {
       const existing = await this.adminRepository.findBillingLedgerResource({
         cloudProvider: 'alibaba_cloud',
@@ -459,6 +466,7 @@ export class ImageImportsService {
           ownerUserId: null,
           platformImageAssetId: input.platformImageAssetId,
           releasedAt: null,
+          tagsSnapshot,
         });
         continue;
       }
@@ -473,7 +481,7 @@ export class ImageImportsService {
         ownerUserId: null,
         platformImageAssetId: input.platformImageAssetId,
         billingStartAt: input.billingStartAt,
-        tagsSnapshot: {},
+        tagsSnapshot,
       });
     }
   }
@@ -495,6 +503,10 @@ export class ImageImportsService {
   }
 
   private async importImage(context: CloudAccountContextCredentials, job: ImageImportJobRow) {
+    const billingTags = buildBillingTags({
+      billingScope: 'platform',
+      billingStartAt: new Date(),
+    });
     const parameters: Record<string, string> = {
       ImageName: job.displayName,
       Architecture: job.architecture,
@@ -507,12 +519,12 @@ export class ImageImportsService {
       'DiskDeviceMapping.1.DiskImageSize': String(job.systemDiskSize),
       DetectionStrategy: 'Standard',
       ClientToken: job.id,
-      'Tag.1.Key': 'CyberRangeOwnerUserId',
-      'Tag.1.Value': job.ownerUserId,
-      'Tag.2.Key': 'CyberRangeCloudContextId',
-      'Tag.2.Value': job.cloudAccountContextId,
-      'Tag.3.Key': 'CyberRangeImageImportJobId',
-      'Tag.3.Value': job.id,
+      ...buildAliyunTagParameters({
+        ...billingTags,
+        CyberRangeOwnerUserId: job.ownerUserId,
+        CyberRangeCloudContextId: job.cloudAccountContextId,
+        CyberRangeImageImportJobId: job.id,
+      }),
     };
 
     if (job.description) {

@@ -34,6 +34,10 @@ function normalizeText(value: string | undefined) {
   return value?.trim() ?? '';
 }
 
+function isSnapshotResourceId(value: string) {
+  return /^s-[a-z0-9-]+$/i.test(value);
+}
+
 export function classifyBillLine(line: RawBillLine): BillLineClassification {
   const productCode = normalizeText(line.ProductCode).toLowerCase();
   const billingItem = normalizeText(line.BillingItem);
@@ -63,7 +67,23 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
     };
   }
 
+  if (productCode === 'image') {
+    return {
+      kind: 'direct',
+      cloudResourceId: instanceId,
+      cloudResourceType: 'image',
+    };
+  }
+
   if (productCode === 'snapshot' && billingItem === '快照链容量') {
+    if (isSnapshotResourceId(instanceId)) {
+      return {
+        kind: 'direct',
+        cloudResourceId: instanceId,
+        cloudResourceType: 'snapshot',
+      };
+    }
+
     return {
       kind: 'aggregated',
       cloudResourceId: instanceId,

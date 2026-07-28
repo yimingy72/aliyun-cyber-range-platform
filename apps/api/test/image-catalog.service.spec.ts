@@ -65,6 +65,9 @@ describe('ImageCatalogService import operation guard', () => {
       listRangeInstances: jest.fn().mockResolvedValue([]),
       listRangeTemplates: jest.fn().mockResolvedValue([]),
       listBillingLedgerResources: jest.fn().mockResolvedValue([]),
+      findBillingLedgerResource: jest.fn().mockResolvedValue(null),
+      createBillingLedgerResource: jest.fn().mockImplementation(async (input) => ({ id: `ledger-${input.cloudResourceType}`, ...input })),
+      updateBillingLedgerResource: jest.fn(),
       deletePlatformImageAssetsBySnapshotId: jest.fn(),
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       reconcileImageSnapshots: jest.fn(),
@@ -101,6 +104,36 @@ describe('ImageCatalogService import operation guard', () => {
       imageId: 'm-importing-image',
     });
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).not.toHaveBeenCalled();
+  });
+
+  it('tags collected platform images and creates platform billing ledgers', async () => {
+    const { service, adminRepositoryMock } = createService();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    await service.collectPlatformAsset('snapshot-1', 'Platform Ubuntu', ADMIN);
+
+    const requestUrl = String((global.fetch as jest.Mock).mock.calls[0]?.[0]);
+    expect(requestUrl).toContain('Action=TagResources');
+    expect(requestUrl).toContain('ResourceType=image');
+    expect(requestUrl).toContain('ResourceId.1=m-importing-image');
+    expect(requestUrl).toContain('Tag.1.Key=CreatedBy');
+    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloudResourceId: 'm-importing-image',
+        cloudResourceType: 'image',
+        billingScope: 'platform',
+      }),
+    );
+    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloudResourceId: 'm-importing-image',
+        cloudResourceType: 'snapshot',
+        billingScope: 'platform',
+      }),
+    );
   });
 
   it('returns server-side image capabilities for an ordinary owner', async () => {

@@ -35,6 +35,7 @@ export type BillingLedgerResourceType =
   | 'image'
   | 'snapshot'
   | 'snapshot_region'
+  | 'oss_bucket'
   | 'unknown';
 
 export type RangeTemplateNetworkZone = {

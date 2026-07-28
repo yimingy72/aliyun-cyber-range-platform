@@ -29,6 +29,20 @@ describe('classifyBillLine', () => {
     });
   });
 
+  it('classifies snapshot chain capacity by a concrete snapshot id directly', () => {
+    expect(
+      classifyBillLine({
+        ProductCode: 'snapshot',
+        BillingItem: '快照链容量',
+        InstanceID: 's-platform-1',
+      }),
+    ).toEqual({
+      kind: 'direct',
+      cloudResourceId: 's-platform-1',
+      cloudResourceType: 'snapshot',
+    });
+  });
+
   it('classifies eip retain charges directly by allocation id', () => {
     expect(
       classifyBillLine({
@@ -40,6 +54,20 @@ describe('classifyBillLine', () => {
       kind: 'direct',
       cloudResourceId: 'eip-123',
       cloudResourceType: 'eip',
+    });
+  });
+
+  it('classifies image charges directly by image id', () => {
+    expect(
+      classifyBillLine({
+        ProductCode: 'image',
+        BillingItem: '镜像存储',
+        InstanceID: 'm-platform-image',
+      }),
+    ).toEqual({
+      kind: 'direct',
+      cloudResourceId: 'm-platform-image',
+      cloudResourceType: 'image',
     });
   });
 

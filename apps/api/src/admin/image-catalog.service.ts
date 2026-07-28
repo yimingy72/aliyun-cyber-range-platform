@@ -17,6 +17,7 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { attachOwnerUsernamesAsCreatedBy } from './creator-display';
 import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-image.dto';
 import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/platform-image-tag.dto';
+import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 
@@ -234,11 +235,27 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
+    const billingStartAt = new Date();
     const asset = await this.adminRepository.collectPlatformImageAsset({
       snapshotId,
       displayName,
       ownerUserId: null,
       visibility: 'platform',
+    });
+    const tagsSnapshot = buildBillingTags({
+      billingScope: 'platform',
+      platformImageAssetId: asset.id,
+      billingStartAt,
+    });
+
+    await this.tagPlatformImage(snapshot.imageId, accountContext, tagsSnapshot);
+    await this.syncPlatformImageBillingLedger({
+      imageId: snapshot.imageId,
+      platformImageAssetId: asset.id,
+      regionId: accountContext.defaultRegion,
+      accountUid: accountContext.accountUid,
+      billingStartAt,
+      tagsSnapshot,
     });
 
     return this.withCreatorUsername(asset, currentUser);
@@ -548,6 +565,68 @@ export class ImageCatalogService {
     }
 
     return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
+  }
+
+  private async tagPlatformImage(
+    imageId: string,
+    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+    tags: Record<string, string>,
+  ) {
+    await this.performAliyunRpcRequest({
+      accessKeyId: accountContext.accessKeyId,
+      accessKeySecret: accountContext.accessKeySecret,
+      regionId: accountContext.defaultRegion,
+      action: 'TagResources',
+      parameters: {
+        ResourceType: 'image',
+        'ResourceId.1': imageId,
+        ...buildAliyunTagParameters(tags),
+      },
+    });
+  }
+
+  private async syncPlatformImageBillingLedger(input: {
+    imageId: string;
+    platformImageAssetId: string;
+    regionId: string;
+    accountUid: string | null;
+    billingStartAt: Date;
+    tagsSnapshot: Record<string, string>;
+  }) {
+    for (const cloudResourceType of ['image', 'snapshot'] as const) {
+      const existing = await this.adminRepository.findBillingLedgerResource({
+        cloudProvider: 'alibaba_cloud',
+        regionId: input.regionId,
+        cloudResourceId: input.imageId,
+        cloudResourceType,
+      });
+
+      if (existing) {
+        await this.adminRepository.updateBillingLedgerResource(existing.id, {
+          billingScope: 'platform',
+          ownerUserId: null,
+          rangeInstanceId: null,
+          singleInstanceBatchId: null,
+          platformImageAssetId: input.platformImageAssetId,
+          releasedAt: null,
+          tagsSnapshot: input.tagsSnapshot,
+        });
+        continue;
+      }
+
+      await this.adminRepository.createBillingLedgerResource({
+        cloudProvider: 'alibaba_cloud',
+        cloudAccountUid: input.accountUid,
+        regionId: input.regionId,
+        cloudResourceId: input.imageId,
+        cloudResourceType,
+        billingScope: 'platform',
+        ownerUserId: null,
+        platformImageAssetId: input.platformImageAssetId,
+        billingStartAt: input.billingStartAt,
+        tagsSnapshot: input.tagsSnapshot,
+      });
+    }
   }
 
   private async withCreatorUsername(asset: PlatformImageAssetRecord, currentUser?: SessionUserProfile) {

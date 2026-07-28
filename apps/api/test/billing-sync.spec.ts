@@ -1,5 +1,6 @@
 import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
+import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('BillingSyncService', () => {
@@ -342,6 +343,193 @@ describe('BillingSyncService', () => {
           matchedLedgerId: diskLedger.id,
         }),
       ]),
+    );
+  });
+
+  it('attributes explicitly tagged platform resources and only exact configured OSS bucket bills', async () => {
+    const repository = createMemoryAdminRepository();
+    const systemConfigService = {
+      getSnapshot: jest.fn().mockResolvedValue({
+        defaultRegion: 'cn-hangzhou',
+        imageImportBucket: 'wzxy-shootingrange',
+      }),
+    } as unknown as SystemConfigService;
+    const service = new BillingSyncService(
+      repository,
+      {
+        listDailyBillingItems: jest.fn(async () => [
+          {
+            ProductCode: 'eip',
+            BillingItem: '公网IP保有费',
+            InstanceID: 'eip-platform-1',
+            PretaxAmount: 0.12,
+            Currency: 'CNY',
+            Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:BillingStartAt value:2026-07-16',
+          },
+          {
+            ProductCode: 'snapshot',
+            BillingItem: '快照链容量',
+            InstanceID: 's-platform-1',
+            PretaxAmount: 0.34,
+            Currency: 'CNY',
+            Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:BillingStartAt value:2026-07-16; key:PlatformImageAssetId value:asset-1',
+          },
+          {
+            ProductCode: 'oss',
+            BillingItem: '外网流出流量',
+            InstanceID: 'wzxy-shootingrange;standard',
+            PretaxAmount: 0.56,
+            Currency: 'CNY',
+          },
+          {
+            ProductCode: 'oss',
+            BillingItem: '外网流出流量',
+            InstanceID: 'cn-hangzhou;standard',
+            PretaxAmount: 9.99,
+            Currency: 'CNY',
+          },
+        ]),
+      } as unknown as BillingBssClient,
+      systemConfigService,
+    );
+
+    await expect(
+      service.syncRange({
+        startAt: '2026-07-16',
+        endAt: '2026-07-16',
+      }),
+    ).resolves.toEqual({
+      syncedDays: 1,
+      importedLineItems: 3,
+      anomalyCount: 1,
+      deferredCount: 0,
+    });
+
+    await expect(
+      repository.listBillingLineItems({
+        startAt: '2026-07-16',
+        endAt: '2026-07-16',
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cloudResourceId: 'eip-platform-1',
+          cloudResourceType: 'eip',
+          billingScope: 'platform',
+          matchedLedgerId: expect.any(String),
+        }),
+        expect.objectContaining({
+          cloudResourceId: 's-platform-1',
+          cloudResourceType: 'snapshot',
+          billingScope: 'platform',
+          matchedLedgerId: expect.any(String),
+        }),
+        expect.objectContaining({
+          cloudResourceId: 'wzxy-shootingrange',
+          cloudResourceType: 'oss_bucket',
+          billingScope: 'platform',
+          matchedLedgerId: expect.any(String),
+        }),
+      ]),
+    );
+
+    await expect(
+      repository.listBillingAnomalies({
+        startAt: '2026-07-16',
+        endAt: '2026-07-16',
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        cloudResourceId: 'cn-hangzhou;standard',
+        pretaxAmount: 9.99,
+        reason: expect.stringContaining('wzxy-shootingrange'),
+      }),
+    ]);
+  });
+
+  it('backfills platform image ledgers before matching direct image bills', async () => {
+    const repository = createMemoryAdminRepository();
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      snapshots: [
+        {
+          imageId: 'm-platform-image',
+          sourceImageName: 'Platform image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-16T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: '1234567890',
+      regionId: 'cn-hangzhou',
+      scope: 'custom',
+      imageId: 'm-platform-image',
+    });
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot!.id,
+      displayName: 'Platform image',
+      ownerUserId: null,
+      visibility: 'platform',
+    });
+    const billingDate = asset.createdAt.toISOString().slice(0, 10);
+    const service = new BillingSyncService(
+      repository,
+      {
+        listDailyBillingItems: jest.fn(async () => [
+          {
+            ProductCode: 'image',
+            BillingItem: '镜像存储',
+            InstanceID: 'm-platform-image',
+            PretaxAmount: 0.78,
+            Currency: 'CNY',
+          },
+        ]),
+      } as unknown as BillingBssClient,
+    );
+
+    await expect(
+      service.syncRange({
+        startAt: billingDate,
+        endAt: billingDate,
+      }),
+    ).resolves.toEqual({
+      syncedDays: 1,
+      importedLineItems: 1,
+      anomalyCount: 0,
+      deferredCount: 0,
+    });
+
+    await expect(
+      repository.listBillingLineItems({
+        startAt: billingDate,
+        endAt: billingDate,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        cloudResourceId: 'm-platform-image',
+        cloudResourceType: 'image',
+        billingScope: 'platform',
+        matchedLedgerId: expect.any(String),
+      }),
+    ]);
+
+    await expect(
+      repository.findBillingLedgerResource({
+        regionId: 'cn-hangzhou',
+        cloudResourceId: 'm-platform-image',
+        cloudResourceType: 'image',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        billingScope: 'platform',
+        platformImageAssetId: asset.id,
+      }),
     );
   });
 });

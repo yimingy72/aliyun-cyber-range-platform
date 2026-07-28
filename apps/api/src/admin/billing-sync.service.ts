@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -7,6 +7,8 @@ import {
 } from './admin.repository';
 import { BillingBssClient } from './billing-bss-client';
 import { classifyBillLine } from './billing-classifier';
+import { buildBillingTags, parsePlatformBillingTags } from './billing-tagging';
+import { SystemConfigService } from './system-config.service';
 
 type RawBillLine = Record<string, unknown>;
 
@@ -78,6 +80,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly billingBssClient: BillingBssClient,
+    @Optional() private readonly systemConfigService?: SystemConfigService,
   ) {}
 
   onModuleInit() {
@@ -127,6 +130,10 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const endAt = parseDate(input.endAt);
       const dates = enumerateDates(startAt, endAt);
       const ledgerResources = await this.adminRepository.listBillingLedgerResources();
+      const cloudConfig = this.systemConfigService
+        ? await this.systemConfigService.getSnapshot()
+        : { defaultRegion: '', imageImportBucket: '' };
+      await this.reconcilePlatformImageBillingLedgers(ledgerResources);
       let importedLineItems = 0;
       let anomalyCount = 0;
 
@@ -141,36 +148,55 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           const classification = classifyBillLine(line);
 
           if (classification.kind === 'direct') {
-            const matchedLedger = this.findActiveLedgerResource(
-              ledgerResources,
-              classification.cloudResourceId,
-              classification.cloudResourceType,
-              billingDate,
-            );
+            const matchedLedger =
+              this.findActiveLedgerResource(
+                ledgerResources,
+                classification.cloudResourceId,
+                classification.cloudResourceType,
+                billingDate,
+              ) ??
+              (await this.findTaggedLedgerResource({
+                line,
+                classification,
+                billingDate,
+                defaultRegionId: cloudConfig.defaultRegion,
+                ledgerResources,
+              }));
 
             if (matchedLedger) {
-              await this.adminRepository.upsertBillingLineItems([
-                {
-                  syncBatchId,
-                  sourceFingerprint: this.buildSourceFingerprint(syncBatchId, classification.cloudResourceType, classification.cloudResourceId, readString(line, 'BillingItem')),
-                  billCycle: billingDate.slice(0, 7),
-                  billingDate,
-                  productCode: readString(line, 'ProductCode'),
-                  productDetail: readString(line, 'ProductDetail') || null,
-                  billItem: readString(line, 'BillingItem'),
-                  cloudResourceId: classification.cloudResourceId,
-                  cloudResourceType: classification.cloudResourceType,
-                  pretaxAmount: readNumber(line, 'PretaxAmount'),
-                  currency: readString(line, 'Currency') || 'CNY',
-                  billingScope: matchedLedger.billingScope,
-                  ownerUserId: matchedLedger.ownerUserId,
-                  matchedLedgerId: matchedLedger.id,
-                  rawPayload: line,
-                },
-              ]);
+              await this.upsertMatchedBillLine({
+                syncBatchId,
+                billingDate,
+                line,
+                ledger: matchedLedger,
+                cloudResourceId: classification.cloudResourceId,
+                cloudResourceType: classification.cloudResourceType,
+              });
               importedLineItems += 1;
               continue;
             }
+          }
+
+          const ossBucket = this.resolveConfiguredOssBucket(line, cloudConfig.imageImportBucket);
+
+          if (ossBucket) {
+            const matchedLedger = await this.ensureOssBucketLedger({
+              bucket: ossBucket,
+              billingDate,
+              regionId: cloudConfig.defaultRegion,
+              ledgerResources,
+            });
+
+            await this.upsertMatchedBillLine({
+              syncBatchId,
+              billingDate,
+              line,
+              ledger: matchedLedger,
+              cloudResourceId: ossBucket,
+              cloudResourceType: 'oss_bucket',
+            });
+            importedLineItems += 1;
+            continue;
           }
 
           if (
@@ -182,14 +208,20 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
           await this.adminRepository.createBillingAnomaly({
             syncBatchId,
-            sourceFingerprint: this.buildSourceFingerprint(syncBatchId, classification.cloudResourceType, classification.cloudResourceId, readString(line, 'BillingItem')),
+            sourceFingerprint: this.buildSourceFingerprint(
+              syncBatchId,
+              classification.cloudResourceType,
+              classification.cloudResourceId,
+              readString(line, 'BillingItem'),
+              readString(line, 'InstanceID'),
+            ),
             billCycle: billingDate.slice(0, 7),
             billingDate,
             cloudResourceId: classification.cloudResourceId,
             cloudResourceType: classification.cloudResourceType,
             pretaxAmount: readNumber(line, 'PretaxAmount'),
             currency: readString(line, 'Currency') || 'CNY',
-            reason: this.resolveAnomalyReason(classification),
+            reason: this.resolveAnomalyReason(classification, cloudConfig.imageImportBucket),
             rawPayload: line,
           });
           anomalyCount += 1;
@@ -207,8 +239,216 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private buildSourceFingerprint(syncBatchId: string, resourceType: string, resourceId: string, billItem: string) {
-    return `${syncBatchId}:${resourceType}:${resourceId}:${billItem}`;
+  private async upsertMatchedBillLine(input: {
+    syncBatchId: string;
+    billingDate: string;
+    line: RawBillLine;
+    ledger: BillingLedgerResourceRecord;
+    cloudResourceId: string;
+    cloudResourceType: BillingLedgerResourceRecord['cloudResourceType'];
+  }) {
+    await this.adminRepository.upsertBillingLineItems([
+      {
+        syncBatchId: input.syncBatchId,
+        sourceFingerprint: this.buildSourceFingerprint(
+          input.syncBatchId,
+          input.cloudResourceType,
+          input.cloudResourceId,
+          readString(input.line, 'BillingItem'),
+          readString(input.line, 'InstanceID'),
+        ),
+        billCycle: input.billingDate.slice(0, 7),
+        billingDate: input.billingDate,
+        productCode: readString(input.line, 'ProductCode'),
+        productDetail: readString(input.line, 'ProductDetail') || null,
+        billItem: readString(input.line, 'BillingItem'),
+        cloudResourceId: input.cloudResourceId,
+        cloudResourceType: input.cloudResourceType,
+        pretaxAmount: readNumber(input.line, 'PretaxAmount'),
+        currency: readString(input.line, 'Currency') || 'CNY',
+        billingScope: input.ledger.billingScope,
+        ownerUserId: input.ledger.ownerUserId,
+        matchedLedgerId: input.ledger.id,
+        rawPayload: input.line,
+      },
+    ]);
+  }
+
+  private async findTaggedLedgerResource(input: {
+    line: RawBillLine;
+    classification: ReturnType<typeof classifyBillLine>;
+    billingDate: string;
+    defaultRegionId: string;
+    ledgerResources: BillingLedgerResourceRecord[];
+  }) {
+    if (input.classification.kind !== 'direct') {
+      return null;
+    }
+
+    const tagged = parsePlatformBillingTags(input.line.Tag);
+
+    if (!tagged || !input.classification.cloudResourceId) {
+      return null;
+    }
+
+    const existing = this.findLedgerResource(
+      input.ledgerResources,
+      input.classification.cloudResourceId,
+      input.classification.cloudResourceType,
+    );
+
+    if (existing) {
+      return isLedgerActiveForBillingDate(existing, input.billingDate) ? existing : null;
+    }
+
+    const ledger = await this.adminRepository.createBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud',
+      regionId: input.defaultRegionId,
+      cloudResourceId: input.classification.cloudResourceId,
+      cloudResourceType: input.classification.cloudResourceType,
+      billingScope: tagged.billingScope,
+      ownerUserId: tagged.ownerUserId,
+      rangeInstanceId: tagged.rangeInstanceId,
+      singleInstanceBatchId: tagged.singleInstanceBatchId,
+      platformImageAssetId: tagged.platformImageAssetId,
+      billingStartAt: parseDate(tagged.billingStartAt ?? input.billingDate),
+      tagsSnapshot: tagged.tags,
+    });
+    input.ledgerResources.push(ledger);
+
+    return ledger;
+  }
+
+  private async reconcilePlatformImageBillingLedgers(ledgerResources: BillingLedgerResourceRecord[]) {
+    const assets = await this.adminRepository.listPlatformImageAssets();
+
+    for (const asset of assets) {
+      if (asset.ownerUserId || !asset.imageId.trim()) {
+        continue;
+      }
+
+      const tagsSnapshot = buildBillingTags({
+        billingScope: 'platform',
+        platformImageAssetId: asset.id,
+        billingStartAt: asset.createdAt,
+      });
+
+      for (const cloudResourceType of ['image', 'snapshot'] as const) {
+        const existing = ledgerResources.find(
+          (item) =>
+            item.regionId === asset.regionId &&
+            item.cloudResourceId === asset.imageId &&
+            item.cloudResourceType === cloudResourceType,
+        );
+
+        if (existing) {
+          if (
+            existing.billingScope === 'platform' &&
+            existing.ownerUserId === null &&
+            existing.platformImageAssetId === asset.id &&
+            existing.releasedAt === null
+          ) {
+            continue;
+          }
+
+          const updated = await this.adminRepository.updateBillingLedgerResource(existing.id, {
+            billingScope: 'platform',
+            ownerUserId: null,
+            rangeInstanceId: null,
+            singleInstanceBatchId: null,
+            platformImageAssetId: asset.id,
+            releasedAt: null,
+            tagsSnapshot,
+          });
+          const index = ledgerResources.findIndex((item) => item.id === updated.id);
+
+          if (index >= 0) {
+            ledgerResources[index] = updated;
+          }
+          continue;
+        }
+
+        const created = await this.adminRepository.createBillingLedgerResource({
+          cloudProvider: asset.provider,
+          cloudAccountUid: asset.accountUid,
+          regionId: asset.regionId,
+          cloudResourceId: asset.imageId,
+          cloudResourceType,
+          billingScope: 'platform',
+          ownerUserId: null,
+          platformImageAssetId: asset.id,
+          billingStartAt: asset.createdAt,
+          tagsSnapshot,
+        });
+        ledgerResources.push(created);
+      }
+    }
+  }
+
+  private resolveConfiguredOssBucket(line: RawBillLine, configuredBucket: string) {
+    const bucket = configuredBucket.trim();
+
+    if (!bucket || readString(line, 'ProductCode').trim().toLowerCase() !== 'oss') {
+      return null;
+    }
+
+    const matchesBucket = (value: string) => value === bucket || value.startsWith(`${bucket};`);
+    const identifiers = ['InstanceID', 'InstanceName', 'NickName', 'ResourceId', 'ResourceName'];
+
+    return identifiers.some((key) => matchesBucket(readString(line, key))) ? bucket : null;
+  }
+
+  private async ensureOssBucketLedger(input: {
+    bucket: string;
+    billingDate: string;
+    regionId: string;
+    ledgerResources: BillingLedgerResourceRecord[];
+  }) {
+    const existing = this.findLedgerResource(input.ledgerResources, input.bucket, 'oss_bucket');
+    const tagsSnapshot = buildBillingTags({
+      billingScope: 'platform',
+      billingStartAt: input.billingDate,
+    });
+
+    if (existing) {
+      const ledger = await this.adminRepository.updateBillingLedgerResource(existing.id, {
+        billingScope: 'platform',
+        ownerUserId: null,
+        releasedAt: null,
+        tagsSnapshot,
+      });
+      const index = input.ledgerResources.findIndex((item) => item.id === ledger.id);
+
+      if (index >= 0) {
+        input.ledgerResources[index] = ledger;
+      }
+
+      return ledger;
+    }
+
+    const ledger = await this.adminRepository.createBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud',
+      regionId: input.regionId,
+      cloudResourceId: input.bucket,
+      cloudResourceType: 'oss_bucket',
+      billingScope: 'platform',
+      ownerUserId: null,
+      billingStartAt: parseDate(input.billingDate),
+      tagsSnapshot,
+    });
+    input.ledgerResources.push(ledger);
+
+    return ledger;
+  }
+
+  private buildSourceFingerprint(
+    syncBatchId: string,
+    resourceType: string,
+    resourceId: string,
+    billItem: string,
+    sourceInstanceId = '',
+  ) {
+    return `${syncBatchId}:${resourceType}:${resourceId}:${billItem}:${sourceInstanceId}`;
   }
 
   private isPlatformScopedAnomaly(
@@ -228,11 +468,21 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveAnomalyReason(
-    classification:
-      | ReturnType<typeof classifyBillLine>,
+    classification: ReturnType<typeof classifyBillLine>,
+    configuredOssBucket: string,
   ) {
     if (classification.kind === 'aggregated') {
-      return `该账单是云账号或地域级聚合费用，无法关联到平台资源，因此不计入平台费用：${classification.cloudResourceType}`;
+      if (classification.cloudResourceType === 'snapshot_region') {
+        return '该账单是地域级快照链容量，BSS 未提供具体快照资源 ID 或平台标记，因此不计入平台费用。';
+      }
+
+      const bucket = configuredOssBucket.trim();
+
+      if (bucket) {
+        return `该 OSS 账单未提供已配置平台 Bucket“${bucket}”的精确标识，因此不计入平台费用。`;
+      }
+
+      return '该 OSS 账单未提供平台 Bucket 的精确标识，因此不计入平台费用。';
     }
 
     if (classification.kind === 'unknown') {
