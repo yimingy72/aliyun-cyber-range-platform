@@ -1511,16 +1511,6 @@ export function TemplateEditorScreen({
     return nextMap;
   }, [edges, nodes]);
 
-  function replaceHistoryPresent(next: TopologySnapshot) {
-    const currentHistory = historyRef.current!;
-    historyRef.current = {
-      ...currentHistory,
-      present: structuredClone(next),
-      future: [],
-    };
-    setHistoryState(historyRef.current);
-  }
-
   function commitSnapshot(next: TopologySnapshot, message: string) {
     const nextHistory = pushTopologySnapshot(historyRef.current!, next);
     historyRef.current = nextHistory;
@@ -1641,8 +1631,7 @@ export function TemplateEditorScreen({
       };
     });
 
-    setNodes(nextNodes);
-    replaceHistoryPresent({ nodes: nextNodes, edges, viewport });
+    commitSnapshot({ nodes: nextNodes, edges, viewport }, '已更新节点属性。');
   }
 
   function handleFlowConnect(connection: { source: string; target: string }) {

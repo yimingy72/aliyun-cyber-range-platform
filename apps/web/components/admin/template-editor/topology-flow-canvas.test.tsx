@@ -217,6 +217,34 @@ describe('TopologyFlowCanvas', () => {
     });
   });
 
+  it('通过普通节点点击重新上报单选，并保留带修饰键的多选操作', () => {
+    const canvasProps = createCanvasProps();
+    render(<TopologyFlowCanvas {...canvasProps} />);
+
+    expect(flowState.props?.onNodeClick).toEqual(expect.any(Function));
+
+    flowState.props?.onNodeClick?.(
+      { ctrlKey: false, metaKey: false, shiftKey: false },
+      { id: 'switch-1' },
+    );
+
+    expect(canvasProps.onSelectionChange).toHaveBeenCalledWith({
+      edgeIds: [],
+      nodeIds: ['switch-1'],
+    });
+
+    canvasProps.onSelectionChange.mockClear();
+
+    for (const modifier of ['shiftKey', 'ctrlKey', 'metaKey'] as const) {
+      flowState.props?.onNodeClick?.(
+        { ctrlKey: false, metaKey: false, shiftKey: false, [modifier]: true },
+        { id: 'ecs-1' },
+      );
+    }
+
+    expect(canvasProps.onSelectionChange).not.toHaveBeenCalled();
+  });
+
   it('将 Delete、撤销和重做快捷键转交给动作回调', () => {
     const canvasProps = createCanvasProps();
     render(<TopologyFlowCanvas {...canvasProps} />);
@@ -229,6 +257,23 @@ describe('TopologyFlowCanvas', () => {
     expect(canvasProps.onDeleteSelection).toHaveBeenCalledOnce();
     expect(canvasProps.onUndo).toHaveBeenCalledOnce();
     expect(canvasProps.onRedo).toHaveBeenCalledOnce();
+  });
+
+  it('按 Escape 清空本地节点选中并上报空选择', async () => {
+    const canvasProps = createCanvasProps();
+    render(<TopologyFlowCanvas {...canvasProps} />);
+
+    flowState.props?.onNodesChange([{ id: 'switch-1', selected: true, type: 'select' }]);
+    await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(true));
+
+    fireEvent.keyDown(screen.getByTestId('react-flow'), { key: 'Escape' });
+
+    await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(false));
+    expect(canvasProps.onSelectionChange).toHaveBeenCalledWith({ edgeIds: [], nodeIds: [] });
+    expect(canvasProps.onDeleteSelection).not.toHaveBeenCalled();
+    expect(canvasProps.onUndo).not.toHaveBeenCalled();
+    expect(canvasProps.onRedo).not.toHaveBeenCalled();
+    expect(flowState.fitView).not.toHaveBeenCalled();
   });
 
   it('将资源拖放坐标转换为世界坐标后请求添加，并拒绝其他 MIME 类型', () => {

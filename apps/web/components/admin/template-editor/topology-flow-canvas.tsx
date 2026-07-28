@@ -144,6 +144,17 @@ function TopologyFlowCanvasInner({
     });
   }
 
+  function handleNodeClick(event: React.MouseEvent, node: { id: string }) {
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+
+    onSelectionChange({
+      edgeIds: [],
+      nodeIds: [node.id],
+    });
+  }
+
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
 
@@ -190,6 +201,13 @@ function TopologyFlowCanvasInner({
   }
 
   function handleKeyboardShortcut(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setFlowNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: false })));
+      onSelectionChange({ edgeIds: [], nodeIds: [] });
+      return;
+    }
+
     if (event.key === 'Delete') {
       event.preventDefault();
       onDeleteSelection();
@@ -318,6 +336,7 @@ function TopologyFlowCanvasInner({
           onNodeDragStop={(_event, _node, movedNodes) => {
             onPositionsCommit(movedNodes.map((node) => ({ id: node.id, position: node.position })));
           }}
+          onNodeClick={handleNodeClick}
           onNodesChange={onNodesChange}
           onSelectionChange={handleSelectionChange}
           multiSelectionKeyCode="Shift"

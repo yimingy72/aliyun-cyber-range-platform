@@ -3718,6 +3718,49 @@ describe('TemplateEditorScreen', () => {
     expect(payload.topologyGraph?.viewport).toEqual({ x: -80, y: 40, zoom: 1.2 });
   });
 
+  it('undoes property drafts without losing the preceding connection or drag snapshot', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          revision: 3,
+          status: 'private',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: null,
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: null,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow connect valid' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow commit positions' }));
+    fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'app-server' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'flow undo' }));
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+
+    expect((screen.getByLabelText('主机名') as HTMLInputElement).value).toBe('ecs-1');
+    expect(screen.getByTestId('topology-flow-edge-edge-switch-1-ecs-2')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('left: 300px');
+
+    fireEvent.click(screen.getByRole('button', { name: 'flow redo' }));
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+
+    expect((screen.getByLabelText('主机名') as HTMLInputElement).value).toBe('app-server');
+    expect(screen.getByRole('button', { name: /ECS 1/ }).getAttribute('style')).toContain('left: 300px');
+  });
+
   it('rejects invalid flow connections without creating a history entry', () => {
     render(
       <TemplateEditorScreen
