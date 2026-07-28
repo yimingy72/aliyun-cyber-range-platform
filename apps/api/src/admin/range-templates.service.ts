@@ -14,6 +14,10 @@ import {
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
 import { SystemConfigService } from './system-config.service';
+import {
+  assertIpv4AddressInCidr,
+  resolveAlibabaCloudVpcCidrs,
+} from '../provisioning/alibaba-cloud-vpc-cidrs';
 
 type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
@@ -631,7 +635,9 @@ export class RangeTemplatesService {
   }
 
   private validateTopologySpec(topologySpec: RangeTemplateTopologySpec) {
+    this.resolveSecondaryVpcCidrs(topologySpec);
     const zoneKeys = new Set<string>();
+    const networkZoneCidrs = new Map<string, string>();
     const hostKeys = new Set<string>();
 
     for (const zone of topologySpec.networkZones) {
@@ -640,6 +646,7 @@ export class RangeTemplatesService {
       }
 
       zoneKeys.add(zone.key);
+      networkZoneCidrs.set(zone.key, zone.cidr);
     }
 
     for (const host of topologySpec.hosts) {
@@ -651,6 +658,7 @@ export class RangeTemplatesService {
         throw new BadRequestException(`Host ${host.key} references unknown network zone: ${host.zoneKey}`);
       }
 
+      this.assertHostPrivateIpInNetworkZone(host.key, host.privateIp, networkZoneCidrs.get(host.zoneKey)!);
       hostKeys.add(host.key);
     }
 
@@ -658,6 +666,27 @@ export class RangeTemplatesService {
       throw new BadRequestException(
         `Public entry host does not exist in hosts: ${topologySpec.publicEntry.hostKey}`,
       );
+    }
+  }
+
+  private resolveSecondaryVpcCidrs(topologySpec: RangeTemplateTopologySpec) {
+    try {
+      return resolveAlibabaCloudVpcCidrs({
+        vpcCidr: topologySpec.vpcCidr,
+        networkZoneCidrs: topologySpec.networkZones.map((zone) => zone.cidr),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'VPC CIDR 校验失败';
+      throw new BadRequestException(message);
+    }
+  }
+
+  private assertHostPrivateIpInNetworkZone(hostKey: string, privateIp: string, networkZoneCidr: string) {
+    try {
+      assertIpv4AddressInCidr(privateIp, networkZoneCidr, `Host ${hostKey} private IP`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '主机私网 IP 校验失败';
+      throw new BadRequestException(message);
     }
   }
 

@@ -4,6 +4,7 @@ import type {
   RangeTemplateNetworkZone,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
+import { resolveAlibabaCloudVpcCidrs } from './alibaba-cloud-vpc-cidrs';
 
 type CompiledResource = RangeTemplateCompiledSpec['resources'][number];
 
@@ -234,7 +235,10 @@ export function buildEnterpriseProvisionPlan(input: {
     resolveVpcCidr(topologySpec, input.compiledProvisionSpec, input.compiledSpec),
     'topologySpec.vpcCidr',
   );
-  const secondaryVpcCidrs = resolveSecondaryVpcCidrs(input.compiledProvisionSpec);
+  const secondaryVpcCidrs = resolveAlibabaCloudVpcCidrs({
+    vpcCidr,
+    networkZoneCidrs: topologySpec.networkZones.map((zone) => zone.cidr),
+  });
 
   if (input.allocatedCidr && input.allocatedCidr !== vpcCidr) {
     throw new Error(
@@ -460,16 +464,6 @@ function resolveVpcCidr(
 ) {
   const topology = readRecord(compiledProvisionSpec?.topology);
   return topologySpec.vpcCidr || (typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : '') || compiledSpec?.topology?.vpcCidr || '';
-}
-
-function resolveSecondaryVpcCidrs(compiledProvisionSpec: CompiledProvisionSpecRecord | null | undefined) {
-  const topology = readRecord(compiledProvisionSpec?.topology);
-
-  return [...new Set(
-    readArray(topology?.secondaryVpcCidrs).filter(
-      (cidr): cidr is string => typeof cidr === 'string' && cidr.trim().length > 0,
-    ),
-  )];
 }
 
 function isCompiledHostResource(resource: CompiledResource): resource is CompiledHostResource {

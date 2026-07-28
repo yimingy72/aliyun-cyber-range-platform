@@ -187,7 +187,7 @@ describe('buildEnterpriseProvisionPlan', () => {
       },
       network: {
         vpcCidr: '10.88.0.0/16',
-        secondaryVpcCidrs: [],
+        secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
         dmzCidr: '10.88.10.0/24',
         officeCidr: '10.88.20.0/24',
         serverCidr: '10.88.30.0/24',
@@ -247,6 +247,33 @@ describe('buildEnterpriseProvisionPlan', () => {
         serverPrimary: expect.objectContaining({ key: 'server-app', privateIp: '10.88.30.10' }),
       }),
     }));
+  });
+
+  it('uses the fixed attached CIDRs for valid switch networks outside the primary VPC', () => {
+    const plan = buildEnterpriseProvisionPlan({
+      rangeInstanceId: 'range-instance-disjoint-switches',
+      templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
+      allocatedCidr: null,
+      topologySpec: {
+        vpcCidr: '10.0.0.0/16',
+        networkZones: [
+          { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '192.168.50.0/24', isPublicEntry: true },
+          { key: 'app', name: 'App', purpose: 'application', cidr: '172.16.10.0/24' },
+          { key: 'data', name: 'Data', purpose: 'data', cidr: '10.0.20.0/24' },
+        ],
+        hosts: [
+          { key: 'entry', name: 'Entry', zoneKey: 'dmz', role: 'entry', privateIp: '192.168.50.10', exposePublic: true },
+          { key: 'app-1', name: 'App', zoneKey: 'app', role: 'app', privateIp: '172.16.10.10' },
+          { key: 'data-1', name: 'Data', zoneKey: 'data', role: 'data', privateIp: '10.0.20.10' },
+        ],
+        publicEntry: {
+          hostKey: 'entry',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
+    });
+
+    expect(plan.network.secondaryVpcCidrs).toEqual(['172.16.0.0/16', '192.168.0.0/16']);
   });
 
   it('builds a stable enterprise provision plan from compiledProvisionSpec when legacy topology fields are absent', () => {
@@ -408,7 +435,7 @@ describe('buildEnterpriseProvisionPlan', () => {
             key: 'zone-1',
             name: 'Zone-1',
             purpose: 'business-zone',
-            cidr: '10.0.0.0/16',
+            cidr: '10.70.0.0/16',
             isPublicEntry: true,
           },
         ],
@@ -418,7 +445,7 @@ describe('buildEnterpriseProvisionPlan', () => {
             name: 'ECS 1',
             zoneKey: 'zone-1',
             role: 'host',
-            privateIp: '10.0.0.1',
+            privateIp: '10.70.0.1',
             exposePublic: true,
           },
           {
@@ -426,14 +453,14 @@ describe('buildEnterpriseProvisionPlan', () => {
             name: 'ECS 2',
             zoneKey: 'zone-1',
             role: 'host',
-            privateIp: '10.0.0.2',
+            privateIp: '10.70.0.2',
           },
           {
             key: 'ecs-3',
             name: 'ECS 3',
             zoneKey: 'zone-1',
             role: 'host',
-            privateIp: '10.0.0.3',
+            privateIp: '10.70.0.3',
           },
         ],
         publicEntry: {
@@ -448,7 +475,7 @@ describe('buildEnterpriseProvisionPlan', () => {
           entryHostKey: 'ecs-1',
         },
         networkZones: [
-          { key: 'zone-1', name: '交换机', cidr: '10.0.0.0/16', purpose: 'business-zone', isPublicEntry: true, routeRole: 'entry' },
+          { key: 'zone-1', name: '交换机', cidr: '10.70.0.0/16', purpose: 'business-zone', isPublicEntry: true, routeRole: 'entry' },
         ],
         hosts: [
           {
@@ -456,18 +483,18 @@ describe('buildEnterpriseProvisionPlan', () => {
             name: 'test-ubuntu',
             role: 'host',
             zoneKey: 'zone-1',
-            primaryPrivateIp: '10.0.0.1',
+            primaryPrivateIp: '10.70.0.1',
             exposePublic: true,
-            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.0.0.1' }],
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.70.0.1' }],
           },
           {
             key: 'ecs-2',
             name: 'test-ubuntu',
             role: 'host',
             zoneKey: 'zone-1',
-            primaryPrivateIp: '10.0.0.2',
+            primaryPrivateIp: '10.70.0.2',
             exposePublic: false,
-            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.0.0.2' }],
+            networkInterfaces: [{ deviceIndex: 0, zoneKey: 'zone-1', privateIp: '10.70.0.2' }],
           },
         ],
         natGateways: [{ key: 'nat-switch-1', name: '交换机 NAT', zoneKey: 'zone-1' }],
@@ -489,14 +516,14 @@ describe('buildEnterpriseProvisionPlan', () => {
     });
     expect(plan.network).toEqual({
       vpcCidr: '10.70.0.0/16',
-      secondaryVpcCidrs: [],
-      dmzCidr: '10.0.0.0/16',
-      officeCidr: '10.0.0.0/16',
-      serverCidr: '10.0.0.0/16',
+      secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
+      dmzCidr: '10.70.0.0/16',
+      officeCidr: '10.70.0.0/16',
+      serverCidr: '10.70.0.0/16',
     });
-    expect(plan.hosts.publicEntry).toEqual(expect.objectContaining({ key: 'ecs-1', privateIp: '10.0.0.1' }));
-    expect(plan.hosts.officePrimary).toEqual(expect.objectContaining({ key: 'ecs-2', privateIp: '10.0.0.2' }));
-    expect(plan.hosts.serverPrimary).toEqual(expect.objectContaining({ key: 'ecs-3', privateIp: '10.0.0.3' }));
+    expect(plan.hosts.publicEntry).toEqual(expect.objectContaining({ key: 'ecs-1', privateIp: '10.70.0.1' }));
+    expect(plan.hosts.officePrimary).toEqual(expect.objectContaining({ key: 'ecs-2', privateIp: '10.70.0.2' }));
+    expect(plan.hosts.serverPrimary).toEqual(expect.objectContaining({ key: 'ecs-3', privateIp: '10.70.0.3' }));
     expect(plan.natGateways).toEqual([
       { key: 'nat-switch-1', name: '交换机 NAT', zoneKey: 'zone-1', snatEnabled: true },
     ]);
@@ -598,7 +625,7 @@ describe('buildEnterpriseProvisionPlan', () => {
     });
     expect(plan.network).toEqual({
       vpcCidr: '10.77.0.0/16',
-      secondaryVpcCidrs: [],
+      secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
       dmzCidr: '10.77.10.0/24',
       officeCidr: '10.77.20.0/24',
       serverCidr: '10.77.30.0/24',

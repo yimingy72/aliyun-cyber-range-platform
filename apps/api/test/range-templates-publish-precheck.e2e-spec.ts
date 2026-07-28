@@ -326,6 +326,88 @@ describe('RangeTemplatesService publish precheck', () => {
     expect(repository.saveRangeTemplateTopology).not.toHaveBeenCalled();
   });
 
+  it('rejects a switch CIDR outside the fixed VPC network ranges before the atomic save action', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+    });
+    const repository = createRepository(template) as unknown as {
+      saveRangeTemplateTopology: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository as unknown as AdminRepository);
+    const invalidTopologySpec = {
+      ...template.currentDraftVersion!.topologySpec!,
+      networkZones: [
+        {
+          ...template.currentDraftVersion!.topologySpec!.networkZones[0]!,
+          cidr: '10.10.20.0/24',
+        },
+        template.currentDraftVersion!.topologySpec!.networkZones[1]!,
+      ],
+    };
+
+    await expect(
+      service.validateAndSave(
+        template.id,
+        {
+          topologySpec: invalidTopologySpec,
+          topologyGraph: {
+            schemaVersion: '2.0.0',
+            nodes: [],
+            edges: [],
+          },
+          scenarioTemplateSpec: {},
+          compiledProvisionSpec: {},
+          compiledSpec: template.currentDraftVersion!.compiledSpec!,
+          expectedRevision: template.revision,
+        },
+        ownerUser,
+      ),
+    ).rejects.toThrow('10.10.20.0/24 不属于固定 VPC 网段');
+
+    expect(repository.saveRangeTemplateTopology).not.toHaveBeenCalled();
+  });
+
+  it('rejects a host private IP outside its switch CIDR before the atomic save action', async () => {
+    const template = createTemplateRecord({
+      ownerUserId: ownerUser.id,
+    });
+    const repository = createRepository(template) as unknown as {
+      saveRangeTemplateTopology: jest.Mock;
+    };
+    const service = new RangeTemplatesService(repository as unknown as AdminRepository);
+    const invalidTopologySpec = {
+      ...template.currentDraftVersion!.topologySpec!,
+      hosts: [
+        {
+          ...template.currentDraftVersion!.topologySpec!.hosts[0]!,
+          privateIp: '10.70.20.10',
+        },
+        template.currentDraftVersion!.topologySpec!.hosts[1]!,
+      ],
+    };
+
+    await expect(
+      service.validateAndSave(
+        template.id,
+        {
+          topologySpec: invalidTopologySpec,
+          topologyGraph: {
+            schemaVersion: '2.0.0',
+            nodes: [],
+            edges: [],
+          },
+          scenarioTemplateSpec: {},
+          compiledProvisionSpec: {},
+          compiledSpec: template.currentDraftVersion!.compiledSpec!,
+          expectedRevision: template.revision,
+        },
+        ownerUser,
+      ),
+    ).rejects.toThrow('Host dmz-entry private IP 10.70.20.10 不属于交换机网段 10.70.10.0/24');
+
+    expect(repository.saveRangeTemplateTopology).not.toHaveBeenCalled();
+  });
+
   it('publishes a private saved topology to the platform in one repository action', async () => {
     const template = createTemplateRecord({
       ownerUserId: ownerUser.id,
