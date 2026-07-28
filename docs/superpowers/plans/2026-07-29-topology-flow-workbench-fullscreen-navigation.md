@@ -60,7 +60,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
    - API 缺失或 Promise 拒绝时不更新本地全屏状态，也不影响编辑。
 6. 删除“选中自动布局”按钮；保留“全部自动布局”。
 7. 用动态名称、标题、图标和 `aria-pressed` 的“进入/退出全屏编辑模式”按钮替换旧“切换专注模式”按钮。
-8. 在工作区右下角渲染导航图开关。只有 `isMiniMapVisible` 为真时，才渲染带专用 class、`width={120}`、`height={80}`、`pannable` 和 `zoomable` 的 `MiniMap`。
+8. 在工作区右下角渲染导航图开关。只有 `isMiniMapVisible` 为真时，才渲染带专用 class、`pannable` 和 `zoomable` 的 `MiniMap`；尺寸由 CSS 固定。
 
 ## 任务 3：删除编辑器中的废弃调用链
 
@@ -82,7 +82,8 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 2. 新增 `.topology-flow-workbench:fullscreen`：全视口尺寸、无圆角、无外边框，并保留画布及其工具覆盖层。
 3. 新增导航图开关的绝对定位、`32px` 固定尺寸、悬停和键盘 focus 样式。
 4. 为专用 MiniMap class 固定 `120px × 80px`，放在右下角开关上方，保留边框、背景和阴影。
-5. 核对窄屏规则仍让 React Flow 底部面板避开属性面板；导航图隐藏时只显示开关。
+5. 属性面板显示时，让导航图与开关在桌面左移避开面板、在窄屏上移避开底部面板；全屏时恢复贴右下角。
+6. 核对窄屏规则仍让 React Flow 底部面板避开属性面板；导航图隐藏时只显示开关。
 
 ## 任务 5：从红到绿并完成回归
 

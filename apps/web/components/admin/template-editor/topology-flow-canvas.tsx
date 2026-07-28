@@ -15,10 +15,12 @@ import {
   type XYPosition,
 } from '@xyflow/react';
 import {
-  Focus,
   GitBranch,
   LayoutGrid,
+  Map,
   Maximize,
+  Maximize2,
+  Minimize2,
   MousePointer2,
   Redo2,
   Undo2,
@@ -63,7 +65,6 @@ type TopologyFlowCanvasProps = {
   onConnect: (connection: { source: string; target: string }) => void;
   onDeleteSelection: () => void;
   onLayoutAll: () => void;
-  onLayoutSelection: () => void;
   onNodeActivate: (nodeId: string) => void;
   onPositionsCommit: (positions: NodePositionCommit[]) => void;
   onRedo: () => void;
@@ -151,7 +152,6 @@ function TopologyFlowCanvasInner({
   onConnect,
   onDeleteSelection,
   onLayoutAll,
-  onLayoutSelection,
   onNodeActivate,
   onPositionsCommit,
   onRedo,
@@ -161,8 +161,10 @@ function TopologyFlowCanvasInner({
   viewport,
 }: TopologyFlowCanvasProps) {
   const [connectMode, setConnectMode] = React.useState(false);
-  const [focusMode, setFocusMode] = React.useState(false);
+  const [isFullscreen, setIsFullscreen] = React.useState(false);
+  const [isMiniMapVisible, setIsMiniMapVisible] = React.useState(false);
   const canvasRef = React.useRef<HTMLDivElement>(null);
+  const workbenchRef = React.useRef<HTMLElement>(null);
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
   const externalFlowNodes = React.useMemo(
     () => toFlowNodes(nodes, connectMode),
@@ -182,6 +184,17 @@ function TopologyFlowCanvasInner({
     syncedFlowNodesRef.current = externalFlowNodes;
     setFlowNodes(externalFlowNodes);
   }, [externalFlowNodes, setFlowNodes]);
+
+  React.useEffect(() => {
+    function syncFullscreenState() {
+      setIsFullscreen(document.fullscreenElement === workbenchRef.current);
+    }
+
+    syncFullscreenState();
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
 
   React.useEffect(() => {
     if (hasSameViewport(knownViewportRef.current, viewport)) {
@@ -274,8 +287,29 @@ function TopologyFlowCanvasInner({
     event.dataTransfer.dropEffect = 'move';
   }
 
+  async function handleFullscreenToggle() {
+    const workbench = workbenchRef.current;
+    if (!workbench) {
+      return;
+    }
+
+    try {
+      if (document.fullscreenElement === workbench) {
+        await document.exitFullscreen();
+      } else {
+        await workbench.requestFullscreen();
+      }
+    } catch {
+      // The browser is the source of truth; fullscreenchange updates the actual state.
+    }
+  }
+
   function handleKeyboardShortcut(event: React.KeyboardEvent<HTMLElement>) {
     if (event.key === 'Escape') {
+      if (isFullscreen) {
+        return;
+      }
+
       event.preventDefault();
       setFlowNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: false })));
       onSelectionChange({ edgeIds: [], nodeIds: [] });
@@ -308,9 +342,9 @@ function TopologyFlowCanvasInner({
     <section
       className="topology-flow-workbench"
       data-connect-mode={connectMode ? 'true' : 'false'}
-      data-focus-mode={focusMode ? 'true' : 'false'}
       data-testid="topology-flow-workbench"
       onKeyDown={handleKeyboardShortcut}
+      ref={workbenchRef}
       tabIndex={0}
     >
       <div className="topology-flow-toolbar" data-testid="topology-flow-toolbar">
@@ -346,15 +380,6 @@ function TopologyFlowCanvasInner({
           <LayoutGrid aria-hidden="true" />
         </button>
         <button
-          aria-label="选中自动布局"
-          className="topology-flow-tool-button"
-          onClick={onLayoutSelection}
-          title="选中自动布局"
-          type="button"
-        >
-          <LayoutGrid aria-hidden="true" />
-        </button>
-        <button
           aria-label="撤销"
           className="topology-flow-tool-button"
           onClick={onUndo}
@@ -382,15 +407,15 @@ function TopologyFlowCanvasInner({
           <Maximize aria-hidden="true" />
         </button>
         <button
-          aria-label="切换专注模式"
-          aria-pressed={focusMode}
+          aria-label={isFullscreen ? '退出全屏编辑模式' : '进入全屏编辑模式'}
+          aria-pressed={isFullscreen}
           className="topology-flow-tool-button"
-          data-active={focusMode ? 'true' : 'false'}
-          onClick={() => setFocusMode((value) => !value)}
-          title="切换专注模式"
+          data-active={isFullscreen ? 'true' : 'false'}
+          onClick={() => void handleFullscreenToggle()}
+          title={isFullscreen ? '退出全屏编辑模式' : '进入全屏编辑模式'}
           type="button"
         >
-          <Focus aria-hidden="true" />
+          {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
         </button>
       </div>
       <TopologyFlowResourceRail initialExpanded={nodes.length === 0} onAddNode={handleResourceAddNode} />
@@ -422,9 +447,25 @@ function TopologyFlowCanvasInner({
         >
           <Background gap={20} size={1} />
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable />
+          {isMiniMapVisible ? (
+            <MiniMap
+              className="topology-flow-mini-map"
+              pannable
+              zoomable
+            />
+          ) : null}
         </ReactFlow>
       </div>
+      <button
+        aria-label={isMiniMapVisible ? '隐藏导航图' : '显示导航图'}
+        aria-pressed={isMiniMapVisible}
+        className="topology-flow-mini-map-toggle"
+        onClick={() => setIsMiniMapVisible((visible) => !visible)}
+        title={isMiniMapVisible ? '隐藏导航图' : '显示导航图'}
+        type="button"
+      >
+        <Map aria-hidden="true" />
+      </button>
     </section>
   );
 }

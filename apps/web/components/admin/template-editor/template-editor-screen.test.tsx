@@ -14,7 +14,6 @@ function TopologyFlowCanvasMock({
   onConnect,
   onDeleteSelection,
   onLayoutAll,
-  onLayoutSelection,
   onNodeActivate,
   onPositionsCommit,
   onRedo,
@@ -102,7 +101,6 @@ function TopologyFlowCanvasMock({
         flow commit viewport
       </button>
       <button onClick={onLayoutAll} type="button">flow layout all</button>
-      <button onClick={onLayoutSelection} type="button">flow layout selection</button>
       <button onClick={onUndo} type="button">flow undo</button>
       <button onClick={onRedo} type="button">flow redo</button>
       <button

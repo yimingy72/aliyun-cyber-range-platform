@@ -59,7 +59,7 @@ React Flow 画布已用于靶场模板的创建和编辑。当前工具栏仍包
 - 隐藏时：`aria-label` / `title` 为 `显示导航图`，`aria-pressed="false"`。
 - 显示时：`aria-label` / `title` 为 `隐藏导航图`，`aria-pressed="true"`。
 
-只有 `isMiniMapVisible` 为真时才渲染 React Flow `MiniMap`，保留 `pannable` 与 `zoomable`。MiniMap 增加专用 CSS class，并通过组件尺寸属性与 CSS 固定为 `120 × 80`。地图展开时位于开关按钮上方，避免遮挡图标；收起时不保留渲染成本与占位。
+只有 `isMiniMapVisible` 为真时才渲染 React Flow `MiniMap`，保留 `pannable` 与 `zoomable`。MiniMap 增加专用 CSS class，并由 CSS 固定为 `120 × 80`。地图展开时位于开关按钮上方，避免遮挡图标；收起时不保留渲染成本与占位。
 
 ## 布局与样式
 
@@ -69,7 +69,8 @@ React Flow 画布已用于靶场模板的创建和编辑。当前工具栏仍包
 - `.topology-flow-workbench:fullscreen` 进入浏览器全屏层，使用完整视口高度和宽度，移除圆角与外部边框，保持现有工具栏、资源工具轨、画布控制和属性选择能力。
 - 为导航图开关提供与画布控制一致的 `32px` 稳定图标按钮、可见的 focus 样式和固定右下角位置。
 - 以专用类约束 MiniMap 为 `120px × 80px`，并在打开时让其位于开关上方。
-- 保持手机断点的属性面板避让规则；当导航图隐藏时，右下区域只留下图标开关。
+- 桌面属性面板打开时，将导航图和开关左移到面板外；窄屏时将两者上移到属性面板上方；全屏状态始终贴回工作区右下角。
+- 当导航图隐藏时，右下区域只留下图标开关。
 
 ## 异常与兼容
 

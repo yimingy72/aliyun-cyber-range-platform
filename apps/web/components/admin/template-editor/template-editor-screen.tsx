@@ -1852,34 +1852,6 @@ export function TemplateEditorScreen({
     }
   }
 
-  function handleLayoutSelection() {
-    if (isSubmitting) {
-      return;
-    }
-
-    const selectedNodeIds = new Set(selection.nodeIds);
-    const selectedNodes = nodes.filter((node) => selectedNodeIds.has(node.id));
-
-    if (selectedNodes.length === 0) {
-      setStatusMessage('请先选择需要自动布局的节点。');
-      return;
-    }
-
-    try {
-      const selectedEdges = edges.filter(
-        (edge) => selectedNodeIds.has(edge.fromNodeId) && selectedNodeIds.has(edge.toNodeId),
-      );
-      const laidOutNodesById = new Map(
-        layoutTopology(selectedNodes, selectedEdges).map((node) => [node.id, node]),
-      );
-      const nextNodes = nodes.map((node) => laidOutNodesById.get(node.id) ?? node);
-
-      commitSnapshot({ nodes: nextNodes, edges, viewport }, '已完成选中节点自动布局。');
-    } catch {
-      setStatusMessage('自动布局失败，请保留当前节点位置。');
-    }
-  }
-
   function handleUndo() {
     restoreHistory(undoTopology(historyRef.current!), '已撤销上一步拓扑操作。');
   }
@@ -2054,7 +2026,6 @@ export function TemplateEditorScreen({
           onConnect={handleFlowConnect}
           onDeleteSelection={handleDeleteSelection}
           onLayoutAll={handleLayoutAll}
-          onLayoutSelection={handleLayoutSelection}
           onNodeActivate={handleFlowNodeActivate}
           onPositionsCommit={handlePositionsCommit}
           onRedo={handleRedo}
