@@ -96,6 +96,99 @@ describe('TemplatePropertyPanel', () => {
     expect(screen.queryByRole('button', { name: '添加安全规则 1' })).toBeNull();
   });
 
+  it('shows non-persisted security-rule input placeholders', () => {
+    const baseNode = createEcsNodeWithPlatformDefaults();
+    const node: TemplateNode = {
+      ...baseNode,
+      nics: [
+        {
+          ...baseNode.nics[0],
+          securityGroupRulesMode: 'custom',
+          securityGroupRules: [
+            {
+              key: 'security-rule-1',
+              direction: 'ingress',
+              protocol: 'all',
+              portRange: '',
+              policy: 'accept',
+              priority: 1,
+              sourceCidr: '',
+            },
+          ],
+        },
+      ],
+    };
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
+
+    const portInput = screen.getByLabelText('安全端口 1-1') as HTMLInputElement;
+    const sourceCidrInput = screen.getByLabelText('安全源网段 1-1') as HTMLInputElement;
+
+    expect(portInput.value).toBe('');
+    expect(portInput.placeholder).toBe('全端口：1/65535');
+    expect(sourceCidrInput.value).toBe('');
+    expect(sourceCidrInput.placeholder).toBe('如：10.0.0.0/24');
+  });
+
+  it('shows all-protocol ACL and source CIDR placeholders without filling values', () => {
+    const node: TemplateNode = {
+      id: 'switch-1',
+      kind: 'switch',
+      label: '交换机 1',
+      zoneKey: 'core',
+      cidr: '10.0.0.0/24',
+      purpose: 'business-zone',
+      aclRules: [
+        {
+          key: 'acl-1',
+          direction: 'inbound',
+          protocol: 'all',
+          portRange: '',
+          policy: 'allow',
+          priority: 1,
+          sourceCidr: '',
+        },
+      ],
+      nat: { snatEnabled: false, dnatMappings: [] },
+    };
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
+
+    const portInput = screen.getByLabelText('ACL 端口范围 1') as HTMLInputElement;
+    const sourceCidrInput = screen.getByLabelText('ACL 源网段 1') as HTMLInputElement;
+
+    expect(portInput.value).toBe('');
+    expect(portInput.placeholder).toBe('全端口：1/65535');
+    expect(sourceCidrInput.value).toBe('');
+    expect(sourceCidrInput.placeholder).toBe('如：10.0.0.0/24');
+  });
+
+  it('keeps the ECS primary IP synchronized with the first NIC', () => {
+    const node = createEcsNodeWithPlatformDefaults();
+    const onUpdateNode = vi.fn();
+    const switchNode: TemplateNode = {
+      id: 'switch-1',
+      kind: 'switch',
+      label: '核心交换机',
+      zoneKey: 'core',
+      cidr: '10.0.0.0/24',
+      purpose: 'business-zone',
+      aclRules: [],
+      nat: { snatEnabled: false, dnatMappings: [] },
+    };
+
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[switchNode, node]} onUpdateNode={onUpdateNode} />);
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.20' } });
+
+    expect(onUpdateNode).toHaveBeenCalledWith(
+      'ecs-1',
+      expect.objectContaining({
+        privateIp: '10.0.0.20',
+        nics: [expect.objectContaining({ privateIp: '10.0.0.20' })],
+      }),
+    );
+  });
+
   it('groups security rule cards inside the network-field inset', () => {
     const node = createEcsNodeWithPlatformDefaults();
 

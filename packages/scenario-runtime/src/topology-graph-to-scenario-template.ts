@@ -1,4 +1,5 @@
 import { resolvePreferredInstanceTypes } from './instance-type-catalog';
+import { normalizeAlibabaCloudPortRange } from './alibaba-cloud-port-range';
 import { getPlatformDefaultSecurityGroupRules, type TemplateNode } from './scenario-graph';
 import type {
   ScenarioTemplateAclRule,
@@ -248,7 +249,10 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
             targetHostKey: host.id,
             direction: readIngressDirection(rule.direction),
             protocol: typeof rule.protocol === 'string' ? rule.protocol : 'all',
-            portRange: typeof rule.portRange === 'string' ? rule.portRange : '-1/-1',
+            portRange: normalizeAlibabaCloudPortRange(
+              typeof rule.portRange === 'string' ? rule.portRange : '-1/-1',
+              typeof rule.protocol === 'string' ? rule.protocol : 'all',
+            ),
             sourceCidr: typeof rule.sourceCidr === 'string' ? rule.sourceCidr : '0.0.0.0/0',
             policy: readAcceptPolicy(rule.policy),
             priority: typeof rule.priority === 'number' ? rule.priority : 1,
@@ -266,7 +270,10 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
           zoneKey: node.zoneKey,
           direction: readInboundDirection(rule.direction),
           protocol: typeof rule.protocol === 'string' ? rule.protocol : 'all',
-          portRange: typeof rule.portRange === 'string' ? rule.portRange : '-1/-1',
+          portRange: normalizeAlibabaCloudPortRange(
+            typeof rule.portRange === 'string' ? rule.portRange : '-1/-1',
+            typeof rule.protocol === 'string' ? rule.protocol : 'all',
+          ),
           sourceCidr: typeof rule.sourceCidr === 'string' ? rule.sourceCidr : '0.0.0.0/0',
           policy: readAllowPolicy(rule.policy),
           priority: typeof rule.priority === 'number' ? rule.priority : 1,

@@ -1523,8 +1523,10 @@ function buildDraftUpdatePayload(
           return nextNode;
         }
 
+        const primaryPrivateIp = nextNode.nics?.[0]?.privateIp?.trim() || nextNode.privateIp.trim();
         return {
           ...nextNode,
+          privateIp: primaryPrivateIp,
           ...applyEconomyInstanceType(nextNode, {
             preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory,
           }),

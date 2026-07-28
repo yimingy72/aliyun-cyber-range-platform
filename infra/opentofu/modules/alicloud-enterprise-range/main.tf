@@ -119,8 +119,11 @@ locals {
     for rule in var.security_group_rules : rule.key => rule
   }
 
-  acl_map = {
-    for acl in var.acls : acl.key => acl
+  acl_rules_by_zone = {
+    for zone_key in distinct([for acl in var.acls : acl.zone_key]) : zone_key => {
+      name  = "${var.resource_name_prefix}-${zone_key}-acl"
+      rules = [for acl in var.acls : acl if acl.zone_key == zone_key]
+    }
   }
 
   snat_entry_map = {
@@ -360,17 +363,19 @@ resource "alicloud_vswitch" "zones" {
 }
 
 resource "alicloud_network_acl" "zone_acls" {
-  for_each = local.acl_map
+  for_each = local.acl_rules_by_zone
 
   vpc_id           = alicloud_vpc.range.id
   network_acl_name = substr(replace(each.value.name, " ", "-"), 0, 128)
   resources {
-    resource_id   = alicloud_vswitch.zones[each.value.zone_key].id
+    resource_id   = alicloud_vswitch.zones[each.key].id
     resource_type = "VSwitch"
   }
 
   dynamic "ingress_acl_entries" {
-    for_each = each.value.direction == "ingress" || each.value.direction == "inbound" ? [each.value] : []
+    for_each = [
+      for acl in each.value.rules : acl if acl.direction == "ingress" || acl.direction == "inbound"
+    ]
     content {
       network_acl_entry_name = ingress_acl_entries.value.name
       source_cidr_ip         = ingress_acl_entries.value.source_cidr
@@ -382,7 +387,9 @@ resource "alicloud_network_acl" "zone_acls" {
   }
 
   dynamic "egress_acl_entries" {
-    for_each = each.value.direction == "egress" || each.value.direction == "outbound" ? [each.value] : []
+    for_each = [
+      for acl in each.value.rules : acl if acl.direction == "egress" || acl.direction == "outbound"
+    ]
     content {
       network_acl_entry_name = egress_acl_entries.value.name
       destination_cidr_ip    = egress_acl_entries.value.source_cidr
@@ -394,8 +401,8 @@ resource "alicloud_network_acl" "zone_acls" {
   }
 
   tags = merge(local.common_tags, {
-    acl_key  = each.key
-    zone_key = each.value.zone_key
+    zone_key       = each.key
+    acl_rule_count = tostring(length(each.value.rules))
   })
 }
 

@@ -2,6 +2,10 @@ import {
   buildScenarioTemplateSpecFromTopologyGraph,
 } from './topology-graph-to-scenario-template';
 import { compileScenarioTemplateSpec } from './scenario-template-compiler';
+import {
+  isAlibabaCloudPortRange,
+  normalizeAlibabaCloudPortRange,
+} from './alibaba-cloud-port-range';
 import type {
   EcsTemplateNode,
   ScenarioGraphDraft,
@@ -475,6 +479,11 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
       if (!parsedVpcCidrs.some(({ parsed }) => isCidrWithin(node.cidr, parsed))) {
         throw new Error(`交换机 CIDR 不在主 VPC 或附加 VPC 网段内：${node.id}`);
       }
+      for (const rule of node.aclRules ?? []) {
+        if (!isAlibabaCloudPortRange(rule.portRange, rule.protocol)) {
+          throw new Error(`ACL 端口范围无效：${node.id}/${rule.key}`);
+        }
+      }
     }
     if (node.kind === 'ecs') {
       if (!isIpv4(node.privateIp)) {
@@ -508,6 +517,11 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         if (!isIpv4(nic.privateIp)) {
           throw new Error(`NIC 私网 IP 无效：${nic.id}`);
         }
+        for (const rule of nic.securityGroupRules ?? []) {
+          if (!isAlibabaCloudPortRange(rule.portRange, rule.protocol)) {
+            throw new Error(`安全组端口范围无效：${node.id}/${rule.key}`);
+          }
+        }
         if (!isIpv4InCidr(nic.privateIp, linkedSwitch.cidr)) {
           throw new Error(`ECS ${node.id} 的 NIC 私网 IP 不在 ${linkedSwitch.cidr} 网段内`);
         }
@@ -526,6 +540,11 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
             throw new Error(`ECS ${node.id} 的辅助 IP 不能使用网段地址或广播地址`);
           }
           registerIpUsage(ipUsage, linkedSwitch.id, secondaryIp, `ECS ${node.id} 的辅助 IP`);
+        }
+      }
+      for (const portGroup of node.portGroups ?? []) {
+        if (!isAlibabaCloudPortRange(portGroup.portRange, portGroup.protocol)) {
+          throw new Error(`端口组端口范围无效：${node.id}/${portGroup.name}`);
         }
       }
     }
@@ -656,7 +675,10 @@ function normalizeTopologyGraph(topologyGraph: ScenarioGraphDraft): ScenarioGrap
       if (node.kind === 'switch') {
         return {
           ...node,
-          aclRules: node.aclRules ?? [],
+          aclRules: (node.aclRules ?? []).map((rule) => ({
+            ...rule,
+            portRange: normalizeAlibabaCloudPortRange(rule.portRange, rule.protocol),
+          })),
           nat: {
             snatEnabled: node.nat?.snatEnabled ?? false,
             dnatMappings: node.nat?.dnatMappings ?? [],
@@ -665,12 +687,17 @@ function normalizeTopologyGraph(topologyGraph: ScenarioGraphDraft): ScenarioGrap
       }
 
       const imageStrategy = node.imageStrategy ?? { mode: 'fixed' as const, imageId: node.image };
+      const primaryPrivateIp = node.nics?.[0]?.privateIp?.trim() || node.privateIp;
       return {
         ...node,
+        privateIp: primaryPrivateIp,
         initScript: node.initScript ?? '',
         dnatMappings: node.dnatMappings ?? [],
         networkInterfaces: node.networkInterfaces ?? [],
-        portGroups: node.portGroups ?? [],
+        portGroups: (node.portGroups ?? []).map((portGroup) => ({
+          ...portGroup,
+          portRange: normalizeAlibabaCloudPortRange(portGroup.portRange, portGroup.protocol),
+        })),
         imageStrategy:
           imageStrategy.mode === 'fixed' && !imageStrategy.imageId
             ? { ...imageStrategy, imageId: node.image }
@@ -679,7 +706,10 @@ function normalizeTopologyGraph(topologyGraph: ScenarioGraphDraft): ScenarioGrap
         nics: (node.nics ?? []).map((nic) => ({
           ...nic,
           secondaryIps: nic.secondaryIps ?? [],
-          securityGroupRules: nic.securityGroupRules ?? [],
+          securityGroupRules: (nic.securityGroupRules ?? []).map((rule) => ({
+            ...rule,
+            portRange: normalizeAlibabaCloudPortRange(rule.portRange, rule.protocol),
+          })),
         })),
       } as EcsNode;
     }),

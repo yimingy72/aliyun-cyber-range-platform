@@ -238,18 +238,22 @@ function readPrivateIps(
     }
   }
 
-  function addNetworkInterfaces(value: unknown) {
+  function addSecondaryNetworkInterfaces(value: unknown) {
     if (!Array.isArray(value)) {
       return;
     }
 
-    value.forEach((networkInterface) => {
+    value.forEach((networkInterface, index) => {
       if (!networkInterface || typeof networkInterface !== 'object') {
         return;
       }
 
       const nic = networkInterface as Record<string, unknown>;
-      addIp(nic.privateIp);
+      const deviceIndex = typeof nic.deviceIndex === 'number' ? nic.deviceIndex : index;
+
+      if (deviceIndex !== 0) {
+        addIp(nic.privateIp);
+      }
 
       if (Array.isArray(nic.secondaryIps)) {
         nic.secondaryIps.forEach(addIp);
@@ -257,11 +261,15 @@ function readPrivateIps(
     });
   }
 
-  addNetworkInterfaces(node.nics);
-  addNetworkInterfaces(node.networkInterfaces);
-  addNetworkInterfaces(hostSpec?.networkInterfaces);
-  addIp(hostSpec?.primaryPrivateIp);
-  addIp(node.privateIp);
+  const primaryNic = Array.isArray(node.nics) ? node.nics[0] : null;
+  addIp(primaryNic && typeof primaryNic === 'object' ? (primaryNic as Record<string, unknown>).privateIp : node.privateIp);
+  addSecondaryNetworkInterfaces(node.nics);
+  addSecondaryNetworkInterfaces(node.networkInterfaces);
+  addSecondaryNetworkInterfaces(hostSpec?.networkInterfaces);
+
+  if (privateIps.length === 0) {
+    addIp(hostSpec?.primaryPrivateIp);
+  }
 
   return privateIps;
 }
@@ -1088,19 +1096,26 @@ export function RangeInstanceDetailScreen({
         }
 
         const nextNode = updater(normalizeTopologyNode(node) ?? (node as unknown as TemplateNode));
+        const synchronizedNode =
+          nextNode.kind === 'ecs'
+            ? {
+                ...nextNode,
+                privateIp: nextNode.nics?.[0]?.privateIp?.trim() || nextNode.privateIp.trim(),
+              }
+            : nextNode;
         const nextData =
           node.data && typeof node.data === 'object'
             ? {
                 ...(node.data as Record<string, unknown>),
-                label: nextNode.label,
+                label: synchronizedNode.label,
               }
             : {
-                label: nextNode.label,
+                label: synchronizedNode.label,
               };
 
         return {
           ...node,
-          ...nextNode,
+          ...synchronizedNode,
           data: nextData,
         };
       }),

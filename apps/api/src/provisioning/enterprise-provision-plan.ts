@@ -4,6 +4,7 @@ import type {
   RangeTemplateNetworkZone,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
+import { normalizeAlibabaCloudPortRange } from './alibaba-cloud-port-range';
 import { resolveAlibabaCloudVpcCidrs } from './alibaba-cloud-vpc-cidrs';
 
 type CompiledResource = RangeTemplateCompiledSpec['resources'][number];
@@ -596,9 +597,15 @@ function buildSecurityGroupRulesFromCompiledSpec(compiledSpec: RangeTemplateComp
       resource.config.protocol,
       `compiledSpec.resources[${resource.id}].config.protocol`,
     ),
-    portRange: requireValue(
-      resource.config.portRange,
-      `compiledSpec.resources[${resource.id}].config.portRange`,
+    portRange: normalizeAlibabaCloudPortRange(
+      requireValue(
+        resource.config.portRange,
+        `compiledSpec.resources[${resource.id}].config.portRange`,
+      ),
+      requireValue(
+        resource.config.protocol,
+        `compiledSpec.resources[${resource.id}].config.protocol`,
+      ),
     ),
     sourceCidr: requireValue(
       resource.config.sourceCidr,
@@ -631,7 +638,10 @@ function buildSecurityGroupRulesFromCompiledProvisionSpec(
       direction: typeof record.direction === 'string' ? record.direction : 'ingress',
       policy: typeof record.policy === 'string' ? record.policy : 'accept',
       protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
-      portRange: typeof record.portRange === 'string' ? record.portRange : '22/22',
+      portRange: normalizeAlibabaCloudPortRange(
+        typeof record.portRange === 'string' ? record.portRange : '22/22',
+        typeof record.protocol === 'string' ? record.protocol : 'tcp',
+      ),
       sourceCidr: typeof record.sourceCidr === 'string' ? record.sourceCidr : '0.0.0.0/0',
       priority: typeof record.priority === 'number' ? record.priority : 1,
     }];
@@ -696,9 +706,15 @@ function buildAclDefinitionsFromCompiledSpec(compiledSpec: RangeTemplateCompiled
       resource.config.protocol,
       `compiledSpec.resources[${resource.id}].config.protocol`,
     ),
-    portRange: requireValue(
-      resource.config.portRange,
-      `compiledSpec.resources[${resource.id}].config.portRange`,
+    portRange: normalizeAlibabaCloudPortRange(
+      requireValue(
+        resource.config.portRange,
+        `compiledSpec.resources[${resource.id}].config.portRange`,
+      ),
+      requireValue(
+        resource.config.protocol,
+        `compiledSpec.resources[${resource.id}].config.protocol`,
+      ),
     ),
     sourceCidr: requireValue(
       resource.config.sourceCidr,
@@ -729,7 +745,10 @@ function buildAclDefinitionsFromCompiledProvisionSpec(compiledProvisionSpec: Com
       direction: typeof record.direction === 'string' ? record.direction : 'inbound',
       policy: normalizeNetworkAclPolicy(typeof record.policy === 'string' ? record.policy : 'accept'),
       protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
-      portRange: typeof record.portRange === 'string' ? record.portRange : '22/22',
+      portRange: normalizeAlibabaCloudPortRange(
+        typeof record.portRange === 'string' ? record.portRange : '22/22',
+        typeof record.protocol === 'string' ? record.protocol : 'tcp',
+      ),
       sourceCidr: typeof record.sourceCidr === 'string' ? record.sourceCidr : '0.0.0.0/0',
       priority: typeof record.priority === 'number' ? record.priority : 1,
     }];

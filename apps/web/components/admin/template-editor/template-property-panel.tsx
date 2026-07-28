@@ -51,6 +51,19 @@ type PropertyGroupProps = {
   children: ReactNode;
 };
 
+function getPortRangePlaceholder(protocol: string) {
+  switch (protocol.trim().toLowerCase()) {
+    case 'all':
+      return '全端口：1/65535';
+    case 'icmp':
+      return '全部类型：-1/-1';
+    default:
+      return '如：80/80';
+  }
+}
+
+const SOURCE_CIDR_PLACEHOLDER = '如：10.0.0.0/24';
+
 function parseMultiLineList(value: string) {
   return value
     .split(/\r?\n|,/)
@@ -629,6 +642,7 @@ function renderHostFields(
 
                       onUpdateNode(selectedNode.id, {
                         ...selectedNode,
+                        ...(isPrimaryNic ? { privateIp: nextValue } : {}),
                         nics: nicItems.map((item) =>
                           item.id === nic.id
                             ? {
@@ -726,6 +740,7 @@ function renderHostFields(
                   <PropertyField label="端口范围">
                     <input
                       aria-label={`安全端口 ${index + 1}-${ruleIndex + 1}`}
+                      placeholder={getPortRangePlaceholder(rule.protocol)}
                       value={rule.portRange}
                       onChange={(event) =>
                         updateNicSecurityGroupRules(nic.id, (rules) =>
@@ -776,6 +791,7 @@ function renderHostFields(
                   <PropertyField label="源网段">
                     <input
                       aria-label={`安全源网段 ${index + 1}-${ruleIndex + 1}`}
+                      placeholder={SOURCE_CIDR_PLACEHOLDER}
                       value={rule.sourceCidr}
                       onChange={(event) =>
                         updateNicSecurityGroupRules(nic.id, (rules) =>
@@ -1061,6 +1077,7 @@ function renderSwitchFields(
               <PropertyField label="端口范围">
                 <input
                   aria-label={`ACL 端口范围 ${index + 1}`}
+                  placeholder={getPortRangePlaceholder(rule.protocol)}
                   value={rule.portRange}
                   onChange={(event) =>
                     onUpdateNode(selectedNode.id, {
@@ -1108,6 +1125,7 @@ function renderSwitchFields(
               <PropertyField label="源网段" className="template-property-field-full">
                 <input
                   aria-label={`ACL 源网段 ${index + 1}`}
+                  placeholder={SOURCE_CIDR_PLACEHOLDER}
                   value={rule.sourceCidr}
                   onChange={(event) =>
                     onUpdateNode(selectedNode.id, {

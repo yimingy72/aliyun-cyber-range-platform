@@ -1,4 +1,5 @@
 export * from './compiled-provision-spec';
+export * from './alibaba-cloud-port-range';
 export * from './instance-type-catalog';
 export * from './password-policy';
 export * from './scenario-graph';
