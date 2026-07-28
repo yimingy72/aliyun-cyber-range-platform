@@ -93,6 +93,98 @@ describe('ProvisioningWorkerService concurrency', () => {
     expect(maxInFlight).toBe(3);
   });
 
+  it('normalizes numeric-prefixed platform names before submitting single instances to Aliyun', async () => {
+    const repository = createMemoryAdminRepository();
+    const requestBodies: string[] = [];
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = typeof init?.body === 'string' ? init.body : '';
+      requestBodies.push(body);
+      return new Response(
+        JSON.stringify({
+          InstanceIdSets: {
+            InstanceIdSet: ['i-numeric-name-01'],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    try {
+      const profile = await repository.upsertSingleInstanceNetworkProfile({
+        provider: 'alibaba_cloud',
+        regionId: 'cn-hangzhou',
+        zoneId: 'cn-hangzhou-h',
+        vpcId: 'vpc-numeric-name',
+        vpcCidr: '10.200.0.0/16',
+        vswitchIds: ['vsw-numeric-name'],
+        vswitchCidrs: ['10.200.1.0/24'],
+        securityGroupId: 'sg-numeric-name',
+        securityGroupName: 'default-open-all',
+      });
+      const batch = await repository.createSingleInstanceBatch({
+        name: '4层网络靶场-test',
+        platformImageAssetId: 'platform-image-1',
+        imageId: 'm-123',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+        quantity: 1,
+        createdBy: 'admin',
+        expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1_000),
+      });
+      const instance = await repository.createRangeInstance({
+        name: '4层网络靶场-test-01',
+        createdBy: 'admin',
+        instanceMode: 'single',
+        singleInstanceBatchId: batch.id,
+        status: 'pending_create',
+        expiresAt: batch.expiresAt?.toISOString(),
+        runtimeCredentials: {
+          'single-ecs-1': {
+            username: 'root',
+            password: 'Aa123456!',
+          },
+        },
+        singleInstanceConfig: {
+          baseName: batch.name,
+          quantityIndex: 1,
+          hostKey: 'single-ecs-1',
+          hostName: 'numeric-name-host-01',
+          platformImageAssetId: batch.platformImageAssetId,
+          imageId: batch.imageId,
+          imageDisplayName: batch.imageDisplayName,
+          cpu: batch.cpu,
+          memory: batch.memory,
+          systemDiskSize: batch.systemDiskSize,
+          assignedVswitchId: profile.vswitchIds[0],
+        },
+      });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id,
+        jobType: 'create',
+        triggeredBy: 'admin',
+      });
+      const executor = new SingleInstanceBatchExecutionService(
+        repository,
+        createSystemConfigServiceStub() as any,
+      );
+
+      await executor.executeCreateBatch([{ instance, job }]);
+
+      expect(requestBodies).toHaveLength(1);
+      expect(new URLSearchParams(requestBodies[0]).get('InstanceName')).toBe('cr-4层网络靶场-test-01');
+      await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+        expect.objectContaining({
+          name: '4层网络靶场-test-01',
+          status: 'creating',
+        }),
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('includes the claimed single-instance destroy job even when that instance has not persisted lastJobId yet', async () => {
     const repository = createMemoryAdminRepository();
     const batch = await repository.createSingleInstanceBatch({

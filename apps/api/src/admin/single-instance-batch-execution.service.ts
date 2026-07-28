@@ -29,6 +29,10 @@ const DESTROY_ALREADY_GONE_ERROR_CODES = [
 ];
 const DEFAULT_DESTROY_RETRY_INTERVAL_MS = 5_000;
 const DESTROY_RETRY_ATTEMPTS = 12;
+const ALIYUN_INSTANCE_NAME_PREFIX = 'cr-';
+const ALIYUN_INSTANCE_NAME_MAX_LENGTH = 128;
+const ALIYUN_INSTANCE_NAME_START_PATTERN = /^[A-Za-z\u3400-\u9FFF]/u;
+const ALIYUN_INSTANCE_NAME_DISALLOWED_CHARACTERS_PATTERN = /[^A-Za-z0-9._\-\u3400-\u9FFF]+/gu;
 
 type SingleInstanceExecutionItem = {
   instance: RangeInstanceRecord;
@@ -146,7 +150,7 @@ export class SingleInstanceBatchExecutionService {
               InternetMaxBandwidthOut: String(readInternetMaxBandwidthOut()),
               'SystemDisk.Category': readSystemDiskCategory(),
               'SystemDisk.Size': String(item.instance.singleInstanceConfig!.systemDiskSize),
-              InstanceName: item.instance.name,
+              InstanceName: resolveAliyunInstanceName(item.instance.name),
               ...(expectedHostName ? { HostName: expectedHostName } : {}),
               ...(autoReleaseTime ? { AutoReleaseTime: autoReleaseTime } : {}),
               ...buildAliyunTagParameters(
@@ -606,6 +610,20 @@ function readRuntimePassword(instance: RangeInstanceRecord) {
   }
 
   return password;
+}
+
+function resolveAliyunInstanceName(name: string) {
+  const sanitized = name
+    .normalize('NFKC')
+    .trim()
+    .replace(ALIYUN_INSTANCE_NAME_DISALLOWED_CHARACTERS_PATTERN, '-')
+    .replace(/[-_.]{2,}/g, '-')
+    .replace(/^[-_.]+|[-_.]+$/g, '');
+  const prefixed = ALIYUN_INSTANCE_NAME_START_PATTERN.test(sanitized)
+    ? sanitized
+    : `${ALIYUN_INSTANCE_NAME_PREFIX}${sanitized || 'instance'}`;
+
+  return Array.from(prefixed).slice(0, ALIYUN_INSTANCE_NAME_MAX_LENGTH).join('');
 }
 
 function compareByQuantityIndex(left: SingleInstanceExecutionItem, right: SingleInstanceExecutionItem) {
