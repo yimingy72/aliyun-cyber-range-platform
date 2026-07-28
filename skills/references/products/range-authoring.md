@@ -12,10 +12,10 @@
 |---|---|---|---|---|
 | 查看模板列表 | `range_template_list` | — | `view: platform\|mine`，默认 `platform` | `templates:read` |
 | 查看模板详情 | `range_template_get` | `templateId` | — | `templates:read` |
-| 新建模板 | `range_template_create` | `name`、完整 `topologyGraph` | `description`、`primaryVpcCidr`、`secondaryVpcCidrs`、已废弃别名 `vpcCidr`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
+| 新建模板 | `range_template_create` | `name`、完整 `topologyGraph` | `description`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
 | 编辑信息 | `range_template_update` | `templateId`、`updates` | 更新对象内须提供名称或描述中的至少一项；操作元数据 | `templates:write` |
 | 复制模板 | `range_template_clone` | `templateId` | 操作元数据 | `templates:write` |
-| 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、完整 `topologyGraph` | `primaryVpcCidr`、`secondaryVpcCidrs`、`vpcCidr`、`publicEntryProtocols`、操作元数据 | `templates:write` |
+| 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `templates:write` |
 | 发布到平台 | `range_template_publish` | `templateId` | 操作元数据 | `templates:publish` |
 | 取消发布 | `range_template_unpublish` | `templateId` | 操作元数据 | `templates:publish` |
 | 删除模板 | `range_template_delete` | `templateId` | 操作元数据 | `templates:delete` |
@@ -23,6 +23,8 @@
 `range_template_topology_detect_and_save` 会编译并校验完整图后保存，但不会发布。拓扑修改始终重新生成完整图；没有“共享/取消共享”、独立预检或节点补丁工具。`publicEntryProtocols` 是可选的访问摘要元数据，不创建 DNAT、不替代 DNAT，也不应用为安全组规则。
 
 创建时平台会生成 `slug`、版本、云厂商、IaC 类型和模块路径。它们不是新的 `RangeDesign/v1` 输出字段，也不是 `range_template_create` 参数；旧设计中存在这些字段时，转换 Skill 仅兼容读取并丢弃，调用方不得传给 MCP。
+
+平台固定创建 `10.0.0.0/16` 主 VPC，并附加 `172.16.0.0/16`、`192.168.0.0/16`。VPC CIDR 不是 MCP 可配置参数；每个交换机 CIDR 必须完整落在这三段之一。
 
 ## 设计转换流程
 
@@ -56,7 +58,9 @@ template:
 
 vpc:
   primaryVpcCidr: 10.0.0.0/16
-  secondaryVpcCidrs: []
+  secondaryVpcCidrs:
+    - 172.16.0.0/16
+    - 192.168.0.0/16
   sharedNat:
     natGatewayKey: nat-gw-shared-1
     snatEipKey: eip-snat-shared-1
@@ -140,9 +144,9 @@ connections:
 | 部分 | 必须表达的事实 | 约束 |
 |---|---|---|
 | `template` | 名称、描述和可选入口访问摘要 | `publicEntryProtocols` 只是显示/访问摘要，不能创建、推导或代替 DNAT；地域/可用区、`slug`、版本、云厂商、IaC 与模块路径均由平台管理，不得输出或传给 MCP。 |
-| `vpc` | 一个主 CIDR、零到四个附加 CIDR、一个共享 NAT 逻辑标识 | 一个 VPC 可使用不连续 CIDR；所有 CIDR 不重叠。SNAT 与 DNAT 使用同一 NAT 网关、不同 EIP。 |
+| `vpc` | 固定主 CIDR、两个固定附加 CIDR、一个共享 NAT 逻辑标识 | 只能是 `10.0.0.0/16`、`172.16.0.0/16`、`192.168.0.0/16`；SNAT 与 DNAT 使用同一 NAT 网关、不同 EIP。 |
 | `router` | 唯一路由器的键、名称和出口意图 | 每份设计恰好一个 Router。 |
-| `switches` | 交换机 CIDR、逻辑 `zoneKey`、用途、ACL、SNAT、DNAT | 每个 Switch 的 `zoneKey` 全局唯一，是网络分区键而非阿里云可用区 ID；CIDR 必须落在主或附加 VPC CIDR 内且互不重叠；`aclRules`、`dnatMappings` 始终存在，可为空数组。 |
+| `switches` | 交换机 CIDR、逻辑 `zoneKey`、用途、ACL、SNAT、DNAT | 每个 Switch 的 `zoneKey` 全局唯一，是网络分区键而非阿里云可用区 ID；CIDR 必须落在三段固定 VPC CIDR 内且互不重叠；`aclRules`、`dnatMappings` 始终存在，可为空数组。 |
 | `ecs` | 计算规格、角色、镜像选择、主 IP、初始化需求、所有 NIC 和安全组 | 每台 ECS 至少一个 NIC；ECS 和第一张 NIC 的 `zoneKey` 必须等于所连 Switch 的 `zoneKey`；ECS `privateIp` 等于第一个 NIC 的 `privateIp`。 |
 | `nics` | NIC 键、所属交换机、IP、辅助 IP 与安全组 | 每张 NIC 都有对应 `switch -> ecs` 连接。自定义规则时显式 `securityGroupRulesMode: custom`。 |
 | `connections` | Router 到每个 Switch、Switch 到每台 ECS 的完整连线 | 使用 `{ key, from, to }`；键、来源和目标必须唯一且可解析。 |
@@ -168,7 +172,7 @@ connections:
 7. 每个 ECS 节点写入 `image: displayName`（展示字段）、`imageName: displayName`、`imageId`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`portGroups` 与 `initScript`。镜像身份只由后三个 ID 字段表达；不得把资产 ID 填入 `image`。ECS 的遗留 `dnatMappings` 不创建 NAT 规则，转换结果应省略或保持为空数组。
 8. 每个 Switch 节点必须写入完整 `aclRules` 与 `nat: { snatEnabled, dnatMappings }`；**公网 DNAT 仅以 `switch.nat.dnatMappings` 为准**，每条映射必须含 `key`、`targetHostId`、`externalPort`、`internalPort`、`protocol`。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
 
-转换回执和完整图均通过后，恰好调用一次 `range_template_create`，只传 `name`、可选 `description`、可选网络元数据和完整 `topologyGraph`。不要传地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或自动重试。
+转换回执和完整图均通过后，恰好调用一次 `range_template_create`，只传 `name`、可选 `description`、可选 `publicEntryProtocols` 和完整 `topologyGraph`。不要传 VPC CIDR、地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或自动重试。
 
 调用 `range_template_topology_detect_and_save` 被拒绝时，必须停止并报告原始错误；不得补猜 `version`、`modulePathOrRef`、地域、可用区或派生规格后重试。它们均由平台在服务端读取或注入。
 

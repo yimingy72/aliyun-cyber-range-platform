@@ -32,9 +32,6 @@ type TemplateWriteInput = TemplateOperation & { templateId: string };
 type CreateInput = TemplateOperation & {
   name: string;
   description?: string;
-  primaryVpcCidr?: string;
-  secondaryVpcCidrs?: string[];
-  vpcCidr?: string;
   publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
   topologyGraph: ScenarioGraphDraft;
   variableSchema?: Record<string, unknown>;
@@ -85,7 +82,7 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_create',
     title: '创建靶场模板',
-    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。必须有且仅有一个 exposePublic=true 的入口 ECS，且该 ECS 必须是至少一条 DNAT 的目标。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述、网络元数据和拓扑；slug、版本、云厂商、IaC 与模块路径由平台生成。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。必须有且仅有一个 exposePublic=true 的入口 ECS，且该 ECS 必须是至少一条 DNAT 的目标。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、版本、云厂商、IaC 与模块路径由平台生成。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     outputSchema: resourceOutputSchema,
@@ -150,15 +147,12 @@ export const templateTools: ToolDefinition[] = [
     async call(context, args) {
       const input = args as TemplateWriteInput & {
         topologyGraph: ScenarioGraphDraft;
-        primaryVpcCidr?: string;
-        secondaryVpcCidrs?: string[];
-        vpcCidr?: string;
         publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
       };
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
       const compiled = compileTemplateTopology(topologyGraph, {
-        ...metadataFromTemplate(withServerOwnedMetadata(current)),
+        ...withoutLegacyVpcMetadata(metadataFromTemplate(withServerOwnedMetadata(current))),
         ...pickTopologyMetadata(input),
       });
       const template = await context.client.saveRangeTemplateTopology(
@@ -238,8 +232,13 @@ function withServerOwnedMetadata(template: Record<string, unknown>) {
 }
 
 function pickTopologyMetadata(input: Record<string, unknown>) {
-  const keys = ['primaryVpcCidr', 'secondaryVpcCidrs', 'vpcCidr', 'publicEntryProtocols'] as const;
+  const keys = ['publicEntryProtocols'] as const;
   return Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
+}
+
+function withoutLegacyVpcMetadata(metadata: TemplateAuthoringMetadata): TemplateAuthoringMetadata {
+  const { primaryVpcCidr: _primaryVpcCidr, secondaryVpcCidrs: _secondaryVpcCidrs, vpcCidr: _vpcCidr, ...rest } = metadata;
+  return rest;
 }
 
 function readRecord(value: unknown) {

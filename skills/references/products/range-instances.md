@@ -4,7 +4,9 @@
 
 ## MCP 工具与参数
 
-保存、应用或同步实例拓扑时，必须先经过本文件的“实例拓扑转换 Skill”。转换 Skill 只能提交完整 `topologyGraph` 与下表允许的网络元数据，不能提交内部派生字段。
+保存、应用或同步实例拓扑时，必须先经过本文件的“实例拓扑转换 Skill”。转换 Skill 只能提交完整 `topologyGraph` 与下表允许的访问摘要元数据，不能提交 VPC CIDR 或内部派生字段。
+
+实例拓扑沿用平台固定网络：`10.0.0.0/16` 主 VPC 和 `172.16.0.0/16`、`192.168.0.0/16` 两个附加 CIDR。交换机 CIDR 必须完整落在这三段之一。
 
 除非行内说明，写工具可按运行时 schema 接收 `idempotencyKey` 和 `confirmationId`。
 
@@ -14,9 +16,9 @@
 | 查看详情 | `range_instance_get` | `rangeInstanceId` | — | `ranges:read` |
 | 获取访问入口 | `range_instance_get_access` | `rangeInstanceId` | — | `ranges:read`、`instances:credentials:read` |
 | 生成实例 | `range_instance_launch` | `templateId`、`name`、带时区 ISO-8601 `expiresAt` | 操作元数据 | `ranges:create` |
-| 保存变更 | `range_instance_topology_save` | `rangeInstanceId`、完整 `topologyGraph` | `primaryVpcCidr`、`secondaryVpcCidrs`（最多 4 个）、`publicEntryProtocols`、操作元数据 | `ranges:write` |
-| 应用变更 | `range_instance_topology_apply` | `rangeInstanceId`、完整 `topologyGraph` | `primaryVpcCidr`、`secondaryVpcCidrs`、`publicEntryProtocols`、操作元数据 | `ranges:write`、`ranges:control` |
-| 更新编排拓扑 | `range_instance_sync_template` | `rangeInstanceId`、完整 `topologyGraph` | `primaryVpcCidr`、`secondaryVpcCidrs`、`publicEntryProtocols`、操作元数据 | `ranges:write`、`templates:write` |
+| 保存变更 | `range_instance_topology_save` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write` |
+| 应用变更 | `range_instance_topology_apply` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write`、`ranges:control` |
+| 更新编排拓扑 | `range_instance_sync_template` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write`、`templates:write` |
 | 失败重试 | `range_instance_retry` | `rangeInstanceId` | 操作元数据 | `ranges:control` |
 | ECS 开机 | `range_instance_node_start` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
 | ECS 关机 | `range_instance_node_stop` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |

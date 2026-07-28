@@ -92,8 +92,6 @@ export const rangeDeleteFailedInputSchema = operationSchema.extend({ rangeInstan
 export const rangeTopologyChangeInputSchema = operationSchema.extend({
   rangeInstanceId: identifier,
   topologyGraph: topologyGraphSchema.describe('完整的实例拓扑图。由实例编排转换 Skill 生成；MCP 会自行编译运行规格，不能传派生字段。'),
-  primaryVpcCidr: identifier.optional(),
-  secondaryVpcCidrs: z.array(identifier).max(4).optional(),
   publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
 });
 const rangeNodeActionFields = {

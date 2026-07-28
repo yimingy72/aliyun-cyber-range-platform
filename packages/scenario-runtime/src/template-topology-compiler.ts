@@ -52,6 +52,11 @@ const DEFAULT_PUBLIC_ENTRY_PROTOCOLS = [
   { protocol: 'ssh', port: 22 },
   { protocol: 'http', port: 80 },
 ];
+export const DEFAULT_ALIBABA_CLOUD_PRIMARY_VPC_CIDR = '10.0.0.0/16';
+export const DEFAULT_ALIBABA_CLOUD_SECONDARY_VPC_CIDRS = [
+  '172.16.0.0/16',
+  '192.168.0.0/16',
+];
 
 export function compileTemplateTopology(
   topologyGraph: ScenarioGraphDraft,
@@ -59,8 +64,13 @@ export function compileTemplateTopology(
 ): CompiledTemplatePayload {
   const graph = normalizeTopologyGraph(topologyGraph);
   validateGraph(graph, metadata);
-  const primaryVpcCidr = metadata.primaryVpcCidr ?? metadata.vpcCidr ?? '10.0.0.0/16';
-  const secondaryVpcCidrs = metadata.secondaryVpcCidrs ?? [];
+  const primaryVpcCidr =
+    metadata.primaryVpcCidr ??
+    metadata.vpcCidr ??
+    DEFAULT_ALIBABA_CLOUD_PRIMARY_VPC_CIDR;
+  const secondaryVpcCidrs =
+    metadata.secondaryVpcCidrs ??
+    DEFAULT_ALIBABA_CLOUD_SECONDARY_VPC_CIDRS;
   const scenarioTemplateSpec = buildScenarioTemplateSpecFromTopologyGraph({
     topologyGraph: graph,
     metadata: {
@@ -394,8 +404,13 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
   if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
     throw new Error('topologyGraph 必须包含 nodes 和 edges 数组');
   }
-  const primaryVpcCidr = metadata.primaryVpcCidr ?? metadata.vpcCidr ?? '10.0.0.0/16';
-  const secondaryVpcCidrs = metadata.secondaryVpcCidrs ?? [];
+  const primaryVpcCidr =
+    metadata.primaryVpcCidr ??
+    metadata.vpcCidr ??
+    DEFAULT_ALIBABA_CLOUD_PRIMARY_VPC_CIDR;
+  const secondaryVpcCidrs =
+    metadata.secondaryVpcCidrs ??
+    DEFAULT_ALIBABA_CLOUD_SECONDARY_VPC_CIDRS;
 
   if (!Array.isArray(secondaryVpcCidrs)) {
     throw new Error('secondaryVpcCidrs 必须是 IPv4 CIDR 数组');

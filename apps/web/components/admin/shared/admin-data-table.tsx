@@ -85,7 +85,7 @@ export function AdminDataTable({ label, columns, children, isRefreshing = false 
             {columns.map((column) => (
               <TableHead
                 className={cn(
-                  'h-11 px-3',
+                  'h-11 min-w-0 overflow-hidden break-words px-3 whitespace-normal',
                   columnPriorityClassName(column.priority),
                   column.align === 'right' && 'text-right',
                 )}
@@ -106,7 +106,7 @@ export function AdminDataTableCell({ column, className, ...props }: AdminDataTab
   return (
     <TableCell
       className={cn(
-        'px-3',
+        'min-w-0 overflow-hidden break-words px-3 whitespace-normal',
         columnPriorityClassName(column.priority),
         column.align === 'right' && 'text-right',
         className,

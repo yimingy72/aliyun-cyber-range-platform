@@ -101,6 +101,8 @@ describe('AdminDataTable', () => {
     expect(screen.getByRole('columnheader', { name: '更新时间' }).className).toContain('hidden lg:table-cell');
     expect(screen.getByRole('columnheader', { name: '详情' }).className).toContain('hidden xl:table-cell');
     expect(screen.getByRole('columnheader', { name: '操作' }).className).toContain('text-right');
+    expect(screen.getByRole('columnheader', { name: '实例名称' }).className).toContain('overflow-hidden');
+    expect(screen.getByRole('columnheader', { name: '实例名称' }).className).toContain('whitespace-normal');
     const tableColumns = screen.getByRole('table', { name: '实例列表' }).querySelectorAll('col');
     expect(tableColumns[1].className).toContain('hidden md:table-column');
     expect(tableColumns[2].className).toContain('hidden lg:table-column');
@@ -165,6 +167,28 @@ describe('AdminDataTable', () => {
     expect(screen.getByRole('cell', { name: 'Ubuntu' }).className).toContain('hidden md:table-cell');
     expect(screen.getByRole('cell', { name: '详情' }).className).toContain('hidden xl:table-cell');
     expect(screen.getByRole('cell', { name: '更多操作' }).className).toContain('text-right');
+  });
+
+  it('contains long values within fixed columns and allows them to wrap', () => {
+    const columns = [{ id: 'name', label: '实例名称', priority: 'primary' as const }];
+    const longName = 'Ubuntu-综合场景-四层拓扑-2026-07-27-实例名称非常非常长';
+
+    render(
+      <AdminDataTable columns={columns} label="实例列表">
+        {(tableColumns) => (
+          <TableRow>
+            <AdminDataTableCell column={tableColumns[0]}>{longName}</AdminDataTableCell>
+          </TableRow>
+        )}
+      </AdminDataTable>,
+    );
+
+    const cell = screen.getByRole('cell', { name: longName });
+
+    expect(cell.className).toContain('min-w-0');
+    expect(cell.className).toContain('overflow-hidden');
+    expect(cell.className).toContain('break-words');
+    expect(cell.className).toContain('whitespace-normal');
   });
 
   it('derives an in-table state colspan from its feature columns', () => {

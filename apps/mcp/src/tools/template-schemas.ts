@@ -60,7 +60,7 @@ const switchNodeSchema = z.object({
   kind: z.literal('switch'),
   label: identifier,
   zoneKey: identifier,
-  cidr: identifier.describe('IPv4 CIDR contained by the template VPC CIDR and not overlapping another switch.'),
+  cidr: identifier.describe('IPv4 CIDR contained by 10.0.0.0/16, 172.16.0.0/16, or 192.168.0.0/16 and not overlapping another switch.'),
   purpose: identifier,
   aclRules: z.array(aclRuleSchema).describe('交换机 ACL 规则；没有规则时传 []。'),
   nat: switchNatSchema.describe('交换机级共享 NAT 配置；即使 SNAT 和 DNAT 均关闭也必须传入。'),
@@ -114,10 +114,7 @@ export const topologyGraphSchema = z.object({
   edges: z.array(templateEdgeSchema),
 });
 
-const templateNetworkMetadataSchema = z.object({
-  primaryVpcCidr: identifier.optional().describe('Primary IPv4 CIDR used to create the VPC.'),
-  secondaryVpcCidrs: z.array(identifier).max(4).optional().describe('Additional, non-overlapping IPv4 CIDRs attached to the same VPC.'),
-  vpcCidr: identifier.optional().describe('Deprecated alias for primaryVpcCidr.'),
+const templateTopologyMetadataSchema = z.object({
   publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
 });
 const templateWriteSchema = operationSchema.extend({ templateId: identifier });
@@ -127,7 +124,7 @@ export const templateGetInputSchema = z.object({ templateId: identifier });
 export const templateCreateInputSchema = operationSchema.extend({
   name: identifier,
   description: z.string().optional(),
-  ...templateNetworkMetadataSchema.shape,
+  ...templateTopologyMetadataSchema.shape,
   topologyGraph: topologyGraphSchema,
   variableSchema: optionalRecord,
   outputSchema: optionalRecord,
@@ -142,6 +139,6 @@ export const templateUpdateInputSchema = templateWriteSchema.extend({
 export const templateCloneInputSchema = templateWriteSchema;
 export const templateDetectAndSaveInputSchema = templateWriteSchema.extend({
   topologyGraph: topologyGraphSchema.describe('待保存的完整拓扑图。必须由设计转换 Skill 产出，且包含 Router、交换机、ECS、NIC 与实际连线。'),
-  ...templateNetworkMetadataSchema.partial().shape,
+  ...templateTopologyMetadataSchema.shape,
 }).strict();
 export const templateLifecycleInputSchema = templateWriteSchema;

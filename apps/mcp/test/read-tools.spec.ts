@@ -278,6 +278,10 @@ describe('tool registry', () => {
         draftTopologyGraph: authoringGraph,
         draftScenarioTemplateSpec: expect.objectContaining({
           metadata: expect.objectContaining({ slug: 'web-dmz' }),
+          topology: expect.objectContaining({
+            vpcCidr: '10.0.0.0/16',
+            secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
+          }),
         }),
         draftCompiledProvisionSpec: expect.any(Object),
       }),
@@ -298,7 +302,13 @@ describe('tool registry', () => {
       expect.objectContaining({
         topologyGraph: authoringGraph,
         topologySpec: expect.objectContaining({ publicEntry: { hostKey: 'ecs-nginx', protocols: [{ protocol: 'ssh', port: 22 }, { protocol: 'http', port: 80 }] } }),
-        scenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ name: 'Web DMZ' }) }),
+        scenarioTemplateSpec: expect.objectContaining({
+          metadata: expect.objectContaining({ name: 'Web DMZ' }),
+          topology: expect.objectContaining({
+            vpcCidr: '10.0.0.0/16',
+            secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
+          }),
+        }),
         compiledProvisionSpec: expect.objectContaining({ dnatEntries: [expect.objectContaining({ hostKey: 'ecs-nginx', externalPort: 80 })] }),
         compiledSpec: expect.objectContaining({
           schemaVersion: '1.0.0',
@@ -321,8 +331,6 @@ describe('tool registry', () => {
     await registry.callTool('range_template_create', ['templates:write'], {
       name: 'Web DMZ',
       description: 'Public web entry template',
-      primaryVpcCidr: '10.0.0.0/16',
-      secondaryVpcCidrs: ['172.16.0.0/16'],
       topologyGraph: authoringGraph,
     });
 
@@ -423,8 +431,6 @@ describe('tool registry', () => {
 
     await registry.callTool('range_template_create', ['templates:write'], {
       name: '三网段靶场',
-      primaryVpcCidr: '10.0.0.0/16',
-      secondaryVpcCidrs: ['172.16.0.0/16', '192.168.0.0/16'],
       topologyGraph: graph,
     });
 
@@ -457,6 +463,34 @@ describe('tool registry', () => {
         compiledProvisionSpec: { forged: true },
       }),
     ).rejects.toThrow('compiledProvisionSpec');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('rejects caller-supplied VPC CIDRs and a switch outside the fixed VPC networks', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const create = registry.listTools(['templates:write']).find((tool) => tool.name === 'range_template_create');
+    const invalidNetworkGraph = structuredClone(authoringGraph);
+    const switchNode = invalidNetworkGraph.nodes.find((node) => node.id === 'switch-dmz');
+
+    if (switchNode?.kind !== 'switch') {
+      throw new Error('Expected a switch node');
+    }
+
+    switchNode.cidr = '10.10.20.0/24';
+
+    expect(create?.inputSchema.safeParse({
+      name: '不得覆盖平台 VPC',
+      primaryVpcCidr: '10.10.0.0/16',
+      topologyGraph: authoringGraph,
+    }).success).toBe(false);
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: '无效交换机网段',
+        topologyGraph: invalidNetworkGraph,
+      }),
+    ).rejects.toThrow('交换机 CIDR 不在主 VPC 或附加 VPC 网段内：switch-dmz');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 

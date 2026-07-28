@@ -228,8 +228,6 @@ type RangeOperationInput = {
 
 type RangeTopologyChangeInput = RangeOperationInput & {
   topologyGraph: ScenarioGraphDraft;
-  primaryVpcCidr?: string;
-  secondaryVpcCidrs?: string[];
   publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
 };
 
@@ -271,8 +269,6 @@ async function saveRangeInstanceTopology(
   const instance = await context.client.getRangeInstance(input.rangeInstanceId);
   const metadata = {
     ...metadataFromRangeInstance(instance),
-    ...(input.primaryVpcCidr ? { primaryVpcCidr: input.primaryVpcCidr } : {}),
-    ...(input.secondaryVpcCidrs ? { secondaryVpcCidrs: input.secondaryVpcCidrs } : {}),
     ...(input.publicEntryProtocols ? { publicEntryProtocols: input.publicEntryProtocols } : {}),
   };
   const compiled = compileTemplateTopology(input.topologyGraph, metadata);
@@ -304,10 +300,6 @@ function metadataFromRangeInstance(instance: Record<string, unknown>): TemplateA
     iacType: metadata.iacType === 'terraform' ? 'terraform' : 'opentofu',
     description: readString(metadata.description),
     modulePathOrRef: 'runtime/range-instance',
-    primaryVpcCidr: readString(topology.vpcCidr),
-    secondaryVpcCidrs: Array.isArray(topology.secondaryVpcCidrs)
-      ? topology.secondaryVpcCidrs.filter((value): value is string => typeof value === 'string')
-      : undefined,
     defaultRegion: readString(topology.defaultRegion),
     defaultZoneId: readString(topology.defaultZoneId),
   };
