@@ -180,6 +180,10 @@ export function RangeInstancesScreen({
     active: false,
     history: false,
   });
+  const [tableContentVersions, setTableContentVersions] = useState<RangeListRecord<number>>({
+    active: 0,
+    history: 0,
+  });
   const [loadingViews, setLoadingViews] = useState<RangeListRecord<boolean>>({
     active: true,
     history: true,
@@ -190,6 +194,13 @@ export function RangeInstancesScreen({
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+
+  function markTableContentUpdated(view: RangeListMode) {
+    setTableContentVersions((current) => ({
+      ...current,
+      [view]: current[view] + 1,
+    }));
+  }
 
   async function reloadRangeInstanceRows(token: string, nextListMode: RangeListMode) {
     const [nextInstances, nextJobs] = await Promise.all([
@@ -218,6 +229,7 @@ export function RangeInstancesScreen({
       setListErrors({ active: null, history: null });
       setActionErrorMessage(null);
       setLoadedViews({ active: false, history: false });
+      setTableContentVersions({ active: 0, history: 0 });
       setLoadingViews({ active: false, history: false });
       return;
     }
@@ -252,6 +264,7 @@ export function RangeInstancesScreen({
           ...current,
           [listMode]: true,
         }));
+        markTableContentUpdated(listMode);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -537,6 +550,7 @@ export function RangeInstancesScreen({
             <div className="mt-4">
               <AdminDataTable
                 columns={columns}
+                contentVersion={tableContentVersions[listMode]}
                 isRefreshing={isRefreshing}
                 label={listMode === 'history' ? '编排实例历史' : '编排实例列表'}
               >

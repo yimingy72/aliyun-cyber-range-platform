@@ -1031,7 +1031,7 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByText('Current Import')).toBeTruthy();
   });
 
-  it('keeps my image rows during a failed import poll and exposes an in-table retry', async () => {
+  it('keeps my image rows during a failed import poll and revises the table body after a successful retry', async () => {
     let rejectPoll: ((error: Error) => void) | undefined;
     let mineRequestCount = 0;
     const importingJob = {
@@ -1103,6 +1103,7 @@ describe('ImageCenterScreen', () => {
     await waitFor(() => {
       expect(mineRequestCount).toBe(3);
       expect(within(table).queryByText('镜像轮询刷新失败')).toBeNull();
+      expect(table.querySelector('tbody')?.className).toContain('admin-data-table-body-enter');
     });
   });
 

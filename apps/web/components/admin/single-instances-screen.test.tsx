@@ -22,10 +22,15 @@ const {
   triggerSingleInstanceActionMock: vi.fn(),
 }));
 
-const { replaceMock, searchParamsState } = vi.hoisted(() => ({
-  replaceMock: vi.fn(),
-  searchParamsState: { value: '' },
-}));
+const { replaceMock, routerMock, searchParamsState } = vi.hoisted(() => {
+  const replaceMock = vi.fn();
+
+  return {
+    replaceMock,
+    routerMock: { replace: replaceMock },
+    searchParamsState: { value: '' },
+  };
+});
 
 const { openWindowMock } = vi.hoisted(() => ({
   openWindowMock: vi.fn(),
@@ -49,9 +54,7 @@ const { openedWindowState } = vi.hoisted(() => ({
 }));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    replace: replaceMock,
-  }),
+  useRouter: () => routerMock,
   useSearchParams: () => new URLSearchParams(searchParamsState.value),
 }));
 
@@ -866,25 +869,54 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
   });
 
-  it('reloads current list and jobs after a successful row action without triggeredBy', async () => {
+  it('keeps current rows during a successful row-action refresh and revises the completed table body without triggeredBy', async () => {
     let currentStatus = 'running';
+    let resolveReload:
+      | ((value: {
+          id: string;
+          name: string;
+          createdBy: string;
+          instanceMode: string;
+          status: string;
+          createdAt: string;
+          accessEntry: { publicIp: string };
+          singleInstanceConfig: {
+            imageDisplayName: string;
+            cpu: number;
+            memory: number;
+          };
+        }[]) => void)
+      | undefined;
+    let shouldDelayReload = false;
 
-    fetchSingleInstancesMock.mockImplementation(async () => [
-      {
-        id: 'single-running',
-        name: 'running-lab',
-        createdBy: 'admin',
-        instanceMode: 'single',
-        status: currentStatus,
-        createdAt: '2026-07-08T09:00:00.000Z',
-        accessEntry: { publicIp: '47.1.2.3' },
-        singleInstanceConfig: {
-          imageDisplayName: 'Ubuntu 24.04 LTS',
-          cpu: 2,
-          memory: 2,
+    function currentRows() {
+      return [
+        {
+          id: 'single-running',
+          name: 'running-lab',
+          createdBy: 'admin',
+          instanceMode: 'single',
+          status: currentStatus,
+          createdAt: '2026-07-08T09:00:00.000Z',
+          accessEntry: { publicIp: '47.1.2.3' },
+          singleInstanceConfig: {
+            imageDisplayName: 'Ubuntu 24.04 LTS',
+            cpu: 2,
+            memory: 2,
+          },
         },
-      },
-    ]);
+      ];
+    }
+
+    fetchSingleInstancesMock.mockImplementation(() => {
+      if (!shouldDelayReload) {
+        return Promise.resolve(currentRows());
+      }
+
+      return new Promise((resolve) => {
+        resolveReload = resolve;
+      });
+    });
     fetchProvisionJobsMock.mockImplementation(async () =>
       currentStatus === 'pending_destroy'
         ? [
@@ -904,12 +936,15 @@ describe('SingleInstancesScreen', () => {
     });
     triggerSingleInstanceActionMock.mockImplementation(async () => {
       currentStatus = 'pending_destroy';
+      shouldDelayReload = true;
       return { jobId: 'job-destroy-reloaded' };
     });
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
+    const table = screen.getByRole('table', { name: '实例列表' });
+    const initialTableBody = table.querySelector('tbody');
     fireEvent.click(await screen.findByRole('button', { name: '更多操作' }));
     fireEvent.click(screen.getByRole('button', { name: '关闭实例' }));
 
@@ -922,8 +957,22 @@ describe('SingleInstancesScreen', () => {
         {},
       ),
     );
-    await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
-    expect(await screen.findByText('销毁中')).toBeTruthy();
+
+    await waitFor(() => {
+      expect(resolveReload).toBeTypeOf('function');
+      expect(within(table).getByText('running-lab')).toBeTruthy();
+      expect(table.getAttribute('aria-busy')).toBe('true');
+      expect(table.querySelector('tbody')).toBe(initialTableBody);
+    });
+
+    shouldDelayReload = false;
+    resolveReload?.(currentRows());
+
+    await waitFor(() => {
+      expect(table.getAttribute('aria-busy')).toBeNull();
+      expect(table.querySelector('tbody')).not.toBe(initialTableBody);
+      expect(table.querySelector('tbody')?.className).toContain('admin-data-table-body-enter');
+    });
   });
 
   it('submits batch destroy without client actor fields', async () => {
