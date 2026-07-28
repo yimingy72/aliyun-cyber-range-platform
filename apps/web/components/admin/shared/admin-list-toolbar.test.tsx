@@ -57,6 +57,7 @@ describe('AdminListToolbar', () => {
       expect(activeTab.getAttribute('aria-selected')).toBe('true');
       expect(panel.getAttribute('id')).toBe(activeTab.getAttribute('aria-controls'));
       expect(panel.className).toContain('min-w-0');
+      expect(panel.className).toContain('admin-list-toolbar-panel');
       expect(panel.textContent).toContain('当前实例');
     });
   });

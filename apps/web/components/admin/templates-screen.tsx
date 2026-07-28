@@ -189,6 +189,10 @@ export function TemplatesScreen({
     platform: false,
     mine: false,
   });
+  const [tableContentVersions, setTableContentVersions] = useState<Record<RangeTemplateView, number>>({
+    platform: 0,
+    mine: 0,
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
@@ -207,6 +211,13 @@ export function TemplatesScreen({
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
 
+  function markTableContentUpdated(view: RangeTemplateView) {
+    setTableContentVersions((current) => ({
+      ...current,
+      [view]: current[view] + 1,
+    }));
+  }
+
   useEffect(() => {
     if (!session.isReady) {
       return;
@@ -216,6 +227,7 @@ export function TemplatesScreen({
       setPlatformTemplates([]);
       setMyTemplates([]);
       setLoadedViews({ platform: false, mine: false });
+      setTableContentVersions({ platform: 0, mine: 0 });
       setErrorMessage(null);
       setActionErrorMessage(null);
       setActionSuccessMessage(null);
@@ -256,6 +268,7 @@ export function TemplatesScreen({
           ...current,
           [activeView]: true,
         }));
+        markTableContentUpdated(activeView);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -742,6 +755,7 @@ export function TemplatesScreen({
             <div className="mt-4">
               <AdminDataTable
                 columns={TEMPLATE_COLUMNS}
+                contentVersion={tableContentVersions[activeView]}
                 isRefreshing={isLoading || isActiveViewLoading}
                 label="靶场列表"
               >

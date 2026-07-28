@@ -95,6 +95,44 @@ describe('AdminDataTable', () => {
     expect(screen.getByText('alpha')).toBeTruthy();
   });
 
+  it('announces refresh immediately, delays only the visual indicator, and keys a completed body replacement', () => {
+    const columns = [{ id: 'name', label: '实例名称', priority: 'primary' as const }];
+    const { rerender } = render(
+      <AdminDataTable columns={columns} contentVersion={1} isRefreshing label="实例列表">
+        {(tableColumns) => (
+          <TableRow>
+            <AdminDataTableCell column={tableColumns[0]}>alpha</AdminDataTableCell>
+          </TableRow>
+        )}
+      </AdminDataTable>,
+    );
+
+    const table = screen.getByRole('table', { name: '实例列表' });
+    const frame = table.closest('[data-slot="admin-data-table-frame"]');
+    const firstBody = table.querySelector('tbody');
+
+    expect(table.getAttribute('aria-busy')).toBe('true');
+    expect(frame?.getAttribute('data-refreshing')).toBe('true');
+    expect(frame?.querySelector('.admin-data-table-refresh-indicator')).toBeTruthy();
+    expect(firstBody?.className).toContain('admin-data-table-body-enter');
+
+    rerender(
+      <AdminDataTable columns={columns} contentVersion={2} label="实例列表">
+        {(tableColumns) => (
+          <TableRow>
+            <AdminDataTableCell column={tableColumns[0]}>bravo</AdminDataTableCell>
+          </TableRow>
+        )}
+      </AdminDataTable>,
+    );
+
+    const completedTable = screen.getByRole('table', { name: '实例列表' });
+
+    expect(screen.getByText('bravo')).toBeTruthy();
+    expect(completedTable.getAttribute('aria-busy')).toBeNull();
+    expect(completedTable.querySelector('tbody')).not.toBe(firstBody);
+  });
+
   it('wraps feature columns in the shared neutral table frame', () => {
     render(
       <AdminDataTable columns={instanceColumns} label="实例列表">

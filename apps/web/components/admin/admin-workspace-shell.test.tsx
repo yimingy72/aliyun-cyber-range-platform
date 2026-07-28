@@ -150,6 +150,17 @@ function createSession(overrides?: Partial<AdminSessionPayload>): AdminSessionPa
   };
 }
 
+function clickLinkWithoutBrowserNavigation(link: Element, init?: MouseEventInit) {
+  const preventBrowserNavigation = (event: MouseEvent) => event.preventDefault();
+  document.addEventListener('click', preventBrowserNavigation);
+
+  try {
+    fireEvent.click(link, init);
+  } finally {
+    document.removeEventListener('click', preventBrowserNavigation);
+  }
+}
+
 describe('AdminWorkspaceShell', () => {
   beforeEach(() => {
     replaceMock.mockReset();
@@ -190,6 +201,69 @@ describe('AdminWorkspaceShell', () => {
     expect(within(navigationDialog).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe(
       '/admin/settings/cloud',
     );
+  });
+
+  it('marks a different destination as pending until the pathname reaches it', async () => {
+    writeAdminSession(createSession());
+    const { rerender } = render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    clickLinkWithoutBrowserNavigation(screen.getByRole('link', { name: /镜像中心/i }));
+
+    expect(screen.getByRole('link', { name: /镜像中心/i }).getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('link', { name: /靶场编排/i }).getAttribute('aria-current')).toBe('page');
+
+    pathnameState.value = '/admin/image-center';
+    rerender(
+      <AdminWorkspaceShell>
+        <div>image workspace</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /镜像中心/i }).getAttribute('aria-busy')).toBeNull();
+    });
+    expect(screen.getByRole('link', { name: /镜像中心/i }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('admin-content-transition').getAttribute('data-route')).toBe('/admin/image-center');
+  });
+
+  it('does not mark the current destination as pending', async () => {
+    writeAdminSession(createSession());
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    const currentLink = screen.getByRole('link', { name: /靶场编排/i });
+    clickLinkWithoutBrowserNavigation(currentLink);
+
+    expect(screen.getByRole('link', { name: /靶场编排/i }).getAttribute('aria-busy')).toBeNull();
+  });
+
+  it('keeps the compact navigation drawer open for modified clicks', async () => {
+    writeAdminSession(createSession());
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    fireEvent.click(screen.getByRole('button', { name: '打开导航' }));
+
+    const navigationDialog = await screen.findByRole('dialog');
+    clickLinkWithoutBrowserNavigation(within(navigationDialog).getByRole('link', { name: /镜像中心/i }), {
+      ctrlKey: true,
+    });
+
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(within(navigationDialog).getByRole('link', { name: /镜像中心/i }).getAttribute('aria-busy')).toBeNull();
   });
 
   it('shows the admin navigation, including 用户管理 and 账单费用, for admin sessions', async () => {

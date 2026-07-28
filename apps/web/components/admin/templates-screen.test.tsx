@@ -390,6 +390,9 @@ describe('TemplatesScreen', () => {
 
     expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
     expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('table', { name: '靶场列表' }).querySelector('tbody')?.className).toContain(
+      'admin-data-table-body-enter',
+    );
   });
 
   it('keeps the selected topology view after refresh without navigating away', async () => {
