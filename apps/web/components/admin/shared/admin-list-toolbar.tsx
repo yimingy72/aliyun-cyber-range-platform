@@ -94,7 +94,9 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
           }
           search={search}
         />
-        <TabsContent value={props.activeView}>{props.children}</TabsContent>
+        <TabsContent className="admin-list-toolbar-panel" value={props.activeView}>
+          {props.children}
+        </TabsContent>
       </Tabs>
     );
   }

@@ -985,6 +985,10 @@ body {
   animation: admin-table-content-enter 160ms ease-out both;
 }
 
+.admin-list-toolbar-panel {
+  animation: admin-table-content-enter 160ms ease-out both;
+}
+
 [data-slot='admin-data-table-frame'][data-refreshing='true'] .admin-data-table-refresh-indicator {
   animation: admin-table-refresh-reveal 160ms ease-out 150ms both;
 }
