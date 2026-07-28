@@ -1014,7 +1014,7 @@ describe('ImageCenterScreen', () => {
       expect(within(table).getByText('My Ubuntu 22.04')).toBeTruthy();
       expect(within(table).getByText('镜像轮询刷新失败')).toBeTruthy();
       expect(within(table).getByRole('button', { name: '重试加载我的镜像' })).toBeTruthy();
-      expect((within(table).getByRole('cell', { name: /镜像轮询刷新失败/ }) as HTMLTableCellElement).colSpan).toBe(5);
+      expect((within(table).getByRole('cell', { name: /镜像轮询刷新失败/ }) as HTMLTableCellElement).colSpan).toBe(6);
       expect(table.getAttribute('aria-busy')).toBeNull();
     });
 
