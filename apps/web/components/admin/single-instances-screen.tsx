@@ -517,6 +517,10 @@ export function SingleInstancesScreen({
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadedListMode, setLoadedListMode] = useState<ListMode | null>(null);
+  const [tableContentVersions, setTableContentVersions] = useState<Record<ListMode, number>>({
+    active: 0,
+    history: 0,
+  });
   const [listErrorMessage, setListErrorMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -538,6 +542,13 @@ export function SingleInstancesScreen({
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const consumedPrefillRef = useRef<string | null>(null);
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+
+  function markTableContentUpdated(view: ListMode) {
+    setTableContentVersions((current) => ({
+      ...current,
+      [view]: current[view] + 1,
+    }));
+  }
 
   async function fetchSingleInstanceRows(token: string, nextListMode: ListMode) {
     const [nextPayload, nextJobs] = await Promise.all([
@@ -584,6 +595,7 @@ export function SingleInstancesScreen({
       setJobs(nextRows.jobs);
       loadedListModeRef.current = nextListMode;
       setLoadedListMode(nextListMode);
+      markTableContentUpdated(nextListMode);
       return nextRows;
     } catch (error: unknown) {
       if (requestId === listRequestIdRef.current && !isUnauthorizedError(error)) {
@@ -606,6 +618,7 @@ export function SingleInstancesScreen({
       setJobs([]);
       loadedListModeRef.current = null;
       setLoadedListMode(null);
+      setTableContentVersions({ active: 0, history: 0 });
       setListErrorMessage(null);
       setErrorMessage(null);
       setIsLoading(false);
@@ -1456,6 +1469,7 @@ export function SingleInstancesScreen({
               <div>
                 <AdminDataTable
                   columns={tableColumns}
+                  contentVersion={tableContentVersions[listMode]}
                   isRefreshing={isBootstrapLoading || (isRefreshing && hasCurrentViewSnapshot)}
                   label={tableLabel}
                 >

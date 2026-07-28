@@ -98,6 +98,19 @@ describe('design system CSS transition contract', () => {
     }
   });
 
+  it('defines restrained route and table feedback with a reduced-motion fallback', () => {
+    const routeTransition = getRuleBlock(stylesheet, '.admin-content-transition');
+    const tableRefresh = getRuleBlock(stylesheet, '.admin-data-table-refresh-indicator');
+    const reducedMotion = getAtRuleBlock(stylesheet, '@media (prefers-reduced-motion: reduce)');
+
+    expect(routeTransition).toContain('animation: admin-content-enter 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both');
+    expect(tableRefresh).toContain('animation: admin-table-refresh-reveal 160ms ease-out 150ms both');
+    expect(stylesheet).toContain('@keyframes admin-content-enter');
+    expect(stylesheet).toContain('@keyframes admin-table-content-enter');
+    expect(reducedMotion).toContain('animation: none !important');
+    expect(reducedMotion).toContain('transition-duration: 0.01ms !important');
+  });
+
   it('maps generated font, sidebar, and chart utilities to light-mode tokens', () => {
     const rootTokens = getRuleBlock(stylesheet, ':root');
     const themeMapping = getRuleBlock(stylesheet, '@theme inline');

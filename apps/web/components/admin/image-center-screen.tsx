@@ -549,6 +549,12 @@ export function ImageCenterScreen({
     custom: false,
     public: false,
   });
+  const [tableContentVersions, setTableContentVersions] = useState<Record<ActiveTab, number>>({
+    platform: 0,
+    mine: 0,
+    custom: 0,
+    public: 0,
+  });
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
   const [tabPages, setTabPages] = useState<TabPageMap>({ platform: 1, mine: 1, custom: 1, public: 1 });
@@ -618,6 +624,13 @@ export function ImageCenterScreen({
 
   function setTabRefreshing(tab: ActiveTab, isRefreshing: boolean) {
     setRefreshingTabs((current) => (current[tab] === isRefreshing ? current : { ...current, [tab]: isRefreshing }));
+  }
+
+  function markTableContentUpdated(tab: ActiveTab) {
+    setTableContentVersions((current) => ({
+      ...current,
+      [tab]: current[tab] + 1,
+    }));
   }
 
   function reportTabLoadError(tab: ActiveTab, error: unknown, fallback: string) {
@@ -746,6 +759,7 @@ export function ImageCenterScreen({
 
       setImageImportJobs(jobsPayload.items);
       setMyAssets(myAssetsPayload.items);
+      markTableContentUpdated('mine');
       markTabLoaded('mine');
       return true;
     } catch (error) {
@@ -864,6 +878,7 @@ export function ImageCenterScreen({
       setTabErrors({});
       setRevalidationErrors({});
       setRefreshingTabs({ platform: false, mine: false, custom: false, public: false });
+      setTableContentVersions({ platform: 0, mine: 0, custom: 0, public: 0 });
       setIsLoading(false);
       return;
     }
@@ -894,6 +909,7 @@ export function ImageCenterScreen({
             }
 
             setPlatformAssets(payload.items);
+            markTableContentUpdated('platform');
           })
         : activeTab === 'mine'
           ? refreshMyAssets(token, () => isActive)
@@ -904,6 +920,7 @@ export function ImageCenterScreen({
                 }
 
                 setCustomScope(scope);
+                markTableContentUpdated('custom');
               })
             : fetchPublicImageCatalogScope(apiBaseUrl, token).then((scope) => {
                 if (!isActive || publicScopeRequestVersionRef.current !== publicRequestVersion) {
@@ -911,6 +928,7 @@ export function ImageCenterScreen({
                 }
 
                 setPublicScope(scope);
+                markTableContentUpdated('public');
               });
 
     request
@@ -967,6 +985,7 @@ export function ImageCenterScreen({
 
       if (publicScopeRequestVersionRef.current === requestVersion) {
         setPublicScope(nextScope);
+        markTableContentUpdated('public');
       }
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -998,6 +1017,7 @@ export function ImageCenterScreen({
 
       if (customScopeRequestVersionRef.current === requestVersion) {
         setCustomScope(nextScope);
+        markTableContentUpdated('custom');
       }
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -1822,7 +1842,12 @@ export function ImageCenterScreen({
                   ) : null}
 
                   <div>
-                    <AdminDataTable columns={activeColumns} isRefreshing={isRefreshing} label={activeTabTitle}>
+                    <AdminDataTable
+                      columns={activeColumns}
+                      contentVersion={tableContentVersions[activeTab]}
+                      isRefreshing={isRefreshing}
+                      label={activeTabTitle}
+                    >
                       {(columns) => {
                         const actionErrorRow = actionErrorMessage ? (
                           <TableRow className="hover:bg-transparent">

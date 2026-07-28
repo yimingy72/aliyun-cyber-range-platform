@@ -20,6 +20,7 @@ interface AdminDataTableProps {
   label: string;
   columns: readonly AdminDataColumn[];
   children: (columns: readonly AdminDataColumn[]) => ReactNode;
+  contentVersion?: number;
   isRefreshing?: boolean;
 }
 
@@ -108,10 +109,15 @@ function useTextOverflow() {
   return { isOverflowing, textRef };
 }
 
-export function AdminDataTable({ label, columns, children, isRefreshing = false }: AdminDataTableProps) {
+export function AdminDataTable({ label, columns, children, contentVersion, isRefreshing = false }: AdminDataTableProps) {
   return (
     <TooltipProvider>
-      <div className="overflow-hidden rounded border border-border bg-background" data-slot="admin-data-table-frame">
+      <div
+        className="relative overflow-hidden rounded border border-border bg-background"
+        data-refreshing={isRefreshing || undefined}
+        data-slot="admin-data-table-frame"
+      >
+        <span aria-hidden="true" className="admin-data-table-refresh-indicator" />
         <Table aria-busy={isRefreshing || undefined} aria-label={label} className="min-w-full table-fixed">
           <colgroup>
             {columns.map((column) => (
@@ -138,7 +144,12 @@ export function AdminDataTable({ label, columns, children, isRefreshing = false 
               ))}
             </TableRow>
           </TableHeader>
-          <TableBody>{children(columns)}</TableBody>
+          <TableBody
+            className={contentVersion === undefined ? undefined : 'admin-data-table-body-enter'}
+            key={contentVersion}
+          >
+            {children(columns)}
+          </TableBody>
         </Table>
       </div>
     </TooltipProvider>

@@ -161,6 +161,7 @@ describe('RangeInstancesScreen', () => {
     const activeTable = screen.getByRole('table', { name: '编排实例列表' });
     expect(activeTable.querySelectorAll('thead th')).toHaveLength(6);
     expect(screen.getByText('蓝队靶场 01').closest('tr')?.querySelectorAll('td')).toHaveLength(6);
+    expect(activeTable.querySelector('tbody')?.className).toContain('admin-data-table-body-enter');
 
     fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: '蓝队' } });
     expect(screen.getByText('蓝队靶场 01')).toBeTruthy();
