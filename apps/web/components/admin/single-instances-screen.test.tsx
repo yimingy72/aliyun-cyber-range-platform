@@ -112,6 +112,16 @@ function formatExpectedDateTime(value: string) {
     .replace(/\//g, '-');
 }
 
+function readBlobAsBytes(blob: Blob) {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
 describe('SingleInstancesScreen', () => {
   beforeEach(() => {
     fetchSingleInstancesMock.mockReset();
@@ -198,8 +208,9 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
-    expect(screen.getByText('公网 IP')).toBeTruthy();
-    expect(screen.getByText('账号/密码')).toBeTruthy();
+    const table = screen.getByRole('table', { name: '实例列表' });
+    expect(within(table).getByRole('columnheader', { name: '公网 IP' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: '账号 / 密码' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
     expect(screen.getByText('root / ******')).toBeTruthy();
 
@@ -291,18 +302,17 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('web-lab-batch')).toBeTruthy();
-    expect(screen.getAllByText('批次名')).toHaveLength(1);
-    expect(screen.queryByText('实例名')).toBeNull();
+    const table = screen.getByRole('table', { name: '实例列表' });
+    expect(within(table).getByRole('columnheader', { name: '实例 / 批次' })).toBeTruthy();
+    expect(within(table).queryByText('web-lab-01')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
-    expect(screen.getByText('实例名')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '一键关闭' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '关闭' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
-    expect(screen.getByText('web-lab-01').closest('.single-instance-batch-child-row')?.className).toContain('is-menu-open');
   });
 
   it('keeps pack image available for a quantity-1 batch child row', async () => {
@@ -595,7 +605,7 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();
 
-    const createFailedRow = screen.getByText('failed-lab').closest('article');
+    const createFailedRow = screen.getByText('failed-lab').closest('tr');
     fireEvent.click(within(createFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除记录' })).toBeTruthy();
@@ -610,13 +620,13 @@ describe('SingleInstancesScreen', () => {
       ),
     );
 
-    const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('article');
+    const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('tr');
     fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
     expect(screen.getByRole('button', { name: '重试关闭' })).toBeTruthy();
     expect(within(destroyFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
     expect(within(destroyFailedRow!).queryByRole('button', { name: '删除记录' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
 
     expect(await screen.findByText('history-lab')).toBeTruthy();
     expect(screen.getByText('创建人')).toBeTruthy();
@@ -689,7 +699,7 @@ describe('SingleInstancesScreen', () => {
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '实例历史' }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '实例历史' }), { button: 0 });
 
     expect(await screen.findByText('history-lab')).toBeTruthy();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:25:00.000Z'))).toBeTruthy();
@@ -725,8 +735,8 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('history-lab')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '实例历史' }).getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByRole('button', { name: '实例列表' }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('tab', { name: '实例历史' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: '实例列表' }).getAttribute('aria-selected')).toBe('false');
   });
 
   it('filters active and history rows by instance name', async () => {
@@ -779,14 +789,14 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('alpha-lab')).toBeTruthy();
-    fireEvent.change(screen.getByRole('textbox', { name: '筛选实例名' }), { target: { value: 'beta' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选实例名' }), { target: { value: 'beta' } });
     expect(screen.queryByText('alpha-lab')).toBeNull();
     expect(screen.getByText('beta-lab')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '实例历史' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
     expect(screen.queryByText('archive-lab')).toBeNull();
-    fireEvent.change(screen.getByRole('textbox', { name: '筛选实例名' }), { target: { value: 'archive' } });
-    expect(screen.getByText('archive-lab')).toBeTruthy();
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选实例名' }), { target: { value: 'archive' } });
+    expect(await screen.findByText('archive-lab')).toBeTruthy();
     expect(screen.queryByText('beta-lab')).toBeNull();
   });
 
@@ -1020,7 +1030,7 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('web-lab-batch')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
-    fireEvent.click(screen.getByRole('button', { name: '一键关闭' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
 
     await waitFor(() => {
       expect(destroySingleInstanceBatchMock).toHaveBeenCalledWith(
@@ -1150,14 +1160,16 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('windows-batch')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '一键导出' }));
+    fireEvent.click(screen.getByRole('button', { name: '导出' }));
 
     await waitFor(() => expect(createObjectUrlMock).toHaveBeenCalledTimes(1));
 
     const blob = createObjectUrlMock.mock.calls[0]?.[0] as Blob;
     expect(blob).toBeInstanceOf(Blob);
-    expect(await blob.text()).toBe(
-      '\uFEFF实例名,公网 IP,账号,密码\nwindows-lab-01,47.1.2.3,Administrator,secret-1\nlinux-lab-02,47.1.2.4,root,secret-2',
+    const csvBytes = await readBlobAsBytes(blob);
+    expect([...csvBytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(new TextDecoder().decode(csvBytes)).toBe(
+      '实例名,公网 IP,账号,密码\nwindows-lab-01,47.1.2.3,Administrator,secret-1\nlinux-lab-02,47.1.2.4,root,secret-2',
     );
     expect(anchorClickSpy).toHaveBeenCalledTimes(1);
     expect(revokeObjectUrlMock).toHaveBeenCalledWith('blob:batch-export');
@@ -1258,30 +1270,31 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     const table = await screen.findByRole('table', { name: '实例列表' });
-    const credentialCell = within(table).getByRole('cell', { name: 'root / ****** 复制密码' });
+    const credentialCell = within(table).getByRole('cell', { name: 'root / ******' });
     const credentialValue = within(credentialCell).getByText('root / ******');
     expect(credentialValue.className).toContain('truncate');
-
-    fireEvent.pointerMove(credentialValue);
-    expect((await screen.findByRole('tooltip')).textContent).toContain('root / super-secret-password');
+    expect(screen.queryByText('root / super-secret-password')).toBeNull();
 
     const tableCopyButton = within(credentialCell).getByRole('button', { name: '复制密码' });
+    expect(tableCopyButton.getAttribute('title')).toBe('复制密码');
     fireEvent.click(tableCopyButton);
 
     await waitFor(() => {
       expect(tableCopyButton.className).toContain('bg-primary');
+      expect(tableCopyButton.getAttribute('title')).toBe('已复制密码');
     });
 
-    const row = (await screen.findByText('running-lab')).closest('article');
+    const row = (await screen.findByText('running-lab')).closest('tr');
     expect(row).toBeTruthy();
     expect(within(row!).getByText('root / ******')).toBeTruthy();
-    expect(within(row!).getByText('root / super-secret-password')).toBeTruthy();
-    expect(within(row!).getByRole('button', { name: '复制密码' }).textContent).toBe('复制');
+    expect(within(row!).queryByText('root / super-secret-password')).toBeNull();
 
     fireEvent.click(within(row!).getByRole('button', { name: '复制密码' }));
 
     await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('super-secret-password'));
-    await waitFor(() => expect(within(row!).getByRole('button', { name: '复制密码' }).textContent).toBe('已复制'));
+    await waitFor(() =>
+      expect(within(row!).getByRole('button', { name: '复制密码' }).getAttribute('title')).toBe('已复制密码'),
+    );
   });
 
 
@@ -1316,10 +1329,11 @@ describe('SingleInstancesScreen', () => {
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    const row = (await screen.findByText('windows-lab')).closest('article');
+    const row = (await screen.findByText('windows-lab')).closest('tr');
     expect(row).toBeTruthy();
     expect(within(row!).getByText('Administrator / ******')).toBeTruthy();
-    expect(within(row!).getByText('Administrator / super-secret-password')).toBeTruthy();
+    expect(within(row!).queryByText('root / ******')).toBeNull();
+    expect(within(row!).queryByText('Administrator / super-secret-password')).toBeNull();
   });
 
   it('blocks duplicate row action clicks while a request is in flight', async () => {
@@ -1455,12 +1469,13 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
-    expect(document.querySelector('.admin-workbench-empty[aria-hidden="true"]')).toBeTruthy();
-    expect(screen.queryByText('正在加载实例...')).toBeNull();
+    expect(screen.getByRole('status', { name: '正在加载实例列表' })).toBeTruthy();
+    expect(screen.getAllByTestId('table-loading-row')).toHaveLength(5);
     expect(screen.queryByText('暂无实例')).toBeNull();
 
     resolveInstances([]);
 
     expect(await screen.findByText('暂无实例')).toBeTruthy();
+    expect(screen.queryByRole('status', { name: '正在加载实例列表' })).toBeNull();
   });
 });
