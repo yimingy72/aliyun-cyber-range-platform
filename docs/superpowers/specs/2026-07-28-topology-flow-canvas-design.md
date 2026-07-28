@@ -1,125 +1,125 @@
-# Topology Flow Canvas Design
+# 拓扑 React Flow 画布设计
 
-## Status
+## 状态
 
-Approved design pending implementation-plan review.
+设计已确认，等待实施计划执行。
 
-## Context
+## 背景
 
-The template authoring screen currently renders its topology through a bespoke DOM and SVG canvas. It has a finite scene rooted at `(0, 0)`, updates editor state during every drag movement, and rerenders the scene for high-frequency viewport changes. This makes the canvas feel constrained and can become sluggish during normal editing.
+模板创建与编辑页当前使用自定义 DOM 与 SVG 组合画布。画布世界坐标固定从 `(0, 0)` 开始，节点拖动期间会持续更新编辑器状态，高频缩放与平移也会反复渲染场景。因此它既不是真正无限画布，在常规编排时也容易出现卡顿。
 
-The replacement is limited to the template creation and editing screen. The range-instance detail screen keeps its existing read-only canvas for this delivery.
+本次只替换靶场模板的创建和编辑画布。编排实例详情页继续使用现有只读 `TemplateCanvas`，不纳入本次交付。
 
-## Goals
+## 目标
 
-- Replace the editable template canvas with a true infinite, pannable, zoomable topology workspace.
-- Keep the existing topology JSON, node-property forms, connection validation, compilation, and save APIs compatible.
-- Add a minimap, box selection, multi-select actions, auto layout, undo/redo, and collapsible panels.
-- Keep dragging, panning, and zooming responsive for templates containing up to several dozen nodes.
-- Preserve the immersive workspace direction: a narrow resource tool rail by default, a right-side inspector when a node is selected, and independent panel collapse controls.
+- 用可无限平移、缩放的拓扑工作区替换可编辑模板画布。
+- 兼容现有拓扑 JSON、节点属性表单、连线校验、编译和保存接口。
+- 增加小地图、框选、多选、自动布局、撤销/重做和侧栏收缩。
+- 在单个拓扑最多几十个节点时，保证拖拽、平移和缩放流畅。
+- 落实沉浸式工作台方向：左侧默认窄资源工具轨，选中节点时显示右侧属性栏，两侧均可独立收缩。
 
-## Non-Goals
+## 非目标
 
-- No changes to provisioned topology semantics, template compilation, backend APIs, or database migrations.
-- No rewrite of the range-instance detail canvas.
-- No real-time multi-user editing, comments, or presence indicators.
-- No support target for thousands of concurrently visible topology nodes.
+- 不改变拓扑资源语义、模板编译、后端 API 或数据库结构。
+- 不重写编排实例详情页的只读画布。
+- 不实现多人实时协作、评论或在线状态。
+- 不以数千个同时可见节点作为性能目标。
 
-## Options Considered
+## 方案比较
 
 ### React Flow
 
-Use `@xyflow/react` with custom router, switch, and ECS node renderers. React Flow supplies the viewport, pointer-centered zoom, panning, selection, connection lifecycle, minimap, and visible-element rendering behavior needed by the authoring experience.
+使用 `@xyflow/react` 配合自定义路由器、交换机和 ECS 节点。React Flow 原生提供视口、以指针为中心的缩放、平移、选择、连线生命周期、小地图和视口外元素按需渲染。
 
-This is the selected approach because the application is React-based, the topology is a node-and-edge workflow graph, and the expected graph size is in the tens of nodes.
+当前项目基于 React，拓扑是明确的节点与边工作流，节点规模为几十个，因此采用此方案。
 
 ### AntV X6
 
-X6 would offer stronger enterprise diagramming primitives, especially ports, grouped nodes, and heavily constrained connection editing. It would add a more imperative rendering model and a larger integration surface for this React editor without providing a proportional benefit for the current topology types.
+X6 对端口、分组节点和强约束连线的企业图编辑更有优势，但它的命令式模型和 React 集成成本更高。对当前三类拓扑节点而言，收益不成比例。
 
-### Continue the Custom DOM and SVG Canvas
+### 继续维护自定义 DOM 与 SVG 画布
 
-The current approach can be optimized with viewport virtualization and animation-frame batching, but it would still require rebuilding the interaction systems that React Flow already provides. It is not selected.
+可以补充虚拟视口和动画帧合并，但仍需自行实现选择、连线、缩略图、拖放和键盘交互。该方案不采用。
 
-## Architecture
+## 架构
 
-`TemplateCanvas` will remain available for the range-instance detail screen. The template authoring screen will render a new `TopologyFlowCanvas` component instead.
+保留 `TemplateCanvas` 供实例详情页使用。模板创建和编辑页改为使用新的 `TopologyFlowCanvas`。
 
-The new components and helpers are:
+新增组件和帮助模块：
 
-- `TopologyFlowCanvas`: owns React Flow configuration, viewport behavior, selection state, panel state, and canvas controls.
-- `TopologyFlowNode`: memoized custom node renderer shared by router, switch, and ECS nodes.
-- `topology-flow-adapter`: converts the existing `TemplateNode` and `TemplateEdge` values to and from React Flow node and edge values.
-- `topology-flow-layout`: computes a deterministic left-to-right router-to-switch-to-ECS layout.
-- `topology-flow-history`: stores immutable draft snapshots for undo and redo operations.
+- `TopologyFlowCanvas`：负责 React Flow 配置、视口、选择、面板状态和画布控制。
+- `TopologyFlowNode`：可记忆化的路由器、交换机、ECS 自定义节点渲染器。
+- `topology-flow-adapter`：在现有 `TemplateNode` / `TemplateEdge` 与 React Flow 节点、边之间转换。
+- `topology-flow-layout`：计算固定的“路由器 → 交换机 → ECS”从左至右布局。
+- `topology-flow-history`：保存不可变草稿快照，实现撤销和重做。
 
-The existing template editor remains the owner of persisted draft nodes and edges. The canvas receives those values and reports intent-level changes such as moved nodes, changed connections, selections, and generated layouts.
+现有模板编辑器仍是待保存节点和边的唯一所有者。画布只向编辑器上报完成的用户动作，例如拖动结束后的节点位置、创建连线、选择变化和自动布局结果。
 
-## Data Compatibility
+## 数据兼容
 
-Existing node records continue to use `TemplateNode`, including all router, switch, ECS, network, image, and security-group fields. The adapter places the complete node record inside the React Flow node `data` payload and maps `TemplateNode.position` to React Flow `position`.
+现有节点继续使用 `TemplateNode`，保留路由器、交换机、ECS、网络、镜像和安全组等全部字段。适配层把完整领域节点放入 React Flow 节点的 `data`，并将 `TemplateNode.position` 映射为 React Flow 的 `position`。
 
-Existing manual edges retain their current shape:
+手工连线继续保持现有结构：
 
-- `TemplateEdge.fromNodeId` maps to React Flow `source`.
-- `TemplateEdge.toNodeId` maps to React Flow `target`.
-- Edge IDs and labels are preserved.
+- `TemplateEdge.fromNodeId` 映射为 React Flow 的 `source`。
+- `TemplateEdge.toNodeId` 映射为 React Flow 的 `target`。
+- 连线 ID 与标签保持不变。
 
-The graph gains an optional `viewport` record containing numeric `x`, `y`, and `zoom` values. It is ignored by the topology compiler and restored by the authoring canvas when reopening a template. Existing graphs without `viewport` open at the default fit view.
+拓扑图增加可选 `viewport` 记录，包含数值型 `x`、`y`、`zoom`。拓扑编译器忽略该字段；模板再次打开时由编辑画布恢复。旧图不包含该字段时使用默认适应视图。
 
-## Workspace Layout
+## 工作台布局
 
-The page keeps its existing header and save actions. Within the workbench:
+页面现有标题和保存操作保留。工作区布局如下：
 
-- The left side defaults to a narrow resource tool rail. Activating a resource opens an overlay palette above the canvas; dragging from it positions a node precisely, while clicking places a node at the visible viewport center.
-- The center is an infinite React Flow workspace with a subtle grid, a top-centered mode toolbar, lower-left zoom and fit-view controls, and a lower-right minimap.
-- The right inspector is visible for a single selected node and uses the current property-panel fields. It can be collapsed independently.
-- A focus control collapses both panels to rails, leaving the workspace, minimap, and canvas toolbar available.
+- 左侧默认为窄资源工具轨。激活后，资源面板以浮层覆盖在画布上方；拖放可精确定位，点击资源则放到当前视口中心。
+- 中央为无限 React Flow 工作区，带细点阵网格、顶部居中模式工具栏、左下缩放与适应视图控制、右下小地图。
+- 右侧属性检查器仅在单选节点时展示，复用现有属性表单，并可独立收起。
+- 专注模式同时将两侧收为工具轨，只保留工作区、小地图和画布工具栏。
 
-Panel overlay behavior prevents the world viewport from changing width whenever a panel opens or closes, so nodes and connections do not visibly jump.
+资源浮层和属性检查器均采用覆盖方式，不改变世界视口宽度，因此展开和收起时节点、连线不会跳动。
 
-## Interaction Model
+## 交互规则
 
-- Dragging empty canvas space pans; wheel events zoom around the pointer; `Space` plus drag also pans; `F` fits the topology into view.
-- Clicking a node or edge selects it. Dragging across empty space box-selects; `Shift` adds to a selection; `Esc` clears the selection.
-- Single-node selection opens the existing right-side property inspector. Multi-selection exposes only batch-safe actions: move, delete, and auto layout.
-- Connection mode requires an ordered source and target selection. The existing manual-edge validation remains authoritative; invalid links are rejected with a local feedback message and never enter the draft.
-- `Delete` removes selected nodes and edges through existing cleanup behavior.
-- `Ctrl/Cmd + Z` and `Ctrl/Cmd + Shift + Z` traverse draft history.
-- Auto layout supports the complete graph or the current selection and feeds its result into the same history.
+- 拖动空白处平移；滚轮以指针为中心缩放；`Space` 加拖动同样平移；`F` 适应视图。
+- 点击节点或边进行选择；拖动空白区域框选；`Shift` 追加选择；`Esc` 清空选择。
+- 单选节点显示现有右侧属性表单。多选只提供安全的批量操作：移动、删除、自动布局。
+- 连线模式按顺序选择起点与终点。现有手工连线校验仍是唯一规则来源；非法连线显示本地反馈且不会进入草稿。
+- `Delete` 删除已选节点和边。
+- `Ctrl/Cmd + Z` 撤销，`Ctrl/Cmd + Shift + Z` 重做。
+- 自动布局支持全部拓扑和当前选择，布局结果进入撤销历史。
 
-## Draft History and Saving
+## 草稿历史与保存
 
-The canvas creates a history snapshot for completed user actions: node and edge additions, deletes, connection changes, drag completion, bulk moves, and auto layout. High-frequency pointer movement updates only local presentation state; the editor draft receives the final position when a node drag ends.
+画布只为已完成动作创建历史快照：添加和删除节点或边、连线变化、拖动结束、批量移动、自动布局。高频指针移动只更新画布临时表现，节点位置在拖动结束后才回写编辑器草稿。
 
-Undo and redo operate on local unsaved topology drafts. The existing explicit “检测并保存” action remains the only backend write. Save failures leave the current draft and history intact. Validation failures retain the draft and identify the related node or edge.
+撤销和重做只作用于未保存的本地拓扑草稿。现有“检测并保存”仍是唯一的后端写入动作。保存失败时保留草稿与历史；校验失败时保留草稿并定位相关节点或连线。
 
-## Performance
+## 性能要求
 
-- Custom node components are memoized and their renderer registrations are module-stable.
-- React Flow's visible-element rendering is enabled.
-- Position changes are committed after drag completion rather than on every pointer event.
-- Panning and zooming stay within React Flow's viewport engine rather than expanding a large DOM scene.
-- The minimap and edge rendering remain within the graph renderer, avoiding duplicate geometry calculations.
+- 自定义节点使用 `memo`，节点渲染器注册保持模块级稳定。
+- 启用 React Flow 的可见元素渲染。
+- 节点位置只在拖动结束后提交，不在每次指针移动时更新编辑器状态。
+- 平移和缩放交由 React Flow 视口引擎处理，不再扩展巨大 DOM 场景。
+- 小地图和连线都由图渲染器统一绘制，避免重复计算几何路径。
 
-## Error Handling
+## 异常处理
 
-- Invalid topology connections continue to use the existing validation rules and message conventions.
-- A failed layout calculation leaves nodes in place and displays a non-destructive editor message.
-- Missing or malformed optional viewport data falls back to the default fit-view behavior.
-- Existing save, compile, and revision-conflict handling remains unchanged.
+- 非法拓扑连线继续使用现有校验规则和消息格式。
+- 自动布局计算失败时保持原位置，并展示非破坏性编辑器消息。
+- 缺失或格式错误的可选视口数据回退至默认适应视图。
+- 保存、编译和版本冲突处理沿用现有逻辑。
 
-## Testing
+## 测试
 
-Tests will be written before implementation changes:
+实现前先编写测试：
 
-- Adapter unit tests for node, edge, and optional viewport round trips.
-- History unit tests for completed actions, undo, redo, and redo-branch clearing.
-- Layout unit tests for deterministic router, switch, and ECS ordering.
-- Canvas component tests for panel collapse state, resource placement intent, box selection behavior, connection rejection, keyboard commands, and viewport restoration.
-- Template editor integration tests proving that property updates, existing connection validation, and explicit save behavior continue to work with the new canvas.
+- 适配器单测：节点、连线、可选视口的双向转换。
+- 历史单测：完成动作、撤销、重做与重做分支清理。
+- 布局单测：路由器、交换机、ECS 的确定性顺序。
+- 画布组件测试：侧栏收缩、资源放置意图、框选、连线拒绝、键盘命令和视口恢复。
+- 模板编辑器集成测试：现有属性修改、连线校验和显式保存行为在新画布下继续成立。
 
-## Container Verification
+## 容器验证
 
-After implementation, the web image will be rebuilt. Tests, build, and browser smoke verification will run through Docker containers and Docker Compose. The smoke flow will verify the editable template page renders the new canvas, supports pan and zoom, opens the resource overlay, collapses panels, creates a permitted connection, undoes it, and retains the draft until explicit save.
+实现后重建 Web 镜像。测试、构建和浏览器烟测均通过 Docker 容器和 Docker Compose 完成。烟测需要确认编辑模板页成功渲染新画布，支持平移、缩放、打开资源面板、收缩侧栏、创建允许的连线、撤销连线，并在显式保存前保留草稿。
 
