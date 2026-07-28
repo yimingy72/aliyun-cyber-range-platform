@@ -163,7 +163,7 @@ describe('TopologyFlowCanvas', () => {
       '.template-editor-grid:has(.topology-flow-workbench[data-focus-mode=\'true\']) > .template-property-panel',
     );
     expect(styles).toMatch(
-      /@media \(max-width: 1180px\)\s*\{[\s\S]*?\.template-editor-grid > \.template-property-panel\s*\{[\s\S]*?bottom:\s*0;/,
+      /@media \(max-width: 1180px\)\s*\{[\s\S]*?\.template-editor-grid:has\(\.topology-flow-workbench\) > \.template-property-panel\s*\{[\s\S]*?bottom:\s*0;/,
     );
   });
 

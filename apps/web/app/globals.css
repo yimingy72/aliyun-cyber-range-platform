@@ -4257,7 +4257,7 @@ body {
     width: min(224px, calc(100vw - 68px));
   }
 
-  .template-editor-grid > .template-property-panel {
+  .template-editor-grid:has(.topology-flow-workbench) > .template-property-panel {
     top: auto;
     right: 0;
     bottom: 0;
