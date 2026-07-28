@@ -74,6 +74,18 @@ type TopologyCachePayload = {
   persistedGraphSignature: string;
 };
 
+function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
+  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
+    return false;
+  }
+
+  const leftNodeIds = new Set(left.nodeIds);
+  const leftEdgeIds = new Set(left.edgeIds);
+
+  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
+    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
+}
+
 function TemplatePropertyPanelPlaceholder() {
   return (
     <aside className="template-editor-panel template-property-panel">
@@ -1539,17 +1551,33 @@ export function TemplateEditorScreen({
   function handleSelectionChange(nextSelection: TopologySelection) {
     const nodeIds = [...new Set(nextSelection.nodeIds.filter((nodeId) => nodes.some((node) => node.id === nodeId)))];
     const edgeIds = [...new Set(nextSelection.edgeIds.filter((edgeId) => edges.some((edge) => edge.id === edgeId)))];
+    const nextSelectionState = { nodeIds, edgeIds };
+    const selectionChanged = !hasSameTopologySelection(selection, nextSelectionState);
     const isSingleNodeSelection = nodeIds.length === 1 && edgeIds.length === 0;
 
-    setSelection({ nodeIds, edgeIds });
+    setSelection((current) => {
+      return hasSameTopologySelection(current, nextSelectionState) ? current : nextSelectionState;
+    });
 
-    if (isSingleNodeSelection) {
+    if (isSingleNodeSelection && selectionChanged) {
       setIsPropertyPanelOpen(true);
     }
 
     if (nodeIds.length === 0 && edgeIds.length > 0) {
       setStatusMessage('已选择连线，可执行删除。');
     }
+  }
+
+  function handleFlowNodeActivate(nodeId: string) {
+    if (!nodes.some((node) => node.id === nodeId)) {
+      return;
+    }
+
+    const nextSelection = { nodeIds: [nodeId], edgeIds: [] };
+    setSelection((current) => (
+      hasSameTopologySelection(current, nextSelection) ? current : nextSelection
+    ));
+    setIsPropertyPanelOpen(true);
   }
 
   function handleAddNode(kind: string, position?: { x: number; y: number }) {
@@ -1985,6 +2013,7 @@ export function TemplateEditorScreen({
           onDeleteSelection={handleDeleteSelection}
           onLayoutAll={handleLayoutAll}
           onLayoutSelection={handleLayoutSelection}
+          onNodeActivate={handleFlowNodeActivate}
           onPositionsCommit={handlePositionsCommit}
           onRedo={handleRedo}
           onSelectionChange={handleSelectionChange}

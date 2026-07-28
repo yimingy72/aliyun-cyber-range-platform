@@ -57,6 +57,7 @@ type TopologyFlowCanvasProps = {
   onDeleteSelection: () => void;
   onLayoutAll: () => void;
   onLayoutSelection: () => void;
+  onNodeActivate: (nodeId: string) => void;
   onPositionsCommit: (positions: NodePositionCommit[]) => void;
   onRedo: () => void;
   onSelectionChange: (selection: TopologySelection) => void;
@@ -84,6 +85,7 @@ function TopologyFlowCanvasInner({
   onDeleteSelection,
   onLayoutAll,
   onLayoutSelection,
+  onNodeActivate,
   onPositionsCommit,
   onRedo,
   onSelectionChange,
@@ -153,6 +155,7 @@ function TopologyFlowCanvasInner({
       edgeIds: [],
       nodeIds: [node.id],
     });
+    onNodeActivate(node.id);
   }
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -326,6 +329,7 @@ function TopologyFlowCanvasInner({
           deleteKeyCode={null}
           edges={flowEdges}
           fitView={!viewport}
+          minZoom={0.25}
           nodes={flowNodes}
           nodeTypes={topologyNodeTypes}
           onlyRenderVisibleElements

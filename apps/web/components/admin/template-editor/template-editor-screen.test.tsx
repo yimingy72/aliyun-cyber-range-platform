@@ -15,6 +15,7 @@ function TopologyFlowCanvasMock({
   onDeleteSelection,
   onLayoutAll,
   onLayoutSelection,
+  onNodeActivate,
   onPositionsCommit,
   onRedo,
   onSelectionChange,
@@ -23,6 +24,13 @@ function TopologyFlowCanvasMock({
   viewport,
 }: TopologyFlowCanvasMockProps) {
   const [pendingNodeId, setPendingNodeId] = React.useState<string | null>(null);
+  const [shouldReplaySelection, setShouldReplaySelection] = React.useState(false);
+
+  React.useEffect(() => {
+    if (shouldReplaySelection && nodes.length > 0) {
+      onSelectionChange({ nodeIds: [nodes[0]!.id], edgeIds: [] });
+    }
+  }, [nodes, onSelectionChange, shouldReplaySelection]);
 
   function selectNode(nodeId: string) {
     if (pendingNodeId) {
@@ -33,6 +41,7 @@ function TopologyFlowCanvasMock({
     }
 
     onSelectionChange({ nodeIds: [nodeId], edgeIds: [] });
+    onNodeActivate(nodeId);
   }
 
   function readNodeAccessibleName(node: (typeof nodes)[number]) {
@@ -110,6 +119,9 @@ function TopologyFlowCanvasMock({
         type="button"
       >
         flow select multiple nodes
+      </button>
+      <button onClick={() => setShouldReplaySelection(true)} type="button">
+        flow replay selection
       </button>
       {nodes.map((node) => (
         <button
@@ -1562,6 +1574,74 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('已添加ECS 1，可继续补充属性和关系。')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     expect(screen.queryByText('已选择连线起点，请点击目标节点完成连接。')).toBeNull();
+  });
+
+  it('deduplicates repeated flow selection callbacks after a graph update', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow replay selection' }));
+
+    await waitFor(() => expect(screen.getByLabelText('主机名')).toBeTruthy());
+  });
+
+  it('keeps a closed property panel closed until the user activates the same node again', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
+    expect(screen.getByLabelText('主机名')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '收起节点属性' }));
+    expect(screen.queryByLabelText('主机名')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    expect(screen.getByLabelText('主机名')).toBeTruthy();
   });
 
   it('creates new ECS nodes with 2 CPU and 2 GB memory', () => {

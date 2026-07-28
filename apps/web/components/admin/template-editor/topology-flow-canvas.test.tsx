@@ -112,6 +112,7 @@ function createCanvasProps() {
     onDeleteSelection: vi.fn(),
     onLayoutAll: vi.fn(),
     onLayoutSelection: vi.fn(),
+    onNodeActivate: vi.fn(),
     onPositionsCommit: vi.fn(),
     onRedo: vi.fn(),
     onSelectionChange: vi.fn(),
@@ -142,6 +143,7 @@ describe('TopologyFlowCanvas', () => {
     expect(screen.getByTestId('flow-mini-map')).toBeTruthy();
     expect(flowState.props).toMatchObject({
       multiSelectionKeyCode: 'Shift',
+      minZoom: 0.25,
       onlyRenderVisibleElements: true,
       panActivationKeyCode: 'Space',
       panOnDrag: [1],
@@ -252,8 +254,10 @@ describe('TopologyFlowCanvas', () => {
       edgeIds: [],
       nodeIds: ['switch-1'],
     });
+    expect(canvasProps.onNodeActivate).toHaveBeenCalledWith('switch-1');
 
     canvasProps.onSelectionChange.mockClear();
+    canvasProps.onNodeActivate.mockClear();
 
     for (const modifier of ['shiftKey', 'ctrlKey', 'metaKey'] as const) {
       flowState.props?.onNodeClick?.(
@@ -263,6 +267,7 @@ describe('TopologyFlowCanvas', () => {
     }
 
     expect(canvasProps.onSelectionChange).not.toHaveBeenCalled();
+    expect(canvasProps.onNodeActivate).not.toHaveBeenCalled();
   });
 
   it('将 Delete、撤销和重做快捷键转交给动作回调', () => {
