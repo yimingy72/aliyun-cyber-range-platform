@@ -686,7 +686,7 @@ export function ImageCenterScreen({
     : !activeCloudContext.imageImportBucket.trim() || activeCloudContext.bucketStatus === 'unconfigured'
       ? '当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。'
       : activeCloudContext.bucketStatus !== 'ready'
-        ? '配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。'
+        ? activeCloudContext.lastError?.trim() || '配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。'
         : null;
   const canImportImages = imageImportUnavailableMessage === null;
 

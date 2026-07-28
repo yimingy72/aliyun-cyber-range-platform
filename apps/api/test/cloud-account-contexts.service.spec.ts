@@ -55,7 +55,7 @@ describe('CloudAccountContextsService', () => {
     expect(contexts[0]).not.toHaveProperty('accessKeySecret');
   });
 
-  it('uses a supplied import Bucket without creating or reconfiguring it', async () => {
+  it('accepts a missing import-prefix object without requiring Bucket ownership', async () => {
     const readyContext = {
       id: 'context-1',
       displayName: '阿里云 1234567890 · cn-hangzhou',
@@ -90,10 +90,7 @@ describe('CloudAccountContextsService', () => {
     global.fetch = jest
       .fn()
       .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockResolvedValueOnce(createResponse({}, 200))
-      .mockResolvedValueOnce(createResponse({}, 200))
-      .mockResolvedValueOnce(createResponse('<CORSConfiguration></CORSConfiguration>', 200))
-      .mockResolvedValueOnce(createResponse({}, 200));
+      .mockResolvedValueOnce(createResponse({}, 404));
 
     const cloudConfig = {
       defaultRegion: 'cn-hangzhou',
@@ -122,6 +119,9 @@ describe('CloudAccountContextsService', () => {
       }),
     });
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=GetCallerIdentity');
+    expect(String((global.fetch as jest.Mock).mock.calls[1][0])).toContain(
+      'training-image-imports.oss-cn-hangzhou.aliyuncs.com/image-imports/.verification/',
+    );
     expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'HEAD' }));
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
@@ -195,7 +195,7 @@ describe('CloudAccountContextsService', () => {
       isActive: true,
       status: 'ready' as const,
       bucketStatus: 'unavailable',
-      lastError: '无法验证镜像导入 Bucket（HTTP 404）。',
+      lastError: '无法验证镜像导入 Bucket 的对象读取权限（HTTP 403）。',
       lastVerifiedAt: null,
       createdAt: new Date('2026-07-20T00:00:00.000Z'),
       updatedAt: new Date('2026-07-20T00:00:00.000Z'),
@@ -211,7 +211,7 @@ describe('CloudAccountContextsService', () => {
     global.fetch = jest
       .fn()
       .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockResolvedValueOnce(createResponse({}, 404));
+      .mockResolvedValueOnce(createResponse({}, 403));
 
     const cloudConfig = {
       defaultRegion: 'cn-hangzhou',
@@ -225,7 +225,7 @@ describe('CloudAccountContextsService', () => {
       status: 'ready',
       imageImportBucket: 'missing-image-imports',
       bucketStatus: 'unavailable',
-      lastError: '无法验证镜像导入 Bucket（HTTP 404）。',
+      lastError: '无法验证镜像导入 Bucket 的对象读取权限（HTTP 403）。',
     }));
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({

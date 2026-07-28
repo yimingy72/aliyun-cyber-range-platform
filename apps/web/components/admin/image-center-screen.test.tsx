@@ -671,6 +671,7 @@ describe('ImageCenterScreen', () => {
         isActive: true,
         status: 'ready',
         bucketStatus: 'unavailable',
+        lastError: '无法验证镜像导入 Bucket 的对象读取权限（HTTP 403）。',
       },
     ]);
 
@@ -680,7 +681,7 @@ describe('ImageCenterScreen', () => {
 
     const uploadButton = await screen.findByRole('button', { name: '上传镜像' });
     expect((uploadButton as HTMLButtonElement).disabled).toBe(true);
-    expect(uploadButton.getAttribute('title')).toBe('配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。');
+    expect(uploadButton.getAttribute('title')).toBe('无法验证镜像导入 Bucket 的对象读取权限（HTTP 403）。');
   });
 
   it('creates a direct-OSS upload session and completes the Alibaba Cloud import after a file upload', async () => {

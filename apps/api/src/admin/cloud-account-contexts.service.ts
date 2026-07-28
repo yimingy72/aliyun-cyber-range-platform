@@ -273,19 +273,22 @@ export class CloudAccountContextsService {
     }
 
     try {
+      const verificationObjectKey = `image-imports/.verification/${randomUUID()}`;
       const response = await this.ossRequest({
-        url: this.getBucketEndpoint(input.bucket, input.regionId),
+        url: this.getObjectEndpoint(input.bucket, input.regionId, verificationObjectKey),
         method: 'HEAD',
-        bucket: input.bucket,
-        resource: `/${input.bucket}/`,
+        resource: `/${input.bucket}/${verificationObjectKey}`,
         accessKeyId: input.accessKeyId,
         accessKeySecret: input.accessKeySecret,
       });
 
-      if (!response.ok) {
+      // A missing object proves that the configured credentials can read the
+      // import prefix. Bucket-level HEAD requests require bucket ownership and
+      // reject otherwise-authorized RAM users.
+      if (!response.ok && response.status !== 404) {
         return {
           bucketStatus: 'unavailable',
-          lastError: `无法验证镜像导入 Bucket（HTTP ${response.status}）。`,
+          lastError: `无法验证镜像导入 Bucket 的对象读取权限（HTTP ${response.status}）。`,
           lastVerifiedAt: null,
         };
       }
@@ -333,7 +336,6 @@ export class CloudAccountContextsService {
   private async ossRequest(input: {
     url: string;
     method: 'HEAD';
-    bucket: string;
     resource: string;
     accessKeyId: string;
     accessKeySecret: string;
@@ -379,6 +381,11 @@ export class CloudAccountContextsService {
 
   private getBucketEndpoint(bucket: string, regionId: string) {
     return `https://${bucket}.oss-${regionId}.aliyuncs.com/`;
+  }
+
+  private getObjectEndpoint(bucket: string, regionId: string, objectKey: string) {
+    const encodedObjectKey = objectKey.split('/').map(encodeURIComponent).join('/');
+    return `${this.getBucketEndpoint(bucket, regionId)}${encodedObjectKey}`;
   }
 
   private toView(context: {
