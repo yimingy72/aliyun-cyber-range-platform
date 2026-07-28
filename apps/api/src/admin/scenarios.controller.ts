@@ -82,7 +82,7 @@ export class ScenariosController {
   ) {
     return this.confirmedMcpLifecycle(
       request,
-      'range_template_unpublish',
+      'range_template_return_to_private',
       id,
       { templateId: id, expectedRevision: body.expectedRevision },
       false,
@@ -108,7 +108,7 @@ export class ScenariosController {
 
   private confirmedMcpLifecycle<TResult extends Record<string, unknown>>(
     request: AuthenticatedAdminRequest,
-    toolName: 'range_template_publish' | 'range_template_unpublish' | 'range_template_delete',
+    toolName: 'range_template_publish' | 'range_template_return_to_private' | 'range_template_delete',
     templateId: string,
     argumentsValue: Record<string, unknown>,
     destructive: boolean,

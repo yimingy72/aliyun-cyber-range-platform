@@ -15,11 +15,11 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 严格按以下顺序执行：
 
-1. **解析设计**：将用户输入按拒绝重复映射键的 YAML 解析器解析为完整 `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；每个数组项必须有自己的 `-` 列表标记。`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。旧设计中的 `template.slug`、版本、云厂商、IaC 和模块路径仅兼容读取，转换时丢弃，绝不传给 MCP。
+1. **解析设计**：将用户输入按拒绝重复映射键的 YAML 解析器解析为完整 `RangeDesign/v1`。顶层与嵌套键、数组、对象、枚举、CIDR、IP、端口、ACL、DNAT 和连接均须完整、可解析；每个数组项必须有自己的 `-` 列表标记。`connections` 必须是 `{ key, from, to }` 对象，不能是 `a -> b` 字符串。旧设计中的 `template.slug`、云厂商、IaC 和模块路径仅兼容读取，转换时丢弃，绝不传给 MCP。
 2. **解析失败即停止**：出现截断字段、无效 YAML、缺失字段、未知图节点、重复 IP 或歧义镜像名时，只返回精确缺项/错误路径，请求修正设计；不得查询资源、猜测补全、试探调用、克隆模板或改用其他 MCP 工具。
 3. **读取靶场编排参考**：完整阅读 [靶场编排](./references/products/range-authoring.md)，只调用 `platform_image_list` 解析镜像。不得为了模板创建调用 `cloud_config_get`。
 4. **转换与创建**：仅调用一次 `platform_image_list` 解析所有镜像；由转换 Skill 生成完整 `topologyGraph`，并以 `range_template_create` 的运行时 schema 传入名称、描述、网络元数据和拓扑。默认地域与可用区由后端基础配置注入，转换结果和 MCP 入参都不得包含它们。
-5. **不做参数试错**：`slug`、版本、云厂商、IaC 类型、模块路径和所有派生规格均由平台管理，绝不能作为创建参数。每份转换回执只允许一次 `range_template_create`；创建 schema、编译器或服务端返回校验错误时，立即停止并报告原始错误与转换回执，不得通过删改字段、克隆、收录镜像或检测保存绕过。
+5. **不做参数试错**：`slug`、云厂商、IaC 类型、模块路径和所有派生规格均由平台管理，绝不能作为创建参数。每份转换回执只允许一次 `range_template_create`；创建 schema、编译器或服务端返回校验错误时，立即停止并报告原始错误与转换回执，不得通过删改字段、克隆、收录镜像或检测保存绕过。
 
 ## 严格禁止（NEVER DO）
 
@@ -44,7 +44,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 |---|---|---|---|
 | 镜像中心 | `image-center` | 平台镜像、云镜像目录和导入任务管理 | [image-center.md](./references/products/image-center.md) |
 | 实例管理 | `instance-management` | 基于平台镜像创建、查询、控制、打包和销毁独立靶机 | [instance-management.md](./references/products/instance-management.md) |
-| 靶场编排 | `range-authoring` | 设计转换、创建、检测并保存、发布和取消发布综合靶场模板 | [range-authoring.md](./references/products/range-authoring.md) |
+| 靶场编排 | `range-authoring` | 设计转换、创建、检测并保存、发布和回退为私有综合靶场模板 | [range-authoring.md](./references/products/range-authoring.md) |
 | 编排实例 | `range-instances` | 从模板启动、查看、修改、控制、访问和销毁整套靶场 | [range-instances.md](./references/products/range-instances.md) |
 | 用户管理 | `user-management` | 管理平台用户、角色、状态和密码 | [user-management.md](./references/products/user-management.md) |
 | 账单费用 | `billing` | 查询、同步和导出平台费用与成本信息 | [billing.md](./references/products/billing.md) |
@@ -91,7 +91,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 |---|---|
 | 镜像中心 | 收录、重命名、启用/停用、发布/取消发布、删除镜像、删除自定义云镜像、重试导入 |
 | 实例管理 | 创建批次、销毁单台/整批、重启、打包镜像、导出 CSV、打开 VNC |
-| 靶场编排 | 发布到平台、取消发布、删除模板 |
+| 靶场编排 | 发布到平台、回退为私有、删除模板 |
 | 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、打包镜像、销毁、获取访问凭据 |
 | 用户管理 | 创建用户、角色/状态变更、重置密码 |
 | 账单费用 | 同步账单、导出费用 CSV |

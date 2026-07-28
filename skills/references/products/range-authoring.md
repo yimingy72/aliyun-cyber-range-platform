@@ -1,6 +1,6 @@
 # 靶场编排
 
-管理综合靶场模板及其完整拓扑。模板要么已保存未发布，要么已发布到平台；发布与取消发布是唯一的可见性操作。
+管理综合靶场模板及其完整拓扑。模板要么为私有已保存，要么已发布到平台；发布与回退为私有是唯一的可见性操作。
 
 ## MCP 工具与参数
 
@@ -17,12 +17,12 @@
 | 复制模板 | `range_template_clone` | `templateId` | 操作元数据 | `templates:write` |
 | 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `templates:write` |
 | 发布到平台 | `range_template_publish` | `templateId` | 操作元数据 | `templates:publish` |
-| 取消发布 | `range_template_unpublish` | `templateId` | 操作元数据 | `templates:publish` |
+| 回退为私有 | `range_template_return_to_private` | `templateId` | 操作元数据 | `templates:publish` |
 | 删除模板 | `range_template_delete` | `templateId` | 操作元数据 | `templates:delete` |
 
-`range_template_topology_detect_and_save` 会编译并校验完整图后保存，但不会发布。拓扑修改始终重新生成完整图；没有“共享/取消共享”、独立预检或节点补丁工具。`publicEntryProtocols` 是可选的访问摘要元数据，不创建 DNAT、不替代 DNAT，也不应用为安全组规则。
+`range_template_topology_detect_and_save` 会编译并校验完整图后保存，但不会发布。拓扑修改始终重新生成完整图；没有独立预检或节点补丁工具。模板可见性只通过“发布到平台”和“回退为私有”变更。`publicEntryProtocols` 是可选的访问摘要元数据，不创建 DNAT、不替代 DNAT，也不应用为安全组规则。
 
-创建时平台会生成 `slug`、版本、云厂商、IaC 类型和模块路径。它们不是新的 `RangeDesign/v1` 输出字段，也不是 `range_template_create` 参数；旧设计中存在这些字段时，转换 Skill 仅兼容读取并丢弃，调用方不得传给 MCP。
+创建时平台会生成 `slug`、云厂商、IaC 类型和模块路径等内部元数据。它们不是新的 `RangeDesign/v1` 输出字段，也不是 `range_template_create` 参数；旧设计中存在这些字段时，转换 Skill 仅兼容读取并丢弃，调用方不得传给 MCP。
 
 平台固定创建 `10.0.0.0/16` 主 VPC，并附加 `172.16.0.0/16`、`192.168.0.0/16`。VPC CIDR 不是 MCP 可配置参数；每个交换机 CIDR 必须完整落在这三段之一。
 
@@ -143,7 +143,7 @@ connections:
 
 | 部分 | 必须表达的事实 | 约束 |
 |---|---|---|
-| `template` | 名称、描述和可选入口访问摘要 | `publicEntryProtocols` 只是显示/访问摘要，不能创建、推导或代替 DNAT；地域/可用区、`slug`、版本、云厂商、IaC 与模块路径均由平台管理，不得输出或传给 MCP。 |
+| `template` | 名称、描述和可选入口访问摘要 | `publicEntryProtocols` 只是显示/访问摘要，不能创建、推导或代替 DNAT；地域/可用区、`slug`、云厂商、IaC 与模块路径均由平台管理，不得输出或传给 MCP。 |
 | `vpc` | 固定主 CIDR、两个固定附加 CIDR、一个共享 NAT 逻辑标识 | 只能是 `10.0.0.0/16`、`172.16.0.0/16`、`192.168.0.0/16`；SNAT 与 DNAT 使用同一 NAT 网关、不同 EIP。 |
 | `router` | 唯一路由器的键、名称和出口意图 | 每份设计恰好一个 Router。 |
 | `switches` | 交换机 CIDR、逻辑 `zoneKey`、用途、ACL、SNAT、DNAT | 每个 Switch 的 `zoneKey` 全局唯一，是网络分区键而非阿里云可用区 ID；CIDR 必须落在三段固定 VPC CIDR 内且互不重叠；`aclRules`、`dnatMappings` 始终存在，可为空数组。 |
@@ -154,8 +154,8 @@ connections:
 1. 交换机 CIDR、ECS 主/辅助 IP 必须属于对应 VPC 或交换机；IP 不可重复，不能使用网络或广播地址。
 2. 开启 `snatEnabled` 的交换机共用 `vpc.sharedNat.natGatewayKey` 和 `snatEipKey`。DNAT 使用 `dnatEipKey`，绝不能与 SNAT EIP 相同。
 3. `externalPort + protocol` 在同一 VPC 内全局唯一；DNAT 目标必须是唯一的公网入口 ECS。
-4. ACL 必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `allow` 或 `drop`。
-5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。
+4. ACL 必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `allow` 或 `drop`。全端口统一填写 `1/65535`，MCP 和后端会将其归一化为阿里云所需的 `-1/-1`，与协议无关；指定 TCP/UDP 端口仍写为如 `80/80`。
+5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。其端口范围也遵循 `1/65535 -> -1/-1` 的规则。
 6. 设计中必须有且仅有一个公网入口 ECS：该 ECS 必须设置 `exposePublic: true`，并且必须是至少一条 DNAT 的目标。它是共享 DNAT EIP 的唯一外部访问落点，不直接绑定公网 IP；没有公网入口时模板不能保存。
 7. 不输出 `customPassword`，除非用户明确要求设置该 ECS 的初始密码。
 
@@ -174,7 +174,7 @@ connections:
 
 转换回执和完整图均通过后，恰好调用一次 `range_template_create`，只传 `name`、可选 `description`、可选 `publicEntryProtocols` 和完整 `topologyGraph`。不要传 VPC CIDR、地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或自动重试。
 
-调用 `range_template_topology_detect_and_save` 被拒绝时，必须停止并报告原始错误；不得补猜 `version`、`modulePathOrRef`、地域、可用区或派生规格后重试。它们均由平台在服务端读取或注入。
+调用 `range_template_topology_detect_and_save` 被拒绝时，必须停止并报告原始错误；不得补猜 `modulePathOrRef`、地域、可用区或派生规格后重试。它们均由平台在服务端读取或注入。
 
 最小结果形状：
 
@@ -210,6 +210,6 @@ connections:
 1. 首次创建：由转换 Skill 输出完整图，调用 `range_template_create`。
 2. 编辑拓扑：从完整修改结果重新生成图，调用 `range_template_topology_detect_and_save`。
 3. 用户明确要求开放给其他用户时，确认模板 ID 和影响范围后调用 `range_template_publish`。
-4. 用户明确要求隐藏模板时，调用 `range_template_unpublish`；它不删除模板及已保存拓扑。
+4. 用户明确要求让模板停止对其他用户可见时，调用 `range_template_return_to_private`；它不删除模板及已保存拓扑。
 
-发布、取消发布和删除需要入口规定的危险操作确认。发布不会创建一套靶场；实际创建云资源应进入 [编排实例](./range-instances.md)。
+发布、回退为私有和删除需要入口规定的危险操作确认。发布不会创建一套靶场；实际创建云资源应进入 [编排实例](./range-instances.md)。

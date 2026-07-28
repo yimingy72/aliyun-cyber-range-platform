@@ -82,7 +82,7 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_create',
     title: '创建靶场模板',
-    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。必须有且仅有一个 exposePublic=true 的入口 ECS，且该 ECS 必须是至少一条 DNAT 的目标。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、版本、云厂商、IaC 与模块路径由平台生成。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。ECS 顶层 privateIp 必须与第一张 NIC 一致；端口全开统一填写 1/65535，平台会转换为阿里云所需的 -1/-1。必须有且仅有一个 exposePublic=true 的入口 ECS，且该 ECS 必须是至少一条 DNAT 的目标。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、云厂商、IaC、模块路径及其他派生元数据由平台管理。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     outputSchema: resourceOutputSchema,
@@ -136,7 +136,6 @@ export const templateTools: ToolDefinition[] = [
     title: '检测并保存拓扑',
     description: '对应平台“检测并保存”。将设计转换 Skill 产出的完整 topologyGraph 与当前模板元数据合并后编译、校验；仅在全部通过时保存。此操作不会发布到平台。',
     requiredScopes: ['templates:write'],
-    annotations: { idempotentHint: true },
     inputSchema: templateDetectAndSaveInputSchema,
     outputSchema: resultOutputSchema(
       z.object({
@@ -166,7 +165,7 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_publish',
     title: '发布模板到平台',
-    description: '对应平台“发布到平台”。校验当前已保存拓扑后生成可供使用的发布版本，并将模板设为平台可见，其他用户随后可查看和使用。调用前必须取得用户确认；平台要求时需携带 confirmationId。',
+    description: '对应平台“发布到平台”。校验当前已保存拓扑后，将模板设为平台可见，其他用户随后可查看和使用；平台会在内部固定此次发布所使用的拓扑快照。调用前必须取得用户确认；平台要求时需携带 confirmationId。',
     requiredScopes: ['templates:publish'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
@@ -180,9 +179,9 @@ export const templateTools: ToolDefinition[] = [
     },
   },
   {
-    name: 'range_template_unpublish',
-    title: '取消发布模板',
-    description: '对应平台“取消发布”。从平台列表隐藏模板并停止向其他用户提供使用，但不会删除模板及其已保存拓扑。调用前必须取得用户确认；平台要求时需携带 confirmationId。',
+    name: 'range_template_return_to_private',
+    title: '回退模板为私有',
+    description: '对应平台“回退为私有”。从平台列表隐藏模板并停止向其他用户提供使用，但不会删除模板及其已保存拓扑。调用前必须取得用户确认；平台要求时需携带 confirmationId。',
     requiredScopes: ['templates:publish'],
     annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: templateLifecycleInputSchema,
@@ -191,7 +190,7 @@ export const templateTools: ToolDefinition[] = [
       const input = args as TemplateWriteInput;
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
       return redactTemplateSecrets(
-        await context.client.unpublishRangeTemplate(input.templateId, readTemplateRevision(current), operation(input)),
+        await context.client.returnRangeTemplateToPrivate(input.templateId, readTemplateRevision(current), operation(input)),
       );
     },
   },

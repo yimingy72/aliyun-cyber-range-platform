@@ -74,7 +74,7 @@ function createClientStub(): ClientStub {
     cloneRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-2' }),
     saveRangeTemplateTopology: vi.fn().mockResolvedValue({ id: 'tpl-1', revision: 8 }),
     publishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
-    unpublishRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
+    returnRangeTemplateToPrivate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),
@@ -160,7 +160,7 @@ describe('tool registry', () => {
       'range_template_clone',
       'range_template_topology_detect_and_save',
       'range_template_publish',
-      'range_template_unpublish',
+      'range_template_return_to_private',
       'range_template_delete',
     ];
 
@@ -185,6 +185,15 @@ describe('tool registry', () => {
     expect(tools.find((tool) => tool.name === 'range_template_delete')?.annotations).toMatchObject({
       readOnlyHint: false,
       destructiveHint: true,
+    });
+    expect(tools.map((tool) => tool.name)).not.toContain('range_template_unpublish');
+    expect(tools.find((tool) => tool.name === 'range_template_return_to_private')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      idempotentHint: false,
+    });
+    expect(tools.find((tool) => tool.name === 'range_template_topology_detect_and_save')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      idempotentHint: false,
     });
   });
 

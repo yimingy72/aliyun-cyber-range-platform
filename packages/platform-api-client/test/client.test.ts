@@ -92,8 +92,8 @@ describe('PlatformApiClient', () => {
     ).resolves.toEqual({ id: 'tpl-1', visibility: 'platform', status: 'published', revision: 8 });
     await expect(
       (client as unknown as {
-        unpublishRangeTemplate: (id: string, expectedRevision: number, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown>;
-      }).unpublishRangeTemplate('tpl-1', 8, { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' }),
+        returnRangeTemplateToPrivate: (id: string, expectedRevision: number, operation: { idempotencyKey: string; confirmationId: string }) => Promise<unknown>;
+      }).returnRangeTemplateToPrivate('tpl-1', 8, { idempotencyKey: 'idem-1', confirmationId: 'confirm-1' }),
     ).resolves.toEqual({ id: 'tpl-1', visibility: 'private', status: 'private', revision: 9 });
 
     expect(calls).toEqual([

@@ -112,7 +112,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.templateRevisionAction(id, 'share', expectedRevision, operation);
   }
 
-  unpublishRangeTemplate(id: string, expectedRevision: number, operation?: OperationRequest) {
+  returnRangeTemplateToPrivate(id: string, expectedRevision: number, operation?: OperationRequest) {
     return this.templateRevisionAction(id, 'unshare', expectedRevision, operation);
   }
 
