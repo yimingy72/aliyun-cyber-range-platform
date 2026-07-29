@@ -15,7 +15,7 @@
 **Files:**
 - Modify: `apps/web/components/admin/template-editor/template-editor-screen.test.tsx`
 
-- [ ] **Step 1: 为检测失败的标题区状态提示写失败测试**
+- [x] **Step 1: 为检测失败的标题区状态提示写失败测试**
 
 在现有“blocks incomplete topologies during 检测与保存”场景中，将状态相关断言扩展为：
 
@@ -28,7 +28,7 @@ expect(status.getAttribute('title')).toMatch(/至少需要一个 ECS 主机/);
 expect(document.querySelector('.template-editor-screen > p[role="status"]')).toBeNull();
 ```
 
-- [ ] **Step 2: 在 Docker 中运行该测试并确认失败**
+- [x] **Step 2: 在 Docker 中运行该测试并确认失败**
 
 Run:
 
@@ -40,7 +40,7 @@ docker compose --env-file .env run --rm --no-deps web \
 
 Expected: 失败，原因是当前 `role="status"` 段落位于 `.template-editor-screen` 的画布网格之后，而不是 `.template-editor-toolbar-copy` 中。
 
-- [ ] **Step 3: 为自动布局成功无提示写失败测试**
+- [x] **Step 3: 为自动布局成功无提示写失败测试**
 
 新增测试，使用已有拓扑编辑器画布 mock 的 `flow layout all` 按钮触发布局：
 
@@ -60,7 +60,7 @@ it('does not announce successful automatic layout', () => {
 
 `emptyTopologyTemplate` 使用当前文件中“blocks incomplete topologies during 检测与保存”测试的同一空拓扑模板对象；点击 mock 画布中的“交换机 switch”后即可获得自动布局所需的一个节点。
 
-- [ ] **Step 4: 在 Docker 中运行测试并确认失败**
+- [x] **Step 4: 在 Docker 中运行测试并确认失败**
 
 Run the command from Step 2.
 
@@ -73,7 +73,7 @@ Expected: 失败，原因是 `handleLayoutAll` 仍将“已完成全部自动布
 - Modify: `apps/web/components/admin/template-editor/template-editor-screen.tsx:1981-2049`
 - Modify: `apps/web/app/globals.css:1347-1377`
 
-- [ ] **Step 1: 将标题区标记拆分为身份行和状态行**
+- [x] **Step 1: 将标题区标记拆分为身份行和状态行**
 
 将工具栏左侧标记改为以下结构，移除画布网格后的独立状态段落：
 
@@ -101,7 +101,7 @@ Expected: 失败，原因是 `handleLayoutAll` 仍将“已完成全部自动布
 </div>
 ```
 
-- [ ] **Step 2: 添加仅限标题区的紧凑样式**
+- [x] **Step 2: 添加仅限标题区的紧凑样式**
 
 保持操作按钮区域不变，改用以下局部规则：
 
@@ -131,7 +131,7 @@ Expected: 失败，原因是 `handleLayoutAll` 仍将“已完成全部自动布
 }
 ```
 
-- [ ] **Step 3: 取消自动布局成功文本**
+- [x] **Step 3: 取消自动布局成功文本**
 
 保留布局快照提交，传入空消息以清除旧反馈：
 
@@ -141,7 +141,7 @@ commitSnapshot({ nodes: layoutTopology(nodes, edges), edges, viewport }, '');
 
 保留 `catch` 中的“自动布局失败，请保留当前节点位置。”提示。
 
-- [ ] **Step 4: 在 Docker 中运行编辑器测试并确认通过**
+- [x] **Step 4: 在 Docker 中运行编辑器测试并确认通过**
 
 Run the command from Task 1 Step 2.
 
@@ -154,7 +154,7 @@ Expected: `template-editor-screen.test.tsx` 全部通过；状态位于标题区
 - Verify: `apps/web/components/admin/template-editor/template-editor-screen.test.tsx`
 - Verify: `apps/web/app/globals.css`
 
-- [ ] **Step 1: 运行 Web 全量测试**
+- [x] **Step 1: 运行 Web 全量测试**
 
 ```bash
 docker compose --env-file .env run --rm --no-deps web \
@@ -163,7 +163,7 @@ docker compose --env-file .env run --rm --no-deps web \
 
 Expected: 全部 Web 测试通过。
 
-- [ ] **Step 2: 构建并替换 Web 容器**
+- [x] **Step 2: 构建并替换 Web 容器**
 
 ```bash
 COMPOSE_BAKE=false docker compose --env-file .env build web
@@ -173,7 +173,7 @@ curl -fsSI --max-time 10 http://localhost:13000/admin/scenarios
 
 Expected: 构建通过，`topology-flow-canvas-web-1` 运行，路由返回 `HTTP/1.1 200 OK`。
 
-- [ ] **Step 3: 提交本次状态反馈变更**
+- [x] **Step 3: 提交本次状态反馈变更**
 
 ```bash
 git add \
