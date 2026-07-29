@@ -1087,7 +1087,7 @@ git commit -m "feat(web): edit and sync instance topology drafts"
 **Files:**
 - No product files modified; this task verifies the merged implementation in Docker containers.
 
-- [ ] **Step 1: 重建所有受影响镜像**
+- [x] **Step 1: 重建所有受影响镜像**
 
 Run:
 
@@ -1098,7 +1098,7 @@ COMPOSE_BAKE=false docker compose build web api provisioner-worker mcp
 Expected: `web`、`api`、`provisioner-worker`、`mcp` 均显示 `Built`；API 构建实际加载
 `@aliyun-cyber-range/scenario-runtime/compiled`，Web 构建完成类型检查。
 
-- [ ] **Step 2: 运行 Web 全量回归**
+- [x] **Step 2: 运行 Web 全量回归**
 
 Run:
 
@@ -1110,7 +1110,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: 所有 Web Vitest 文件通过，包含创建页和实例详情两个 Flow 画布消费者。
 
-- [ ] **Step 3: 运行 API、worker 与 MCP 回归**
+- [x] **Step 3: 运行 API、worker 与 MCP 回归**
 
 Run:
 
@@ -1128,7 +1128,7 @@ docker compose run --rm --no-deps mcp \
 
 Expected: 所有指定 API、worker 与 MCP 测试通过；不执行阿里云 smoke test。
 
-- [ ] **Step 4: 验证隔离生产 API 镜像**
+- [x] **Step 4: 验证隔离生产 API 镜像**
 
 Run:
 
@@ -1146,7 +1146,7 @@ unset COMPOSE_PROJECT_NAME
 Expected: 返回 `{"status":"ok","service":"api"}`。该临时 compose 项目只包含新建的
 `postgres` 卷，验证完成后必须清理；不要对日常开发 compose 项目执行 `down -v`。
 
-- [ ] **Step 5: 验证隔离生产 Web 镜像**
+- [x] **Step 5: 验证隔离生产 Web 镜像**
 
 Run:
 
