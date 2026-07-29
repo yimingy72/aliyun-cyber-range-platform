@@ -304,6 +304,7 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('web-lab-batch')).toBeTruthy();
     const table = screen.getByRole('table', { name: '实例列表' });
     expect(within(table).getByRole('columnheader', { name: '实例 / 批次' })).toBeTruthy();
+    expect(within(table).queryByText('批次', { selector: 'span' })).toBeNull();
     expect(within(table).queryByText('web-lab-01')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
