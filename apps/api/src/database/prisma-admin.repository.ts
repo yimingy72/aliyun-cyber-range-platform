@@ -65,6 +65,14 @@ import {
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
 
+function isSerializableTransactionConflict(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+    return true;
+  }
+
+  return error instanceof Error && /could not serialize access|write conflict|deadlock/i.test(error.message);
+}
+
 function toBillingLineItemRecord(
   record: {
     id: string;
@@ -1238,7 +1246,7 @@ export class PrismaAdminRepository implements AdminRepository {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+      if (isSerializableTransactionConflict(error)) {
         throw new RangeInstanceDraftRevisionConflictError();
       }
 

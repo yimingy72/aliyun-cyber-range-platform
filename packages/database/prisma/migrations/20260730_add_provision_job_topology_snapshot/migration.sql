@@ -43,5 +43,5 @@ SET
   "finishedAt" = NOW(),
   "errorSummary" = 'Update job predates immutable topology snapshots. Re-save the topology draft and apply changes again.'
 WHERE "jobType" = 'update'
-  AND "status" IN ('pending', 'running')
+  AND "status" = 'pending'
   AND "topologySnapshot" IS NULL;

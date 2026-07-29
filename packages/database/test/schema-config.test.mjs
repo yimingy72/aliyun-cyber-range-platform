@@ -127,6 +127,7 @@ test('topology snapshot migration preserves recoverable legacy update jobs', () 
   assert.match(migration, /"topologySnapshot"\s*=\s*jsonb_build_object/);
   assert.match(migration, /"jobType"\s*=\s*'update'/);
   assert.match(migration, /"status"\s*=\s*'failed'/);
+  assert.match(migration, /WHERE "jobType" = 'update'\s+AND "status" = 'pending'\s+AND "topologySnapshot" IS NULL/);
   assert.match(migration, /Re-save the topology draft and apply changes again/);
 });
 
