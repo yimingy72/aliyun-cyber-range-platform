@@ -17,7 +17,7 @@ import {
 import {
   GitBranch,
   LayoutGrid,
-  Map,
+  Map as MapIcon,
   Maximize,
   Maximize2,
   Minimize2,
@@ -34,6 +34,7 @@ import {
 } from './topology-flow-resource-rail';
 import type { TemplateEdge } from './template-editor-screen';
 import type {
+  TopologyFlowNode as TopologyFlowNodeState,
   TopologySelection,
   TopologyViewport,
 } from './topology-flow-types';
@@ -84,6 +85,30 @@ function hasSameViewport(
 ) {
   return left === right
     || (left?.x === right?.x && left?.y === right?.y && left?.zoom === right?.zoom);
+}
+
+function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
+  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
+    return false;
+  }
+
+  const leftNodeIds = new Set(left.nodeIds);
+  const leftEdgeIds = new Set(left.edgeIds);
+
+  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
+    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
+}
+
+function applyNodeSelection(
+  nodes: TopologyFlowNodeState[],
+  selection: TopologySelection,
+) {
+  const selectedNodeIds = new Set(selection.nodeIds);
+
+  return nodes.map((node) => ({
+    ...node,
+    selected: selectedNodeIds.has(node.id),
+  }));
 }
 
 function doesResourcePlacementOverlap(
@@ -168,43 +193,101 @@ function TopologyFlowCanvasInner({
   const canvasRef = React.useRef<HTMLDivElement>(null);
   const workbenchRef = React.useRef<HTMLElement>(null);
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
-  const externalFlowNodes = React.useMemo(
+  const topologyFlowNodes = React.useMemo(
     () => toFlowNodes(nodes, connectMode),
     [connectMode, nodes],
   );
+  const externalFlowNodes = React.useMemo(
+    () => applyNodeSelection(topologyFlowNodes, selection),
+    [selection, topologyFlowNodes],
+  );
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(externalFlowNodes);
-  const flowEdges = React.useMemo(() => toFlowEdges(edges), [edges]);
-  const syncedFlowNodesRef = React.useRef(externalFlowNodes);
+  const flowEdges = React.useMemo(() => {
+    const selectedEdgeIds = new Set(selection.edgeIds);
+
+    return toFlowEdges(edges).map((edge) => ({
+      ...edge,
+      selected: selectedEdgeIds.has(edge.id),
+    }));
+  }, [edges, selection.edgeIds]);
+  const syncedTopologyNodesRef = React.useRef(nodes);
+  const syncedConnectModeRef = React.useRef(connectMode);
+  const selectionRef = React.useRef(selection);
+  const pendingExternalSelectionRef = React.useRef<TopologySelection | null>(null);
+  const previousSelectionRef = React.useRef(selection);
+  const onSelectionChangeRef = React.useRef(onSelectionChange);
   const knownViewportRef = React.useRef<TopologyViewport | null>(viewport);
   const pendingExternalViewportRef = React.useRef<TopologyViewport | null>(null);
 
+  if (!hasSameTopologySelection(previousSelectionRef.current, selection)) {
+    previousSelectionRef.current = selection;
+    pendingExternalSelectionRef.current = selection;
+  }
+
+  selectionRef.current = selection;
+  onSelectionChangeRef.current = onSelectionChange;
+
   React.useEffect(() => {
-    if (syncedFlowNodesRef.current === externalFlowNodes) {
+    const pendingSelection = pendingExternalSelectionRef.current;
+    if (!pendingSelection) {
       return;
     }
 
-    syncedFlowNodesRef.current = externalFlowNodes;
-    setFlowNodes(externalFlowNodes);
-  }, [externalFlowNodes, setFlowNodes]);
+    const timeoutId = window.setTimeout(() => {
+      if (pendingExternalSelectionRef.current === pendingSelection) {
+        pendingExternalSelectionRef.current = null;
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [selection]);
 
   React.useEffect(() => {
-    const selectedNodeIds = new Set(selection.nodeIds);
+    const shouldSyncTopology = syncedTopologyNodesRef.current !== nodes;
+    const shouldSyncConnectMode = syncedConnectModeRef.current !== connectMode;
+    syncedTopologyNodesRef.current = nodes;
+    syncedConnectModeRef.current = connectMode;
 
     setFlowNodes((currentNodes) => {
-      let hasSelectionChange = false;
-      const nextNodes = currentNodes.map((node) => {
-        const selected = selectedNodeIds.has(node.id);
-        if (node.selected === selected) {
-          return node;
+      const currentNodesById = new Map(currentNodes.map((node) => [node.id, node]));
+      let hasChanges = currentNodes.length !== externalFlowNodes.length;
+      const nextNodes = externalFlowNodes.map((externalNode) => {
+        const currentNode = currentNodesById.get(externalNode.id);
+
+        if (!currentNode) {
+          hasChanges = true;
+          return externalNode;
         }
 
-        hasSelectionChange = true;
-        return { ...node, selected };
+        const shouldSyncPosition = shouldSyncTopology
+          && (
+            currentNode.position.x !== externalNode.position.x
+            || currentNode.position.y !== externalNode.position.y
+          );
+        const shouldSyncNodeData = (shouldSyncTopology || shouldSyncConnectMode)
+          && (
+            currentNode.type !== externalNode.type
+            || currentNode.data.topologyNode !== externalNode.data.topologyNode
+            || currentNode.data.connectMode !== externalNode.data.connectMode
+          );
+        const shouldSyncSelection = currentNode.selected !== externalNode.selected;
+
+        if (!shouldSyncPosition && !shouldSyncNodeData && !shouldSyncSelection) {
+          return currentNode;
+        }
+
+        hasChanges = true;
+        return {
+          ...currentNode,
+          ...(shouldSyncNodeData ? { data: externalNode.data, type: externalNode.type } : {}),
+          ...(shouldSyncPosition ? { position: externalNode.position } : {}),
+          ...(shouldSyncSelection ? { selected: externalNode.selected } : {}),
+        };
       });
 
-      return hasSelectionChange ? nextNodes : currentNodes;
+      return hasChanges ? nextNodes : currentNodes;
     });
-  }, [selection.nodeIds, setFlowNodes]);
+  }, [connectMode, externalFlowNodes, nodes, setFlowNodes]);
 
   React.useEffect(() => {
     function syncFullscreenState() {
@@ -240,19 +323,37 @@ function TopologyFlowCanvasInner({
     }
   }
 
-  function handleSelectionChange({ nodes: selectedNodes, edges: selectedEdges }: OnSelectionChangeParams) {
-    onSelectionChange({
+  const reportSelectionChange = React.useCallback((nextSelection: TopologySelection, force = false) => {
+    if (!force && hasSameTopologySelection(selectionRef.current, nextSelection)) {
+      return;
+    }
+
+    onSelectionChangeRef.current(nextSelection);
+  }, []);
+
+  const handleSelectionChange = React.useCallback(({ nodes: selectedNodes, edges: selectedEdges }: OnSelectionChangeParams) => {
+    const nextSelection = {
       edgeIds: selectedEdges.map((edge) => edge.id),
       nodeIds: selectedNodes.map((node) => node.id),
-    });
-  }
+    };
+    const pendingExternalSelection = pendingExternalSelectionRef.current;
+
+    if (pendingExternalSelection) {
+      if (hasSameTopologySelection(pendingExternalSelection, nextSelection)) {
+        pendingExternalSelectionRef.current = null;
+      }
+      return;
+    }
+
+    reportSelectionChange(nextSelection);
+  }, [reportSelectionChange]);
 
   function handleNodeClick(event: React.MouseEvent, node: { id: string }) {
     if (event.shiftKey || event.ctrlKey || event.metaKey) {
       return;
     }
 
-    onSelectionChange({
+    reportSelectionChange({
       edgeIds: [],
       nodeIds: [node.id],
     });
@@ -339,7 +440,7 @@ function TopologyFlowCanvasInner({
 
       event.preventDefault();
       setFlowNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: false })));
-      onSelectionChange({ edgeIds: [], nodeIds: [] });
+      reportSelectionChange({ edgeIds: [], nodeIds: [] }, true);
       return;
     }
 
@@ -491,7 +592,7 @@ function TopologyFlowCanvasInner({
         title={isMiniMapVisible ? '隐藏导航图' : '显示导航图'}
         type="button"
       >
-        <Map aria-hidden="true" />
+        <MapIcon aria-hidden="true" />
       </button>
     </section>
   );

@@ -10,6 +10,7 @@ import type { TemplateEdge } from './template-editor-screen';
 import type { TemplateNode } from '../../../lib/scenario-graph';
 
 const flowState = vi.hoisted(() => ({
+  emitSelectionEvents: false,
   props: null as Record<string, any> | null,
   fitView: vi.fn(),
   nodeChanges: vi.fn(),
@@ -41,8 +42,20 @@ vi.mock('@xyflow/react', async () => {
       />
     ),
     Position: { Left: 'left', Right: 'right' },
-    ReactFlow: ({ children, ...props }: { children: React.ReactNode }) => {
+    ReactFlow: ({ children, ...props }: { children: React.ReactNode } & Record<string, any>) => {
       flowState.props = props;
+
+      ReactModule.useEffect(() => {
+        if (!flowState.emitSelectionEvents) {
+          return;
+        }
+
+        props.onSelectionChange?.({
+          edges: props.edges.filter((edge: Record<string, any>) => edge.selected),
+          nodes: props.nodes.filter((node: Record<string, any>) => node.selected),
+        });
+      }, [props.edges, props.nodes, props.onSelectionChange]);
+
       return <div data-testid="react-flow">{children}</div>;
     },
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => (
@@ -164,6 +177,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  flowState.emitSelectionEvents = false;
   fullscreenElement = null;
   fullscreenRequestTarget = null;
   requestFullscreen.mockReset();
@@ -324,6 +338,47 @@ describe('TopologyFlowCanvas', () => {
 
     await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(false));
     expect(flowState.props?.nodes[1].selected).toBe(true);
+  });
+
+  it('同步父级选中态时不将 React Flow 回调反向写回编辑器', async () => {
+    flowState.emitSelectionEvents = true;
+    const canvasProps = createCanvasProps();
+
+    render(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        selection={{ nodeIds: ['switch-1'], edgeIds: [] }}
+      />,
+    );
+
+    await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(true));
+    expect(canvasProps.onSelectionChange).not.toHaveBeenCalled();
+  });
+
+  it('新增资源并选中时不将 React Flow 回调反向写回编辑器', async () => {
+    const canvasProps = createCanvasProps();
+    const { rerender } = render(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        nodes={[nodes[0]!]}
+        selection={{ nodeIds: [], edgeIds: [] }}
+      />,
+    );
+
+    await waitFor(() => expect(flowState.props?.nodes).toHaveLength(1));
+    flowState.emitSelectionEvents = true;
+
+    rerender(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        nodes={nodes}
+        selection={{ nodeIds: ['ecs-1'], edgeIds: [] }}
+      />,
+    );
+
+    await waitFor(() => expect(flowState.props?.nodes[1].selected).toBe(true));
+    expect(flowState.props?.nodes[0].selected).toBe(false);
+    expect(canvasProps.onSelectionChange).not.toHaveBeenCalled();
   });
 
   it('同步父编辑器选择时保留尚未提交的节点位置', async () => {
