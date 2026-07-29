@@ -362,6 +362,30 @@ describe('Range instance apply API', () => {
     );
   });
 
+  it('rejects a duplicate apply while the same draft revision already has a pending update job', async () => {
+    const fixture = await createSyncFixture();
+
+    const first = await request(app.getHttpServer())
+      .post(`/admin/ranges/${fixture.instance.id}/apply`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ expectedDraftRevision: 1 })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${fixture.instance.id}/apply`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ expectedDraftRevision: 1 })
+      .expect(409);
+
+    const updateJobs = (await repository.listProvisionJobs()).filter(
+      (job) => job.rangeInstanceId === fixture.instance.id && job.jobType === 'update',
+    );
+
+    expect(updateJobs).toHaveLength(1);
+    expect(updateJobs[0]?.id).toBe(first.body.id);
+    expect(updateJobs[0]?.status).toBe('pending');
+  });
+
   it('rejects a stale apply revision without creating an orphaned update job', async () => {
     const before = await repository.listProvisionJobs();
 

@@ -117,6 +117,19 @@ test('database package includes a checked-in migration baseline', () => {
   );
 });
 
+test('topology snapshot migration preserves recoverable legacy update jobs', () => {
+  const migration = fs.readFileSync(
+    new URL('../prisma/migrations/20260730_add_provision_job_topology_snapshot/migration.sql', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(migration, /UPDATE "ProvisionJob"/);
+  assert.match(migration, /"topologySnapshot"\s*=\s*jsonb_build_object/);
+  assert.match(migration, /"jobType"\s*=\s*'update'/);
+  assert.match(migration, /"status"\s*=\s*'failed'/);
+  assert.match(migration, /Re-save the topology draft and apply changes again/);
+});
+
 test('workspace exposes real-postgres local scripts and deploy migration command', () => {
   const rootPackage = JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'));
   const databasePackage = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));

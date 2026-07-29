@@ -1130,6 +1130,7 @@ export class PrismaAdminRepository implements AdminRepository {
       const result = await transaction.rangeInstance.updateMany({
         where: {
           id,
+          status: 'running',
           draftRevision: expectedDraftRevision,
         },
         data: {
@@ -1156,6 +1157,7 @@ export class PrismaAdminRepository implements AdminRepository {
       const result = await transaction.rangeInstance.updateMany({
         where: {
           id,
+          status: 'running',
           draftRevision: expectedDraftRevision,
         },
         data: {
@@ -1178,49 +1180,70 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput): Promise<ProvisionJobRecord | null> {
-    return this.prisma.$transaction(async (transaction) => {
-      const instance = await transaction.rangeInstance.findUnique({
-        where: { id: input.rangeInstanceId },
-      });
+    try {
+      return await this.prisma.$transaction(async (transaction) => {
+        const instance = await transaction.rangeInstance.findUnique({
+          where: { id: input.rangeInstanceId },
+        });
 
-      if (
-        !instance ||
-        instance.status !== 'running' ||
-        instance.draftRevision !== input.expectedDraftRevision ||
-        !instance.draftTopologyGraph ||
-        !instance.draftTopologySpec ||
-        !instance.draftScenarioTemplateSpec ||
-        !instance.draftCompiledProvisionSpec
-      ) {
-        return null;
-      }
+        if (
+          !instance ||
+          instance.status !== 'running' ||
+          instance.draftRevision !== input.expectedDraftRevision ||
+          !instance.draftTopologyGraph ||
+          !instance.draftTopologySpec ||
+          !instance.draftScenarioTemplateSpec ||
+          !instance.draftCompiledProvisionSpec
+        ) {
+          return null;
+        }
 
-      const job = await transaction.provisionJob.create({
-        data: {
-          rangeInstanceId: input.rangeInstanceId,
-          jobType: 'update',
-          triggeredBy: input.triggeredBy,
-          topologySnapshot: input.topologySnapshot as Prisma.InputJsonValue,
-        },
-      });
-      const updated = await transaction.rangeInstance.updateMany({
-        where: {
-          id: input.rangeInstanceId,
-          status: 'running',
-          draftRevision: input.expectedDraftRevision,
-        },
-        data: {
-          lastJobId: job.id,
-          errorSummary: null,
-        },
-      });
+        const job = await transaction.provisionJob.create({
+          data: {
+            rangeInstanceId: input.rangeInstanceId,
+            jobType: 'update',
+            triggeredBy: input.triggeredBy,
+            topologySnapshot: input.topologySnapshot as Prisma.InputJsonValue,
+          },
+        });
+        const updated = await transaction.rangeInstance.updateMany({
+          where: {
+            id: input.rangeInstanceId,
+            status: 'running',
+            draftRevision: input.expectedDraftRevision,
+            jobs: {
+              none: {
+                id: {
+                  not: job.id,
+                },
+                jobType: 'update',
+                status: {
+                  in: ['pending', 'running'],
+                },
+              },
+            },
+          },
+          data: {
+            lastJobId: job.id,
+            errorSummary: null,
+          },
+        });
 
-      if (updated.count !== 1) {
+        if (updated.count !== 1) {
+          throw new RangeInstanceDraftRevisionConflictError();
+        }
+
+        return job as ProvisionJobRecord;
+      }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
         throw new RangeInstanceDraftRevisionConflictError();
       }
 
-      return job as ProvisionJobRecord;
-    });
+      throw error;
+    }
   }
 
   async completeRangeInstanceDraftApply(

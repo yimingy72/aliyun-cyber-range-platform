@@ -342,6 +342,10 @@ export class RangeInstancesService {
       this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
+    if (instance.status !== 'running') {
+      throw new ConflictException('Only running instances can discard draft changes');
+    }
+
     const updated = await this.adminRepository.discardRangeInstanceDraft(id, instance.draftRevision ?? 0);
 
     if (!updated) {

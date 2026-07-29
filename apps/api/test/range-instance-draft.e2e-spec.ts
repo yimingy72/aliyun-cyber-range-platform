@@ -290,6 +290,40 @@ describe('Range instance draft API', () => {
     expect(response.body.draftRevision).toBe(3);
   });
 
+  it('keeps a destroyed instance draft immutable', async () => {
+    const historicalInstance = await repository.createRangeInstance({
+      name: 'historical-draft-range',
+      createdBy: draftUser.id,
+      ownerUserId: draftUser.id,
+      templateId: 'historical-template',
+      status: 'destroyed',
+      draftTopologyGraph: validDraftPayload.draftTopologyGraph,
+      draftTopologySpec: validDraftPayload.draftTopologySpec,
+      draftScenarioTemplateSpec: validDraftPayload.draftScenarioTemplateSpec,
+      draftCompiledProvisionSpec: validDraftPayload.draftCompiledProvisionSpec,
+      draftRevision: 1,
+    });
+
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${historicalInstance.id}/draft`)
+      .set('authorization', `Bearer ${userToken}`)
+      .send({ ...validDraftPayload, expectedDraftRevision: 1 })
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .delete(`/admin/ranges/${historicalInstance.id}/draft`)
+      .set('authorization', `Bearer ${userToken}`)
+      .expect(409);
+
+    await expect(repository.getRangeInstanceById(historicalInstance.id)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'destroyed',
+        draftTopologyGraph: validDraftPayload.draftTopologyGraph,
+        draftRevision: 1,
+      }),
+    );
+  });
+
   it('rejects client-sent draftUpdatedBy on draft save requests', async () => {
     await request(app.getHttpServer())
       .patch(`/admin/ranges/${instanceId}/draft`)

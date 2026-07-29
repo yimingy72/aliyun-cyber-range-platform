@@ -802,7 +802,11 @@ export function createMemoryAdminRepository(): AdminRepository {
     async saveRangeInstanceDraft(id: string, expectedDraftRevision: number, input: SaveRangeInstanceDraftInput) {
       const record = rangeInstances.find((instance) => instance.id === id);
 
-      if (!record || (record.draftRevision ?? 0) !== expectedDraftRevision) {
+      if (
+        !record ||
+        record.status !== 'running' ||
+        (record.draftRevision ?? 0) !== expectedDraftRevision
+      ) {
         return null;
       }
 
@@ -822,7 +826,11 @@ export function createMemoryAdminRepository(): AdminRepository {
     async discardRangeInstanceDraft(id: string, expectedDraftRevision: number) {
       const record = rangeInstances.find((instance) => instance.id === id);
 
-      if (!record || (record.draftRevision ?? 0) !== expectedDraftRevision) {
+      if (
+        !record ||
+        record.status !== 'running' ||
+        (record.draftRevision ?? 0) !== expectedDraftRevision
+      ) {
         return null;
       }
 
@@ -850,6 +858,17 @@ export function createMemoryAdminRepository(): AdminRepository {
         !instance.draftTopologySpec ||
         !instance.draftScenarioTemplateSpec ||
         !instance.draftCompiledProvisionSpec
+      ) {
+        return null;
+      }
+
+      if (
+        provisionJobs.some(
+          (job) =>
+            job.rangeInstanceId === input.rangeInstanceId &&
+            job.jobType === 'update' &&
+            (job.status === 'pending' || job.status === 'running'),
+        )
       ) {
         return null;
       }
