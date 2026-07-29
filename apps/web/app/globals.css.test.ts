@@ -128,6 +128,7 @@ describe('design system CSS transition contract', () => {
     expect(loginLayout).not.toContain('grid-template-columns');
     expect(loginCard).toContain('border-radius: 6px');
     expect(loginCard).toContain('padding: 34px');
+    expect(loginCard).toContain('max-width: 420px');
     expect(loginCard).toContain('animation: admin-content-enter 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both');
     expect(loginForm).toContain('gap: 18px');
     expect(loginCopy).toContain('text-align: left');
