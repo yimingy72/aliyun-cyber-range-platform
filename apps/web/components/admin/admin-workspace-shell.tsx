@@ -10,6 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import {
+  buildAdminOidcLogoutUrl,
+  clearPendingAdminOidcLogin,
   parseAdminOidcSessionPayload,
   readAdminOidcTokenExpiresAt,
   refreshAdminOidcToken,
@@ -149,6 +151,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const [isRenewingSession, setIsRenewingSession] = useState(false);
   const renewalTimeoutRef = useRef<number | null>(null);
   const renewingRef = useRef(false);
+  const loggingOutRef = useRef(false);
   const visibleNavigationItems = navigationItems.filter((item) => !item.requiresAdmin || session.isAdmin);
   const tokenExpiresAt = session.token ? readAdminOidcTokenExpiresAt(session.token) : null;
   const shouldRenewNow = Boolean(
@@ -182,6 +185,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
 
       writeAdminSession({
         ...nextSession,
+        idToken: nextSession.idToken ?? session.idToken,
         refreshToken: nextSession.refreshToken ?? session.refreshToken,
       });
     } catch {
@@ -194,7 +198,14 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   }
 
   useEffect(() => {
-    if (!isLoginRoute && !isCallbackRoute && session.isReady && !session.token && !isRenewingSession) {
+    if (
+      !loggingOutRef.current &&
+      !isLoginRoute &&
+      !isCallbackRoute &&
+      session.isReady &&
+      !session.token &&
+      !isRenewingSession
+    ) {
       router.replace('/admin/login');
     }
   }, [isCallbackRoute, isLoginRoute, isRenewingSession, router, session.isReady, session.token]);
@@ -267,6 +278,24 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
     tokenExpiresAt,
   ]);
 
+  function logoutFromPlatform() {
+    if (loggingOutRef.current) {
+      return;
+    }
+
+    loggingOutRef.current = true;
+    const logoutUrl = buildAdminOidcLogoutUrl({
+      issuer: oidcIssuer,
+      clientId: oidcClientId,
+      postLogoutRedirectUri: `${window.location.origin}/admin/login`,
+      idTokenHint: session.idToken,
+    });
+
+    session.logout();
+    clearPendingAdminOidcLogin();
+    window.location.assign(logoutUrl);
+  }
+
   if (isLoginRoute || isCallbackRoute) {
     return <>{children}</>;
   }
@@ -335,10 +364,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
                 </div>
               ) : null}
               <Button
-                onClick={() => {
-                  session.logout();
-                  router.replace('/admin/login');
-                }}
+                onClick={logoutFromPlatform}
                 size="sm"
                 type="button"
                 variant="outline"

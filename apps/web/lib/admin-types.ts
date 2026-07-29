@@ -9,6 +9,7 @@ export type AdminProfile = {
 
 export type AdminSessionPayload = {
   token: string;
+  idToken?: string | null;
   refreshToken?: string | null;
   profile: AdminProfile;
 };

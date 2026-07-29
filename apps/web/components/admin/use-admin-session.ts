@@ -26,6 +26,7 @@ export function useAdminSession() {
   return useMemo(
     () => ({
       token: session?.token ?? null,
+      idToken: session?.idToken ?? null,
       refreshToken: session?.refreshToken ?? null,
       profile: session?.profile ?? null,
       isAdmin: session?.profile?.role === 'admin',

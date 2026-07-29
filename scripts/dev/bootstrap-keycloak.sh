@@ -170,7 +170,8 @@ ensure_realm_roles_mapper() {
 
  /opt/keycloak/bin/kcadm.sh update "clients/$PLATFORM_WEB_CLIENT_ID" -r "$REALM" \
   -s "redirectUris=[\"${WEB_PUBLIC_URL}/*\"]" \
-  -s "webOrigins=[\"${WEB_PUBLIC_URL}\"]" >/dev/null
+  -s "webOrigins=[\"${WEB_PUBLIC_URL}\"]" \
+  -s 'attributes."post.logout.redirect.uris"=+' >/dev/null
 ensure_subject_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_preferred_username_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_realm_roles_mapper "$PLATFORM_WEB_CLIENT_ID"

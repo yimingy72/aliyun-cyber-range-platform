@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAdminOidcAuthorizeUrl, parseAdminOidcSessionPayload } from './admin-oidc';
+import {
+  buildAdminOidcAuthorizeUrl,
+  buildAdminOidcLogoutUrl,
+  parseAdminOidcSessionPayload,
+} from './admin-oidc';
 
 describe('admin OIDC helpers', () => {
   it('builds an authorization url with PKCE values', async () => {
@@ -21,6 +25,24 @@ describe('admin OIDC helpers', () => {
     expect(authorization.codeVerifier).toBeTruthy();
   });
 
+  it('builds a Keycloak logout url that returns to the admin login page', () => {
+    const logoutUrl = new URL(
+      buildAdminOidcLogoutUrl({
+        issuer: 'http://localhost:8080/realms/cyber-range',
+        clientId: 'platform-web',
+        postLogoutRedirectUri: 'http://localhost:3000/admin/login',
+        idTokenHint: 'id-token-hint',
+      }),
+    );
+
+    expect(logoutUrl.origin + logoutUrl.pathname).toBe(
+      'http://localhost:8080/realms/cyber-range/protocol/openid-connect/logout',
+    );
+    expect(logoutUrl.searchParams.get('client_id')).toBe('platform-web');
+    expect(logoutUrl.searchParams.get('post_logout_redirect_uri')).toBe('http://localhost:3000/admin/login');
+    expect(logoutUrl.searchParams.get('id_token_hint')).toBe('id-token-hint');
+  });
+
   it('parses an access token into an admin session payload', () => {
     const token = [
       Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url'),
@@ -34,8 +56,9 @@ describe('admin OIDC helpers', () => {
       'signature',
     ].join('.');
 
-    expect(parseAdminOidcSessionPayload({ access_token: token })).toEqual({
+    expect(parseAdminOidcSessionPayload({ access_token: token, id_token: 'id-token' })).toEqual({
       token,
+      idToken: 'id-token',
       profile: {
         id: 'alice-subject',
         username: 'alice',

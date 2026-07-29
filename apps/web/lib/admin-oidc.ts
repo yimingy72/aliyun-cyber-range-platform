@@ -16,6 +16,7 @@ export type AdminOidcPendingLogin = {
 
 export type AdminOidcTokenResponse = {
   access_token?: string;
+  id_token?: string;
   refresh_token?: string;
 };
 
@@ -68,6 +69,34 @@ export function consumePendingAdminOidcLogin(expectedState: string) {
     state: storedState,
     codeVerifier: storedCodeVerifier,
   };
+}
+
+export function clearPendingAdminOidcLogin() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.sessionStorage.removeItem(ADMIN_OIDC_STATE_STORAGE_KEY);
+  window.sessionStorage.removeItem(ADMIN_OIDC_CODE_VERIFIER_STORAGE_KEY);
+}
+
+export function buildAdminOidcLogoutUrl(input: {
+  issuer: string;
+  clientId: string;
+  postLogoutRedirectUri: string;
+  idTokenHint?: string | null;
+}) {
+  const url = new URL(`${trimTrailingSlash(input.issuer)}/protocol/openid-connect/logout`);
+
+  url.searchParams.set('client_id', input.clientId);
+  url.searchParams.set('post_logout_redirect_uri', input.postLogoutRedirectUri);
+
+  const idTokenHint = normalizeText(input.idTokenHint);
+  if (idTokenHint) {
+    url.searchParams.set('id_token_hint', idTokenHint);
+  }
+
+  return url.toString();
 }
 
 export async function exchangeAdminOidcCode(input: {
@@ -124,6 +153,7 @@ export async function refreshAdminOidcToken(input: {
 
 export function parseAdminOidcSessionPayload(tokenResponse: AdminOidcTokenResponse): AdminSessionPayload | null {
   const accessToken = normalizeText(tokenResponse.access_token);
+  const idToken = normalizeText(tokenResponse.id_token);
   const refreshToken = normalizeText(tokenResponse.refresh_token);
 
   if (!accessToken) {
@@ -142,6 +172,7 @@ export function parseAdminOidcSessionPayload(tokenResponse: AdminOidcTokenRespon
 
   return {
     token: accessToken,
+    ...(idToken ? { idToken } : {}),
     ...(refreshToken ? { refreshToken } : {}),
     profile: {
       id: subject,

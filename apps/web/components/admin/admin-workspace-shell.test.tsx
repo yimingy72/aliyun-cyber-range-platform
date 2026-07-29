@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminSessionPayload } from '../../lib/admin-types';
 
-const { replaceMock, pathnameState, sessionOverrideState, storageEventState } = vi.hoisted(() => ({
+const { assignMock, replaceMock, pathnameState, sessionOverrideState, storageEventState } = vi.hoisted(() => ({
+  assignMock: vi.fn(),
   replaceMock: vi.fn(),
   pathnameState: { value: '/admin/scenarios' },
   sessionOverrideState: {
@@ -22,6 +23,7 @@ const { replaceMock, pathnameState, sessionOverrideState, storageEventState } = 
 }));
 
 const storage = new Map<string, string>();
+const oidcStorage = new Map<string, string>();
 const fetchMock = vi.fn();
 
 function createJwt(options?: { exp?: number; sub?: string; username?: string; role?: 'admin' | 'user' }) {
@@ -117,6 +119,27 @@ Object.defineProperty(window, 'localStorage', {
   },
 });
 
+Object.defineProperty(window, 'sessionStorage', {
+  configurable: true,
+  value: {
+    getItem: (key: string) => oidcStorage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      oidcStorage.set(key, value);
+    },
+    removeItem: (key: string) => {
+      oidcStorage.delete(key);
+    },
+  },
+});
+
+Object.defineProperty(window, 'location', {
+  configurable: true,
+  value: {
+    origin: 'http://localhost:3000',
+    assign: assignMock,
+  },
+});
+
 vi.stubGlobal('fetch', fetchMock);
 
 vi.mock('next/navigation', () => ({
@@ -141,6 +164,7 @@ import { AdminWorkspaceShell } from './admin-workspace-shell';
 function createSession(overrides?: Partial<AdminSessionPayload>): AdminSessionPayload {
   return {
     token: overrides?.token ?? createJwt(),
+    idToken: overrides?.idToken,
     refreshToken: overrides?.refreshToken,
     profile: {
       id: overrides?.profile?.id ?? 'admin',
@@ -163,6 +187,7 @@ function clickLinkWithoutBrowserNavigation(link: Element, init?: MouseEventInit)
 
 describe('AdminWorkspaceShell', () => {
   beforeEach(() => {
+    assignMock.mockReset();
     replaceMock.mockReset();
     pathnameState.value = '/admin/scenarios';
     sessionOverrideState.value = null;
@@ -170,6 +195,7 @@ describe('AdminWorkspaceShell', () => {
     storageEventState.queue = [];
     storageEventState.scheduled = false;
     storage.clear();
+    oidcStorage.clear();
     fetchMock.mockReset();
     clearAdminSession();
     storage.clear();
@@ -331,6 +357,35 @@ describe('AdminWorkspaceShell', () => {
     expect(screen.queryByRole('link', { name: /用户管理/i })).toBeNull();
     expect(screen.queryByRole('link', { name: /账单费用/i })).toBeNull();
     expect(screen.queryByRole('link', { name: /基础配置/i })).toBeNull();
+  });
+
+  it('ends the Keycloak browser session when the user explicitly logs out', async () => {
+    writeAdminSession(createSession({ idToken: 'id-token-hint' }));
+    window.sessionStorage.setItem('aliyun-cyber-range-admin-oidc-state', 'stale-state');
+    window.sessionStorage.setItem('aliyun-cyber-range-admin-oidc-code-verifier', 'stale-code-verifier');
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+
+    expect(window.localStorage.getItem('aliyun-cyber-range-admin-session')).toBeNull();
+    expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-state')).toBeNull();
+    expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-code-verifier')).toBeNull();
+    expect(assignMock).toHaveBeenCalledTimes(1);
+
+    const logoutUrl = new URL(String(assignMock.mock.calls[0][0]));
+    expect(logoutUrl.origin + logoutUrl.pathname).toBe(
+      'http://localhost:8080/realms/cyber-range/protocol/openid-connect/logout',
+    );
+    expect(logoutUrl.searchParams.get('client_id')).toBe('platform-web');
+    expect(logoutUrl.searchParams.get('post_logout_redirect_uri')).toBe('http://localhost:3000/admin/login');
+    expect(logoutUrl.searchParams.get('id_token_hint')).toBe('id-token-hint');
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it('keeps the login route outside the workspace shell', () => {
