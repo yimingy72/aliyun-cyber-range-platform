@@ -40,11 +40,6 @@ export function AdminLoginScreen({ oidcIssuer, oidcClientId }: AdminLoginScreenP
   return (
     <main className="admin-login-shell">
       <div className="admin-login-layout">
-        <aside aria-hidden="true" className="admin-login-context">
-          <strong>CYBER RANGE / ADMIN</strong>
-          <p>统一身份验证完成后，继续进入综合靶场管理工作台。</p>
-        </aside>
-
         <section aria-labelledby="admin-login-title" className="admin-login-card">
           <div aria-label="管理员登录表单" className="admin-login-form">
             <div className="admin-login-copy">
