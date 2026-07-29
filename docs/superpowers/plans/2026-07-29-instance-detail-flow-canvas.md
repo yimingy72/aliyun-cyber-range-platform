@@ -1073,7 +1073,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: PASS，运行中实例完整编辑、保存/应用/回写顺序、草稿视口恢复和历史只读均通过。
 
-- [ ] **Step 5: 提交实例详情业务接入**
+- [x] **Step 5: 提交实例详情业务接入**
 
 ```bash
 git add \
