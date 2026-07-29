@@ -50,6 +50,9 @@ export type SaveRangeTemplateTopologyInput = {
   compiledProvisionSpec: Record<string, unknown>;
   compiledSpec: Record<string, unknown>;
 };
+export type ApplyRangeInstanceDraftInput = {
+  expectedDraftRevision: number;
+};
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
 export type ImageCatalogScopePayload = {
   snapshots: Array<Record<string, unknown> & { id: string }>;
@@ -235,7 +238,11 @@ export type PlatformApiClientLike = {
   getRangeInstance(id: string): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
-  applyRangeInstanceDraft(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
+  applyRangeInstanceDraft(
+    id: string,
+    expectedDraftRevision: number,
+    operation?: OperationRequest,
+  ): Promise<Record<string, unknown>>;
   syncRangeInstanceTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
   retryRangeInstance(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
   runRangeInstanceNodeAction(

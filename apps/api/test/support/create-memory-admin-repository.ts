@@ -15,6 +15,8 @@ import {
   CreateOperationConfirmationInput,
   CreatePlatformUserInput,
   CreateSingleInstanceBatchInput,
+  ApplyRangeInstanceDraftInput,
+  CompleteRangeInstanceDraftApplyInput,
   CreateProvisionJobInput,
   CreateProvisionJobStepLogInput,
   CreateRangeInstanceInput,
@@ -642,10 +644,10 @@ export function createMemoryAdminRepository(): AdminRepository {
         singleInstanceConfig: cloneIfDefined(input.singleInstanceConfig ?? null),
         templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
-        templateNameSnapshot: null,
-        templateSlugSnapshot: null,
-        templateVersionSnapshot: null,
-        templateModulePathSnapshot: null,
+        templateNameSnapshot: input.templateNameSnapshot ?? null,
+        templateSlugSnapshot: input.templateSlugSnapshot ?? null,
+        templateVersionSnapshot: input.templateVersionSnapshot ?? null,
+        templateModulePathSnapshot: input.templateModulePathSnapshot ?? null,
         runtimeTopologyGraph: cloneIfDefined(input.runtimeTopologyGraph ?? null),
         runtimeScenarioTemplateSpec: cloneIfDefined(input.runtimeScenarioTemplateSpec ?? null),
         runtimeCompiledProvisionSpec: cloneIfDefined(input.runtimeCompiledProvisionSpec ?? null),
@@ -773,6 +775,70 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput) {
+      const instance = rangeInstances.find((record) => record.id === input.rangeInstanceId);
+
+      if (
+        !instance ||
+        instance.status !== 'running' ||
+        instance.draftRevision !== input.expectedDraftRevision ||
+        !instance.draftTopologyGraph ||
+        !instance.draftTopologySpec ||
+        !instance.draftScenarioTemplateSpec ||
+        !instance.draftCompiledProvisionSpec
+      ) {
+        return null;
+      }
+
+      const job: ProvisionJobRecord = {
+        id: nextId(),
+        rangeInstanceId: input.rangeInstanceId,
+        jobType: 'update',
+        topologySnapshot: clone(input.topologySnapshot),
+        status: 'pending',
+        triggeredBy: input.triggeredBy,
+        startedAt: null,
+        finishedAt: null,
+        retryCount: 0,
+        errorSummary: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+
+      provisionJobs.unshift(job);
+      instance.lastJobId = job.id;
+      instance.errorSummary = null;
+      instance.updatedAt = now();
+
+      return clone(job);
+    },
+    async completeRangeInstanceDraftApply(id: string, input: CompleteRangeInstanceDraftApplyInput) {
+      const instance = rangeInstances.find((record) => record.id === id)!;
+      const shouldClearDraft = instance.draftRevision === input.expectedDraftRevision;
+
+      Object.assign(instance, {
+        runtimeTopologyGraph: clone(input.runtimeTopologyGraph),
+        runtimeScenarioTemplateSpec: clone(input.runtimeScenarioTemplateSpec),
+        runtimeCompiledProvisionSpec: clone(input.runtimeCompiledProvisionSpec),
+        accessEntry: cloneIfDefined(input.accessEntry ?? null),
+        resourceSummary: cloneIfDefined(input.resourceSummary ?? null),
+        errorSummary: input.errorSummary ?? null,
+        ...(shouldClearDraft
+          ? {
+              draftTopologyGraph: null,
+              draftTopologySpec: null,
+              draftScenarioTemplateSpec: null,
+              draftCompiledProvisionSpec: null,
+              draftUpdatedBy: null,
+              draftUpdatedAt: null,
+              draftRevision: (instance.draftRevision ?? 0) + 1,
+            }
+          : {}),
+        updatedAt: now(),
+      });
+
+      return clone(instance);
+    },
     async listProvisionJobs() {
       return cloneList(provisionJobs);
     },
@@ -781,6 +847,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         id: nextId(),
         rangeInstanceId: input.rangeInstanceId,
         jobType: input.jobType,
+        topologySnapshot: cloneIfDefined(input.topologySnapshot ?? null),
         status: input.status ?? 'pending',
         triggeredBy: input.triggeredBy,
         startedAt: null,

@@ -12,6 +12,7 @@ import {
   CloudImageSnapshotRecord,
   CollectImageCatalogItemInput,
   CollectPlatformImageAssetInput,
+  CompleteRangeInstanceDraftApplyInput,
   CreatePlatformImageTagInput,
   CreateBillingAnomalyInput,
   CreateBillingLedgerResourceInput,
@@ -24,6 +25,7 @@ import {
   CreateSingleInstanceBatchInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
+  ApplyRangeInstanceDraftInput,
   FindBillingLedgerResourceInput,
   ImageCatalogItemRecord,
   IdempotentOperationRecord,
@@ -42,6 +44,7 @@ import {
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
+  RangeInstanceDraftRevisionConflictError,
   SaveRangeInstanceDraftInput,
   SingleInstanceBatchRecord,
   SingleInstanceBatchWithInstancesRecord,
@@ -855,6 +858,10 @@ export class PrismaAdminRepository implements AdminRepository {
         ownerUserId: input.ownerUserId ?? null,
         templateId: input.templateId ?? null,
         sourceTemplateVersionId: input.sourceTemplateVersionId ?? null,
+        templateNameSnapshot: input.templateNameSnapshot ?? null,
+        templateSlugSnapshot: input.templateSlugSnapshot ?? null,
+        templateVersionSnapshot: input.templateVersionSnapshot ?? null,
+        templateModulePathSnapshot: input.templateModulePathSnapshot ?? null,
         runtimeTopologyGraph: (input.runtimeTopologyGraph ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
@@ -1067,6 +1074,97 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
+  async applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput): Promise<ProvisionJobRecord | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const instance = await transaction.rangeInstance.findUnique({
+        where: { id: input.rangeInstanceId },
+      });
+
+      if (
+        !instance ||
+        instance.status !== 'running' ||
+        instance.draftRevision !== input.expectedDraftRevision ||
+        !instance.draftTopologyGraph ||
+        !instance.draftTopologySpec ||
+        !instance.draftScenarioTemplateSpec ||
+        !instance.draftCompiledProvisionSpec
+      ) {
+        return null;
+      }
+
+      const job = await transaction.provisionJob.create({
+        data: {
+          rangeInstanceId: input.rangeInstanceId,
+          jobType: 'update',
+          triggeredBy: input.triggeredBy,
+          topologySnapshot: input.topologySnapshot as Prisma.InputJsonValue,
+        },
+      });
+      const updated = await transaction.rangeInstance.updateMany({
+        where: {
+          id: input.rangeInstanceId,
+          status: 'running',
+          draftRevision: input.expectedDraftRevision,
+        },
+        data: {
+          lastJobId: job.id,
+          errorSummary: null,
+        },
+      });
+
+      if (updated.count !== 1) {
+        throw new RangeInstanceDraftRevisionConflictError();
+      }
+
+      return job as ProvisionJobRecord;
+    });
+  }
+
+  async completeRangeInstanceDraftApply(
+    id: string,
+    input: CompleteRangeInstanceDraftApplyInput,
+  ): Promise<RangeInstanceRecord> {
+    return this.prisma.$transaction(async (transaction) => {
+      const runtimeData = {
+        runtimeTopologyGraph: input.runtimeTopologyGraph as Prisma.InputJsonValue,
+        runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec as Prisma.InputJsonValue,
+        runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec as Prisma.InputJsonValue,
+        accessEntry: (input.accessEntry ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+        resourceSummary: (input.resourceSummary ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+        errorSummary: input.errorSummary ?? null,
+      };
+      const cleared = await transaction.rangeInstance.updateMany({
+        where: {
+          id,
+          draftRevision: input.expectedDraftRevision,
+        },
+        data: {
+          ...runtimeData,
+          draftTopologyGraph: Prisma.DbNull,
+          draftTopologySpec: Prisma.DbNull,
+          draftScenarioTemplateSpec: Prisma.DbNull,
+          draftCompiledProvisionSpec: Prisma.DbNull,
+          draftUpdatedBy: null,
+          draftUpdatedAt: null,
+          draftRevision: {
+            increment: 1,
+          },
+        },
+      });
+
+      if (cleared.count === 1) {
+        return transaction.rangeInstance.findUniqueOrThrow({
+          where: { id },
+        }) as Promise<RangeInstanceRecord>;
+      }
+
+      return transaction.rangeInstance.update({
+        where: { id },
+        data: runtimeData,
+      }) as Promise<RangeInstanceRecord>;
+    });
+  }
+
   async listProvisionJobs(): Promise<ProvisionJobRecord[]> {
     return this.prisma.provisionJob.findMany({
       orderBy: {
@@ -1081,6 +1179,9 @@ export class PrismaAdminRepository implements AdminRepository {
         rangeInstanceId: input.rangeInstanceId,
         jobType: input.jobType,
         triggeredBy: input.triggeredBy,
+        topologySnapshot: (input.topologySnapshot ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
         status: input.status ?? 'pending',
         retryCount: input.retryCount ?? 0,
       },

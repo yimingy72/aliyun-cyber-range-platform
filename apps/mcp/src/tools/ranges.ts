@@ -118,8 +118,13 @@ export const rangeTools: ToolDefinition[] = [
     outputSchema: actionOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
-      await saveRangeInstanceTopology(context, input);
-      return context.client.applyRangeInstanceDraft(input.rangeInstanceId, operation(input));
+      const saved = await saveRangeInstanceTopology(context, input);
+      const expectedDraftRevision = readAppliedDraftRevision(saved.draftRevision);
+      return context.client.applyRangeInstanceDraft(
+        input.rangeInstanceId,
+        expectedDraftRevision,
+        operation(input),
+      );
     },
   },
   {
@@ -310,6 +315,14 @@ function readString(value: unknown) {
 
 function readDraftRevision(value: unknown) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function readAppliedDraftRevision(value: unknown) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error('保存编排实例草稿后未返回有效版本号，无法应用变更');
+  }
+
+  return value;
 }
 
 function withResourceId(value: unknown, resultIdField: 'rangeInstanceId' | 'templateId') {

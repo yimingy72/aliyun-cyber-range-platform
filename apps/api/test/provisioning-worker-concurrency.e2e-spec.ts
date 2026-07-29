@@ -16,6 +16,50 @@ function createSystemConfigServiceStub() {
   };
 }
 
+function createImmutableUpdateTopologySnapshot(draftRevision = 1) {
+  return {
+    draftRevision,
+    topologyGraph: {
+      schemaVersion: '2.0.0',
+      nodes: [
+        { id: 'router-main', kind: 'router', label: 'Frozen VPC' },
+        { id: 'switch-dmz', kind: 'switch', label: 'Frozen DMZ' },
+        { id: 'ecs-entry', kind: 'ecs', label: 'Frozen entry' },
+      ],
+      edges: [],
+    },
+    topologySpec: {
+      vpcCidr: '10.88.0.0/16',
+      networkZones: [{ key: 'dmz', name: 'Frozen DMZ', purpose: 'public-entry', cidr: '10.88.10.0/24' }],
+      hosts: [{ key: 'ecs-entry', name: 'Frozen entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.88.10.10' }],
+      publicEntry: { hostKey: 'ecs-entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+    },
+    scenarioTemplateSpec: {
+      metadata: {
+        name: 'Frozen update',
+        slug: 'frozen-update',
+        version: 'v1',
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+      },
+      topology: { vpcCidr: '10.88.0.0/16', entryHostKey: 'ecs-entry' },
+      networkZones: [{ key: 'dmz', name: 'Frozen DMZ', purpose: 'public-entry', cidr: '10.88.10.0/24' }],
+      hosts: [{ key: 'ecs-entry', name: 'Frozen entry', zoneKey: 'dmz', role: 'entry', primaryPrivateIp: '10.88.10.10' }],
+    },
+    compiledProvisionSpec: {
+      topology: { vpcCidr: '10.88.0.0/16', entryHostKey: 'ecs-entry' },
+      networkZones: [{ key: 'dmz', name: 'Frozen DMZ', purpose: 'public-entry', cidr: '10.88.10.0/24' }],
+      hosts: [{ key: 'ecs-entry', name: 'Frozen entry', zoneKey: 'dmz', role: 'entry', primaryPrivateIp: '10.88.10.10' }],
+    },
+    compiledSpec: {
+      schemaVersion: '1.0.0',
+      resources: [{ id: 'ecs-entry', type: 'host', provider: 'alibaba_cloud', config: {} }],
+      topology: { vpcCidr: '10.88.0.0/16', publicEntryHostKey: 'ecs-entry' },
+    },
+    templateModulePath: 'infra/opentofu/modules/frozen-range',
+  };
+}
+
 describe('ProvisioningWorkerService concurrency', () => {
   it('requeues a stale running provision job when the worker restarts', async () => {
     const repository = createMemoryAdminRepository();
@@ -1824,6 +1868,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       rangeInstanceId: instance.id,
       jobType: 'update',
       triggeredBy: 'admin',
+      topologySnapshot: createImmutableUpdateTopologySnapshot(1),
     });
 
     await repository.updateRangeInstance(instance.id, {
@@ -2101,6 +2146,149 @@ describe('ProvisioningWorkerService concurrency', () => {
         id: instance.id,
         status: 'destroyed',
         errorSummary: null,
+      }),
+    );
+  });
+
+  it('uses only the immutable update job snapshot and retains a newer saved draft after the job succeeds', async () => {
+    const repository = createMemoryAdminRepository();
+    const snapshot = createImmutableUpdateTopologySnapshot(1);
+    const template = await repository.createRangeTemplate({
+      name: 'Frozen update template',
+      slug: 'frozen-update-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/current-template-must-not-be-read',
+      topologySpec: snapshot.topologySpec,
+      topologyGraph: snapshot.topologyGraph,
+      scenarioTemplateSpec: snapshot.scenarioTemplateSpec,
+      compiledProvisionSpec: snapshot.compiledProvisionSpec,
+      compiledSpec: snapshot.compiledSpec,
+    });
+    const newerDraft = createImmutableUpdateTopologySnapshot(2);
+    newerDraft.topologyGraph.nodes[2] = {
+      id: 'ecs-entry',
+      kind: 'ecs',
+      label: 'Newer draft entry',
+    };
+    const instance = await repository.createRangeInstance({
+      name: 'frozen-update-instance',
+      templateId: template.id,
+      status: 'running',
+      allocatedCidr: '10.88.0.0/16',
+      runtimeTopologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+      runtimeScenarioTemplateSpec: { metadata: { name: 'runtime-before-apply' } },
+      runtimeCompiledProvisionSpec: { topology: { vpcCidr: '10.88.0.0/16' } },
+      draftTopologyGraph: snapshot.topologyGraph,
+      draftTopologySpec: snapshot.topologySpec,
+      draftScenarioTemplateSpec: snapshot.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: snapshot.compiledProvisionSpec,
+      draftRevision: 1,
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'update',
+      triggeredBy: 'admin',
+      topologySnapshot: snapshot,
+    } as Parameters<typeof repository.createProvisionJob>[0]);
+    await repository.updateRangeInstance(instance.id, {
+      lastJobId: job.id,
+      draftTopologyGraph: newerDraft.topologyGraph,
+      draftTopologySpec: newerDraft.topologySpec,
+      draftScenarioTemplateSpec: newerDraft.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: newerDraft.compiledProvisionSpec,
+      draftRevision: 2,
+    });
+
+    const create = jest.fn().mockResolvedValue({
+      accessEntry: { hostRole: 'ecs-entry', publicIp: '47.88.0.10', privateIp: '10.88.10.10', ssh: 'ssh root@47.88.0.10' },
+      resourceSummary: { mode: 'opentofu', vpcId: 'vpc-frozen-update' },
+    });
+    const worker = new ProvisioningWorkerService(
+      repository,
+      { create, destroy: jest.fn() } as unknown as RangeProvisioner,
+      createSystemConfigServiceStub() as any,
+    );
+
+    await worker.process(job.id);
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateModulePath: snapshot.templateModulePath,
+        topologyGraph: snapshot.topologyGraph,
+        topologySpec: snapshot.topologySpec,
+        compiledProvisionSpec: snapshot.compiledProvisionSpec,
+        compiledSpec: snapshot.compiledSpec,
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        runtimeTopologyGraph: snapshot.topologyGraph,
+        runtimeScenarioTemplateSpec: snapshot.scenarioTemplateSpec,
+        runtimeCompiledProvisionSpec: snapshot.compiledProvisionSpec,
+        draftTopologyGraph: newerDraft.topologyGraph,
+        draftTopologySpec: newerDraft.topologySpec,
+        draftScenarioTemplateSpec: newerDraft.scenarioTemplateSpec,
+        draftCompiledProvisionSpec: newerDraft.compiledProvisionSpec,
+        draftRevision: 2,
+      }),
+    );
+  });
+
+  it('fails an update job without a valid immutable snapshot instead of reading the mutable instance draft', async () => {
+    const repository = createMemoryAdminRepository();
+    const mutableDraft = createImmutableUpdateTopologySnapshot(1);
+    const template = await repository.createRangeTemplate({
+      name: 'Missing snapshot template',
+      slug: 'missing-snapshot-template',
+      version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/missing-snapshot-template',
+      topologySpec: mutableDraft.topologySpec,
+      topologyGraph: mutableDraft.topologyGraph,
+      scenarioTemplateSpec: mutableDraft.scenarioTemplateSpec,
+      compiledProvisionSpec: mutableDraft.compiledProvisionSpec,
+      compiledSpec: mutableDraft.compiledSpec,
+    });
+    const instance = await repository.createRangeInstance({
+      name: 'missing-snapshot-instance',
+      templateId: template.id,
+      status: 'running',
+      allocatedCidr: '10.88.0.0/16',
+      draftTopologyGraph: mutableDraft.topologyGraph,
+      draftTopologySpec: mutableDraft.topologySpec,
+      draftScenarioTemplateSpec: mutableDraft.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: mutableDraft.compiledProvisionSpec,
+      draftRevision: 1,
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'update',
+      triggeredBy: 'admin',
+    });
+    const create = jest.fn().mockResolvedValue({
+      accessEntry: null,
+      resourceSummary: { mode: 'opentofu' },
+    });
+    const worker = new ProvisioningWorkerService(
+      repository,
+      { create, destroy: jest.fn() } as unknown as RangeProvisioner,
+      createSystemConfigServiceStub() as any,
+    );
+
+    await worker.process(job.id);
+
+    expect(create).not.toHaveBeenCalled();
+    await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        errorSummary: expect.stringContaining('topology snapshot'),
+      }),
+    );
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
+      expect.objectContaining({
+        draftTopologyGraph: mutableDraft.topologyGraph,
+        draftTopologySpec: mutableDraft.topologySpec,
+        draftScenarioTemplateSpec: mutableDraft.scenarioTemplateSpec,
+        draftCompiledProvisionSpec: mutableDraft.compiledProvisionSpec,
       }),
     );
   });

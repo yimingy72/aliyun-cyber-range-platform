@@ -851,7 +851,17 @@ export function RangeInstanceDetailScreen({
         return;
       }
 
-      await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id);
+      const expectedDraftRevision = saved.draftRevision;
+
+      if (
+        typeof expectedDraftRevision !== 'number' ||
+        !Number.isInteger(expectedDraftRevision) ||
+        expectedDraftRevision < 1
+      ) {
+        throw new Error('Saved range instance draft revision is unavailable');
+      }
+
+      await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, expectedDraftRevision);
       setSuccessMessage('实例配置变更已提交应用。');
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {

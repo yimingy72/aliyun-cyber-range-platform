@@ -469,6 +469,7 @@ describe('RangeInstanceDetailScreen', () => {
       id: 'range-1',
       name: '攻防实例-一号',
       status: 'running',
+      draftRevision: 1,
       draftTopologyGraph: {
         schemaVersion: '1',
         nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'checker-updated' }, label: 'checker-updated' }],
@@ -526,6 +527,7 @@ describe('RangeInstanceDetailScreen', () => {
         'http://localhost:3001',
         'dev-admin-token',
         'range-1',
+        1,
       ),
     );
   });

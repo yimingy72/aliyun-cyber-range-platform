@@ -230,10 +230,10 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  applyRangeInstanceDraft(id: string, operation?: OperationRequest) {
+  applyRangeInstanceDraft(id: string, expectedDraftRevision: number, operation?: OperationRequest) {
     return this.request<Record<string, unknown>>(`/admin/ranges/${encodeURIComponent(id)}/apply`, {
       method: 'POST',
-      body: '{}',
+      body: JSON.stringify({ expectedDraftRevision }),
       operation,
     });
   }

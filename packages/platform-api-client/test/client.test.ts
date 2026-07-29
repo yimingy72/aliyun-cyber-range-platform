@@ -151,6 +151,37 @@ describe('PlatformApiClient', () => {
     ).resolves.toEqual({ id: 'range-1' });
   });
 
+  it('sends the exact expected range draft revision when applying an instance draft', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/ranges/range-1/apply');
+      expect(init?.method).toBe('POST');
+      expect(init?.body).toBe(JSON.stringify({ expectedDraftRevision: 8 }));
+      expect((init?.headers as Record<string, string>)['x-idempotency-key']).toBe('apply-range-1-revision-8');
+      expect((init?.headers as Record<string, string>)['x-confirmation-id']).toBe('confirm-apply-1');
+
+      return new Response(JSON.stringify({ id: 'job-1', jobType: 'update' }), { status: 200 });
+    });
+    const client = new PlatformApiClient({
+      baseUrl: 'https://platform.example',
+      token: 'token-1',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      (client as unknown as {
+        applyRangeInstanceDraft: (
+          id: string,
+          expectedDraftRevision: number,
+          operation: { idempotencyKey: string; confirmationId: string },
+        ) => Promise<unknown>;
+      }).applyRangeInstanceDraft(
+        'range-1',
+        8,
+        { idempotencyKey: 'apply-range-1-revision-8', confirmationId: 'confirm-apply-1' },
+      ),
+    ).resolves.toEqual({ id: 'job-1', jobType: 'update' });
+  });
+
   it('finds single instance by flattening lists', async () => {
     const fetchMock = vi.fn(async (input: string) => {
       if (input.endsWith('/admin/instances?view=active')) {

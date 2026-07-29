@@ -375,6 +375,43 @@ describe('tool registry', () => {
     );
   });
 
+  it('applies the draft revision returned by save instead of the revision read before compilation', async () => {
+    const client = createClientStub();
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'range-1',
+      name: 'Web DMZ 练习环境',
+      draftRevision: 7,
+      runtimeScenarioTemplateSpec: {
+        metadata: {
+          name: 'Web DMZ',
+          slug: 'web-dmz',
+          version: '1.0.0',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: {
+          vpcCidr: '10.0.0.0/16',
+        },
+      },
+    });
+    (client.saveRangeInstanceDraft as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'range-1',
+      draftRevision: 8,
+    });
+    const registry = createToolRegistry(client);
+
+    await registry.callTool('range_instance_topology_apply', ['ranges:write', 'ranges:control'], {
+      rangeInstanceId: 'range-1',
+      topologyGraph: authoringGraph,
+    });
+
+    expect(client.applyRangeInstanceDraft).toHaveBeenCalledWith(
+      'range-1',
+      8,
+      { idempotencyKey: undefined, confirmationId: undefined },
+    );
+  });
+
   it('compiles a new topology graph before forwarding template creation', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);

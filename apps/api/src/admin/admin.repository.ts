@@ -289,10 +289,21 @@ export type RangeInstanceRecord = {
   updatedAt: Date;
 };
 
+export type ProvisionJobTopologySnapshot = {
+  draftRevision: number;
+  topologyGraph: Record<string, unknown>;
+  topologySpec: Record<string, unknown>;
+  scenarioTemplateSpec: Record<string, unknown>;
+  compiledProvisionSpec: Record<string, unknown>;
+  compiledSpec: Record<string, unknown>;
+  templateModulePath: string;
+};
+
 export type ProvisionJobRecord = {
   id: string;
   rangeInstanceId: string;
   jobType: ProvisionJobType;
+  topologySnapshot: ProvisionJobTopologySnapshot | null;
   status: ProvisionJobStatus;
   triggeredBy: string;
   startedAt: Date | null;
@@ -803,6 +814,10 @@ export type CreateRangeInstanceInput = {
   ownerUserId?: string | null;
   templateId?: string | null;
   sourceTemplateVersionId?: string | null;
+  templateNameSnapshot?: string | null;
+  templateSlugSnapshot?: string | null;
+  templateVersionSnapshot?: string | null;
+  templateModulePathSnapshot?: string | null;
   runtimeTopologyGraph?: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
   runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
@@ -873,9 +888,39 @@ export type CreateProvisionJobInput = {
   rangeInstanceId: string;
   jobType: ProvisionJobType;
   triggeredBy: string;
+  topologySnapshot?: ProvisionJobTopologySnapshot | null;
   status?: ProvisionJobStatus;
   retryCount?: number;
 };
+
+export type ApplyRangeInstanceDraftInput = {
+  rangeInstanceId: string;
+  expectedDraftRevision: number;
+  triggeredBy: string;
+  topologySnapshot: ProvisionJobTopologySnapshot;
+};
+
+export type CompleteRangeInstanceDraftApplyInput = Pick<
+  UpdateRangeInstanceInput,
+  | 'runtimeTopologyGraph'
+  | 'runtimeScenarioTemplateSpec'
+  | 'runtimeCompiledProvisionSpec'
+  | 'accessEntry'
+  | 'resourceSummary'
+  | 'errorSummary'
+> & {
+  runtimeTopologyGraph: Record<string, unknown>;
+  runtimeScenarioTemplateSpec: Record<string, unknown>;
+  runtimeCompiledProvisionSpec: Record<string, unknown>;
+  expectedDraftRevision: number;
+};
+
+export class RangeInstanceDraftRevisionConflictError extends Error {
+  constructor() {
+    super('RANGE_INSTANCE_DRAFT_REVISION_CONFLICT');
+    this.name = 'RangeInstanceDraftRevisionConflictError';
+  }
+}
 
 export type UpdateProvisionJobInput = Partial<{
   status: ProvisionJobStatus;
@@ -945,6 +990,11 @@ export interface AdminRepository {
     input: SaveRangeInstanceDraftInput,
   ): Promise<RangeInstanceRecord | null>;
   discardRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceRecord | null>;
+  applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput): Promise<ProvisionJobRecord | null>;
+  completeRangeInstanceDraftApply(
+    id: string,
+    input: CompleteRangeInstanceDraftApplyInput,
+  ): Promise<RangeInstanceRecord>;
   listProvisionJobs(): Promise<ProvisionJobRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   getProvisionJobById(id: string): Promise<ProvisionJobRecord | null>;

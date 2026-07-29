@@ -12,7 +12,9 @@ import {
 import {
   ADMIN_REPOSITORY,
   AdminRepository,
+  ProvisionJobTopologySnapshot,
   RangeInstanceRecord,
+  RangeInstanceDraftRevisionConflictError,
   CreateRangeInstanceInput,
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
@@ -21,7 +23,7 @@ import {
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
-import { LaunchRangeInstanceDto } from './dto/range-instance.dto';
+import { ApplyRangeInstanceDraftDto, LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { RangeTemplatesService } from './range-templates.service';
@@ -180,9 +182,8 @@ export class RangeInstancesService {
     }
 
     const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
-    const sourceTemplateVersionId = sourceTemplateVersion?.id ?? null;
 
-    if (!sourceTemplateVersionId) {
+    if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
     }
 
@@ -190,7 +191,11 @@ export class RangeInstancesService {
       ...input,
       createdBy: currentUser?.id ?? input.createdBy,
       ownerUserId: currentUser?.id ?? input.ownerUserId,
-      sourceTemplateVersionId,
+      sourceTemplateVersionId: sourceTemplateVersion.id,
+      templateNameSnapshot: template.name,
+      templateSlugSnapshot: template.slug,
+      templateVersionSnapshot: sourceTemplateVersion.version,
+      templateModulePathSnapshot: sourceTemplateVersion.modulePathOrRef,
     });
 
     return this.withCreatorUsername(instance);
@@ -250,6 +255,10 @@ export class RangeInstancesService {
       instanceMode: 'range',
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
+      templateNameSnapshot: template.name,
+      templateSlugSnapshot: template.slug,
+      templateVersionSnapshot: sourceTemplateVersion.version,
+      templateModulePathSnapshot: sourceTemplateVersion.modulePathOrRef,
       runtimeTopologyGraph: sourceTopologyGraph ?? null,
       runtimeScenarioTemplateSpec,
       runtimeCompiledProvisionSpec,
@@ -298,13 +307,13 @@ export class RangeInstancesService {
     const compiled = validateRangeInstanceDraftPayload(input, metadata);
     const viewport = this.readDraftViewport(input.draftTopologyGraph);
     const updated = await this.adminRepository.saveRangeInstanceDraft(id, input.expectedDraftRevision, {
-      draftTopologyGraph: {
+      draftTopologyGraph: this.normalizeJsonRecord({
         ...compiled.topologyGraph,
         ...(viewport ? { viewport } : {}),
-      },
-      draftTopologySpec: compiled.topologySpec,
-      draftScenarioTemplateSpec: compiled.scenarioTemplateSpec,
-      draftCompiledProvisionSpec: compiled.compiledProvisionSpec,
+      }),
+      draftTopologySpec: this.normalizeJsonRecord(compiled.topologySpec),
+      draftScenarioTemplateSpec: this.normalizeJsonRecord(compiled.scenarioTemplateSpec),
+      draftCompiledProvisionSpec: this.normalizeJsonRecord(compiled.compiledProvisionSpec),
       draftUpdatedBy: currentUser?.id ?? null,
       draftUpdatedAt: new Date(),
     });
@@ -348,7 +357,11 @@ export class RangeInstancesService {
     return this.withCreatorUsername(hydrated);
   }
 
-  async applyDraft(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
+  async applyDraft(
+    id: string,
+    input: ApplyRangeInstanceDraftDto,
+    currentUserOrTriggeredBy?: AuthenticatedUser | string,
+  ) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -368,20 +381,67 @@ export class RangeInstancesService {
       throw new ConflictException('Only running instances can apply draft changes');
     }
 
-    if (!instance.draftTopologyGraph || !instance.draftScenarioTemplateSpec || !instance.draftCompiledProvisionSpec) {
+    if (
+      !instance.draftTopologyGraph ||
+      !instance.draftTopologySpec ||
+      !instance.draftScenarioTemplateSpec ||
+      !instance.draftCompiledProvisionSpec
+    ) {
       throw new ConflictException('Range instance does not have a pending draft');
     }
 
-    const job = await this.adminRepository.createProvisionJob({
-      rangeInstanceId: id,
-      jobType: 'update',
-      triggeredBy: actorId,
-    });
+    if (instance.draftRevision !== input.expectedDraftRevision) {
+      throw new ConflictException('Range instance draft has changed; refresh before applying it');
+    }
 
-    await this.adminRepository.updateRangeInstance(id, {
-      lastJobId: job.id,
-      errorSummary: null,
-    });
+    const draftTopologyGraph = this.normalizeJsonRecord(instance.draftTopologyGraph);
+    const draftTopologySpec = this.normalizeJsonRecord(instance.draftTopologySpec);
+    const draftScenarioTemplateSpec = this.normalizeJsonRecord(instance.draftScenarioTemplateSpec);
+    const draftCompiledProvisionSpec = this.normalizeJsonRecord(instance.draftCompiledProvisionSpec);
+    const metadata = await this.resolveDraftCompilationMetadata(instance);
+    const compiled = validateRangeInstanceDraftPayload(
+      {
+        draftTopologyGraph,
+        draftTopologySpec,
+        draftScenarioTemplateSpec,
+        draftCompiledProvisionSpec,
+      },
+      metadata,
+    );
+    const viewport = this.readDraftViewport(draftTopologyGraph);
+    const templateModulePath = await this.resolveApplyTemplateModulePath(instance);
+    const topologySnapshot: ProvisionJobTopologySnapshot = {
+      draftRevision: input.expectedDraftRevision,
+      topologyGraph: {
+        ...compiled.topologyGraph,
+        ...(viewport ? { viewport } : {}),
+      },
+      topologySpec: compiled.topologySpec,
+      scenarioTemplateSpec: compiled.scenarioTemplateSpec,
+      compiledProvisionSpec: compiled.compiledProvisionSpec,
+      compiledSpec: compiled.compiledSpec,
+      templateModulePath,
+    };
+    let job;
+
+    try {
+      job = await this.adminRepository.applyRangeInstanceDraft({
+        rangeInstanceId: id,
+        expectedDraftRevision: input.expectedDraftRevision,
+        triggeredBy: actorId,
+        topologySnapshot,
+      });
+    } catch (error) {
+      if (error instanceof RangeInstanceDraftRevisionConflictError) {
+        throw new ConflictException('Range instance draft has changed; refresh before applying it');
+      }
+
+      throw error;
+    }
+
+    if (!job) {
+      throw new ConflictException('Range instance draft has changed; refresh before applying it');
+    }
 
     this.provisioningWorkerService.dispatch(job.id);
 
@@ -1019,6 +1079,27 @@ export class RangeInstancesService {
     };
   }
 
+  private async resolveApplyTemplateModulePath(instance: RangeInstanceRecord) {
+    const savedModulePath = this.readNonEmptyString(instance.templateModulePathSnapshot);
+
+    if (savedModulePath) {
+      return savedModulePath;
+    }
+
+    if (!instance.sourceTemplateVersionId) {
+      throw new ConflictException('Range instance source template module path is unavailable');
+    }
+
+    const sourceTemplateVersion = await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId);
+    const sourceModulePath = this.readNonEmptyString(sourceTemplateVersion?.modulePathOrRef);
+
+    if (!sourceModulePath) {
+      throw new ConflictException('Range instance source template module path is unavailable');
+    }
+
+    return sourceModulePath;
+  }
+
   private readNonEmptyString(value: unknown) {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
@@ -1042,6 +1123,10 @@ export class RangeInstancesService {
     }
 
     return { x, y, zoom };
+  }
+
+  private normalizeJsonRecord(value: Record<string, unknown>) {
+    return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
   }
 
   private readRecord(value: unknown): Record<string, unknown> | null {

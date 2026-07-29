@@ -3,7 +3,12 @@ import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post,
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
-import { CreateRangeInstanceDto, LaunchRangeInstanceDto, TriggerProvisionJobDto } from './dto/range-instance.dto';
+import {
+  ApplyRangeInstanceDraftDto,
+  CreateRangeInstanceDto,
+  LaunchRangeInstanceDto,
+  TriggerProvisionJobDto,
+} from './dto/range-instance.dto';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { RangeInstancesService } from './range-instances.service';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
@@ -121,14 +126,21 @@ export class RangesController {
   }
 
   @Post(':id/apply')
-  applyDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+  applyDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: ApplyRangeInstanceDraftDto) {
     if (request.authContext.source === 'mcp') {
-      return this.confirmedMcpAction(request, 'range_instance_topology_apply', id, { rangeInstanceId: id }, false, async () => {
-        const job = await this.rangeInstancesService.applyDraft(id, request.adminUser);
-        return { rangeInstanceId: id, jobId: job.id };
-      });
+      return this.confirmedMcpAction(
+        request,
+        'range_instance_topology_apply',
+        id,
+        { rangeInstanceId: id, expectedDraftRevision: body.expectedDraftRevision },
+        false,
+        async () => {
+          const job = await this.rangeInstancesService.applyDraft(id, body, request.adminUser);
+          return { rangeInstanceId: id, jobId: job.id };
+        },
+      );
     }
-    return this.rangeInstancesService.applyDraft(id, request.adminUser);
+    return this.rangeInstancesService.applyDraft(id, body, request.adminUser);
   }
 
   @Post(':id/sync-template')

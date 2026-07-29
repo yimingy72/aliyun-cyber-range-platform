@@ -300,10 +300,16 @@ export async function discardRangeInstanceDraft(apiBaseUrl: string, token: strin
   return readJson<RangeInstanceDetail>(response);
 }
 
-export async function applyRangeInstanceDraft(apiBaseUrl: string, token: string, id: string) {
+export async function applyRangeInstanceDraft(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  expectedDraftRevision: number,
+) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/apply`, {
     method: 'POST',
     headers: createAdminHeaders(token),
+    body: JSON.stringify({ expectedDraftRevision }),
   });
 
   return readJson<ProvisionJob>(response);

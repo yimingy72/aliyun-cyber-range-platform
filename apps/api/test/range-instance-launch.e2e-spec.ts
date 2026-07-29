@@ -313,12 +313,18 @@ describe('Range instance launch API', () => {
         hosts: [
           {
             key: 'entry-host',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
+            imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
             accountPreset: {
               password: '  TemplateSecret123!  ',
             },
           },
           {
             key: 'db-host',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
+            imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
             accountPreset: {
               password: '',
             },
@@ -327,6 +333,20 @@ describe('Range instance launch API', () => {
       },
       compiledProvisionSpec: {
         topology: { vpcCidr: '10.90.0.0/16' },
+        hosts: [
+          {
+            key: 'entry-host',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
+            imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
+          },
+          {
+            key: 'db-host',
+            platformImageAssetId: imageAsset.id,
+            imageId: imageAsset.imageId,
+            imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
+          },
+        ],
       },
     });
 
@@ -345,7 +365,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId,
         name: '攻防实例-一号',
-        expiresAt: '2026-07-09T12:00:00.000Z',
+        expiresAt: '2030-07-09T12:00:00.000Z',
       })
       .expect(201);
 
@@ -356,8 +376,12 @@ describe('Range instance launch API', () => {
         status: 'pending_create',
         createdBy: launchUser.username,
         ownerUserId: launchUser.id,
-        expiresAt: '2026-07-09T12:00:00.000Z',
+        expiresAt: '2030-07-09T12:00:00.000Z',
         lastJobId: expect.any(String),
+        templateNameSnapshot: 'Launchable Template',
+        templateSlugSnapshot: 'launchable-template',
+        templateVersionSnapshot: 'v1',
+        templateModulePathSnapshot: 'infra/opentofu/modules/alicloud-enterprise-range',
         runtimeTopologyGraph: expect.objectContaining({
           schemaVersion: '1',
         }),
@@ -382,7 +406,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId,
         name: '攻防实例-二号',
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: '2030-07-10T12:00:00.000Z',
       })
       .expect(201);
 
@@ -459,7 +483,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId: legacyTemplate.id,
         name: '旧模板实例',
-        expiresAt: '2026-07-12T12:00:00.000Z',
+        expiresAt: '2030-07-12T12:00:00.000Z',
       })
       .expect(400);
 
@@ -473,7 +497,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId,
         name: '攻防实例-三号',
-        expiresAt: '2026-07-11T12:00:00.000Z',
+        expiresAt: '2030-07-11T12:00:00.000Z',
         triggeredBy: 'malicious-client',
       })
       .expect(400)

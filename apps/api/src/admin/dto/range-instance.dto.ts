@@ -1,4 +1,4 @@
-import { IsISO8601, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsISO8601, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateRangeInstanceDto {
   @IsString()
@@ -28,3 +28,9 @@ export class LaunchRangeInstanceDto {
 }
 
 export class TriggerProvisionJobDto {}
+
+export class ApplyRangeInstanceDraftDto {
+  @IsInt()
+  @Min(1)
+  expectedDraftRevision!: number;
+}

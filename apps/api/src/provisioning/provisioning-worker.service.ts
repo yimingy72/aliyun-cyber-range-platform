@@ -6,6 +6,7 @@ import {
   ADMIN_REPOSITORY,
   AdminRepository,
   ProvisionJobRecord,
+  ProvisionJobTopologySnapshot,
   RangeInstanceRecord,
   RangeResourceSummary,
   RangeTemplateCompiledSpec,
@@ -184,6 +185,23 @@ export class ProvisioningWorkerService {
         return;
       }
 
+      if (effectiveJobType === 'update') {
+        await this.processRangeInstanceUpdateJob({
+          job,
+          instance,
+          runtimeConfig,
+          reportStep,
+        });
+        await this.adminRepository.updateProvisionJob(job.id, {
+          status: 'succeeded',
+          finishedAt: new Date(),
+          errorSummary: null,
+        });
+        await this.finalizeDispatchedOperation(job, 'succeeded');
+        this.nextResourceReconciliationAt = 0;
+        return;
+      }
+
       if (!instance.templateId) {
         await this.failJob(job, instance, 'Template not found');
         return;
@@ -238,20 +256,10 @@ export class ProvisioningWorkerService {
         return;
       }
 
-      const compiledProvisionSpec =
-        effectiveJobType === 'update'
-          ? this.getCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ?? baseCompiledProvisionSpec
-          : baseCompiledProvisionSpec;
-      const compiledSpec = effectiveJobType === 'update' ? baseCompiledSpec : baseCompiledSpec;
-      const topologySpec =
-        effectiveJobType === 'update'
-          ? this.getTopologySpecFromCompiledProvisionSpec(instance.draftCompiledProvisionSpec) ??
-            baseTopologySpec
-          : baseTopologySpec;
-      const topologyGraph =
-        effectiveJobType === 'update'
-          ? instance.draftTopologyGraph ?? baseTopologyGraph
-          : baseTopologyGraph;
+      const compiledProvisionSpec = baseCompiledProvisionSpec;
+      const compiledSpec = baseCompiledSpec;
+      const topologySpec = baseTopologySpec;
+      const topologyGraph = baseTopologyGraph;
       const accountContext = await this.resolveAccountContext();
 
       if (effectiveJobType === 'create') {
@@ -318,59 +326,6 @@ export class ProvisioningWorkerService {
             billingStartAt: new Date(),
           });
         });
-      } else if (effectiveJobType === 'update') {
-        await this.runWorkerStep(reportStep, 'prepare', async () => {
-          await this.adminRepository.updateRangeInstance(instance.id, {
-            errorSummary: null,
-          });
-        });
-
-        const result = await this.rangeProvisioner.create({
-          rangeInstanceId: instance.id,
-          templateModulePath,
-          allocatedCidr: instance.allocatedCidr,
-          preserveWorkspaceState: true,
-          runtimeConfig,
-          runtimeCredentials: instance.runtimeCredentials ?? undefined,
-          topologyGraph,
-          topologySpec,
-          compiledProvisionSpec,
-          compiledSpec,
-          billingTags: buildBillingTags({
-            billingScope: instance.ownerUserId ? 'user' : 'platform',
-            ownerUserId: instance.ownerUserId,
-            rangeInstanceId: instance.id,
-            singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
-            platformResourceType: 'range',
-            billingStartAt: new Date(),
-          }),
-          reportStep,
-        });
-
-        await this.runWorkerStep(reportStep, 'persist_update_result', async () => {
-          await this.adminRepository.updateRangeInstance(instance.id, {
-            runtimeTopologyGraph: instance.draftTopologyGraph,
-            runtimeScenarioTemplateSpec: instance.draftScenarioTemplateSpec,
-            runtimeCompiledProvisionSpec: instance.draftCompiledProvisionSpec,
-            draftTopologyGraph: null,
-            draftScenarioTemplateSpec: null,
-            draftCompiledProvisionSpec: null,
-            draftUpdatedBy: null,
-            draftUpdatedAt: null,
-            accessEntry: result.accessEntry,
-            resourceSummary: result.resourceSummary,
-            errorSummary: null,
-          });
-          await syncRangeInstanceBillingLedger({
-            repository: this.adminRepository,
-            instance,
-            regionId: accountContext.defaultRegion,
-            cloudAccountUid: accountContext.accountUid,
-            resourceSummary: result.resourceSummary,
-            sourceProvisionJobId: job.id,
-            billingStartAt: new Date(),
-          });
-        });
       } else if (effectiveJobType === 'destroy') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
@@ -422,6 +377,126 @@ export class ProvisioningWorkerService {
 
       await this.failJob(job, instance, message, cleanupFailureMessage ? 'destroy_failed' : undefined);
     }
+  }
+
+  private async processRangeInstanceUpdateJob(input: {
+    job: ProvisionJobRecord;
+    instance: RangeInstanceRecord;
+    runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
+    reportStep: RangeProvisionStepReporter;
+  }) {
+    const topologySnapshot = this.readUpdateTopologySnapshot(input.job.topologySnapshot);
+
+    if (!topologySnapshot) {
+      throw new Error('Update job topology snapshot is missing or invalid');
+    }
+
+    await this.runWorkerStep(input.reportStep, 'prepare', async () => {
+      await this.adminRepository.updateRangeInstance(input.instance.id, {
+        errorSummary: null,
+      });
+    });
+
+    const result = await this.rangeProvisioner.create({
+      rangeInstanceId: input.instance.id,
+      templateModulePath: topologySnapshot.templateModulePath,
+      allocatedCidr: input.instance.allocatedCidr,
+      preserveWorkspaceState: true,
+      runtimeConfig: input.runtimeConfig,
+      runtimeCredentials: input.instance.runtimeCredentials ?? undefined,
+      topologyGraph: topologySnapshot.topologyGraph,
+      topologySpec: topologySnapshot.topologySpec as RangeTemplateTopologySpec,
+      compiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
+      compiledSpec: topologySnapshot.compiledSpec as RangeTemplateCompiledSpec,
+      billingTags: buildBillingTags({
+        billingScope: input.instance.ownerUserId ? 'user' : 'platform',
+        ownerUserId: input.instance.ownerUserId,
+        rangeInstanceId: input.instance.id,
+        singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
+        platformResourceType: 'range',
+        billingStartAt: new Date(),
+      }),
+      reportStep: input.reportStep,
+    });
+
+    await this.runWorkerStep(input.reportStep, 'persist_update_result', async () => {
+      await this.adminRepository.completeRangeInstanceDraftApply(input.instance.id, {
+        runtimeTopologyGraph: topologySnapshot.topologyGraph,
+        runtimeScenarioTemplateSpec: topologySnapshot.scenarioTemplateSpec,
+        runtimeCompiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
+        expectedDraftRevision: topologySnapshot.draftRevision,
+        accessEntry: result.accessEntry,
+        resourceSummary: result.resourceSummary,
+        errorSummary: null,
+      });
+      const accountContext = await this.resolveAccountContext();
+      await syncRangeInstanceBillingLedger({
+        repository: this.adminRepository,
+        instance: input.instance,
+        regionId: accountContext.defaultRegion,
+        cloudAccountUid: accountContext.accountUid,
+        resourceSummary: result.resourceSummary,
+        sourceProvisionJobId: input.job.id,
+        billingStartAt: new Date(),
+      });
+    });
+  }
+
+  private readUpdateTopologySnapshot(value: unknown): ProvisionJobTopologySnapshot | null {
+    const snapshot = this.readJsonObject(value);
+
+    if (!snapshot) {
+      return null;
+    }
+
+    const draftRevision = snapshot.draftRevision;
+    const topologyGraph = this.readJsonObject(snapshot.topologyGraph);
+    const topologySpec = this.readJsonObject(snapshot.topologySpec);
+    const scenarioTemplateSpec = this.readJsonObject(snapshot.scenarioTemplateSpec);
+    const compiledProvisionSpec = this.readJsonObject(snapshot.compiledProvisionSpec);
+    const compiledSpec = this.readJsonObject(snapshot.compiledSpec);
+    const templateModulePath = typeof snapshot.templateModulePath === 'string'
+      ? snapshot.templateModulePath.trim()
+      : '';
+
+    if (
+      typeof draftRevision !== 'number' ||
+      !Number.isInteger(draftRevision) ||
+      draftRevision < 1 ||
+      !topologyGraph ||
+      !topologySpec ||
+      !scenarioTemplateSpec ||
+      !compiledProvisionSpec ||
+      !compiledSpec ||
+      !templateModulePath ||
+      !Array.isArray(topologyGraph.nodes) ||
+      !Array.isArray(topologyGraph.edges) ||
+      typeof topologySpec.vpcCidr !== 'string' ||
+      !Array.isArray(topologySpec.networkZones) ||
+      !Array.isArray(topologySpec.hosts) ||
+      !this.readJsonObject(topologySpec.publicEntry) ||
+      !this.readJsonObject(scenarioTemplateSpec.metadata) ||
+      !this.readJsonObject(scenarioTemplateSpec.topology) ||
+      !Array.isArray(scenarioTemplateSpec.networkZones) ||
+      !Array.isArray(scenarioTemplateSpec.hosts) ||
+      !this.readJsonObject(compiledProvisionSpec.topology) ||
+      !Array.isArray(compiledProvisionSpec.networkZones) ||
+      !Array.isArray(compiledProvisionSpec.hosts) ||
+      !Array.isArray(compiledSpec.resources) ||
+      !this.readJsonObject(compiledSpec.topology)
+    ) {
+      return null;
+    }
+
+    return {
+      draftRevision,
+      topologyGraph,
+      topologySpec,
+      scenarioTemplateSpec,
+      compiledProvisionSpec,
+      compiledSpec,
+      templateModulePath,
+    };
   }
 
   private async startEligiblePendingJobs() {

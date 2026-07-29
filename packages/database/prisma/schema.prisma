@@ -543,6 +543,7 @@ model ProvisionJob {
   id              String               @id @default(cuid())
   rangeInstanceId String
   jobType         ProvisionJobType
+  topologySnapshot Json?
   status          ProvisionJobStatus   @default(pending)
   triggeredBy     String
   startedAt       DateTime?

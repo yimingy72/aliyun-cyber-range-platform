@@ -1,5 +1,10 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import {
+  compileTemplateTopology,
+  type ScenarioGraphDraft,
+  type TemplateAuthoringMetadata,
+} from '@aliyun-cyber-range/scenario-runtime/compiled';
 import request from 'supertest';
 
 import { AdminAuthGuard } from '../src/admin/admin-auth.guard';
@@ -22,6 +27,96 @@ function createSystemConfigServiceStub() {
     }),
   };
 }
+
+const applyDraftMetadata: TemplateAuthoringMetadata = {
+  name: 'Apply Template',
+  slug: 'apply-template',
+  version: 'v1',
+  cloudProvider: 'alibaba_cloud',
+  iacType: 'opentofu',
+  modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+  primaryVpcCidr: '10.77.0.0/16',
+};
+
+const applyDraftGraph: ScenarioGraphDraft = {
+  schemaVersion: '2.0.0',
+  nodes: [
+    {
+      id: 'router-main',
+      kind: 'router',
+      label: '主 VPC',
+      routeRole: 'vpc',
+      egressType: 'none',
+      bindEip: false,
+    },
+    {
+      id: 'switch-dmz',
+      kind: 'switch',
+      label: 'DMZ',
+      zoneKey: 'dmz',
+      cidr: '10.77.10.0/24',
+      purpose: 'public-entry',
+      aclRules: [],
+      nat: {
+        snatEnabled: false,
+        dnatMappings: [
+          {
+            key: 'entry-ssh',
+            targetHostId: 'ecs-entry',
+            externalPort: 22,
+            internalPort: 22,
+            protocol: 'tcp',
+          },
+        ],
+      },
+    },
+    {
+      id: 'ecs-entry',
+      kind: 'ecs',
+      label: '入口 ECS',
+      zoneKey: 'dmz',
+      role: 'entry',
+      privateIp: '10.77.10.10',
+      exposePublic: false,
+      image: 'img-entry',
+      imageId: 'img-entry',
+      platformImageAssetId: 'asset-entry',
+      dnatMappings: [],
+      networkInterfaces: [],
+      portGroups: [],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'img-entry' },
+      instanceTypeStrategy: { mode: 'auto' },
+      nics: [
+        {
+          id: 'nic-entry',
+          switchId: 'switch-dmz',
+          privateIp: '10.77.10.10',
+          secondaryIps: [],
+          securityGroupRules: [],
+        },
+      ],
+    },
+  ],
+  edges: [
+    {
+      id: 'router-to-switch',
+      fromNodeId: 'router-main',
+      toNodeId: 'switch-dmz',
+      relationType: 'manual',
+    },
+    {
+      id: 'switch-to-entry',
+      fromNodeId: 'switch-dmz',
+      toNodeId: 'ecs-entry',
+      relationType: 'manual',
+    },
+  ],
+};
+
+const compiledApplyDraft = JSON.parse(
+  JSON.stringify(compileTemplateTopology(applyDraftGraph, applyDraftMetadata)),
+) as ReturnType<typeof compileTemplateTopology>;
 
 describe('Range instance apply API', () => {
   let app: INestApplication;
@@ -72,12 +167,12 @@ describe('Range instance apply API', () => {
       version: 'v1',
       modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
       topologySpec: {
-        vpcCidr: '10.66.0.0/16',
+        vpcCidr: '10.77.0.0/16',
         networkZones: [
-          { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.66.10.0/24', isPublicEntry: true },
+          { key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.77.10.0/24', isPublicEntry: true },
         ],
         hosts: [
-          { key: 'checker', name: 'checker', zoneKey: 'dmz', role: 'entry', privateIp: '10.66.10.10', exposePublic: true },
+          { key: 'checker', name: 'checker', zoneKey: 'dmz', role: 'entry', privateIp: '10.77.10.10', exposePublic: true },
         ],
         publicEntry: {
           hostKey: 'checker',
@@ -90,19 +185,27 @@ describe('Range instance apply API', () => {
       name: 'apply-range',
       createdBy: 'admin',
       templateId: template.id,
+      sourceTemplateVersionId: template.currentDraftVersionId,
       status: 'running',
-      draftTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-checker', kind: 'ecs', data: { label: 'checker-updated' } }],
-        edges: [],
+      runtimeTopologyGraph: { schemaVersion: '1', nodes: [], edges: [] },
+      runtimeScenarioTemplateSpec: {
+        metadata: {
+          name: applyDraftMetadata.name,
+          slug: applyDraftMetadata.slug,
+          version: applyDraftMetadata.version,
+          cloudProvider: applyDraftMetadata.cloudProvider,
+          iacType: applyDraftMetadata.iacType,
+        },
+        topology: { vpcCidr: applyDraftMetadata.primaryVpcCidr },
       },
-      draftScenarioTemplateSpec: {
-        metadata: { name: 'checker-updated' },
+      runtimeCompiledProvisionSpec: {
+        topology: { vpcCidr: applyDraftMetadata.primaryVpcCidr },
       },
-      draftCompiledProvisionSpec: {
-        topology: { vpcCidr: '10.66.0.0/16' },
-      },
-    });
+      templateNameSnapshot: applyDraftMetadata.name,
+      templateSlugSnapshot: applyDraftMetadata.slug,
+      templateVersionSnapshot: applyDraftMetadata.version,
+      templateModulePathSnapshot: applyDraftMetadata.modulePathOrRef,
+    } as Parameters<AdminRepository['createRangeInstance']>[0]);
 
     instanceId = instance.id;
   });
@@ -111,14 +214,71 @@ describe('Range instance apply API', () => {
     await app?.close();
   });
 
-  it('applies a saved draft through an update job only when the instance is running', async () => {
+  it('creates an update job from the exact saved draft revision and freezes every topology artifact', async () => {
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${instanceId}/draft`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        draftTopologyGraph: compiledApplyDraft.topologyGraph,
+        draftTopologySpec: compiledApplyDraft.topologySpec,
+        draftScenarioTemplateSpec: compiledApplyDraft.scenarioTemplateSpec,
+        draftCompiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
+        expectedDraftRevision: 0,
+      })
+      .expect(200);
+
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({})
+      .send({ expectedDraftRevision: 1 })
       .expect(201);
 
-    expect(response.body.jobType).toBe('update');
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        jobType: 'update',
+        topologySnapshot: {
+          draftRevision: 1,
+          topologyGraph: compiledApplyDraft.topologyGraph,
+          topologySpec: compiledApplyDraft.topologySpec,
+          scenarioTemplateSpec: compiledApplyDraft.scenarioTemplateSpec,
+          compiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
+          compiledSpec: compiledApplyDraft.compiledSpec,
+          templateModulePath: applyDraftMetadata.modulePathOrRef,
+        },
+      }),
+    );
+  });
+
+  it('rejects a stale apply revision without creating an orphaned update job', async () => {
+    const before = await repository.listProvisionJobs();
+
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${instanceId}/draft`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        draftTopologyGraph: compiledApplyDraft.topologyGraph,
+        draftTopologySpec: compiledApplyDraft.topologySpec,
+        draftScenarioTemplateSpec: compiledApplyDraft.scenarioTemplateSpec,
+        draftCompiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
+        expectedDraftRevision: 1,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${instanceId}/apply`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ expectedDraftRevision: 1 })
+      .expect(409);
+
+    await expect(repository.listProvisionJobs()).resolves.toHaveLength(before.length);
+  });
+
+  it('requires a positive expected draft revision before accepting apply', async () => {
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${instanceId}/apply`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ expectedDraftRevision: 0 })
+      .expect(400);
   });
 
   it('rejects apply when the instance is not running', async () => {
@@ -127,19 +287,17 @@ describe('Range instance apply API', () => {
       createdBy: 'admin',
       templateId: 'template-stopped',
       status: 'destroyed',
-      draftTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [],
-        edges: [],
-      },
-      draftScenarioTemplateSpec: { metadata: { name: 'stopped-range' } },
-      draftCompiledProvisionSpec: { topology: { vpcCidr: '10.66.0.0/16' } },
+      draftTopologyGraph: compiledApplyDraft.topologyGraph,
+      draftTopologySpec: compiledApplyDraft.topologySpec,
+      draftScenarioTemplateSpec: compiledApplyDraft.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
+      draftRevision: 1,
     });
 
     await request(app.getHttpServer())
       .post(`/admin/ranges/${stopped.id}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({})
+      .send({ expectedDraftRevision: 1 })
       .expect(409);
   });
 
@@ -612,40 +770,29 @@ describe('ProvisioningWorkerService update flow', () => {
       templateId: template.id,
       sourceTemplateVersionId: template.currentDraftVersionId,
       status: 'running',
-      runtimeTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-checker', kind: 'ecs', data: { label: 'checker' } }],
-        edges: [],
-      },
+      runtimeTopologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
       runtimeScenarioTemplateSpec: { metadata: { name: 'checker' } },
-      runtimeCompiledProvisionSpec: {
-        topology: {
-          vpcCidr: '10.55.0.0/16',
-          entryHostKey: 'checker',
-        },
-        networkZones: [{ key: 'dmz', name: 'DMZ', cidr: '10.55.10.0/24', purpose: 'public-entry', isPublicEntry: true }],
-        hosts: [{ key: 'checker', name: 'checker', zoneKey: 'dmz', role: 'entry', primaryPrivateIp: '10.55.10.10', exposePublic: true }],
-      },
-      draftTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-checker', kind: 'ecs', data: { label: 'checker-updated' } }],
-        edges: [],
-      },
-      draftScenarioTemplateSpec: { metadata: { name: 'checker-updated' } },
-      draftCompiledProvisionSpec: {
-        topology: {
-          vpcCidr: '10.55.0.0/16',
-          entryHostKey: 'checker',
-        },
-        networkZones: [{ key: 'dmz', name: 'DMZ', cidr: '10.55.10.0/24', purpose: 'public-entry', isPublicEntry: true }],
-        hosts: [{ key: 'checker', name: 'checker-updated', zoneKey: 'dmz', role: 'entry', primaryPrivateIp: '10.55.10.10', exposePublic: true }],
-      },
+      runtimeCompiledProvisionSpec: { topology: { vpcCidr: '10.55.0.0/16' } },
+      draftTopologyGraph: compiledApplyDraft.topologyGraph,
+      draftTopologySpec: compiledApplyDraft.topologySpec,
+      draftScenarioTemplateSpec: compiledApplyDraft.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
+      draftRevision: 1,
     });
 
     const job = await repository.createProvisionJob({
       rangeInstanceId: instance.id,
       jobType: 'update',
       triggeredBy: 'admin',
+      topologySnapshot: {
+        draftRevision: 1,
+        topologyGraph: compiledApplyDraft.topologyGraph,
+        topologySpec: compiledApplyDraft.topologySpec,
+        scenarioTemplateSpec: compiledApplyDraft.scenarioTemplateSpec,
+        compiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
+        compiledSpec: compiledApplyDraft.compiledSpec,
+        templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
+      },
     });
 
     await service.process(job.id);
@@ -658,16 +805,9 @@ describe('ProvisioningWorkerService update flow', () => {
         preserveWorkspaceState: true,
       }),
     );
-    expect(updated?.runtimeTopologyGraph).toEqual(
-      expect.objectContaining({
-        nodes: expect.arrayContaining([
-          expect.objectContaining({
-            data: expect.objectContaining({ label: 'checker-updated' }),
-          }),
-        ]),
-      }),
-    );
+    expect(updated?.runtimeTopologyGraph).toEqual(compiledApplyDraft.topologyGraph);
     expect(updated?.draftTopologyGraph).toBeNull();
+    expect(updated?.draftTopologySpec).toBeNull();
     expect(updated?.draftScenarioTemplateSpec).toBeNull();
     expect(updated?.draftCompiledProvisionSpec).toBeNull();
   });
