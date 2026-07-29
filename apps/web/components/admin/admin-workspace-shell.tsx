@@ -163,7 +163,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   );
 
   async function renewSession() {
-    if (renewingRef.current || !session.refreshToken) {
+    if (loggingOutRef.current || renewingRef.current || !session.refreshToken) {
       return;
     }
 
@@ -178,6 +178,10 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
       });
       const nextSession = tokenResponse ? parseAdminOidcSessionPayload(tokenResponse) : null;
 
+      if (loggingOutRef.current) {
+        return;
+      }
+
       if (!nextSession) {
         session.logout();
         router.replace('/admin/login');
@@ -190,8 +194,10 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         refreshToken: nextSession.refreshToken ?? session.refreshToken,
       });
     } catch {
-      session.logout();
-      router.replace('/admin/login');
+      if (!loggingOutRef.current) {
+        session.logout();
+        router.replace('/admin/login');
+      }
     } finally {
       renewingRef.current = false;
       setIsRenewingSession(false);

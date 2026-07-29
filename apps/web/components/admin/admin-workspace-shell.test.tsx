@@ -570,6 +570,67 @@ describe('AdminWorkspaceShell', () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it('does not restore a refreshed session after explicit logout', async () => {
+    const now = Date.now();
+    const dateNowMock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    let resolveRefresh: (response: Response) => void = () => undefined;
+
+    try {
+      writeAdminSession(
+        createSession({
+          token: createJwt({ exp: Math.floor((now + 120_000) / 1000) }),
+          idToken: 'original-id-token',
+          refreshToken: 'refresh-token-1',
+        }),
+      );
+      fetchMock.mockReturnValue(
+        new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        }),
+      );
+
+      render(
+        <AdminWorkspaceShell>
+          <div>workspace content</div>
+        </AdminWorkspaceShell>,
+      );
+
+      await screen.findByText('workspace content');
+      const logoutButton = screen.getByRole('button', { name: '退出登录' });
+
+      dateNowMock.mockReturnValue(now + 61_000);
+      window.dispatchEvent(new Event('focus'));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      fireEvent.click(logoutButton);
+
+      resolveRefresh(
+        new Response(
+          JSON.stringify({
+            access_token: createJwt({
+              exp: Math.floor((now + 3_600_000) / 1000),
+              sub: 'renewed-user',
+              username: 'renewed',
+              role: 'user',
+            }),
+            id_token: 'renewed-id-token',
+            refresh_token: 'refresh-token-2',
+          }),
+          { status: 200 },
+        ),
+      );
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('正在续期管理会话')).toBeNull();
+      });
+
+      expect(window.localStorage.getItem('aliyun-cyber-range-admin-session')).toBeNull();
+      expect(assignMock).toHaveBeenCalledTimes(1);
+      expect(replaceMock).not.toHaveBeenCalled();
+    } finally {
+      dateNowMock.mockRestore();
+    }
+  });
+
   it('refreshes expiring sessions before rendering the workspace', async () => {
     writeAdminSession(
       createSession({

@@ -9,6 +9,10 @@ const bootstrapScript = fs.readFileSync(
   new URL('../scripts/dev/bootstrap-keycloak.sh', import.meta.url),
   'utf8',
 );
+const imageDeploymentCompose = fs.readFileSync(
+  new URL('../deploy/current-system/docker-compose.images.yml', import.meta.url),
+  'utf8',
+);
 
 function getClient(clientId) {
   return realmConfig.clients.find((client) => client.clientId === clientId);
@@ -16,6 +20,13 @@ function getClient(clientId) {
 
 function getMapper(client, mapperName) {
   return client?.protocolMappers?.find((mapper) => mapper.name === mapperName);
+}
+
+function getKeycloakBootstrapBlock(composeSource) {
+  const start = composeSource.indexOf('  keycloak-bootstrap:');
+  const end = composeSource.indexOf('\n  api:', start);
+
+  return start === -1 || end === -1 ? '' : composeSource.slice(start, end);
 }
 
 test('platform-web emits username and realm roles without relying on missing built-in client scopes', () => {
@@ -34,6 +45,13 @@ test('platform-web permits post-logout redirects to its configured redirect URIs
   assert.ok(platformWeb, 'platform-web client should exist');
   assert.equal(platformWeb.attributes['post.logout.redirect.uris'], '+');
   assert.match(bootstrapScript, /attributes\."post\.logout\.redirect\.uris"=\+/);
+});
+
+test('image deployment passes the hosted web origin to Keycloak bootstrap', () => {
+  const keycloakBootstrapBlock = getKeycloakBootstrapBlock(imageDeploymentCompose);
+
+  assert.ok(keycloakBootstrapBlock, 'image deployment keycloak-bootstrap service should exist');
+  assert.match(keycloakBootstrapBlock, /WEB_PUBLIC_URL: \$\{WEB_PUBLIC_URL:-http:\/\/localhost:3000\}/);
 });
 
 test('smoke-conf emits username and realm roles without relying on missing built-in client scopes', () => {
