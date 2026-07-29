@@ -46,5 +46,7 @@ test('uses the blue workbench login treatment instead of the retired green gradi
   assert.match(stylesheet, /\.cr-form-input\s*\{[^}]*border-radius: 6px;/s);
   assert.match(stylesheet, /\.cr-login-button\s*\{[^}]*border-radius: 6px;[^}]*background: #1d56a7;/s);
   assert.match(stylesheet, /\.cr-form-input:focus[\s\S]*border-color: #1d56a7;/);
+  assert.match(stylesheet, /\.cr-login-copy\s*\{[^}]*text-align: start;/s);
+  assert.match(stylesheet, /\.cr-login-info\s*\{[^}]*text-align: start;/s);
   assert.doesNotMatch(stylesheet, /linear-gradient\(|#214d46|#183230|border-radius: 24px|border-radius: 14px/);
 });

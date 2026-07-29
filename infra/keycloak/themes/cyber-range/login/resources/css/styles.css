@@ -38,7 +38,7 @@ body.login-pf {
   display: grid;
   gap: 9px;
   margin-bottom: 18px;
-  text-align: left;
+  text-align: start;
 }
 
 .cr-login-eyebrow {
@@ -171,7 +171,7 @@ body.login-pf {
   color: #65758d;
   font-size: 13px;
   line-height: 1.6;
-  text-align: left;
+  text-align: start;
 }
 
 .cr-login-info a {
