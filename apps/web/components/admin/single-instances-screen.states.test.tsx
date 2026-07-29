@@ -9,7 +9,6 @@ const {
   fetchPlatformImagesMock,
   fetchInstanceTypeAvailabilityMock,
   launchSingleInstancesMock,
-  deleteRangeInstanceMock,
   destroySingleInstanceBatchMock,
   triggerSingleInstanceActionMock,
 } = vi.hoisted(() => ({
@@ -18,7 +17,6 @@ const {
   fetchPlatformImagesMock: vi.fn(),
   fetchInstanceTypeAvailabilityMock: vi.fn(),
   launchSingleInstancesMock: vi.fn(),
-  deleteRangeInstanceMock: vi.fn(),
   destroySingleInstanceBatchMock: vi.fn(),
   triggerSingleInstanceActionMock: vi.fn(),
 }));
@@ -62,7 +60,6 @@ vi.mock('../../lib/admin-api', () => ({
   fetchPlatformImages: fetchPlatformImagesMock,
   fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   launchSingleInstances: launchSingleInstancesMock,
-  deleteRangeInstance: deleteRangeInstanceMock,
   destroySingleInstanceBatch: destroySingleInstanceBatchMock,
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
 }));
@@ -110,7 +107,6 @@ describe('SingleInstancesScreen list states', () => {
     fetchPlatformImagesMock.mockReset();
     fetchInstanceTypeAvailabilityMock.mockReset();
     launchSingleInstancesMock.mockReset();
-    deleteRangeInstanceMock.mockReset();
     destroySingleInstanceBatchMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();

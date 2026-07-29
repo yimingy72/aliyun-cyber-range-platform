@@ -3,12 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
-  deleteRangeInstanceMock,
   fetchProvisionJobsMock,
   fetchRangeInstancesMock,
   triggerRangeActionMock,
 } = vi.hoisted(() => ({
-  deleteRangeInstanceMock: vi.fn(),
   fetchProvisionJobsMock: vi.fn(),
   fetchRangeInstancesMock: vi.fn(),
   triggerRangeActionMock: vi.fn(),
@@ -48,7 +46,6 @@ vi.mock('../../lib/admin-api', () => ({
       super(message);
     }
   },
-  deleteRangeInstance: deleteRangeInstanceMock,
   fetchProvisionJobs: fetchProvisionJobsMock,
   fetchRangeInstances: fetchRangeInstancesMock,
   triggerRangeAction: triggerRangeActionMock,
@@ -70,7 +67,6 @@ function createPendingPromise<T>() {
 
 describe('RangeInstancesScreen list states', () => {
   beforeEach(() => {
-    deleteRangeInstanceMock.mockReset();
     fetchProvisionJobsMock.mockReset();
     fetchRangeInstancesMock.mockReset();
     triggerRangeActionMock.mockReset();

@@ -915,7 +915,6 @@ export interface AdminRepository {
   listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
   archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void>;
-  deleteRangeInstance(id: string): Promise<void>;
   createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord>;
   getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null>;
   updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord>;

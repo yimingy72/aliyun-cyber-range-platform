@@ -8,7 +8,6 @@ const {
   fetchPlatformImagesMock,
   fetchInstanceTypeAvailabilityMock,
   launchSingleInstancesMock,
-  deleteRangeInstanceMock,
   destroySingleInstanceBatchMock,
   triggerSingleInstanceActionMock,
 } = vi.hoisted(() => ({
@@ -17,7 +16,6 @@ const {
   fetchPlatformImagesMock: vi.fn(),
   fetchInstanceTypeAvailabilityMock: vi.fn(),
   launchSingleInstancesMock: vi.fn(),
-  deleteRangeInstanceMock: vi.fn(),
   destroySingleInstanceBatchMock: vi.fn(),
   triggerSingleInstanceActionMock: vi.fn(),
 }));
@@ -81,7 +79,6 @@ vi.mock('../../lib/admin-api', () => ({
   fetchPlatformImages: fetchPlatformImagesMock,
   fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   launchSingleInstances: launchSingleInstancesMock,
-  deleteRangeInstance: deleteRangeInstanceMock,
   destroySingleInstanceBatch: destroySingleInstanceBatchMock,
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
 }));
@@ -129,7 +126,6 @@ describe('SingleInstancesScreen', () => {
     fetchPlatformImagesMock.mockReset();
     fetchInstanceTypeAvailabilityMock.mockReset();
     launchSingleInstancesMock.mockReset();
-    deleteRangeInstanceMock.mockReset();
     destroySingleInstanceBatchMock.mockReset();
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
@@ -574,6 +570,15 @@ describe('SingleInstancesScreen', () => {
         finishedAt: '2026-07-08T08:20:00.000Z',
       },
       {
+        id: 'job-create-failed',
+        rangeInstanceId: 'single-create-failed',
+        jobType: 'create',
+        status: 'failed',
+        triggeredBy: 'admin',
+        startedAt: '2026-07-08T10:05:00.000Z',
+        finishedAt: '2026-07-08T10:06:00.000Z',
+      },
+      {
         id: 'job-destroy-history',
         rangeInstanceId: 'single-destroyed',
         jobType: 'destroy',
@@ -605,21 +610,7 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();
-
-    const createFailedRow = screen.getByText('failed-lab').closest('tr');
-    fireEvent.click(within(createFailedRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '重试创建' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除记录' })).toBeTruthy();
-    expect(within(createFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '删除记录' }));
-    await waitFor(() =>
-      expect(deleteRangeInstanceMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'single-create-failed',
-      ),
-    );
+    expect(screen.queryByText('failed-lab')).toBeNull();
 
     const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('tr');
     fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
@@ -630,11 +621,14 @@ describe('SingleInstancesScreen', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
 
     expect(await screen.findByText('history-lab')).toBeTruthy();
+    expect(screen.getByText('failed-lab')).toBeTruthy();
+    expect(screen.getByText('创建失败')).toBeTruthy();
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getAllByText('admin').length).toBeGreaterThan(0);
     expect(screen.queryByText('操作')).toBeNull();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeTruthy();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
+    expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:06:00.000Z'))).toBeTruthy();
     expect(screen.getByText('2 小时 35 分钟')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
   });

@@ -64,35 +64,41 @@ export class SingleInstancesService {
               ),
             }));
 
+    const isHistoryView = view === 'history';
     const normalizedBatches = await Promise.all(
-      visibleBatches.map(async (entry) => {
-        const [batch] = await attachCreatedByUsernames(this.adminRepository, [entry.batch]);
-        const instances = await attachCreatedByUsernames(
-          this.adminRepository,
-          entry.instances.map((instance) => toSingleInstanceListItem(instance)),
-        );
-
-        return {
+      visibleBatches
+        .map((entry) => ({
           ...entry,
-          batch,
-          instances,
-        };
-      }),
+          instances: entry.instances.filter(
+            (instance) => isSingleInstanceHistoryStatus(instance.status) === isHistoryView,
+          ),
+        }))
+        .filter((entry) => entry.instances.length > 0)
+        .map(async (entry) => {
+          const [batch] = await attachCreatedByUsernames(this.adminRepository, [entry.batch]);
+          const instances = await attachCreatedByUsernames(
+            this.adminRepository,
+            entry.instances.map((instance) => toSingleInstanceListItem(instance)),
+          );
+
+          return {
+            ...entry,
+            batch,
+            instances,
+          };
+        }),
     );
 
     const standaloneItems = await attachCreatedByUsernames(
-        this.adminRepository,
-        standaloneInstances.map((instance) => toSingleInstanceListItem(instance)),
-      );
-    const batchesForView = normalizedBatches.filter((entry) =>
-      view === 'history' ? isHistoryOnlyBatch(entry.instances) : !isHistoryOnlyBatch(entry.instances),
+      this.adminRepository,
+      standaloneInstances.map((instance) => toSingleInstanceListItem(instance)),
     );
     const standaloneForView = standaloneItems.filter((instance) =>
-      view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed',
+      isSingleInstanceHistoryStatus(instance.status) === isHistoryView,
     );
 
     return {
-      batches: batchesForView,
+      batches: normalizedBatches,
       standaloneInstances: standaloneForView,
     };
   }
@@ -168,7 +174,10 @@ export class SingleInstancesService {
     this.assertBatchAccess(group.batch.ownerUserId, group.batch.createdBy, currentUser);
     return {
       targetId: group.batch.id,
-      targetSnapshot: { batchName: group.batch.name, instanceCount: group.instances.filter((instance) => instance.status !== 'destroyed').length },
+      targetSnapshot: {
+        batchName: group.batch.name,
+        instanceCount: group.instances.filter((instance) => !isSingleInstanceHistoryStatus(instance.status)).length,
+      },
       summary: { targetName: group.batch.name, destructive: true },
     };
   }
@@ -199,7 +208,7 @@ export class SingleInstancesService {
     const sharedPassword = input.password?.trim() || null;
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
-      (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
+      (instance) => instance.instanceMode === 'single' && !isSingleInstanceHistoryStatus(instance.status),
     ).length;
     const created = [];
     const jobIds: string[] = [];
@@ -314,7 +323,7 @@ export class SingleInstancesService {
 
     this.assertBatchAccess(group.batch.ownerUserId, group.batch.createdBy, currentUser);
 
-    const targetInstances = group.instances.filter((instance) => instance.status !== 'destroyed');
+    const targetInstances = group.instances.filter((instance) => !isSingleInstanceHistoryStatus(instance.status));
     const jobIds: string[] = [];
 
     try {
@@ -498,12 +507,8 @@ function normalizeOptionalValue(value: string | null | undefined) {
   return normalized || null;
 }
 
-function isHistoryOnlyBatch(
-  instances: Array<{
-    status: string;
-  }>,
-) {
-  return instances.length > 0 && instances.every((instance) => instance.status === 'destroyed');
+function isSingleInstanceHistoryStatus(status: string) {
+  return status === 'destroyed' || status === 'create_failed';
 }
 
 function toSingleInstanceListItem(instance: RangeInstanceRecord) {

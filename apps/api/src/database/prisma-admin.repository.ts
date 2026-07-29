@@ -846,14 +846,6 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async deleteRangeInstance(id: string): Promise<void> {
-    await this.prisma.rangeInstance.delete({
-      where: {
-        id,
-      },
-    });
-  }
-
   async createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord> {
     return this.prisma.rangeInstance.create({
       data: {

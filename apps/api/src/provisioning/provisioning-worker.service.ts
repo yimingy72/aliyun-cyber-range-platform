@@ -420,7 +420,7 @@ export class ProvisioningWorkerService {
         : null;
       const message = appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage);
 
-      await this.failJob(job, instance, message);
+      await this.failJob(job, instance, message, cleanupFailureMessage ? 'destroy_failed' : undefined);
     }
   }
 
@@ -1291,17 +1291,22 @@ export class ProvisioningWorkerService {
     return (await response.json()) as ResponsePayload;
   }
 
-  private async failJob(job: ProvisionJobRecord, instance: RangeInstanceRecord, message: string) {
+  private async failJob(
+    job: ProvisionJobRecord,
+    instance: RangeInstanceRecord,
+    message: string,
+    failedInstanceStatus?: 'create_failed' | 'destroy_failed',
+  ) {
     await this.adminRepository.updateProvisionJob(job.id, {
       status: 'failed',
       finishedAt: new Date(),
       errorSummary: message,
     });
 
-    const failedInstanceStatus = this.resolveFailedInstanceStatus(job, instance);
+    const resolvedFailedInstanceStatus = failedInstanceStatus ?? this.resolveFailedInstanceStatus(job, instance);
 
     await this.adminRepository.updateRangeInstance(instance.id, {
-      status: failedInstanceStatus,
+      status: resolvedFailedInstanceStatus,
       errorSummary: message,
     });
     await this.finalizeDispatchedOperation(job, 'failed', 'PROVISIONING_FAILED');

@@ -658,28 +658,6 @@ export class RangeInstancesService {
     return job;
   }
 
-  async delete(id: string, currentUser?: AuthenticatedUser) {
-    const instance = await this.adminRepository.getRangeInstanceById(id);
-
-    if (!instance) {
-      throw new NotFoundException('Range instance not found');
-    }
-
-    if (currentUser) {
-      this.assertInstanceOwnerOrAdmin(instance, currentUser);
-    }
-
-    if (instance.instanceMode === 'range') {
-      throw new ConflictException('Range instance records are retained in history and cannot be deleted');
-    }
-
-    if (instance.status !== 'create_failed') {
-      throw new ConflictException('Only create_failed single instances can be deleted');
-    }
-
-    await this.adminRepository.deleteRangeInstance(id);
-  }
-
   private assertInstanceOwnerOrAdmin(
     instance: NonNullable<Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>>,
     currentUser: AuthenticatedUser,

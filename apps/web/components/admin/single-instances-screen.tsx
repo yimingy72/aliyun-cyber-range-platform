@@ -7,7 +7,6 @@ import { Check, ChevronDown, ChevronRight, Copy, MoreHorizontal, Plus } from 'lu
 
 import {
   AdminApiError,
-  deleteRangeInstance,
   destroySingleInstanceBatch,
   fetchInstanceTypeAvailability,
   fetchPlatformImages,
@@ -73,6 +72,7 @@ const historyInstanceColumns = [
   { id: 'image', label: '镜像', priority: 'secondary' },
   { id: 'summary', label: '规格 / 汇总', priority: 'secondary' },
   { id: 'public-ip', label: '公网 IP', priority: 'tertiary' },
+  { id: 'status', label: '状态', priority: 'secondary' },
   { id: 'started-at', label: '开启时间', priority: 'detail' },
   { id: 'ended-at', label: '结束时间', priority: 'secondary' },
   { id: 'duration', label: '运行时长', priority: 'detail' },
@@ -92,7 +92,7 @@ type CreateDialogState = {
   remark: string;
 };
 
-type MenuAction = SingleInstanceAction | 'delete-record';
+type MenuAction = SingleInstanceAction;
 
 type InstanceCredential = {
   username: string;
@@ -367,7 +367,11 @@ function formatBatchSummary(instances: RangeInstance[]) {
 }
 
 function isHistoryBatch(group: SingleInstanceBatchGroup) {
-  return group.instances.length > 0 && group.instances.every((instance) => instance.status === 'destroyed');
+  return group.instances.length > 0 && group.instances.every((instance) => isSingleInstanceHistoryStatus(instance.status));
+}
+
+function isSingleInstanceHistoryStatus(status: string) {
+  return status === 'destroyed' || status === 'create_failed';
 }
 
 function readJobTimestamp(job: ProvisionJob | undefined, edge: 'start' | 'end') {
@@ -395,18 +399,10 @@ function getAvailableActions(status: string): MenuAction[] {
     return ['retry'];
   }
 
-  if (status === 'create_failed') {
-    return ['retry', 'delete-record'];
-  }
-
   return [];
 }
 
 function getActionLabel(action: MenuAction, status: string) {
-  if (action === 'delete-record') {
-    return '删除记录';
-  }
-
   if (action === 'destroy') {
     return '关闭实例';
   }
@@ -732,9 +728,10 @@ export function SingleInstancesScreen({
 
   const lifecycleByInstanceId = useMemo(() => {
     return Array.from(jobsByInstanceId.entries()).reduce<
-      Map<string, { createJob?: ProvisionJob; destroyJob?: ProvisionJob }>
+      Map<string, { createJob?: ProvisionJob; createFailureJob?: ProvisionJob; destroyJob?: ProvisionJob }>
     >((map, [instanceId, instanceJobs]) => {
       let createJob: ProvisionJob | undefined;
+      let createFailureJob: ProvisionJob | undefined;
       let destroyJob: ProvisionJob | undefined;
       let retryPhase: 'create' | 'destroy' | null = null;
 
@@ -744,6 +741,8 @@ export function SingleInstancesScreen({
 
           if (job.status === 'succeeded') {
             createJob = job;
+          } else if (job.status === 'failed') {
+            createFailureJob = job;
           }
 
           continue;
@@ -759,12 +758,16 @@ export function SingleInstancesScreen({
           continue;
         }
 
-        if (job.jobType === 'retry' && job.status === 'succeeded') {
+        if (job.jobType === 'retry') {
           if (retryPhase === 'create') {
-            createJob = job;
+            if (job.status === 'succeeded') {
+              createJob = job;
+            } else if (job.status === 'failed') {
+              createFailureJob = job;
+            }
           }
 
-          if (retryPhase === 'destroy') {
+          if (retryPhase === 'destroy' && job.status === 'succeeded') {
             destroyJob = job;
           }
         }
@@ -772,18 +775,19 @@ export function SingleInstancesScreen({
 
       map.set(instanceId, {
         createJob,
+        createFailureJob,
         destroyJob,
       });
       return map;
-    }, new Map<string, { createJob?: ProvisionJob; destroyJob?: ProvisionJob }>());
+    }, new Map<string, { createJob?: ProvisionJob; createFailureJob?: ProvisionJob; destroyJob?: ProvisionJob }>());
   }, [jobsByInstanceId]);
 
   const activeInstances = useMemo(
-    () => instances.filter((instance) => instance.status !== 'destroyed'),
+    () => instances.filter((instance) => !isSingleInstanceHistoryStatus(instance.status)),
     [instances],
   );
   const historyInstances = useMemo(
-    () => instances.filter((instance) => instance.status === 'destroyed'),
+    () => instances.filter((instance) => isSingleInstanceHistoryStatus(instance.status)),
     [instances],
   );
   const enabledPlatformImages = useMemo(
@@ -1090,12 +1094,6 @@ export function SingleInstancesScreen({
         vncWindow.opener = null;
       }
 
-      if (action === 'delete-record') {
-        await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
-        await refreshSingleInstanceRows(session.token, listMode);
-        return;
-      }
-
       const result = await triggerSingleInstanceAction(apiBaseUrl, session.token, instance.id, action, {});
 
       if (action === 'open-vnc') {
@@ -1391,14 +1389,32 @@ export function SingleInstancesScreen({
     );
   }
 
+  function getHistoryLifecycleTimestamps(instance: RangeInstance) {
+    const lifecycle = lifecycleByInstanceId.get(instance.id);
+    const isCreateFailure = instance.status === 'create_failed';
+    const createJob = lifecycle?.createJob ?? lifecycle?.createFailureJob;
+    const startedAt = readJobTimestamp(createJob, 'start') ?? instance.createdAt ?? null;
+    const endedAt = isCreateFailure
+      ? readJobTimestamp(lifecycle?.createFailureJob ?? lifecycle?.createJob, 'end')
+      : readJobTimestamp(lifecycle?.destroyJob, 'end');
+
+    return { startedAt, endedAt };
+  }
+
+  function getBatchHistoryEndedAt(group: SingleInstanceBatchGroup) {
+    return group.instances
+      .map((instance) => getHistoryLifecycleTimestamps(instance).endedAt)
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? null;
+  }
+
   function renderHistoryInstanceCells(
     instance: RangeInstance,
     columns: readonly AdminDataColumn[],
     { indented = false }: { indented?: boolean } = {},
   ) {
-    const lifecycle = lifecycleByInstanceId.get(instance.id);
-    const startedAt = readJobTimestamp(lifecycle?.createJob, 'start') ?? instance.createdAt ?? null;
-    const endedAt = readJobTimestamp(lifecycle?.destroyJob, 'end') ?? null;
+    const { startedAt, endedAt } = getHistoryLifecycleTimestamps(instance);
 
     return (
       <>
@@ -1408,10 +1424,11 @@ export function SingleInstancesScreen({
         <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[4]}>{formatDateTime(startedAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[5]}>{formatDateTime(endedAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[6]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[4]}><StatusBadge status={instance.status} /></AdminDataTableCell>
+        <AdminDataTableCell column={columns[5]}>{formatDateTime(startedAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[6]}>{formatDateTime(endedAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[7]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[8]}>{instance.createdBy?.trim() || 'admin'}</AdminDataTableCell>
       </>
     );
   }
@@ -1736,6 +1753,7 @@ export function SingleInstancesScreen({
                   {pagedBatchGroups.map((group) => {
                     const isExpanded = expandedBatchIds.includes(group.batch.id);
                     const isHistoryGroup = isHistoryBatch(group);
+                    const batchEndedAt = isHistoryGroup ? getBatchHistoryEndedAt(group) : group.batch.expiresAt;
 
                     return (
                       <div key={group.batch.id} className="single-instance-batch-card">
@@ -1761,7 +1779,7 @@ export function SingleInstancesScreen({
                             <span>{group.batch.imageDisplayName}</span>
                           </div>
                           <div className="range-workbench-main">
-                            <span>{group.batch.quantity}</span>
+                            <span>{group.instances.length}</span>
                           </div>
                           <div className="range-workbench-main">
                             <span>{formatBatchSummary(group.instances)}</span>
@@ -1770,7 +1788,7 @@ export function SingleInstancesScreen({
                             <span>{formatDateTime(group.batch.createdAt)}</span>
                           </div>
                           <div className="range-workbench-created-at">
-                            <span>{formatDateTime(group.batch.expiresAt)}</span>
+                            <span>{formatDateTime(batchEndedAt)}</span>
                           </div>
                           <div className="range-workbench-main">
                             <span>{group.batch.createdBy?.trim() || 'admin'}</span>

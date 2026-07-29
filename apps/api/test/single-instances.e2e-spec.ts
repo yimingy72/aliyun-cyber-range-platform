@@ -716,7 +716,10 @@ describe('single instances', () => {
       },
     });
     const activeCount = (await repository.listRangeInstances()).filter(
-      (instance) => instance.instanceMode === 'single' && instance.status !== 'destroyed',
+      (instance) =>
+        instance.instanceMode === 'single' &&
+        instance.status !== 'destroyed' &&
+        instance.status !== 'create_failed',
     ).length;
     const expectedVswitchIds = ['vsw-bootstrap-1', 'vsw-bootstrap-2', 'vsw-bootstrap-3'];
 
@@ -897,6 +900,43 @@ describe('single instances', () => {
         systemDiskSize: 40,
       },
     });
+    await repository.createRangeInstance({
+      name: 'web-lab-failed',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'create_failed',
+      singleInstanceBatchId: batch.id,
+      singleInstanceConfig: {
+        baseName: 'web-lab',
+        quantityIndex: 2,
+        hostKey: 'single-ecs-2',
+        hostName: 'web-lab-failed',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
+    await repository.createRangeInstance({
+      name: 'legacy-single-failed',
+      createdBy: 'admin',
+      instanceMode: 'single',
+      status: 'create_failed',
+      singleInstanceConfig: {
+        baseName: 'legacy-single-failed',
+        quantityIndex: 1,
+        hostKey: 'single-ecs-legacy-failed',
+        hostName: 'legacy-single-failed',
+        platformImageAssetId: 'memory-2',
+        imageId: 'm-platform-image-1',
+        imageDisplayName: 'Ubuntu 24.04',
+        cpu: 2,
+        memory: 2,
+        systemDiskSize: 40,
+      },
+    });
 
     const response = await request(app.getHttpServer())
       .get('/admin/instances')
@@ -922,10 +962,33 @@ describe('single instances', () => {
         ]),
       }),
     );
+    expect(response.body.batches[0].instances).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'web-lab-failed' })]),
+    );
+    expect(response.body.standaloneInstances).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'legacy-single-failed' })]),
+    );
     expect(response.body.batches[0].instances[0]).not.toHaveProperty('runtimeTopologyGraph');
     expect(response.body.batches[0].instances[0]).not.toHaveProperty('runtimeScenarioTemplateSpec');
     expect(response.body.batches[0].instances[0]).not.toHaveProperty('runtimeCompiledProvisionSpec');
     expect(response.body.batches[0].instances[0]).not.toHaveProperty('draftTopologyGraph');
+
+    const historyResponse = await request(app.getHttpServer())
+      .get('/admin/instances?view=history')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(historyResponse.body).toEqual(
+      expect.objectContaining({
+        batches: expect.arrayContaining([
+          expect.objectContaining({
+            batch: expect.objectContaining({ id: batch.id }),
+            instances: [expect.objectContaining({ name: 'web-lab-failed', status: 'create_failed' })],
+          }),
+        ]),
+        standaloneInstances: [expect.objectContaining({ name: 'legacy-single-failed', status: 'create_failed' })],
+      }),
+    );
   });
 
   it('allows regular users to load their own single instances and jobs while blocking other users resources', async () => {

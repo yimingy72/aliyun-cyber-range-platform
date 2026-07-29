@@ -630,29 +630,6 @@ export function createMemoryAdminRepository(): AdminRepository {
         instance.updatedAt = now();
       }
     },
-    async deleteRangeInstance(id: string) {
-      const deletedJobIds = new Set(
-        provisionJobs.filter((job) => job.rangeInstanceId === id).map((job) => job.id),
-      );
-
-      for (let i = rangeInstances.length - 1; i >= 0; i -= 1) {
-        if (rangeInstances[i].id === id) {
-          rangeInstances.splice(i, 1);
-        }
-      }
-
-      for (let i = provisionJobs.length - 1; i >= 0; i -= 1) {
-        if (provisionJobs[i].rangeInstanceId === id) {
-          provisionJobs.splice(i, 1);
-        }
-      }
-
-      for (let i = provisionJobStepLogs.length - 1; i >= 0; i -= 1) {
-        if (deletedJobIds.has(provisionJobStepLogs[i].jobId)) {
-          provisionJobStepLogs.splice(i, 1);
-        }
-      }
-    },
     async createRangeInstance(input: CreateRangeInstanceInput) {
       const record: RangeInstanceRecord = {
         id: nextId(),

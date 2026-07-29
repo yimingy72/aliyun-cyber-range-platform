@@ -223,6 +223,7 @@ export class SingleInstanceBatchExecutionService {
             [item],
             appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage),
             createRequestStarted && !cleanupFailureMessage,
+            createRequestStarted && Boolean(cleanupFailureMessage),
           );
         }
       });
@@ -236,12 +237,31 @@ export class SingleInstanceBatchExecutionService {
       }
 
       const accountContext = await this.resolveAccountContext();
-      const instanceIds = items
-        .map((item) => resolveHostInstanceId(item.instance))
-        .filter((value): value is string => Boolean(value));
+      const instanceIds = [
+        ...new Set(
+          (
+            await Promise.all(
+              items.map(async (item) => {
+                const knownInstanceId = resolveHostInstanceId(item.instance);
+
+                if (knownInstanceId) {
+                  return [knownInstanceId];
+                }
+
+                return this.findSingleInstanceIdsByRangeInstanceTag({
+                  accessKeyId: accountContext.accessKeyId,
+                  accessKeySecret: accountContext.accessKeySecret,
+                  regionId: accountContext.defaultRegion,
+                  rangeInstanceId: item.instance.id,
+                });
+              }),
+            )
+          ).flat(),
+        ),
+      ];
 
       if (!instanceIds.length) {
-        await this.markDestroyFailure(items, 'Single-instance ECS instance id is missing from resourceSummary.hostIds.');
+        await this.markDestroySucceeded(items);
         return;
       }
 
@@ -253,18 +273,7 @@ export class SingleInstanceBatchExecutionService {
           instanceIds,
         });
 
-        for (const item of items) {
-          await this.adminRepository.updateRangeInstance(item.instance.id, {
-            status: 'destroyed',
-            errorSummary: null,
-          });
-          await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
-          await this.adminRepository.updateProvisionJob(item.job.id, {
-            status: 'succeeded',
-            finishedAt: new Date(),
-            errorSummary: null,
-          });
-        }
+        await this.markDestroySucceeded(items);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown single-instance batch destroy error';
         await this.markDestroyFailure(items, message);
@@ -514,10 +523,11 @@ export class SingleInstanceBatchExecutionService {
     items: SingleInstanceExecutionItem[],
     message: string,
     clearRecoveredResourceState = false,
+    cleanupFailed = false,
   ) {
     for (const item of items) {
       await this.adminRepository.updateRangeInstance(item.instance.id, {
-        status: 'create_failed',
+        status: cleanupFailed ? 'destroy_failed' : 'create_failed',
         errorSummary: message,
         ...(clearRecoveredResourceState
           ? {
@@ -594,6 +604,21 @@ export class SingleInstanceBatchExecutionService {
         status: 'failed',
         finishedAt: new Date(),
         errorSummary: message,
+      });
+    }
+  }
+
+  private async markDestroySucceeded(items: SingleInstanceExecutionItem[]) {
+    for (const item of items) {
+      await this.adminRepository.updateRangeInstance(item.instance.id, {
+        status: 'destroyed',
+        errorSummary: null,
+      });
+      await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
+      await this.adminRepository.updateProvisionJob(item.job.id, {
+        status: 'succeeded',
+        finishedAt: new Date(),
+        errorSummary: null,
       });
     }
   }

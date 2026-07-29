@@ -53,11 +53,6 @@ export class RangesController {
     return this.rangeInstancesService.saveDraft(id, body, request.adminUser);
   }
 
-  @Delete(':id')
-  async delete(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    await this.rangeInstancesService.delete(id, request.adminUser);
-  }
-
   @Delete(':id/draft')
   discardDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
     return this.rangeInstancesService.discardDraft(id, request.adminUser);

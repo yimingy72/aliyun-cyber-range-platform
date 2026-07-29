@@ -360,33 +360,6 @@ export async function launchRangeInstance(
   return readJson<RangeInstance>(response);
 }
 
-export async function deleteRangeInstance(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}`, {
-    method: 'DELETE',
-    headers: createAdminHeaders(token),
-  });
-
-  if (!response.ok) {
-    let details: unknown;
-
-    try {
-      details = await response.json();
-    } catch {
-      details = null;
-    }
-
-    const message =
-      details &&
-      typeof details === 'object' &&
-      'message' in details &&
-      typeof (details as { message?: unknown }).message === 'string'
-        ? (details as { message: string }).message
-        : `Admin API request failed with status ${response.status}`;
-
-    throw new AdminApiError(response.status, message, details);
-  }
-}
-
 export async function fetchProvisionJobDetail(apiBaseUrl: string, token: string, id: string) {
   const headers = createAdminHeaders(token);
   const [jobResponse, stepsResponse] = await Promise.all([
