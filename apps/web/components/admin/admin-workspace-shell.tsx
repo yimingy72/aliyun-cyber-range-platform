@@ -17,7 +17,7 @@ import {
   refreshAdminOidcToken,
 } from '../../lib/admin-oidc';
 import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../lib/admin-oidc-config';
-import { writeAdminSession } from '../../lib/admin-auth-storage';
+import { readAdminSession, writeAdminSession } from '../../lib/admin-auth-storage';
 import { AdminContentTransition } from './admin-content-transition';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { PlatformBrand } from './platform-brand';
@@ -188,10 +188,15 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         return;
       }
 
+      const currentSession = readAdminSession();
+      if (!currentSession || currentSession.refreshToken !== session.refreshToken) {
+        return;
+      }
+
       writeAdminSession({
         ...nextSession,
-        idToken: nextSession.idToken ?? session.idToken,
-        refreshToken: nextSession.refreshToken ?? session.refreshToken,
+        idToken: nextSession.idToken ?? currentSession.idToken,
+        refreshToken: nextSession.refreshToken ?? currentSession.refreshToken,
       });
     } catch {
       if (!loggingOutRef.current) {

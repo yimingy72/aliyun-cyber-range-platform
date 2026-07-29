@@ -159,7 +159,11 @@ vi.mock('./use-admin-session', async (importOriginal) => {
   };
 });
 
-import { clearAdminSession, writeAdminSession } from '../../lib/admin-auth-storage';
+import {
+  ADMIN_SESSION_STORAGE_KEY,
+  clearAdminSession,
+  writeAdminSession,
+} from '../../lib/admin-auth-storage';
 import { AdminWorkspaceShell } from './admin-workspace-shell';
 
 function createSession(overrides?: Partial<AdminSessionPayload>): AdminSessionPayload {
@@ -629,6 +633,60 @@ describe('AdminWorkspaceShell', () => {
     } finally {
       dateNowMock.mockRestore();
     }
+  });
+
+  it('does not restore a refreshed session after another tab clears it', async () => {
+    let resolveRefresh: (response: Response) => void = () => undefined;
+
+    writeAdminSession(
+      createSession({
+        token: createJwt({ exp: Math.floor(Date.now() / 1000) + 30 }),
+        idToken: 'original-id-token',
+        refreshToken: 'refresh-token-1',
+      }),
+    );
+    fetchMock.mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    const oldValue = storage.get(ADMIN_SESSION_STORAGE_KEY) ?? null;
+    storage.delete(ADMIN_SESSION_STORAGE_KEY);
+    emitStorageEvent(ADMIN_SESSION_STORAGE_KEY, oldValue, null);
+
+    resolveRefresh(
+      new Response(
+        JSON.stringify({
+          access_token: createJwt({
+            exp: Math.floor(Date.now() / 1000) + 3600,
+            sub: 'renewed-user',
+            username: 'renewed',
+            role: 'user',
+          }),
+          id_token: 'renewed-id-token',
+          refresh_token: 'refresh-token-2',
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText('正在续期管理会话')).toBeNull();
+    });
+
+    expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
+    expect(screen.queryByText('renewed / user')).toBeNull();
   });
 
   it('refreshes expiring sessions before rendering the workspace', async () => {
