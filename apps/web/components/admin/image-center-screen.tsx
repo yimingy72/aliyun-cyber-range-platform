@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { TableCell, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -56,7 +57,6 @@ import {
   AdminPaginationControls,
   buildVisiblePages,
   getPagination,
-  PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminPageHeader } from './shared/admin-page-header';
@@ -69,6 +69,8 @@ import {
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminDialog, AdminConfirmationDialog, type AdminDialogSize } from './shared/admin-dialog';
+import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
 
@@ -463,21 +465,22 @@ function ImageTagsDropdown({
 function ImageCenterDialog({
   title,
   children,
+  footer,
+  pending = false,
+  size = 'standard',
+  onClose,
 }: {
   title: string;
   children: React.ReactNode;
+  footer?: React.ReactNode;
+  pending?: boolean;
+  size?: AdminDialogSize;
+  onClose: () => void;
 }) {
   return (
-    <div className="template-workbench-dialog-backdrop" role="presentation">
-      <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="template-workbench-dialog-header">
-          <div>
-            <h2>{title}</h2>
-          </div>
-        </div>
-        {children}
-      </section>
-    </div>
+    <AdminDialog footer={footer} open pending={pending} size={size} title={title} onOpenChange={(open) => !open && onClose()}>
+      {children}
+    </AdminDialog>
   );
 }
 
@@ -575,7 +578,7 @@ export function ImageCenterScreen({
   const publicScopeRequestVersionRef = useRef(0);
   const customScopeRequestVersionRef = useRef(0);
   const loadedTabsRef = useRef(loadedTabs);
-  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+  const { pageSize, setPageSize } = useAdminPageSize();
 
   function beginAction(actionKey: string) {
     setPendingActionKeys((previous) => (previous.includes(actionKey) ? previous : [...previous, actionKey]));
@@ -1419,6 +1422,10 @@ export function ImageCenterScreen({
         ? filteredCustomSnapshots.length
         : filteredPublicSnapshots.length;
 
+  useEffect(() => {
+    setPage(activeTab, 1);
+  }, [activeTab, myTagFilter, platformCreatedByFilter, platformTagFilter, searchName]);
+
   const activePagination = getPagination(activeItemsCount, tabPages[activeTab], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
 
@@ -1440,16 +1447,8 @@ export function ImageCenterScreen({
     setPage(activeTab, activePagination.page + 1);
   }
 
-  function handlePageSizeChange(nextValue: string) {
-    if (nextValue === PAGE_SIZE_AUTO) {
-      setPageSizeMode(PAGE_SIZE_AUTO);
-      setTabPages({ platform: 1, mine: 1, custom: 1, public: 1 });
-      return;
-    }
-
-    const nextPageSize = Number(nextValue);
-    setPageSizeMode(nextValue);
-    setPageSize(nextPageSize);
+  function handlePageSizeChange(nextValue: 20 | 50 | 100) {
+    setPageSize(nextValue);
     setTabPages({ platform: 1, mine: 1, custom: 1, public: 1 });
   }
 
@@ -1712,12 +1711,12 @@ export function ImageCenterScreen({
   }
 
   return (
-    <div className="admin-screen image-center-screen">
-      <section className="admin-workbench-surface">
+    <div className="admin-screen image-center-screen admin-pagination-screen">
+      <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="收录、导入和维护演练镜像资产。" title="镜像中心" />
         {imageImportSuccessMessage ? <p className="mt-4 text-sm text-emerald-700" aria-live="polite">{imageImportSuccessMessage}</p> : null}
 
-        <div className="mt-4">
+        <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             activeView={activeMainView}
             onSearchChange={setSearchName}
@@ -1811,7 +1810,26 @@ export function ImageCenterScreen({
               ) : undefined
             }
           >
-            <div className="mt-4">
+            <AdminPaginatedList
+              className="mt-4"
+              footer={
+                !isActiveTabLoading && !activeTabError && activeItemsCount ? (
+                  <AdminPaginationControls
+                    jumpPageValue={jumpPageValue}
+                    label={`${activeTabTitle} 分页`}
+                    pageSize={pageSize}
+                    pagination={activePagination}
+                    visiblePages={visiblePages}
+                    onJumpPage={handleJumpToPage}
+                    onJumpPageValueChange={setJumpPageValue}
+                    onNextPage={goToNextPage}
+                    onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
+                    onPageSizeChange={handlePageSizeChange}
+                    onPreviousPage={goToPreviousPage}
+                  />
+                ) : null
+              }
+            >
               <CloudSourceTabs
                 activeTab={activeTab}
                 isCloudView={activeMainView === 'cloud'}
@@ -1954,30 +1972,35 @@ export function ImageCenterScreen({
                     </AdminDataTable>
                   </div>
 
-                  {!isActiveTabLoading && !activeTabError && activeItemsCount ? (
-                    <AdminPaginationControls
-                      jumpPageValue={jumpPageValue}
-                      label={`${activeTabTitle} 分页`}
-                      pageSizeMode={pageSizeMode}
-                      pagination={activePagination}
-                      visiblePages={visiblePages}
-                      onJumpPage={handleJumpToPage}
-                      onJumpPageValueChange={setJumpPageValue}
-                      onNextPage={goToNextPage}
-                      onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
-                      onPageSizeChange={handlePageSizeChange}
-                      onPreviousPage={goToPreviousPage}
-                    />
-                  ) : null}
                 </div>
               </CloudSourceTabs>
-            </div>
+            </AdminPaginatedList>
           </AdminListToolbar>
         </div>
 
           {imageImportDraft ? (
-            <ImageCenterDialog title="上传本地镜像">
+            <ImageCenterDialog
+              footer={
+                <>
+                  <Button disabled={pendingActionKeys.includes('create:image-import')} type="button" variant="outline" onClick={closeImageImportDialog}>
+                    取消
+                  </Button>
+                  <Button
+                    disabled={pendingActionKeys.includes('create:image-import') || !canImportImages}
+                    form="image-import-form"
+                    type="submit"
+                  >
+                    {pendingActionKeys.includes('create:image-import') ? '正在处理…' : '上传并导入'}
+                  </Button>
+                </>
+              }
+              pending={pendingActionKeys.includes('create:image-import')}
+              title="上传本地镜像"
+              onClose={closeImageImportDialog}
+            >
               <form
+                className="grid gap-4"
+                id="image-import-form"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void handleSubmitImageImport();
@@ -1986,11 +2009,14 @@ export function ImageCenterScreen({
                 <p className="image-import-dialog-copy">
                   文件会直接上传到当前云账号的私有 OSS Bucket，再由阿里云导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。
                 </p>
-                <fieldset className="template-workbench-dialog-grid image-import-dialog-grid" disabled={pendingActionKeys.includes('create:image-import')}>
-                  <label className="image-import-file-field">
-                    <span>系统盘镜像文件</span>
-                    <input
+                <fieldset className="grid gap-4 border-0 p-0" disabled={pendingActionKeys.includes('create:image-import')}>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-file">系统盘镜像文件</Label>
+                    <Input
+                      autoFocus
                       aria-label="系统盘镜像文件"
+                      className="h-auto py-2"
+                      id="image-import-file"
                       type="file"
                       accept=".qcow2,.raw,.vhd"
                       onChange={(event) => {
@@ -2007,28 +2033,29 @@ export function ImageCenterScreen({
                       required
                     />
                     <small>仅支持 QCOW2、RAW、VHD；首期只导入系统盘。</small>
-                  </label>
-                  <label>
-                    <span>镜像名</span>
-                    <input aria-label="上传镜像名" value={imageImportDraft.displayName} onChange={(event) => updateImageImportDraft({ displayName: event.target.value })} required />
-                  </label>
-                  <label>
-                    <span>默认主机名</span>
-                    <input aria-label="上传镜像默认主机名" value={imageImportDraft.defaultHostName} onChange={(event) => updateImageImportDraft({ defaultHostName: event.target.value })} placeholder="可选，创建实例时使用" />
-                  </label>
-                  <label>
-                    <span>默认登录密码</span>
-                    <input aria-label="上传镜像默认登录密码" type="password" value={imageImportDraft.defaultPassword} onChange={(event) => updateImageImportDraft({ defaultPassword: event.target.value })} autoComplete="new-password" placeholder="可选，保存后不再回显" />
-                  </label>
-                  <label>
-                    <span>备注</span>
-                    <input aria-label="上传镜像备注" value={imageImportDraft.description} onChange={(event) => updateImageImportDraft({ description: event.target.value })} placeholder="镜像用途或来源说明" />
-                  </label>
-                  <label>
-                    <span>操作系统</span>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-name">镜像名</Label>
+                    <Input aria-label="上传镜像名" id="image-import-name" value={imageImportDraft.displayName} onChange={(event) => updateImageImportDraft({ displayName: event.target.value })} required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-host-name">默认主机名</Label>
+                    <Input aria-label="上传镜像默认主机名" id="image-import-host-name" value={imageImportDraft.defaultHostName} onChange={(event) => updateImageImportDraft({ defaultHostName: event.target.value })} placeholder="可选，创建实例时使用" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-password">默认登录密码</Label>
+                    <Input aria-label="上传镜像默认登录密码" id="image-import-password" type="password" value={imageImportDraft.defaultPassword} onChange={(event) => updateImageImportDraft({ defaultPassword: event.target.value })} autoComplete="new-password" placeholder="可选，保存后不再回显" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-description">备注</Label>
+                    <Input aria-label="上传镜像备注" id="image-import-description" value={imageImportDraft.description} onChange={(event) => updateImageImportDraft({ description: event.target.value })} placeholder="镜像用途或来源说明" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-os-type">操作系统</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像操作系统"
-                      className="h-[46px] w-full"
+                      className="w-full"
+                      id="image-import-os-type"
                       onValueChange={(value) =>
                         updateImageImportDraft({ osType: value as ImageImportDialogDraft['osType'] })
                       }
@@ -2038,16 +2065,17 @@ export function ImageCenterScreen({
                       ]}
                       value={imageImportDraft.osType}
                     />
-                  </label>
-                  <label>
-                    <span>系统版本 / 平台</span>
-                    <input aria-label="上传镜像系统版本" value={imageImportDraft.platform} onChange={(event) => updateImageImportDraft({ platform: event.target.value })} placeholder="例如 Ubuntu 22.04" />
-                  </label>
-                  <label>
-                    <span>架构</span>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-platform">系统版本 / 平台</Label>
+                    <Input aria-label="上传镜像系统版本" id="image-import-platform" value={imageImportDraft.platform} onChange={(event) => updateImageImportDraft({ platform: event.target.value })} placeholder="例如 Ubuntu 22.04" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-architecture">架构</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像架构"
-                      className="h-[46px] w-full"
+                      className="w-full"
+                      id="image-import-architecture"
                       onValueChange={(value) =>
                         updateImageImportDraft({ architecture: value as ImageImportDialogDraft['architecture'] })
                       }
@@ -2057,12 +2085,13 @@ export function ImageCenterScreen({
                       ]}
                       value={imageImportDraft.architecture}
                     />
-                  </label>
-                  <label>
-                    <span>启动模式</span>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-boot-mode">启动模式</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像启动模式"
-                      className="h-[46px] w-full"
+                      className="w-full"
+                      id="image-import-boot-mode"
                       onValueChange={(value) =>
                         updateImageImportDraft({ bootMode: value as ImageImportDialogDraft['bootMode'] })
                       }
@@ -2072,12 +2101,13 @@ export function ImageCenterScreen({
                       ]}
                       value={imageImportDraft.bootMode}
                     />
-                  </label>
-                  <label>
-                    <span>镜像格式</span>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-format">镜像格式</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像格式"
-                      className="h-[46px] w-full"
+                      className="w-full"
+                      id="image-import-format"
                       onValueChange={(value) =>
                         updateImageImportDraft({ imageFormat: value as ImageImportDialogDraft['imageFormat'] })
                       }
@@ -2088,11 +2118,11 @@ export function ImageCenterScreen({
                       ]}
                       value={imageImportDraft.imageFormat}
                     />
-                  </label>
-                  <label>
-                    <span>系统盘大小（GiB）</span>
-                    <input aria-label="上传镜像系统盘大小" type="number" min="1" max="2048" value={imageImportDraft.systemDiskSize} onChange={(event) => updateImageImportDraft({ systemDiskSize: event.target.value })} required />
-                  </label>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="image-import-system-disk-size">系统盘大小（GiB）</Label>
+                    <Input aria-label="上传镜像系统盘大小" id="image-import-system-disk-size" type="number" min="1" max="2048" value={imageImportDraft.systemDiskSize} onChange={(event) => updateImageImportDraft({ systemDiskSize: event.target.value })} required />
+                  </div>
                 </fieldset>
                 {imageImportProgress !== null ? (
                   <div className="image-import-progress" aria-live="polite">
@@ -2101,79 +2131,57 @@ export function ImageCenterScreen({
                   </div>
                 ) : null}
                 {imageImportErrorMessage ? <p className="admin-error image-import-dialog-error" role="alert">{imageImportErrorMessage}</p> : null}
-                <div className="template-workbench-dialog-actions">
-                  <button type="submit" disabled={pendingActionKeys.includes('create:image-import') || !canImportImages}>
-                    {pendingActionKeys.includes('create:image-import') ? '正在处理…' : '上传并导入'}
-                  </button>
-                  <button type="button" disabled={pendingActionKeys.includes('create:image-import')} onClick={closeImageImportDialog}>
-                    取消
-                  </button>
-                </div>
               </form>
             </ImageCenterDialog>
           ) : null}
 
           {renamingAsset ? (
-            <ImageCenterDialog title="编辑镜像名称">
-              <div className="template-workbench-dialog-grid">
-                <label>
-                  <span>镜像名</span>
-                  <input aria-label="镜像名" value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} />
-                </label>
-              </div>
-              <div className="template-workbench-dialog-actions">
-                <button type="button" disabled={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)} onClick={() => void handleRenamePlatformAsset()}>
-                  保存信息
-                </button>
-                <button type="button" disabled={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)} onClick={closeRenameDialog}>
-                  取消编辑
-                </button>
+            <ImageCenterDialog
+              footer={
+                <>
+                  <Button disabled={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)} type="button" variant="outline" onClick={closeRenameDialog}>
+                    取消编辑
+                  </Button>
+                  <Button disabled={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)} type="button" onClick={() => void handleRenamePlatformAsset()}>
+                    保存信息
+                  </Button>
+                </>
+              }
+              pending={pendingActionKeys.includes(`rename:platform:${renamingAsset.id}`)}
+              title="编辑镜像名称"
+              onClose={closeRenameDialog}
+            >
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="rename-platform-image">镜像名</Label>
+                  <Input aria-label="镜像名" autoFocus id="rename-platform-image" value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} />
+                </div>
               </div>
             </ImageCenterDialog>
           ) : null}
 
           {confirmState?.type === 'remove-platform' ? (
-            <ImageCenterDialog title="确认删除镜像">
-              <p className="template-workbench-confirm-copy">
-                删除“{confirmState.asset.displayName}”后会将其移出平台收录目录，但不会删除阿里云上的原始镜像。
-              </p>
-              <div className="template-workbench-dialog-actions">
-                <button
-                  type="button"
-                  disabled={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)}
-                  onClick={() => void handleRemovePlatformAsset(confirmState.asset)}
-                >
-                  确认删除
-                </button>
-                <button type="button" disabled={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)} onClick={closeConfirmDialog}>
-                  取消
-                </button>
-              </div>
-            </ImageCenterDialog>
+            <AdminConfirmationDialog
+              confirmLabel="确认删除"
+              description={`删除“${confirmState.asset.displayName}”后会将其移出平台收录目录，但不会删除阿里云上的原始镜像。`}
+              open
+              pending={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)}
+              title="确认删除镜像"
+              onConfirm={() => void handleRemovePlatformAsset(confirmState.asset)}
+              onOpenChange={(open) => !open && closeConfirmDialog()}
+            />
           ) : null}
 
           {confirmState?.type === 'delete-custom' ? (
-            <ImageCenterDialog title="确认删除阿里云自定义镜像">
-              <p className="template-workbench-confirm-copy">
-                即将删除阿里云上的自定义镜像“{confirmState.snapshot.sourceImageName}”，此操作会影响当前账号下该镜像的后续使用。
-              </p>
-              <div className="template-workbench-dialog-actions">
-                <button
-                  type="button"
-                  disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
-                  onClick={() => void handleDeleteCustomSnapshot(confirmState.snapshot)}
-                >
-                  确认删除
-                </button>
-                <button
-                  type="button"
-                  disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
-                  onClick={closeConfirmDialog}
-                >
-                  取消
-                </button>
-              </div>
-            </ImageCenterDialog>
+            <AdminConfirmationDialog
+              confirmLabel="确认删除"
+              description={`即将删除阿里云上的自定义镜像“${confirmState.snapshot.sourceImageName}”，此操作会影响当前账号下该镜像的后续使用。`}
+              open
+              pending={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
+              title="确认删除阿里云自定义镜像"
+              onConfirm={() => void handleDeleteCustomSnapshot(confirmState.snapshot)}
+              onOpenChange={(open) => !open && closeConfirmDialog()}
+            />
           ) : null}
       </section>
     </div>

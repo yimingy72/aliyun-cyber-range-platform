@@ -6,6 +6,7 @@ const {
   exportBillingUserItemsCsvMock,
   exportBillingUsersCsvMock,
   exportPlatformBillingCsvMock,
+  fetchAdminUsersMock,
   fetchBillingSummaryMock,
   fetchBillingUserGroupsMock,
   fetchBillingUsersMock,
@@ -17,6 +18,7 @@ const {
   exportBillingUserItemsCsvMock: vi.fn(),
   exportBillingUsersCsvMock: vi.fn(),
   exportPlatformBillingCsvMock: vi.fn(),
+  fetchAdminUsersMock: vi.fn(),
   fetchBillingSummaryMock: vi.fn(),
   fetchBillingUserGroupsMock: vi.fn(),
   fetchBillingUsersMock: vi.fn(),
@@ -27,6 +29,10 @@ const {
 }));
 
 routerMock.replace = replaceMock;
+
+function toBillingPage<T>(payload: T[] | { items: T[]; page: number; pageSize: 20 | 50 | 100; total: number }) {
+  return Array.isArray(payload) ? { items: payload, page: 1, pageSize: 20 as const, total: payload.length } : payload;
+}
 
 vi.mock('next/navigation', () => ({
   useRouter: () => routerMock,
@@ -40,10 +46,11 @@ vi.mock('../../lib/admin-api', async () => {
     exportBillingUserItemsCsv: exportBillingUserItemsCsvMock,
     exportBillingUsersCsv: exportBillingUsersCsvMock,
     exportPlatformBillingCsv: exportPlatformBillingCsvMock,
+    fetchAdminUsers: fetchAdminUsersMock,
     fetchBillingSummary: fetchBillingSummaryMock,
-    fetchBillingUserGroups: fetchBillingUserGroupsMock,
-    fetchBillingUsers: fetchBillingUsersMock,
-    fetchPlatformBillingGroups: fetchPlatformBillingGroupsMock,
+    fetchBillingUserGroups: async (...args: unknown[]) => toBillingPage(await fetchBillingUserGroupsMock(...args)),
+    fetchBillingUsers: async (...args: unknown[]) => toBillingPage(await fetchBillingUsersMock(...args)),
+    fetchPlatformBillingGroups: async (...args: unknown[]) => toBillingPage(await fetchPlatformBillingGroupsMock(...args)),
     triggerBillingSync: triggerBillingSyncMock,
   };
 });
@@ -138,11 +145,16 @@ describe('BillingScreen', () => {
     exportBillingUserItemsCsvMock.mockReset();
     exportBillingUsersCsvMock.mockReset();
     exportPlatformBillingCsvMock.mockReset();
+    fetchAdminUsersMock.mockReset();
     fetchBillingSummaryMock.mockReset();
     fetchBillingUserGroupsMock.mockReset();
     fetchBillingUsersMock.mockReset();
     fetchPlatformBillingGroupsMock.mockReset();
     triggerBillingSyncMock.mockReset();
+    fetchAdminUsersMock.mockResolvedValue([
+      { id: 'user-1', username: 'alice', role: 'user', status: 'active', createdAt: '', updatedAt: '' },
+      { id: 'user-2', username: 'bob', role: 'user', status: 'active', createdAt: '', updatedAt: '' },
+    ]);
     vi.stubGlobal('Blob', class BlobMock {
       constructor(_parts?: unknown[], _options?: Record<string, unknown>) {}
     });
@@ -230,7 +242,7 @@ describe('BillingScreen', () => {
     expect(fetchBillingUsersMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
-      expect.objectContaining({ limit: 500 }),
+      expect.objectContaining({ page: 1, pageSize: 20 }),
     );
 
     fireEvent.click(rangeGroupButtons[0]!);

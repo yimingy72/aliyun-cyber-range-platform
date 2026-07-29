@@ -1,18 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,7 +28,6 @@ import {
   AdminPaginationControls,
   buildVisiblePages,
   getPagination,
-  PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminPageHeader } from './shared/admin-page-header';
@@ -48,6 +39,8 @@ import {
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminDialog } from './shared/admin-dialog';
+import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
@@ -119,7 +112,9 @@ export function UsersScreen({
   const [page, setPage] = useState(1);
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const [searchName, setSearchName] = useState('');
-  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+  const createUserNameRef = useRef<HTMLInputElement>(null);
+  const resetPasswordRef = useRef<HTMLInputElement>(null);
+  const { pageSize, setPageSize } = useAdminPageSize();
 
   useEffect(() => {
     if (!session.isReady) {
@@ -205,6 +200,11 @@ export function UsersScreen({
         : users,
     [normalizedSearchName, users],
   );
+
+  useEffect(() => {
+    setPage(1);
+  }, [normalizedSearchName]);
+
   const pagination = getPagination(filteredUsers.length, page, pageSize);
   const visiblePages = buildVisiblePages(pagination.totalPages, pagination.page);
   const pagedUsers = filteredUsers.slice(pagination.startIndex, pagination.endIndex);
@@ -219,15 +219,8 @@ export function UsersScreen({
     setJumpPageValue(String(pagination.page));
   }, [pagination.page]);
 
-  function handlePageSizeChange(nextValue: string) {
-    if (nextValue === PAGE_SIZE_AUTO) {
-      setPageSizeMode(PAGE_SIZE_AUTO);
-      setPage(1);
-      return;
-    }
-
-    setPageSizeMode(nextValue);
-    setPageSize(Number(nextValue));
+  function handlePageSizeChange(nextValue: 20 | 50 | 100) {
+    setPageSize(nextValue);
     setPage(1);
   }
 
@@ -443,7 +436,7 @@ export function UsersScreen({
   const hasVisibleUsers = filteredUsers.length > 0;
 
   return (
-    <div className="admin-screen">
+    <div className="admin-screen admin-pagination-screen">
       {actionErrorMessage ? (
         <p className="mb-3 text-sm text-destructive" role="alert">
           {actionErrorMessage}
@@ -455,10 +448,10 @@ export function UsersScreen({
         </p>
       ) : null}
 
-      <section className="admin-workbench-surface users-workbench-panel">
+      <section className="admin-workbench-surface users-workbench-panel admin-pagination-surface">
         <AdminPageHeader description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理" />
 
-        <div className="mt-4">
+        <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             action={
               <>
@@ -478,7 +471,26 @@ export function UsersScreen({
             searchPlaceholder="搜索用户名"
             searchValue={searchName}
           >
-            <div className="mt-4">
+            <AdminPaginatedList
+              className="mt-4"
+              footer={
+                hasVisibleUsers ? (
+                  <AdminPaginationControls
+                    jumpPageValue={jumpPageValue}
+                    label="用户列表分页"
+                    onJumpPage={handleJumpToPage}
+                    onJumpPageValueChange={setJumpPageValue}
+                    onNextPage={() => setPage(pagination.page + 1)}
+                    onPageSelect={setPage}
+                    onPageSizeChange={handlePageSizeChange}
+                    onPreviousPage={() => setPage(pagination.page - 1)}
+                    pageSize={pageSize}
+                    pagination={pagination}
+                    visiblePages={visiblePages}
+                  />
+                ) : null
+              }
+            >
               <AdminDataTable columns={USER_COLUMNS} isRefreshing={isRefreshing} label="用户列表">
                 {(columns) => {
                   const [usernameColumn, roleColumn, createdAtColumn, updatedAtColumn, statusColumn, actionsColumn] = columns;
@@ -601,46 +613,38 @@ export function UsersScreen({
                   return retainedListErrorRow ? [retainedListErrorRow, ...userRows] : userRows;
                 }}
               </AdminDataTable>
-            </div>
-            {hasVisibleUsers ? (
-              <div className="mt-4">
-                <AdminPaginationControls
-                  jumpPageValue={jumpPageValue}
-                  label="用户列表分页"
-                  onJumpPage={handleJumpToPage}
-                  onJumpPageValueChange={setJumpPageValue}
-                  onNextPage={() => setPage(pagination.page + 1)}
-                  onPageSelect={setPage}
-                  onPageSizeChange={handlePageSizeChange}
-                  onPreviousPage={() => setPage(pagination.page - 1)}
-                  pageSizeMode={pageSizeMode}
-                  pagination={pagination}
-                  visiblePages={visiblePages}
-                />
-              </div>
-            ) : null}
+            </AdminPaginatedList>
           </AdminListToolbar>
         </div>
       </section>
 
-      <Dialog
+      <AdminDialog
+        footer={
+          <>
+            <Button disabled={isSubmitting} onClick={closeCreateDialog} type="button" variant="outline">
+              取消
+            </Button>
+            <Button disabled={isSubmitting} onClick={() => void handleCreateUser()} type="button">
+              确认创建
+            </Button>
+          </>
+        }
+        initialFocusRef={createUserNameRef}
         onOpenChange={(open) => {
-          if (!open && !isSubmitting) {
+          if (!open) {
             closeCreateDialog();
           }
         }}
         open={isCreateDialogOpen}
+        pending={isSubmitting}
+        title="创建用户"
       >
-        <DialogContent closeButtonDisabled={isSubmitting}>
-          <DialogHeader>
-            <DialogTitle>创建用户</DialogTitle>
-            <DialogDescription>创建新的后台账号，并分配初始角色。</DialogDescription>
-          </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="create-user-username">用户名</Label>
               <Input
                 id="create-user-username"
+                ref={createUserNameRef}
                 value={createDraft.username}
                 onChange={(event) => setCreateDraft((currentValue) => ({ ...currentValue, username: event.target.value }))}
               />
@@ -674,34 +678,34 @@ export function UsersScreen({
               />
             </div>
           </div>
-          <DialogFooter>
-            <Button disabled={isSubmitting} onClick={() => void handleCreateUser()} type="button">
-              确认创建
-            </Button>
-            <Button disabled={isSubmitting} onClick={closeCreateDialog} type="button" variant="outline">
+      </AdminDialog>
+
+      <AdminDialog
+        footer={
+          <>
+            <Button disabled={isSubmitting} onClick={closeResetPasswordDialog} type="button" variant="outline">
               取消
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
+            <Button disabled={isSubmitting} onClick={() => void handleResetPassword()} type="button">
+              确认重置
+            </Button>
+          </>
+        }
+        initialFocusRef={resetPasswordRef}
         onOpenChange={(open) => {
-          if (!open && !isSubmitting) {
+          if (!open) {
             closeResetPasswordDialog();
           }
         }}
         open={resetPasswordState !== null}
+        pending={isSubmitting}
+        title="重置密码"
       >
-        <DialogContent closeButtonDisabled={isSubmitting}>
-          <DialogHeader>
-            <DialogTitle>重置密码</DialogTitle>
-            <DialogDescription>将为“{resetPasswordState?.username}”设置新的登录密码。</DialogDescription>
-          </DialogHeader>
           <div className="grid gap-2">
             <Label htmlFor="reset-user-password">新密码</Label>
             <Input
               id="reset-user-password"
+              ref={resetPasswordRef}
               type="password"
               value={resetPasswordState?.password ?? ''}
               onChange={(event) =>
@@ -716,16 +720,7 @@ export function UsersScreen({
               }
             />
           </div>
-          <DialogFooter>
-            <Button disabled={isSubmitting} onClick={() => void handleResetPassword()} type="button">
-              确认重置
-            </Button>
-            <Button disabled={isSubmitting} onClick={closeResetPasswordDialog} type="button" variant="outline">
-              取消
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </AdminDialog>
     </div>
   );
 }

@@ -1,18 +1,10 @@
 'use client';
 
-import { type MouseEvent, useEffect, useMemo, useState } from 'react';
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,7 +35,6 @@ import {
   AdminPaginationControls,
   buildVisiblePages,
   getPagination,
-  PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminPageHeader } from './shared/admin-page-header';
@@ -54,6 +45,8 @@ import {
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminDialog } from './shared/admin-dialog';
+import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
@@ -215,9 +208,12 @@ export function TemplatesScreen({
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
   const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
+  const createNameRef = useRef<HTMLInputElement>(null);
+  const editNameRef = useRef<HTMLInputElement>(null);
+  const launchNameRef = useRef<HTMLInputElement>(null);
   const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
-  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+  const { pageSize, setPageSize } = useAdminPageSize();
 
   function markTableContentUpdated(view: RangeTemplateView) {
     setTableContentVersions((current) => ({
@@ -312,6 +308,14 @@ export function TemplatesScreen({
       return searchName.trim().length === 0 || displayName.includes(searchName.trim().toLowerCase());
     });
   }, [searchName, scenarios]);
+
+  useEffect(() => {
+    setViewPages((current) => ({
+      ...current,
+      [activeView]: 1,
+    }));
+  }, [activeView, searchName]);
+
   const activePagination = getPagination(filteredTemplates.length, viewPages[activeView], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedTemplates = filteredTemplates.slice(activePagination.startIndex, activePagination.endIndex);
@@ -329,15 +333,8 @@ export function TemplatesScreen({
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, activeView]);
 
-  function handlePageSizeChange(nextValue: string) {
-    if (nextValue === PAGE_SIZE_AUTO) {
-      setPageSizeMode(PAGE_SIZE_AUTO);
-      setViewPages({ platform: 1, mine: 1 });
-      return;
-    }
-
-    setPageSizeMode(nextValue);
-    setPageSize(Number(nextValue));
+  function handlePageSizeChange(nextValue: 20 | 50 | 100) {
+    setPageSize(nextValue);
     setViewPages({ platform: 1, mine: 1 });
   }
 
@@ -478,22 +475,6 @@ export function TemplatesScreen({
 
   function closeConfirmDialog() {
     setConfirmState(null);
-  }
-
-  function handlePendingDialogOpenChange(open: boolean, closeDialog: () => void) {
-    if (!open && isSubmitting) {
-      return;
-    }
-
-    if (!open) {
-      closeDialog();
-    }
-  }
-
-  function preventPendingDialogClose(event: Event) {
-    if (isSubmitting) {
-      event.preventDefault();
-    }
   }
 
   function openConfirmDialog(type: 'delete', template: Scenario) {
@@ -732,13 +713,13 @@ export function TemplatesScreen({
   }
 
   return (
-    <div className="admin-screen template-workbench-screen" onClickCapture={handleScreenClickCapture}>
+    <div className="admin-screen template-workbench-screen admin-pagination-screen" onClickCapture={handleScreenClickCapture}>
       {actionErrorMessage ? <p className="admin-error">{actionErrorMessage}</p> : null}
       {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
 
-      <section className="admin-workbench-surface">
+      <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
-        <div className="mt-4">
+        <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             activeView={activeView}
             onSearchChange={setSearchName}
@@ -761,7 +742,41 @@ export function TemplatesScreen({
               </Button>
             }
           >
-            <div className="mt-4">
+            <AdminPaginatedList
+              className="mt-4"
+              footer={
+                filteredTemplates.length ? (
+                  <AdminPaginationControls
+                    jumpPageValue={jumpPageValue}
+                    label="靶场列表分页"
+                    pageSize={pageSize}
+                    pagination={activePagination}
+                    visiblePages={visiblePages}
+                    onJumpPage={handleJumpToPage}
+                    onJumpPageValueChange={setJumpPageValue}
+                    onNextPage={() =>
+                      setViewPages((current) => ({
+                        ...current,
+                        [activeView]: activePagination.page + 1,
+                      }))
+                    }
+                    onPageSelect={(pageNumber) =>
+                      setViewPages((current) => ({
+                        ...current,
+                        [activeView]: pageNumber,
+                      }))
+                    }
+                    onPageSizeChange={handlePageSizeChange}
+                    onPreviousPage={() =>
+                      setViewPages((current) => ({
+                        ...current,
+                        [activeView]: activePagination.page - 1,
+                      }))
+                    }
+                  />
+                ) : null
+              }
+            >
               <AdminDataTable
                 columns={TEMPLATE_COLUMNS}
                 contentVersion={tableContentVersions[activeView]}
@@ -897,61 +912,38 @@ export function TemplatesScreen({
                   });
                 }}
               </AdminDataTable>
-              {filteredTemplates.length ? (
-                <div className="mt-4">
-                  <AdminPaginationControls
-                    jumpPageValue={jumpPageValue}
-                    label="靶场列表分页"
-                    pageSizeMode={pageSizeMode}
-                    pagination={activePagination}
-                    visiblePages={visiblePages}
-                    onJumpPage={handleJumpToPage}
-                    onJumpPageValueChange={setJumpPageValue}
-                    onNextPage={() =>
-                      setViewPages((current) => ({
-                        ...current,
-                        [activeView]: activePagination.page + 1,
-                      }))
-                    }
-                    onPageSelect={(pageNumber) =>
-                      setViewPages((current) => ({
-                        ...current,
-                        [activeView]: pageNumber,
-                      }))
-                    }
-                    onPageSizeChange={handlePageSizeChange}
-                    onPreviousPage={() =>
-                      setViewPages((current) => ({
-                        ...current,
-                        [activeView]: activePagination.page - 1,
-                      }))
-                    }
-                  />
-                </div>
-              ) : null}
-            </div>
+            </AdminPaginatedList>
           </AdminListToolbar>
         </div>
       </section>
 
-      <Dialog
+      <AdminDialog
+        footer={
+          <>
+            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeCreateDialog}>
+              取消
+            </Button>
+            <Button disabled={isSubmitting} type="button" onClick={() => void handleCreateTemplate()}>
+              创建并进入编排
+            </Button>
+          </>
+        }
+        initialFocusRef={createNameRef}
         open={isCreateDialogOpen}
+        pending={isSubmitting}
+        title="创建靶场"
         onOpenChange={(open) => {
           if (!open) {
             closeCreateDialog();
           }
         }}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>创建靶场</DialogTitle>
-            <DialogDescription className="sr-only">填写靶场基础信息后进入拓扑编排。</DialogDescription>
-          </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="create-template-name">靶场名</Label>
               <Input
                 id="create-template-name"
+                ref={createNameRef}
                 value={createDraft.name}
                 onChange={(event) => setCreateDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
@@ -965,38 +957,39 @@ export function TemplatesScreen({
               />
             </div>
           </div>
-          <DialogFooter>
-            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeCreateDialog}>
-              取消
-            </Button>
-            <Button disabled={isSubmitting} type="button" onClick={() => void handleCreateTemplate()}>
-              创建并进入编排
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </AdminDialog>
 
-      <Dialog
+      <AdminDialog
+        footer={
+          <>
+            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeEditDialog}>
+              取消编辑
+            </Button>
+            <Button
+              disabled={isSubmitting || !editingTemplate}
+              type="button"
+              onClick={() => editingTemplate && void handleUpdateTemplate(editingTemplate.id)}
+            >
+              保存信息
+            </Button>
+          </>
+        }
+        initialFocusRef={editNameRef}
         open={Boolean(editingTemplate)}
+        pending={isSubmitting}
+        title="编辑靶场"
         onOpenChange={(open) => {
-          handlePendingDialogOpenChange(open, closeEditDialog);
+          if (!open) {
+            closeEditDialog();
+          }
         }}
       >
-        <DialogContent
-          closeButtonDisabled={isSubmitting}
-          onEscapeKeyDown={preventPendingDialogClose}
-          onInteractOutside={preventPendingDialogClose}
-          onPointerDownOutside={preventPendingDialogClose}
-        >
-          <DialogHeader>
-            <DialogTitle>编辑靶场</DialogTitle>
-            <DialogDescription className="sr-only">更新靶场的基础信息。</DialogDescription>
-          </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="edit-template-name">靶场名</Label>
               <Input
                 id="edit-template-name"
+                ref={editNameRef}
                 value={editDraft.name}
                 onChange={(event) => setEditDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
@@ -1010,42 +1003,35 @@ export function TemplatesScreen({
               />
             </div>
           </div>
-          <DialogFooter>
-            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeEditDialog}>
-              取消编辑
-            </Button>
-            <Button
-              disabled={isSubmitting || !editingTemplate}
-              type="button"
-              onClick={() => editingTemplate && void handleUpdateTemplate(editingTemplate.id)}
-            >
-              保存信息
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </AdminDialog>
 
-      <Dialog
+      <AdminDialog
+        footer={
+          <>
+            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeLaunchDialog}>
+              取消
+            </Button>
+            <Button disabled={isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
+              确认生成
+            </Button>
+          </>
+        }
+        initialFocusRef={launchNameRef}
         open={Boolean(launchDraft.templateId)}
+        pending={isSubmitting}
+        title="生成实例"
         onOpenChange={(open) => {
-          handlePendingDialogOpenChange(open, closeLaunchDialog);
+          if (!open) {
+            closeLaunchDialog();
+          }
         }}
       >
-        <DialogContent
-          closeButtonDisabled={isSubmitting}
-          onEscapeKeyDown={preventPendingDialogClose}
-          onInteractOutside={preventPendingDialogClose}
-          onPointerDownOutside={preventPendingDialogClose}
-        >
-          <DialogHeader>
-            <DialogTitle>生成实例</DialogTitle>
-            <DialogDescription className="sr-only">填写实例名和到期时间后生成靶场实例。</DialogDescription>
-          </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="launch-instance-name">实例名</Label>
               <Input
                 id="launch-instance-name"
+                ref={launchNameRef}
                 value={launchDraft.name}
                 onChange={(event) => setLaunchDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
@@ -1060,16 +1046,7 @@ export function TemplatesScreen({
               />
             </div>
           </div>
-          <DialogFooter>
-            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeLaunchDialog}>
-              取消
-            </Button>
-            <Button disabled={isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
-              确认生成
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </AdminDialog>
 
       <ConfirmActionDialog
         confirmLabel="删除模板"

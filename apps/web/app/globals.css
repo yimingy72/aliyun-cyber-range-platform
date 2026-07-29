@@ -988,6 +988,10 @@ body {
   animation: admin-content-enter 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
+.admin-content-transition:has(.admin-pagination-screen) {
+  height: 100%;
+}
+
 .admin-data-table-body-enter {
   animation: admin-table-content-enter 160ms ease-out both;
 }
@@ -1061,6 +1065,41 @@ body {
   border-radius: 6px;
   background: var(--card);
   box-shadow: 0 2px 8px rgba(24, 44, 74, 0.06);
+}
+
+.admin-pagination-screen,
+.template-workbench-screen.admin-pagination-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.admin-pagination-screen > .admin-workbench-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.admin-pagination-surface {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.admin-paginated-list {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.admin-paginated-list-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.admin-paginated-list-footer {
+  min-width: 0;
 }
 
 .single-instance-screen .admin-workbench-panel {
@@ -1817,9 +1856,9 @@ body {
 
 .image-center-actions-cell button,
 .image-center-list-meta button,
-.image-center-pagination select,
-.image-center-pagination input,
-.image-center-pagination button {
+.admin-pagination select,
+.admin-pagination input,
+.admin-pagination button {
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid #d5e1f0;
@@ -1835,22 +1874,22 @@ body {
 
 .image-center-actions-cell button:hover,
 .image-center-list-meta button:hover,
-.image-center-pagination select:hover,
-.image-center-pagination input:hover,
-.image-center-pagination button:hover {
+.admin-pagination select:hover,
+.admin-pagination input:hover,
+.admin-pagination button:hover {
   border-color: #bdd0e7;
   background: #edf4ff;
 }
 
 .image-center-actions-cell button:disabled,
 .image-center-list-meta button:disabled,
-.image-center-pagination button:disabled {
+.admin-pagination button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.image-center-pagination select,
-.image-center-pagination input {
+.admin-pagination select,
+.admin-pagination input {
   min-width: 82px;
   cursor: text;
 }
@@ -1887,39 +1926,141 @@ body {
   min-height: 132px;
 }
 
-.image-center-pagination {
+.admin-pagination {
   display: flex;
   justify-content: flex-end;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 16px 18px 18px;
-  border-top: 1px solid #edf1f5;
+  width: fit-content;
+  max-width: 100%;
+  gap: 8px;
+  margin-left: auto;
+  padding: 12px 0 0;
   color: #65758c;
   font-size: var(--ui-font-button);
 }
 
-.image-center-pagination-size,
-.image-center-pagination-jump {
+.admin-pagination-size,
+.admin-pagination-jump {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
 
-.image-center-pagination-pages {
+.admin-pagination-actions,
+.admin-pagination-navigation {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.admin-pagination-actions {
+  flex: 0 1 auto;
+}
+
+.admin-pagination-jump label {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.admin-pagination-jump {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.admin-pagination-jump input {
+  flex: 0 0 3.5rem;
+  min-width: 3.5rem;
+  width: 3.5rem;
+  padding-right: 8px;
+  padding-left: 8px;
+}
+
+.admin-pagination-pages {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.image-center-pagination-pages button[aria-pressed='true'] {
+.admin-pagination-pages button[aria-pressed='true'] {
   color: #184b97;
   border-color: #bdd0e7;
   background: #edf4ff;
 }
 
-.image-center-pagination-summary {
+.admin-pagination-summary {
   color: #7a889d;
+  white-space: nowrap;
+}
+
+.admin-pagination-ellipsis {
+  display: inline-grid;
+  width: 24px;
+  min-height: 32px;
+  place-items: center;
+  color: #7a889d;
+  font-weight: 600;
+}
+
+.billing-detail-panel-header {
+  min-height: 7.8125rem;
+}
+
+.billing-users-panel-header {
+  min-height: 8.5rem;
+}
+
+.admin-dialog-content {
+  width: min(34rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100dvh - 2rem);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  border-color: #dfe6ee;
+  box-shadow: 0 18px 42px rgba(31, 45, 72, 0.18);
+}
+
+.admin-dialog-size-compact {
+  width: min(28rem, calc(100vw - 2rem));
+}
+
+.admin-dialog-size-wide {
+  width: min(48rem, calc(100vw - 2rem));
+}
+
+.admin-dialog-header {
+  gap: 6px;
+  padding: 18px 48px 14px 20px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.admin-dialog-header [data-slot='dialog-title'] {
+  color: #1f2f49;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.admin-dialog-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px;
+}
+
+.admin-dialog-footer {
+  min-height: 64px;
+  padding: 12px 20px;
+  border-top: 1px solid #edf1f6;
+  background: #ffffff;
 }
 
 .template-canvas-node {
@@ -3242,67 +3383,13 @@ body {
   color: #1b5fa8;
 }
 
-.single-instance-dialog-backdrop {
-  place-items: center;
-  padding: 20px;
-  overflow: auto;
-}
-
-.template-workbench-dialog.single-instance-dialog {
-  width: min(680px, calc(100vw - 40px));
-  max-height: min(720px, calc(100vh - 40px));
-  gap: 0;
-  padding: 0;
-  overflow: hidden;
-  border-radius: 14px;
-}
-
-.single-instance-dialog form {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  min-height: 0;
-}
-
 .single-instance-dialog-body {
-  min-height: 0;
-  overflow: auto;
-  padding: 14px 18px 12px;
+  padding: 0;
 }
 
 .single-instance-dialog-grid {
   display: grid;
   gap: 10px;
-}
-
-.single-instance-dialog .template-workbench-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px 12px;
-  border-bottom: 1px solid #edf1f6;
-}
-
-.single-instance-dialog .template-workbench-dialog-header h2 {
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.single-instance-dialog-close {
-  border: 0;
-  background: transparent;
-  color: #74839a;
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  font: inherit;
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.single-instance-dialog-close:hover {
-  background: #f3f6fa;
-  color: #22314d;
 }
 
 .single-instance-form-row {
@@ -3395,33 +3482,6 @@ body {
   color: #617089;
   font-size: var(--ui-font-row-body);
   line-height: var(--ui-line-row-body);
-}
-
-.range-detail-dialog-backdrop {
-  padding-top: 84px;
-}
-
-.range-detail-dialog {
-  width: min(760px, 100%);
-}
-
-.range-detail-body {
-  display: grid;
-  gap: 12px;
-  padding: 16px 18px 18px;
-}
-
-.range-detail-section {
-  display: grid;
-  gap: 10px;
-  padding: 14px 16px;
-  border: 1px solid #edf1f6;
-  border-radius: 10px;
-  background: #fafcff;
-}
-
-.range-detail-section strong {
-  color: #22314d;
 }
 
 .range-detail-actions {
@@ -3726,8 +3786,7 @@ body {
 }
 
 .template-workbench-primary-action,
-.template-workbench-secondary-action,
-.template-workbench-dialog-actions button {
+.template-workbench-secondary-action {
   min-height: var(--ui-button-height);
   padding: 0 12px;
   border-radius: 7px;
@@ -3737,15 +3796,13 @@ body {
   line-height: var(--ui-line-heading);
 }
 
-.template-workbench-primary-action,
-.template-workbench-dialog-actions button:first-child {
+.template-workbench-primary-action {
   border: 1px solid #d6e2f6;
   background: #edf4ff;
   color: #1e56a2;
 }
 
-.template-workbench-secondary-action,
-.template-workbench-dialog-actions button:last-child {
+.template-workbench-secondary-action {
   border: 1px solid #dbe2ea;
   background: #ffffff;
   color: #4f617d;
@@ -3809,45 +3866,6 @@ body {
   color: #65758d;
 }
 
-.template-workbench-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  place-items: start center;
-  padding: 24px;
-  padding-top: 120px;
-  background: rgba(16, 24, 40, 0.08);
-}
-
-.template-workbench-dialog {
-  width: min(420px, 100%);
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  border-radius: 16px;
-  background: #ffffff;
-  border: 1px solid #dfe6ee;
-  box-shadow: 0 12px 30px rgba(31, 45, 72, 0.12);
-}
-
-.template-workbench-dialog-header {
-  display: grid;
-  gap: 8px;
-}
-
-.template-workbench-dialog-header h2 {
-  margin: 0;
-  color: #1f2f49;
-  font-size: 16px;
-}
-
-.template-workbench-dialog-header p {
-  margin: 0;
-  color: #63738c;
-  line-height: 1.6;
-}
-
 .template-workbench-dialog-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -3889,28 +3907,7 @@ body {
   line-height: 1.6;
 }
 
-.image-import-dialog-grid {
-  max-height: min(54vh, 560px);
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.image-import-dialog-grid fieldset,
-.image-import-dialog-grid {
-  border: 0;
-  margin: 0;
-}
-
-.image-import-file-field {
-  grid-column: 1 / -1;
-}
-
-.image-import-file-field input[type='file'] {
-  min-height: 44px;
-  padding: 8px;
-}
-
-.image-import-file-field small {
+.image-import-dialog-copy + fieldset small {
   color: #708199;
   font-size: var(--ui-font-meta);
   line-height: 1.45;
@@ -3932,26 +3929,6 @@ body {
 
 .image-import-dialog-error {
   margin: 12px 0 0;
-}
-
-.template-workbench-dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.single-instance-dialog-actions {
-  position: sticky;
-  bottom: 0;
-  padding: 12px 18px 16px;
-  border-top: 1px solid #edf1f6;
-  background: #ffffff;
-}
-
-.template-workbench-confirm-copy {
-  margin: 0;
-  color: #5f6f88;
-  line-height: 1.6;
 }
 
 .template-editor-grid:has(.topology-flow-workbench) {
@@ -4490,7 +4467,7 @@ body {
 @media (max-width: 820px) {
   .image-center-controls,
   .image-center-list-meta,
-  .image-center-pagination {
+  .admin-pagination {
     width: 100%;
     flex-direction: column;
     align-items: flex-start;
@@ -4524,13 +4501,6 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .single-instance-dialog .template-workbench-dialog-header,
-  .single-instance-dialog-body,
-  .single-instance-dialog-actions {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
   .single-instance-form-row {
     grid-template-columns: 1fr;
     gap: 6px;
@@ -4546,10 +4516,6 @@ body {
 
   .single-instance-form-message {
     margin-left: 0;
-  }
-
-  .template-workbench-dialog-actions {
-    flex-direction: column;
   }
 
   .settings-workbench-header {

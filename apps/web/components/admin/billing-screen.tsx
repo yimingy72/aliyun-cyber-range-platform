@@ -8,6 +8,7 @@ import {
   exportBillingUserItemsCsv,
   exportBillingUsersCsv,
   exportPlatformBillingCsv,
+  fetchAdminUsers,
   fetchBillingSummary,
   fetchBillingUserGroups,
   fetchBillingUsers,
@@ -15,7 +16,7 @@ import {
   triggerBillingSync,
 } from '../../lib/admin-api';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
-import type { BillingLaunchGroup, BillingSummary, BillingUserSummary } from '../../lib/admin-types';
+import type { AdminUser, BillingLaunchGroup, BillingSummary, BillingUserSummary, PaginatedResult } from '../../lib/admin-types';
 import { Button } from '../ui/button';
 import {
   DropdownMenu,
@@ -24,8 +25,10 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Skeleton } from '../ui/skeleton';
+import { AdminPaginationControls, buildVisiblePages, getPagination, useAdminPageSize } from './admin-pagination';
 import { AdminSelectField } from './shared/admin-select-field';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { StatusBadge } from './shared/status-badge';
 import { useAdminSession } from './use-admin-session';
 
@@ -133,20 +136,43 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const { isAdmin, isReady, logout, token } = useAdminSession();
   const [range, setRange] = useState<BillingRange>(getDefaultRange);
   const [summary, setSummary] = useState<BillingSummary | null>(null);
-  const [users, setUsers] = useState<BillingUserSummary[]>([]);
-  const [groups, setGroups] = useState<BillingLaunchGroup[]>([]);
+  const [usersResult, setUsersResult] = useState<PaginatedResult<BillingUserSummary>>({
+    items: [],
+    page: 1,
+    pageSize: 100,
+    total: 0,
+  });
+  const [groupsResult, setGroupsResult] = useState<PaginatedResult<BillingLaunchGroup>>({
+    items: [],
+    page: 1,
+    pageSize: 20,
+    total: 0,
+  });
+  const [filterUsers, setFilterUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
   const [detailView, setDetailView] = useState<DetailView>('users');
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
   const [groupsRevision, setGroupsRevision] = useState(0);
+  const [groupsPage, setGroupsPage] = useState(1);
+  const [groupsJumpPageValue, setGroupsJumpPageValue] = useState('1');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [groupsErrorMessage, setGroupsErrorMessage] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingGroups, setIsLoadingGroups] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const { pageSize, setPageSize } = useAdminPageSize();
 
-  const userNameById = useMemo(() => new Map(users.map((user) => [user.userId, user.username])), [users]);
+  const users = usersResult.items;
+  const groups = groupsResult.items;
+  const userNameById = useMemo(
+    () =>
+      new Map([
+        ...filterUsers.map((user) => [user.id, user.username] as const),
+        ...users.map((user) => [user.userId, user.username] as const),
+      ]),
+    [filterUsers, users],
+  );
   useEffect(() => {
     if (!isReady) {
       return;
@@ -154,8 +180,9 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     if (!token) {
       setSummary(null);
-      setUsers([]);
-      setGroups([]);
+      setUsersResult({ items: [], page: 1, pageSize: 100, total: 0 });
+      setGroupsResult({ items: [], page: 1, pageSize, total: 0 });
+      setFilterUsers([]);
       setErrorMessage(null);
       setSyncMessage(null);
       setIsLoading(false);
@@ -173,16 +200,18 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     Promise.all([
       fetchBillingSummary(apiBaseUrl, token, range),
-      fetchBillingUsers(apiBaseUrl, token, { ...range, limit: 500 }),
+      fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
+      fetchAdminUsers(apiBaseUrl, token),
     ])
-      .then(([summaryPayload, usersPayload]) => {
+      .then(([summaryPayload, usersPayload, allUsersPayload]) => {
         if (!isActive) {
           return;
         }
 
         setSummary(summaryPayload);
-        setUsers(usersPayload);
-        setSelectedUserId((current) => (current && usersPayload.some((user) => user.userId === current) ? current : ''));
+        setUsersResult(usersPayload);
+        setFilterUsers(allUsersPayload);
+        setSelectedUserId((current) => (current && allUsersPayload.some((user) => user.id === current) ? current : ''));
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -220,13 +249,19 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     const request =
       detailView === 'users'
-        ? fetchBillingUserGroups(apiBaseUrl, token, { ...range, limit: 100, userId: selectedUserId || undefined })
-        : fetchPlatformBillingGroups(apiBaseUrl, token, { ...range, limit: 100 });
+        ? fetchBillingUserGroups(apiBaseUrl, token, {
+            ...range,
+            page: groupsPage,
+            pageSize,
+            userId: selectedUserId || undefined,
+          })
+        : fetchPlatformBillingGroups(apiBaseUrl, token, { ...range, page: groupsPage, pageSize });
 
     request
       .then((payload) => {
         if (isActive) {
-          setGroups(payload);
+          setGroupsResult(payload);
+          setGroupsPage(payload.page);
         }
       })
       .catch((error: unknown) => {
@@ -251,7 +286,14 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, detailView, groupsRevision, isAdmin, logout, range, router, selectedUserId, token]);
+  }, [apiBaseUrl, detailView, groupsPage, groupsRevision, isAdmin, logout, pageSize, range, router, selectedUserId, token]);
+
+  const groupsPagination = getPagination(groupsResult.total, groupsResult.page, groupsResult.pageSize);
+  const groupsVisiblePages = buildVisiblePages(groupsPagination.totalPages, groupsPagination.page);
+
+  useEffect(() => {
+    setGroupsJumpPageValue(String(groupsPagination.page));
+  }, [groupsPagination.page]);
 
   if (!isReady) {
     return null;
@@ -286,10 +328,10 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     const [summaryPayload, usersPayload] = await Promise.all([
       fetchBillingSummary(apiBaseUrl, token, range),
-      fetchBillingUsers(apiBaseUrl, token, { ...range, limit: 500 }),
+      fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
     ]);
     setSummary(summaryPayload);
-    setUsers(usersPayload);
+    setUsersResult(usersPayload);
   };
 
   const handleSync = async () => {
@@ -303,6 +345,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     try {
       const result = await triggerBillingSync(apiBaseUrl, token, range);
+      setGroupsPage(1);
       await refreshOverview();
       setGroupsRevision((current) => current + 1);
       setSyncMessage(`已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。`);
@@ -347,6 +390,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     setIsLoadingGroups(true);
     setSelectedUserId(userId);
     setDetailView('users');
+    setGroupsPage(1);
   };
 
   const selectDetailView = (view: DetailView) => {
@@ -356,11 +400,23 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     setIsLoadingGroups(true);
     setDetailView(view);
+    setGroupsPage(1);
   };
 
   const updateRange = (nextRange: BillingRange) => {
     setIsLoadingGroups(true);
+    setGroupsPage(1);
     setRange(nextRange);
+  };
+
+  const handlePageSizeChange = (nextPageSize: 20 | 50 | 100) => {
+    setPageSize(nextPageSize);
+    setGroupsPage(1);
+  };
+
+  const handleGroupsJump = () => {
+    const parsedPage = Number.parseInt(groupsJumpPageValue, 10);
+    setGroupsPage(Number.isNaN(parsedPage) ? groupsPagination.page : parsedPage);
   };
 
   const retryGroups = () => {
@@ -382,8 +438,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   };
 
   return (
-    <div className="admin-screen admin-workbench-screen gap-3">
-      <section className="admin-workbench-surface">
+    <div className="admin-screen admin-workbench-screen admin-pagination-screen gap-3">
+      <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader
           action={
             <>
@@ -439,9 +495,9 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         </p>
       ) : null}
 
-      <div className="mt-4 grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_17rem]">
-        <section aria-busy={isLoadingGroups || undefined} aria-label="费用明细" className="min-w-0">
-          <div className="flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:items-end lg:justify-between">
+      <div className="mt-4 grid min-h-0 min-w-0 flex-1 items-stretch gap-5 lg:grid-cols-[minmax(0,1fr)_17rem]">
+        <section aria-busy={isLoadingGroups || undefined} aria-label="费用明细" className="flex min-w-0 min-h-0 flex-col">
+          <div className="billing-detail-panel-header flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="font-heading text-base font-semibold text-foreground">费用明细</h2>
               <p className="mt-1 text-sm text-muted-foreground">按每次开通任务展开关联资源的费用。</p>
@@ -486,7 +542,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                   disabled={detailView === 'platform'}
                   emptyOptionLabel="全部用户"
                   onValueChange={selectUser}
-                  options={users.map((user) => ({ label: user.username, value: user.userId }))}
+                  options={filterUsers.map((user) => ({ label: user.username, value: user.id }))}
                   value={selectedUserId}
                 />
               </label>
@@ -518,7 +574,27 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
             </div>
           </div>
 
-          <div aria-live="polite" className="mt-3 border-y border-border">
+          <AdminPaginatedList
+            className="mt-3"
+            footer={
+              groupsResult.total > 0 && !isLoadingGroups && !groupsErrorMessage ? (
+                <AdminPaginationControls
+                  jumpPageValue={groupsJumpPageValue}
+                  label="费用明细分页"
+                  pageSize={groupsResult.pageSize}
+                  pagination={groupsPagination}
+                  visiblePages={groupsVisiblePages}
+                  onJumpPage={handleGroupsJump}
+                  onJumpPageValueChange={setGroupsJumpPageValue}
+                  onNextPage={() => setGroupsPage(groupsPagination.page + 1)}
+                  onPageSelect={setGroupsPage}
+                  onPageSizeChange={handlePageSizeChange}
+                  onPreviousPage={() => setGroupsPage(groupsPagination.page - 1)}
+                />
+              ) : null
+            }
+          >
+          <div aria-live="polite" className="border-y border-border">
             {groupsErrorMessage ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-destructive/15 bg-destructive/5 px-3 py-2 text-sm" role="alert">
                 <span className="text-destructive">
@@ -617,48 +693,49 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               );
             })}
           </div>
+          </AdminPaginatedList>
         </section>
 
-        <aside aria-label="用户账单" className="rounded-lg border border-border bg-card">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-3">
-            <div>
-              <h2 className="font-heading text-base font-semibold text-foreground">用户账单</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">{users.length} 位用户</p>
-            </div>
+      <aside aria-label="用户账单" className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+        <div className="billing-users-panel-header flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-3">
+          <div>
+            <h2 className="font-heading text-base font-semibold text-foreground">用户账单</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">{users.length} 位用户</p>
           </div>
+        </div>
 
-          <div className="divide-y divide-border">
-            {isLoading && !users.length ? (
-              <div className="space-y-3 px-3 py-4" role="status" aria-label="正在加载用户账单">
-                <Skeleton className="h-9 w-full" />
-                <Skeleton className="h-9 w-full" />
-                <Skeleton className="h-9 w-full" />
-              </div>
-            ) : null}
-            {users.map((user) => (
-              <button
-                aria-pressed={user.userId === selectedUserId && detailView === 'users'}
-                className={
-                  user.userId === selectedUserId && detailView === 'users'
-                    ? 'flex w-full items-center justify-between gap-3 border-l-2 border-primary bg-accent/60 px-3 py-2.5 text-left'
-                    : 'flex w-full items-center justify-between gap-3 border-l-2 border-transparent px-3 py-2.5 text-left hover:bg-muted/60'
-                }
-                key={user.userId}
-                onClick={() => selectUser(user.userId)}
-                type="button"
-              >
-                <span className="grid min-w-0 gap-1">
-                  <strong className="truncate text-sm font-medium text-foreground">{user.username}</strong>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {user.launchCount} 次成功开通 · {user.itemCount} 项费用
-                  </span>
+        <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+          {isLoading && !users.length ? (
+            <div className="space-y-3 px-3 py-4" role="status" aria-label="正在加载用户账单">
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+          ) : null}
+          {users.map((user) => (
+            <button
+              aria-pressed={user.userId === selectedUserId && detailView === 'users'}
+              className={
+                user.userId === selectedUserId && detailView === 'users'
+                  ? 'flex w-full items-center justify-between gap-3 border-l-2 border-primary bg-accent/60 px-3 py-2.5 text-left'
+                  : 'flex w-full items-center justify-between gap-3 border-l-2 border-transparent px-3 py-2.5 text-left hover:bg-muted/60'
+              }
+              key={user.userId}
+              onClick={() => selectUser(user.userId)}
+              type="button"
+            >
+              <span className="grid min-w-0 gap-1">
+                <strong className="truncate text-sm font-medium text-foreground">{user.username}</strong>
+                <span className="truncate text-xs text-muted-foreground">
+                  {user.launchCount} 次成功开通 · {user.itemCount} 项费用
                 </span>
-                <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{formatMoney(user.pretaxAmount)}</strong>
-              </button>
-            ))}
-            {!users.length && !isLoading ? <p className="px-3 py-8 text-sm text-muted-foreground">当前账期内暂无用户账单。</p> : null}
-          </div>
-        </aside>
+              </span>
+              <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{formatMoney(user.pretaxAmount)}</strong>
+            </button>
+          ))}
+          {!users.length && !isLoading ? <p className="px-3 py-8 text-sm text-muted-foreground">当前账期内暂无用户账单。</p> : null}
+        </div>
+      </aside>
       </div>
       </section>
     </div>

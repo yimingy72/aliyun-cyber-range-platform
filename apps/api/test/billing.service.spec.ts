@@ -13,15 +13,20 @@ describe('BillingService', () => {
       role: 'user',
     });
 
-    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
-      {
-        userId: 'user-2',
-        username: 'new-user',
-        pretaxAmount: 0,
-        itemCount: 0,
-        launchCount: 0,
-      },
-    ]);
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+      items: [
+        {
+          userId: 'user-2',
+          username: 'new-user',
+          pretaxAmount: 0,
+          itemCount: 0,
+          launchCount: 0,
+        },
+      ],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
   });
 
   it('builds summary and user totals from normalized bill items', async () => {
@@ -133,15 +138,20 @@ describe('BillingService', () => {
       dailyTotals: [{ billingDate: '2026-07-16', pretaxAmount: 1.75 }],
     });
 
-    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
-      {
-        userId: 'user-1',
-        username: 'alice',
-        pretaxAmount: 1.25,
-        itemCount: 1,
-        launchCount: 0,
-      },
-    ]);
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+      items: [
+        {
+          userId: 'user-1',
+          username: 'alice',
+          pretaxAmount: 1.25,
+          itemCount: 1,
+          launchCount: 0,
+        },
+      ],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
 
     await expect(service.listPlatformItems({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
       expect.objectContaining({
@@ -276,36 +286,46 @@ describe('BillingService', () => {
       ).listUserGroups?.({ startAt: '2026-07-16', endAt: '2026-07-16' }),
     );
 
-    expect(groups).toEqual([
-      expect.objectContaining({
-        id: singleJob.id,
-        kind: 'single_launch',
-        title: '开启编排实例',
-        completedAt: '2026-07-16T07:16:07.000Z',
-        ownerUsername: 'alice',
-        pretaxAmount: 9.2,
-        resourceCount: 1,
-      }),
-      expect.objectContaining({
-        id: rangeJob.id,
-        kind: 'range_launch',
-        title: '开启靶场实例',
-        completedAt: '2026-07-16T02:03:42.000Z',
-        ownerUsername: 'alice',
-        pretaxAmount: 8.4,
-        resourceCount: 1,
-      }),
-    ]);
+    expect(groups).toEqual({
+      items: [
+        expect.objectContaining({
+          id: singleJob.id,
+          kind: 'single_launch',
+          title: '开启编排实例',
+          completedAt: '2026-07-16T07:16:07.000Z',
+          ownerUsername: 'alice',
+          pretaxAmount: 9.2,
+          resourceCount: 1,
+        }),
+        expect.objectContaining({
+          id: rangeJob.id,
+          kind: 'range_launch',
+          title: '开启靶场实例',
+          completedAt: '2026-07-16T02:03:42.000Z',
+          ownerUsername: 'alice',
+          pretaxAmount: 8.4,
+          resourceCount: 1,
+        }),
+      ],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
 
-    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
-      {
-        userId: 'user-1',
-        username: 'alice',
-        pretaxAmount: 17.6,
-        itemCount: 2,
-        launchCount: 2,
-      },
-    ]);
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+      items: [
+        {
+          userId: 'user-1',
+          username: 'alice',
+          pretaxAmount: 17.6,
+          itemCount: 2,
+          launchCount: 2,
+        },
+      ],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
   });
 
   it('associates legacy billing ledgers with a failed launch instead of reporting them as unlinked', async () => {
@@ -363,16 +383,21 @@ describe('BillingService', () => {
       },
     ]);
 
-    await expect(service.listUserGroups({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toEqual([
-      expect.objectContaining({
-        id: job.id,
-        kind: 'range_launch',
-        provisionJobStatus: 'failed',
-        title: '开启靶场实例',
-        ownerUsername: 'alice',
-        pretaxAmount: 0.25,
-        resourceCount: 1,
-      }),
-    ]);
+    await expect(service.listUserGroups({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toEqual({
+      items: [
+        expect.objectContaining({
+          id: job.id,
+          kind: 'range_launch',
+          provisionJobStatus: 'failed',
+          title: '开启靶场实例',
+          ownerUsername: 'alice',
+          pretaxAmount: 0.25,
+          resourceCount: 1,
+        }),
+      ],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
   });
 });

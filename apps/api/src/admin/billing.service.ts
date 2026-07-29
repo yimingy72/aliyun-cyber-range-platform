@@ -13,7 +13,8 @@ import {
 type BillingWindowInput = Partial<{
   startAt: string | Date;
   endAt: string | Date;
-  limit: number;
+  page: number;
+  pageSize: number;
 }>;
 
 type BillingGroupInput = BillingWindowInput & {
@@ -39,6 +40,13 @@ type BillingLaunchGroup = {
 
 type BillingLaunchGroupBuilder = Omit<BillingLaunchGroup, 'resourceCount'> & {
   resourceKeys: Set<string>;
+};
+
+type PaginatedResult<T> = {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
 };
 
 function toIsoDate(value: Date) {
@@ -86,12 +94,19 @@ function isLaunchProvisionJob(job: ProvisionJobRecord | null | undefined): job i
   return job?.jobType === 'create' || job?.jobType === 'retry';
 }
 
-function resolveListLimit(input: BillingWindowInput, fallback: number) {
-  if (!Number.isFinite(input.limit) || !input.limit) {
-    return fallback;
-  }
+function paginate<T>(items: T[], input: BillingWindowInput): PaginatedResult<T> {
+  const pageSize = input.pageSize === 50 || input.pageSize === 100 ? input.pageSize : 20;
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const requestedPage = Number.isFinite(input.page) ? Math.trunc(input.page!) : 1;
+  const page = Math.min(Math.max(requestedPage, 1), totalPages);
+  const startIndex = (page - 1) * pageSize;
 
-  return Math.max(1, Math.min(Math.trunc(input.limit), 500));
+  return {
+    items: items.slice(startIndex, startIndex + pageSize),
+    page,
+    pageSize,
+    total: items.length,
+  };
 }
 
 function escapeCsvCell(value: string | number | null | undefined) {
@@ -137,8 +152,11 @@ export class BillingService {
   }
 
   async listUsers(input: BillingWindowInput) {
+    return paginate(await this.listUserSummaries(input), input);
+  }
+
+  private async listUserSummaries(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const limit = resolveListLimit(input, 100);
     const [platformUsers, fetchedLineItems] = await Promise.all([
       this.adminRepository.listPlatformUsers(),
       this.adminRepository.listBillingLineItems({
@@ -192,8 +210,7 @@ export class BillingService {
     }
 
     return [...usersById.values()]
-      .sort((left, right) => right.pretaxAmount - left.pretaxAmount || left.username.localeCompare(right.username))
-      .slice(0, limit);
+      .sort((left, right) => right.pretaxAmount - left.pretaxAmount || left.username.localeCompare(right.username));
   }
 
   async getUserSummary(userId: string, input: BillingWindowInput) {
@@ -220,7 +237,6 @@ export class BillingService {
 
   async listUserGroups(input: BillingGroupInput) {
     const window = resolveBillingWindow(input);
-    const limit = resolveListLimit(input, 100);
     const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
@@ -228,26 +244,24 @@ export class BillingService {
       ...(input.userId ? { ownerUserId: input.userId } : {}),
     })).filter(isTrackedBillingLineItem);
 
-    const groups = (await this.groupBillingLineItems(items)).slice(0, limit);
-    return this.attachOwnerUsernames(groups);
+    const groups = await this.attachOwnerUsernames(await this.groupBillingLineItems(items));
+    return paginate(groups, input);
   }
 
   async listPlatformGroups(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const limit = resolveListLimit(input, 100);
     const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
       endAt: window.endAt,
       billingScope: 'platform',
     })).filter(isTrackedBillingLineItem);
 
-    const groups = (await this.groupBillingLineItems(items)).slice(0, limit);
-    return this.attachOwnerUsernames(groups);
+    const groups = await this.attachOwnerUsernames(await this.groupBillingLineItems(items));
+    return paginate(groups, input);
   }
 
   async listUserItems(userId: string, input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const limit = resolveListLimit(input, 100);
 
     const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
@@ -258,13 +272,11 @@ export class BillingService {
 
     return items
       .slice()
-      .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime())
-      .slice(0, limit);
+      .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime());
   }
 
   async listPlatformItems(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const limit = resolveListLimit(input, 100);
 
     const items = (await this.adminRepository.listBillingLineItems({
       startAt: window.startAt,
@@ -277,13 +289,11 @@ export class BillingService {
       .sort((left, right) => {
         const dateDelta = right.billingDate.getTime() - left.billingDate.getTime();
         return dateDelta !== 0 ? dateDelta : right.pretaxAmount - left.pretaxAmount;
-      })
-      .slice(0, limit);
+      });
   }
 
   async listAnomalies(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const limit = resolveListLimit(input, 50);
 
     const anomalies = await this.adminRepository.listBillingAnomalies({
       startAt: window.startAt,
@@ -292,8 +302,7 @@ export class BillingService {
 
     return anomalies
       .slice()
-      .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime())
-      .slice(0, limit);
+      .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime());
   }
 
   async exportPlatformCsv(input: BillingWindowInput) {
@@ -315,7 +324,7 @@ export class BillingService {
   }
 
   async exportUsersCsv(input: BillingWindowInput) {
-    const users = await this.listUsers(input);
+    const users = await this.listUserSummaries(input);
 
     return toCsv([
       ['userId', 'username', 'pretaxAmount', 'itemCount'],

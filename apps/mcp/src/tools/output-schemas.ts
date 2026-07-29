@@ -106,7 +106,18 @@ export const billingUserSummarySchema = z
   })
   .passthrough();
 
-export const billingUserListOutputSchema = resultOutputSchema(z.array(billingUserSummarySchema));
+function billingPageOutputSchema<T extends z.ZodType>(itemSchema: T) {
+  return resultOutputSchema(
+    z.object({
+      items: z.array(itemSchema),
+      page: z.number().int().positive(),
+      pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]),
+      total: z.number().int().nonnegative(),
+    }),
+  );
+}
+
+export const billingUserListOutputSchema = billingPageOutputSchema(billingUserSummarySchema);
 
 export const billingLineItemSchema = resourceSchema
   .extend({
@@ -130,7 +141,7 @@ export const billingGroupSchema = resourceSchema
   })
   .passthrough();
 
-export const billingGroupListOutputSchema = resultOutputSchema(z.array(billingGroupSchema));
+export const billingGroupListOutputSchema = billingPageOutputSchema(billingGroupSchema);
 export const billingLineItemListOutputSchema = resultOutputSchema(z.array(billingLineItemSchema));
 
 export const billingAnomalyListOutputSchema = resultOutputSchema(

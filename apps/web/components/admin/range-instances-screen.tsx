@@ -19,11 +19,11 @@ import {
   AdminPaginationControls,
   buildVisiblePages,
   getPagination,
-  PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
@@ -188,7 +188,7 @@ export function RangeInstancesScreen({
   const [isSubmittingAction, setIsSubmittingAction] = useState<'destroy' | null>(null);
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
-  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+  const { pageSize, setPageSize } = useAdminPageSize();
 
   function markTableContentUpdated(view: RangeListMode) {
     setTableContentVersions((current) => ({
@@ -324,6 +324,13 @@ export function RangeInstancesScreen({
     return matchingModeInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
   }, [currentInstances, listMode, searchName]);
 
+  useEffect(() => {
+    setListPages((current) => ({
+      ...current,
+      [listMode]: 1,
+    }));
+  }, [listMode, searchName]);
+
   const activePagination = getPagination(visibleListInstances.length, listPages[listMode], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedVisibleListInstances = visibleListInstances.slice(activePagination.startIndex, activePagination.endIndex);
@@ -341,15 +348,8 @@ export function RangeInstancesScreen({
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, listMode]);
 
-  function handlePageSizeChange(nextValue: string) {
-    if (nextValue === PAGE_SIZE_AUTO) {
-      setPageSizeMode(PAGE_SIZE_AUTO);
-      setListPages({ active: 1, history: 1 });
-      return;
-    }
-
-    setPageSizeMode(nextValue);
-    setPageSize(Number(nextValue));
+  function handlePageSizeChange(nextValue: 20 | 50 | 100) {
+    setPageSize(nextValue);
     setListPages({ active: 1, history: 1 });
   }
 
@@ -477,13 +477,13 @@ export function RangeInstancesScreen({
   }
 
   return (
-    <div className="admin-screen">
+    <div className="admin-screen admin-pagination-screen">
       {actionErrorMessage ? <p className="admin-error" role="alert">{actionErrorMessage}</p> : null}
 
-      <section className="admin-workbench-surface">
+      <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="查看靶场实例状态和生命周期。" title="编排实例" />
 
-        <div className="mt-4">
+        <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             activeView={listMode}
             onSearchChange={setSearchName}
@@ -500,7 +500,41 @@ export function RangeInstancesScreen({
               { value: 'history', label: '实例历史' },
             ]}
           >
-            <div className="mt-4">
+            <AdminPaginatedList
+              className="mt-4"
+              footer={
+                visibleListInstances.length ? (
+                  <AdminPaginationControls
+                    jumpPageValue={jumpPageValue}
+                    label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
+                    onJumpPage={handleJumpToPage}
+                    onJumpPageValueChange={setJumpPageValue}
+                    onNextPage={() =>
+                      setListPages((current) => ({
+                        ...current,
+                        [listMode]: activePagination.page + 1,
+                      }))
+                    }
+                    onPageSelect={(pageNumber) =>
+                      setListPages((current) => ({
+                        ...current,
+                        [listMode]: pageNumber,
+                      }))
+                    }
+                    onPageSizeChange={handlePageSizeChange}
+                    onPreviousPage={() =>
+                      setListPages((current) => ({
+                        ...current,
+                        [listMode]: activePagination.page - 1,
+                      }))
+                    }
+                    pageSize={pageSize}
+                    pagination={activePagination}
+                    visiblePages={visiblePages}
+                  />
+                ) : null
+              }
+            >
               <AdminDataTable
                 columns={columns}
                 contentVersion={tableContentVersions[listMode]}
@@ -649,42 +683,9 @@ export function RangeInstancesScreen({
                   return retainedErrorRow ? [retainedErrorRow, ...rows] : rows;
                 }}
               </AdminDataTable>
-            </div>
+            </AdminPaginatedList>
           </AdminListToolbar>
         </div>
-
-        {visibleListInstances.length ? (
-          <div className="mt-4">
-            <AdminPaginationControls
-              jumpPageValue={jumpPageValue}
-              label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
-              onJumpPage={handleJumpToPage}
-              onJumpPageValueChange={setJumpPageValue}
-              onNextPage={() =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: activePagination.page + 1,
-                }))
-              }
-              onPageSelect={(pageNumber) =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: pageNumber,
-                }))
-              }
-              onPageSizeChange={handlePageSizeChange}
-              onPreviousPage={() =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: activePagination.page - 1,
-                }))
-              }
-              pageSizeMode={pageSizeMode}
-              pagination={activePagination}
-              visiblePages={visiblePages}
-            />
-          </div>
-        ) : null}
       </section>
     </div>
   );

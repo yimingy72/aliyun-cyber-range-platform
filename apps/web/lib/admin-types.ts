@@ -416,6 +416,13 @@ export type BillingUserSummary = {
   launchCount: number;
 };
 
+export type PaginatedResult<T> = {
+  items: T[];
+  page: number;
+  pageSize: 20 | 50 | 100;
+  total: number;
+};
+
 export type BillingLineItem = {
   id: string;
   syncBatchId: string;

@@ -22,6 +22,7 @@ import type {
   LaunchRangeInput,
   LaunchSingleInstancesInput,
   OperationRequest,
+  PaginatedResult,
   PlatformApiClientLike,
   PlatformApiClientOptions,
   PlatformImageAsset,
@@ -329,7 +330,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   }
 
   listBillingUsers(input: BillingWindowInput = {}) {
-    return this.request<BillingUserSummary[]>(this.billingPath('users', input));
+    return this.request<PaginatedResult<BillingUserSummary>>(this.billingPath('users', input));
   }
 
   getBillingUserSummary(userId: string, input: BillingWindowInput = {}) {
@@ -337,11 +338,11 @@ export class PlatformApiClient implements PlatformApiClientLike {
   }
 
   listBillingUserGroups(input: BillingGroupInput = {}) {
-    return this.request<BillingLaunchGroup[]>(this.billingPath('user-groups', input));
+    return this.request<PaginatedResult<BillingLaunchGroup>>(this.billingPath('user-groups', input));
   }
 
   listBillingPlatformGroups(input: BillingWindowInput = {}) {
-    return this.request<BillingLaunchGroup[]>(this.billingPath('platform/groups', input));
+    return this.request<PaginatedResult<BillingLaunchGroup>>(this.billingPath('platform/groups', input));
   }
 
   listBillingUserItems(userId: string, input: BillingWindowInput = {}) {
@@ -506,8 +507,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
       query.set('endAt', input.endAt);
     }
 
-    if (input.limit !== undefined) {
-      query.set('limit', String(input.limit));
+    if (input.page !== undefined) {
+      query.set('page', String(input.page));
+    }
+
+    if (input.pageSize !== undefined) {
+      query.set('pageSize', String(input.pageSize));
     }
 
     if ('userId' in input && input.userId) {

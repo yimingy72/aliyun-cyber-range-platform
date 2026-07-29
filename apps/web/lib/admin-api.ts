@@ -6,6 +6,7 @@ import type {
   BillingLineItem,
   BillingSummary,
   BillingUserSummary,
+  PaginatedResult,
   CollectImageCatalogItemInput,
   CloudConfigSnapshot,
   CreateAdminUserInput,
@@ -423,8 +424,8 @@ export async function fetchBillingSummary(
 export async function fetchBillingUsers(
   apiBaseUrl: string,
   token: string,
-  options?: { startAt?: string; endAt?: string; limit?: number },
-): Promise<BillingUserSummary[]> {
+  options?: { startAt?: string; endAt?: string; page?: number; pageSize?: 20 | 50 | 100 },
+): Promise<PaginatedResult<BillingUserSummary>> {
   const url = new URL(`${apiBaseUrl}/admin/billing/users`);
 
   if (options?.startAt) {
@@ -435,22 +436,26 @@ export async function fetchBillingUsers(
     url.searchParams.set('endAt', options.endAt);
   }
 
-  if (options?.limit) {
-    url.searchParams.set('limit', String(options.limit));
+  if (options?.page) {
+    url.searchParams.set('page', String(options.page));
+  }
+
+  if (options?.pageSize) {
+    url.searchParams.set('pageSize', String(options.pageSize));
   }
 
   const response = await fetch(url, {
     headers: createAdminHeaders(token),
   });
 
-  return readJson<BillingUserSummary[]>(response);
+  return readJson<PaginatedResult<BillingUserSummary>>(response);
 }
 
 export async function fetchBillingUserGroups(
   apiBaseUrl: string,
   token: string,
-  options?: { userId?: string; startAt?: string; endAt?: string; limit?: number },
-): Promise<BillingLaunchGroup[]> {
+  options?: { userId?: string; startAt?: string; endAt?: string; page?: number; pageSize?: 20 | 50 | 100 },
+): Promise<PaginatedResult<BillingLaunchGroup>> {
   const url = new URL(`${apiBaseUrl}/admin/billing/user-groups`);
 
   if (options?.userId) {
@@ -465,22 +470,26 @@ export async function fetchBillingUserGroups(
     url.searchParams.set('endAt', options.endAt);
   }
 
-  if (options?.limit) {
-    url.searchParams.set('limit', String(options.limit));
+  if (options?.page) {
+    url.searchParams.set('page', String(options.page));
+  }
+
+  if (options?.pageSize) {
+    url.searchParams.set('pageSize', String(options.pageSize));
   }
 
   const response = await fetch(url, {
     headers: createAdminHeaders(token),
   });
 
-  return readJson<BillingLaunchGroup[]>(response);
+  return readJson<PaginatedResult<BillingLaunchGroup>>(response);
 }
 
 export async function fetchPlatformBillingGroups(
   apiBaseUrl: string,
   token: string,
-  options?: { startAt?: string; endAt?: string; limit?: number },
-): Promise<BillingLaunchGroup[]> {
+  options?: { startAt?: string; endAt?: string; page?: number; pageSize?: 20 | 50 | 100 },
+): Promise<PaginatedResult<BillingLaunchGroup>> {
   const url = new URL(`${apiBaseUrl}/admin/billing/platform/groups`);
 
   if (options?.startAt) {
@@ -491,22 +500,26 @@ export async function fetchPlatformBillingGroups(
     url.searchParams.set('endAt', options.endAt);
   }
 
-  if (options?.limit) {
-    url.searchParams.set('limit', String(options.limit));
+  if (options?.page) {
+    url.searchParams.set('page', String(options.page));
+  }
+
+  if (options?.pageSize) {
+    url.searchParams.set('pageSize', String(options.pageSize));
   }
 
   const response = await fetch(url, {
     headers: createAdminHeaders(token),
   });
 
-  return readJson<BillingLaunchGroup[]>(response);
+  return readJson<PaginatedResult<BillingLaunchGroup>>(response);
 }
 
 export async function fetchBillingUserItems(
   apiBaseUrl: string,
   token: string,
   userId: string,
-  options?: { startAt?: string; endAt?: string; limit?: number },
+  options?: { startAt?: string; endAt?: string },
 ): Promise<BillingLineItem[]> {
   const url = new URL(`${apiBaseUrl}/admin/billing/users/${userId}/items`);
 
@@ -516,10 +529,6 @@ export async function fetchBillingUserItems(
 
   if (options?.endAt) {
     url.searchParams.set('endAt', options.endAt);
-  }
-
-  if (options?.limit) {
-    url.searchParams.set('limit', String(options.limit));
   }
 
   const response = await fetch(url, {
@@ -532,7 +541,7 @@ export async function fetchBillingUserItems(
 export async function fetchPlatformBillingItems(
   apiBaseUrl: string,
   token: string,
-  options?: { startAt?: string; endAt?: string; limit?: number },
+  options?: { startAt?: string; endAt?: string },
 ): Promise<BillingLineItem[]> {
   const url = new URL(`${apiBaseUrl}/admin/billing/platform/items`);
 
@@ -542,10 +551,6 @@ export async function fetchPlatformBillingItems(
 
   if (options?.endAt) {
     url.searchParams.set('endAt', options.endAt);
-  }
-
-  if (options?.limit) {
-    url.searchParams.set('limit', String(options.limit));
   }
 
   const response = await fetch(url, {
@@ -558,7 +563,7 @@ export async function fetchPlatformBillingItems(
 export async function fetchBillingAnomalies(
   apiBaseUrl: string,
   token: string,
-  options?: { startAt?: string; endAt?: string; limit?: number },
+  options?: { startAt?: string; endAt?: string },
 ): Promise<BillingAnomaly[]> {
   const url = new URL(`${apiBaseUrl}/admin/billing/anomalies`);
 
@@ -568,10 +573,6 @@ export async function fetchBillingAnomalies(
 
   if (options?.endAt) {
     url.searchParams.set('endAt', options.endAt);
-  }
-
-  if (options?.limit) {
-    url.searchParams.set('limit', String(options.limit));
   }
 
   const response = await fetch(url, {

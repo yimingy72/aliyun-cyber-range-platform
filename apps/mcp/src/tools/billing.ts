@@ -53,7 +53,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_user_list',
     title: '查询用户费用汇总',
-    description: '对应账单费用页的用户费用列表。按费用从高到低返回用户、费用、账单条目数和启动次数。',
+    description: '对应账单费用页的用户费用列表。按费用从高到低返回指定页的用户、费用、账单条目数、启动次数和总数。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingUsersInputSchema,
@@ -79,7 +79,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_user_group_list',
     title: '查询用户启动费用分组',
-    description: '对应账单费用页的用户启动费用分组。可按指定用户和统计窗口筛选，返回关联实例及账单明细。',
+    description: '对应账单费用页的用户启动费用分组。可按指定用户和统计窗口筛选，返回指定页、关联实例、账单明细和总数。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingUserGroupsInputSchema,
@@ -91,7 +91,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_platform_group_list',
     title: '查询平台费用分组',
-    description: '对应账单费用页的平台费用分组。返回平台归属资源按启动记录或未归属费用的分组。',
+    description: '对应账单费用页的平台费用分组。返回指定页的平台归属资源分组及总数。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingPlatformGroupsInputSchema,

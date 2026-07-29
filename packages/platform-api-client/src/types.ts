@@ -66,11 +66,19 @@ export type ImageImportJobListPayload = {
 export type BillingWindowInput = {
   startAt?: string;
   endAt?: string;
-  limit?: number;
+  page?: number;
+  pageSize?: 20 | 50 | 100;
 };
 
 export type BillingGroupInput = BillingWindowInput & {
   userId?: string;
+};
+
+export type PaginatedResult<T> = {
+  items: T[];
+  page: number;
+  pageSize: 20 | 50 | 100;
+  total: number;
 };
 
 export type BillingSummary = Record<string, unknown> & {
@@ -245,10 +253,10 @@ export type PlatformApiClientLike = {
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
   getBillingSummary(input?: BillingWindowInput): Promise<BillingSummary>;
-  listBillingUsers(input?: BillingWindowInput): Promise<BillingUserSummary[]>;
+  listBillingUsers(input?: BillingWindowInput): Promise<PaginatedResult<BillingUserSummary>>;
   getBillingUserSummary(userId: string, input?: BillingWindowInput): Promise<BillingUserSummary>;
-  listBillingUserGroups(input?: BillingGroupInput): Promise<BillingLaunchGroup[]>;
-  listBillingPlatformGroups(input?: BillingWindowInput): Promise<BillingLaunchGroup[]>;
+  listBillingUserGroups(input?: BillingGroupInput): Promise<PaginatedResult<BillingLaunchGroup>>;
+  listBillingPlatformGroups(input?: BillingWindowInput): Promise<PaginatedResult<BillingLaunchGroup>>;
   listBillingUserItems(userId: string, input?: BillingWindowInput): Promise<BillingLineItem[]>;
   listBillingPlatformItems(input?: BillingWindowInput): Promise<BillingLineItem[]>;
   listBillingAnomalies(input?: BillingWindowInput): Promise<BillingAnomaly[]>;

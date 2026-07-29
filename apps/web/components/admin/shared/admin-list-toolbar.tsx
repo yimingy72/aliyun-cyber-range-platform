@@ -76,7 +76,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
 
   if (props.views) {
     return (
-      <Tabs className="gap-3" onValueChange={props.onViewChange} value={props.activeView}>
+      <Tabs className="min-h-0 flex-1 gap-3" onValueChange={props.onViewChange} value={props.activeView}>
         <ToolbarLayout
           controls={
             <>
@@ -94,7 +94,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
           }
           search={search}
         />
-        <TabsContent className="admin-list-toolbar-panel" value={props.activeView}>
+        <TabsContent className="admin-list-toolbar-panel flex min-h-0 flex-1 flex-col" value={props.activeView}>
           {props.children}
         </TabsContent>
       </Tabs>

@@ -29,7 +29,6 @@ import {
   AdminPaginationControls,
   buildVisiblePages,
   getPagination,
-  PAGE_SIZE_AUTO,
   useAdminPageSize,
 } from './admin-pagination';
 import {
@@ -40,6 +39,8 @@ import {
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminDialog, type AdminDialogSize } from './shared/admin-dialog';
+import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
@@ -476,23 +477,21 @@ function SingleInstanceDialog({
   title,
   onClose,
   children,
+  footer,
+  pending = false,
+  size = 'wide',
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  footer: React.ReactNode;
+  pending?: boolean;
+  size?: AdminDialogSize;
 }) {
   return (
-    <div className="template-workbench-dialog-backdrop single-instance-dialog-backdrop" role="presentation">
-      <section className="template-workbench-dialog single-instance-dialog" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="template-workbench-dialog-header">
-          <h2>{title}</h2>
-          <button type="button" className="single-instance-dialog-close" aria-label="关闭创建实例弹窗" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        {children}
-      </section>
-    </div>
+    <AdminDialog footer={footer} open pending={pending} size={size} title={title} onOpenChange={(open) => !open && onClose()}>
+      {children}
+    </AdminDialog>
   );
 }
 
@@ -537,7 +536,7 @@ export function SingleInstancesScreen({
   const loadedListModeRef = useRef<ListMode | null>(null);
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const consumedPrefillRef = useRef<string | null>(null);
-  const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
+  const { pageSize, setPageSize } = useAdminPageSize();
 
   function markTableContentUpdated(view: ListMode) {
     setTableContentVersions((current) => ({
@@ -1224,6 +1223,14 @@ export function SingleInstancesScreen({
     normalizedSearchName ? group.batch.name.trim().toLowerCase().includes(normalizedSearchName) : true,
   );
   const hasCurrentViewSnapshot = loadedListMode === listMode;
+
+  useEffect(() => {
+    setListPages((current) => ({
+      ...current,
+      [listMode]: 1,
+    }));
+  }, [listMode, normalizedSearchName]);
+
   const currentItemsCount = hasCurrentViewSnapshot ? visibleBatchGroups.length + visibleInstances.length : 0;
   const activePagination = getPagination(currentItemsCount, listPages[listMode], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
@@ -1248,15 +1255,8 @@ export function SingleInstancesScreen({
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, listMode]);
 
-  function handlePageSizeChange(nextValue: string) {
-    if (nextValue === PAGE_SIZE_AUTO) {
-      setPageSizeMode(PAGE_SIZE_AUTO);
-      setListPages({ active: 1, history: 1 });
-      return;
-    }
-
-    setPageSizeMode(nextValue);
-    setPageSize(Number(nextValue));
+  function handlePageSizeChange(nextValue: 20 | 50 | 100) {
+    setPageSize(nextValue);
     setListPages({ active: 1, history: 1 });
   }
 
@@ -1454,17 +1454,20 @@ export function SingleInstancesScreen({
   const emptyDescription = normalizedSearchName ? '没有找到匹配的实例或批次。' : '当前视图还没有可查看的实例。';
 
   return (
-    <div className="admin-screen admin-workbench-screen single-instance-screen">
+    <div className="admin-screen admin-workbench-screen single-instance-screen admin-pagination-screen">
       {errorMessage ? (
         <p className="mb-3 text-sm text-destructive" role="alert">
           {errorMessage}
         </p>
       ) : null}
 
-      <section className="admin-workbench-surface">
+      <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" />
 
-        <div className="mt-4 space-y-4">
+        <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
+          {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
+            <p className="text-sm text-muted-foreground">请先前往镜像中心收录或启用至少一个平台镜像。</p>
+          ) : null}
             <AdminListToolbar
               activeView={listMode}
               action={
@@ -1483,7 +1486,40 @@ export function SingleInstancesScreen({
                 { value: 'history', label: '实例历史' },
               ]}
             >
-              <div>
+              <AdminPaginatedList
+                footer={
+                  hasVisibleContent ? (
+                    <AdminPaginationControls
+                      jumpPageValue={jumpPageValue}
+                      label={`${tableLabel} 分页`}
+                      onJumpPage={handleJumpToPage}
+                      onJumpPageValueChange={setJumpPageValue}
+                      onNextPage={() =>
+                        setListPages((current) => ({
+                          ...current,
+                          [listMode]: activePagination.page + 1,
+                        }))
+                      }
+                      onPageSelect={(pageNumber) =>
+                        setListPages((current) => ({
+                          ...current,
+                          [listMode]: pageNumber,
+                        }))
+                      }
+                      onPageSizeChange={handlePageSizeChange}
+                      onPreviousPage={() =>
+                        setListPages((current) => ({
+                          ...current,
+                          [listMode]: activePagination.page - 1,
+                        }))
+                      }
+                      pageSize={pageSize}
+                      pagination={activePagination}
+                      visiblePages={visiblePages}
+                    />
+                  ) : null
+                }
+              >
                 <AdminDataTable
                   columns={tableColumns}
                   contentVersion={tableContentVersions[listMode]}
@@ -1630,43 +1666,8 @@ export function SingleInstancesScreen({
                     );
                   }}
                 </AdminDataTable>
-              </div>
-
-              {hasVisibleContent ? (
-                <AdminPaginationControls
-                  jumpPageValue={jumpPageValue}
-                  label={`${tableLabel} 分页`}
-                  onJumpPage={handleJumpToPage}
-                  onJumpPageValueChange={setJumpPageValue}
-                  onNextPage={() =>
-                    setListPages((current) => ({
-                      ...current,
-                      [listMode]: activePagination.page + 1,
-                    }))
-                  }
-                  onPageSelect={(pageNumber) =>
-                    setListPages((current) => ({
-                      ...current,
-                      [listMode]: pageNumber,
-                    }))
-                  }
-                  onPageSizeChange={handlePageSizeChange}
-                  onPreviousPage={() =>
-                    setListPages((current) => ({
-                      ...current,
-                      [listMode]: activePagination.page - 1,
-                    }))
-                  }
-                  pageSizeMode={pageSizeMode}
-                  pagination={activePagination}
-                  visiblePages={visiblePages}
-                />
-              ) : null}
+              </AdminPaginatedList>
             </AdminListToolbar>
-
-            {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
-              <p className="text-sm text-muted-foreground">请先前往镜像中心收录或启用至少一个平台镜像。</p>
-            ) : null}
         </div>
       </section>
 
@@ -2051,7 +2052,7 @@ export function SingleInstancesScreen({
           {hasVisibleContent ? (
             <AdminPaginationControls
               label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
-              pageSizeMode={pageSizeMode}
+              pageSize={pageSize}
               pagination={activePagination}
               visiblePages={visiblePages}
               jumpPageValue={jumpPageValue}
@@ -2083,8 +2084,22 @@ export function SingleInstancesScreen({
       ) : null}
 
       {isCreateOpen ? (
-        <SingleInstanceDialog title="创建实例" onClose={() => setIsCreateOpen(false)}>
-          <form onSubmit={handleCreateSubmit}>
+        <SingleInstanceDialog
+          footer={
+            <>
+              <Button disabled={isSubmitting} type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
+                取消
+              </Button>
+              <Button disabled={isSubmitting || !enabledPlatformImages.length} form="single-instance-create-form" type="submit">
+                确认创建
+              </Button>
+            </>
+          }
+          pending={isSubmitting}
+          title="创建实例"
+          onClose={() => setIsCreateOpen(false)}
+        >
+          <form id="single-instance-create-form" onSubmit={handleCreateSubmit}>
             <div className="single-instance-dialog-body">
               <div className="single-instance-dialog-grid">
                 <div className="single-instance-form-row single-instance-form-row-full">
@@ -2092,7 +2107,7 @@ export function SingleInstancesScreen({
                     实例名
                   </label>
                   <div className="single-instance-form-control">
-                    <input id="single-instance-name" aria-label="实例名" value={createForm.name} onChange={(event) => updateCreateForm('name', event.target.value)} required />
+                    <input autoFocus id="single-instance-name" aria-label="实例名" value={createForm.name} onChange={(event) => updateCreateForm('name', event.target.value)} required />
                   </div>
                 </div>
 
@@ -2221,20 +2236,30 @@ export function SingleInstancesScreen({
                 ) : null}
               </div>
             </div>
-            <div className="template-workbench-dialog-actions single-instance-dialog-actions">
-              <button type="submit" disabled={isSubmitting || !enabledPlatformImages.length}>
-                确认创建
-              </button>
-              <button type="button" onClick={() => setIsCreateOpen(false)}>
-                取消
-              </button>
-            </div>
           </form>
         </SingleInstanceDialog>
       ) : null}
 
       {packImageDialog ? (
-        <SingleInstanceDialog title="打包为镜像" onClose={() => setPackImageDialog(null)}>
+        <SingleInstanceDialog
+          footer={
+            <>
+              <Button disabled={pendingActionInstanceId === packImageDialog.instanceId} type="button" variant="outline" onClick={() => setPackImageDialog(null)}>
+                取消
+              </Button>
+              <Button
+                disabled={pendingActionInstanceId === packImageDialog.instanceId || packImageDialog.displayName.trim().length === 0}
+                type="button"
+                onClick={() => void handleConfirmPackImage()}
+              >
+                {pendingActionInstanceId === packImageDialog.instanceId ? '处理中...' : '确认打包'}
+              </Button>
+            </>
+          }
+          pending={pendingActionInstanceId === packImageDialog.instanceId}
+          title="打包为镜像"
+          onClose={() => setPackImageDialog(null)}
+        >
           <div className="single-instance-dialog-body">
             <div className="single-instance-dialog-grid">
               <div className="single-instance-form-row single-instance-form-row-full">
@@ -2243,6 +2268,7 @@ export function SingleInstancesScreen({
                 </label>
                 <div className="single-instance-form-control">
                   <input
+                    autoFocus
                     id="single-instance-pack-image-name"
                     aria-label="镜像名"
                     value={packImageDialog.displayName}
@@ -2332,18 +2358,6 @@ export function SingleInstancesScreen({
                 </div>
               </div>
             </div>
-          </div>
-          <div className="template-workbench-dialog-actions single-instance-dialog-actions">
-            <button type="button" onClick={() => setPackImageDialog(null)}>
-              取消
-            </button>
-            <button
-              type="button"
-              disabled={pendingActionInstanceId === packImageDialog.instanceId || packImageDialog.displayName.trim().length === 0}
-              onClick={() => void handleConfirmPackImage()}
-            >
-              {pendingActionInstanceId === packImageDialog.instanceId ? '处理中...' : '确认打包'}
-            </button>
           </div>
         </SingleInstanceDialog>
       ) : null}

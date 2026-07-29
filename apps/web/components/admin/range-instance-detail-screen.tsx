@@ -28,6 +28,7 @@ import {
   type TemplateNode,
 } from '../../lib/scenario-graph';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
+import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
 import { useAdminSession } from './use-admin-session';
@@ -1278,16 +1279,32 @@ export function RangeInstanceDetailScreen({
       </section>
 
       {packImageDialog ? (
-        <div className="template-workbench-dialog-backdrop" role="presentation">
-          <section className="template-workbench-dialog" role="dialog" aria-modal="true" aria-label="二次打包镜像">
-            <div className="template-workbench-dialog-header">
-              <h2>二次打包镜像</h2>
-              <p>将当前主机保存为阿里云自定义镜像，并归档到我的镜像。</p>
-            </div>
+        <AdminDialog
+          footer={
+            <>
+              <Button disabled={pendingNodeAction?.action === 'pack-image'} type="button" variant="outline" onClick={() => setPackImageDialog(null)}>
+                取消
+              </Button>
+              <Button
+                disabled={pendingNodeAction?.action === 'pack-image' || packImageDialog.displayName.trim().length === 0}
+                type="button"
+                onClick={() => void handleConfirmPackImage()}
+              >
+                {pendingNodeAction?.action === 'pack-image' ? '处理中...' : '确认打包'}
+              </Button>
+            </>
+          }
+          open
+          pending={pendingNodeAction?.action === 'pack-image'}
+          size="wide"
+          title="二次打包镜像"
+          onOpenChange={(open) => !open && setPackImageDialog(null)}
+        >
             <div className="template-workbench-dialog-grid">
               <label>
                 <span>镜像名</span>
                 <input
+                  autoFocus
                   aria-label="镜像名"
                   value={packImageDialog.displayName}
                   onChange={(event) =>
@@ -1357,16 +1374,7 @@ export function RangeInstanceDetailScreen({
                 />
               </label>
             </div>
-            <div className="template-workbench-dialog-actions">
-              <button type="button" disabled={pendingNodeAction?.action === 'pack-image'} onClick={() => setPackImageDialog(null)}>
-                取消
-              </button>
-              <button type="button" disabled={pendingNodeAction?.action === 'pack-image' || packImageDialog.displayName.trim().length === 0} onClick={() => void handleConfirmPackImage()}>
-                {pendingNodeAction?.action === 'pack-image' ? '处理中...' : '确认打包'}
-              </button>
-            </div>
-          </section>
-        </div>
+        </AdminDialog>
       ) : null}
     </main>
   );

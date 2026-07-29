@@ -18,6 +18,7 @@ type AdminSelectOption = {
 
 type AdminSelectFieldProps = {
   ariaLabel: string;
+  id?: string;
   value: string;
   onValueChange: (value: string) => void;
   options: readonly AdminSelectOption[];
@@ -31,6 +32,7 @@ export function AdminSelectField({
   className,
   disabled = false,
   emptyOptionLabel,
+  id,
   onValueChange,
   options,
   value,
@@ -43,7 +45,7 @@ export function AdminSelectField({
       onValueChange={(nextValue) => onValueChange(nextValue === EMPTY_OPTION_VALUE ? '' : nextValue)}
       value={selectedValue}
     >
-      <SelectTrigger aria-label={ariaLabel} className={className ?? 'w-full'}>
+      <SelectTrigger aria-label={ariaLabel} className={className ?? 'w-full'} id={id}>
         <SelectValue placeholder={emptyOptionLabel ?? '请选择'} />
       </SelectTrigger>
       <SelectContent position="popper">

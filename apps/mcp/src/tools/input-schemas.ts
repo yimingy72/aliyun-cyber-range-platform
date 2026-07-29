@@ -50,7 +50,6 @@ export const imageImportJobRetryInputSchema = z.object({
 const billingWindowFields = {
   startAt: isoDate.optional().describe('统计起始日期；与 endAt 必须同时提供。省略两者时使用平台默认窗口。'),
   endAt: isoDate.optional().describe('统计结束日期；与 startAt 必须同时提供。省略两者时使用平台默认窗口。'),
-  limit: z.number().int().min(1).max(500).optional().describe('返回记录上限，范围为 1 至 500。'),
 };
 
 const billingWindowSchema = z.object(billingWindowFields).refine(
@@ -58,15 +57,22 @@ const billingWindowSchema = z.object(billingWindowFields).refine(
   'startAt 和 endAt 必须同时提供或同时省略',
 );
 
+const billingPageFields = {
+  page: z.number().int().min(1).optional().describe('页码，省略时为第 1 页。'),
+  pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional().describe('每页条数，默认 20。'),
+};
+
+const billingListWindowSchema = billingWindowSchema.extend(billingPageFields);
+
 export const billingSummaryInputSchema = billingWindowSchema.pick({ startAt: true, endAt: true });
-export const billingUsersInputSchema = billingWindowSchema;
+export const billingUsersInputSchema = billingListWindowSchema;
 export const billingUserSummaryInputSchema = billingWindowSchema.extend({
   userId: identifier.describe('要查看费用汇总的平台用户 ID。'),
 });
-export const billingUserGroupsInputSchema = billingWindowSchema.extend({
+export const billingUserGroupsInputSchema = billingListWindowSchema.extend({
   userId: identifier.optional().describe('可选。仅查看指定平台用户的启动费用分组。'),
 });
-export const billingPlatformGroupsInputSchema = billingWindowSchema;
+export const billingPlatformGroupsInputSchema = billingListWindowSchema;
 export const billingUserItemsInputSchema = billingWindowSchema.extend({
   userId: identifier.describe('要查看明细的平台用户 ID。'),
 });

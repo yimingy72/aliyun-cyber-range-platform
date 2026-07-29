@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class BillingWindowDto {
   @IsOptional()
@@ -14,8 +14,13 @@ export class BillingWindowDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(500)
-  limit?: number;
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsIn([20, 50, 100])
+  pageSize?: number;
 
   @IsOptional()
   @IsString()
