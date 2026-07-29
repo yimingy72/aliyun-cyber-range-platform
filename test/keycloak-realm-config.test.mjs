@@ -28,6 +28,14 @@ test('platform-web emits username and realm roles without relying on missing bui
   assert.ok(getMapper(platformWeb, 'realm-roles-direct'));
 });
 
+test('platform-web permits post-logout redirects to its configured redirect URIs', () => {
+  const platformWeb = getClient('platform-web');
+
+  assert.ok(platformWeb, 'platform-web client should exist');
+  assert.equal(platformWeb.attributes['post.logout.redirect.uris'], '+');
+  assert.match(bootstrapScript, /attributes\."post\.logout\.redirect\.uris"=\+/);
+});
+
 test('smoke-conf emits username and realm roles without relying on missing built-in client scopes', () => {
   const smokeClient = getClient('smoke-conf');
 

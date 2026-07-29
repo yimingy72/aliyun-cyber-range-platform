@@ -11,6 +11,7 @@ const { assignMock, replaceMock, pathnameState, sessionOverrideState, storageEve
   sessionOverrideState: {
     value: null as {
       token: string | null;
+      idToken: string | null;
       refreshToken: string | null;
       profile: AdminSessionPayload['profile'] | null;
       isAdmin: boolean;
@@ -443,6 +444,7 @@ describe('AdminWorkspaceShell', () => {
   it('renders a stable recovery skeleton while the protected session is hydrating', () => {
     sessionOverrideState.value = {
       token: null,
+      idToken: null,
       refreshToken: null,
       profile: null,
       isAdmin: false,
@@ -477,6 +479,7 @@ describe('AdminWorkspaceShell', () => {
   it('renders a stable renewal skeleton while an expiring valid session is refreshing', async () => {
     sessionOverrideState.value = {
       token: createJwt({ exp: Math.floor(Date.now() / 1000) + 30 }),
+      idToken: null,
       refreshToken: 'refresh-token-1',
       profile: {
         id: 'admin',
@@ -538,10 +541,40 @@ describe('AdminWorkspaceShell', () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it('ends the Keycloak browser session when the user explicitly logs out', async () => {
+    writeAdminSession(createSession({ idToken: 'id-token-hint' }));
+    window.sessionStorage.setItem('aliyun-cyber-range-admin-oidc-state', 'stale-state');
+    window.sessionStorage.setItem('aliyun-cyber-range-admin-oidc-code-verifier', 'stale-code-verifier');
+
+    render(
+      <AdminWorkspaceShell>
+        <div>workspace content</div>
+      </AdminWorkspaceShell>,
+    );
+
+    await screen.findByText('workspace content');
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+
+    expect(window.localStorage.getItem('aliyun-cyber-range-admin-session')).toBeNull();
+    expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-state')).toBeNull();
+    expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-code-verifier')).toBeNull();
+    expect(assignMock).toHaveBeenCalledTimes(1);
+
+    const logoutUrl = new URL(String(assignMock.mock.calls[0][0]));
+    expect(logoutUrl.origin + logoutUrl.pathname).toBe(
+      'http://localhost:8080/realms/cyber-range/protocol/openid-connect/logout',
+    );
+    expect(logoutUrl.searchParams.get('client_id')).toBe('platform-web');
+    expect(logoutUrl.searchParams.get('post_logout_redirect_uri')).toBe('http://localhost:3000/admin/login');
+    expect(logoutUrl.searchParams.get('id_token_hint')).toBe('id-token-hint');
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it('refreshes expiring sessions before rendering the workspace', async () => {
     writeAdminSession(
       createSession({
         token: createJwt({ exp: Math.floor(Date.now() / 1000) + 30 }),
+        idToken: 'original-id-token',
         refreshToken: 'refresh-token-1',
       }),
     );
@@ -572,6 +605,9 @@ describe('AdminWorkspaceShell', () => {
     await screen.findByText('workspace content');
 
     expect(screen.getByText('renewed / user')).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem('aliyun-cyber-range-admin-session') ?? '{}').idToken).toBe(
+      'original-id-token',
+    );
     expect(replaceMock).not.toHaveBeenCalled();
   });
 });
