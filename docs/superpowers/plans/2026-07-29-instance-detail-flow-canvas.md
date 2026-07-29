@@ -946,7 +946,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: PASS，运行中实例可完整编辑，历史实例保持只读，属性面板在全屏容器中仍可用。
 
-- [ ] **Step 5: 提交实例 Flow 工作区**
+- [x] **Step 5: 提交实例 Flow 工作区**
 
 ```bash
 git add \
