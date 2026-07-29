@@ -1261,6 +1261,28 @@ describe('tool registry', () => {
 
   it('normalizes confirmed range lifecycle results to stable resource IDs', async () => {
     const client = createClientStub();
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'range-2',
+      draftRevision: 7,
+      sourceTemplateRevision: 11,
+      runtimeScenarioTemplateSpec: {
+        metadata: {
+          name: 'Web DMZ',
+          slug: 'web-dmz',
+          version: '1.0.0',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: {
+          vpcCidr: '10.0.0.0/16',
+        },
+      },
+    });
+    (client.saveRangeInstanceDraft as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'range-2',
+      draftRevision: 8,
+      sourceTemplateRevision: 11,
+    });
     (client.launchRange as ReturnType<typeof vi.fn>).mockResolvedValue({
       rangeInstanceId: 'range-2',
       jobId: 'job-2',
@@ -1289,6 +1311,12 @@ describe('tool registry', () => {
     ).resolves.toMatchObject({
       structuredContent: { result: { id: 'tpl-2', rangeInstanceId: 'range-2' } },
     });
+    expect(client.syncRangeInstanceTemplate).toHaveBeenCalledWith(
+      'range-2',
+      8,
+      11,
+      { idempotencyKey: undefined, confirmationId: undefined },
+    );
   });
 
   it('keeps cloud-config operation metadata out of the configuration payload', async () => {

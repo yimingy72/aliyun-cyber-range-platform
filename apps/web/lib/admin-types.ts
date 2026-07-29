@@ -258,6 +258,7 @@ export type RangeInstance = {
   templateVersionSnapshot?: string | null;
   templateModulePathSnapshot?: string | null;
   sourceTemplateVersionId?: string | null;
+  sourceTemplateRevision?: number | null;
   runtimeTopologyGraph?: Record<string, unknown> | null;
   runtimeScenarioTemplateSpec?: Record<string, unknown> | null;
   runtimeCompiledProvisionSpec?: Record<string, unknown> | null;

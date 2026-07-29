@@ -315,10 +315,17 @@ export async function applyRangeInstanceDraft(
   return readJson<ProvisionJob>(response);
 }
 
-export async function syncRangeInstanceTemplate(apiBaseUrl: string, token: string, id: string) {
+export async function syncRangeInstanceTemplate(
+  apiBaseUrl: string,
+  token: string,
+  id: string,
+  expectedDraftRevision: number,
+  expectedTemplateRevision: number,
+) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/sync-template`, {
     method: 'POST',
     headers: createAdminHeaders(token),
+    body: JSON.stringify({ expectedDraftRevision, expectedTemplateRevision }),
   });
 
   return readJson<Scenario>(response);

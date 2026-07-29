@@ -144,8 +144,12 @@ describe('Range instance apply API', () => {
             getRequest(): Record<string, unknown>;
           };
         }) => {
-          const authenticatedUser = { id: 'admin', username: 'admin', role: 'admin' as const };
           const requestContext = context.switchToHttp().getRequest();
+          const requestHeaders = requestContext.headers as Record<string, string | undefined> | undefined;
+          const authenticatedUser =
+            requestHeaders?.['x-test-user'] === 'instance-owner'
+              ? { id: 'instance-owner', username: 'instance-owner', role: 'user' as const }
+              : { id: 'admin', username: 'admin', role: 'admin' as const };
           requestContext.adminUser = authenticatedUser;
           requestContext.authContext = { user: authenticatedUser, source: 'web' };
           return true;
@@ -214,8 +218,108 @@ describe('Range instance apply API', () => {
     await app?.close();
   });
 
+  async function createSyncFixture(input: {
+    instanceStatus?: 'running' | 'destroyed';
+    instanceOwnerId?: string;
+    templateOwnerId?: string;
+    withDraft?: boolean;
+    publishTemplate?: boolean;
+  } = {}) {
+    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await repository.upsertImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'public',
+      snapshots: [
+        {
+          imageId: `sync-image-${suffix}`,
+          sourceImageName: 'Sync test image',
+          status: 'Available',
+          isAvailable: true,
+          lastSyncedAt: new Date('2026-07-22T00:00:00.000Z'),
+        },
+      ],
+    });
+    const [imageSnapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud',
+      accountUid: null,
+      regionId: 'cn-hangzhou',
+      scope: 'public',
+      imageId: `sync-image-${suffix}`,
+    });
+    const imageAsset = await repository.collectPlatformImageAsset({
+      snapshotId: imageSnapshot!.id,
+      displayName: 'Sync test image',
+      visibility: 'platform',
+    });
+    const graph = structuredClone(applyDraftGraph);
+    const entryHost = graph.nodes.find((node) => node.kind === 'ecs' && node.id === 'ecs-entry');
+
+    if (!entryHost || entryHost.kind !== 'ecs') {
+      throw new Error('Sync fixture entry host is missing');
+    }
+
+    entryHost.platformImageAssetId = imageAsset.id;
+    entryHost.imageId = imageAsset.imageId;
+    entryHost.image = imageAsset.imageId;
+    entryHost.imageStrategy = { mode: 'fixed', imageId: imageAsset.imageId };
+
+    const metadata: TemplateAuthoringMetadata = {
+      ...applyDraftMetadata,
+      name: `Sync template ${suffix}`,
+      slug: `sync-template-${suffix}`,
+    };
+    const sourceCompiled = compileTemplateTopology(structuredClone(graph), metadata);
+    entryHost.memory = 4;
+    const compiled = compileTemplateTopology(graph, metadata);
+    let template = await repository.createRangeTemplate({
+      name: metadata.name,
+      slug: metadata.slug,
+      version: metadata.version,
+      modulePathOrRef: metadata.modulePathOrRef,
+      ownerUserId: input.templateOwnerId ?? 'admin',
+      topologySpec: sourceCompiled.topologySpec as Parameters<AdminRepository['createRangeTemplate']>[0]['topologySpec'],
+      topologyGraph: sourceCompiled.topologyGraph,
+      scenarioTemplateSpec: sourceCompiled.scenarioTemplateSpec,
+      compiledProvisionSpec: sourceCompiled.compiledProvisionSpec,
+      compiledSpec: sourceCompiled.compiledSpec,
+    });
+
+    if (input.publishTemplate) {
+      template = await repository.publishRangeTemplateToPlatform(template.id, template.revision);
+    }
+
+    const instance = await repository.createRangeInstance({
+      name: `sync-instance-${suffix}`,
+      createdBy: input.instanceOwnerId ?? 'admin',
+      ownerUserId: input.instanceOwnerId ?? 'admin',
+      templateId: template.id,
+      sourceTemplateVersionId: template.currentDraftVersionId,
+      templateNameSnapshot: template.name,
+      templateSlugSnapshot: template.slug,
+      templateVersionSnapshot: template.version,
+      templateModulePathSnapshot: metadata.modulePathOrRef,
+      status: input.instanceStatus ?? 'running',
+      runtimeTopologyGraph: sourceCompiled.topologyGraph,
+      runtimeScenarioTemplateSpec: sourceCompiled.scenarioTemplateSpec,
+      runtimeCompiledProvisionSpec: sourceCompiled.compiledProvisionSpec,
+      ...(input.withDraft === false
+        ? {}
+        : {
+            draftTopologyGraph: compiled.topologyGraph,
+            draftTopologySpec: compiled.topologySpec,
+            draftScenarioTemplateSpec: compiled.scenarioTemplateSpec,
+            draftCompiledProvisionSpec: compiled.compiledProvisionSpec,
+            draftRevision: 1,
+          }),
+    });
+
+    return { compiled, instance, template };
+  }
+
   it('creates an update job from the exact saved draft revision and freezes every topology artifact', async () => {
-    await request(app.getHttpServer())
+    const saved = await request(app.getHttpServer())
       .patch(`/admin/ranges/${instanceId}/draft`)
       .set('authorization', 'Bearer dev-admin-token')
       .send({
@@ -226,6 +330,15 @@ describe('Range instance apply API', () => {
         expectedDraftRevision: 0,
       })
       .expect(200);
+
+    expect(saved.body.sourceTemplateRevision).toBe(1);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/admin/ranges/${instanceId}`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .expect(200);
+
+    expect(detail.body.sourceTemplateRevision).toBe(1);
 
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/apply`)
@@ -301,7 +414,7 @@ describe('Range instance apply API', () => {
       .expect(409);
   });
 
-  it('validates and saves the instance topology back into the private source template', async () => {
+  it('rejects a legacy instance draft that is not a canonical topology graph', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
       accountUid: null,
@@ -509,6 +622,32 @@ describe('Range instance apply API', () => {
         ],
         edges: [{ id: 'edge-1', fromNodeId: 'switch-1', toNodeId: 'ecs-1' }],
       },
+      draftTopologySpec: {
+        vpcCidr: '10.67.0.0/16',
+        networkZones: [
+          {
+            key: 'zone-1',
+            name: 'Zone 1',
+            purpose: 'business-zone',
+            cidr: '10.67.10.0/24',
+            isPublicEntry: true,
+          },
+        ],
+        hosts: [
+          {
+            key: 'ecs-1',
+            name: 'ECS 1',
+            zoneKey: 'zone-1',
+            role: 'host',
+            privateIp: '10.67.10.10',
+            exposePublic: true,
+          },
+        ],
+        publicEntry: {
+          hostKey: 'ecs-1',
+          protocols: [{ protocol: 'ssh', port: 22 }],
+        },
+      },
       draftScenarioTemplateSpec: {
         metadata: {
           name: 'sync-template',
@@ -579,53 +718,130 @@ describe('Range instance apply API', () => {
           },
         },
       },
+      draftRevision: 1,
     });
 
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instance.id}/sync-template`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({});
+      .send({
+        expectedDraftRevision: 1,
+        expectedTemplateRevision: template.revision,
+      });
 
-    expect({ status: response.status, body: response.body }).toEqual({
-      status: 201,
-      body: expect.objectContaining({ id: template.id }),
-    });
-    expect(response.body.id).toBe(template.id);
-    expect(response.body).toEqual(
-      expect.objectContaining({
-        status: 'private',
-        revision: template.revision + 1,
-      }),
-    );
-    expect(response.body).not.toHaveProperty('currentDraftVersion');
-    expect(response.body).not.toHaveProperty('currentPublishedVersion');
+    expect(response.status).toBe(400);
+    expect(response.body.message).toBe('拓扑必须且只能包含一个 Router 节点');
 
     const updatedTemplate = await repository.getRangeTemplateById(template.id);
 
-    expect(updatedTemplate?.topologyGraph).toEqual(
+    expect(updatedTemplate?.revision).toBe(template.revision);
+  });
+
+  it('rejects runtime-only snapshots and requests without both positive revisions', async () => {
+    const runtimeOnly = await createSyncFixture({ withDraft: false });
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${runtimeOnly.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        expectedDraftRevision: 1,
+        expectedTemplateRevision: runtimeOnly.template.revision,
+      })
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${runtimeOnly.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({ expectedDraftRevision: 0, expectedTemplateRevision: 0 })
+      .expect(400);
+  });
+
+  it('rejects historical instances even when they retain a complete saved draft', async () => {
+    const historical = await createSyncFixture({ instanceStatus: 'destroyed' });
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${historical.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        expectedDraftRevision: 1,
+        expectedTemplateRevision: historical.template.revision,
+      })
+      .expect(409);
+  });
+
+  it('requires both instance ownership and source-template edit permission', async () => {
+    const fixture = await createSyncFixture({
+      instanceOwnerId: 'instance-owner',
+      templateOwnerId: 'template-owner',
+    });
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${fixture.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .set('x-test-user', 'instance-owner')
+      .send({
+        expectedDraftRevision: 1,
+        expectedTemplateRevision: fixture.template.revision,
+      })
+      .expect(403);
+  });
+
+  it('rolls back when the saved draft or source-template revision is stale', async () => {
+    const fixture = await createSyncFixture();
+    const before = await repository.getRangeTemplateById(fixture.template.id);
+    const instanceBefore = await repository.getRangeInstanceById(fixture.instance.id);
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${fixture.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        expectedDraftRevision: 2,
+        expectedTemplateRevision: fixture.template.revision,
+      })
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/admin/ranges/${fixture.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        expectedDraftRevision: 1,
+        expectedTemplateRevision: fixture.template.revision + 1,
+      })
+      .expect(409);
+
+    const after = await repository.getRangeTemplateById(fixture.template.id);
+    expect(after).toEqual(before);
+    await expect(repository.getRangeInstanceById(fixture.instance.id)).resolves.toEqual(instanceBefore);
+  });
+
+  it('updates only the current template draft and leaves the published version intact', async () => {
+    const fixture = await createSyncFixture({ publishTemplate: true });
+    const publishedVersionId = fixture.template.currentPublishedVersionId;
+    const publishedVersion = fixture.template.currentPublishedVersion;
+    const jobsBefore = await repository.listProvisionJobs();
+
+    const response = await request(app.getHttpServer())
+      .post(`/admin/ranges/${fixture.instance.id}/sync-template`)
+      .set('authorization', 'Bearer dev-admin-token')
+      .send({
+        expectedDraftRevision: 1,
+        expectedTemplateRevision: fixture.template.revision,
+      })
+      .expect(201);
+
+    expect(response.body).toEqual(
       expect.objectContaining({
-        nodes: expect.arrayContaining([
-          expect.objectContaining({
-            id: 'ecs-1',
-            memory: 4,
-            instanceType: 'ecs.e-c1m2.large',
-          }),
-        ]),
+        id: fixture.template.id,
+        status: 'published',
+        revision: fixture.template.revision + 1,
       }),
     );
-    expect(updatedTemplate?.currentDraftVersion?.compiledSpec).toEqual(
-      expect.objectContaining({
-        resources: expect.arrayContaining([
-          expect.objectContaining({
-            id: 'ecs-1',
-            config: expect.objectContaining({
-              memory: 4,
-              instanceType: 'ecs.e-c1m2.large',
-            }),
-          }),
-        ]),
-      }),
-    );
+
+    const updated = await repository.getRangeTemplateById(fixture.template.id);
+    expect(updated?.currentPublishedVersionId).toBe(publishedVersionId);
+    expect(updated?.currentPublishedVersion).toEqual(publishedVersion);
+    expect(updated?.currentDraftVersion?.topologyGraph).toEqual(fixture.compiled.topologyGraph);
+    await expect(repository.listProvisionJobs()).resolves.toEqual(jobsBefore);
   });
 });
 

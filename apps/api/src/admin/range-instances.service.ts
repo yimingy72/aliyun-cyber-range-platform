@@ -2,11 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import {
-  compileTopologyGraph,
-  type CompiledTopologySpec,
   type ScenarioGraphDraft,
   type TemplateAuthoringMetadata,
-  type TemplateNode,
 } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 import {
@@ -24,6 +21,7 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { ApplyRangeInstanceDraftDto, LaunchRangeInstanceDto } from './dto/range-instance.dto';
+import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { RangeTemplatesService } from './range-templates.service';
@@ -96,10 +94,12 @@ export class RangeInstancesService {
     }
 
     const nodeStatuses = await this.resolveNodeStatuses(hydrated);
+    const sourceTemplateRevision = await this.resolveSourceTemplateRevision(hydrated);
 
     return {
       ...hydrated,
       nodeStatuses,
+      sourceTemplateRevision,
     };
   }
 
@@ -285,7 +285,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withCreatorUsername(hydrated);
+    return this.withCreatorUsername(await this.withSourceTemplateRevision(hydrated));
   }
 
   async saveDraft(id: string, input: SaveRangeInstanceDraftDto, currentUser?: AuthenticatedUser) {
@@ -328,7 +328,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    return this.withCreatorUsername(hydrated);
+    return this.withCreatorUsername(await this.withSourceTemplateRevision(hydrated));
   }
 
   async discardDraft(id: string, currentUser?: AuthenticatedUser) {
@@ -448,7 +448,11 @@ export class RangeInstancesService {
     return job;
   }
 
-  async syncTemplate(id: string, currentUser?: AuthenticatedUser) {
+  async syncTemplate(
+    id: string,
+    input: SyncRangeInstanceTemplateDto,
+    currentUser?: AuthenticatedUser,
+  ) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -469,42 +473,79 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
-    const topologyGraph = instance.draftTopologyGraph ?? instance.runtimeTopologyGraph;
-    const scenarioTemplateSpec = instance.draftScenarioTemplateSpec ?? instance.runtimeScenarioTemplateSpec;
-    const compiledProvisionSpec =
-      instance.draftCompiledProvisionSpec ?? instance.runtimeCompiledProvisionSpec;
-
-    if (!topologyGraph || !scenarioTemplateSpec || !compiledProvisionSpec) {
-      throw new ConflictException('Range instance does not have a complete topology snapshot to sync');
+    if (instance.status !== 'running') {
+      throw new ConflictException('Only running instances can sync draft changes to the template');
     }
 
-    const topologySpec =
-      this.readTopologySpecFromScenarioTemplateSpec(scenarioTemplateSpec) ??
-      template.currentDraftVersion?.topologySpec ??
-      template.topologySpec;
-
-    if (!topologySpec) {
-      throw new ConflictException('Unable to derive template topology spec from the instance snapshot');
+    if (
+      !instance.draftTopologyGraph ||
+      !instance.draftTopologySpec ||
+      !instance.draftScenarioTemplateSpec ||
+      !instance.draftCompiledProvisionSpec
+    ) {
+      throw new ConflictException('Range instance does not have a complete saved draft to sync');
     }
 
-    const compiledSpec = this.buildCompiledSpecFromTopologyGraph(topologyGraph, topologySpec);
-
-    if (!compiledSpec) {
-      throw new ConflictException('Unable to compile the instance topology snapshot');
+    if (instance.draftRevision !== input.expectedDraftRevision) {
+      throw new ConflictException('Range instance draft has changed; refresh before syncing the template');
     }
 
-    return this.rangeTemplatesService.validateAndSave(
+    if (template.revision !== input.expectedTemplateRevision) {
+      throw new ConflictException('Range template has changed; refresh before syncing the template');
+    }
+
+    const compiled = validateRangeInstanceDraftPayload(
+      {
+        draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
+        draftTopologySpec: this.normalizeJsonRecord(instance.draftTopologySpec),
+        draftScenarioTemplateSpec: this.normalizeJsonRecord(instance.draftScenarioTemplateSpec),
+        draftCompiledProvisionSpec: this.normalizeJsonRecord(instance.draftCompiledProvisionSpec),
+      },
+      await this.resolveDraftCompilationMetadata(instance),
+    );
+    const viewport = this.readDraftViewport(instance.draftTopologyGraph);
+    const topology = await this.rangeTemplatesService.prepareTopologySave(
       template.id,
       {
-        expectedRevision: template.revision,
-        topologySpec,
-        topologyGraph,
-        scenarioTemplateSpec,
-        compiledProvisionSpec,
-        compiledSpec,
+        expectedRevision: input.expectedTemplateRevision,
+        topologySpec: compiled.topologySpec as RangeTemplateTopologySpec,
+        topologyGraph: this.normalizeJsonRecord({
+          ...compiled.topologyGraph,
+          ...(viewport ? { viewport } : {}),
+        }),
+        scenarioTemplateSpec: this.normalizeJsonRecord(compiled.scenarioTemplateSpec),
+        compiledProvisionSpec: this.normalizeJsonRecord(compiled.compiledProvisionSpec),
+        compiledSpec: this.normalizeJsonRecord(compiled.compiledSpec),
       },
       currentUser,
     );
+
+    try {
+      const synced = await this.adminRepository.syncRangeInstanceDraftToTemplate({
+        rangeInstanceId: id,
+        expectedDraftRevision: input.expectedDraftRevision,
+        expectedTemplateRevision: input.expectedTemplateRevision,
+        topology: {
+          ...topology,
+          expectedRevision: input.expectedTemplateRevision,
+        },
+      });
+
+      if (!synced) {
+        throw new ConflictException('Range instance draft or template has changed; refresh before syncing the template');
+      }
+    } catch (error) {
+      if (
+        error instanceof RangeInstanceDraftRevisionConflictError ||
+        error instanceof Error && error.message === 'TEMPLATE_REVISION_CONFLICT'
+      ) {
+        throw new ConflictException('Range instance draft or template has changed; refresh before syncing the template');
+      }
+
+      throw error;
+    }
+
+    return this.rangeTemplatesService.getById(template.id, currentUser);
   }
 
   async triggerCreate(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
@@ -781,6 +822,21 @@ export class RangeInstancesService {
     return normalizedInstance;
   }
 
+  private async withSourceTemplateRevision<T extends { templateId: string | null }>(instance: T) {
+    return {
+      ...instance,
+      sourceTemplateRevision: await this.resolveSourceTemplateRevision(instance),
+    };
+  }
+
+  private async resolveSourceTemplateRevision(instance: { templateId: string | null }) {
+    if (!instance.templateId) {
+      return null;
+    }
+
+    return (await this.adminRepository.getRangeTemplateById(instance.templateId))?.revision ?? null;
+  }
+
   private async resolveNodeStatuses(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
     const hostIds = instance?.resourceSummary?.hostIds ?? null;
 
@@ -929,93 +985,6 @@ export class RangeInstancesService {
     const accountPreset = (value as { accountPreset?: unknown }).accountPreset;
 
     return accountPreset === undefined || (accountPreset !== null && typeof accountPreset === 'object');
-  }
-
-  private readTopologySpecFromScenarioTemplateSpec(
-    value: Record<string, unknown> | null | undefined,
-  ): RangeTemplateTopologySpec | null {
-    if (!value) {
-      return null;
-    }
-
-    const topology = this.readRecord(value.topology);
-    const networkZones = this.readArray(value.networkZones);
-    const hosts = this.readArray(value.hosts);
-    const publicEntryHostKey = typeof topology?.entryHostKey === 'string' ? topology.entryHostKey : null;
-    const vpcCidr = typeof topology?.vpcCidr === 'string' ? topology.vpcCidr : null;
-
-    if (!publicEntryHostKey || !vpcCidr || networkZones.length === 0 || hosts.length === 0) {
-      return null;
-    }
-
-    return {
-      vpcCidr,
-      networkZones: networkZones.flatMap((zoneValue) => {
-        const zone = this.readRecord(zoneValue);
-
-        if (!zone || typeof zone.key !== 'string' || typeof zone.name !== 'string' || typeof zone.cidr !== 'string') {
-          return [];
-        }
-
-        return [
-          {
-            key: zone.key,
-            name: zone.name,
-            purpose: typeof zone.purpose === 'string' ? zone.purpose : zone.key,
-            cidr: zone.cidr,
-            ...(zone.isPublicEntry === true ? { isPublicEntry: true } : {}),
-          },
-        ];
-      }),
-      hosts: hosts.flatMap((hostValue) => {
-        const host = this.readRecord(hostValue);
-
-        if (
-          !host ||
-          typeof host.key !== 'string' ||
-          typeof host.name !== 'string' ||
-          typeof host.zoneKey !== 'string' ||
-          typeof host.role !== 'string' ||
-          typeof host.primaryPrivateIp !== 'string'
-        ) {
-          return [];
-        }
-
-        return [
-          {
-            key: host.key,
-            name: host.name,
-            zoneKey: host.zoneKey,
-            role: host.role,
-            privateIp: host.primaryPrivateIp,
-            ...(host.exposePublic === true ? { exposePublic: true } : {}),
-          },
-        ];
-      }),
-      publicEntry: {
-        hostKey: publicEntryHostKey,
-        protocols: [{ protocol: 'ssh', port: 22 }],
-      },
-    };
-  }
-
-  private buildCompiledSpecFromTopologyGraph(
-    topologyGraph: Record<string, unknown>,
-    topologySpec: RangeTemplateTopologySpec,
-  ) {
-    const rawNodes = this.readArray(topologyGraph.nodes).filter((node) => {
-      const record = this.readRecord(node);
-      return record && typeof record.id === 'string' && typeof record.kind === 'string';
-    });
-
-    if (rawNodes.length === 0) {
-      return null;
-    }
-
-    return compileTopologyGraph(
-      rawNodes as TemplateNode[],
-      topologySpec as CompiledTopologySpec,
-    );
   }
 
   private async resolveDraftCompilationMetadata(instance: RangeInstanceRecord): Promise<TemplateAuthoringMetadata> {

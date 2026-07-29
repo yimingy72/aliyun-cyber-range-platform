@@ -46,6 +46,7 @@ import {
   RangeInstanceRecord,
   RangeInstanceDraftRevisionConflictError,
   SaveRangeInstanceDraftInput,
+  SyncRangeInstanceDraftToTemplateInput,
   SingleInstanceBatchRecord,
   SingleInstanceBatchWithInstancesRecord,
   RangeTemplateRecord,
@@ -612,6 +613,108 @@ export class PrismaAdminRepository implements AdminRepository {
 
       return tx.rangeTemplate.findUniqueOrThrow({
         where: { id },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+          versions: true,
+        },
+      }) as Promise<RangeTemplateRecord>;
+    });
+  }
+
+  async syncRangeInstanceDraftToTemplate(
+    input: SyncRangeInstanceDraftToTemplateInput,
+  ): Promise<RangeTemplateRecord | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const instance = await transaction.rangeInstance.findUnique({
+        where: { id: input.rangeInstanceId },
+      });
+
+      if (
+        !instance ||
+        instance.status !== 'running' ||
+        !instance.templateId ||
+        instance.draftRevision !== input.expectedDraftRevision ||
+        !instance.draftTopologyGraph ||
+        !instance.draftTopologySpec ||
+        !instance.draftScenarioTemplateSpec ||
+        !instance.draftCompiledProvisionSpec
+      ) {
+        return null;
+      }
+
+      const template = await transaction.rangeTemplate.findUnique({
+        where: { id: instance.templateId },
+        include: {
+          currentDraftVersion: true,
+          currentPublishedVersion: true,
+        },
+      });
+
+      if (
+        !template ||
+        template.revision !== input.expectedTemplateRevision ||
+        !template.currentDraftVersion
+      ) {
+        return null;
+      }
+
+      const guardedInstance = await transaction.rangeInstance.updateMany({
+        where: {
+          id: instance.id,
+          status: 'running',
+          draftRevision: input.expectedDraftRevision,
+        },
+        data: {
+          draftRevision: { increment: 0 },
+        },
+      });
+
+      if (guardedInstance.count !== 1) {
+        return null;
+      }
+
+      const topologyChanged =
+        !isDeepStrictEqual(template.currentDraftVersion.topologySpec, input.topology.topologySpec) ||
+        !isDeepStrictEqual(template.currentDraftVersion.topologyGraph, input.topology.topologyGraph) ||
+        !isDeepStrictEqual(template.currentDraftVersion.scenarioTemplateSpec, input.topology.scenarioTemplateSpec) ||
+        !isDeepStrictEqual(template.currentDraftVersion.compiledProvisionSpec, input.topology.compiledProvisionSpec) ||
+        !isDeepStrictEqual(template.currentDraftVersion.compiledSpec, input.topology.compiledSpec);
+
+      if (topologyChanged) {
+        await transaction.rangeTemplateVersion.update({
+          where: { id: template.currentDraftVersion.id },
+          data: {
+            topologySpec: input.topology.topologySpec as Prisma.InputJsonValue,
+            topologyGraph: input.topology.topologyGraph as Prisma.InputJsonValue,
+            scenarioTemplateSpec: input.topology.scenarioTemplateSpec as Prisma.InputJsonValue,
+            compiledProvisionSpec: input.topology.compiledProvisionSpec as Prisma.InputJsonValue,
+            compiledSpec: input.topology.compiledSpec as Prisma.InputJsonValue,
+          },
+        });
+
+        const updatedTemplate = await transaction.rangeTemplate.updateMany({
+          where: {
+            id: template.id,
+            revision: input.expectedTemplateRevision,
+          },
+          data: {
+            topologySpec: input.topology.topologySpec as Prisma.InputJsonValue,
+            topologyGraph: input.topology.topologyGraph as Prisma.InputJsonValue,
+            scenarioTemplateSpec: input.topology.scenarioTemplateSpec as Prisma.InputJsonValue,
+            compiledProvisionSpec: input.topology.compiledProvisionSpec as Prisma.InputJsonValue,
+            compiledSpec: input.topology.compiledSpec as Prisma.InputJsonValue,
+            revision: { increment: 1 },
+          },
+        });
+
+        if (updatedTemplate.count !== 1) {
+          throw new TemplateRevisionConflictError();
+        }
+      }
+
+      return transaction.rangeTemplate.findUniqueOrThrow({
+        where: { id: template.id },
         include: {
           currentDraftVersion: true,
           currentPublishedVersion: true,

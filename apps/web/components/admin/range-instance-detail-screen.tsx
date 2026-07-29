@@ -820,9 +820,13 @@ export function RangeInstanceDetailScreen({
         expectedDraftRevision: detail.draftRevision ?? 0,
       });
 
-      setDetail(updated);
-      setDraftGraph((updated.draftTopologyGraph as Record<string, unknown> | null) ?? nextTopologyGraph);
-      return updated;
+      const nextDetail = {
+        ...updated,
+        sourceTemplateRevision: updated.sourceTemplateRevision ?? detail.sourceTemplateRevision ?? null,
+      };
+      setDetail(nextDetail);
+      setDraftGraph((nextDetail.draftTopologyGraph as Record<string, unknown> | null) ?? nextTopologyGraph);
+      return nextDetail;
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
@@ -921,7 +925,24 @@ export function RangeInstanceDetailScreen({
         return;
       }
 
-      await syncRangeInstanceTemplate(apiBaseUrl, session.token, detail.id);
+      if (
+        typeof saved.draftRevision !== 'number' ||
+        !Number.isInteger(saved.draftRevision) ||
+        saved.draftRevision < 1 ||
+        typeof saved.sourceTemplateRevision !== 'number' ||
+        !Number.isInteger(saved.sourceTemplateRevision) ||
+        saved.sourceTemplateRevision < 1
+      ) {
+        throw new Error('实例或模板版本已变化，请刷新后重新保存草稿。');
+      }
+
+      await syncRangeInstanceTemplate(
+        apiBaseUrl,
+        session.token,
+        detail.id,
+        saved.draftRevision,
+        saved.sourceTemplateRevision,
+      );
       setSuccessMessage('当前实例拓扑已更新到模板草稿。');
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {

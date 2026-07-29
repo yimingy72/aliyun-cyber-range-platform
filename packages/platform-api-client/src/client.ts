@@ -238,10 +238,15 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  syncRangeInstanceTemplate(id: string, operation?: OperationRequest) {
+  syncRangeInstanceTemplate(
+    id: string,
+    expectedDraftRevision: number,
+    expectedTemplateRevision: number,
+    operation?: OperationRequest,
+  ) {
     return this.request<RangeTemplate>(`/admin/ranges/${encodeURIComponent(id)}/sync-template`, {
       method: 'POST',
-      body: '{}',
+      body: JSON.stringify({ expectedDraftRevision, expectedTemplateRevision }),
       operation,
     });
   }

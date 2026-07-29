@@ -505,6 +505,70 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async syncRangeInstanceDraftToTemplate(input) {
+      const instance = rangeInstances.find((record) => record.id === input.rangeInstanceId);
+
+      if (
+        !instance ||
+        instance.status !== 'running' ||
+        !instance.templateId ||
+        instance.draftRevision !== input.expectedDraftRevision ||
+        !instance.draftTopologyGraph ||
+        !instance.draftTopologySpec ||
+        !instance.draftScenarioTemplateSpec ||
+        !instance.draftCompiledProvisionSpec
+      ) {
+        return null;
+      }
+
+      const template = rangeTemplates.find((record) => record.id === instance.templateId);
+
+      if (
+        !template ||
+        template.revision !== input.expectedTemplateRevision ||
+        !template.currentDraftVersionId
+      ) {
+        return null;
+      }
+
+      const draftVersion = rangeTemplateVersions.find((item) => item.id === template.currentDraftVersionId);
+
+      if (!draftVersion) {
+        return null;
+      }
+
+      const topologyChanged =
+        JSON.stringify(draftVersion.topologySpec) !== JSON.stringify(input.topology.topologySpec) ||
+        JSON.stringify(draftVersion.topologyGraph) !== JSON.stringify(input.topology.topologyGraph) ||
+        JSON.stringify(draftVersion.scenarioTemplateSpec) !== JSON.stringify(input.topology.scenarioTemplateSpec) ||
+        JSON.stringify(draftVersion.compiledProvisionSpec) !== JSON.stringify(input.topology.compiledProvisionSpec) ||
+        JSON.stringify(draftVersion.compiledSpec) !== JSON.stringify(input.topology.compiledSpec);
+
+      if (topologyChanged) {
+        Object.assign(draftVersion, {
+          topologySpec: clone(input.topology.topologySpec),
+          topologyGraph: clone(input.topology.topologyGraph),
+          scenarioTemplateSpec: clone(input.topology.scenarioTemplateSpec),
+          compiledProvisionSpec: clone(input.topology.compiledProvisionSpec),
+          compiledSpec: clone(input.topology.compiledSpec),
+          updatedAt: now(),
+        });
+
+        Object.assign(template, {
+          topologySpec: clone(input.topology.topologySpec),
+          topologyGraph: clone(input.topology.topologyGraph),
+          scenarioTemplateSpec: clone(input.topology.scenarioTemplateSpec),
+          compiledProvisionSpec: clone(input.topology.compiledProvisionSpec),
+          compiledSpec: clone(input.topology.compiledSpec),
+          currentDraftVersion: clone(draftVersion),
+          revision: template.revision + 1,
+          updatedAt: now(),
+        });
+        template.versions = cloneList(rangeTemplateVersions.filter((item) => item.templateId === template.id));
+      }
+
+      return clone(template);
+    },
     async publishRangeTemplateToPlatform(id, expectedRevision) {
       const record = rangeTemplates.find((template) => template.id === id)!;
 

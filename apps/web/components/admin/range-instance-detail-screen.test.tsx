@@ -540,6 +540,8 @@ describe('RangeInstanceDetailScreen', () => {
       status: 'running',
       createdBy: 'admin',
       templateId: 'template-1',
+      draftRevision: 0,
+      sourceTemplateRevision: 12,
       templateNameSnapshot: '浏览器验证模板',
       createdAt: '2026-07-06T10:00:00.000Z',
       expiresAt: '2026-07-09T12:00:00.000Z',
@@ -559,6 +561,8 @@ describe('RangeInstanceDetailScreen', () => {
       id: 'range-1',
       name: '攻防实例-一号',
       status: 'running',
+      draftRevision: 1,
+      sourceTemplateRevision: 12,
       draftTopologyGraph: {
         schemaVersion: '1',
         nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'checker' }, cpu: 4, memory: 2 }],
@@ -585,6 +589,8 @@ describe('RangeInstanceDetailScreen', () => {
         'http://localhost:3001',
         'dev-admin-token',
         'range-1',
+        1,
+        12,
       ),
     );
     expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();

@@ -236,13 +236,7 @@ export class RangeTemplatesService {
       this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
     }
 
-    const topology = await this.normalizeTopologyMetadata(input, {
-      name: existingTemplate.name,
-      slug: existingTemplate.slug,
-      version: existingTemplate.version,
-    });
-
-    await this.validateTopologyPayload(topology, currentUser);
+    const topology = await this.normalizeAndValidateTopology(existingTemplate, input, currentUser);
 
     try {
       const template = await this.adminRepository.saveRangeTemplateTopology(id, {
@@ -253,6 +247,24 @@ export class RangeTemplatesService {
     } catch (error) {
       this.rethrowRevisionConflict(error);
     }
+  }
+
+  async prepareTopologySave(
+    id: string,
+    input: SaveRangeTemplateTopologyInput,
+    currentUser?: AuthenticatedUser,
+  ): Promise<TemplateTopologyPayload> {
+    const existingTemplate = await this.adminRepository.getRangeTemplateById(id);
+
+    if (!existingTemplate) {
+      throw new NotFoundException('Range template not found');
+    }
+
+    if (currentUser) {
+      this.assertTemplateOwnerOrAdmin(existingTemplate, currentUser);
+    }
+
+    return this.normalizeAndValidateTopology(existingTemplate, input, currentUser);
   }
 
   async updateMetadata(
@@ -522,6 +534,21 @@ export class RangeTemplatesService {
       },
       compiledSpec: input.compiledSpec,
     };
+  }
+
+  private async normalizeAndValidateTopology(
+    template: ExistingRangeTemplate,
+    input: TemplateTopologyPayload,
+    currentUser?: AuthenticatedUser,
+  ) {
+    const topology = await this.normalizeTopologyMetadata(input, {
+      name: template.name,
+      slug: template.slug,
+      version: template.version,
+    });
+
+    await this.validateTopologyPayload(topology, currentUser);
+    return topology;
   }
 
   private async getTemplatePlacementDefaults() {

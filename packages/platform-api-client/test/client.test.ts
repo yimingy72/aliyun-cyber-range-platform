@@ -182,6 +182,44 @@ describe('PlatformApiClient', () => {
     ).resolves.toEqual({ id: 'job-1', jobType: 'update' });
   });
 
+  it('sends both instance and template revisions when syncing a template draft', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/ranges/range-1/sync-template');
+      expect(init?.method).toBe('POST');
+      expect(init?.body).toBe(
+        JSON.stringify({
+          expectedDraftRevision: 8,
+          expectedTemplateRevision: 13,
+        }),
+      );
+      expect((init?.headers as Record<string, string>)['x-idempotency-key']).toBe('sync-range-1-revision-8');
+      expect((init?.headers as Record<string, string>)['x-confirmation-id']).toBe('confirm-sync-1');
+
+      return new Response(JSON.stringify({ id: 'template-1', revision: 14 }), { status: 200 });
+    });
+    const client = new PlatformApiClient({
+      baseUrl: 'https://platform.example',
+      token: 'token-1',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      (client as unknown as {
+        syncRangeInstanceTemplate: (
+          id: string,
+          expectedDraftRevision: number,
+          expectedTemplateRevision: number,
+          operation: { idempotencyKey: string; confirmationId: string },
+        ) => Promise<unknown>;
+      }).syncRangeInstanceTemplate(
+        'range-1',
+        8,
+        13,
+        { idempotencyKey: 'sync-range-1-revision-8', confirmationId: 'confirm-sync-1' },
+      ),
+    ).resolves.toEqual({ id: 'template-1', revision: 14 });
+  });
+
   it('finds single instance by flattening lists', async () => {
     const fetchMock = vi.fn(async (input: string) => {
       if (input.endsWith('/admin/instances?view=active')) {

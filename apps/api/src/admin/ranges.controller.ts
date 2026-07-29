@@ -3,6 +3,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post,
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
+import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
 import {
   ApplyRangeInstanceDraftDto,
   CreateRangeInstanceDto,
@@ -144,14 +145,22 @@ export class RangesController {
   }
 
   @Post(':id/sync-template')
-  syncTemplate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() _body: TriggerProvisionJobDto) {
+  syncTemplate(
+    @Req() request: AuthenticatedAdminRequest,
+    @Param('id') id: string,
+    @Body() body: SyncRangeInstanceTemplateDto,
+  ) {
     if (request.authContext.source === 'mcp') {
-      return this.confirmedMcpAction(request, 'range_instance_sync_template', id, { rangeInstanceId: id }, false, async () => {
-        const template = await this.rangeInstancesService.syncTemplate(id, request.adminUser);
+      return this.confirmedMcpAction(request, 'range_instance_sync_template', id, {
+        rangeInstanceId: id,
+        expectedDraftRevision: body.expectedDraftRevision,
+        expectedTemplateRevision: body.expectedTemplateRevision,
+      }, false, async () => {
+        const template = await this.rangeInstancesService.syncTemplate(id, body, request.adminUser);
         return { rangeInstanceId: id, templateId: template.id };
       });
     }
-    return this.rangeInstancesService.syncTemplate(id, request.adminUser);
+    return this.rangeInstancesService.syncTemplate(id, body, request.adminUser);
   }
 
   @Post(':id/nodes/:nodeId/actions/:action')

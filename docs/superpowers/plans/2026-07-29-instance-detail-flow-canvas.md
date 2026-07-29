@@ -52,7 +52,7 @@
 - Modify: `apps/web/components/admin/template-editor/topology-flow-canvas.test.tsx`
 - Modify: `apps/web/components/admin/template-editor/topology-flow-resource-rail.test.tsx`
 
-- [ ] **Step 1: 写出失败的画布能力测试**
+- [x] **Step 1: 写出失败的画布能力测试**
 
 在 `topology-flow-canvas.test.tsx` 增加下列用例：只读画布能选择、平移和全屏，但不渲染连线模式、撤销/重做、自动布局和资源新增；编辑画布仍会提交节点拖动和连线；传入实例全屏选择器时，请求全屏的元素是实例三栏容器。
 
@@ -72,7 +72,7 @@ it('keeps navigation but disables structural mutations in read-only mode', async
 });
 ```
 
-- [ ] **Step 2: 在容器中确认测试为红**
+- [x] **Step 2: 在容器中确认测试为红**
 
 Run:
 
@@ -87,7 +87,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: FAIL，提示 `mode`、`fullscreenTargetSelector` 或只读 DOM 断言尚不存在。
 
-- [ ] **Step 3: 在画布和资源面板实现最小通用能力**
+- [x] **Step 3: 在画布和资源面板实现最小通用能力**
 
 给 `TopologyFlowCanvasProps` 增加：
 
@@ -122,7 +122,7 @@ function readFullscreenTarget() {
 
 只读时隐藏所有会改变图的工具按钮，保留适应视图、全屏和导航图；`Escape` 仍可清除选择。资源面板新增 `disabled?: boolean`，创建按钮设置 `disabled`、`aria-disabled` 并取消 `draggable`，但展开/收起按钮保持可用。
 
-- [ ] **Step 4: 在容器中验证画布与资源面板回归**
+- [x] **Step 4: 在容器中验证画布与资源面板回归**
 
 Run:
 
@@ -137,7 +137,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: PASS，现有编辑画布测试和新增只读/全屏测试全部通过。
 
-- [ ] **Step 5: 提交共享画布能力**
+- [x] **Step 5: 提交共享画布能力**
 
 ```bash
 git add \
@@ -156,7 +156,7 @@ git commit -m "feat(web): support readonly flow canvases"
 - Modify: `apps/web/components/admin/template-editor/template-editor-screen.tsx:1192-1406`
 - Modify: `apps/web/components/admin/template-editor/template-editor-screen.test.tsx`
 
-- [ ] **Step 1: 写出公共编译器的失败测试**
+- [x] **Step 1: 写出公共编译器的失败测试**
 
 测试文件顶部定义 `validGraph`：一个 Router、一个 `10.77.10.0/24` 交换机、一个首网卡绑定该交换机的 ECS，以及指向该 ECS 的 TCP/22 DNAT。定义 `validMetadata` 为模板名、slug、版本、`alibaba_cloud`、`opentofu`、模块路径和 `10.77.0.0/16` 主 VPC。公共函数必须把含 `viewport` 的图传入 `compileTemplateTopology`，返回图、拓扑规格、场景规格、运行规格和编译规格；无 DNAT、多 DNAT 目标、重复公网端口和未连接交换机的 DNAT 目标都必须抛出当前精确错误。
 
@@ -179,7 +179,7 @@ it('derives all topology artifacts from one DNAT entry host', () => {
 });
 ```
 
-- [ ] **Step 2: 在容器中确认公共编译器测试为红**
+- [x] **Step 2: 在容器中确认公共编译器测试为红**
 
 Run:
 
@@ -193,7 +193,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: FAIL，提示 `buildTopologyDraftPayload` 尚未导出。
 
-- [ ] **Step 3: 实现公共 Web 编译适配**
+- [x] **Step 3: 实现公共 Web 编译适配**
 
 在 `topology-draft-payload.ts` 封装运行时共享编译器，而不是复制创建页的产物推导：
 
@@ -219,7 +219,7 @@ export function buildTopologyDraftPayload(input: {
 
 保留创建页已有的镜像、密码、NIC IP 和实例规格 UI 校验；通过这些校验后，用公共函数一次性得到 `topologyGraph`、`topologySpec`、`scenarioTemplateSpec`、`compiledProvisionSpec` 和 `compiledSpec`。删除 `buildValidatedDraftPayload` 内部重复的四份产物构建，不改变创建页的状态提示文本。
 
-- [ ] **Step 4: 在容器中验证公共编译器与创建页**
+- [x] **Step 4: 在容器中验证公共编译器与创建页**
 
 Run:
 
@@ -236,7 +236,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: PASS，创建页现有 DNAT、校验、检测保存和发布测试保持通过。
 
-- [ ] **Step 5: 提交公共草稿编译器**
+- [x] **Step 5: 提交公共草稿编译器**
 
 ```bash
 git add \
@@ -271,7 +271,7 @@ git commit -m "refactor(web): share topology draft compilation"
 - Modify: `apps/mcp/test/read-tools.spec.ts`
 - Modify: `apps/api/test/range-instance-draft.e2e-spec.ts`
 
-- [ ] **Step 1: 为 API 写出失败的规范化与拒绝测试**
+- [x] **Step 1: 为 API 写出失败的规范化与拒绝测试**
 
 在 `range-instance-draft.e2e-spec.ts` 定义 `validGraph`：一个 Router、一个 `10.77.10.0/24` 的 DMZ 交换机、一个首网卡绑定 DMZ 的 ECS，DNAT `22 -> 22/tcp` 唯一指向该 ECS。用 `compileTemplateTopology(validGraph, metadata)` 生成 `validDraftPayload` 的 `draftTopologyGraph`、`draftTopologySpec`、`draftScenarioTemplateSpec` 和 `draftCompiledProvisionSpec`，并覆盖两个关键契约：
 
@@ -315,7 +315,7 @@ it('rejects a stale draft revision without overwriting the newer draft', async (
 });
 ```
 
-- [ ] **Step 2: 在容器中确认 API 测试为红**
+- [x] **Step 2: 在容器中确认 API 测试为红**
 
 Run:
 
@@ -328,7 +328,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
 
 Expected: FAIL，现有浅校验会接受不一致产物，也没有草稿修订冲突保护。
 
-- [ ] **Step 3: 增加草稿修订存储并用运行时编译器替换浅校验**
+- [x] **Step 3: 增加草稿修订存储并用运行时编译器替换浅校验**
 
 为 `scenario-runtime` 创建可执行的构建入口。`packages/scenario-runtime/tsconfig.build.json`：
 
@@ -457,7 +457,7 @@ MCP 的 `range_instance_topology_save` 在编译前读取实例，传入读取�
 `draftTopologySpec` 和修订号；本任务只改保存契约，apply 与模板回写的 MCP 参数在后续任务
 对应接口落地时调整。
 
-- [ ] **Step 4: 在容器中验证 API 草稿与应用回归**
+- [x] **Step 4: 在容器中验证 API 草稿与应用回归**
 
 Run:
 
@@ -474,7 +474,7 @@ docker compose run --rm --no-deps mcp \
 
 Expected: PASS，合法草稿被规范化，图/产物不一致和非法 DNAT 均被拒绝，旧草稿修订不会覆盖新草稿。
 
-- [ ] **Step 5: 提交 API 草稿强校验**
+- [x] **Step 5: 提交 API 草稿强校验**
 
 ```bash
 git add \
@@ -522,7 +522,7 @@ git commit -m "feat(api): validate instance topology drafts"
 - Modify: `apps/mcp/src/tools/ranges.ts`
 - Modify: `apps/mcp/test/read-tools.spec.ts`
 
-- [ ] **Step 1: 写出应用任务快照与并发的失败测试**
+- [x] **Step 1: 写出应用任务快照与并发的失败测试**
 
 在 `range-instance-apply.e2e-spec.ts` 覆盖下列契约：
 
@@ -556,7 +556,7 @@ it('rejects an outdated apply revision without creating an update job', async ()
 `draftRevision + 1` 的新草稿，再放行 provisioner。断言 worker 向 provisioner 传入的是
 job 快照而非实例的新草稿；任务成功后运行态等于快照、较新的实例草稿仍存在且未被清空。
 
-- [ ] **Step 2: 在容器中确认快照测试为红**
+- [x] **Step 2: 在容器中确认快照测试为红**
 
 Run:
 
@@ -571,7 +571,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
 Expected: FAIL，现有 apply 不接收草稿修订，也没有将草稿冻结到任务；worker 会读取可变的
 `instance.draft*` 字段。
 
-- [ ] **Step 3: 持久化任务快照并只消费它**
+- [x] **Step 3: 持久化任务快照并只消费它**
 
 新增 DTO：
 
@@ -628,7 +628,7 @@ provisioner 传入快照中的 `templateModulePath`、`topologyGraph`、`topolog
 `draftTopologyGraph`、`draftTopologySpec`、`draftScenarioTemplateSpec`、
 `draftCompiledProvisionSpec`、草稿操作者与时间。若修订更高，保留新草稿。
 
-- [ ] **Step 4: 在容器中验证应用快照与 worker 并发回归**
+- [x] **Step 4: 在容器中验证应用快照与 worker 并发回归**
 
 Run:
 
@@ -648,7 +648,7 @@ docker compose run --rm --no-deps mcp \
 Expected: PASS，过期修订不创建任务，任务始终消费自身快照，旧任务完成不会覆盖或删除排队期间
 保存的新草稿。
 
-- [ ] **Step 5: 提交应用任务快照**
+- [x] **Step 5: 提交应用任务快照**
 
 ```bash
 git add \
@@ -690,7 +690,7 @@ git commit -m "feat(ranges): snapshot topology updates"
 - Modify: `apps/mcp/test/read-tools.spec.ts`
 - Modify: `apps/api/test/range-instance-apply.e2e-spec.ts`
 
-- [ ] **Step 1: 写出模板回写的失败 API 测试**
+- [x] **Step 1: 写出模板回写的失败 API 测试**
 
 为 `POST /admin/ranges/:id/sync-template` 增加三项测试：
 
@@ -738,7 +738,7 @@ it('updates only the source template current draft and keeps its published versi
 `403`；在草稿读取后保存了更高修订时，旧 `expectedDraftRevision` 返回 `409`，模板修订和
 当前草稿均不改变。
 
-- [ ] **Step 2: 在容器中确认模板回写测试为红**
+- [x] **Step 2: 在容器中确认模板回写测试为红**
 
 Run:
 
@@ -751,7 +751,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
 
 Expected: FAIL，现有接口忽略请求体、允许运行态回退，且没有用户加载时的模板修订冲突保护。
 
-- [ ] **Step 3: 扩展现有回写路由和服务**
+- [x] **Step 3: 扩展现有回写路由和服务**
 
 新增 DTO：
 
@@ -808,7 +808,7 @@ if (template.revision !== input.expectedTemplateRevision) {
 MCP 的 `range_instance_sync_template` 先保存草稿，再用保存结果的 `draftRevision` 和详情读取的
 `sourceTemplateRevision` 调用回写接口；为这一序列补充 `read-tools.spec.ts` 断言。
 
-- [ ] **Step 4: 在容器中验证模板回写和平台客户端契约**
+- [x] **Step 4: 在容器中验证模板回写和平台客户端契约**
 
 Run:
 

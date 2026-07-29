@@ -104,7 +104,7 @@ export const rangeTools: ToolDefinition[] = [
     outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
-      const saved = await saveRangeInstanceTopology(context, input);
+      const { saved } = await saveRangeInstanceTopology(context, input);
       return redactRangeInstanceSecrets(saved);
     },
   },
@@ -118,7 +118,7 @@ export const rangeTools: ToolDefinition[] = [
     outputSchema: actionOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
-      const saved = await saveRangeInstanceTopology(context, input);
+      const { saved } = await saveRangeInstanceTopology(context, input);
       const expectedDraftRevision = readAppliedDraftRevision(saved.draftRevision);
       return context.client.applyRangeInstanceDraft(
         input.rangeInstanceId,
@@ -137,9 +137,14 @@ export const rangeTools: ToolDefinition[] = [
     outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as RangeTopologyChangeInput;
-      await saveRangeInstanceTopology(context, input);
+      const { saved, sourceTemplateRevision } = await saveRangeInstanceTopology(context, input);
       return withResourceId(
-        await context.client.syncRangeInstanceTemplate(input.rangeInstanceId, operation(input)),
+        await context.client.syncRangeInstanceTemplate(
+          input.rangeInstanceId,
+          readAppliedDraftRevision(saved.draftRevision),
+          readSourceTemplateRevision(sourceTemplateRevision),
+          operation(input),
+        ),
         'templateId',
       );
     },
@@ -262,7 +267,7 @@ async function saveRangeInstanceTopology(
   };
   const compiled = compileTemplateTopology(input.topologyGraph, metadata);
 
-  return context.client.saveRangeInstanceDraft(
+  const saved = await context.client.saveRangeInstanceDraft(
     input.rangeInstanceId,
     {
       draftTopologyGraph: compiled.topologyGraph,
@@ -273,6 +278,11 @@ async function saveRangeInstanceTopology(
     },
     operation(input),
   );
+
+  return {
+    saved,
+    sourceTemplateRevision: instance.sourceTemplateRevision,
+  };
 }
 
 function metadataFromRangeInstance(instance: Record<string, unknown>): TemplateAuthoringMetadata {
@@ -320,6 +330,14 @@ function readDraftRevision(value: unknown) {
 function readAppliedDraftRevision(value: unknown) {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
     throw new Error('保存编排实例草稿后未返回有效版本号，无法应用变更');
+  }
+
+  return value;
+}
+
+function readSourceTemplateRevision(value: unknown) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error('编排实例详情未返回有效来源模板版本号，无法同步模板');
   }
 
   return value;

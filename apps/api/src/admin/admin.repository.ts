@@ -900,6 +900,13 @@ export type ApplyRangeInstanceDraftInput = {
   topologySnapshot: ProvisionJobTopologySnapshot;
 };
 
+export type SyncRangeInstanceDraftToTemplateInput = {
+  rangeInstanceId: string;
+  expectedDraftRevision: number;
+  expectedTemplateRevision: number;
+  topology: SaveRangeTemplateTopologyInput;
+};
+
 export type CompleteRangeInstanceDraftApplyInput = Pick<
   UpdateRangeInstanceInput,
   | 'runtimeTopologyGraph'
@@ -991,6 +998,7 @@ export interface AdminRepository {
   ): Promise<RangeInstanceRecord | null>;
   discardRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceRecord | null>;
   applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput): Promise<ProvisionJobRecord | null>;
+  syncRangeInstanceDraftToTemplate(input: SyncRangeInstanceDraftToTemplateInput): Promise<RangeTemplateRecord | null>;
   completeRangeInstanceDraftApply(
     id: string,
     input: CompleteRangeInstanceDraftApplyInput,
