@@ -490,8 +490,10 @@ model RangeInstance {
   runtimeCompiledProvisionSpec Json?
   runtimeCredentials           Json?
   draftTopologyGraph           Json?
+  draftTopologySpec            Json?
   draftScenarioTemplateSpec    Json?
   draftCompiledProvisionSpec   Json?
+  draftRevision                Int                 @default(0)
   draftUpdatedBy               String?
   draftUpdatedAt               DateTime?
   status                       RangeInstanceStatus @default(draft)

@@ -276,8 +276,10 @@ export async function saveRangeInstanceDraft(
   id: string,
   payload: {
     draftTopologyGraph: Record<string, unknown>;
+    draftTopologySpec: Record<string, unknown>;
     draftScenarioTemplateSpec: Record<string, unknown>;
     draftCompiledProvisionSpec: Record<string, unknown>;
+    expectedDraftRevision: number;
   },
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/draft`, {

@@ -1,10 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  compileTopologyGraph,
+  type CompiledTopologySpec,
+  type ScenarioGraphDraft,
+  type TemplateAuthoringMetadata,
+  type TemplateNode,
+} from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 import {
   ADMIN_REPOSITORY,
   AdminRepository,
+  RangeInstanceRecord,
   CreateRangeInstanceInput,
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
@@ -22,7 +30,6 @@ import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { SystemConfigService } from './system-config.service';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
-import { compileTopologyGraph } from '../../../web/lib/template-compiler';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -287,15 +294,24 @@ export class RangeInstancesService {
       throw new ConflictException('Only running instances can save draft changes');
     }
 
-    validateRangeInstanceDraftPayload(input);
-
-    const updated = await this.adminRepository.updateRangeInstance(id, {
-      draftTopologyGraph: input.draftTopologyGraph,
-      draftScenarioTemplateSpec: input.draftScenarioTemplateSpec,
-      draftCompiledProvisionSpec: input.draftCompiledProvisionSpec,
+    const metadata = await this.resolveDraftCompilationMetadata(instance);
+    const compiled = validateRangeInstanceDraftPayload(input, metadata);
+    const viewport = this.readDraftViewport(input.draftTopologyGraph);
+    const updated = await this.adminRepository.saveRangeInstanceDraft(id, input.expectedDraftRevision, {
+      draftTopologyGraph: {
+        ...compiled.topologyGraph,
+        ...(viewport ? { viewport } : {}),
+      },
+      draftTopologySpec: compiled.topologySpec,
+      draftScenarioTemplateSpec: compiled.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: compiled.compiledProvisionSpec,
       draftUpdatedBy: currentUser?.id ?? null,
       draftUpdatedAt: new Date(),
     });
+
+    if (!updated) {
+      throw new ConflictException('Range instance draft has changed; refresh before saving again');
+    }
 
     const hydrated = await this.attachRecoverySummary(updated);
 
@@ -317,13 +333,11 @@ export class RangeInstancesService {
       this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
-    const updated = await this.adminRepository.updateRangeInstance(id, {
-      draftTopologyGraph: null,
-      draftScenarioTemplateSpec: null,
-      draftCompiledProvisionSpec: null,
-      draftUpdatedBy: null,
-      draftUpdatedAt: null,
-    });
+    const updated = await this.adminRepository.discardRangeInstanceDraft(id, instance.draftRevision ?? 0);
+
+    if (!updated) {
+      throw new ConflictException('Range instance draft has changed; refresh before discarding it');
+    }
 
     const hydrated = await this.attachRecoverySummary(updated);
 
@@ -938,10 +952,96 @@ export class RangeInstancesService {
       return null;
     }
 
-    return compileTopologyGraph({
-      topologySpec,
-      nodes: rawNodes as Parameters<typeof compileTopologyGraph>[0]['nodes'],
-    });
+    return compileTopologyGraph(
+      rawNodes as TemplateNode[],
+      topologySpec as CompiledTopologySpec,
+    );
+  }
+
+  private async resolveDraftCompilationMetadata(instance: RangeInstanceRecord): Promise<TemplateAuthoringMetadata> {
+    const scenarioTemplateSpec = this.readRecord(instance.runtimeScenarioTemplateSpec);
+    const metadata = this.readRecord(scenarioTemplateSpec?.metadata);
+    const runtimeTopology = this.readRecord(scenarioTemplateSpec?.topology);
+    const compiledProvisionTopology = this.readRecord(
+      this.readRecord(instance.runtimeCompiledProvisionSpec)?.topology,
+    );
+    const sourceTemplateVersion = instance.sourceTemplateVersionId
+      ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
+      : null;
+    const sourceTemplate = instance.templateId
+      ? await this.adminRepository.getRangeTemplateById(instance.templateId)
+      : null;
+    const name = this.readNonEmptyString(metadata?.name) ?? this.readNonEmptyString(instance.name);
+    const slug =
+      this.readNonEmptyString(metadata?.slug) ??
+      this.readNonEmptyString(instance.templateSlugSnapshot) ??
+      this.readNonEmptyString(sourceTemplate?.slug);
+    const version =
+      this.readNonEmptyString(metadata?.version) ??
+      this.readNonEmptyString(instance.templateVersionSnapshot) ??
+      this.readNonEmptyString(sourceTemplate?.version);
+    const modulePathOrRef =
+      this.readNonEmptyString(instance.templateModulePathSnapshot) ??
+      this.readNonEmptyString(sourceTemplateVersion?.modulePathOrRef) ??
+      this.readNonEmptyString(sourceTemplate?.modulePathOrRef);
+    const primaryVpcCidr =
+      this.readNonEmptyString(runtimeTopology?.vpcCidr) ??
+      this.readNonEmptyString(compiledProvisionTopology?.vpcCidr);
+    const cloudProvider = metadata?.cloudProvider === 'alibaba_cloud'
+      ? 'alibaba_cloud'
+      : sourceTemplate?.cloudProvider === 'alibaba_cloud'
+        ? 'alibaba_cloud'
+        : null;
+    const iacType = metadata?.iacType === 'terraform' || metadata?.iacType === 'opentofu'
+      ? metadata.iacType
+      : sourceTemplate?.iacType === 'terraform' || sourceTemplate?.iacType === 'opentofu'
+        ? sourceTemplate.iacType
+        : null;
+    const description = this.readNonEmptyString(metadata?.description);
+    const defaultRegion = this.readNonEmptyString(runtimeTopology?.defaultRegion);
+    const defaultZoneId = this.readNonEmptyString(runtimeTopology?.defaultZoneId);
+
+    if (!name || !slug || !version || !modulePathOrRef || !primaryVpcCidr || !cloudProvider || !iacType) {
+      throw new ConflictException('Range instance runtime metadata is incomplete; refresh the instance before saving a draft');
+    }
+
+    return {
+      name,
+      slug,
+      version,
+      cloudProvider,
+      iacType,
+      modulePathOrRef,
+      primaryVpcCidr,
+      ...(description ? { description } : {}),
+      ...(defaultRegion ? { defaultRegion } : {}),
+      ...(defaultZoneId ? { defaultZoneId } : {}),
+    };
+  }
+
+  private readNonEmptyString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private readDraftViewport(value: Record<string, unknown>) {
+    const viewport = this.readRecord(value.viewport);
+    const x = viewport?.x;
+    const y = viewport?.y;
+    const zoom = viewport?.zoom;
+
+    if (
+      typeof x !== 'number' ||
+      typeof y !== 'number' ||
+      typeof zoom !== 'number' ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(zoom) ||
+      zoom <= 0
+    ) {
+      return null;
+    }
+
+    return { x, y, zoom };
   }
 
   private readRecord(value: unknown): Record<string, unknown> | null {

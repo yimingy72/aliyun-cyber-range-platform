@@ -448,6 +448,7 @@ describe('RangeInstanceDetailScreen', () => {
       id: 'range-1',
       name: '攻防实例-一号',
       status: 'running',
+      draftRevision: 0,
       createdBy: 'admin',
       templateNameSnapshot: '浏览器验证模板',
       createdAt: '2026-07-06T10:00:00.000Z',
@@ -509,8 +510,9 @@ describe('RangeInstanceDetailScreen', () => {
         'http://localhost:3001',
         'dev-admin-token',
         'range-1',
-        expect.not.objectContaining({
-          draftUpdatedBy: expect.anything(),
+        expect.objectContaining({
+          draftTopologySpec: expect.any(Object),
+          expectedDraftRevision: 0,
         }),
       ),
     );

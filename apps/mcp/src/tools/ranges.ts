@@ -261,8 +261,10 @@ async function saveRangeInstanceTopology(
     input.rangeInstanceId,
     {
       draftTopologyGraph: compiled.topologyGraph,
+      draftTopologySpec: compiled.topologySpec,
       draftScenarioTemplateSpec: compiled.scenarioTemplateSpec,
       draftCompiledProvisionSpec: compiled.compiledProvisionSpec,
+      expectedDraftRevision: readDraftRevision(instance.draftRevision),
     },
     operation(input),
   );
@@ -304,6 +306,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readDraftRevision(value: unknown) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 function withResourceId(value: unknown, resultIdField: 'rangeInstanceId' | 'templateId') {

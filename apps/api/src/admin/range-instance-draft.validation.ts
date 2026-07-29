@@ -1,13 +1,25 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { BadRequestException } from '@nestjs/common';
-import { isAlibabaCloudPortRange } from '../provisioning/alibaba-cloud-port-range';
+import {
+  compileTemplateTopology,
+  type CompiledTemplatePayload,
+  type ScenarioGraphDraft,
+  type TemplateAuthoringMetadata,
+} from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 export function validateRangeInstanceDraftPayload(input: {
   draftTopologyGraph: Record<string, unknown>;
+  draftTopologySpec: Record<string, unknown>;
   draftScenarioTemplateSpec: Record<string, unknown>;
   draftCompiledProvisionSpec: Record<string, unknown>;
-}) {
+}, metadata: TemplateAuthoringMetadata): CompiledTemplatePayload {
   if (!isPlainObject(input.draftTopologyGraph)) {
     throw new BadRequestException('draftTopologyGraph must be a plain object');
+  }
+
+  if (!isPlainObject(input.draftTopologySpec)) {
+    throw new BadRequestException('draftTopologySpec must be a plain object');
   }
 
   if (!isPlainObject(input.draftScenarioTemplateSpec)) {
@@ -24,69 +36,43 @@ export function validateRangeInstanceDraftPayload(input: {
     throw new BadRequestException('draftTopologyGraph.nodes must be an array');
   }
 
-  for (const value of nodes) {
-    if (!isPlainObject(value)) {
-      continue;
-    }
+  let compiled: CompiledTemplatePayload;
 
-    if (value.kind === 'ecs') {
-      assertEcsPrimaryIpIsSynchronized(value);
-      assertNetworkRulePortRanges(value.nics, '安全组', 'securityGroupRules');
-      assertNetworkRulePortRanges(value.portGroups, '端口组');
-    }
-
-    if (value.kind === 'switch') {
-      assertNetworkRulePortRanges(value.aclRules, 'ACL');
-    }
+  try {
+    compiled = compileTemplateTopology(input.draftTopologyGraph as ScenarioGraphDraft, metadata);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid range instance topology draft';
+    throw new BadRequestException(message);
   }
+
+  const canonicalCompiled: CompiledTemplatePayload = {
+    ...compiled,
+    topologyGraph: toJsonRecord(compiled.topologyGraph) as ScenarioGraphDraft,
+    topologySpec: toJsonRecord(compiled.topologySpec),
+    scenarioTemplateSpec: toJsonRecord(compiled.scenarioTemplateSpec),
+    compiledProvisionSpec: toJsonRecord(compiled.compiledProvisionSpec),
+    compiledSpec: toJsonRecord(compiled.compiledSpec),
+  };
+
+  if (!isDeepStrictEqual(input.draftTopologySpec, canonicalCompiled.topologySpec)) {
+    throw new BadRequestException('draftTopologySpec does not match draftTopologyGraph');
+  }
+
+  if (!isDeepStrictEqual(input.draftScenarioTemplateSpec, canonicalCompiled.scenarioTemplateSpec)) {
+    throw new BadRequestException('draftScenarioTemplateSpec does not match draftTopologyGraph');
+  }
+
+  if (!isDeepStrictEqual(input.draftCompiledProvisionSpec, canonicalCompiled.compiledProvisionSpec)) {
+    throw new BadRequestException('draftCompiledProvisionSpec does not match draftTopologyGraph');
+  }
+
+  return canonicalCompiled;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function assertEcsPrimaryIpIsSynchronized(node: Record<string, unknown>) {
-  const nics = node.nics;
-  const primaryPrivateIp = typeof node.privateIp === 'string' ? node.privateIp.trim() : '';
-
-  if (!Array.isArray(nics) || !isPlainObject(nics[0])) {
-    throw new BadRequestException(`ECS ${String(node.id ?? '')} must include a primary NIC`);
-  }
-
-  const nicPrivateIp = typeof nics[0].privateIp === 'string' ? nics[0].privateIp.trim() : '';
-
-  if (!primaryPrivateIp || primaryPrivateIp !== nicPrivateIp) {
-    throw new BadRequestException(`ECS ${String(node.id ?? '')} primary private IP must match its first NIC`);
-  }
-}
-
-function assertNetworkRulePortRanges(value: unknown, ruleType: string, nestedRulesKey?: string) {
-  if (!Array.isArray(value)) {
-    return;
-  }
-
-  for (const item of value) {
-    if (!isPlainObject(item)) {
-      continue;
-    }
-
-    const rules = nestedRulesKey ? item[nestedRulesKey] : [item];
-
-    if (!Array.isArray(rules)) {
-      continue;
-    }
-
-    for (const rule of rules) {
-      if (!isPlainObject(rule)) {
-        continue;
-      }
-
-      const portRange = typeof rule.portRange === 'string' ? rule.portRange : '';
-      const protocol = typeof rule.protocol === 'string' ? rule.protocol : '';
-
-      if (!isAlibabaCloudPortRange(portRange, protocol)) {
-        throw new BadRequestException(`${ruleType} port range is invalid: ${String(rule.key ?? '')}`);
-      }
-    }
-  }
+function toJsonRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }

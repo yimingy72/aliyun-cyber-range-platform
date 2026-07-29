@@ -44,7 +44,7 @@ export type CompiledTemplatePayload = {
   compiledSpec: Record<string, unknown>;
 };
 
-type CompiledTopologySpec = {
+export type CompiledTopologySpec = {
   vpcCidr: string;
   networkZones: Array<{ key: string }>;
   hosts: Array<{ key: string }>;
@@ -135,7 +135,7 @@ export function compileTemplateTopology(
   };
 }
 
-function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopologySpec) {
+export function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopologySpec) {
   const graphNodes: GraphNode[] = nodes.map((node) => {
     if (node.kind !== 'router' && node.kind !== 'switch' && node.kind !== 'ecs') {
       throw new Error(`Unsupported template node kind: ${String((node as { kind?: unknown }).kind)}`);

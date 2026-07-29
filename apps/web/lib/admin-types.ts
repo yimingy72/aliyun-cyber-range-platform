@@ -263,8 +263,10 @@ export type RangeInstance = {
   runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
   runtimeCredentials?: RangeRuntimeCredentials | null;
   draftTopologyGraph?: Record<string, unknown> | null;
+  draftTopologySpec?: Record<string, unknown> | null;
   draftScenarioTemplateSpec?: Record<string, unknown> | null;
   draftCompiledProvisionSpec?: Record<string, unknown> | null;
+  draftRevision?: number;
   draftUpdatedBy?: string | null;
   draftUpdatedAt?: string | null;
   lastJobId?: string | null;

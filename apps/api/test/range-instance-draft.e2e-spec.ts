@@ -1,5 +1,10 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import {
+  compileTemplateTopology,
+  type ScenarioGraphDraft,
+  type TemplateAuthoringMetadata,
+} from '@aliyun-cyber-range/scenario-runtime';
 import request from 'supertest';
 
 import { hashPassword } from '../src/admin/admin-user-auth';
@@ -26,6 +31,106 @@ describe('Range instance draft API', () => {
     username: 'draft-user',
     password: 'DraftUser123!',
   };
+  const draftMetadata: TemplateAuthoringMetadata = {
+    name: 'Draft Template',
+    slug: 'draft-template',
+    version: 'v1',
+    cloudProvider: 'alibaba_cloud',
+    iacType: 'opentofu',
+    modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+    primaryVpcCidr: '10.77.0.0/16',
+  };
+  const validGraph: ScenarioGraphDraft & {
+    viewport: { x: number; y: number; zoom: number };
+  } = {
+    schemaVersion: '2.0.0',
+    viewport: { x: 24, y: 48, zoom: 1 },
+    nodes: [
+      {
+        id: 'router-main',
+        kind: 'router',
+        label: '主 VPC',
+        routeRole: 'vpc',
+        egressType: 'none',
+        bindEip: false,
+      },
+      {
+        id: 'switch-dmz',
+        kind: 'switch',
+        label: 'DMZ',
+        zoneKey: 'dmz',
+        cidr: '10.77.10.0/24',
+        purpose: 'public-entry',
+        aclRules: [],
+        nat: {
+          snatEnabled: false,
+          dnatMappings: [
+            {
+              key: 'entry-ssh',
+              targetHostId: 'ecs-entry',
+              externalPort: 22,
+              internalPort: 22,
+              protocol: 'tcp',
+            },
+          ],
+        },
+      },
+      {
+        id: 'ecs-entry',
+        kind: 'ecs',
+        label: '入口 ECS',
+        zoneKey: 'dmz',
+        role: 'entry',
+        privateIp: '10.77.10.10',
+        exposePublic: false,
+        image: 'img-entry',
+        imageId: 'img-entry',
+        platformImageAssetId: 'asset-entry',
+        dnatMappings: [],
+        networkInterfaces: [],
+        portGroups: [],
+        initScript: '',
+        imageStrategy: { mode: 'fixed', imageId: 'img-entry' },
+        instanceTypeStrategy: { mode: 'auto' },
+        nics: [
+          {
+            id: 'nic-entry',
+            switchId: 'switch-dmz',
+            privateIp: '10.77.10.10',
+            secondaryIps: [],
+            securityGroupRules: [],
+          },
+        ],
+      },
+    ],
+    edges: [
+      {
+        id: 'router-to-switch',
+        fromNodeId: 'router-main',
+        toNodeId: 'switch-dmz',
+        relationType: 'manual',
+      },
+      {
+        id: 'switch-to-entry',
+        fromNodeId: 'switch-dmz',
+        toNodeId: 'ecs-entry',
+        relationType: 'manual',
+      },
+    ],
+  };
+  const validDraftPayload = (() => {
+    const compiled = compileTemplateTopology(validGraph, draftMetadata);
+
+    return {
+      draftTopologyGraph: {
+        ...compiled.topologyGraph,
+        viewport: validGraph.viewport,
+      },
+      draftTopologySpec: compiled.topologySpec,
+      draftScenarioTemplateSpec: compiled.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: compiled.compiledProvisionSpec,
+    };
+  })();
 
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
@@ -89,16 +194,14 @@ describe('Range instance draft API', () => {
         edges: [],
       },
       runtimeScenarioTemplateSpec: {
-        metadata: { name: 'checker' },
-        hosts: [
-          {
-            key: 'host-checker',
-            name: 'checker',
-            zoneKey: 'switch-1',
-            role: 'ecs',
-            privateIp: '10.0.0.10',
-          },
-        ],
+        metadata: {
+          name: draftMetadata.name,
+          slug: draftMetadata.slug,
+          version: draftMetadata.version,
+          cloudProvider: draftMetadata.cloudProvider,
+          iacType: draftMetadata.iacType,
+        },
+        topology: { vpcCidr: draftMetadata.primaryVpcCidr },
       },
       runtimeCompiledProvisionSpec: {
         topology: { vpcCidr: '10.77.0.0/16' },
@@ -113,53 +216,78 @@ describe('Range instance draft API', () => {
     await app.close();
   });
 
-  it('saves an instance draft without changing runtime status', async () => {
+  it('saves only server-compiled artifacts for a valid running instance', async () => {
     const response = await request(app.getHttpServer())
       .patch(`/admin/ranges/${instanceId}/draft`)
       .set('authorization', `Bearer ${userToken}`)
-      .send({
-        draftTopologyGraph: {
-          schemaVersion: '1',
-          nodes: [{ id: 'host-checker', kind: 'ecs', data: { label: 'checker-updated' } }],
-          edges: [],
-        },
-        draftScenarioTemplateSpec: {
-          metadata: { name: 'checker' },
-          hosts: [
-            {
-              key: 'host-checker',
-              name: 'checker-updated',
-              zoneKey: 'switch-1',
-              role: 'ecs',
-              privateIp: '10.0.0.10',
-            },
-          ],
-        },
-        draftCompiledProvisionSpec: {
-          topology: { vpcCidr: '10.77.0.0/16' },
-        },
-      })
+      .send({ ...validDraftPayload, expectedDraftRevision: 0 })
       .expect(200);
 
     expect(response.body.status).toBe('running');
-    expect(response.body.draftScenarioTemplateSpec.hosts[0].name).toBe('checker-updated');
+    expect(response.body.draftTopologyGraph.viewport).toEqual({ x: 24, y: 48, zoom: 1 });
+    expect(response.body.draftTopologySpec.publicEntry.hostKey).toBe('ecs-entry');
+    expect(response.body.draftCompiledProvisionSpec.topology.entryHostKey).toBe('ecs-entry');
+    expect(response.body.draftRevision).toBe(1);
     expect(response.body.draftUpdatedBy).toBe(draftUser.id);
 
     const persisted = await repository.getRangeInstanceById(instanceId);
 
     expect(persisted?.draftUpdatedBy).toBe(draftUser.id);
+    expect(persisted?.draftTopologySpec).toEqual(validDraftPayload.draftTopologySpec);
+    expect(persisted?.draftRevision).toBe(1);
   });
 
-  it('discards the saved draft and clears draft fields', async () => {
+  it('rejects artifacts that do not match the graph-derived DNAT entry host', async () => {
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${instanceId}/draft`)
+      .set('authorization', `Bearer ${userToken}`)
+      .send({
+        ...validDraftPayload,
+        expectedDraftRevision: 1,
+        draftCompiledProvisionSpec: {
+          ...validDraftPayload.draftCompiledProvisionSpec,
+          topology: {
+            ...((validDraftPayload.draftCompiledProvisionSpec.topology as Record<string, unknown>) ?? {}),
+            entryHostKey: 'ecs-not-entry',
+          },
+        },
+      })
+      .expect(400);
+
+    const persisted = await repository.getRangeInstanceById(instanceId);
+    expect(persisted?.draftRevision).toBe(1);
+    expect(persisted?.draftCompiledProvisionSpec).toEqual(validDraftPayload.draftCompiledProvisionSpec);
+  });
+
+  it('rejects a stale draft revision without overwriting the newer draft', async () => {
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${instanceId}/draft`)
+      .set('authorization', `Bearer ${userToken}`)
+      .send({ ...validDraftPayload, expectedDraftRevision: 1 })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .patch(`/admin/ranges/${instanceId}/draft`)
+      .set('authorization', `Bearer ${userToken}`)
+      .send({ ...validDraftPayload, expectedDraftRevision: 1 })
+      .expect(409);
+
+    const persisted = await repository.getRangeInstanceById(instanceId);
+    expect(persisted?.draftRevision).toBe(2);
+  });
+
+  it('discards the saved draft and clears every draft artifact', async () => {
     const response = await request(app.getHttpServer())
       .delete(`/admin/ranges/${instanceId}/draft`)
       .set('authorization', `Bearer ${userToken}`)
       .expect(200);
 
     expect(response.body.draftTopologyGraph).toBeNull();
+    expect(response.body.draftTopologySpec).toBeNull();
     expect(response.body.draftScenarioTemplateSpec).toBeNull();
     expect(response.body.draftCompiledProvisionSpec).toBeNull();
     expect(response.body.draftUpdatedBy).toBeNull();
+    expect(response.body.draftRevision).toBe(3);
   });
 
   it('rejects client-sent draftUpdatedBy on draft save requests', async () => {
@@ -167,26 +295,8 @@ describe('Range instance draft API', () => {
       .patch(`/admin/ranges/${instanceId}/draft`)
       .set('authorization', `Bearer ${userToken}`)
       .send({
-        draftTopologyGraph: {
-          schemaVersion: '1',
-          nodes: [{ id: 'host-checker', kind: 'ecs', data: { label: 'checker-updated' } }],
-          edges: [],
-        },
-        draftScenarioTemplateSpec: {
-          metadata: { name: 'checker' },
-          hosts: [
-            {
-              key: 'host-checker',
-              name: 'checker-updated',
-              zoneKey: 'switch-1',
-              role: 'ecs',
-              privateIp: '10.0.0.10',
-            },
-          ],
-        },
-        draftCompiledProvisionSpec: {
-          topology: { vpcCidr: '10.77.0.0/16' },
-        },
+        ...validDraftPayload,
+        expectedDraftRevision: 3,
         draftUpdatedBy: 'malicious-client',
       })
       .expect(400)

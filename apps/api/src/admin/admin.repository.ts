@@ -270,8 +270,10 @@ export type RangeInstanceRecord = {
   runtimeCompiledProvisionSpec: Record<string, unknown> | null;
   runtimeCredentials: RangeRuntimeCredentials | null;
   draftTopologyGraph: Record<string, unknown> | null;
+  draftTopologySpec?: Record<string, unknown> | null;
   draftScenarioTemplateSpec: Record<string, unknown> | null;
   draftCompiledProvisionSpec: Record<string, unknown> | null;
+  draftRevision?: number;
   draftUpdatedBy: string | null;
   draftUpdatedAt: Date | null;
   status: RangeInstanceStatus;
@@ -806,8 +808,10 @@ export type CreateRangeInstanceInput = {
   runtimeCompiledProvisionSpec?: Record<string, unknown> | null;
   runtimeCredentials?: RangeRuntimeCredentials | null;
   draftTopologyGraph?: Record<string, unknown> | null;
+  draftTopologySpec?: Record<string, unknown> | null;
   draftScenarioTemplateSpec?: Record<string, unknown> | null;
   draftCompiledProvisionSpec?: Record<string, unknown> | null;
+  draftRevision?: number;
   draftUpdatedBy?: string | null;
   draftUpdatedAt?: Date | null;
   status?: RangeInstanceStatus;
@@ -835,8 +839,10 @@ export type UpdateRangeInstanceInput = Partial<{
   runtimeCompiledProvisionSpec: Record<string, unknown> | null;
   runtimeCredentials: RangeRuntimeCredentials | null;
   draftTopologyGraph: Record<string, unknown> | null;
+  draftTopologySpec: Record<string, unknown> | null;
   draftScenarioTemplateSpec: Record<string, unknown> | null;
   draftCompiledProvisionSpec: Record<string, unknown> | null;
+  draftRevision: number;
   draftUpdatedBy: string | null;
   draftUpdatedAt: Date | null;
   status: RangeInstanceStatus;
@@ -847,6 +853,21 @@ export type UpdateRangeInstanceInput = Partial<{
   expiresAt: Date | null;
   lastJobId: string | null;
 }>;
+
+export type SaveRangeInstanceDraftInput = Pick<
+  UpdateRangeInstanceInput,
+  | 'draftTopologyGraph'
+  | 'draftTopologySpec'
+  | 'draftScenarioTemplateSpec'
+  | 'draftCompiledProvisionSpec'
+  | 'draftUpdatedBy'
+  | 'draftUpdatedAt'
+> & {
+  draftTopologyGraph: Record<string, unknown>;
+  draftTopologySpec: Record<string, unknown>;
+  draftScenarioTemplateSpec: Record<string, unknown>;
+  draftCompiledProvisionSpec: Record<string, unknown>;
+};
 
 export type CreateProvisionJobInput = {
   rangeInstanceId: string;
@@ -918,6 +939,12 @@ export interface AdminRepository {
   createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord>;
   getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null>;
   updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord>;
+  saveRangeInstanceDraft(
+    id: string,
+    expectedDraftRevision: number,
+    input: SaveRangeInstanceDraftInput,
+  ): Promise<RangeInstanceRecord | null>;
+  discardRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceRecord | null>;
   listProvisionJobs(): Promise<ProvisionJobRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   getProvisionJobById(id: string): Promise<ProvisionJobRecord | null>;

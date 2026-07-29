@@ -36,6 +36,7 @@ import {
   RangeInstanceRecord,
   RangeTemplateRecord,
   RangeTemplateVersionRecord,
+  SaveRangeInstanceDraftInput,
   FindBillingLedgerResourceInput,
   ListBillingAnomaliesFilter,
   ListBillingLineItemsFilter,
@@ -650,8 +651,10 @@ export function createMemoryAdminRepository(): AdminRepository {
         runtimeCompiledProvisionSpec: cloneIfDefined(input.runtimeCompiledProvisionSpec ?? null),
         runtimeCredentials: cloneIfDefined(input.runtimeCredentials ?? null),
         draftTopologyGraph: cloneIfDefined(input.draftTopologyGraph ?? null),
+        draftTopologySpec: cloneIfDefined(input.draftTopologySpec ?? null),
         draftScenarioTemplateSpec: cloneIfDefined(input.draftScenarioTemplateSpec ?? null),
         draftCompiledProvisionSpec: cloneIfDefined(input.draftCompiledProvisionSpec ?? null),
+        draftRevision: input.draftRevision ?? 0,
         draftUpdatedBy: input.draftUpdatedBy ?? null,
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
@@ -705,6 +708,8 @@ export function createMemoryAdminRepository(): AdminRepository {
           input.runtimeCredentials !== undefined ? cloneIfDefined(input.runtimeCredentials) : record.runtimeCredentials,
         draftTopologyGraph:
           input.draftTopologyGraph !== undefined ? cloneIfDefined(input.draftTopologyGraph) : record.draftTopologyGraph,
+        draftTopologySpec:
+          input.draftTopologySpec !== undefined ? cloneIfDefined(input.draftTopologySpec) : record.draftTopologySpec,
         draftScenarioTemplateSpec:
           input.draftScenarioTemplateSpec !== undefined
             ? cloneIfDefined(input.draftScenarioTemplateSpec)
@@ -713,6 +718,7 @@ export function createMemoryAdminRepository(): AdminRepository {
           input.draftCompiledProvisionSpec !== undefined
             ? cloneIfDefined(input.draftCompiledProvisionSpec)
             : record.draftCompiledProvisionSpec,
+        draftRevision: input.draftRevision !== undefined ? input.draftRevision : record.draftRevision,
         draftUpdatedBy: input.draftUpdatedBy !== undefined ? input.draftUpdatedBy : record.draftUpdatedBy,
         draftUpdatedAt: input.draftUpdatedAt !== undefined ? input.draftUpdatedAt : record.draftUpdatedAt,
         status: input.status ?? record.status,
@@ -722,6 +728,46 @@ export function createMemoryAdminRepository(): AdminRepository {
         errorSummary: input.errorSummary !== undefined ? input.errorSummary : record.errorSummary,
         expiresAt: input.expiresAt !== undefined ? input.expiresAt : record.expiresAt,
         lastJobId: input.lastJobId !== undefined ? input.lastJobId : record.lastJobId,
+        updatedAt: now(),
+      });
+
+      return clone(record);
+    },
+    async saveRangeInstanceDraft(id: string, expectedDraftRevision: number, input: SaveRangeInstanceDraftInput) {
+      const record = rangeInstances.find((instance) => instance.id === id);
+
+      if (!record || (record.draftRevision ?? 0) !== expectedDraftRevision) {
+        return null;
+      }
+
+      Object.assign(record, {
+        draftTopologyGraph: cloneIfDefined(input.draftTopologyGraph),
+        draftTopologySpec: cloneIfDefined(input.draftTopologySpec),
+        draftScenarioTemplateSpec: cloneIfDefined(input.draftScenarioTemplateSpec),
+        draftCompiledProvisionSpec: cloneIfDefined(input.draftCompiledProvisionSpec),
+        draftUpdatedBy: input.draftUpdatedBy,
+        draftUpdatedAt: input.draftUpdatedAt,
+        draftRevision: (record.draftRevision ?? 0) + 1,
+        updatedAt: now(),
+      });
+
+      return clone(record);
+    },
+    async discardRangeInstanceDraft(id: string, expectedDraftRevision: number) {
+      const record = rangeInstances.find((instance) => instance.id === id);
+
+      if (!record || (record.draftRevision ?? 0) !== expectedDraftRevision) {
+        return null;
+      }
+
+      Object.assign(record, {
+        draftTopologyGraph: null,
+        draftTopologySpec: null,
+        draftScenarioTemplateSpec: null,
+        draftCompiledProvisionSpec: null,
+        draftUpdatedBy: null,
+        draftUpdatedAt: null,
+        draftRevision: (record.draftRevision ?? 0) + 1,
         updatedAt: now(),
       });
 

@@ -333,6 +333,7 @@ describe('tool registry', () => {
     (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: 'range-1',
       name: 'Web DMZ 练习环境',
+      draftRevision: 7,
       runtimeScenarioTemplateSpec: {
         metadata: {
           name: 'Web DMZ',
@@ -357,6 +358,9 @@ describe('tool registry', () => {
       'range-1',
       expect.objectContaining({
         draftTopologyGraph: authoringGraph,
+        draftTopologySpec: expect.objectContaining({
+          publicEntry: expect.objectContaining({ hostKey: 'ecs-nginx' }),
+        }),
         draftScenarioTemplateSpec: expect.objectContaining({
           metadata: expect.objectContaining({ slug: 'web-dmz' }),
           topology: expect.objectContaining({
@@ -365,6 +369,7 @@ describe('tool registry', () => {
           }),
         }),
         draftCompiledProvisionSpec: expect.any(Object),
+        expectedDraftRevision: 7,
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
@@ -1101,7 +1106,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(68);
+    expect(tools).toHaveLength(69);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

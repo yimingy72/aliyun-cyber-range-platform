@@ -42,6 +42,7 @@ import {
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
+  SaveRangeInstanceDraftInput,
   SingleInstanceBatchRecord,
   SingleInstanceBatchWithInstancesRecord,
   RangeTemplateRecord,
@@ -869,12 +870,16 @@ export class PrismaAdminRepository implements AdminRepository {
         draftTopologyGraph: (input.draftTopologyGraph ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
+        draftTopologySpec: (input.draftTopologySpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
         draftScenarioTemplateSpec: (input.draftScenarioTemplateSpec ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
         draftCompiledProvisionSpec: (input.draftCompiledProvisionSpec ?? null) as
           | Prisma.InputJsonValue
           | Prisma.NullableJsonNullValueInput,
+        draftRevision: input.draftRevision ?? 0,
         draftUpdatedBy: input.draftUpdatedBy ?? null,
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
@@ -961,6 +966,13 @@ export class PrismaAdminRepository implements AdminRepository {
                 | Prisma.NullableJsonNullValueInput,
             }
           : {}),
+        ...(input.draftTopologySpec !== undefined
+          ? {
+              draftTopologySpec: input.draftTopologySpec as
+                | Prisma.InputJsonValue
+                | Prisma.NullableJsonNullValueInput,
+            }
+          : {}),
         ...(input.draftScenarioTemplateSpec !== undefined
           ? {
               draftScenarioTemplateSpec: input.draftScenarioTemplateSpec as
@@ -975,6 +987,7 @@ export class PrismaAdminRepository implements AdminRepository {
                 | Prisma.NullableJsonNullValueInput,
             }
           : {}),
+        ...(input.draftRevision !== undefined ? { draftRevision: input.draftRevision } : {}),
         ...(input.draftUpdatedBy !== undefined ? { draftUpdatedBy: input.draftUpdatedBy } : {}),
         ...(input.draftUpdatedAt !== undefined ? { draftUpdatedAt: input.draftUpdatedAt } : {}),
         ...(input.status ? { status: input.status } : {}),
@@ -996,6 +1009,62 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.lastJobId !== undefined ? { lastJobId: input.lastJobId } : {}),
       },
     }) as Promise<RangeInstanceRecord>;
+  }
+
+  async saveRangeInstanceDraft(
+    id: string,
+    expectedDraftRevision: number,
+    input: SaveRangeInstanceDraftInput,
+  ): Promise<RangeInstanceRecord | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const result = await transaction.rangeInstance.updateMany({
+        where: {
+          id,
+          draftRevision: expectedDraftRevision,
+        },
+        data: {
+          draftTopologyGraph: input.draftTopologyGraph as Prisma.InputJsonValue,
+          draftTopologySpec: input.draftTopologySpec as Prisma.InputJsonValue,
+          draftScenarioTemplateSpec: input.draftScenarioTemplateSpec as Prisma.InputJsonValue,
+          draftCompiledProvisionSpec: input.draftCompiledProvisionSpec as Prisma.InputJsonValue,
+          draftUpdatedBy: input.draftUpdatedBy,
+          draftUpdatedAt: input.draftUpdatedAt,
+          draftRevision: {
+            increment: 1,
+          },
+        },
+      });
+
+      return result.count === 0
+        ? null
+        : transaction.rangeInstance.findUnique({ where: { id } }) as Promise<RangeInstanceRecord | null>;
+    });
+  }
+
+  async discardRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceRecord | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const result = await transaction.rangeInstance.updateMany({
+        where: {
+          id,
+          draftRevision: expectedDraftRevision,
+        },
+        data: {
+          draftTopologyGraph: Prisma.DbNull,
+          draftTopologySpec: Prisma.DbNull,
+          draftScenarioTemplateSpec: Prisma.DbNull,
+          draftCompiledProvisionSpec: Prisma.DbNull,
+          draftUpdatedBy: null,
+          draftUpdatedAt: null,
+          draftRevision: {
+            increment: 1,
+          },
+        },
+      });
+
+      return result.count === 0
+        ? null
+        : transaction.rangeInstance.findUnique({ where: { id } }) as Promise<RangeInstanceRecord | null>;
+    });
   }
 
   async listProvisionJobs(): Promise<ProvisionJobRecord[]> {

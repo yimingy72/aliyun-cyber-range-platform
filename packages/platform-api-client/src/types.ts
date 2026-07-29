@@ -152,8 +152,10 @@ export type LaunchRangeInput = {
 
 export type SaveRangeInstanceDraftInput = {
   draftTopologyGraph: Record<string, unknown>;
+  draftTopologySpec: Record<string, unknown>;
   draftScenarioTemplateSpec: Record<string, unknown>;
   draftCompiledProvisionSpec: Record<string, unknown>;
+  expectedDraftRevision: number;
 };
 
 export type RangeInstanceNodeActionPayload = {

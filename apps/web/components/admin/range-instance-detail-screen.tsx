@@ -4,10 +4,6 @@ import React from 'react';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  buildScenarioTemplateSpecFromTopologyGraph,
-  compileScenarioTemplateSpec,
-} from '@aliyun-cyber-range/scenario-runtime';
 
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -27,10 +23,12 @@ import {
   type ScenarioGraphDraft,
   type TemplateNode,
 } from '../../lib/scenario-graph';
+import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
+import { readTopologyViewport } from './template-editor/topology-flow-adapter';
 import { useAdminSession } from './use-admin-session';
 
 type RangeInstanceDetailScreenProps = {
@@ -762,6 +760,10 @@ export function RangeInstanceDetailScreen({
 
     try {
       const currentSpec = readScenarioTemplateSpec(detail);
+      let nextTopologyGraph = draftGraph;
+      let nextTopologySpec =
+        (detail.draftTopologySpec as Record<string, unknown> | null) ??
+        {};
       let nextScenarioTemplateSpec =
         (detail.draftScenarioTemplateSpec as Record<string, unknown> | null) ??
         (detail.runtimeScenarioTemplateSpec as Record<string, unknown> | null) ??
@@ -782,41 +784,44 @@ export function RangeInstanceDetailScreen({
                 iacType?: 'opentofu' | 'terraform';
               })
             : {};
-        const rebuiltScenarioTemplateSpec = buildScenarioTemplateSpecFromTopologyGraph({
-          topologyGraph: draftGraph as unknown as Parameters<
-            typeof buildScenarioTemplateSpecFromTopologyGraph
-          >[0]['topologyGraph'],
+        const primaryVpcCidr =
+          currentSpec &&
+          currentSpec.topology &&
+          typeof currentSpec.topology === 'object' &&
+          typeof (currentSpec.topology as Record<string, unknown>).vpcCidr === 'string'
+            ? ((currentSpec.topology as Record<string, unknown>).vpcCidr as string)
+            : detail.resourceSummary?.topologySpec?.vpcCidr ?? '10.0.0.0/16';
+        const payload = buildTopologyDraftPayload({
+          graph: draftGraph as unknown as ScenarioGraphDraft,
           metadata: {
             name: metadata.name ?? detail.name ?? 'instance-draft',
             slug: metadata.slug ?? detail.id,
             version: metadata.version ?? 'v1',
             cloudProvider: metadata.cloudProvider ?? 'alibaba_cloud',
             iacType: metadata.iacType ?? 'opentofu',
+            modulePathOrRef: detail.templateModulePathSnapshot ?? 'runtime/range-instance',
+            primaryVpcCidr,
           },
-          defaults: {
-            vpcCidr:
-              currentSpec &&
-              currentSpec.topology &&
-              typeof currentSpec.topology === 'object' &&
-              typeof (currentSpec.topology as Record<string, unknown>).vpcCidr === 'string'
-                ? ((currentSpec.topology as Record<string, unknown>).vpcCidr as string)
-                : detail.resourceSummary?.topologySpec?.vpcCidr ?? '10.0.0.0/16',
-          },
+          viewport: readTopologyViewport(draftGraph.viewport),
         });
-        nextScenarioTemplateSpec = rebuiltScenarioTemplateSpec as unknown as Record<string, unknown>;
-        nextCompiledProvisionSpec = compileScenarioTemplateSpec(rebuiltScenarioTemplateSpec) as unknown as Record<string, unknown>;
+        nextTopologyGraph = payload.topologyGraph;
+        nextTopologySpec = payload.topologySpec;
+        nextScenarioTemplateSpec = payload.scenarioTemplateSpec;
+        nextCompiledProvisionSpec = payload.compiledProvisionSpec;
       } catch {
         // Fall back to the current runtime/draft spec when the draft graph is too incomplete to recompile.
       }
 
       const updated = await saveRangeInstanceDraft(apiBaseUrl, session.token, detail.id, {
-        draftTopologyGraph: draftGraph,
+        draftTopologyGraph: nextTopologyGraph,
+        draftTopologySpec: nextTopologySpec,
         draftScenarioTemplateSpec: nextScenarioTemplateSpec,
         draftCompiledProvisionSpec: nextCompiledProvisionSpec,
+        expectedDraftRevision: detail.draftRevision ?? 0,
       });
 
       setDetail(updated);
-      setDraftGraph((updated.draftTopologyGraph as Record<string, unknown> | null) ?? draftGraph);
+      setDraftGraph((updated.draftTopologyGraph as Record<string, unknown> | null) ?? nextTopologyGraph);
       return updated;
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {

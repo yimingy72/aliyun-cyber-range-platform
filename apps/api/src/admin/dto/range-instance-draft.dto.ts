@@ -1,4 +1,4 @@
-import { IsDefined, IsObject } from 'class-validator';
+import { IsDefined, IsInt, IsObject, Min } from 'class-validator';
 
 export class SaveRangeInstanceDraftDto {
   @IsDefined()
@@ -7,9 +7,17 @@ export class SaveRangeInstanceDraftDto {
 
   @IsDefined()
   @IsObject()
+  draftTopologySpec!: Record<string, unknown>;
+
+  @IsDefined()
+  @IsObject()
   draftScenarioTemplateSpec!: Record<string, unknown>;
 
   @IsDefined()
   @IsObject()
   draftCompiledProvisionSpec!: Record<string, unknown>;
+
+  @IsInt()
+  @Min(0)
+  expectedDraftRevision!: number;
 }
