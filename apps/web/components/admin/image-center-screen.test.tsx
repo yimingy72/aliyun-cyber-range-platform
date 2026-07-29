@@ -713,6 +713,14 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByText('文件会直接上传到当前云账号的私有 OSS Bucket，再由阿里云导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。')).toBeTruthy();
   });
 
+  it('opens the same local image upload form from 平台镜像', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+
+    expect(screen.getByRole('dialog', { name: '上传本地镜像' })).toBeTruthy();
+  });
+
   it('disables image upload when the active cloud account has no custom import Bucket', async () => {
     fetchCloudAccountContextsMock.mockResolvedValue([
       {

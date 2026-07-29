@@ -43,7 +43,7 @@ function SearchField({
   compact?: boolean;
 }) {
   return (
-    <div className={compact ? 'relative w-full sm:w-44' : 'relative w-full sm:max-w-xs'}>
+    <div className={compact ? 'relative w-full sm:w-60' : 'relative w-full sm:max-w-xs'}>
       <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
       <Input
         aria-label={searchLabel}
@@ -87,7 +87,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
                   </TabsTrigger>
                 ))}
               </TabsList>
-              <div className="flex min-w-[6.75rem] justify-end" data-testid="admin-list-toolbar-view-action">
+              <div className="flex w-36 shrink-0 justify-end" data-testid="admin-list-toolbar-view-action">
                 {props.action}
               </div>
             </>
