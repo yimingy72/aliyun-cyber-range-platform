@@ -852,7 +852,7 @@ git commit -m "feat(ranges): protect topology template sync"
 - Create: `apps/web/components/admin/range-instance-topology-workspace.test.tsx`
 - Modify: `apps/web/app/globals.css:4857-4894`
 
-- [ ] **Step 1: 写出实例工作区失败测试**
+- [x] **Step 1: 写出实例工作区失败测试**
 
 新增工作区测试，验证运行中实例渲染共享 Flow 画布和资源面板，历史实例传入 `readonly`，属性面板在运行中实例允许完整拓扑字段编辑，在历史实例禁用字段：
 
@@ -868,7 +868,7 @@ it('renders the shared flow workbench with an editable instance property panel',
 });
 ```
 
-- [ ] **Step 2: 在容器中确认实例工作区测试为红**
+- [x] **Step 2: 在容器中确认实例工作区测试为红**
 
 Run:
 
@@ -882,7 +882,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: FAIL，旧工作区仍渲染 `TemplateCanvas`，且实例详情模式仍禁用部分属性字段。
 
-- [ ] **Step 3: 实现实例三栏 Flow 适配层**
+- [x] **Step 3: 实现实例三栏 Flow 适配层**
 
 将工作区 props 改为完整受控 Flow 接口：
 
@@ -930,7 +930,7 @@ type RangeInstanceTopologyWorkspaceProps = {
 
 移除 `TemplatePropertyPanel` 对 `instanceDetailMode` 的写入限制；保留 `runtimeNodeStatus` 作为显示信息，运行中实例通过 `readOnly={false}` 获得与创建页一致的配置字段。CSS 将实例拓扑区域定义为资源面板、画布和属性面板三栏，并添加 `.range-instance-topology-grid:fullscreen` 规则，使高度、画布和属性面板滚动与创建页全屏规则一致。
 
-- [ ] **Step 4: 在容器中验证实例工作区与共享画布**
+- [x] **Step 4: 在容器中验证实例工作区与共享画布**
 
 Run:
 

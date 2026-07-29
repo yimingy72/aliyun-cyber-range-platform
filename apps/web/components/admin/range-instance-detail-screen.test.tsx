@@ -67,6 +67,11 @@ import { RangeInstanceDetailScreen } from './range-instance-detail-screen';
 
 describe('RangeInstanceDetailScreen', () => {
   beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class ResizeObserver {
+      disconnect() {}
+      observe() {}
+      unobserve() {}
+    });
     writeTextMock.mockReset();
     writeTextMock.mockResolvedValue(undefined);
     Object.assign(navigator, {
@@ -79,6 +84,7 @@ describe('RangeInstanceDetailScreen', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('renders overview, node directory, and topology tabs from the runtime snapshot', async () => {
@@ -243,7 +249,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
   });
 
-  it('renders the topology tab with the shared template canvas and property panel layout', async () => {
+  it('renders the topology tab with the shared flow canvas and editable property panel', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -288,9 +294,10 @@ describe('RangeInstanceDetailScreen', () => {
 
     const topologyButton = await screen.findByRole('tab', { name: '拓扑结构' });
     fireEvent.mouseDown(topologyButton);
-    await waitFor(() => expect(screen.getByText('拓扑画布')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
-    expect(screen.getByText('在线编排')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('topology-flow-workbench')).toBeTruthy());
+    expect(screen.getByTestId('topology-resource-rail')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '连线模式' })).toBeTruthy();
+    fireEvent.click(screen.getByText('ECS 1'));
     expect(screen.getByText('基础信息')).toBeTruthy();
     expect(screen.getByText('ECS')).toBeTruthy();
     expect(screen.getByLabelText('名称')).toBeTruthy();
@@ -303,14 +310,14 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getByLabelText('交换机标识 1')).toBeTruthy();
     expect(screen.getByLabelText('私网 IP 1')).toBeTruthy();
     expect(screen.getByLabelText('辅助 IP 1')).toBeTruthy();
-    expect((screen.getByLabelText('名称') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('主机名') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('镜像名') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('CPU') as HTMLInputElement).disabled).toBe(false);
-    expect((screen.getByLabelText('内存') as HTMLInputElement).disabled).toBe(false);
-    expect((screen.getByLabelText('交换机标识 1') as HTMLSelectElement).disabled).toBe(true);
-    expect((screen.getByLabelText('私网 IP 1') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('辅助 IP 1') as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByLabelText('名称') as HTMLInputElement).matches(':disabled')).toBe(false);
+    expect((screen.getByLabelText('主机名') as HTMLInputElement).matches(':disabled')).toBe(false);
+    expect((screen.getByLabelText('镜像名') as HTMLInputElement).matches(':disabled')).toBe(false);
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).matches(':disabled')).toBe(false);
+    expect((screen.getByLabelText('内存') as HTMLInputElement).matches(':disabled')).toBe(false);
+    expect(screen.getByLabelText('交换机标识 1').matches(':disabled')).toBe(false);
+    expect((screen.getByLabelText('私网 IP 1') as HTMLInputElement).matches(':disabled')).toBe(false);
+    expect((screen.getByLabelText('辅助 IP 1') as HTMLInputElement).matches(':disabled')).toBe(false);
   });
 
   it('masks runtime credentials, exposes the full value on hover, and copies the password', async () => {
@@ -435,7 +442,7 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
-    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.click(screen.getByText('ECS 1'));
     const cpuInput = (await screen.findByLabelText('CPU')) as HTMLInputElement;
     fireEvent.change(cpuInput, { target: { value: '4' } });
 
@@ -579,7 +586,6 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
-    fireEvent.click(screen.getByRole('button', { name: /checker/ }));
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: '更新编排拓扑' }));
 
@@ -705,7 +711,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '拓扑结构' }));
     await waitFor(() => expect(screen.getByLabelText('名称')).toBeTruthy());
-    expect((screen.getByLabelText('名称') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('名称') as HTMLInputElement).matches(':disabled')).toBe(true);
     expect(screen.getByLabelText('CPU').matches(':disabled')).toBe(true);
   });
 });

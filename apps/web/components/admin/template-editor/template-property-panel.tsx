@@ -31,7 +31,6 @@ type TemplatePropertyPanelProps = {
   linkedSwitchIdsByHostId?: Record<string, string[]>;
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void;
   readOnly?: boolean;
-  instanceDetailMode?: boolean;
   runtimeNodeStatus?: string | null;
   onClose?: () => void;
 };
@@ -361,12 +360,9 @@ function renderHostFields(
   linkedSwitchIdsByHostId: Record<string, string[]>,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
   options?: {
-    instanceDetailMode?: boolean;
     runtimeNodeStatus?: string | null;
   },
 ) {
-  const instanceDetailMode = options?.instanceDetailMode ?? false;
-  const isLockedByInstanceDetail = instanceDetailMode;
   const nicItems = selectedNode.nics ?? [];
   const allSwitchOptions = allNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
   const linkedSwitchIds = linkedSwitchIdsByHostId[selectedNode.id] ?? [];
@@ -484,7 +480,6 @@ function renderHostFields(
         <PropertyField label="名称">
           <input
             aria-label="名称"
-            disabled={isLockedByInstanceDetail}
             value={selectedNode.label}
             onChange={(event) =>
               onUpdateNode(selectedNode.id, {
@@ -498,7 +493,6 @@ function renderHostFields(
         <PropertyField label="主机名">
           <input
             aria-label="主机名"
-            disabled={isLockedByInstanceDetail}
             value={selectedNode.hostName ?? ''}
             onChange={(event) =>
               onUpdateNode(selectedNode.id, {
@@ -509,15 +503,11 @@ function renderHostFields(
           />
         </PropertyField>
         <PropertyField label="镜像名" className="template-property-field-full">
-          {instanceDetailMode ? (
-            <input aria-label="镜像名" disabled value={selectedNode.imageName ?? selectedNode.image ?? ''} />
-          ) : (
-            <TemplateImageCombobox
-              selectedImageAsset={selectedPlatformImageAsset}
-              imageOptions={platformImageOptions}
-              onSelectImageAsset={handleSelectPlatformImageAsset}
-            />
-          )}
+          <TemplateImageCombobox
+            selectedImageAsset={selectedPlatformImageAsset}
+            imageOptions={platformImageOptions}
+            onSelectImageAsset={handleSelectPlatformImageAsset}
+          />
         </PropertyField>
         <PropertyField label="CPU">
           <input
@@ -543,21 +533,15 @@ function renderHostFields(
             }
           />
         </PropertyField>
-        {instanceDetailMode ? (
-          <PropertyField label="自定义密码" hint="实例详情页不支持实时修改自定义密码。">
-            <input aria-label="自定义密码" disabled value={selectedNode.customPassword ?? ''} />
-          </PropertyField>
-        ) : (
-          <EcsCustomPasswordField
-            value={selectedNode.customPassword}
-            onChange={(nextValue) =>
-              onUpdateNode(selectedNode.id, {
-                ...selectedNode,
-                customPassword: nextValue,
-              })
-            }
-          />
-        )}
+        <EcsCustomPasswordField
+          value={selectedNode.customPassword}
+          onChange={(nextValue) =>
+            onUpdateNode(selectedNode.id, {
+              ...selectedNode,
+              customPassword: nextValue,
+            })
+          }
+        />
         {instanceTypeAvailability?.warning ? (
           <div className="template-property-warning-note" role="status">
             {instanceTypeAvailability.warning}
@@ -568,7 +552,7 @@ function renderHostFields(
       <PropertyGroup
         title="网卡配置"
         action={
-          <button type="button" className="template-property-inline-button" disabled={instanceDetailMode} onClick={handleAddNic}>
+          <button type="button" className="template-property-inline-button" onClick={handleAddNic}>
             添加网卡
           </button>
         }
@@ -603,7 +587,7 @@ function renderHostFields(
                   <button
                     type="button"
                     className="template-property-inline-button is-danger"
-                    disabled={instanceDetailMode || nicItems.length <= 1}
+                    disabled={nicItems.length <= 1}
                     aria-label={`删除网卡 ${index + 1}`}
                     onClick={() => handleDeleteNic(nic.id)}
                   >
@@ -615,7 +599,6 @@ function renderHostFields(
                 <PropertyField label="交换机标识" className="template-property-field-full">
                   <PropertySelect
                     ariaLabel={`交换机标识 ${index + 1}`}
-                    disabled={instanceDetailMode}
                     value={nic.switchId}
                     emptyOptionLabel="未连接交换机"
                     onValueChange={(nextValue) => {
@@ -637,7 +620,7 @@ function renderHostFields(
                 <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
                   <input
                     aria-label={`私网 IP ${index + 1}`}
-                    disabled={instanceDetailMode || !selectedSwitch}
+                    disabled={!selectedSwitch}
                     value={nic.privateIp}
                     onChange={(event) => {
                       const nextValue = event.target.value.trim();
@@ -819,7 +802,6 @@ function renderHostFields(
         <div className="template-property-field">
           <textarea
             aria-label="初始化脚本"
-            disabled={instanceDetailMode}
             rows={4}
             value={selectedNode.initScript}
             onChange={(event) =>
@@ -1386,7 +1368,6 @@ export function TemplatePropertyPanel({
   linkedSwitchIdsByHostId = {},
   onUpdateNode,
   readOnly = false,
-  instanceDetailMode = false,
   runtimeNodeStatus = null,
   onClose,
 }: TemplatePropertyPanelProps) {
@@ -1427,7 +1408,6 @@ export function TemplatePropertyPanel({
               linkedSwitchIdsByHostId,
               onUpdateNode,
               {
-                instanceDetailMode,
                 runtimeNodeStatus,
               },
             )}
