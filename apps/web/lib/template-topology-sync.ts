@@ -1,3 +1,5 @@
+import { resolveUniqueDnatEntryHost } from '../../../packages/scenario-runtime/src/scenario-graph';
+
 import type { RangeTemplateTopologySpec } from './admin-types';
 import type { TemplateNode } from './scenario-graph';
 
@@ -13,12 +15,10 @@ function formatZoneName(zoneKey: string) {
   return zoneKey.charAt(0).toUpperCase() + zoneKey.slice(1);
 }
 
-function buildExecutionPolicies(nodes: TemplateNode[]) {
-  const publicHost = nodes.find((node) => node.kind === 'ecs' && node.exposePublic);
-
+function buildExecutionPolicies(nodes: TemplateNode[], publicEntryHostId: string) {
   return {
-    allowSshIngress: Boolean(publicHost),
-    allowHttpIngress: Boolean(publicHost),
+    allowSshIngress: Boolean(publicEntryHostId),
+    allowHttpIngress: Boolean(publicEntryHostId),
     enableSnatOnDemand: nodes.some(
       (node) => node.kind === 'switch' && (node.nat?.snatEnabled || node.snatEnabled || node.enableNat),
     ),
@@ -29,7 +29,9 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
   const switchNodes = input.nodes.filter((node): node is Extract<TemplateNode, { kind: 'switch' }> => node.kind === 'switch');
   const hostNodes = input.nodes.filter((node): node is Extract<TemplateNode, { kind: 'ecs' }> => node.kind === 'ecs');
   const switchById = new Map(switchNodes.map((node) => [node.id, node]));
-  const entryHost = hostNodes.find((node) => node.exposePublic || node.role === 'entry');
+  const entryResolution = resolveUniqueDnatEntryHost(input.nodes);
+  const entryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : '';
+  const entryHost = hostNodes.find((node) => node.id === entryHostId);
 
   return {
     vpcCidr: '10.0.0.0/16',
@@ -52,7 +54,7 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
         zoneKey: resolvedSwitch?.zoneKey ?? primaryNic?.zoneKey ?? node.zoneKey,
         role: node.role,
         privateIp: primaryNic?.privateIp ?? node.privateIp,
-        exposePublic: node.exposePublic,
+        exposePublic: node.id === entryHost?.id,
       };
     }),
     publicEntry: {
@@ -64,6 +66,6 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
           ]
         : [],
     },
-    executionPolicies: buildExecutionPolicies(input.nodes),
+    executionPolicies: buildExecutionPolicies(input.nodes, entryHost?.id ?? ''),
   };
 }

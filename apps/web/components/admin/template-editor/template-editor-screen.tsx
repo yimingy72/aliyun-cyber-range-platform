@@ -4,7 +4,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
+import {
+  resolveUniqueDnatEntryHost,
+  validateAliyunEcsPassword,
+} from '@aliyun-cyber-range/scenario-runtime';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -431,15 +434,6 @@ function readStoredPosition(
     x: typeof candidate.x === 'number' ? candidate.x : fallbackPosition.x,
     y: typeof candidate.y === 'number' ? candidate.y : fallbackPosition.y,
   };
-}
-
-function isDraftBlueprintComplete(topologySpec: ReturnType<typeof syncTopologySpecFromNodes>) {
-  return (
-    topologySpec.networkZones.length > 0 &&
-    topologySpec.hosts.length > 0 &&
-    topologySpec.publicEntry.hostKey.trim().length > 0 &&
-    topologySpec.publicEntry.protocols.length > 0
-  );
 }
 
 function readDefaultSwitchCidr(ordinal: number) {
@@ -1327,13 +1321,39 @@ export function TemplateEditorScreen({
       );
     });
 
+    const entryResolution = resolveUniqueDnatEntryHost(normalizedNodes);
+
+    if (entryResolution.kind === 'missing') {
+      validationErrors.push('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
+    } else if (entryResolution.kind === 'multiple') {
+      validationErrors.push('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
+    } else {
+      const entryHost = hostNodes.find((hostNode) => hostNode.id === entryResolution.targetHostId);
+
+      if (!entryHost) {
+        validationErrors.push(`DNAT 目标 ECS 不存在：${entryResolution.targetHostId}`);
+      } else {
+        const entryMapping = switchNodes
+          .flatMap((switchNode) =>
+            (switchNode.nat?.dnatMappings ?? []).map((mapping) => ({
+              switchNode,
+              mapping,
+            })),
+          )
+          .find(({ mapping }) => mapping.targetHostId === entryHost.id);
+
+        if (
+          entryMapping
+          && !(entryHost.nics ?? []).some((nic) => nic.switchId === entryMapping.switchNode.id)
+        ) {
+          validationErrors.push(`DNAT 目标 ECS 未连接到交换机：${entryMapping.mapping.key}`);
+        }
+      }
+    }
+
     const topologySpec = syncTopologySpecFromNodes({
       nodes: normalizedNodes,
     });
-
-    if (!isDraftBlueprintComplete(topologySpec)) {
-      validationErrors.push('缺少可作为入口的 ECS 或基础连线未完成');
-    }
 
     if (validationErrors.length > 0) {
       throw new Error(`拓扑检测未通过：${validationErrors.join('；')}`);
@@ -1660,7 +1680,7 @@ export function TemplateEditorScreen({
               readDefaultNodeLabel('ecs', kindCount),
               'core',
               '',
-              nextIndex === 1,
+              false,
               kindCount,
             );
     const nextPosition =

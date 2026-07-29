@@ -235,6 +235,12 @@ function selectAdminOption(controlName: string, optionName: string) {
   fireEvent.click(screen.getByRole('option', { name: optionName }));
 }
 
+function addDnatEntry(targetHostName = 'ECS 1', mappingIndex = 1) {
+  fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
+  fireEvent.click(screen.getByRole('button', { name: '添加 DNAT 规则' }));
+  selectAdminOption(`DNAT 目标主机 ${mappingIndex}`, targetHostName);
+}
+
 vi.mock('../use-admin-session', () => ({
   useAdminSession: () => ({
     isReady: true,
@@ -939,6 +945,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
@@ -2161,6 +2168,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '4' } });
+    addDnatEntry();
 
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
@@ -2298,6 +2306,7 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
@@ -2436,6 +2445,110 @@ describe('TemplateEditorScreen', () => {
     expect(container.querySelector('.template-editor-screen > p[role="status"]')).toBeNull();
   });
 
+  it('explains that an ECS needs a DNAT mapping instead of accepting a legacy public-entry flag', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(await screen.findByLabelText('镜像名'), {
+      target: { value: 'Ubuntu 24.04 LTS' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
+    selectAdminOption('交换机标识 1', '交换机 1');
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        '拓扑检测未通过：请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('explains that all DNAT mappings must use the same public-entry ECS', async () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(await screen.findByLabelText('镜像名'), {
+      target: { value: 'Ubuntu 24.04 LTS' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
+    selectAdminOption('交换机标识 1', '交换机 1');
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /ECS 2/ }));
+    fireEvent.change(await screen.findByLabelText('镜像名'), {
+      target: { value: 'Ubuntu 24.04 LTS' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
+    selectAdminOption('交换机标识 1', '交换机 1');
+    fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.14' } });
+
+    addDnatEntry('ECS 1', 1);
+    addDnatEntry('ECS 2', 2);
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        /请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。/,
+      ),
+    ).toBeTruthy();
+  });
+
   it('allows topology detection when an ecs hostName is left blank', async () => {
     render(
       <TemplateEditorScreen
@@ -2527,6 +2640,8 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
@@ -3035,6 +3150,8 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'persisted-instance-type-host' } });
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    addDnatEntry();
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     expect(screen.getByDisplayValue('persisted-instance-type-host')).toBeTruthy();
@@ -3118,6 +3235,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.change(screen.getByLabelText('内存'), { target: { value: '8' } });
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'catalog-backed-host' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
@@ -3228,6 +3346,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-1' } });
     selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
@@ -3378,6 +3497,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'new-edge-host' } });
     selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {
@@ -3731,6 +3851,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
@@ -3793,6 +3914,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
     await waitFor(() => {
       expect(validateAndSaveRangeTemplateMock).toHaveBeenCalled();
@@ -3878,6 +4000,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.12' } });
     fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: 'Valid123!' } });
+    addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {

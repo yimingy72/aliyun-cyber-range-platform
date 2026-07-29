@@ -1,3 +1,5 @@
+import { resolveUniqueDnatEntryHost } from '../../../packages/scenario-runtime/src/scenario-graph';
+
 import type { RangeTemplateCompiledSpec, RangeTemplateTopologySpec } from './admin-types';
 import type { EcsTemplateNode, SwitchTemplateNode, TemplateNode } from './scenario-graph';
 
@@ -22,6 +24,8 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
 
     return node as GraphNode;
   });
+  const entryResolution = resolveUniqueDnatEntryHost(graphNodes);
+  const publicEntryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : '';
 
   return {
     schemaVersion: '1.0.0',
@@ -30,7 +34,7 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
         id: node.id,
         type: node.kind === 'ecs' ? 'host' : node.kind,
         provider: 'alibaba_cloud' as const,
-        config: compileNodeConfig(node, graphNodes),
+        config: compileNodeConfig(node, graphNodes, publicEntryHostId),
       })),
       ...buildDerivedNatResources(graphNodes),
     ],
@@ -38,7 +42,7 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
       ? {
           topology: {
             vpcCidr: input.topologySpec.vpcCidr,
-            publicEntryHostKey: input.topologySpec.publicEntry.hostKey,
+            publicEntryHostKey: publicEntryHostId,
             networkZoneKeys: input.topologySpec.networkZones.map((zone) => zone.key),
             hostKeys: input.topologySpec.hosts.map((host) => host.key),
           },
@@ -62,7 +66,11 @@ function resolveHostPlacement(node: EcsTemplateNode, graphNodes: GraphNode[]) {
   };
 }
 
-function compileNodeConfig(node: GraphNode, graphNodes: GraphNode[]): Record<string, unknown> {
+function compileNodeConfig(
+  node: GraphNode,
+  graphNodes: GraphNode[],
+  publicEntryHostId: string,
+): Record<string, unknown> {
   switch (node.kind) {
     case 'ecs': {
       const placement = resolveHostPlacement(node, graphNodes);
@@ -72,7 +80,7 @@ function compileNodeConfig(node: GraphNode, graphNodes: GraphNode[]): Record<str
         zoneKey: placement.zoneKey,
         role: node.role,
         privateIp: placement.privateIp,
-        exposePublic: node.exposePublic,
+        exposePublic: node.id === publicEntryHostId,
         image: node.image,
         platformImageAssetId: node.platformImageAssetId,
         instanceName: node.instanceName,

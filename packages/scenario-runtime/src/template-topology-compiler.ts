@@ -13,6 +13,7 @@ import type {
   SwitchTemplateNode,
   TemplateNode,
 } from './scenario-graph';
+import { resolveUniqueDnatEntryHost } from './scenario-graph';
 import type { ScenarioTemplateMetadata } from './scenario-template-spec';
 import { validateAliyunEcsPassword } from './password-policy';
 
@@ -150,7 +151,7 @@ function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopol
         id: node.id,
         type: node.kind === 'ecs' ? 'host' : node.kind,
         provider: 'alibaba_cloud',
-        config: compileNodeConfig(node, graphNodes),
+        config: compileNodeConfig(node, graphNodes, topologySpec.publicEntry.hostKey),
       })),
       ...buildDerivedNatResources(graphNodes),
     ],
@@ -163,7 +164,11 @@ function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopol
   };
 }
 
-function compileNodeConfig(node: GraphNode, graphNodes: GraphNode[]): Record<string, unknown> {
+function compileNodeConfig(
+  node: GraphNode,
+  graphNodes: GraphNode[],
+  publicEntryHostKey: string,
+): Record<string, unknown> {
   switch (node.kind) {
     case 'ecs': {
       const placement = resolveHostPlacement(node, graphNodes);
@@ -173,7 +178,7 @@ function compileNodeConfig(node: GraphNode, graphNodes: GraphNode[]): Record<str
         zoneKey: placement.zoneKey,
         role: node.role,
         privateIp: placement.privateIp,
-        exposePublic: node.exposePublic,
+        exposePublic: node.id === publicEntryHostKey,
         image: node.image,
         platformImageAssetId: node.platformImageAssetId,
         instanceName: node.instanceName,
@@ -558,20 +563,15 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
     }
   }
 
-  const entryHosts = hosts.filter((host) => host.exposePublic || host.role === 'entry');
-  if (entryHosts.length === 0) {
-    throw new Error('必须指定一个公网入口 ECS');
+  const entryResolution = resolveUniqueDnatEntryHost(graph.nodes);
+  if (entryResolution.kind === 'missing') {
+    throw new Error('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
   }
-  if (entryHosts.length > 1) {
-    throw new Error('只能指定一个公网入口 ECS');
-  }
-  const entryHost = entryHosts[0]!;
-  if (!entryHost.exposePublic) {
-    throw new Error(`公网入口 ECS 必须设置 exposePublic=true：${entryHost.id}`);
+  if (entryResolution.kind === 'multiple') {
+    throw new Error('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
   }
 
   const dnatExternalPorts = new Map<string, string>();
-  let entryDnatCount = 0;
   for (const switchNode of switches) {
     for (const mapping of switchNode.nat?.dnatMappings ?? []) {
       const targetHost = hostById.get(mapping.targetHostId);
@@ -593,17 +593,7 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
       if (!(targetHost.nics ?? []).some((nic) => nic.switchId === switchNode.id)) {
         throw new Error(`DNAT 目标 ECS 未连接到交换机：${mapping.key}`);
       }
-      if (!targetHost.exposePublic) {
-        throw new Error(`DNAT 目标必须是公网入口 ECS：${mapping.key}`);
-      }
-      if (targetHost.id !== entryHost.id) {
-        throw new Error(`DNAT 目标必须是唯一公网入口 ECS：${mapping.key}`);
-      }
-      entryDnatCount += 1;
     }
-  }
-  if (entryDnatCount === 0) {
-    throw new Error(`公网入口 ECS 必须至少配置一条 DNAT：${entryHost.id}`);
   }
 
   const edgeIds = new Set<string>();
