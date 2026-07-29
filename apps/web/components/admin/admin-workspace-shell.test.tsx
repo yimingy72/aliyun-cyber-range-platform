@@ -160,8 +160,10 @@ vi.mock('./use-admin-session', async (importOriginal) => {
 });
 
 import {
+  ADMIN_SESSION_GENERATION_STORAGE_KEY,
   ADMIN_SESSION_STORAGE_KEY,
   clearAdminSession,
+  invalidateAdminSessionForLogout,
   writeAdminSession,
 } from '../../lib/admin-auth-storage';
 import { AdminWorkspaceShell } from './admin-workspace-shell';
@@ -560,6 +562,7 @@ describe('AdminWorkspaceShell', () => {
     fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
 
     expect(window.localStorage.getItem('aliyun-cyber-range-admin-session')).toBeNull();
+    expect(Number(window.localStorage.getItem(ADMIN_SESSION_GENERATION_STORAGE_KEY))).toBeGreaterThan(0);
     expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-state')).toBeNull();
     expect(window.sessionStorage.getItem('aliyun-cyber-range-admin-oidc-code-verifier')).toBeNull();
     expect(assignMock).toHaveBeenCalledTimes(1);
@@ -661,9 +664,7 @@ describe('AdminWorkspaceShell', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    const oldValue = storage.get(ADMIN_SESSION_STORAGE_KEY) ?? null;
-    storage.delete(ADMIN_SESSION_STORAGE_KEY);
-    emitStorageEvent(ADMIN_SESSION_STORAGE_KEY, oldValue, null);
+    invalidateAdminSessionForLogout();
 
     resolveRefresh(
       new Response(

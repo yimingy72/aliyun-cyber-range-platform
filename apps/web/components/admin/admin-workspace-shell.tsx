@@ -17,7 +17,11 @@ import {
   refreshAdminOidcToken,
 } from '../../lib/admin-oidc';
 import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../lib/admin-oidc-config';
-import { readAdminSession, writeAdminSession } from '../../lib/admin-auth-storage';
+import {
+  invalidateAdminSessionForLogout,
+  readAdminSession,
+  writeAdminSession,
+} from '../../lib/admin-auth-storage';
 import { AdminContentTransition } from './admin-content-transition';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { PlatformBrand } from './platform-brand';
@@ -197,6 +201,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         ...nextSession,
         idToken: nextSession.idToken ?? currentSession.idToken,
         refreshToken: nextSession.refreshToken ?? currentSession.refreshToken,
+        sessionGeneration: currentSession.sessionGeneration,
       });
     } catch {
       if (!loggingOutRef.current) {
@@ -303,7 +308,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
       idTokenHint: session.idToken,
     });
 
-    session.logout();
+    invalidateAdminSessionForLogout();
     clearPendingAdminOidcLogin();
     window.location.assign(logoutUrl);
   }

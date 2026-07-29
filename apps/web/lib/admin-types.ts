@@ -11,6 +11,7 @@ export type AdminSessionPayload = {
   token: string;
   idToken?: string | null;
   refreshToken?: string | null;
+  sessionGeneration?: number;
   profile: AdminProfile;
 };
 
