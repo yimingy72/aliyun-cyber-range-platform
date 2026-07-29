@@ -50,6 +50,7 @@ describe('admin auth storage', () => {
 
     expect((session as { sessionGeneration?: number } | null)?.sessionGeneration).toBe(0);
     expect(readAdminSession()).toEqual(session);
+    expect(JSON.parse(storage.get(ADMIN_SESSION_STORAGE_KEY) ?? '{}').sessionGeneration).toBe(0);
     expect(storage.get(ADMIN_SESSION_GENERATION_STORAGE_KEY)).toBe('0');
   });
 
@@ -68,6 +69,21 @@ describe('admin auth storage', () => {
     invalidateAdminSessionForLogout();
 
     expect(writeAdminSession(staleSession as AdminSessionPayload)).toBeNull();
+    expect(storage.get(ADMIN_SESSION_STORAGE_KEY)).toBeUndefined();
+    expect(storage.get(ADMIN_SESSION_GENERATION_STORAGE_KEY)).toBe('1');
+  });
+
+  it('rejects a late stale record after the logout generation advances', () => {
+    const staleSession = writeAdminSession(createSession());
+    const staleRecord = storage.get(ADMIN_SESSION_STORAGE_KEY);
+
+    expect((staleSession as { sessionGeneration?: number } | null)?.sessionGeneration).toBe(0);
+    expect(staleRecord).toBeTruthy();
+
+    invalidateAdminSessionForLogout();
+    storage.set(ADMIN_SESSION_STORAGE_KEY, staleRecord as string);
+
+    expect(readAdminSession()).toBeNull();
     expect(storage.get(ADMIN_SESSION_STORAGE_KEY)).toBeUndefined();
     expect(storage.get(ADMIN_SESSION_GENERATION_STORAGE_KEY)).toBe('1');
   });

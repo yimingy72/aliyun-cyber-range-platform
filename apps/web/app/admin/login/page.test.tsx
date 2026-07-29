@@ -155,6 +155,7 @@ describe('AdminLoginPage', () => {
     await waitFor(() => {
       expect(JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ?? 'null')).toEqual({
         token: 'normalized-admin-token',
+        sessionGeneration: 0,
         profile: ADMIN_PROFILE,
       });
     });

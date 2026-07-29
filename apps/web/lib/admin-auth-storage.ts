@@ -98,12 +98,6 @@ function updateCachedSession(serializedSession: string | null, session: AdminSes
   cachedSession = session;
 }
 
-function serializeAdminSession(session: AdminSessionPayload) {
-  const { sessionGeneration: _sessionGeneration, ...persistedSession } = session;
-
-  return JSON.stringify(persistedSession);
-}
-
 function emitAdminSessionChanged() {
   if (typeof window === 'undefined') {
     return;
@@ -161,10 +155,7 @@ export function readAdminSession() {
       ...normalizedSession,
       sessionGeneration: currentGeneration,
     };
-    const serializedSession =
-      normalizedSession.sessionGeneration === undefined
-        ? serializeAdminSession(sessionWithGeneration)
-        : JSON.stringify(sessionWithGeneration);
+    const serializedSession = JSON.stringify(sessionWithGeneration);
 
     if (serializedSession !== storedSession) {
       window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
@@ -237,7 +228,7 @@ export function writeAdminSession(session: AdminSessionPayload) {
     ...normalizedSession,
     sessionGeneration: currentGeneration,
   };
-  const serializedSession = serializeAdminSession(sessionWithGeneration);
+  const serializedSession = JSON.stringify(sessionWithGeneration);
 
   if (window.localStorage.getItem(ADMIN_SESSION_GENERATION_STORAGE_KEY) !== String(currentGeneration)) {
     window.localStorage.setItem(ADMIN_SESSION_GENERATION_STORAGE_KEY, String(currentGeneration));
