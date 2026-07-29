@@ -107,8 +107,8 @@ describe('RangeInstancesScreen list states', () => {
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect((await screen.findByRole('tab', { name: '实例历史' })).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByRole('columnheader', { name: '回收时间' })).toBeTruthy();
-    expect(screen.queryByRole('columnheader', { name: '状态' })).toBeNull();
+    expect(screen.getByRole('columnheader', { name: '结束时间' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
     expect(
       Array.from(screen.getByRole('table', { name: '编排实例历史' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
     ).toContain('width: 8rem');
@@ -221,7 +221,7 @@ describe('RangeInstancesScreen list states', () => {
     const activeTab = screen.getByRole('tab', { name: '实例列表' });
     activeTab.focus();
     fireEvent.keyDown(activeTab, { key: 'ArrowRight' });
-    await screen.findByText('还没有已回收实例');
+    await screen.findByText('还没有历史实例');
     const historyTab = screen.getByRole('tab', { name: '实例历史' });
     historyTab.focus();
     fireEvent.keyDown(historyTab, { key: 'ArrowLeft' });
@@ -254,7 +254,7 @@ describe('RangeInstancesScreen list states', () => {
     const activeTab = screen.getByRole('tab', { name: '实例列表' });
     activeTab.focus();
     fireEvent.keyDown(activeTab, { key: 'ArrowRight' });
-    await screen.findByText('还没有已回收实例');
+    await screen.findByText('还没有历史实例');
 
     const historyTab = screen.getByRole('tab', { name: '实例历史' });
     historyTab.focus();
@@ -290,7 +290,7 @@ describe('RangeInstancesScreen list states', () => {
     const activeTab = screen.getByRole('tab', { name: '实例列表' });
     activeTab.focus();
     fireEvent.keyDown(activeTab, { key: 'ArrowRight' });
-    await screen.findByText('还没有已回收实例');
+    await screen.findByText('还没有历史实例');
 
     const historyTab = screen.getByRole('tab', { name: '实例历史' });
     historyTab.focus();
