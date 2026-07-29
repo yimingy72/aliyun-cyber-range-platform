@@ -1432,10 +1432,16 @@ body {
 }
 
 .template-editor-toolbar-copy {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.template-editor-toolbar-identity {
   display: flex;
   align-items: baseline;
   gap: 12px;
-  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1454,6 +1460,16 @@ body {
 
 .template-editor-toolbar-secondary {
   opacity: 0.82;
+}
+
+.template-editor-feedback {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .template-editor-toolbar-actions {

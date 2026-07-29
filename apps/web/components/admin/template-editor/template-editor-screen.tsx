@@ -1846,7 +1846,7 @@ export function TemplateEditorScreen({
     }
 
     try {
-      commitSnapshot({ nodes: layoutTopology(nodes, edges), edges, viewport }, '已完成全部自动布局。');
+      commitSnapshot({ nodes: layoutTopology(nodes, edges), edges, viewport }, '');
     } catch {
       setStatusMessage('自动布局失败，请保留当前节点位置。');
     }
@@ -1981,10 +1981,22 @@ export function TemplateEditorScreen({
     <section className="template-editor-screen">
       <div className="template-editor-toolbar admin-workbench-surface">
         <div className="template-editor-toolbar-copy">
-          <h1>{template.name ?? template.slug}</h1>
-          <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
-            {template.status === 'published' ? '已发布' : '私有'}
-          </Badge>
+          <div className="template-editor-toolbar-identity">
+            <h1>{template.name ?? template.slug}</h1>
+            <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
+              {template.status === 'published' ? '已发布' : '私有'}
+            </Badge>
+          </div>
+          {statusMessage ? (
+            <p
+              aria-live="polite"
+              className="template-editor-toolbar-secondary template-editor-feedback"
+              role="status"
+              title={statusMessage}
+            >
+              {statusMessage}
+            </p>
+          ) : null}
         </div>
         <div className="template-editor-toolbar-actions">
           <Button
@@ -2046,7 +2058,6 @@ export function TemplateEditorScreen({
           />
         ) : null}
       </div>
-      {statusMessage ? <p aria-live="polite" role="status">{statusMessage}</p> : null}
     </section>
   );
 }

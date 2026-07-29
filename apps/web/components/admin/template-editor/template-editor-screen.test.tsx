@@ -1574,6 +1574,41 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByText('已选择连线起点，请点击目标节点完成连接。')).toBeNull();
   });
 
+  it('clears addition feedback without reporting a successful automatic layout', () => {
+    render(
+      <TemplateEditorScreen
+        template={{
+          id: 'template-1',
+          name: '企业攻防靶场',
+          slug: 'enterprise-range',
+          version: 'v1.1.0',
+          currentDraftVersionId: 'draft-1',
+          currentPublishedVersionId: 'published-1',
+          currentDraftVersion: {
+            id: 'draft-1',
+            status: 'draft',
+            version: 'v1.1.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+          currentPublishedVersion: {
+            id: 'published-1',
+            status: 'published',
+            version: 'v1.0.0',
+            topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    expect(screen.getByText('已添加交换机 1，可继续补充属性和关系。')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'flow layout all' }));
+
+    expect(screen.queryByText('已添加交换机 1，可继续补充属性和关系。')).toBeNull();
+    expect(screen.queryByText('已完成全部自动布局。')).toBeNull();
+  });
+
   it('deduplicates repeated flow selection callbacks after a graph update', async () => {
     render(
       <TemplateEditorScreen
@@ -2361,8 +2396,8 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByRole('button', { name: '保存属性' })).toBeNull();
   });
 
-  it('blocks incomplete topologies during 检测与保存', () => {
-    render(
+  it('places 检测与保存 failure feedback beneath the toolbar title', () => {
+    const { container } = render(
       <TemplateEditorScreen
         template={{
           id: 'template-1',
@@ -2392,7 +2427,13 @@ describe('TemplateEditorScreen', () => {
 
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
-    expect(screen.getByText(/拓扑检测未通过：至少需要一个 ECS 主机/)).toBeTruthy();
+    const message = '拓扑检测未通过：至少需要一个 ECS 主机';
+    const status = screen.getByRole('status');
+
+    expect(status.textContent).toContain(message);
+    expect(status.getAttribute('title')).toBe(status.textContent);
+    expect(container.querySelector('.template-editor-toolbar-copy [role="status"]')).toBe(status);
+    expect(container.querySelector('.template-editor-screen > p[role="status"]')).toBeNull();
   });
 
   it('allows topology detection when an ecs hostName is left blank', async () => {
