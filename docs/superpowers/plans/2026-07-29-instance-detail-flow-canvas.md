@@ -321,7 +321,7 @@ Run:
 
 ```bash
 COMPOSE_BAKE=false docker compose build api
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-draft.e2e-spec.ts'
 ```
@@ -463,7 +463,7 @@ Run:
 
 ```bash
 COMPOSE_BAKE=false docker compose build api mcp
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-draft.e2e-spec.ts \
   test/range-templates-publish-precheck.e2e-spec.ts'
@@ -562,7 +562,7 @@ Run:
 
 ```bash
 COMPOSE_BAKE=false docker compose build api
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-apply.e2e-spec.ts \
   test/provisioning-worker-concurrency.e2e-spec.ts'
@@ -634,7 +634,7 @@ Run:
 
 ```bash
 COMPOSE_BAKE=false docker compose build api mcp
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-apply.e2e-spec.ts \
   test/provisioning-worker-concurrency.e2e-spec.ts \
@@ -744,7 +744,7 @@ Run:
 
 ```bash
 COMPOSE_BAKE=false docker compose build api
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-apply.e2e-spec.ts'
 ```
@@ -814,7 +814,7 @@ Run:
 
 ```bash
 COMPOSE_BAKE=false docker compose build api mcp
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-apply.e2e-spec.ts \
   test/range-instance-draft.e2e-spec.ts'
@@ -1115,7 +1115,7 @@ Expected: 所有 Web Vitest 文件通过，包含创建页和实例详情两个 
 Run:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint sh api -lc \
+docker compose run --rm --no-deps -e NODE_ENV=test --entrypoint sh api -lc \
   'pnpm --filter @aliyun-cyber-range/api exec jest --runInBand \
   test/range-instance-draft.e2e-spec.ts \
   test/range-instance-apply.e2e-spec.ts \
