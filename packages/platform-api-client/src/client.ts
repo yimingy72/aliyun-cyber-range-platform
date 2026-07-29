@@ -37,6 +37,7 @@ import type {
   SingleInstanceListPayload,
   SaveRangeInstanceDraftInput,
   SaveRangeTemplateTopologyInput,
+  SingleInstanceCloudResourceStatus,
   UpdateAdminUserRoleInput,
   UpdateAdminUserStatusInput,
   UpdateRangeTemplateInput,
@@ -284,6 +285,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     }
 
     return null;
+  }
+
+  getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus> {
+    return this.request<SingleInstanceCloudResourceStatus>(
+      `/admin/instances/${encodeURIComponent(id)}/cloud-resource-status`,
+    );
   }
 
   async getSingleInstanceAccess(id: string): Promise<RangeAccessPayload> {

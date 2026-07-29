@@ -45,6 +45,13 @@ function createClientStub(): ClientStub {
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
+    getSingleInstanceCloudResourceStatus: vi.fn().mockResolvedValue({
+      singleInstanceId: 'ins-1',
+      regionId: 'cn-hangzhou',
+      exists: false,
+      instanceIds: [],
+      checkedAt: '2026-07-29T00:00:00.000Z',
+    }),
     getSingleInstanceAccess: vi.fn().mockResolvedValue({ runtimeCredentials: {} }),
     listProvisionJobs: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),
@@ -152,6 +159,7 @@ describe('mcp http e2e', () => {
 
     expect(tools.tools.map((tool) => tool.name)).toContain('range_template_list');
     expect(tools.tools.map((tool) => tool.name)).toContain('single_instance_get');
+    expect(tools.tools.map((tool) => tool.name)).toContain('single_instance_cloud_resource_status');
     const specTool = tools.tools.find((tool) => tool.name === 'single_instance_spec_check');
 
     expect(specTool?.inputSchema).toMatchObject({

@@ -27,6 +27,11 @@ export class SingleInstancesController {
     return this.singleInstancesService.list(request.adminUser, view);
   }
 
+  @Get(':id/cloud-resource-status')
+  getCloudResourceStatus(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    return this.singleInstancesService.getCloudResourceStatus(id, request.adminUser);
+  }
+
   @Get(':id')
   getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
     return this.singleInstancesService.getById(id, request.adminUser);

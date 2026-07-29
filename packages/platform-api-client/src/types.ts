@@ -109,6 +109,13 @@ export type SingleInstanceListPayload = {
   }>;
   standaloneInstances: RangeInstance[];
 };
+export type SingleInstanceCloudResourceStatus = {
+  singleInstanceId: string;
+  regionId: string;
+  exists: boolean;
+  instanceIds: string[];
+  checkedAt: string;
+};
 
 export type InstanceTypeAvailabilityMatch = {
   instanceTypeId: string;
@@ -230,6 +237,7 @@ export type PlatformApiClientLike = {
   ): Promise<Record<string, unknown>>;
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
+  getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus>;
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;
   getInstanceTypeAvailability(cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   listProvisionJobs(instanceMode?: InstanceMode): Promise<ProvisionJob[]>;

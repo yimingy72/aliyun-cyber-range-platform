@@ -10,6 +10,7 @@
 |---|---|---|---|---|
 | 查询单实例/批次 | `single_instance_list` | — | `view: active\|history`，默认 `active` | `instances:read` |
 | 查询单实例详情 | `single_instance_get` | `singleInstanceId` | — | `instances:read` |
+| 核验云端 ECS | `single_instance_cloud_resource_status` | `singleInstanceId` | — | `instances:read` |
 | 查询访问凭据 | `single_instance_get_access` | `singleInstanceId` | — | `instances:read`、`instances:credentials:read` |
 | 校验规格 | `single_instance_spec_check` | 正整数 `cpu`、`memory`（GiB） | — | `instances:read` |
 | 创建批次 | `single_instance_batch_launch` | `name`、`platformImageAssetId`、`cpu`、`memory`、`quantity`（1–99）、带时区 `expiresAt` | `hostName`、`systemDiskSize`（整数且至少 20）、敏感 `password`、`remark`、操作元数据 | `instances:read`、`instances:create` |
@@ -24,6 +25,7 @@
 ## 操作规则
 
 - 查询状态使用 `list`/`get`；密码、SSH、VNC 和 CSV 必须有用户明确请求并具备 `instances:credentials:read`。
+- 云端 ECS 核验按 `RangeInstanceId` 标签只读查询当前默认地域；返回匹配 ECS ID，不会创建、停止或释放资源。
 - 创建前先从 `platform_image_list` 选择可见且启用的 `platformImageAssetId`，再用完全相同的 CPU/内存调用 `single_instance_spec_check`。仅 `exactAvailable: true` 可创建。
 - `expiresAt` 必填，必须是带时区的 ISO-8601 未来时间；不得猜测默认到期时间。`quantity` 为 1–99；省略 `systemDiskSize` 时服务端默认 40 GiB。
 - 当前候选规格仅为 2c2g、2c4g、4c8g、8c16g。规格校验不预留库存，CPU 或内存变化后必须重新校验。

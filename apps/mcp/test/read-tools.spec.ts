@@ -162,6 +162,13 @@ function createClientStub(): ClientStub {
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [{ batch: { id: 'batch-1', name: 'batch-a' }, instances: [{ id: 'ins-1', name: 'ins-1', accessEntry: { publicIp: '1.1.1.1' }, runtimeCredentials: { 'single-ecs-1': { username: 'root', password: 'secret' } }, singleInstanceConfig: { hostKey: 'single-ecs-1', imageDisplayName: 'Ubuntu 24.04' } }] }], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
+    getSingleInstanceCloudResourceStatus: vi.fn().mockResolvedValue({
+      singleInstanceId: 'ins-1',
+      regionId: 'cn-hangzhou',
+      exists: false,
+      instanceIds: [],
+      checkedAt: '2026-07-29T00:00:00.000Z',
+    }),
     getSingleInstanceAccess: vi.fn().mockResolvedValue({ runtimeCredentials: {} }),
     listProvisionJobs: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),

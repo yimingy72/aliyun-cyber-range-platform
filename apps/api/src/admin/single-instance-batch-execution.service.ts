@@ -98,6 +98,23 @@ export class SingleInstanceBatchExecutionService {
     }
   }
 
+  async findCloudInstanceIdsByRangeInstanceId(rangeInstanceId: string) {
+    return this.runWithSlot(async () => {
+      const accountContext = await this.resolveAccountContext();
+      const instanceIds = await this.findSingleInstanceIdsByRangeInstanceTag({
+        accessKeyId: accountContext.accessKeyId,
+        accessKeySecret: accountContext.accessKeySecret,
+        regionId: accountContext.defaultRegion,
+        rangeInstanceId,
+      });
+
+      return {
+        regionId: accountContext.defaultRegion,
+        instanceIds,
+      };
+    });
+  }
+
   async executeCreateBatch(items: SingleInstanceExecutionItem[]) {
     return this.runWithSlot(async () => {
       if (!items.length) {

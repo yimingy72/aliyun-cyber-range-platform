@@ -16,6 +16,7 @@ import {
   type PlatformImageAssetRecord,
 } from './admin.repository';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
+import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 import { SingleInstanceNetworkService } from './single-instance-network.service';
 import { SystemConfigService } from './system-config.service';
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
@@ -35,6 +36,7 @@ export class SingleInstancesService {
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
     private readonly singleInstanceNetworkService: SingleInstanceNetworkService,
+    private readonly singleInstanceBatchExecutionService: SingleInstanceBatchExecutionService,
     private readonly provisioningWorkerService: ProvisioningWorkerService,
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
   ) {}
@@ -107,6 +109,19 @@ export class SingleInstancesService {
     const instance = await this.requireSingleInstance(id, currentUser);
     const [detail] = await attachCreatedByUsernames(this.adminRepository, [toSingleInstanceListItem(instance)]);
     return detail;
+  }
+
+  async getCloudResourceStatus(id: string, currentUser: SessionUserProfile) {
+    const instance = await this.requireSingleInstance(id, currentUser);
+    const result = await this.singleInstanceBatchExecutionService.findCloudInstanceIdsByRangeInstanceId(instance.id);
+
+    return {
+      singleInstanceId: instance.id,
+      regionId: result.regionId,
+      exists: result.instanceIds.length > 0,
+      instanceIds: result.instanceIds,
+      checkedAt: new Date().toISOString(),
+    };
   }
 
   async getAccessById(id: string, currentUser: SessionUserProfile) {

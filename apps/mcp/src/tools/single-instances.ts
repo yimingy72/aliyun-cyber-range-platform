@@ -44,6 +44,16 @@ const singleInstanceAccessOutputSchema = resultOutputSchema(
   }).passthrough(),
 );
 
+const singleInstanceCloudResourceStatusOutputSchema = resultOutputSchema(
+  z.object({
+    singleInstanceId: z.string().describe('平台独立实例 ID。'),
+    regionId: z.string().describe('执行阿里云查询的地域。'),
+    exists: z.boolean().describe('阿里云中是否仍存在带该 RangeInstanceId 标签的 ECS。'),
+    instanceIds: z.array(z.string()).describe('当前匹配标签的 ECS 实例 ID 列表。'),
+    checkedAt: z.string().describe('平台完成云端查询的 ISO-8601 时间。'),
+  }),
+);
+
 function escapeCsvCell(value: string) {
   const normalizedValue = value.replaceAll('"', '""');
   return /[",\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
@@ -88,6 +98,21 @@ export const singleInstanceTools: ToolDefinition[] = [
     outputSchema: nullableResourceOutputSchema,
     call(context, args) {
       return context.client.getSingleInstance((args as { singleInstanceId: string }).singleInstanceId);
+    },
+  },
+  {
+    name: 'single_instance_cloud_resource_status',
+    title: '核验独立实例云资源',
+    description:
+      '按独立实例的 RangeInstanceId 标签查询阿里云 ECS 是否仍存在。该工具只读取云资源状态，不会创建、停止或释放任何资源。',
+    requiredScopes: ['instances:read'],
+    readOnlyHint: true,
+    inputSchema: singleInstanceIdInputSchema,
+    outputSchema: singleInstanceCloudResourceStatusOutputSchema,
+    call(context, args) {
+      return context.client.getSingleInstanceCloudResourceStatus(
+        (args as { singleInstanceId: string }).singleInstanceId,
+      );
     },
   },
   {
