@@ -13,7 +13,6 @@ export type PlatformScope =
   | 'ranges:write'
   | 'ranges:control'
   | 'ranges:destroy'
-  | 'ranges:delete'
   | 'instances:read'
   | 'instances:create'
   | 'instances:destroy'

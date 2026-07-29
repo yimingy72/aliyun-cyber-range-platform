@@ -26,7 +26,6 @@
 | ECS VNC | `range_instance_node_open_vnc` | `rangeInstanceId`、`nodeId` | — | `ranges:read`、`instances:credentials:read` |
 | ECS 打包镜像 | `range_instance_node_pack_image` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control`、`images:write` |
 | 关闭/销毁 | `range_instance_destroy` | `rangeInstanceId` | 操作元数据 | `ranges:destroy` |
-| 删除创建失败记录 | `range_instance_delete_failed` | `rangeInstanceId` | 操作元数据 | `ranges:delete` |
 
 ## 实例拓扑转换 Skill
 
@@ -72,7 +71,7 @@
 
 - 编排创建进入 OpenTofu 后发生失败时，平台会立即在同一 workspace 执行销毁，回收已部分创建的 VPC、交换机、ACL、EIP、NAT 和 ECS。自动回收失败时，任务错误会同时保留创建失败和回收失败原因。
 - 创建或销毁失败：先读取详情确认状态，再用 `range_instance_retry`。
-- 创建失败且用户明确希望移除记录：使用 `range_instance_delete_failed`。
+- 创建失败记录会保留在实例历史中，用于审计、排障和账单归属，不能物理删除。
 - 释放运行环境：使用 `range_instance_destroy`。它回收整套资源，不是节点关机的替代。
 
-重试、关机、重启、打包镜像、销毁和删除失败记录均须确认。授权 smoke test 成功后应立即销毁对应编排实例并确认终态。
+重试、关机、重启、打包镜像和销毁均须确认。授权 smoke test 成功后应立即销毁对应编排实例并确认终态。

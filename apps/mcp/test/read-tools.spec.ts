@@ -96,7 +96,6 @@ function createClientStub(): ClientStub {
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
-    removeFailedRangeInstance: vi.fn().mockResolvedValue(undefined),
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [{ batch: { id: 'batch-1', name: 'batch-a' }, instances: [{ id: 'ins-1', name: 'ins-1', accessEntry: { publicIp: '1.1.1.1' }, runtimeCredentials: { 'single-ecs-1': { username: 'root', password: 'secret' } }, singleInstanceConfig: { hostKey: 'single-ecs-1', imageDisplayName: 'Ubuntu 24.04' } }] }], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
@@ -219,7 +218,6 @@ describe('tool registry', () => {
       'ranges:write',
       'ranges:control',
       'ranges:destroy',
-      'ranges:delete',
       'instances:credentials:read',
       'templates:write',
       'images:write',
@@ -239,7 +237,6 @@ describe('tool registry', () => {
       'range_instance_node_open_vnc',
       'range_instance_node_pack_image',
       'range_instance_destroy',
-      'range_instance_delete_failed',
     ];
 
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(expectedNames));
@@ -874,14 +871,14 @@ describe('tool registry', () => {
     const registry = createToolRegistry(createClientStub());
     const scopes = [
       'templates:read', 'templates:write', 'templates:publish', 'templates:delete',
-      'images:read', 'images:write', 'ranges:read', 'ranges:create', 'ranges:write', 'ranges:control', 'ranges:destroy', 'ranges:delete',
+      'images:read', 'images:write', 'ranges:read', 'ranges:create', 'ranges:write', 'ranges:control', 'ranges:destroy',
       'instances:read', 'instances:create', 'instances:destroy', 'instances:control', 'instances:credentials:read',
       'jobs:read', 'users:read', 'users:write', 'billing:read', 'billing:sync', 'settings:read', 'settings:write',
     ];
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(69);
+    expect(tools).toHaveLength(68);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

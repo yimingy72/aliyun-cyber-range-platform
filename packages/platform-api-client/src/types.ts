@@ -221,7 +221,6 @@ export type PlatformApiClientLike = {
   applyRangeInstanceDraft(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
   syncRangeInstanceTemplate(id: string, operation?: OperationRequest): Promise<RangeTemplate>;
   retryRangeInstance(id: string, operation?: OperationRequest): Promise<Record<string, unknown>>;
-  removeFailedRangeInstance(id: string, operation?: OperationRequest): Promise<void>;
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,

@@ -252,13 +252,6 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  async removeFailedRangeInstance(id: string, operation?: OperationRequest) {
-    await this.request<void>(`/admin/ranges/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      operation,
-    });
-  }
-
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,

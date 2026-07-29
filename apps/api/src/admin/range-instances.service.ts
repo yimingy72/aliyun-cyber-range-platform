@@ -669,8 +669,12 @@ export class RangeInstancesService {
       this.assertInstanceOwnerOrAdmin(instance, currentUser);
     }
 
+    if (instance.instanceMode === 'range') {
+      throw new ConflictException('Range instance records are retained in history and cannot be deleted');
+    }
+
     if (instance.status !== 'create_failed') {
-      throw new ConflictException('Only create_failed instances can be deleted');
+      throw new ConflictException('Only create_failed single instances can be deleted');
     }
 
     await this.adminRepository.deleteRangeInstance(id);

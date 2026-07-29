@@ -88,7 +88,6 @@ export const rangeLaunchInputSchema = operationSchema.extend({
 });
 export const rangeDestroyInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
 export const rangeRetryInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
-export const rangeDeleteFailedInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
 export const rangeTopologyChangeInputSchema = operationSchema.extend({
   rangeInstanceId: identifier,
   topologyGraph: topologyGraphSchema.describe('完整的实例拓扑图。由实例编排转换 Skill 生成；MCP 会自行编译运行规格，不能传派生字段。'),

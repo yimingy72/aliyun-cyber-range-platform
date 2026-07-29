@@ -625,7 +625,7 @@ describe('Admin resources', () => {
       .expect(409);
   });
 
-  it('deletes create_failed instances but rejects deleting running instances', async () => {
+  it('retains create_failed range instances in history and rejects deleting running instances', async () => {
     const template = await createTemplate('Instance Delete Template');
     const failed = await repository.createRangeInstance({
       name: 'failed-instance',
@@ -647,8 +647,8 @@ describe('Admin resources', () => {
     await request(app.getHttpServer())
       .delete(`/admin/ranges/${failed.id}`)
       .set('authorization', 'Bearer dev-admin-token')
-      .expect(200);
-    expect(await repository.getRangeInstanceById(failed.id)).toBeNull();
+      .expect(409);
+    expect(await repository.getRangeInstanceById(failed.id)).not.toBeNull();
 
     await request(app.getHttpServer())
       .delete(`/admin/ranges/${running.id}`)

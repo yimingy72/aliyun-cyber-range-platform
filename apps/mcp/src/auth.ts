@@ -21,7 +21,6 @@ export const END_USER_SCOPES = [
   'ranges:write',
   'ranges:control',
   'ranges:destroy',
-  'ranges:delete',
   'instances:read',
   'instances:create',
   'instances:destroy',

@@ -6,7 +6,6 @@ import {
   type TemplateAuthoringMetadata,
 } from './template-authoring';
 import {
-  rangeDeleteFailedInputSchema,
   rangeDestroyInputSchema,
   rangeInstanceIdInputSchema,
   rangeLaunchInputSchema,
@@ -18,7 +17,6 @@ import {
 } from './input-schemas';
 import {
   actionOutputSchema,
-  removedOutputSchema,
   resourceListOutputSchema,
   resourceOutputSchema,
   resultOutputSchema,
@@ -202,20 +200,6 @@ export const rangeTools: ToolDefinition[] = [
     call(context, args) {
       const input = args as { rangeInstanceId: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.destroyRange(input.rangeInstanceId, operation(input));
-    },
-  },
-  {
-    name: 'range_instance_delete_failed',
-    title: '删除创建失败的编排实例',
-    description: '对应编排实例页中创建失败记录的“删除”。仅能删除 create_failed 状态且尚未形成可运行环境的实例记录；该操作不可恢复，调用前必须取得用户确认。',
-    requiredScopes: ['ranges:delete'],
-    annotations: { destructiveHint: true, idempotentHint: false },
-    inputSchema: rangeDeleteFailedInputSchema,
-    outputSchema: removedOutputSchema('rangeInstanceId'),
-    async call(context, args) {
-      const input = args as RangeOperationInput;
-      await context.client.removeFailedRangeInstance(input.rangeInstanceId, operation(input));
-      return { removed: true, rangeInstanceId: input.rangeInstanceId };
     },
   },
 ];

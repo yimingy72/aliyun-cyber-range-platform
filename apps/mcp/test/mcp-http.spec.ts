@@ -42,7 +42,6 @@ function createClientStub(): ClientStub {
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
-    removeFailedRangeInstance: vi.fn().mockResolvedValue(undefined),
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
     listSingleInstances: vi.fn().mockResolvedValue({ batches: [], standaloneInstances: [{ id: 'ins-1' }] }),
     getSingleInstance: vi.fn().mockResolvedValue({ id: 'ins-1' }),
