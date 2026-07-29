@@ -142,6 +142,12 @@ export function readAdminSession() {
       return null;
     }
 
+    if (normalizedSession.sessionGeneration === undefined && currentGeneration !== 0) {
+      clearAdminSessionRecord();
+      updateCachedSession(null, null);
+      return null;
+    }
+
     if (
       normalizedSession.sessionGeneration !== undefined &&
       normalizedSession.sessionGeneration !== currentGeneration

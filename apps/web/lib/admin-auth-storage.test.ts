@@ -88,6 +88,22 @@ describe('admin auth storage', () => {
     expect(storage.get(ADMIN_SESSION_GENERATION_STORAGE_KEY)).toBe('1');
   });
 
+  it('rejects an untagged legacy record after logout generation advances', () => {
+    storage.set(ADMIN_SESSION_GENERATION_STORAGE_KEY, '1');
+    storage.set(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(createSession()));
+
+    expect(readAdminSession()).toBeNull();
+    expect(storage.get(ADMIN_SESSION_STORAGE_KEY)).toBeUndefined();
+    expect(storage.get(ADMIN_SESSION_GENERATION_STORAGE_KEY)).toBe('1');
+  });
+
+  it('migrates an untagged legacy record only at generation zero', () => {
+    storage.set(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(createSession()));
+
+    expect(readAdminSession()?.sessionGeneration).toBe(0);
+    expect(JSON.parse(storage.get(ADMIN_SESSION_STORAGE_KEY) ?? '{}').sessionGeneration).toBe(0);
+  });
+
   it('rejects a persisted session from an older generation without erasing the marker', () => {
     storage.set(ADMIN_SESSION_GENERATION_STORAGE_KEY, '3');
     storage.set(
