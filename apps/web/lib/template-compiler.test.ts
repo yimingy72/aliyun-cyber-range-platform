@@ -3,8 +3,25 @@ import { describe, expect, it } from 'vitest';
 import { compileTopologyGraph } from './template-compiler';
 import type { RangeTemplateTopologySpec } from './admin-types';
 import type { TemplateNode } from './scenario-graph';
+import { createEnterpriseRangeSkeleton } from './template-topology-skeleton';
+import { syncTopologySpecFromNodes } from './template-topology-sync';
 
 describe('compileTopologyGraph', () => {
+  it('derives the compiled topology entry host from DNAT instead of a stale topologySpec', () => {
+    const nodes = createEnterpriseRangeSkeleton();
+    const topologySpec = syncTopologySpecFromNodes({ nodes });
+    topologySpec.publicEntry = {
+      ...topologySpec.publicEntry,
+      hostKey: 'legacy-entry',
+    };
+
+    expect(compileTopologyGraph({ nodes, topologySpec }).topology).toEqual(
+      expect.objectContaining({
+        publicEntryHostKey: 'ecs-core-1',
+      }),
+    );
+  });
+
   it('compiles the router, switch, and ecs graph while deriving nat resources from switch.nat and keeping the newer node fields intact', () => {
     const nodes: TemplateNode[] = [
       {
@@ -55,10 +72,10 @@ describe('compileTopologyGraph', () => {
         id: 'host-1',
         kind: 'ecs',
         label: '边界主机',
-        role: 'entry',
+        role: 'host',
         zoneKey: 'legacy-dmz',
         privateIp: '10.255.255.10',
-        exposePublic: true,
+        exposePublic: false,
         image: 'aliyun_linux_3_x64_20G_alibase',
         instanceName: 'host-1',
         hostName: 'dmz-web-01',
@@ -195,7 +212,7 @@ describe('compileTopologyGraph', () => {
           config: {
             label: '边界主机',
             zoneKey: 'dmz-a',
-            role: 'entry',
+            role: 'host',
             privateIp: '10.0.1.10',
             exposePublic: true,
             image: 'aliyun_linux_3_x64_20G_alibase',

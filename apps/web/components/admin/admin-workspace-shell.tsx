@@ -146,6 +146,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const oidcClientId = resolveAdminOidcClientId();
   const isLoginRoute = pathname === '/admin/login';
   const isCallbackRoute = pathname === '/admin/callback';
+  const isTopologyEditorRoute = /^\/admin\/scenarios\/[^/]+$/.test(pathname);
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
   const [pendingHref, setPendingHref] = useState<string | null>(null);
   const [isRenewingSession, setIsRenewingSession] = useState(false);
@@ -313,7 +314,10 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   }
 
   return (
-    <div className="admin-workspace">
+    <div
+      className="admin-workspace"
+      data-topology-editor={isTopologyEditorRoute ? 'true' : undefined}
+    >
       <aside className="admin-sidebar bg-card text-card-foreground">
         <div className="border-b border-border px-5 py-[18px]" data-testid="admin-sidebar-brand">
           <PlatformBrand />

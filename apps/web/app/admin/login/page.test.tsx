@@ -111,7 +111,7 @@ describe('AdminLoginPage', () => {
   it('renders a single admin-only login experience without player entry copy', () => {
     render(<AdminLoginPage />);
 
-    expect(screen.getByText('综合靶场平台')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '登录综合靶场平台' })).toBeTruthy();
     expect(screen.queryByText(/选手/)).toBeNull();
     expect(screen.queryByRole('link', { name: '选手入口' })).toBeNull();
     expect(screen.queryByText('阿里云企业网络型靶场编排与实例管理工作台')).toBeNull();
@@ -120,6 +120,22 @@ describe('AdminLoginPage', () => {
     expect(screen.queryByText('账号')).toBeNull();
     expect(screen.queryByText('密码')).toBeNull();
     expect(screen.getByRole('button', { name: '使用平台账号登录' })).toBeTruthy();
+  });
+
+  it('renders the workbench-aligned entry title with the canonical platform mark', () => {
+    render(<AdminLoginPage />);
+
+    const title = screen.getByRole('heading', { name: '登录综合靶场平台' });
+    const mark = screen.getByTestId('admin-login-title-mark');
+
+    expect(title).toBeTruthy();
+    expect(mark.getAttribute('src')).toBe('/brand/platform-mark.svg');
+    expect(mark.getAttribute('aria-hidden')).toBe('true');
+    expect(screen.getByText('管理入口')).toBeTruthy();
+    expect(screen.getByText('使用平台统一账号验证身份并进入管理后台。')).toBeTruthy();
+    expect(screen.getByText('登录由平台统一身份认证服务保护')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '使用平台账号登录' })).toBeTruthy();
+    expect(screen.queryByText('使用平台统一账号登录管理后台。')).toBeNull();
   });
 
   it('normalizes shared admin sessions before persisting them', async () => {

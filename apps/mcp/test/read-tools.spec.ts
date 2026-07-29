@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
-import type { ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime';
+import {
+  resolveUniqueDnatEntryHost,
+  type ScenarioGraphDraft,
+} from '@aliyun-cyber-range/scenario-runtime';
 
 import { createToolRegistry } from '../src/server';
 
@@ -21,7 +24,7 @@ const authoringGraph: ScenarioGraphDraft = {
       aclRules: [],
     },
     {
-      id: 'ecs-nginx', kind: 'ecs', label: 'Nginx', zoneKey: 'dmz', role: 'entry', privateIp: '10.0.0.10', exposePublic: true,
+      id: 'ecs-nginx', kind: 'ecs', label: 'Nginx', zoneKey: 'dmz', role: 'web', privateIp: '10.0.0.10', exposePublic: false,
       image: 'img-nginx', imageId: 'img-nginx', platformImageAssetId: 'asset-nginx',
       dnatMappings: [], networkInterfaces: [], portGroups: [], initScript: '',
       imageStrategy: { mode: 'fixed', imageId: 'img-nginx' }, instanceTypeStrategy: { mode: 'auto' },
@@ -33,6 +36,66 @@ const authoringGraph: ScenarioGraphDraft = {
     { id: 'switch-dmz-to-nginx', fromNodeId: 'switch-dmz', toNodeId: 'ecs-nginx', relationType: 'manual' as const },
   ],
 };
+
+describe('resolveUniqueDnatEntryHost', () => {
+  it('ignores a DNAT mapping without a target ECS id', () => {
+    const graph = structuredClone(authoringGraph);
+    const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz');
+
+    if (switchNode?.kind !== 'switch' || !switchNode.nat) {
+      throw new Error('Expected a switch node');
+    }
+
+    switchNode.nat.dnatMappings[0]!.targetHostId = ' ';
+
+    expect(resolveUniqueDnatEntryHost(graph.nodes)).toEqual({ kind: 'missing' });
+  });
+});
+
+function addEcsNode(
+  graph: ScenarioGraphDraft,
+  input: {
+    id: string;
+    label: string;
+    zoneKey: string;
+    switchId: string;
+    privateIp: string;
+    role?: string;
+    exposePublic?: boolean;
+  },
+) {
+  graph.nodes.push({
+    id: input.id,
+    kind: 'ecs',
+    label: input.label,
+    zoneKey: input.zoneKey,
+    role: input.role ?? 'host',
+    privateIp: input.privateIp,
+    exposePublic: input.exposePublic ?? false,
+    image: 'img-nginx',
+    imageId: 'img-nginx',
+    platformImageAssetId: 'asset-nginx',
+    dnatMappings: [],
+    networkInterfaces: [],
+    portGroups: [],
+    initScript: '',
+    imageStrategy: { mode: 'fixed', imageId: 'img-nginx' },
+    instanceTypeStrategy: { mode: 'auto' },
+    nics: [{
+      id: `nic-${input.id}`,
+      switchId: input.switchId,
+      privateIp: input.privateIp,
+      secondaryIps: [],
+      securityGroupRules: [],
+    }],
+  });
+  graph.edges.push({
+    id: `${input.switchId}-to-${input.id}`,
+    fromNodeId: input.switchId,
+    toNodeId: input.id,
+    relationType: 'manual',
+  });
+}
 
 const minimalAuthoringGraph = {
   schemaVersion: '2.0.0',
@@ -328,6 +391,22 @@ describe('tool registry', () => {
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
+
+    const payload = (client.createRangeTemplate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      topologyGraph: ScenarioGraphDraft;
+      topologySpec: { hosts: Array<{ key: string; exposePublic: boolean }> };
+      scenarioTemplateSpec: { hosts: Array<{ key: string; exposePublic: boolean }> };
+      compiledProvisionSpec: { hosts: Array<{ key: string; exposePublic: boolean }> };
+      compiledSpec: { resources: Array<{ id: string; config: { exposePublic?: boolean } }> };
+    };
+    expect(payload.topologyGraph.nodes.find((node) => node.id === 'ecs-nginx')).toMatchObject({
+      exposePublic: false,
+      role: 'web',
+    });
+    expect(payload.topologySpec.hosts).toEqual([expect.objectContaining({ key: 'ecs-nginx', exposePublic: true })]);
+    expect(payload.scenarioTemplateSpec.hosts).toEqual([expect.objectContaining({ key: 'ecs-nginx', exposePublic: true })]);
+    expect(payload.compiledProvisionSpec.hosts).toEqual([expect.objectContaining({ key: 'ecs-nginx', exposePublic: true })]);
+    expect(payload.compiledSpec.resources.find((resource) => resource.id === 'ecs-nginx')?.config.exposePublic).toBe(true);
   });
 
   it('creates a template with the API contract instead of caller-supplied server metadata', async () => {
@@ -456,6 +535,26 @@ describe('tool registry', () => {
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
+
+    const payload = (client.createRangeTemplate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      topologySpec: { hosts: Array<{ key: string; exposePublic: boolean }> };
+      scenarioTemplateSpec: { hosts: Array<{ key: string; exposePublic: boolean }> };
+      compiledProvisionSpec: { hosts: Array<{ key: string; exposePublic: boolean }> };
+      compiledSpec: { resources: Array<{ id: string; config: { exposePublic?: boolean } }> };
+    };
+    const expectedExposure = [
+      { key: 'ecs-nginx', exposePublic: true },
+      { key: 'ecs-office', exposePublic: false },
+      { key: 'ecs-server', exposePublic: false },
+    ];
+    const expectedExposureMatchers = expectedExposure.map((host) => expect.objectContaining(host));
+    expect(payload.topologySpec.hosts).toEqual(expect.arrayContaining(expectedExposureMatchers));
+    expect(payload.scenarioTemplateSpec.hosts).toEqual(expect.arrayContaining(expectedExposureMatchers));
+    expect(payload.compiledProvisionSpec.hosts).toEqual(expect.arrayContaining(expectedExposureMatchers));
+    for (const expectedHost of expectedExposure) {
+      expect(payload.compiledSpec.resources.find((resource) => resource.id === expectedHost.key)?.config.exposePublic)
+        .toBe(expectedHost.exposePublic);
+    }
   });
 
   it('rejects caller-supplied compiled artifacts during template creation', async () => {
@@ -513,7 +612,7 @@ describe('tool registry', () => {
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
-  it('requires explicit switch NAT and exposes DNAT mappings in the create schema', () => {
+  it('requires explicit switch NAT, derives public entry from DNAT, and exposes DNAT mappings in the create schema', () => {
     const registry = createToolRegistry(createClientStub());
     const create = registry.listTools(['templates:write']).find((tool) => tool.name === 'range_template_create');
     const graphWithoutNat = structuredClone(authoringGraph);
@@ -533,6 +632,26 @@ describe('tool registry', () => {
     const serializedSchema = JSON.stringify(create?.inputSchema);
     expect(serializedSchema).toContain('dnatMappings');
     expect(serializedSchema).toContain('targetHostId');
+
+    const graphWithoutLegacyPublicFlag = structuredClone(authoringGraph);
+    const host = graphWithoutLegacyPublicFlag.nodes.find((node) => node.id === 'ecs-nginx');
+    if (host?.kind !== 'ecs') {
+      throw new Error('Expected an ECS node');
+    }
+    delete (host as Partial<typeof host>).exposePublic;
+
+    const parsedGraphWithoutLegacyPublicFlag = create?.inputSchema?.safeParse({
+      name: '不要求旧公网标记',
+      topologyGraph: graphWithoutLegacyPublicFlag,
+    });
+    expect(parsedGraphWithoutLegacyPublicFlag?.success).toBe(true);
+    if (!parsedGraphWithoutLegacyPublicFlag?.success) {
+      throw new Error('Expected topology graph without exposePublic to parse');
+    }
+    expect(
+      (parsedGraphWithoutLegacyPublicFlag.data as { topologyGraph: ScenarioGraphDraft })
+        .topologyGraph.nodes.find((node) => node.id === 'ecs-nginx'),
+    ).toMatchObject({ exposePublic: false });
   });
 
   it('accepts the complete switch ACL shape used by the topology editor', () => {
@@ -595,9 +714,10 @@ describe('tool registry', () => {
       }),
       { idempotencyKey: undefined, confirmationId: undefined },
     );
+
   });
 
-  it('rejects a public entry ECS without a DNAT mapping before creating a template', async () => {
+  it('requires a DNAT mapping even when an ECS has legacy public entry flags', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
     const invalidGraph = structuredClone(authoringGraph);
@@ -614,7 +734,100 @@ describe('tool registry', () => {
         name: '缺少入口 DNAT',
         topologyGraph: invalidGraph,
       }),
-    ).rejects.toThrow('公网入口 ECS 必须至少配置一条 DNAT：ecs-nginx');
+    ).rejects.toThrow('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('rejects DNAT mappings that target multiple ECS nodes', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const invalidGraph = structuredClone(authoringGraph);
+    addEcsNode(invalidGraph, {
+      id: 'ecs-api',
+      label: 'API',
+      zoneKey: 'dmz',
+      switchId: 'switch-dmz',
+      privateIp: '10.0.0.11',
+    });
+    const switchNode = invalidGraph.nodes.find((node) => node.id === 'switch-dmz');
+    if (switchNode?.kind !== 'switch' || !switchNode.nat) {
+      throw new Error('Expected a switch node');
+    }
+    switchNode.nat.dnatMappings.push({
+      key: 'api-8080',
+      targetHostId: 'ecs-api',
+      externalPort: 8080,
+      internalPort: 8080,
+      protocol: 'tcp',
+    });
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: '多个 DNAT 目标',
+        topologyGraph: invalidGraph,
+      }),
+    ).rejects.toThrow('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a DNAT mapping whose target ECS does not exist', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const invalidGraph = structuredClone(authoringGraph);
+    const switchNode = invalidGraph.nodes.find((node) => node.id === 'switch-dmz');
+    if (switchNode?.kind !== 'switch' || !switchNode.nat) {
+      throw new Error('Expected a switch node');
+    }
+    switchNode.nat.dnatMappings[0]!.targetHostId = 'ecs-missing';
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: 'DNAT 目标不存在',
+        topologyGraph: invalidGraph,
+      }),
+    ).rejects.toThrow('DNAT 引用了不存在的 ECS：ecs-missing');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a DNAT mapping whose target ECS is not connected to its switch', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const invalidGraph = structuredClone(authoringGraph);
+    invalidGraph.nodes.push({
+      id: 'switch-internal',
+      kind: 'switch',
+      label: '内部交换机',
+      zoneKey: 'internal',
+      cidr: '10.0.1.0/24',
+      purpose: 'internal',
+      nat: { snatEnabled: false, dnatMappings: [] },
+      aclRules: [],
+    });
+    invalidGraph.edges.push({
+      id: 'router-to-switch-internal',
+      fromNodeId: 'router-main',
+      toNodeId: 'switch-internal',
+      relationType: 'manual',
+    });
+    addEcsNode(invalidGraph, {
+      id: 'ecs-internal',
+      label: '内部主机',
+      zoneKey: 'internal',
+      switchId: 'switch-internal',
+      privateIp: '10.0.1.10',
+    });
+    const switchNode = invalidGraph.nodes.find((node) => node.id === 'switch-dmz');
+    if (switchNode?.kind !== 'switch' || !switchNode.nat) {
+      throw new Error('Expected a switch node');
+    }
+    switchNode.nat.dnatMappings[0]!.targetHostId = 'ecs-internal';
+
+    await expect(
+      registry.callTool('range_template_create', ['templates:write'], {
+        name: 'DNAT 目标未连交换机',
+        topologyGraph: invalidGraph,
+      }),
+    ).rejects.toThrow('DNAT 目标 ECS 未连接到交换机：nginx-80');
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
@@ -689,7 +902,7 @@ describe('tool registry', () => {
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
-  it('rejects a graph with no explicit public entry ECS', async () => {
+  it('accepts a DNAT target regardless of legacy public entry flags', async () => {
     const client = createClientStub();
     const invalidGraph = structuredClone(authoringGraph);
     const host = invalidGraph.nodes.find((node) => node.id === 'ecs-nginx')!;
@@ -702,13 +915,11 @@ describe('tool registry', () => {
     host.exposePublic = false;
     const registry = createToolRegistry(client);
 
-    await expect(
-      registry.callTool('range_template_create', ['templates:write'], {
-        name: 'Web DMZ',
-        topologyGraph: invalidGraph,
-      }),
-    ).rejects.toThrow('必须指定一个公网入口 ECS');
-    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    await registry.callTool('range_template_create', ['templates:write'], {
+      name: 'Web DMZ',
+      topologyGraph: invalidGraph,
+    });
+    expect(client.createRangeTemplate).toHaveBeenCalledOnce();
   });
 
   it('rejects duplicated primary or secondary private IPs in the same switch', async () => {

@@ -177,6 +177,35 @@ export type RouterTemplateNode = TemplateNodeBase & {
 
 export type TemplateNode = EcsTemplateNode | SwitchTemplateNode | RouterTemplateNode;
 
+export type UniqueDnatEntryHostResolution =
+  | { kind: 'missing' }
+  | { kind: 'single'; targetHostId: string }
+  | { kind: 'multiple'; targetHostIds: string[] };
+
+export function resolveUniqueDnatEntryHost(
+  nodes: readonly TemplateNode[],
+): UniqueDnatEntryHostResolution {
+  const targetHostIds = [
+    ...new Set(
+      nodes.flatMap((node) =>
+        node.kind === 'switch'
+          ? (node.nat?.dnatMappings ?? [])
+              .map((mapping) => mapping.targetHostId.trim())
+              .filter((targetHostId) => targetHostId.length > 0)
+          : [],
+      ),
+    ),
+  ];
+
+  if (targetHostIds.length === 0) {
+    return { kind: 'missing' };
+  }
+  if (targetHostIds.length === 1) {
+    return { kind: 'single', targetHostId: targetHostIds[0]! };
+  }
+  return { kind: 'multiple', targetHostIds };
+}
+
 export type ScenarioGraphEdge = {
   id: string;
   fromNodeId: string;

@@ -24,7 +24,15 @@ export function createEnterpriseRangeSkeleton(): TemplateNode[] {
       aclRules: [],
       nat: {
         snatEnabled: false,
-        dnatMappings: [],
+        dnatMappings: [
+          {
+            key: 'switch-core-dnat-entry',
+            targetHostId: 'ecs-core-1',
+            externalPort: 80,
+            internalPort: 80,
+            protocol: 'tcp',
+          },
+        ],
       },
     },
     {
@@ -35,9 +43,9 @@ export function createEnterpriseRangeSkeleton(): TemplateNode[] {
       instanceName: 'ecs-core-1',
       hostName: 'core-entry',
       zoneKey: 'core',
-      role: 'entry',
+      role: 'host',
       privateIp: '10.0.0.10',
-      exposePublic: true,
+      exposePublic: false,
       image: 'aliyun_linux_3_x64_20G_alibase',
       imageName: 'aliyun_linux_3_x64_20G_alibase',
       imageId: 'aliyun_linux_3_x64_20G_alibase',

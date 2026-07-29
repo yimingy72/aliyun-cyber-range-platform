@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "@aliyun-cyber-range/scenario-runtime": "workspace:*",
+    "@dagrejs/dagre": "^3.0.0",
+    "@xyflow/react": "^12.11.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.25.0",

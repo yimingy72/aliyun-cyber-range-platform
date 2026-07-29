@@ -4,6 +4,96 @@ import { createEnterpriseRangeSkeleton } from './template-topology-skeleton';
 import { syncTopologySpecFromNodes } from './template-topology-sync';
 
 describe('syncTopologySpecFromNodes', () => {
+  it('derives the public entry exclusively from a single switch DNAT target', () => {
+    const skeleton = createEnterpriseRangeSkeleton();
+    const topologySpec = syncTopologySpecFromNodes({
+      nodes: skeleton.map((node) => {
+        if (node.kind === 'switch') {
+          return {
+            ...node,
+            nat: {
+              ...node.nat,
+              dnatMappings: [
+                {
+                  key: 'dnat-entry',
+                  targetHostId: 'ecs-core-1',
+                  externalPort: 80,
+                  internalPort: 80,
+                  protocol: 'tcp',
+                },
+              ],
+            },
+          };
+        }
+
+        if (node.kind === 'ecs') {
+          return {
+            ...node,
+            role: 'host',
+            exposePublic: false,
+          };
+        }
+
+        return node;
+      }) as any,
+    });
+
+    expect(topologySpec.publicEntry).toEqual({
+      hostKey: 'ecs-core-1',
+      protocols: [
+        { protocol: 'ssh', port: 22 },
+        { protocol: 'http', port: 80 },
+      ],
+    });
+    expect(topologySpec.hosts).toEqual([
+      expect.objectContaining({
+        key: 'ecs-core-1',
+        role: 'host',
+        exposePublic: true,
+      }),
+    ]);
+    expect(topologySpec.executionPolicies).toEqual(
+      expect.objectContaining({
+        allowSshIngress: true,
+        allowHttpIngress: true,
+      }),
+    );
+  });
+
+  it('does not infer a public entry from legacy host flags when DNAT has no unique target', () => {
+    const skeleton = createEnterpriseRangeSkeleton();
+    const topologySpec = syncTopologySpecFromNodes({
+      nodes: skeleton.map((node) =>
+        node.kind === 'switch'
+          ? {
+              ...node,
+              nat: {
+                ...node.nat,
+                dnatMappings: [],
+              },
+            }
+          : node,
+      ) as any,
+    });
+
+    expect(topologySpec.publicEntry).toEqual({
+      hostKey: '',
+      protocols: [],
+    });
+    expect(topologySpec.hosts).toEqual([
+      expect.objectContaining({
+        key: 'ecs-core-1',
+        exposePublic: false,
+      }),
+    ]);
+    expect(topologySpec.executionPolicies).toEqual(
+      expect.objectContaining({
+        allowSshIngress: false,
+        allowHttpIngress: false,
+      }),
+    );
+  });
+
   it('builds a phase-one topologySpec from the router + switch + ecs skeleton nodes', () => {
     const skeleton = createEnterpriseRangeSkeleton();
     const topologySpec = syncTopologySpecFromNodes({ nodes: skeleton as any });
@@ -20,7 +110,11 @@ describe('syncTopologySpecFromNodes', () => {
         aclRules: expect.any(Array),
         nat: expect.objectContaining({
           snatEnabled: false,
-          dnatMappings: [],
+          dnatMappings: [
+            expect.objectContaining({
+              targetHostId: 'ecs-core-1',
+            }),
+          ],
         }),
       }),
       expect.objectContaining({
@@ -53,7 +147,7 @@ describe('syncTopologySpecFromNodes', () => {
         name: '业务 ECS',
         hostName: 'core-entry',
         zoneKey: 'core',
-        role: 'entry',
+        role: 'host',
         privateIp: '10.0.0.10',
         exposePublic: true,
       },
@@ -87,7 +181,15 @@ describe('syncTopologySpecFromNodes', () => {
           aclRules: [],
           nat: {
             snatEnabled: true,
-            dnatMappings: [],
+            dnatMappings: [
+              {
+                key: 'dnat-app',
+                targetHostId: 'ecs-app-1',
+                externalPort: 80,
+                internalPort: 80,
+                protocol: 'tcp',
+              },
+            ],
           },
         },
         {
@@ -95,9 +197,9 @@ describe('syncTopologySpecFromNodes', () => {
           kind: 'ecs',
           label: '应用主机',
           zoneKey: 'legacy-zone',
-          role: 'entry',
+          role: 'host',
           privateIp: '10.255.255.10',
-          exposePublic: true,
+          exposePublic: false,
           image: 'aliyun_linux_3_x64_20G_alibase',
           instanceName: 'app-01',
           hostName: 'app-01',
@@ -144,7 +246,7 @@ describe('syncTopologySpecFromNodes', () => {
         name: '应用主机',
         hostName: 'app-01',
         zoneKey: 'app',
-        role: 'entry',
+        role: 'host',
         privateIp: '10.77.20.10',
         exposePublic: true,
       },

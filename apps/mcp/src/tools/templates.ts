@@ -82,7 +82,7 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_create',
     title: '创建靶场模板',
-    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。ECS 顶层 privateIp 必须与第一张 NIC 一致；端口全开统一填写 1/65535，平台会转换为阿里云所需的 -1/-1。必须有且仅有一个 exposePublic=true 的入口 ECS，且该 ECS 必须是至少一条 DNAT 的目标。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、云厂商、IaC、模块路径及其他派生元数据由平台管理。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。ECS 顶层 privateIp 必须与第一张 NIC 一致；端口全开统一填写 1/65535，平台会转换为阿里云所需的 -1/-1。请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，且所有 DNAT 必须指向同一台 ECS；该 ECS 会自动成为公网入口，无需设置 exposePublic。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、云厂商、IaC、模块路径及其他派生元数据由平台管理。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     outputSchema: resourceOutputSchema,

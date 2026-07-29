@@ -1,6 +1,10 @@
 import { resolvePreferredInstanceTypes } from './instance-type-catalog';
 import { normalizeAlibabaCloudPortRange } from './alibaba-cloud-port-range';
-import { getPlatformDefaultSecurityGroupRules, type TemplateNode } from './scenario-graph';
+import {
+  getPlatformDefaultSecurityGroupRules,
+  resolveUniqueDnatEntryHost,
+  type TemplateNode,
+} from './scenario-graph';
 import type {
   ScenarioTemplateAclRule,
   ScenarioTemplateAccessConfig,
@@ -168,7 +172,9 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
     (node): node is Extract<TemplateNode, { kind: 'ecs' }> => node.kind === 'ecs',
   );
   const switchById = new Map(switchNodes.map((node) => [node.id, node]));
-  const entryHost = hostNodes.find((node) => node.exposePublic || node.role === 'entry') ?? hostNodes[0] ?? null;
+  const entryResolution = resolveUniqueDnatEntryHost(input.topologyGraph.nodes);
+  const entryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : undefined;
+  const entryHost = hostNodes.find((node) => node.id === entryHostId) ?? null;
   const entryHostPlacement = entryHost ? readHostPrimaryPlacement(entryHost, switchById, switchNodes) : null;
 
   const derivedNatSwitches = switchNodes.filter((node) => {
@@ -426,7 +432,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
         role: node.role,
         zoneKey: primaryPlacement.zoneKey,
         primaryPrivateIp: primaryPlacement.privateIp,
-        exposePublic: node.exposePublic,
+        exposePublic: node.id === entryHostId,
         image: node.image || node.imageId || node.imageName,
         platformImageAssetId: node.platformImageAssetId,
         imageId: node.imageId,

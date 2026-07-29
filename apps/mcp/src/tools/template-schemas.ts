@@ -31,7 +31,7 @@ const securityRuleSchema = z.object({
 }).passthrough();
 const dnatMappingSchema = z.object({
   key: identifier,
-  targetHostId: identifier.describe('与本交换机连接且唯一 exposePublic=true 的公网入口 ECS ID。'),
+  targetHostId: identifier.describe('DNAT 目标 ECS ID。所有 DNAT 映射必须指向同一台、与所属交换机连接的 ECS；该 ECS 会自动成为公网入口。'),
   externalPort: z.number().int().min(1).max(65535),
   internalPort: z.number().int().min(1).max(65535),
   protocol: z.enum(['tcp', 'udp']),
@@ -80,7 +80,7 @@ const ecsNodeSchema = z.object({
   zoneKey: identifier,
   role: identifier,
   privateIp: identifier.describe('Must equal the first NIC privateIp.'),
-  exposePublic: z.boolean(),
+  exposePublic: z.boolean().optional().default(false),
   image: identifier.describe('Human-readable image displayName copied from the selected platform image asset. It is not the image identity.'),
   platformImageAssetId: identifier.describe('The unique enabled platform image asset selected by the conversion Skill.'),
   imageId: identifier.describe('The Alibaba Cloud imageId resolved from platformImageAssetId.'),

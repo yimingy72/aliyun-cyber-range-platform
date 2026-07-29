@@ -4,7 +4,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
+import {
+  resolveUniqueDnatEntryHost,
+  validateAliyunEcsPassword,
+} from '@aliyun-cyber-range/scenario-runtime';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -39,8 +42,21 @@ import type {
 import { compileTopologyGraph } from '../../../lib/template-compiler';
 import { syncTopologySpecFromNodes } from '../../../lib/template-topology-sync';
 import { useAdminSession } from '../use-admin-session';
-import { TemplateCanvas } from './template-canvas';
-import { TemplateNodePalette } from './template-node-palette';
+import { readTopologyViewport, writeTopologyViewport } from './topology-flow-adapter';
+import {
+  createTopologyHistory,
+  pushTopologySnapshot,
+  redoTopology,
+  undoTopology,
+  type TopologyHistory,
+} from './topology-flow-history';
+import { layoutTopology } from './topology-flow-layout';
+import { TopologyFlowCanvas } from './topology-flow-canvas';
+import type {
+  TopologySelection,
+  TopologySnapshot,
+  TopologyViewport,
+} from './topology-flow-types';
 
 type TemplateEditorScreenProps = {
   templateId?: string;
@@ -48,7 +64,7 @@ type TemplateEditorScreenProps = {
   template?: RangeTemplate;
 };
 
-type DraftTopologyGraph = ScenarioGraphDraft;
+type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
 export type TemplateEdge = ScenarioGraphEdge;
 type TemplateEditorEcsNode = EcsTemplateNode & { platformImageAssetId?: string };
 const SCENARIO_GRAPH_SCHEMA_VERSION = '2.0.0';
@@ -60,6 +76,28 @@ type TopologyCachePayload = {
   topologyGraph: DraftTopologyGraph;
   persistedGraphSignature: string;
 };
+
+type NewTemplateSession = {
+  draftId?: unknown;
+  name?: unknown;
+  description?: unknown;
+};
+
+type NewTemplateDraft = RangeTemplate & {
+  draftId: string;
+};
+
+function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
+  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
+    return false;
+  }
+
+  const leftNodeIds = new Set(left.nodeIds);
+  const leftEdgeIds = new Set(left.edgeIds);
+
+  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
+    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
+}
 
 function TemplatePropertyPanelPlaceholder() {
   return (
@@ -200,7 +238,13 @@ function readFinalInstanceType(node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'i
 }
 
 function readTopologyCacheKey(template: RangeTemplate | null | undefined, fallbackTemplateId?: string) {
-  const resolvedTemplateId = template?.id ?? fallbackTemplateId ?? null;
+  const draftId =
+    template?.id === 'new' && typeof (template as Partial<NewTemplateDraft>).draftId === 'string'
+      ? (template as NewTemplateDraft).draftId
+      : null;
+  const resolvedTemplateId = draftId
+    ? `new:${draftId}`
+    : template?.id ?? fallbackTemplateId ?? null;
   const revision = template?.revision ?? null;
 
   if (!resolvedTemplateId || revision === null) {
@@ -257,6 +301,9 @@ function readTopologyGraphFromCache(
             : SCENARIO_GRAPH_SCHEMA_VERSION,
         nodes: topologyGraph.nodes as DraftTopologyGraph['nodes'],
         edges: topologyGraph.edges as DraftTopologyGraph['edges'],
+        ...(readTopologyViewport(topologyGraph.viewport)
+          ? { viewport: readTopologyViewport(topologyGraph.viewport)! }
+          : {}),
       };
     }
 
@@ -300,16 +347,22 @@ function readTemplateTopologyGraph(template: RangeTemplate | null) {
   return topologyGraph && typeof topologyGraph === 'object' ? topologyGraph : null;
 }
 
-function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTemplateId?: string) {
-  const persistedTopologyGraph = readTemplateTopologyGraph(template);
-  const currentPersistedGraphSignature = readGraphSignature(
-    persistedTopologyGraph && typeof persistedTopologyGraph === 'object' && Array.isArray((persistedTopologyGraph as { nodes?: unknown }).nodes)
-      ? readNodesFromRawTopologyGraph(persistedTopologyGraph)
+function readPersistedTopologyGraphSignature(template: RangeTemplate | null) {
+  const topologyGraph = readTemplateTopologyGraph(template);
+
+  return readGraphSignature(
+    topologyGraph && Array.isArray((topologyGraph as { nodes?: unknown }).nodes)
+      ? readNodesFromRawTopologyGraph(topologyGraph)
       : [],
-    persistedTopologyGraph && typeof persistedTopologyGraph === 'object' && Array.isArray((persistedTopologyGraph as { edges?: unknown }).edges)
-      ? readEdgesFromRawTopologyGraph(persistedTopologyGraph)
+    topologyGraph && Array.isArray((topologyGraph as { edges?: unknown }).edges)
+      ? readEdgesFromRawTopologyGraph(topologyGraph)
       : [],
   );
+}
+
+function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTemplateId?: string) {
+  const persistedTopologyGraph = readTemplateTopologyGraph(template);
+  const currentPersistedGraphSignature = readPersistedTopologyGraphSignature(template);
 
   return (
     readTopologyGraphFromCache(readTopologyCacheKey(template, fallbackTemplateId), currentPersistedGraphSignature) ??
@@ -329,6 +382,14 @@ function readNodesFromRawTopologyGraph(topologyGraph: Record<string, unknown>) {
 function readEdgesFromRawTopologyGraph(topologyGraph: Record<string, unknown>) {
   const rawEdges = (topologyGraph as { edges?: unknown }).edges;
   return Array.isArray(rawEdges) ? (rawEdges as TemplateEdge[]) : [];
+}
+
+function readViewportFromTemplate(template: RangeTemplate | null, fallbackTemplateId?: string) {
+  const topologyGraph = readResolvedTopologyGraph(template, fallbackTemplateId);
+
+  return topologyGraph && typeof topologyGraph === 'object'
+    ? readTopologyViewport((topologyGraph as { viewport?: unknown }).viewport)
+    : null;
 }
 
 function parseIpv4ToNumber(value: string) {
@@ -373,15 +434,6 @@ function readStoredPosition(
     x: typeof candidate.x === 'number' ? candidate.x : fallbackPosition.x,
     y: typeof candidate.y === 'number' ? candidate.y : fallbackPosition.y,
   };
-}
-
-function isDraftBlueprintComplete(topologySpec: ReturnType<typeof syncTopologySpecFromNodes>) {
-  return (
-    topologySpec.networkZones.length > 0 &&
-    topologySpec.hosts.length > 0 &&
-    topologySpec.publicEntry.hostKey.trim().length > 0 &&
-    topologySpec.publicEntry.protocols.length > 0
-  );
 }
 
 function readDefaultSwitchCidr(ordinal: number) {
@@ -774,8 +826,16 @@ function buildScenarioTemplateMetadata(template: RangeTemplate): ScenarioTemplat
   };
 }
 
-function readNewTemplateSession(): RangeTemplate {
-  let seed: { name?: unknown; description?: unknown } = {};
+function createNewTemplateDraftId() {
+  if (typeof window !== 'undefined' && typeof window.crypto?.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+
+  return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function readNewTemplateSession(): NewTemplateDraft {
+  let seed: NewTemplateSession = {};
 
   if (typeof window !== 'undefined') {
     try {
@@ -785,7 +845,20 @@ function readNewTemplateSession(): RangeTemplate {
     }
   }
 
+  const draftId =
+    typeof seed.draftId === 'string' && seed.draftId.trim().length > 0
+      ? seed.draftId
+      : createNewTemplateDraftId();
+
+  if (typeof window !== 'undefined' && seed.draftId !== draftId) {
+    window.sessionStorage.setItem(
+      NEW_TEMPLATE_SESSION_KEY,
+      JSON.stringify({ ...seed, draftId }),
+    );
+  }
+
   return {
+    draftId,
     id: 'new',
     name: typeof seed.name === 'string' && seed.name.trim() ? seed.name.trim() : '未命名拓扑',
     description: typeof seed.description === 'string' ? seed.description.trim() : '',
@@ -1070,9 +1143,11 @@ export function TemplateEditorScreen({
   const [edges, setEdges] = useState<TemplateEdge[]>(() =>
     readEdgesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
   );
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [pendingLinkSourceNodeId, setPendingLinkSourceNodeId] = useState<string | null>(null);
+  const [viewport, setViewport] = useState<TopologyViewport | null>(() =>
+    readViewportFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
+  );
+  const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
+  const [isPropertyPanelOpen, setIsPropertyPanelOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [platformImageAssets, setPlatformImageAssets] = useState<PlatformImageAsset[]>([]);
@@ -1081,33 +1156,50 @@ export function TemplateEditorScreen({
   );
   const topologyCacheKey = useMemo(() => readTopologyCacheKey(template, templateId), [template, templateId]);
   const graphSignature = useMemo(() => readGraphSignature(nodes, edges), [edges, nodes]);
-  const lastPersistedGraphRef = useRef(
-    readGraphSignature(
-      readNodesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
-      readEdgesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
-    ),
-  );
+  const lastPersistedGraphRef = useRef('');
+
+  if (!lastPersistedGraphRef.current) {
+    lastPersistedGraphRef.current = readPersistedTopologyGraphSignature(template);
+  }
   const instanceTypeAvailabilityRequestRef = useRef(0);
+  const historyRef = useRef<TopologyHistory | null>(null);
+
+  if (!historyRef.current) {
+    historyRef.current = createTopologyHistory({ nodes, edges, viewport });
+  }
+
+  const [, setHistoryState] = useState<TopologyHistory>(historyRef.current);
 
   function applyTemplateState(nextTemplate: RangeTemplate | null) {
     const nextNodes = readNodesFromTemplate(nextTemplate, templateId);
     const nextEdges = readEdgesFromTemplate(nextTemplate, templateId);
+    const nextViewport = readViewportFromTemplate(nextTemplate, templateId);
     setTemplate(nextTemplate);
     setNodes(nextNodes);
     setEdges(nextEdges);
-    lastPersistedGraphRef.current = readGraphSignature(nextNodes, nextEdges);
+    setViewport(nextViewport);
+    setSelection({ nodeIds: [], edgeIds: [] });
+    setIsPropertyPanelOpen(false);
+    lastPersistedGraphRef.current = readPersistedTopologyGraphSignature(nextTemplate);
+    historyRef.current = createTopologyHistory({
+      nodes: nextNodes,
+      edges: nextEdges,
+      viewport: nextViewport,
+    });
+    setHistoryState(historyRef.current);
   }
 
-function buildDraftUpdatePayload(
-  currentNodes: TemplateNode[],
-  currentEdges: TemplateEdge[],
-) {
+  function buildDraftUpdatePayload(
+    currentNodes: TemplateNode[],
+    currentEdges: TemplateEdge[],
+    currentViewport: TopologyViewport | null,
+  ) {
     return {
-      topologyGraph: {
+      topologyGraph: writeTopologyViewport({
         schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
         nodes: currentNodes,
         edges: currentEdges,
-      } satisfies DraftTopologyGraph,
+      } satisfies ScenarioGraphDraft, currentViewport) satisfies DraftTopologyGraph,
     };
   }
 
@@ -1128,9 +1220,10 @@ function buildDraftUpdatePayload(
     currentTemplate: RangeTemplate,
     currentNodes: TemplateNode[],
     currentEdges: TemplateEdge[],
+    currentViewport: TopologyViewport | null,
   ) {
     const normalizedNodes = normalizeNodesForValidatedPayload(currentNodes);
-    const graphPayload = buildDraftUpdatePayload(normalizedNodes, currentEdges);
+    const graphPayload = buildDraftUpdatePayload(normalizedNodes, currentEdges, currentViewport);
     const topologyGraph = graphPayload.topologyGraph;
     const switchNodes = normalizedNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
     const hostNodes = normalizedNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs');
@@ -1228,13 +1321,39 @@ function buildDraftUpdatePayload(
       );
     });
 
+    const entryResolution = resolveUniqueDnatEntryHost(normalizedNodes);
+
+    if (entryResolution.kind === 'missing') {
+      validationErrors.push('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
+    } else if (entryResolution.kind === 'multiple') {
+      validationErrors.push('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
+    } else {
+      const entryHost = hostNodes.find((hostNode) => hostNode.id === entryResolution.targetHostId);
+
+      if (!entryHost) {
+        validationErrors.push(`DNAT 目标 ECS 不存在：${entryResolution.targetHostId}`);
+      } else {
+        const entryMapping = switchNodes
+          .flatMap((switchNode) =>
+            (switchNode.nat?.dnatMappings ?? []).map((mapping) => ({
+              switchNode,
+              mapping,
+            })),
+          )
+          .find(({ mapping }) => mapping.targetHostId === entryHost.id);
+
+        if (
+          entryMapping
+          && !(entryHost.nics ?? []).some((nic) => nic.switchId === entryMapping.switchNode.id)
+        ) {
+          validationErrors.push(`DNAT 目标 ECS 未连接到交换机：${entryMapping.mapping.key}`);
+        }
+      }
+    }
+
     const topologySpec = syncTopologySpecFromNodes({
       nodes: normalizedNodes,
     });
-
-    if (!isDraftBlueprintComplete(topologySpec)) {
-      validationErrors.push('缺少可作为入口的 ECS 或基础连线未完成');
-    }
 
     if (validationErrors.length > 0) {
       throw new Error(`拓扑检测未通过：${validationErrors.join('；')}`);
@@ -1367,8 +1486,11 @@ function buildDraftUpdatePayload(
   }, [apiBaseUrl, session.isReady, session.token]);
 
   const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
-    [nodes, selectedNodeId],
+    () =>
+      selection.nodeIds.length === 1 && selection.edgeIds.length === 0
+        ? nodes.find((node) => node.id === selection.nodeIds[0]) ?? null
+        : null,
+    [nodes, selection],
   );
   const selectedEcsNode = useMemo(
     () => (selectedNode?.kind === 'ecs' ? selectedNode : null),
@@ -1435,12 +1557,16 @@ function buildDraftUpdatePayload(
       return;
     }
 
-    writeTopologyGraphToCache(topologyCacheKey, {
-      schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
-      nodes,
-      edges,
-    }, lastPersistedGraphRef.current);
-  }, [edges, nodes, template, topologyCacheKey]);
+    writeTopologyGraphToCache(
+      topologyCacheKey,
+      writeTopologyViewport({
+        schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
+        nodes,
+        edges,
+      } satisfies ScenarioGraphDraft, viewport),
+      lastPersistedGraphRef.current,
+    );
+  }, [edges, nodes, template, topologyCacheKey, viewport]);
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1459,8 +1585,65 @@ function buildDraftUpdatePayload(
     return nextMap;
   }, [edges, nodes]);
 
-  function handleAddNode(kind: string) {
-    if (isSubmitting) {
+  function commitSnapshot(next: TopologySnapshot, message: string) {
+    const nextHistory = pushTopologySnapshot(historyRef.current!, next);
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    setViewport(next.viewport);
+    setStatusMessage(message);
+  }
+
+  function restoreHistory(nextHistory: TopologyHistory, message: string) {
+    if (nextHistory === historyRef.current) {
+      return;
+    }
+
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
+    setNodes(nextHistory.present.nodes);
+    setEdges(nextHistory.present.edges);
+    setViewport(nextHistory.present.viewport);
+    setSelection({ nodeIds: [], edgeIds: [] });
+    setIsPropertyPanelOpen(false);
+    setStatusMessage(message);
+  }
+
+  function handleSelectionChange(nextSelection: TopologySelection) {
+    const nodeIds = [...new Set(nextSelection.nodeIds.filter((nodeId) => nodes.some((node) => node.id === nodeId)))];
+    const edgeIds = [...new Set(nextSelection.edgeIds.filter((edgeId) => edges.some((edge) => edge.id === edgeId)))];
+    const nextSelectionState = { nodeIds, edgeIds };
+    const selectionChanged = !hasSameTopologySelection(selection, nextSelectionState);
+    const isSingleNodeSelection = nodeIds.length === 1 && edgeIds.length === 0;
+
+    setSelection((current) => {
+      return hasSameTopologySelection(current, nextSelectionState) ? current : nextSelectionState;
+    });
+
+    if (isSingleNodeSelection && selectionChanged) {
+      setIsPropertyPanelOpen(true);
+    }
+
+    if (nodeIds.length === 0 && edgeIds.length > 0) {
+      setStatusMessage('已选择连线，可执行删除。');
+    }
+  }
+
+  function handleFlowNodeActivate(nodeId: string) {
+    if (!nodes.some((node) => node.id === nodeId)) {
+      return;
+    }
+
+    const nextSelection = { nodeIds: [nodeId], edgeIds: [] };
+    setSelection((current) => (
+      hasSameTopologySelection(current, nextSelection) ? current : nextSelection
+    ));
+    setIsPropertyPanelOpen(true);
+  }
+
+  function handleAddNode(kind: string, position?: { x: number; y: number }) {
+    if (isSubmitting || (kind !== 'router' && kind !== 'switch' && kind !== 'ecs')) {
       return;
     }
 
@@ -1497,15 +1680,21 @@ function buildDraftUpdatePayload(
               readDefaultNodeLabel('ecs', kindCount),
               'core',
               '',
-              nextIndex === 1,
+              false,
               kindCount,
             );
+    const nextPosition =
+      position && Number.isFinite(position.x) && Number.isFinite(position.y)
+        ? position
+        : nextNode.position;
+    const positionedNode = nextPosition ? { ...nextNode, position: nextPosition } : nextNode;
 
-    setNodes((previous) => [...previous, nextNode]);
-    setSelectedNodeId(nextNode.id);
-    setSelectedEdgeId(null);
-    setPendingLinkSourceNodeId(null);
-    setStatusMessage(`已添加${nextNode.label}，可继续补充属性和关系。`);
+    commitSnapshot(
+      { nodes: [...nodes, positionedNode], edges, viewport },
+      `已添加${positionedNode.label}，可继续补充属性和关系。`,
+    );
+    setSelection({ nodeIds: [positionedNode.id], edgeIds: [] });
+    setIsPropertyPanelOpen(true);
   }
 
   function handleUpdateNode(nodeId: string, nextNode: TemplateNode) {
@@ -1513,96 +1702,37 @@ function buildDraftUpdatePayload(
       return;
     }
 
-    setNodes((previous) =>
-      previous.map((node) => {
-        if (node.id !== nodeId) {
-          return node;
-        }
+    const nextNodes = nodes.map((node) => {
+      if (node.id !== nodeId) {
+        return node;
+      }
 
-        if (node.kind !== 'ecs' || nextNode.kind !== 'ecs') {
-          return nextNode;
-        }
+      if (node.kind !== 'ecs' || nextNode.kind !== 'ecs') {
+        return nextNode;
+      }
 
-        const primaryPrivateIp = nextNode.nics?.[0]?.privateIp?.trim() || nextNode.privateIp.trim();
-        return {
-          ...nextNode,
-          privateIp: primaryPrivateIp,
-          ...applyEconomyInstanceType(nextNode, {
-            preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory,
-          }),
-        };
-      }),
-    );
+      const primaryPrivateIp = nextNode.nics?.[0]?.privateIp?.trim() || nextNode.privateIp.trim();
+      return {
+        ...nextNode,
+        privateIp: primaryPrivateIp,
+        ...applyEconomyInstanceType(nextNode, {
+          preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory,
+        }),
+      };
+    });
+
+    commitSnapshot({ nodes: nextNodes, edges, viewport }, '已更新节点属性。');
   }
 
-  function handleMoveNode(nodeId: string, position: { x: number; y: number }) {
+  function handleFlowConnect(connection: { source: string; target: string }) {
     if (isSubmitting) {
       return;
     }
 
-    setNodes((previous) =>
-      previous.map((node) =>
-        node.id === nodeId
-          ? {
-              ...node,
-              position,
-            }
-          : node,
-      ),
-    );
-  }
-
-  function handleOpenNode(nodeId: string) {
-    setSelectedNodeId(nodeId);
-    setSelectedEdgeId(null);
-    setPendingLinkSourceNodeId(null);
-  }
-
-  function handleBoardClick() {
-    if (!pendingLinkSourceNodeId && !statusMessage && !selectedEdgeId) {
-      return;
-    }
-
-    setPendingLinkSourceNodeId(null);
-    setSelectedEdgeId(null);
-    setStatusMessage('');
-  }
-
-  function handleSelectEdge(edgeId: string) {
-    setSelectedNodeId(null);
-    setSelectedEdgeId(edgeId);
-    setPendingLinkSourceNodeId(null);
-    setStatusMessage('已选择连线，可执行删除。');
-  }
-
-  function handleSelectNode(nodeId: string) {
-    if (isSubmitting) {
-      return;
-    }
-
-    if (!pendingLinkSourceNodeId) {
-      setSelectedNodeId(nodeId);
-      setSelectedEdgeId(null);
-      setPendingLinkSourceNodeId(nodeId);
-      setStatusMessage('已选择连线起点，请点击目标节点完成连接。');
-      return;
-    }
-
-    if (pendingLinkSourceNodeId === nodeId) {
-      setPendingLinkSourceNodeId(null);
-      setSelectedNodeId(nodeId);
-      setSelectedEdgeId(null);
-      setStatusMessage('已取消当前连线起点。');
-      return;
-    }
-
-    const sourceNode = nodes.find((node) => node.id === pendingLinkSourceNodeId) ?? null;
-    const targetNode = nodes.find((node) => node.id === nodeId) ?? null;
+    const sourceNode = nodes.find((node) => node.id === connection.source) ?? null;
+    const targetNode = nodes.find((node) => node.id === connection.target) ?? null;
 
     if (!sourceNode || !targetNode) {
-      setPendingLinkSourceNodeId(null);
-      setSelectedNodeId(nodeId);
-      setSelectedEdgeId(null);
       setStatusMessage('连线节点不存在，请重新选择。');
       return;
     }
@@ -1610,29 +1740,18 @@ function buildDraftUpdatePayload(
     const normalizedPair = normalizeManualEdgePair(sourceNode, targetNode);
     const canonicalSourceNode = normalizedPair?.fromNode ?? sourceNode;
     const canonicalTargetNode = normalizedPair?.toNode ?? targetNode;
-
     const existingEdge = edges.find(
       (edge) => edge.fromNodeId === canonicalSourceNode.id && edge.toNodeId === canonicalTargetNode.id,
     );
 
     if (existingEdge) {
-      setPendingLinkSourceNodeId(null);
-      setSelectedNodeId(nodeId);
-      setSelectedEdgeId(null);
       setStatusMessage(`已存在 ${sourceNode.label} -> ${targetNode.label} 的连线。`);
       return;
     }
 
-    const validation = validateManualEdge({
-      sourceNode,
-      targetNode,
-      edges,
-    });
+    const validation = validateManualEdge({ sourceNode, targetNode, edges });
 
     if (!validation.ok) {
-      setPendingLinkSourceNodeId(null);
-      setSelectedNodeId(nodeId);
-      setSelectedEdgeId(null);
       setStatusMessage(validation.reason);
       return;
     }
@@ -1644,69 +1763,121 @@ function buildDraftUpdatePayload(
       relationType: 'manual',
       label: `${canonicalSourceNode.label} -> ${canonicalTargetNode.label}`,
     };
+    const nextNodes =
+      canonicalSourceNode.kind === 'switch' && canonicalTargetNode.kind === 'ecs'
+        ? nodes.map((node) =>
+            node.id === canonicalTargetNode.id && node.kind === 'ecs'
+              ? syncHostNicsWithLinkedSwitch(node, canonicalSourceNode)
+              : node,
+          )
+        : nodes;
 
-    if (canonicalSourceNode.kind === 'switch' && canonicalTargetNode.kind === 'ecs') {
-      setNodes((previous) =>
-        previous.map((node) =>
-          node.id === canonicalTargetNode.id && node.kind === 'ecs'
-            ? syncHostNicsWithLinkedSwitch(node, canonicalSourceNode as SwitchTemplateNode)
-            : node,
-        ),
-      );
-    }
-
-    setEdges((previous) => [...previous, nextEdge]);
-    setPendingLinkSourceNodeId(null);
-    setSelectedNodeId(nodeId);
-    setSelectedEdgeId(null);
-    setStatusMessage(`已创建连线：${canonicalSourceNode.label} -> ${canonicalTargetNode.label}`);
+    commitSnapshot(
+      { nodes: nextNodes, edges: [...edges, nextEdge], viewport },
+      `已创建连线：${canonicalSourceNode.label} -> ${canonicalTargetNode.label}`,
+    );
+    setSelection({ nodeIds: [canonicalTargetNode.id], edgeIds: [] });
+    setIsPropertyPanelOpen(true);
   }
 
-  function handleDeleteSelectedNode() {
+  function handleDeleteSelection() {
     if (isSubmitting) {
       return;
     }
 
-    if (selectedEdgeId) {
-      const targetEdge = edges.find((edge) => edge.id === selectedEdgeId) ?? null;
+    const selectedNodeIds = new Set(selection.nodeIds);
+    const selectedEdgeIds = new Set(selection.edgeIds);
+    const deletedNodes = nodes.filter((node) => selectedNodeIds.has(node.id));
+    const deletedEdges = edges.filter(
+      (edge) =>
+        selectedEdgeIds.has(edge.id)
+        || selectedNodeIds.has(edge.fromNodeId)
+        || selectedNodeIds.has(edge.toNodeId),
+    );
 
-      if (!targetEdge) {
-        setSelectedEdgeId(null);
-        setStatusMessage('当前选中的连线不存在。');
-        return;
-      }
-
-      setNodes((previous) => cleanupEdgeReferencesAfterDeletion(previous, targetEdge));
-      setEdges((previous) => previous.filter((edge) => edge.id !== selectedEdgeId));
-      setSelectedEdgeId(null);
-      setPendingLinkSourceNodeId(null);
-      setStatusMessage('已删除连线');
-      return;
-    }
-
-    if (!selectedNodeId) {
+    if (deletedNodes.length === 0 && deletedEdges.length === 0) {
       setStatusMessage('请先选择一个节点或连线，再执行删除。');
       return;
     }
 
-    const targetNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+    let nextNodes = nodes.filter((node) => !selectedNodeIds.has(node.id));
 
-    if (!targetNode) {
-      setStatusMessage('当前选中的节点不存在。');
+    for (const deletedNode of deletedNodes) {
+      nextNodes = cleanupNodeReferencesAfterDeletion(nextNodes, deletedNode);
+    }
+
+    for (const deletedEdge of deletedEdges) {
+      nextNodes = cleanupEdgeReferencesAfterDeletion(nextNodes, deletedEdge);
+    }
+
+    const nextEdges = edges.filter((edge) => !deletedEdges.includes(edge));
+    const message =
+      deletedNodes.length === 1 && selection.edgeIds.length === 0
+        ? `已删除节点：${deletedNodes[0]!.label}`
+        : deletedNodes.length === 0 && deletedEdges.length === 1
+          ? '已删除连线'
+          : `已删除 ${deletedNodes.length} 个节点和 ${deletedEdges.length} 条连线`;
+
+    commitSnapshot({ nodes: nextNodes, edges: nextEdges, viewport }, message);
+    setSelection({ nodeIds: [], edgeIds: [] });
+    setIsPropertyPanelOpen(false);
+  }
+
+  function handlePositionsCommit(positions: Array<{ id: string; position: { x: number; y: number } }>) {
+    if (isSubmitting) {
       return;
     }
 
-    setNodes((previous) =>
-      cleanupNodeReferencesAfterDeletion(
-        previous.filter((node) => node.id !== selectedNodeId),
-        targetNode,
-      ),
+    const positionsById = new Map(
+      positions
+        .filter(({ position }) => Number.isFinite(position.x) && Number.isFinite(position.y))
+        .map(({ id, position }) => [id, position]),
     );
-    setEdges((previous) => previous.filter((edge) => edge.fromNodeId !== selectedNodeId && edge.toNodeId !== selectedNodeId));
-    setPendingLinkSourceNodeId((previous) => (previous === selectedNodeId ? null : previous));
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
-    setStatusMessage(`已删除节点：${targetNode.label}`);
+    const nextNodes = nodes.map((node) =>
+      positionsById.has(node.id)
+        ? { ...node, position: positionsById.get(node.id)! }
+        : node,
+    );
+
+    commitSnapshot({ nodes: nextNodes, edges, viewport }, '已移动选中节点。');
+  }
+
+  function handleViewportCommit(nextViewport: TopologyViewport) {
+    const validatedViewport = readTopologyViewport(nextViewport);
+
+    if (!validatedViewport) {
+      return;
+    }
+
+    const currentHistory = historyRef.current!;
+    historyRef.current = {
+      ...currentHistory,
+      present: {
+        ...currentHistory.present,
+        viewport: validatedViewport,
+      },
+    };
+    setViewport(validatedViewport);
+  }
+
+  function handleLayoutAll() {
+    if (isSubmitting || nodes.length === 0) {
+      return;
+    }
+
+    try {
+      commitSnapshot({ nodes: layoutTopology(nodes, edges), edges, viewport }, '');
+    } catch {
+      setStatusMessage('自动布局失败，请保留当前节点位置。');
+    }
+  }
+
+  function handleUndo() {
+    restoreHistory(undoTopology(historyRef.current!), '已撤销上一步拓扑操作。');
+  }
+
+  function handleRedo() {
+    restoreHistory(redoTopology(historyRef.current!), '已重做上一步拓扑操作。');
   }
 
   async function handleDetectTopology() {
@@ -1724,7 +1895,7 @@ function buildDraftUpdatePayload(
     let payload: ReturnType<typeof buildValidatedDraftPayload>;
 
     try {
-      payload = buildValidatedDraftPayload(template, nodes, edges);
+      payload = buildValidatedDraftPayload(template, nodes, edges, viewport);
     } catch (error) {
       setStatusMessage(readPersistTopologyErrorMessage(error));
       return;
@@ -1756,7 +1927,6 @@ function buildDraftUpdatePayload(
       }
 
       applyTemplateState(nextTemplate);
-      setPendingLinkSourceNodeId(null);
       setStatusMessage('拓扑检测通过，已保存');
 
       if (template.id === 'new') {
@@ -1805,7 +1975,6 @@ function buildDraftUpdatePayload(
       }
 
       applyTemplateState(nextTemplate);
-      setPendingLinkSourceNodeId(null);
       setStatusMessage('拓扑已发布到平台。');
     } catch (error) {
       setStatusMessage(readPublishErrorMessage(error));
@@ -1824,13 +1993,6 @@ function buildDraftUpdatePayload(
     );
   }
 
-  const topologyGraph = {
-    ...(template?.topologyGraph ?? {}),
-    schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
-    nodes,
-    edges,
-  };
-
   if (!template) {
     return <TemplateEditorLoadingState />;
   }
@@ -1839,16 +2001,28 @@ function buildDraftUpdatePayload(
     <section className="template-editor-screen">
       <div className="template-editor-toolbar admin-workbench-surface">
         <div className="template-editor-toolbar-copy">
-          <h1>{template.name ?? template.slug}</h1>
-          <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
-            {template.status === 'published' ? '已发布' : '私有'}
-          </Badge>
+          <div className="template-editor-toolbar-identity">
+            <h1>{template.name ?? template.slug}</h1>
+            <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
+              {template.status === 'published' ? '已发布' : '私有'}
+            </Badge>
+          </div>
+          {statusMessage ? (
+            <p
+              aria-live="polite"
+              className="template-editor-toolbar-secondary template-editor-feedback"
+              role="status"
+              title={statusMessage}
+            >
+              {statusMessage}
+            </p>
+          ) : null}
         </div>
         <div className="template-editor-toolbar-actions">
           <Button
             className="border border-destructive/40 bg-card hover:bg-destructive/10 hover:text-destructive"
-            disabled={(!selectedNodeId && !selectedEdgeId) || isSubmitting}
-            onClick={handleDeleteSelectedNode}
+            disabled={(selection.nodeIds.length === 0 && selection.edgeIds.length === 0) || isSubmitting}
+            onClick={handleDeleteSelection}
             size="sm"
             type="button"
             variant="destructive"
@@ -1876,22 +2050,23 @@ function buildDraftUpdatePayload(
       </div>
 
       <div className="template-editor-grid">
-        <TemplateNodePalette onAddNode={handleAddNode} />
-        <TemplateCanvas
-          topologyGraph={topologyGraph}
+        <TopologyFlowCanvas
           nodes={nodes}
           edges={edges}
-          selectedNodeId={selectedNodeId}
-          selectedEdgeId={selectedEdgeId}
-          pendingLinkSourceNodeId={pendingLinkSourceNodeId}
-          statusMessage={statusMessage}
-          onSelectNode={handleSelectNode}
-          onSelectEdge={handleSelectEdge}
-          onOpenNode={handleOpenNode}
-          onMoveNode={handleMoveNode}
-          onBoardClick={handleBoardClick}
+          viewport={viewport}
+          onAddNode={handleAddNode}
+          onConnect={handleFlowConnect}
+          onDeleteSelection={handleDeleteSelection}
+          onLayoutAll={handleLayoutAll}
+          onNodeActivate={handleFlowNodeActivate}
+          onPositionsCommit={handlePositionsCommit}
+          onRedo={handleRedo}
+          onSelectionChange={handleSelectionChange}
+          onUndo={handleUndo}
+          onViewportCommit={handleViewportCommit}
+          selection={selection}
         />
-        {selectedNode ? (
+        {selectedNode && isPropertyPanelOpen ? (
           <TemplatePropertyPanel
             selectedNode={selectedNode}
             allNodes={nodes}
@@ -1899,10 +2074,9 @@ function buildDraftUpdatePayload(
             instanceTypeAvailability={selectedEcsNode ? instanceTypeAvailability : null}
             linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
             onUpdateNode={handleUpdateNode}
+            onClose={() => setIsPropertyPanelOpen(false)}
           />
-        ) : (
-          <TemplatePropertyPanelPlaceholder />
-        )}
+        ) : null}
       </div>
     </section>
   );
