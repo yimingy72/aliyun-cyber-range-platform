@@ -824,7 +824,7 @@ docker compose run --rm --no-deps mcp \
 
 Expected: PASS，模板草稿修订正确递增，公开版本不变，旧修订和无草稿请求均被拒绝，MCP 客户端回归不受影响。
 
-- [ ] **Step 5: 提交模板回写契约**
+- [x] **Step 5: 提交模板回写契约**
 
 ```bash
 git add \
