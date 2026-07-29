@@ -69,6 +69,10 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
     };
   }, [oidcClientId, oidcIssuer, router, searchParams]);
 
+  if (!errorMessage) {
+    return null;
+  }
+
   return (
     <main className="admin-login-shell">
       <section className="admin-login-card">
@@ -77,7 +81,7 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
         </div>
 
         <div className="admin-form admin-login-form">
-          {errorMessage ? <p className="form-error">{errorMessage}</p> : <p>正在完成登录...</p>}
+          <p className="form-error">{errorMessage}</p>
         </div>
       </section>
     </main>
