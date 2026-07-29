@@ -4,7 +4,10 @@ import {
   ADMIN_REPOSITORY,
   AdminRepository,
   type BillingAnomalyRecord,
+  type BillingLedgerResourceRecord,
   type BillingLineItemRecord,
+  type ProvisionJobRecord,
+  type ProvisionJobStatus,
 } from './admin.repository';
 
 type BillingWindowInput = Partial<{
@@ -21,6 +24,7 @@ type BillingLaunchGroup = {
   id: string;
   kind: 'range_launch' | 'single_launch' | 'unmatched';
   title: '开启靶场实例' | '开启编排实例' | '未关联平台启动的费用';
+  provisionJobStatus: ProvisionJobStatus | null;
   completedAt: string | null;
   billingPeriodStart: string;
   billingPeriodEnd: string;
@@ -76,6 +80,10 @@ function sumPretax(items: Array<{ pretaxAmount: number }>) {
 
 function isTrackedBillingLineItem(item: BillingLineItemRecord) {
   return Boolean(item.matchedLedgerId);
+}
+
+function isLaunchProvisionJob(job: ProvisionJobRecord | null | undefined): job is ProvisionJobRecord {
+  return job?.jobType === 'create' || job?.jobType === 'retry';
 }
 
 function resolveListLimit(input: BillingWindowInput, fallback: number) {
@@ -145,7 +153,7 @@ export class BillingService {
     const launchCountsByUserId = new Map<string, number>();
 
     for (const group of groups) {
-      if (group.kind !== 'unmatched' && group.ownerUserId) {
+      if (group.kind !== 'unmatched' && group.provisionJobStatus === 'succeeded' && group.ownerUserId) {
         launchCountsByUserId.set(group.ownerUserId, (launchCountsByUserId.get(group.ownerUserId) ?? 0) + 1);
       }
     }
@@ -197,7 +205,9 @@ export class BillingService {
       billingScope: 'user',
     })).filter(isTrackedBillingLineItem);
     const user = await this.adminRepository.getPlatformUserById(userId);
-    const launchCount = (await this.groupBillingLineItems(items)).filter((group) => group.kind !== 'unmatched').length;
+    const launchCount = (await this.groupBillingLineItems(items)).filter(
+      (group) => group.kind !== 'unmatched' && group.provisionJobStatus === 'succeeded',
+    ).length;
 
     return {
       userId,
@@ -384,26 +394,41 @@ export class BillingService {
     const ledgerById = new Map(ledgerResources.map((ledger) => [ledger.id, ledger]));
     const instanceById = new Map(instances.map((instance) => [instance.id, instance]));
     const jobById = new Map(jobs.map((job) => [job.id, job]));
+    const launchJobsByInstanceId = new Map<string, ProvisionJobRecord[]>();
+
+    for (const job of jobs) {
+      if (!isLaunchProvisionJob(job)) {
+        continue;
+      }
+
+      const instanceJobs = launchJobsByInstanceId.get(job.rangeInstanceId) ?? [];
+      instanceJobs.push(job);
+      launchJobsByInstanceId.set(job.rangeInstanceId, instanceJobs);
+    }
+
+    for (const instanceJobs of launchJobsByInstanceId.values()) {
+      instanceJobs.sort((left, right) => {
+        const leftTime = (left.finishedAt ?? left.startedAt ?? left.createdAt).getTime();
+        const rightTime = (right.finishedAt ?? right.startedAt ?? right.createdAt).getTime();
+        return rightTime - leftTime || right.id.localeCompare(left.id);
+      });
+    }
+
     const groups = new Map<string, BillingLaunchGroupBuilder>();
     const unmatchedItems: BillingLineItemRecord[] = [];
 
     for (const item of lineItems) {
-      const ledger = item.matchedLedgerId ? ledgerById.get(item.matchedLedgerId) : null;
-      const job = ledger?.sourceProvisionJobId ? jobById.get(ledger.sourceProvisionJobId) : null;
+      const ledger = item.matchedLedgerId ? ledgerById.get(item.matchedLedgerId) ?? null : null;
       const instance = ledger?.rangeInstanceId ? instanceById.get(ledger.rangeInstanceId) : null;
-      const isSuccessfulLaunch =
-        Boolean(job?.finishedAt) &&
-        job?.status === 'succeeded' &&
-        (job.jobType === 'create' || job.jobType === 'retry') &&
-        Boolean(instance);
+      const job = this.resolveLaunchProvisionJob(ledger, jobById, launchJobsByInstanceId);
 
-      if (!ledger || !job || !instance || !isSuccessfulLaunch) {
+      if (!ledger || !job || !instance) {
         unmatchedItems.push(item);
         continue;
       }
 
       const kind = instance.instanceMode === 'single' ? 'single_launch' : 'range_launch';
-      const completedAt = job.finishedAt!.toISOString();
+      const completedAt = job.finishedAt?.toISOString() ?? null;
       const billingDate = toIsoDate(item.billingDate);
       const existing = groups.get(job.id);
 
@@ -420,6 +445,7 @@ export class BillingService {
         id: job.id,
         kind,
         title: kind === 'single_launch' ? '开启编排实例' : '开启靶场实例',
+        provisionJobStatus: job.status,
         completedAt,
         billingPeriodStart: billingDate,
         billingPeriodEnd: billingDate,
@@ -443,6 +469,7 @@ export class BillingService {
         id: 'unmatched',
         kind: 'unmatched',
         title: '未关联平台启动的费用',
+        provisionJobStatus: null,
         completedAt: null,
         billingPeriodStart: billingDates[0]!,
         billingPeriodEnd: billingDates[billingDates.length - 1]!,
@@ -476,5 +503,27 @@ export class BillingService {
 
         return right.billingPeriodEnd.localeCompare(left.billingPeriodEnd);
       });
+  }
+
+  private resolveLaunchProvisionJob(
+    ledger: BillingLedgerResourceRecord | null,
+    jobById: Map<string, ProvisionJobRecord>,
+    launchJobsByInstanceId: Map<string, ProvisionJobRecord[]>,
+  ) {
+    if (!ledger) {
+      return null;
+    }
+
+    const sourceJob = ledger.sourceProvisionJobId ? jobById.get(ledger.sourceProvisionJobId) : null;
+
+    if (isLaunchProvisionJob(sourceJob)) {
+      return sourceJob;
+    }
+
+    const candidates = ledger.rangeInstanceId ? launchJobsByInstanceId.get(ledger.rangeInstanceId) ?? [] : [];
+
+    // Older ledgers did not persist the originating job. Prefer the latest
+    // successful launch, but retain failed launch attribution when none exists.
+    return candidates.find((job) => job.status === 'succeeded') ?? candidates[0] ?? null;
   }
 }

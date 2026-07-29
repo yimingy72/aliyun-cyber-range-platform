@@ -55,6 +55,10 @@ const statusConfig = {
     label: '处理中',
     variant: 'secondary',
   },
+  cancelled: {
+    label: '已取消',
+    variant: 'outline',
+  },
   failed: {
     label: '失败',
     variant: 'destructive',

@@ -26,6 +26,7 @@ import {
 import { Skeleton } from '../ui/skeleton';
 import { AdminSelectField } from './shared/admin-select-field';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { StatusBadge } from './shared/status-badge';
 import { useAdminSession } from './use-admin-session';
 
 type BillingScreenProps = {
@@ -443,7 +444,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           <div className="flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="font-heading text-base font-semibold text-foreground">费用明细</h2>
-              <p className="mt-1 text-sm text-muted-foreground">按每次成功开通展开关联资源的费用。</p>
+              <p className="mt-1 text-sm text-muted-foreground">按每次开通任务展开关联资源的费用。</p>
             </div>
 
             <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
@@ -573,7 +574,10 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                     />
                     <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">{groupTime}</span>
                     <span className="grid min-w-0 gap-1">
-                      <strong className="truncate text-sm font-medium text-foreground">{formatBillingGroupTitle(group)}</strong>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <strong className="truncate text-sm font-medium text-foreground">{formatBillingGroupTitle(group)}</strong>
+                        {group.provisionJobStatus ? <StatusBadge status={group.provisionJobStatus} /> : null}
+                      </span>
                       <span className="truncate text-xs text-muted-foreground">
                         {[ownerName, group.instance?.name, `${group.resourceCount} 项资源`].filter(Boolean).join(' · ')}
                       </span>

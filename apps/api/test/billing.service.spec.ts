@@ -307,4 +307,72 @@ describe('BillingService', () => {
       },
     ]);
   });
+
+  it('associates legacy billing ledgers with a failed launch instead of reporting them as unlinked', async () => {
+    const repository = createMemoryAdminRepository();
+    const service = new BillingService(repository);
+
+    await repository.createPlatformUser({
+      id: 'user-1',
+      username: 'alice',
+      passwordHash: 'hash',
+      role: 'user',
+    });
+
+    const instance = await repository.createRangeInstance({
+      name: 'failed-range',
+      ownerUserId: 'user-1',
+      instanceMode: 'range',
+      status: 'create_failed',
+    });
+    const job = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'user-1',
+    });
+    await repository.updateProvisionJob(job.id, {
+      status: 'failed',
+      finishedAt: new Date('2026-07-29T03:11:00.000Z'),
+    });
+    const ledger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-failed-range',
+      cloudResourceType: 'ecs',
+      billingScope: 'user',
+      ownerUserId: 'user-1',
+      rangeInstanceId: instance.id,
+      billingStartAt: new Date('2026-07-29T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
+    await repository.upsertBillingLineItems([
+      {
+        syncBatchId: 'sync-1',
+        sourceFingerprint: 'failed-range-ecs',
+        billCycle: '2026-07',
+        billingDate: '2026-07-29',
+        productCode: 'ecs',
+        billItem: '云服务器配置',
+        cloudResourceId: 'i-failed-range',
+        cloudResourceType: 'ecs',
+        pretaxAmount: 0.25,
+        currency: 'CNY',
+        billingScope: 'user',
+        ownerUserId: 'user-1',
+        matchedLedgerId: ledger.id,
+        rawPayload: {},
+      },
+    ]);
+
+    await expect(service.listUserGroups({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toEqual([
+      expect.objectContaining({
+        id: job.id,
+        kind: 'range_launch',
+        provisionJobStatus: 'failed',
+        title: '开启靶场实例',
+        ownerUsername: 'alice',
+        pretaxAmount: 0.25,
+        resourceCount: 1,
+      }),
+    ]);
+  });
 });

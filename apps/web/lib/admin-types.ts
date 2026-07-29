@@ -437,6 +437,7 @@ export type BillingLaunchGroup = {
   id: string;
   kind: 'range_launch' | 'single_launch' | 'unmatched';
   title: '开启靶场实例' | '开启编排实例' | '未关联平台启动的费用';
+  provisionJobStatus: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | null;
   completedAt: string | null;
   billingPeriodStart: string;
   billingPeriodEnd: string;
