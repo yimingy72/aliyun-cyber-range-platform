@@ -126,8 +126,20 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     this.isRunning = true;
 
     try {
-      const startAt = parseDate(input.startAt);
+      const requestedStartAt = parseDate(input.startAt);
       const endAt = parseDate(input.endAt);
+      const latestBillingDate = await this.adminRepository.getLatestBillingLineItemDate();
+      const startAt = latestBillingDate ?? requestedStartAt;
+
+      if (startAt > endAt) {
+        return {
+          syncedDays: 0,
+          importedLineItems: 0,
+          anomalyCount: 0,
+          deferredCount: 0,
+        };
+      }
+
       const dates = enumerateDates(startAt, endAt);
       const ledgerResources = await this.adminRepository.listBillingLedgerResources();
       const cloudConfig = this.systemConfigService

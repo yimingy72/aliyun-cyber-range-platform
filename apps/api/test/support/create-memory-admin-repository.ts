@@ -1305,6 +1305,14 @@ export function createMemoryAdminRepository(): AdminRepository {
     async listBillingLedgerResources() {
       return cloneList(billingLedgerResources);
     },
+    async getLatestBillingLineItemDate() {
+      const latest = billingLineItems.reduce<Date | null>(
+        (current, item) => (!current || item.billingDate > current ? item.billingDate : current),
+        null,
+      );
+
+      return latest ? new Date(latest) : null;
+    },
     async deleteBillingLineItemsBySyncBatchId(syncBatchId: string) {
       for (let index = billingLineItems.length - 1; index >= 0; index -= 1) {
         if (billingLineItems[index]?.syncBatchId === syncBatchId) {

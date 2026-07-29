@@ -970,6 +970,7 @@ export interface AdminRepository {
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   listBillingLedgerResources(): Promise<BillingLedgerResourceRecord[]>;
+  getLatestBillingLineItemDate(): Promise<Date | null>;
   deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void>;
   upsertBillingLineItems(input: CreateBillingLineItemInput[]): Promise<BillingLineItemRecord[]>;
   listBillingLineItems(filter?: ListBillingLineItemsFilter): Promise<BillingLineItemRecord[]>;

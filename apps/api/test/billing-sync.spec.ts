@@ -4,6 +4,139 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('BillingSyncService', () => {
+  it('continues from the latest persisted billing date through the requested end date', async () => {
+    const repository = createMemoryAdminRepository();
+    const ledger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-incremental-sync-1',
+      cloudResourceType: 'ecs',
+      billingScope: 'platform',
+      billingStartAt: new Date('2026-07-01T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
+    await repository.upsertBillingLineItems([
+      {
+        syncBatchId: 'billing-sync:2026-07-01',
+        sourceFingerprint: 'billing-sync:2026-07-01:ecs:i-incremental-sync-1:云服务器配置',
+        billCycle: '2026-07',
+        billingDate: '2026-07-01',
+        productCode: 'ecs',
+        productDetail: '云服务器ECS-按量付费',
+        billItem: '云服务器配置',
+        cloudResourceId: 'i-incremental-sync-1',
+        cloudResourceType: 'ecs',
+        pretaxAmount: 1.25,
+        currency: 'CNY',
+        billingScope: 'platform',
+        matchedLedgerId: ledger.id,
+        rawPayload: {},
+      },
+    ]);
+    const listDailyBillingItems = jest.fn(async () => []);
+    const service = new BillingSyncService(
+      repository,
+      { listDailyBillingItems } as unknown as BillingBssClient,
+    );
+
+    await expect(
+      service.syncRange({
+        startAt: '2026-06-01',
+        endAt: '2026-07-07',
+      }),
+    ).resolves.toEqual({
+      syncedDays: 7,
+      importedLineItems: 0,
+      anomalyCount: 0,
+      deferredCount: 0,
+    });
+
+    expect(listDailyBillingItems.mock.calls).toEqual([
+      [{ billingDate: '2026-07-01' }],
+      [{ billingDate: '2026-07-02' }],
+      [{ billingDate: '2026-07-03' }],
+      [{ billingDate: '2026-07-04' }],
+      [{ billingDate: '2026-07-05' }],
+      [{ billingDate: '2026-07-06' }],
+      [{ billingDate: '2026-07-07' }],
+    ]);
+  });
+
+  it('uses the full requested range before any bill is persisted', async () => {
+    const repository = createMemoryAdminRepository();
+    const listDailyBillingItems = jest.fn(async () => []);
+    const service = new BillingSyncService(
+      repository,
+      { listDailyBillingItems } as unknown as BillingBssClient,
+    );
+
+    await expect(
+      service.syncRange({
+        startAt: '2026-07-01',
+        endAt: '2026-07-03',
+      }),
+    ).resolves.toEqual({
+      syncedDays: 3,
+      importedLineItems: 0,
+      anomalyCount: 0,
+      deferredCount: 0,
+    });
+
+    expect(listDailyBillingItems.mock.calls).toEqual([
+      [{ billingDate: '2026-07-01' }],
+      [{ billingDate: '2026-07-02' }],
+      [{ billingDate: '2026-07-03' }],
+    ]);
+  });
+
+  it('does not query Aliyun when the stored billing date is later than the requested end date', async () => {
+    const repository = createMemoryAdminRepository();
+    const ledger = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-later-billing-date-1',
+      cloudResourceType: 'ecs',
+      billingScope: 'platform',
+      billingStartAt: new Date('2026-07-07T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
+    await repository.upsertBillingLineItems([
+      {
+        syncBatchId: 'billing-sync:2026-07-07',
+        sourceFingerprint: 'billing-sync:2026-07-07:ecs:i-later-billing-date-1:云服务器配置',
+        billCycle: '2026-07',
+        billingDate: '2026-07-07',
+        productCode: 'ecs',
+        productDetail: '云服务器ECS-按量付费',
+        billItem: '云服务器配置',
+        cloudResourceId: 'i-later-billing-date-1',
+        cloudResourceType: 'ecs',
+        pretaxAmount: 1.25,
+        currency: 'CNY',
+        billingScope: 'platform',
+        matchedLedgerId: ledger.id,
+        rawPayload: {},
+      },
+    ]);
+    const listDailyBillingItems = jest.fn(async () => []);
+    const service = new BillingSyncService(
+      repository,
+      { listDailyBillingItems } as unknown as BillingBssClient,
+    );
+
+    await expect(
+      service.syncRange({
+        startAt: '2026-07-01',
+        endAt: '2026-07-06',
+      }),
+    ).resolves.toEqual({
+      syncedDays: 0,
+      importedLineItems: 0,
+      anomalyCount: 0,
+      deferredCount: 0,
+    });
+
+    expect(listDailyBillingItems).not.toHaveBeenCalled();
+  });
+
   it('keeps account-level OSS and snapshot aggregates out of platform costs', async () => {
     const repository = createMemoryAdminRepository();
 

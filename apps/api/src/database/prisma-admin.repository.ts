@@ -1631,6 +1631,16 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<BillingLedgerResourceRecord[]>;
   }
 
+  async getLatestBillingLineItemDate(): Promise<Date | null> {
+    const result = await this.prisma.billingLineItem.aggregate({
+      _max: {
+        billingDate: true,
+      },
+    });
+
+    return result._max.billingDate;
+  }
+
   async deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void> {
     await this.prisma.billingLineItem.deleteMany({
       where: {
