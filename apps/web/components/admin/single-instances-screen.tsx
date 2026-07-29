@@ -1543,7 +1543,6 @@ export function SingleInstancesScreen({
                                       {isExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
                                     </Button>
                                     <div className="min-w-0">
-                                      <span className="block text-xs text-muted-foreground">批次</span>
                                       <strong className="block truncate">{group.batch.name}</strong>
                                     </div>
                                   </div>
