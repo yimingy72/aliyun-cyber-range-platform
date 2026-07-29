@@ -1134,17 +1134,23 @@ Run:
 
 ```bash
 export COMPOSE_PROJECT_NAME=codex-instance-topology-production
-docker compose up -d postgres
+export POSTGRES_PORT=25432
+export KEYCLOAK_PORT=18081
+export OPENTOFU_PROVIDER_MIRROR_HOST_PATH=../../.local/provider-mirror
+docker compose up -d postgres keycloak keycloak-bootstrap
+docker compose wait keycloak-bootstrap
 API_PORT=13004 docker compose run --rm -d --no-deps --service-ports \
   -e NODE_ENV=production api
-curl --retry 20 --retry-connrefused --retry-delay 1 -fsS \
+curl --retry 20 --retry-all-errors --retry-delay 1 -fsS \
   http://127.0.0.1:13004/health
 docker compose down -v
 unset COMPOSE_PROJECT_NAME
 ```
 
 Expected: 返回 `{"status":"ok","service":"api"}`。该临时 compose 项目只包含新建的
-`postgres` 卷，验证完成后必须清理；不要对日常开发 compose 项目执行 `down -v`。
+`postgres`、`keycloak-postgres` 和 OpenTofu 工作目录卷，验证完成后必须清理；不要对日常开发
+compose 项目执行 `down -v`。API 的 OIDC 管理员初始化依赖 Keycloak，镜像启动前还会校验
+Provider 缓存，因此两项前置条件不能省略。
 
 - [x] **Step 5: 验证隔离生产 Web 镜像**
 
