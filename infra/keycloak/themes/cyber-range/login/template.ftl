@@ -37,12 +37,23 @@
 <body id="keycloak-bg" class="${properties.kcBodyClass!}">
 <div class="cr-login-shell">
   <div class="cr-login-wrap">
-    <header id="kc-header" class="cr-login-header">
-      <div id="kc-header-wrapper" class="cr-login-brand">综合靶场平台</div>
-      <p class="cr-login-subtitle">使用平台统一账号登录管理后台。</p>
-    </header>
-
     <main class="cr-login-card">
+      <header id="kc-header" class="cr-login-copy">
+        <span class="cr-login-eyebrow">平台账号认证</span>
+        <div class="cr-login-title-row">
+          <img
+            alt=""
+            aria-hidden="true"
+            class="cr-login-title-mark"
+            height="31"
+            src="${url.resourcesPath}/img/platform-mark.svg"
+            width="31"
+          />
+          <h1 id="kc-page-title" class="cr-login-title"><#nested "header"></h1>
+        </div>
+        <p class="cr-login-subtitle">使用平台账号继续进入综合靶场管理工作台。</p>
+      </header>
+
       <#if displayMessage && message?has_content && (message.type != 'warning' || !isAppInitiatedAction??)>
           <div class="cr-alert cr-alert-${(message.type = 'error')?then('danger', message.type)}">
               <span class="cr-alert-text">${kcSanitize(message.summary)?no_esc}</span>

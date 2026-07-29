@@ -9,7 +9,7 @@ body.login-pf {
   margin: 0;
   background: #f5f7fb;
   color: #1d2b44;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
 
 .cr-login-shell {
@@ -22,37 +22,57 @@ body.login-pf {
 
 .cr-login-wrap {
   width: min(420px, 100%);
-  display: grid;
-  gap: 24px;
 }
 
-.cr-login-header {
+.cr-login-card {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 34px;
+  border: 1px solid #dbe5f0;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(24, 44, 74, 0.06);
+}
+
+.cr-login-copy {
   display: grid;
+  gap: 9px;
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.cr-login-eyebrow {
+  color: #4d76aa;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.cr-login-title-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  justify-items: center;
-  text-align: center;
 }
 
-.cr-login-brand {
-  color: #1d2b44;
-  font-size: 30px;
-  line-height: 1.1;
+.cr-login-title-mark {
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+}
+
+.cr-login-title {
+  margin: 0;
+  color: #22314d;
+  font-size: 24px;
   font-weight: 700;
+  line-height: 1.25;
 }
 
 .cr-login-subtitle {
   margin: 0;
   color: #65758d;
-  font-size: 16px;
+  font-size: 13px;
   line-height: 1.6;
-}
-
-.cr-login-card {
-  padding: 32px 28px 28px;
-  border-radius: 24px;
-  background: #ffffff;
-  border: 1px solid #e7ecf2;
-  box-shadow: 0 20px 50px rgba(39, 69, 66, 0.08);
 }
 
 .cr-login-form {
@@ -67,32 +87,32 @@ body.login-pf {
 
 .cr-form-label {
   color: #33415c;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.5;
 }
 
 .cr-form-input {
   width: 100%;
   height: 46px;
   box-sizing: border-box;
-  border-radius: 14px;
-  border: 1px solid #d8e0ea;
-  background: #fbfcfe;
-  padding: 0 14px;
-  outline: none;
-  box-shadow: none;
+  border: 1px solid #d7dfe9;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 0 12px;
   color: #1d2b44;
   font: inherit;
+  outline: none;
 }
 
 .cr-form-input:hover {
-  border-color: #c2cedd;
+  border-color: #b8c7dc;
 }
 
 .cr-form-input:focus,
 .cr-form-input:focus-visible {
-  border-color: #183230;
-  box-shadow: 0 0 0 3px rgba(24, 50, 48, 0.12);
+  border-color: #1d56a7;
+  box-shadow: 0 0 0 3px rgba(29, 86, 167, 0.14);
 }
 
 .cr-form-input:-webkit-autofill,
@@ -100,25 +120,25 @@ body.login-pf {
 .cr-form-input:-webkit-autofill:focus,
 .cr-form-input:-webkit-autofill:active {
   -webkit-text-fill-color: #1d2b44 !important;
-  -webkit-box-shadow: 0 0 0 1000px #fbfcfe inset !important;
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
   transition: background-color 9999s ease-in-out 0s;
 }
 
 .cr-form-error {
   margin: -4px 0 0;
-  color: #c0392b;
-  font-size: 14px;
+  color: #bf3f45;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .cr-login-button {
   width: 100%;
   min-height: 46px;
-  margin-top: 8px;
+  margin-top: 0;
   border: 0;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #214d46, #183230);
-  color: #f7f4ef;
+  border-radius: 6px;
+  background: #1d56a7;
+  color: #ffffff;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -127,38 +147,46 @@ body.login-pf {
 .cr-login-button:hover,
 .cr-login-button:focus,
 .cr-login-button:active {
-  background: linear-gradient(135deg, #28594f, #183230);
+  background: #184b97;
+}
+
+.cr-login-button:focus-visible {
+  outline: 3px solid rgba(29, 86, 167, 0.24);
+  outline-offset: 2px;
 }
 
 .cr-alert {
-  margin-bottom: 16px;
-  border-radius: 14px;
-  padding: 12px 14px;
-  background: #fff4f2;
-  border: 1px solid #f3c7c0;
-  color: #9f2d20;
+  margin: 0 0 18px;
+  border: 1px solid #efc4c7;
+  border-radius: 6px;
+  background: #fff5f5;
+  padding: 12px;
+  color: #a63238;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .cr-login-info {
-  margin-top: 16px;
-  text-align: center;
+  margin-top: 18px;
   color: #65758d;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: left;
 }
 
 .cr-login-info a {
-  color: #214d46;
-  text-decoration: none;
+  color: #1d56a7;
   font-weight: 600;
+  text-decoration: none;
 }
 
 .cr-login-info a:hover {
-  color: #183230;
+  color: #184b97;
   text-decoration: underline;
 }
 
 #login-footer,
 .pf-v5-c-login__main-footer,
-#kc-page-title,
 #kc-content,
 #kc-content-wrapper,
 #kc-attempted-username,
@@ -176,15 +204,7 @@ button[data-password-toggle],
     padding: 16px;
   }
 
-  .cr-login-wrap {
-    width: 100%;
-  }
-
   .cr-login-card {
-    padding: 24px 20px;
-  }
-
-  .cr-login-brand {
-    font-size: 26px;
+    padding: 26px 22px;
   }
 }
