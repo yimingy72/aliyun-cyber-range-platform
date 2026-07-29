@@ -17,7 +17,11 @@ import {
   refreshAdminOidcToken,
 } from '../../lib/admin-oidc';
 import { resolveAdminOidcClientId, resolveAdminOidcIssuer } from '../../lib/admin-oidc-config';
-import { writeAdminSession } from '../../lib/admin-auth-storage';
+import {
+  invalidateAdminSessionForLogout,
+  readAdminSession,
+  writeAdminSession,
+} from '../../lib/admin-auth-storage';
 import { AdminContentTransition } from './admin-content-transition';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { PlatformBrand } from './platform-brand';
@@ -163,7 +167,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   );
 
   async function renewSession() {
-    if (renewingRef.current || !session.refreshToken) {
+    if (loggingOutRef.current || renewingRef.current || !session.refreshToken) {
       return;
     }
 
@@ -178,20 +182,32 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
       });
       const nextSession = tokenResponse ? parseAdminOidcSessionPayload(tokenResponse) : null;
 
+      if (loggingOutRef.current) {
+        return;
+      }
+
       if (!nextSession) {
         session.logout();
         router.replace('/admin/login');
         return;
       }
 
+      const currentSession = readAdminSession();
+      if (!currentSession || currentSession.refreshToken !== session.refreshToken) {
+        return;
+      }
+
       writeAdminSession({
         ...nextSession,
-        idToken: nextSession.idToken ?? session.idToken,
-        refreshToken: nextSession.refreshToken ?? session.refreshToken,
+        idToken: nextSession.idToken ?? currentSession.idToken,
+        refreshToken: nextSession.refreshToken ?? currentSession.refreshToken,
+        sessionGeneration: currentSession.sessionGeneration,
       });
     } catch {
-      session.logout();
-      router.replace('/admin/login');
+      if (!loggingOutRef.current) {
+        session.logout();
+        router.replace('/admin/login');
+      }
     } finally {
       renewingRef.current = false;
       setIsRenewingSession(false);
@@ -292,7 +308,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
       idTokenHint: session.idToken,
     });
 
-    session.logout();
+    invalidateAdminSessionForLogout();
     clearPendingAdminOidcLogin();
     window.location.assign(logoutUrl);
   }

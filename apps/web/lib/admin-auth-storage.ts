@@ -1,6 +1,7 @@
 import type { AdminProfile, AdminSessionPayload } from './admin-types';
 
 export const ADMIN_SESSION_STORAGE_KEY = 'aliyun-cyber-range-admin-session';
+export const ADMIN_SESSION_GENERATION_STORAGE_KEY = 'aliyun-cyber-range-admin-session-generation';
 const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'aliyun-cyber-range-admin-token';
 const ADMIN_SESSION_STORAGE_EVENT = 'aliyun-cyber-range-admin-session-change';
 let cachedSerializedSession: string | null = null;
@@ -37,6 +38,25 @@ function normalizeAdminProfile(profile: unknown): AdminProfile | null {
   };
 }
 
+function normalizeAdminSessionGeneration(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function readAdminSessionGeneration() {
+  if (typeof window === 'undefined') {
+    return 0;
+  }
+
+  const storedGeneration = window.localStorage.getItem(ADMIN_SESSION_GENERATION_STORAGE_KEY);
+  if (!storedGeneration || !storedGeneration.trim()) {
+    return 0;
+  }
+
+  const generation = Number(storedGeneration);
+
+  return Number.isSafeInteger(generation) && generation >= 0 ? generation : 0;
+}
+
 export function parseAdminSessionPayload(session: unknown): AdminSessionPayload | null {
   if (!session || typeof session !== 'object') {
     return null;
@@ -46,9 +66,13 @@ export function parseAdminSessionPayload(session: unknown): AdminSessionPayload 
   const token = normalizeAdminText(nextSession.token);
   const idToken = nextSession.idToken === undefined ? undefined : normalizeAdminText(nextSession.idToken);
   const refreshToken = nextSession.refreshToken === undefined ? undefined : normalizeAdminText(nextSession.refreshToken);
+  const sessionGeneration =
+    nextSession.sessionGeneration === undefined
+      ? undefined
+      : normalizeAdminSessionGeneration(nextSession.sessionGeneration);
   const profile = normalizeAdminProfile(nextSession.profile);
 
-  if (!token || !profile) {
+  if (!token || !profile || sessionGeneration === null) {
     return null;
   }
 
@@ -56,6 +80,7 @@ export function parseAdminSessionPayload(session: unknown): AdminSessionPayload 
     token,
     idToken,
     refreshToken,
+    ...(sessionGeneration === undefined ? {} : { sessionGeneration }),
     profile,
   };
 }
@@ -87,6 +112,7 @@ export function readAdminSession() {
   }
 
   const storedSession = window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+  const currentGeneration = readAdminSessionGeneration();
 
   if (!storedSession) {
     if (window.localStorage.getItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY) !== null) {
@@ -97,7 +123,13 @@ export function readAdminSession() {
   }
 
   if (storedSession === cachedSerializedSession) {
-    return cachedSession;
+    if (cachedSession?.sessionGeneration === currentGeneration) {
+      return cachedSession;
+    }
+
+    clearAdminSessionRecord();
+    updateCachedSession(null, null);
+    return null;
   }
 
   try {
@@ -110,7 +142,26 @@ export function readAdminSession() {
       return null;
     }
 
-    const serializedSession = JSON.stringify(normalizedSession);
+    if (normalizedSession.sessionGeneration === undefined && currentGeneration !== 0) {
+      clearAdminSessionRecord();
+      updateCachedSession(null, null);
+      return null;
+    }
+
+    if (
+      normalizedSession.sessionGeneration !== undefined &&
+      normalizedSession.sessionGeneration !== currentGeneration
+    ) {
+      clearAdminSessionRecord();
+      updateCachedSession(null, null);
+      return null;
+    }
+
+    const sessionWithGeneration = {
+      ...normalizedSession,
+      sessionGeneration: currentGeneration,
+    };
+    const serializedSession = JSON.stringify(sessionWithGeneration);
 
     if (serializedSession !== storedSession) {
       window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
@@ -120,9 +171,9 @@ export function readAdminSession() {
       clearLegacyAdminTokenRecord();
     }
 
-    updateCachedSession(serializedSession, normalizedSession);
+    updateCachedSession(serializedSession, sessionWithGeneration);
 
-    return normalizedSession;
+    return sessionWithGeneration;
   } catch {
     clearAdminSessionRecord();
     clearLegacyAdminTokenRecord();
@@ -143,6 +194,7 @@ export function subscribeAdminSession(onChange: () => void) {
     if (
       event.key === null ||
       event.key === ADMIN_SESSION_STORAGE_KEY ||
+      event.key === ADMIN_SESSION_GENERATION_STORAGE_KEY ||
       event.key === LEGACY_ADMIN_TOKEN_STORAGE_KEY
     ) {
       onChange();
@@ -170,10 +222,25 @@ export function writeAdminSession(session: AdminSessionPayload) {
     return null;
   }
 
-  const serializedSession = JSON.stringify(normalizedSession);
+  const currentGeneration = readAdminSessionGeneration();
+  if (
+    normalizedSession.sessionGeneration !== undefined &&
+    normalizedSession.sessionGeneration !== currentGeneration
+  ) {
+    return null;
+  }
 
+  const sessionWithGeneration = {
+    ...normalizedSession,
+    sessionGeneration: currentGeneration,
+  };
+  const serializedSession = JSON.stringify(sessionWithGeneration);
+
+  if (window.localStorage.getItem(ADMIN_SESSION_GENERATION_STORAGE_KEY) !== String(currentGeneration)) {
+    window.localStorage.setItem(ADMIN_SESSION_GENERATION_STORAGE_KEY, String(currentGeneration));
+  }
   window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, serializedSession);
-  updateCachedSession(serializedSession, normalizedSession);
+  updateCachedSession(serializedSession, sessionWithGeneration);
 
   if (window.localStorage.getItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY) !== null) {
     clearLegacyAdminTokenRecord();
@@ -181,7 +248,7 @@ export function writeAdminSession(session: AdminSessionPayload) {
 
   emitAdminSessionChanged();
 
-  return normalizedSession;
+  return sessionWithGeneration;
 }
 
 export function clearAdminSession() {
@@ -193,4 +260,15 @@ export function clearAdminSession() {
   clearLegacyAdminTokenRecord();
   updateCachedSession(null, null);
   emitAdminSessionChanged();
+}
+
+export function invalidateAdminSessionForLogout() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const nextGeneration = readAdminSessionGeneration() + 1;
+
+  window.localStorage.setItem(ADMIN_SESSION_GENERATION_STORAGE_KEY, String(nextGeneration));
+  clearAdminSession();
 }

@@ -134,6 +134,8 @@ describe('AdminLoginPage', () => {
     expect(screen.getByText('管理入口')).toBeTruthy();
     expect(screen.getByText('使用平台统一账号验证身份并进入管理后台。')).toBeTruthy();
     expect(screen.getByText('登录由平台统一身份认证服务保护')).toBeTruthy();
+    expect(screen.queryByText('CYBER RANGE / ADMIN')).toBeNull();
+    expect(screen.queryByText('统一身份验证完成后，继续进入综合靶场管理工作台。')).toBeNull();
     expect(screen.getByRole('button', { name: '使用平台账号登录' })).toBeTruthy();
     expect(screen.queryByText('使用平台统一账号登录管理后台。')).toBeNull();
   });
@@ -153,6 +155,7 @@ describe('AdminLoginPage', () => {
     await waitFor(() => {
       expect(JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ?? 'null')).toEqual({
         token: 'normalized-admin-token',
+        sessionGeneration: 0,
         profile: ADMIN_PROFILE,
       });
     });

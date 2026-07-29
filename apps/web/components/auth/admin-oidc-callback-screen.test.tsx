@@ -97,6 +97,7 @@ describe('AdminOidcCallbackScreen', () => {
     expect(screen.queryByText('正在完成登录...')).toBeNull();
     expect(JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ?? 'null')).toEqual({
       token: accessToken,
+      sessionGeneration: 0,
       profile: {
         id: 'alice-subject',
         username: 'alice',

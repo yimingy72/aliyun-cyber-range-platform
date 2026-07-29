@@ -111,23 +111,32 @@ describe('design system CSS transition contract', () => {
     expect(reducedMotion).toContain('transition-duration: 0.01ms !important');
   });
 
-  it('defines the compact workbench-aligned admin login entry', () => {
+  it('defines a centered single-surface admin login entry', () => {
     const loginShell = getRuleBlock(stylesheet, '.admin-login-shell');
     const loginLayout = getRuleBlock(stylesheet, '.admin-login-layout');
     const loginCard = getRuleBlock(stylesheet, '.admin-login-card');
     const loginForm = getRuleBlock(stylesheet, '.admin-login-form');
+    const loginCopy = getRuleBlock(stylesheet, '.admin-login-copy');
     const loginCommand = getRuleBlock(stylesheet, '.admin-login-command');
     const narrowScreenRules = getAtRuleBlock(stylesheet, '@media (max-width: 720px)');
 
     expect(loginShell).toContain('background: #f5f7fb');
-    expect(loginLayout).toContain('grid-template-columns: minmax(0, 1fr) minmax(360px, 480px)');
+    expect(loginShell).toContain('place-items: center');
+    expect(loginShell).toContain('display: grid');
+    expect(loginShell).toContain('padding: 24px');
+    expect(loginLayout).toContain('width: min(420px, 100%)');
+    expect(loginLayout).not.toContain('grid-template-columns');
     expect(loginCard).toContain('border-radius: 6px');
     expect(loginCard).toContain('padding: 34px');
+    expect(loginCard).toContain('max-width: 420px');
     expect(loginCard).toContain('animation: admin-content-enter 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both');
-    expect(loginForm).toContain('gap: 17px');
+    expect(loginForm).toContain('gap: 18px');
+    expect(loginCopy).toContain('text-align: left');
     expect(loginCommand).toContain('justify-content: space-between');
-    expect(loginCommand).not.toContain('text-align: center');
-    expect(getRuleBlock(narrowScreenRules, '.admin-login-context')).toContain('display: none');
+    expect(loginCommand).toContain('width: 100%');
+    expect(stylesheet).not.toContain('.admin-login-context');
+    expect(getRuleBlock(narrowScreenRules, '.admin-login-shell')).toContain('padding: 16px');
+    expect(getRuleBlock(narrowScreenRules, '.admin-login-card')).toContain('padding: 26px 22px');
   });
 
   it('maps generated font, sidebar, and chart utilities to light-mode tokens', () => {
