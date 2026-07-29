@@ -1775,7 +1775,7 @@ export function ImageCenterScreen({
               ) : undefined
             }
             action={
-              activeTab === 'mine' ? (
+              activeTab === 'platform' || activeTab === 'mine' ? (
                 <Button
                   disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                   title={imageImportUnavailableMessage ?? undefined}

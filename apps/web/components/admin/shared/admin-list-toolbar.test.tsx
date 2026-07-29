@@ -84,11 +84,12 @@ describe('AdminListToolbar', () => {
 
     expect(searchControls.contains(screen.getByRole('searchbox', { name: '筛选镜像名' }))).toBe(true);
     expect(searchControls.contains(screen.getByRole('button', { name: '全部标签' }))).toBe(true);
+    expect(screen.getByRole('searchbox', { name: '筛选镜像名' }).parentElement?.className).toContain('sm:w-60');
     expect(searchControls.className).toContain('sm:shrink-0');
     expect(searchControls.parentElement?.className).toContain('sm:flex-wrap');
   });
 
-  it('reserves a stable view-action slot when a tabbed toolbar has no action', () => {
+  it('reserves a fixed view-action slot for tabbed toolbars', () => {
     render(
       <AdminListToolbar
         activeView="platform"
@@ -108,7 +109,7 @@ describe('AdminListToolbar', () => {
 
     const actionSlot = screen.getByTestId('admin-list-toolbar-view-action');
 
-    expect(actionSlot.className).toContain('min-w-[6.75rem]');
+    expect(actionSlot.className).toContain('w-36');
     expect(actionSlot.textContent).toBe('');
   });
 });
