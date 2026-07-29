@@ -75,6 +75,19 @@ function TopologyFlowCanvasMock({
       </button>
       <button
         onClick={() => {
+          const source = nodes.find((node) => node.kind === 'router');
+          const target = nodes.find((node) => node.kind === 'switch');
+
+          if (source && target) {
+            onConnect({ source: source.id, target: target.id });
+          }
+        }}
+        type="button"
+      >
+        flow connect router switch
+      </button>
+      <button
+        onClick={() => {
           const node = nodes.find((candidate) => candidate.kind === 'ecs');
 
           if (node) {
@@ -239,6 +252,11 @@ function addDnatEntry(targetHostName = 'ECS 1', mappingIndex = 1) {
   fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
   fireEvent.click(screen.getByRole('button', { name: '添加 DNAT 规则' }));
   selectAdminOption(`DNAT 目标主机 ${mappingIndex}`, targetHostName);
+}
+
+function addRouterConnection() {
+  fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+  fireEvent.click(screen.getByRole('button', { name: 'flow connect router switch' }));
 }
 
 vi.mock('../use-admin-session', () => ({
@@ -935,6 +953,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
 
@@ -960,6 +979,12 @@ describe('TemplateEditorScreen', () => {
       'template-1',
       expect.objectContaining({
         topologyGraph: expect.objectContaining({
+          nodes: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'ecs-1',
+              zoneKey: 'zone-1',
+            }),
+          ]),
           edges: expect.arrayContaining([
             expect.objectContaining({
               fromNodeId: 'switch-2',
@@ -2158,6 +2183,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
@@ -2306,6 +2332,7 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
+    addRouterConnection();
     addDnatEntry();
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
@@ -2321,6 +2348,7 @@ describe('TemplateEditorScreen', () => {
             id: 'ecs-1',
             cpu: 2,
             memory: 2,
+            zoneKey: 'zone-1',
             instanceType: 'ecs.e-c1m1.large',
             instanceTypeStrategy: {
               mode: 'fixed',
@@ -2638,6 +2666,7 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
@@ -3147,6 +3176,7 @@ describe('TemplateEditorScreen', () => {
       />,
     );
 
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'persisted-instance-type-host' } });
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
@@ -3224,6 +3254,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(await screen.findByLabelText('镜像名'), {
@@ -3338,6 +3369,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(await screen.findByLabelText('镜像名'), {
       target: { value: 'Ubuntu 24.04 LTS' },
@@ -3489,6 +3521,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(await screen.findByLabelText('镜像名'), {
       target: { value: 'Ubuntu 24.04 LTS' },
@@ -3845,6 +3878,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-publish' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
@@ -3908,6 +3942,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'edge-host-fail' } });
     fireEvent.change(screen.getByLabelText('镜像名'), { target: { value: 'Ubuntu 24.04 LTS' } });
@@ -3985,6 +4020,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '虚拟主机 virtual client' }));
     fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
     fireEvent.click(screen.getByRole('button', { name: 'flow connect valid' }));
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: 'flow commit positions' }));
     fireEvent.click(screen.getByRole('button', { name: 'flow commit viewport' }));
 
@@ -4010,9 +4046,12 @@ describe('TemplateEditorScreen', () => {
     const payload = validateAndSaveRangeTemplateMock.mock.calls[0]?.[3] as {
       topologyGraph?: { edges?: unknown[]; viewport?: unknown };
     };
-    expect(payload.topologyGraph?.edges).toEqual([
-      expect.objectContaining({ fromNodeId: 'switch-2', toNodeId: 'ecs-1' }),
-    ]);
+    expect(payload.topologyGraph?.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fromNodeId: 'switch-2', toNodeId: 'ecs-1' }),
+        expect.objectContaining({ fromNodeId: 'router-3', toNodeId: 'switch-2' }),
+      ]),
+    );
     expect(payload.topologyGraph?.viewport).toEqual({ x: -80, y: 40, zoom: 1.2 });
   });
 

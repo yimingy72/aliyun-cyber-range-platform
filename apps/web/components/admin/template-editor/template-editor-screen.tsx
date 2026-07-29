@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   resolveUniqueDnatEntryHost,
+  type TemplateAuthoringMetadata,
   validateAliyunEcsPassword,
 } from '@aliyun-cyber-range/scenario-runtime';
 
@@ -22,10 +23,7 @@ import {
   validateAndSaveRangeTemplate,
 } from '../../../lib/admin-api';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset, RangeTemplate } from '../../../lib/admin-types';
-import type { ScenarioTemplateMetadata } from '../../../lib/scenario-template-spec';
-import { resolveFixedInstanceType, resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
-import { buildScenarioTemplateSpecFromTopologyGraph } from '../../../lib/topology-graph-to-scenario-template';
-import { compileScenarioTemplateSpec } from '../../../lib/scenario-template-compiler';
+import { resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
 import {
   findDuplicateDnatExternalPorts,
   isPhaseOneNodeKind as isPhaseOneNodeKindTypeGuard,
@@ -39,8 +37,7 @@ import type {
   TemplateNode,
   TemplateNodeImageStrategy,
 } from '../../../lib/scenario-graph';
-import { compileTopologyGraph } from '../../../lib/template-compiler';
-import { syncTopologySpecFromNodes } from '../../../lib/template-topology-sync';
+import { buildTopologyDraftPayload } from '../../../lib/topology-draft-payload';
 import { useAdminSession } from '../use-admin-session';
 import { readTopologyViewport, writeTopologyViewport } from './topology-flow-adapter';
 import {
@@ -71,6 +68,7 @@ const SCENARIO_GRAPH_SCHEMA_VERSION = '2.0.0';
 const DEFAULT_SWITCH_CIDRS = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'] as const;
 const TOPOLOGY_CACHE_PREFIX = 'template-editor:topology-cache';
 const NEW_TEMPLATE_SESSION_KEY = 'template-editor:new-template';
+const TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-enterprise-range';
 
 type TopologyCachePayload = {
   topologyGraph: DraftTopologyGraph;
@@ -227,14 +225,6 @@ function applyEconomyInstanceType(
 
 function readConfiguredInstanceType(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readFinalInstanceType(node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'instanceType' | 'instanceTypeStrategy'>) {
-  return (
-    readConfiguredInstanceType(node.instanceType) ??
-    readConfiguredInstanceType(node.instanceTypeStrategy.instanceType) ??
-    resolveFixedInstanceType(node.cpu, node.memory)
-  );
 }
 
 function readTopologyCacheKey(template: RangeTemplate | null | undefined, fallbackTemplateId?: string) {
@@ -683,7 +673,12 @@ function syncHostNicsWithLinkedSwitch(
       ];
 
   if (existingNics.some((nic) => nic.switchId === switchNode.id)) {
-    return hostNode;
+    return existingNics[0]?.switchId === switchNode.id && hostNode.zoneKey !== switchNode.zoneKey
+      ? {
+          ...hostNode,
+          zoneKey: switchNode.zoneKey,
+        }
+      : hostNode;
   }
 
   const emptyNicIndex = existingNics.findIndex((nic) => !nic.switchId);
@@ -691,6 +686,7 @@ function syncHostNicsWithLinkedSwitch(
   if (emptyNicIndex >= 0) {
     return {
       ...hostNode,
+      ...(emptyNicIndex === 0 ? { zoneKey: switchNode.zoneKey } : {}),
       nics: existingNics.map((nic, index) =>
         index === emptyNicIndex
           ? {
@@ -816,13 +812,14 @@ function readPublishErrorMessage(error: unknown) {
   return '编排发布失败，请检查拓扑与编译结果';
 }
 
-function buildScenarioTemplateMetadata(template: RangeTemplate): ScenarioTemplateMetadata {
+function buildScenarioTemplateMetadata(template: RangeTemplate): TemplateAuthoringMetadata {
   return {
     name: template.name ?? template.slug,
     slug: template.slug,
     version: 'v1',
     cloudProvider: 'alibaba_cloud',
     iacType: 'opentofu',
+    modulePathOrRef: TEMPLATE_MODULE_PATH,
   };
 }
 
@@ -1204,10 +1201,19 @@ export function TemplateEditorScreen({
   }
 
   function normalizeNodesForValidatedPayload(currentNodes: TemplateNode[]) {
+    const switchById = new Map(
+      currentNodes
+        .filter((node): node is SwitchTemplateNode => node.kind === 'switch')
+        .map((node) => [node.id, node]),
+    );
+
     return currentNodes.map((node) =>
       node.kind === 'ecs'
         ? {
             ...node,
+            ...(node.nics?.[0]?.switchId && switchById.has(node.nics[0].switchId)
+              ? { zoneKey: switchById.get(node.nics[0].switchId)!.zoneKey }
+              : {}),
             ...applyEconomyInstanceType(node, {
               preserveExisting: true,
             }),
@@ -1351,58 +1357,15 @@ export function TemplateEditorScreen({
       }
     }
 
-    const topologySpec = syncTopologySpecFromNodes({
-      nodes: normalizedNodes,
-    });
-
     if (validationErrors.length > 0) {
       throw new Error(`拓扑检测未通过：${validationErrors.join('；')}`);
     }
 
-    const scenarioTemplateSpec = buildScenarioTemplateSpecFromTopologyGraph({
-      topologyGraph,
+    return buildTopologyDraftPayload({
+      graph: topologyGraph,
       metadata: buildScenarioTemplateMetadata(currentTemplate),
-      defaults: {
-        vpcCidr: topologySpec.vpcCidr,
-      },
+      viewport: currentViewport,
     });
-    const compiledSpec = compileTopologyGraph({
-      nodes: normalizedNodes,
-    });
-    const finalInstanceTypeByHostId = new Map(
-      normalizedNodes
-        .filter((node): node is EcsTemplateNode => node.kind === 'ecs')
-        .map((node) => [node.id, readFinalInstanceType(node)]),
-    );
-
-    return {
-      topologyGraph,
-      topologySpec,
-      scenarioTemplateSpec,
-      compiledProvisionSpec: compileScenarioTemplateSpec(scenarioTemplateSpec),
-      compiledSpec: {
-        ...compiledSpec,
-        resources: compiledSpec.resources.map((resource) => {
-          if (resource.type !== 'host') {
-            return resource;
-          }
-
-          const instanceType = finalInstanceTypeByHostId.get(resource.id);
-
-          if (!instanceType) {
-            return resource;
-          }
-
-          return {
-            ...resource,
-            config: {
-              ...resource.config,
-              instanceType,
-            },
-          };
-        }),
-      },
-    };
   }
 
   useEffect(() => {
