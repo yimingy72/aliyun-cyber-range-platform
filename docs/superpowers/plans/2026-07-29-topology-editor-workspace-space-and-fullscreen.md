@@ -72,10 +72,10 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 1. 为画布增加“最近编辑网格或工作区自身”的全屏目标读取逻辑。
 2. `requestFullscreen`、`exitFullscreen` 与 `fullscreenchange` 全部基于该实际目标同步，不能乐观更新本地状态。
 3. 将原 `.topology-flow-workbench:fullscreen` 样式迁移为：
-   - `.template-editor-grid:fullscreen` 提供全视口的定位、尺寸与背景。
-   - 全屏网格内 `.topology-flow-workbench` 填满空间并移除普通编辑边框与圆角。
+   - `.template-editor-grid:fullscreen` 提供 `100vw × 100vh`、`min-height: 0` 的全视口定位、尺寸与背景。
+   - 全屏网格内 `.topology-flow-workbench` 以 `min-height: 0` 填满空间，并移除普通编辑边框与圆角。
    - 同级属性面板维持其覆盖式桌面布局、关闭按钮和焦点行为。
-4. 保留导航图对属性面板的避让与全屏右下角定位。
+4. 将导航图与开关的全屏定位选择器同步迁移到网格，保留对属性面板的避让与全屏右下角定位。
 
 ## 任务 4：调整选择模式的平移手势
 

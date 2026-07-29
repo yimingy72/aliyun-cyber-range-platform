@@ -71,6 +71,7 @@ type TopologyFlowCanvasProps = {
   onSelectionChange: (selection: TopologySelection) => void;
   onUndo: () => void;
   onViewportCommit: (viewport: TopologyViewport) => void;
+  selection: TopologySelection;
 };
 
 function isTopologyResourceKind(value: string): value is TopologyResourceKind {
@@ -158,6 +159,7 @@ function TopologyFlowCanvasInner({
   onSelectionChange,
   onUndo,
   onViewportCommit,
+  selection,
   viewport,
 }: TopologyFlowCanvasProps) {
   const [connectMode, setConnectMode] = React.useState(false);
@@ -186,8 +188,27 @@ function TopologyFlowCanvasInner({
   }, [externalFlowNodes, setFlowNodes]);
 
   React.useEffect(() => {
+    const selectedNodeIds = new Set(selection.nodeIds);
+
+    setFlowNodes((currentNodes) => {
+      let hasSelectionChange = false;
+      const nextNodes = currentNodes.map((node) => {
+        const selected = selectedNodeIds.has(node.id);
+        if (node.selected === selected) {
+          return node;
+        }
+
+        hasSelectionChange = true;
+        return { ...node, selected };
+      });
+
+      return hasSelectionChange ? nextNodes : currentNodes;
+    });
+  }, [selection.nodeIds, setFlowNodes]);
+
+  React.useEffect(() => {
     function syncFullscreenState() {
-      setIsFullscreen(document.fullscreenElement === workbenchRef.current);
+      setIsFullscreen(document.fullscreenElement === readFullscreenTarget());
     }
 
     syncFullscreenState();
@@ -287,17 +308,23 @@ function TopologyFlowCanvasInner({
     event.dataTransfer.dropEffect = 'move';
   }
 
-  async function handleFullscreenToggle() {
+  function readFullscreenTarget() {
     const workbench = workbenchRef.current;
-    if (!workbench) {
+
+    return workbench?.closest<HTMLElement>('.template-editor-grid') ?? workbench;
+  }
+
+  async function handleFullscreenToggle() {
+    const fullscreenTarget = readFullscreenTarget();
+    if (!fullscreenTarget) {
       return;
     }
 
     try {
-      if (document.fullscreenElement === workbench) {
+      if (document.fullscreenElement === fullscreenTarget) {
         await document.exitFullscreen();
       } else {
-        await workbench.requestFullscreen();
+        await fullscreenTarget.requestFullscreen();
       }
     } catch {
       // The browser is the source of truth; fullscreenchange updates the actual state.
@@ -442,8 +469,8 @@ function TopologyFlowCanvasInner({
           onSelectionChange={handleSelectionChange}
           multiSelectionKeyCode="Shift"
           panActivationKeyCode="Space"
-          panOnDrag={[1]}
-          selectionOnDrag
+          panOnDrag={connectMode ? [1] : [0, 1]}
+          selectionOnDrag={false}
         >
           <Background gap={20} size={1} />
           <Controls showInteractive={false} />

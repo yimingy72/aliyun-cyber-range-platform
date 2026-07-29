@@ -2032,6 +2032,7 @@ export function TemplateEditorScreen({
           onSelectionChange={handleSelectionChange}
           onUndo={handleUndo}
           onViewportCommit={handleViewportCommit}
+          selection={selection}
         />
         {selectedNode && isPropertyPanelOpen ? (
           <TemplatePropertyPanel

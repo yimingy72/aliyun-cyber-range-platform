@@ -307,6 +307,30 @@ describe('AdminWorkspaceShell', () => {
     expect(identity.parentElement?.className).toContain('ml-auto');
   });
 
+  it('仅标记桌面拓扑创建和编辑路由为沉浸式编辑页', async () => {
+    writeAdminSession(createSession());
+
+    for (const [pathname, expected] of [
+      ['/admin/scenarios/new', 'true'],
+      ['/admin/scenarios/example-id', 'true'],
+      ['/admin/scenarios', null],
+      ['/admin/image-center', null],
+    ] as const) {
+      pathnameState.value = pathname;
+      const { unmount } = render(
+        <AdminWorkspaceShell>
+          <div>workspace content</div>
+        </AdminWorkspaceShell>,
+      );
+
+      await screen.findByText('workspace content');
+      expect(document.querySelector('.admin-workspace')?.getAttribute('data-topology-editor')).toBe(expected);
+      expect(screen.getByRole('banner')).toBeTruthy();
+
+      unmount();
+    }
+  });
+
   it('hides 用户管理 for regular users and shows their identity in the topbar', async () => {
     writeAdminSession(
       createSession({

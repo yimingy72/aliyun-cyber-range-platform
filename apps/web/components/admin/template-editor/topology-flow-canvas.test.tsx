@@ -132,16 +132,22 @@ function createCanvasProps() {
     onSelectionChange: vi.fn(),
     onUndo: vi.fn(),
     onViewportCommit: vi.fn(),
+    selection: { nodeIds: [], edgeIds: [] },
     viewport: { x: -80, y: 40, zoom: 1.2 },
   };
 }
 
 let fullscreenElement: Element | null = null;
+let fullscreenRequestTarget: Element | null = null;
 const requestFullscreen = vi.fn();
 const exitFullscreen = vi.fn();
 
 beforeEach(() => {
   fullscreenElement = null;
+  fullscreenRequestTarget = null;
+  requestFullscreen.mockImplementation(function requestFullscreenMock(this: Element) {
+    fullscreenRequestTarget = this;
+  });
   Object.defineProperty(document, 'fullscreenElement', {
     configurable: true,
     get: () => fullscreenElement,
@@ -159,6 +165,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   fullscreenElement = null;
+  fullscreenRequestTarget = null;
   requestFullscreen.mockReset();
   exitFullscreen.mockReset();
   flowState.props = null;
@@ -184,8 +191,8 @@ describe('TopologyFlowCanvas', () => {
       minZoom: 0.25,
       onlyRenderVisibleElements: true,
       panActivationKeyCode: 'Space',
-      panOnDrag: [1],
-      selectionOnDrag: true,
+      panOnDrag: [0, 1],
+      selectionOnDrag: false,
     });
   });
 
@@ -200,7 +207,7 @@ describe('TopologyFlowCanvas', () => {
     });
   });
 
-  it('declares the full-screen workbench and compact navigation map layout contract', () => {
+  it('declares the full-screen editor grid and compact navigation map layout contract', () => {
     const styles = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
 
     expect(styles).toContain('@import url("@xyflow/react/dist/style.css");');
@@ -210,7 +217,8 @@ describe('TopologyFlowCanvas', () => {
     expect(styles).toMatch(
       /\.topology-flow-workbench\s*\{[\s\S]*?min-height:\s*680px;/,
     );
-    expect(styles).toContain('.topology-flow-workbench:fullscreen');
+    expect(styles).toContain('.template-editor-grid:fullscreen');
+    expect(styles).toContain(".admin-workspace[data-topology-editor='true'] .admin-topbar");
     expect(styles).toContain('.topology-flow-mini-map-toggle');
     expect(styles).toMatch(
       /\.topology-flow-mini-map\s*\{[\s\S]*?width:\s*120px;[\s\S]*?height:\s*80px;/,
@@ -219,6 +227,7 @@ describe('TopologyFlowCanvas', () => {
       '.template-editor-grid:has(.template-property-panel) .topology-flow-mini-map-toggle',
     );
     expect(styles).not.toContain('data-focus-mode');
+    expect(styles).not.toContain('.topology-flow-workbench:fullscreen');
     expect(styles).toMatch(
       /@media \(max-width: 1180px\)\s*\{[\s\S]*?\.template-editor-grid:has\(\.topology-flow-workbench\) > \.template-property-panel\s*\{[\s\S]*?bottom:\s*0;/,
     );
@@ -292,6 +301,52 @@ describe('TopologyFlowCanvas', () => {
       edgeIds: ['edge-switch-ecs'],
       nodeIds: ['switch-1', 'ecs-1'],
     });
+  });
+
+  it('同步父编辑器的节点选择，保持新增资源的属性面板选择状态', async () => {
+    const canvasProps = createCanvasProps();
+    const { rerender } = render(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        selection={{ nodeIds: ['switch-1'], edgeIds: [] }}
+      />,
+    );
+
+    await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(true));
+    expect(flowState.props?.nodes[1].selected).toBe(false);
+
+    rerender(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        selection={{ nodeIds: ['ecs-1'], edgeIds: [] }}
+      />,
+    );
+
+    await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(false));
+    expect(flowState.props?.nodes[1].selected).toBe(true);
+  });
+
+  it('同步父编辑器选择时保留尚未提交的节点位置', async () => {
+    const canvasProps = createCanvasProps();
+    const { rerender } = render(<TopologyFlowCanvas {...canvasProps} />);
+
+    flowState.props?.onNodesChange([{
+      id: 'switch-1',
+      position: { x: 260, y: 140 },
+      type: 'position',
+    }]);
+
+    await waitFor(() => expect(flowState.props?.nodes[0].position).toEqual({ x: 260, y: 140 }));
+
+    rerender(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        selection={{ nodeIds: ['switch-1'], edgeIds: [] }}
+      />,
+    );
+
+    await waitFor(() => expect(flowState.props?.nodes[0].selected).toBe(true));
+    expect(flowState.props?.nodes[0].position).toEqual({ x: 260, y: 140 });
   });
 
   it('通过普通节点点击重新上报单选，并保留带修饰键的多选操作', () => {
@@ -393,12 +448,15 @@ describe('TopologyFlowCanvas', () => {
 
     expect(workbench.getAttribute('data-connect-mode')).toBe('true');
     expect(flowState.props?.nodes[0].data.connectMode).toBe(true);
+    expect(flowState.props?.panOnDrag).toEqual([1]);
+    expect(flowState.props?.selectionOnDrag).toBe(false);
     expect(screen.getByRole('button', { name: '选择模式' }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByRole('button', { name: '连线模式' }).getAttribute('aria-pressed')).toBe('true');
 
     fireEvent.click(screen.getByRole('button', { name: '选择模式' }));
     expect(screen.getByRole('button', { name: '选择模式' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: '连线模式' }).getAttribute('aria-pressed')).toBe('false');
+    expect(flowState.props?.panOnDrag).toEqual([0, 1]);
 
     fireEvent.click(screen.getByRole('button', { name: '全部自动布局' }));
     fireEvent.click(screen.getByRole('button', { name: '适应视图' }));
@@ -439,13 +497,14 @@ describe('TopologyFlowCanvas', () => {
     expect(screen.getByRole('button', { name: '显示导航图' }).getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('根据浏览器全屏状态切换工作区全屏编辑按钮', () => {
+  it('没有编辑网格容器时回退工作区全屏，并根据浏览器状态切换按钮', () => {
     const canvasProps = createCanvasProps();
     render(<TopologyFlowCanvas {...canvasProps} />);
     const workbench = screen.getByTestId('topology-flow-workbench');
 
     fireEvent.click(screen.getByRole('button', { name: '进入全屏编辑模式' }));
     expect(requestFullscreen).toHaveBeenCalledOnce();
+    expect(fullscreenRequestTarget).toBe(workbench);
 
     fullscreenElement = workbench;
     fireEvent(document, new Event('fullscreenchange'));
@@ -459,6 +518,27 @@ describe('TopologyFlowCanvas', () => {
     fireEvent(document, new Event('fullscreenchange'));
 
     expect(screen.getByRole('button', { name: '进入全屏编辑模式' }).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('在编辑网格内请求全屏并根据网格状态显示属性面板所需的退出按钮', () => {
+    const canvasProps = createCanvasProps();
+    render(
+      <div className="template-editor-grid" data-testid="template-editor-grid">
+        <TopologyFlowCanvas {...canvasProps} />
+        <aside className="template-property-panel">属性面板</aside>
+      </div>,
+    );
+    const editorGrid = screen.getByTestId('template-editor-grid');
+
+    fireEvent.click(screen.getByRole('button', { name: '进入全屏编辑模式' }));
+
+    expect(fullscreenRequestTarget).toBe(editorGrid);
+
+    fullscreenElement = editorGrid;
+    fireEvent(document, new Event('fullscreenchange'));
+
+    expect(screen.getByRole('button', { name: '退出全屏编辑模式' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('属性面板')).toBeTruthy();
   });
 
   it('全屏编辑时将 Escape 留给浏览器退出全屏', () => {

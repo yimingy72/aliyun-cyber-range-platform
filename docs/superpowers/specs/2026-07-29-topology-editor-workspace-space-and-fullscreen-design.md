@@ -43,7 +43,7 @@
 
 1. 点击全屏按钮时，画布读取最近的编辑网格并调用该元素的 `requestFullscreen()`；没有网格容器时回退到工作区本身，保证组件测试与独立使用仍可工作。
 2. `fullscreenchange` 以当前实际目标是否为 `document.fullscreenElement` 为唯一状态来源。
-3. `.template-editor-grid:fullscreen` 占满视口，内部 `.topology-flow-workbench` 占据完整画布区域。
+3. `.template-editor-grid:fullscreen` 使用 `100vw × 100vh` 且 `min-height: 0` 占满视口，内部 `.topology-flow-workbench` 同步使用 `min-height: 0` 填满网格，不能继承普通编辑的 `680px` 最小高度。
 4. 同级 `TemplatePropertyPanel` 仍属于全屏网格，保持其现有覆盖式位置和关闭行为。
 5. 新增资源已由编辑器选择新节点并打开属性面板；本轮只修复全屏层不包含面板的问题，不改变该领域行为。
 
@@ -63,6 +63,7 @@
 - 顶部栏仅通过桌面限定选择器隐藏，不从 DOM 删除，因此认证、会话续期和退出登录逻辑不受影响。
 - 全屏按钮继续根据实际浏览器全屏状态提供动态名称、标题和 `aria-pressed`。
 - 属性面板在全屏时保留焦点顺序、关闭按钮和现有桌面尺寸。
+- 全屏的导航图与开关定位规则以全屏网格为边界，保留对属性面板的避让，不能继续依赖工作区自身成为全屏元素。
 - 不新增移动端样式调整。
 
 ## 测试策略
