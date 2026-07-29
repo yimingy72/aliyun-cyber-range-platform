@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { TableCell, TableRow } from '@/components/ui/table';
 import {
-  deleteRangeInstance,
   fetchProvisionJobs,
   fetchRangeInstances,
   triggerRangeAction,
@@ -60,9 +59,10 @@ const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '实例名称', priority: 'primary' },
   { id: 'createdBy', label: '创建人', priority: 'tertiary' },
   { id: 'template', label: '所属靶场', priority: 'secondary' },
-  { id: 'createdAt', label: '开启时间', priority: 'secondary' },
-  { id: 'endedAt', label: '回收时间', priority: 'tertiary' },
-  { id: 'duration', label: '运行时长', priority: 'detail' },
+  { id: 'status', label: '状态', priority: 'primary' },
+  { id: 'createdAt', label: '创建时间', priority: 'secondary' },
+  { id: 'endedAt', label: '结束时间', priority: 'tertiary' },
+  { id: 'duration', label: '持续时长', priority: 'detail' },
   { id: 'actions', label: '操作', priority: 'primary', width: '8rem' },
 ];
 
@@ -86,16 +86,12 @@ function getInstanceTemplateLabel(
   return instance.templateNameSnapshot?.trim() || '未知靶场';
 }
 
-function getActionTrigger(instance: RangeInstance, action: 'create' | 'destroy') {
-  if (action === 'create' && instance.status === 'create_failed') {
+function getActionTrigger(instance: RangeInstance) {
+  if (instance.status === 'destroy_failed') {
     return 'retry' as const;
   }
 
-  if (action === 'destroy' && instance.status === 'destroy_failed') {
-    return 'retry' as const;
-  }
-
-  return action;
+  return 'destroy' as const;
 }
 
 function getInstanceDisplayName(instance: ExtendedRangeInstance) {
@@ -115,11 +111,11 @@ function getInstanceActionLabel(instance: ExtendedRangeInstance) {
     return '销毁';
   }
 
-  if (instance.status === 'create_failed') {
-    return '删除';
-  }
-
   return null;
+}
+
+function isRangeInstanceHistoryStatus(status: string) {
+  return status === 'destroyed' || status === 'create_failed';
 }
 
 function getEndedAtLabel(job?: ExtendedProvisionJob | null) {
@@ -189,8 +185,7 @@ export function RangeInstancesScreen({
     history: true,
   });
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [isSubmittingAction, setIsSubmittingAction] = useState<'create' | 'destroy' | null>(null);
-  const [removedInstanceIds, setRemovedInstanceIds] = useState<string[]>([]);
+  const [isSubmittingAction, setIsSubmittingAction] = useState<'destroy' | null>(null);
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSizeMode, pageSize, setPageSizeMode, setPageSize } = useAdminPageSize();
@@ -316,16 +311,10 @@ export function RangeInstancesScreen({
     return map;
   }, [currentJobs]);
 
-  const visibleInstances = useMemo(() => {
-    return currentInstances.filter(
-      (instance) => !removedInstanceIds.includes(instance.id),
-    );
-  }, [currentInstances, removedInstanceIds]);
-
   const visibleListInstances = useMemo(() => {
     const keyword = searchName.trim().toLowerCase();
-    const matchingModeInstances = visibleInstances.filter((instance) =>
-      listMode === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed',
+    const matchingModeInstances = currentInstances.filter((instance) =>
+      listMode === 'history' ? isRangeInstanceHistoryStatus(instance.status) : !isRangeInstanceHistoryStatus(instance.status),
     );
 
     if (!keyword) {
@@ -333,7 +322,7 @@ export function RangeInstancesScreen({
     }
 
     return matchingModeInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
-  }, [listMode, searchName, visibleInstances]);
+  }, [currentInstances, listMode, searchName]);
 
   const activePagination = getPagination(visibleListInstances.length, listPages[listMode], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
@@ -398,17 +387,6 @@ export function RangeInstancesScreen({
     }));
   }
 
-  function removeInstanceFromSnapshot(instanceId: string) {
-    setInstancesByView((current) => ({
-      ...current,
-      [listMode]: current[listMode].filter((item) => item.id !== instanceId),
-    }));
-    setJobsByView((current) => ({
-      ...current,
-      [listMode]: current[listMode].filter((item) => item.rangeInstanceId !== instanceId),
-    }));
-  }
-
   function handleViewDetail(instanceId: string) {
     router.push(`/admin/ranges/${instanceId}`);
   }
@@ -422,7 +400,7 @@ export function RangeInstancesScreen({
     setIsSubmittingAction('destroy');
 
     try {
-      const trigger = getActionTrigger(instance, 'destroy');
+      const trigger = getActionTrigger(instance);
       const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger)) as ExtendedProvisionJob;
 
       upsertInstanceInSnapshot({
@@ -439,31 +417,6 @@ export function RangeInstancesScreen({
       }
 
       setActionErrorMessage('实例生命周期操作失败，请稍后重试。');
-    } finally {
-      setIsSubmittingAction(null);
-    }
-  }
-
-  async function handleDeleteFailedInstance(instance: ExtendedRangeInstance) {
-    if (!session.token) {
-      return;
-    }
-
-    setActionErrorMessage(null);
-    setIsSubmittingAction('create');
-
-    try {
-      await deleteRangeInstance(apiBaseUrl, session.token, instance.id);
-      setRemovedInstanceIds((current) => [...current, instance.id]);
-      removeInstanceFromSnapshot(instance.id);
-    } catch (error: unknown) {
-      if (isUnauthorizedAdminError(error)) {
-        session.logout();
-        router.replace('/admin/login');
-        return;
-      }
-
-      setActionErrorMessage('删除失败实例失败，请稍后重试。');
     } finally {
       setIsSubmittingAction(null);
     }
@@ -598,10 +551,10 @@ export function RangeInstancesScreen({
                         columns={tableColumns}
                         description={
                           listMode === 'history'
-                            ? '实例完成销毁后，会自动沉淀到这里。'
+                            ? '实例完成销毁或创建失败后，会自动沉淀到这里。'
                             : '实例会在靶场编排页生成后进入这里。'
                         }
-                        title={listMode === 'history' ? '还没有已回收实例' : '还没有编排实例'}
+                        title={listMode === 'history' ? '还没有历史实例' : '还没有编排实例'}
                         variant="empty"
                       />
                     );
@@ -628,6 +581,9 @@ export function RangeInstancesScreen({
                           </AdminDataTableCell>
                           <AdminDataTableCell column={templateColumn}>
                             {getInstanceTemplateLabel(instance)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
+                            <StatusBadge status={instance.status} />
                           </AdminDataTableCell>
                           <AdminDataTableCell column={createdAtColumn}>
                             {formatAdminDateTime(instance.createdAt)}
@@ -676,11 +632,7 @@ export function RangeInstancesScreen({
                             {actionLabel ? (
                               <Button
                                 disabled={isSubmittingAction !== null}
-                                onClick={() =>
-                                  void (instance.status === 'create_failed'
-                                    ? handleDeleteFailedInstance(instance)
-                                    : handleListDestroyAction(instance))
-                                }
+                                onClick={() => void handleListDestroyAction(instance)}
                                 size="sm"
                                 type="button"
                                 variant="destructive"

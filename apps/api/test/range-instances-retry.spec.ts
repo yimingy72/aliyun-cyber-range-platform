@@ -3,6 +3,49 @@ import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('RangeInstancesService retry flow', () => {
+  it('moves failed creates into history while keeping destroy failures in the active list', async () => {
+    const repository = createMemoryAdminRepository();
+    const service = new RangeInstancesService(
+      repository,
+      new RangeTemplatesService(repository),
+      {} as never,
+      {
+        serialize: async <T>(handler: () => Promise<T>) => handler(),
+        getPool: () => [],
+        allocate: () => null,
+      } as never,
+      {
+        dispatch: () => undefined,
+      } as never,
+    );
+
+    const [running, failedCreate, failedDestroy, destroyed] = await Promise.all([
+      repository.createRangeInstance({ name: 'running-range', status: 'running' }),
+      repository.createRangeInstance({ name: 'failed-create-range', status: 'create_failed' }),
+      repository.createRangeInstance({ name: 'failed-destroy-range', status: 'destroy_failed' }),
+      repository.createRangeInstance({ name: 'destroyed-range', status: 'destroyed' }),
+    ]);
+
+    await expect(service.list({ id: 'admin', role: 'admin' }, 'active')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: running.id }),
+        expect.objectContaining({ id: failedDestroy.id }),
+      ]),
+    );
+    await expect(service.list({ id: 'admin', role: 'admin' }, 'active')).resolves.not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: failedCreate.id }),
+        expect.objectContaining({ id: destroyed.id }),
+      ]),
+    );
+    await expect(service.list({ id: 'admin', role: 'admin' }, 'history')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: failedCreate.id, status: 'create_failed' }),
+        expect.objectContaining({ id: destroyed.id, status: 'destroyed' }),
+      ]),
+    );
+  });
+
   it('rejects starting a draft range without a future expiration time', async () => {
     const repository = createMemoryAdminRepository();
     const dispatched: string[] = [];

@@ -59,7 +59,9 @@ export class RangeInstancesService {
     const listItems = hydratedInstances
       .filter((instance): instance is NonNullable<typeof instance> => Boolean(instance))
       .map((instance) => toRangeInstanceListItem(instance, templateNameById))
-      .filter((instance) => (view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed'));
+      .filter((instance) =>
+        view === 'history' ? isRangeInstanceHistoryStatus(instance.status) : !isRangeInstanceHistoryStatus(instance.status),
+      );
 
     return attachCreatedByUsernames(
       this.adminRepository,
@@ -1187,4 +1189,8 @@ function toRangeInstanceListItem(
     lastJobId: instance.lastJobId,
     errorSummary: instance.errorSummary ?? null,
   };
+}
+
+function isRangeInstanceHistoryStatus(status: string) {
+  return status === 'destroyed' || status === 'create_failed';
 }

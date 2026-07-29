@@ -4,12 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   createRangeInstanceMock,
-  deleteRangeInstanceMock,
   fetchAdminBootstrapMock,
   triggerRangeActionMock,
 } = vi.hoisted(() => ({
   createRangeInstanceMock: vi.fn(),
-  deleteRangeInstanceMock: vi.fn(),
   fetchAdminBootstrapMock: vi.fn(),
   triggerRangeActionMock: vi.fn(),
 }));
@@ -45,7 +43,6 @@ vi.mock('../../lib/admin-api', () => ({
     status = 500;
   },
   createRangeInstance: createRangeInstanceMock,
-  deleteRangeInstance: deleteRangeInstanceMock,
   fetchProvisionJobs: async () => {
     const snapshot = await fetchAdminBootstrapMock();
     return snapshot.provisionJobs;
@@ -59,7 +56,11 @@ vi.mock('../../lib/admin-api', () => ({
     const templateNames = new Map(snapshot.rangeTemplates.map((template: { id: string; name: string }) => [template.id, template.name]));
 
     return snapshot.rangeInstances
-      .filter((instance: { status: string }) => (options.view === 'history' ? instance.status === 'destroyed' : instance.status !== 'destroyed'))
+      .filter((instance: { status: string }) =>
+        options.view === 'history'
+          ? ['destroyed', 'create_failed'].includes(instance.status)
+          : !['destroyed', 'create_failed'].includes(instance.status),
+      )
       .map((instance: { templateId?: string | null; templateNameSnapshot?: string | null }) => ({
         ...instance,
         templateNameSnapshot:
@@ -75,7 +76,6 @@ import { RangeInstancesScreen } from './range-instances-screen';
 describe('RangeInstancesScreen', () => {
   beforeEach(() => {
     createRangeInstanceMock.mockReset();
-    deleteRangeInstanceMock.mockReset();
     fetchAdminBootstrapMock.mockReset();
     triggerRangeActionMock.mockReset();
     pushMock.mockReset();
@@ -113,6 +113,15 @@ describe('RangeInstancesScreen', () => {
           createdAt: '2026-06-28T08:00:00.000Z',
           lastJobId: 'job-2',
         },
+        {
+          id: 'range-3',
+          name: '失败靶场 03',
+          teamId: 'team-3',
+          templateId: 'template-1',
+          status: 'create_failed',
+          createdAt: '2026-06-27T08:00:00.000Z',
+          lastJobId: 'job-3',
+        },
       ],
       provisionJobs: [
         { id: 'job-1', rangeInstanceId: 'range-1', jobType: 'create', status: 'running', triggeredBy: 'admin', startedAt: '2026-06-29T09:00:00.000Z' },
@@ -124,6 +133,15 @@ describe('RangeInstancesScreen', () => {
           triggeredBy: 'admin',
           startedAt: '2026-06-28T10:00:00.000Z',
           finishedAt: '2026-06-28T12:30:00.000Z',
+        },
+        {
+          id: 'job-3',
+          rangeInstanceId: 'range-3',
+          jobType: 'create',
+          status: 'failed',
+          triggeredBy: 'admin',
+          startedAt: '2026-06-27T08:00:00.000Z',
+          finishedAt: '2026-06-27T08:04:00.000Z',
         },
       ],
     });
@@ -148,6 +166,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('range-1')).toBeNull();
     expect(screen.getAllByText('企业攻防靶场').length).toBeGreaterThan(0);
     expect(screen.queryByText('红队靶场 02')).toBeNull();
+    expect(screen.queryByText('失败靶场 03')).toBeNull();
     expect(screen.queryByText('已回收实例')).toBeNull();
     expect(screen.queryByText('开启时间')).toBeNull();
     expect(screen.queryByText('回收时间')).toBeNull();
@@ -171,17 +190,19 @@ describe('RangeInstancesScreen', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
 
     expect(await screen.findByText('红队靶场 02')).toBeTruthy();
+    expect(screen.getByText('失败靶场 03')).toBeTruthy();
+    expect(screen.getByText('创建失败')).toBeTruthy();
     expect(screen.queryByText('已回收实例')).toBeNull();
-    expect(screen.getByText('开启时间')).toBeTruthy();
-    expect(screen.getByText('回收时间')).toBeTruthy();
-    expect(screen.getByText('运行时长')).toBeTruthy();
+    expect(screen.getByText('创建时间')).toBeTruthy();
+    expect(screen.getByText('结束时间')).toBeTruthy();
+    expect(screen.getByText('持续时长')).toBeTruthy();
     expect(screen.getByText('操作')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '查看详情' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: '查看详情' })).toHaveLength(2);
 
     const historyTable = screen.getByRole('table', { name: '编排实例历史' });
-    expect(historyTable.querySelectorAll('thead th')).toHaveLength(7);
-    expect(Array.from(historyTable.querySelectorAll('thead th')).map((cell) => cell.textContent)).not.toContain('状态');
-    expect(screen.getByText('红队靶场 02').closest('tr')?.querySelectorAll('td')).toHaveLength(7);
+    expect(historyTable.querySelectorAll('thead th')).toHaveLength(8);
+    expect(Array.from(historyTable.querySelectorAll('thead th')).map((cell) => cell.textContent)).toContain('状态');
+    expect(screen.getByText('红队靶场 02').closest('tr')?.querySelectorAll('td')).toHaveLength(8);
   });
 
   it('navigates to the standalone detail workbench when clicking 查看详情', async () => {
@@ -340,50 +361,6 @@ describe('RangeInstancesScreen', () => {
     });
   });
 
-  it('shows delete for create_failed instances and removes the row after deletion', async () => {
-    fetchAdminBootstrapMock.mockResolvedValue({
-      competitions: [],
-      teams: [],
-      rangeTemplates: [
-        { id: 'template-1', name: '企业攻防靶场', slug: 'enterprise-range', version: 'v1' },
-      ],
-      rangeInstances: [
-        {
-          id: 'range-failed',
-          name: '失败靶场 01',
-          templateId: 'template-1',
-          status: 'create_failed',
-          createdAt: '2026-06-29T09:00:00.000Z',
-          lastJobId: 'job-failed',
-        },
-      ],
-      provisionJobs: [
-        { id: 'job-failed', rangeInstanceId: 'range-failed', jobType: 'create', status: 'failed', triggeredBy: 'admin', startedAt: '2026-06-29T09:00:00.000Z' },
-      ],
-    });
-    deleteRangeInstanceMock.mockResolvedValue(undefined);
-
-    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
-
-    expect(await screen.findByText('失败靶场 01')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '关闭' })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '删除' }));
-
-    await waitFor(() => {
-      expect(deleteRangeInstanceMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'range-failed',
-      );
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByText('失败靶场 01')).toBeNull();
-    });
-  });
-
   it('keeps the page shell visible while instances are still loading', () => {
     fetchAdminBootstrapMock.mockImplementation(() => new Promise(() => undefined));
 
@@ -391,56 +368,6 @@ describe('RangeInstancesScreen', () => {
 
     expect(screen.getByRole('heading', { name: '编排实例' })).toBeTruthy();
     expect(screen.queryByText('正在加载靶场实例...')).toBeNull();
-  });
-
-  it('shows delete for create_failed instances, falls back to template snapshot, and removes the row after deletion', async () => {
-    fetchAdminBootstrapMock.mockResolvedValue({
-      competitions: [],
-      teams: [],
-      rangeTemplates: [],
-      rangeInstances: [
-        {
-          id: 'range-failed',
-          name: '失败实例 01',
-          templateId: null,
-          templateNameSnapshot: '已删除模板',
-          status: 'create_failed',
-          createdAt: '2026-06-29T09:00:00.000Z',
-          lastJobId: 'job-failed',
-          errorSummary: 'mock failed',
-        },
-      ],
-      provisionJobs: [
-        {
-          id: 'job-failed',
-          rangeInstanceId: 'range-failed',
-          jobType: 'create',
-          status: 'failed',
-          triggeredBy: 'admin',
-          startedAt: '2026-06-29T09:00:00.000Z',
-        },
-      ],
-    });
-    deleteRangeInstanceMock.mockResolvedValue(undefined);
-
-    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
-
-    await screen.findByText('失败实例 01');
-    expect(screen.getByText('已删除模板')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: '删除' }));
-
-    await waitFor(() => {
-      expect(deleteRangeInstanceMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'range-failed',
-      );
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByText('失败实例 01')).toBeNull();
-    });
   });
 
   it('keeps destroy_failed instances visible in the active list with a 销毁 action', async () => {
