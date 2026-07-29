@@ -1138,47 +1138,13 @@ body {
 .admin-login-shell {
   min-height: 100dvh;
   display: grid;
+  place-items: center;
   padding: 24px;
   background: #f5f7fb;
 }
 
 .admin-login-layout {
-  width: min(1140px, 100%);
-  min-height: 570px;
-  margin: auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 480px);
-  align-items: center;
-  gap: 48px;
-}
-
-.admin-login-context {
-  align-self: stretch;
-  display: grid;
-  align-content: end;
-  gap: 12px;
-  padding-bottom: 34px;
-  color: #8492a6;
-}
-
-.admin-login-context::before {
-  width: min(340px, 76%);
-  height: 1px;
-  background: #dce5f0;
-  content: "";
-}
-
-.admin-login-context strong {
-  color: #5c6e88;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-}
-
-.admin-login-context p {
-  max-width: 310px;
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.7;
+  width: min(420px, 100%);
 }
 
 .admin-login-card {
@@ -1193,7 +1159,7 @@ body {
 
 .admin-login-form {
   display: grid;
-  gap: 17px;
+  gap: 18px;
 }
 
 .admin-login-copy {
@@ -1256,16 +1222,6 @@ body {
 @media (max-width: 720px) {
   .admin-login-shell {
     padding: 16px;
-  }
-
-  .admin-login-layout {
-    min-height: calc(100dvh - 32px);
-    grid-template-columns: minmax(0, 480px);
-    justify-content: center;
-  }
-
-  .admin-login-context {
-    display: none;
   }
 
   .admin-login-card {
