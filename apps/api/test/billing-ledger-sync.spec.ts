@@ -101,6 +101,20 @@ describe('billing-ledger-sync', () => {
     });
     const initialStartAt = new Date('2026-07-16T02:03:42.000Z');
     const updateStartAt = new Date('2026-07-16T12:00:00.000Z');
+    const createJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'user-1',
+    });
+    await repository.updateProvisionJob(createJob.id, {
+      status: 'succeeded',
+      finishedAt: initialStartAt,
+    });
+    const updateJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'update',
+      triggeredBy: 'user-1',
+    });
 
     await syncRangeInstanceBillingLedger({
       repository,
@@ -111,7 +125,7 @@ describe('billing-ledger-sync', () => {
         hostIds: { dmz: 'i-existing' },
         systemDiskIds: { dmz: 'd-existing' },
       },
-      sourceProvisionJobId: 'job-create',
+      sourceProvisionJobId: createJob.id,
       billingStartAt: initialStartAt,
     });
 
@@ -125,7 +139,7 @@ describe('billing-ledger-sync', () => {
         systemDiskIds: { dmz: 'd-existing' },
         eipAllocationIds: { entry: 'eip-new' },
       },
-      sourceProvisionJobId: 'job-update',
+      sourceProvisionJobId: updateJob.id,
       billingStartAt: updateStartAt,
     });
 
@@ -134,22 +148,171 @@ describe('billing-ledger-sync', () => {
         expect.objectContaining({
           cloudResourceId: 'i-existing',
           cloudResourceType: 'ecs',
-          sourceProvisionJobId: 'job-create',
+          sourceProvisionJobId: createJob.id,
           billingStartAt: initialStartAt,
         }),
         expect.objectContaining({
           cloudResourceId: 'd-existing',
           cloudResourceType: 'disk',
-          sourceProvisionJobId: 'job-create',
+          sourceProvisionJobId: createJob.id,
           billingStartAt: initialStartAt,
         }),
         expect.objectContaining({
           cloudResourceId: 'eip-new',
           cloudResourceType: 'eip',
-          sourceProvisionJobId: 'job-update',
+          sourceProvisionJobId: createJob.id,
           billingStartAt: updateStartAt,
         }),
       ]),
+    );
+  });
+  it('backfills a missing creation job for an existing resource ledger without replacing it later', async () => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({
+      name: 'billing-ledger-range',
+      ownerUserId: 'user-1',
+      instanceMode: 'range',
+      status: 'running',
+    });
+    const existing = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-billing-ledger-range',
+      cloudResourceType: 'ecs',
+      billingScope: 'user',
+      ownerUserId: 'user-1',
+      rangeInstanceId: instance.id,
+      billingStartAt: new Date('2026-07-29T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
+    const createJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'user-1',
+    });
+    await repository.updateProvisionJob(createJob.id, {
+      status: 'succeeded',
+      finishedAt: new Date('2026-07-29T00:00:00.000Z'),
+    });
+    const updateJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'update',
+      triggeredBy: 'user-1',
+    });
+
+    await syncRangeInstanceBillingLedger({
+      repository,
+      instance,
+      regionId: 'cn-hangzhou',
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          app: 'i-billing-ledger-range',
+        },
+      },
+      sourceProvisionJobId: createJob.id,
+      billingStartAt: new Date('2026-07-29T00:00:00.000Z'),
+    });
+
+    await expect(
+      repository.findBillingLedgerResource({
+        regionId: 'cn-hangzhou',
+        cloudResourceId: 'i-billing-ledger-range',
+        cloudResourceType: 'ecs',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: existing.id,
+        sourceProvisionJobId: createJob.id,
+      }),
+    );
+
+    await syncRangeInstanceBillingLedger({
+      repository,
+      instance,
+      regionId: 'cn-hangzhou',
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          app: 'i-billing-ledger-range',
+        },
+      },
+      sourceProvisionJobId: updateJob.id,
+      billingStartAt: new Date('2026-07-29T00:00:00.000Z'),
+    });
+
+    await expect(
+      repository.findBillingLedgerResource({
+        regionId: 'cn-hangzhou',
+        cloudResourceId: 'i-billing-ledger-range',
+        cloudResourceType: 'ecs',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: existing.id,
+        sourceProvisionJobId: createJob.id,
+      }),
+    );
+  });
+
+  it('replaces an unsuccessful creation job with the retry that recreates an existing resource', async () => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({
+      name: 'retry-billing-ledger-range',
+      ownerUserId: 'user-1',
+      instanceMode: 'range',
+      status: 'running',
+    });
+    const failedJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'create',
+      triggeredBy: 'user-1',
+    });
+    await repository.updateProvisionJob(failedJob.id, {
+      status: 'failed',
+      finishedAt: new Date('2026-07-29T00:00:00.000Z'),
+    });
+    const retryJob = await repository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'retry',
+      triggeredBy: 'user-1',
+    });
+    const existing = await repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-retry-billing-ledger-range',
+      cloudResourceType: 'ecs',
+      billingScope: 'user',
+      ownerUserId: 'user-1',
+      rangeInstanceId: instance.id,
+      sourceProvisionJobId: failedJob.id,
+      billingStartAt: new Date('2026-07-29T00:00:00.000Z'),
+      tagsSnapshot: {},
+    });
+
+    await syncRangeInstanceBillingLedger({
+      repository,
+      instance,
+      regionId: 'cn-hangzhou',
+      resourceSummary: {
+        mode: 'ecs-native',
+        hostIds: {
+          app: 'i-retry-billing-ledger-range',
+        },
+      },
+      sourceProvisionJobId: retryJob.id,
+      billingStartAt: new Date('2026-07-29T00:00:00.000Z'),
+    });
+
+    await expect(
+      repository.findBillingLedgerResource({
+        regionId: 'cn-hangzhou',
+        cloudResourceId: 'i-retry-billing-ledger-range',
+        cloudResourceType: 'ecs',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: existing.id,
+        sourceProvisionJobId: retryJob.id,
+      }),
     );
   });
 });

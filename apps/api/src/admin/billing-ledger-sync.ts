@@ -2,6 +2,7 @@ import type {
   AdminRepository,
   BillingLedgerResourceType,
   BillingScope,
+  ProvisionJobRecord,
   RangeInstanceRecord,
   RangeResourceSummary,
 } from './admin.repository';
@@ -32,6 +33,10 @@ function collectResourceIds(values: Record<string, string> | null | undefined) {
 
 function resolveBillingScope(instance: RangeInstanceRecord): BillingScope {
   return instance.ownerUserId ? 'user' : 'platform';
+}
+
+function isSuccessfulLaunchJob(job: ProvisionJobRecord | null): job is ProvisionJobRecord {
+  return job?.status === 'succeeded' && (job.jobType === 'create' || job.jobType === 'retry');
 }
 
 function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerSpec[] {
@@ -79,6 +84,19 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
   const ledgerSpecs = buildLedgerSpecs(input.resourceSummary);
   const hostIds = collectResourceIds(input.resourceSummary?.hostIds);
   const systemDiskIds = new Set(collectResourceIds(input.resourceSummary?.systemDiskIds));
+  const existingLedgers = await input.repository.listBillingLedgerResources();
+  const instanceSourceJobIds = [
+    ...new Set(
+      existingLedgers
+        .filter((ledger) => ledger.rangeInstanceId === input.instance.id)
+        .flatMap((ledger) => (ledger.sourceProvisionJobId ? [ledger.sourceProvisionJobId] : [])),
+    ),
+  ];
+  const sourceJobs = await Promise.all(
+    instanceSourceJobIds.map(async (jobId) => [jobId, await input.repository.getProvisionJobById(jobId)] as const),
+  );
+  const sourceProvisionJobId =
+    sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? input.sourceProvisionJobId ?? null;
 
   for (const hostId of hostIds) {
     if (systemDiskIds.has(hostId)) {
@@ -108,11 +126,17 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
     });
 
     if (existing) {
+      const existingSourceJob = existing.sourceProvisionJobId
+        ? sourceJobs.find(([jobId]) => jobId === existing.sourceProvisionJobId)?.[1] ??
+          (await input.repository.getProvisionJobById(existing.sourceProvisionJobId))
+        : null;
+
       await input.repository.updateBillingLedgerResource(existing.id, {
         billingScope,
         ownerUserId: input.instance.ownerUserId ?? null,
         rangeInstanceId: input.instance.id,
         singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
+        sourceProvisionJobId: isSuccessfulLaunchJob(existingSourceJob) ? existingSourceJob.id : sourceProvisionJobId,
         releasedAt: null,
       });
       continue;
@@ -128,7 +152,7 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
       ownerUserId: input.instance.ownerUserId ?? null,
       rangeInstanceId: input.instance.id,
       singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-      sourceProvisionJobId: input.sourceProvisionJobId ?? null,
+      sourceProvisionJobId,
       billingStartAt: input.billingStartAt,
       tagsSnapshot: {},
     });
