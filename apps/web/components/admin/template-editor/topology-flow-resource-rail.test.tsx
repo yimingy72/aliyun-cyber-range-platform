@@ -69,6 +69,29 @@ describe('TopologyFlowResourceRail', () => {
     expect(dataTransfer.setData).toHaveBeenCalledWith('application/x-topology-node-kind', 'ecs');
   });
 
+  it('只读时仍可收缩资源面板，但禁止创建和拖放资源', () => {
+    const onAddNode = vi.fn();
+    render(<TopologyFlowResourceRail disabled initialExpanded onAddNode={onAddNode} />);
+
+    const ecsButton = screen.getByRole('button', { name: /ECS 主机/ });
+    expect(ecsButton.getAttribute('disabled')).not.toBeNull();
+    expect(ecsButton.getAttribute('draggable')).toBe('false');
+
+    fireEvent.click(ecsButton);
+    fireEvent.dragStart(ecsButton, {
+      dataTransfer: {
+        effectAllowed: '',
+        setData: vi.fn(),
+      },
+    });
+    expect(onAddNode).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭资源面板' }));
+    expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: '打开资源面板' }));
+    expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('true');
+  });
+
   it('通过 aria-describedby 保留资源描述', () => {
     render(<TopologyFlowResourceRail onAddNode={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '打开资源面板' }));

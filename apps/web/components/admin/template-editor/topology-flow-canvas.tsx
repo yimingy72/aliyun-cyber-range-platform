@@ -58,9 +58,13 @@ type NodePositionCommit = {
   position: XYPosition;
 };
 
-type TopologyFlowCanvasProps = {
+export type TopologyFlowCanvasMode = 'edit' | 'readonly';
+
+export type TopologyFlowCanvasProps = {
   nodes: TemplateNode[];
   edges: TemplateEdge[];
+  fullscreenTargetSelector?: string;
+  mode?: TopologyFlowCanvasMode;
   viewport: TopologyViewport | null;
   onAddNode: (kind: TopologyResourceKind, position?: XYPosition) => void;
   onConnect: (connection: { source: string; target: string }) => void;
@@ -173,6 +177,8 @@ function findResourceInsertionPosition(nodes: TemplateNode[], preferredPosition:
 
 function TopologyFlowCanvasInner({
   edges,
+  fullscreenTargetSelector = '.template-editor-grid',
+  mode = 'edit',
   nodes,
   onAddNode,
   onConnect,
@@ -187,15 +193,17 @@ function TopologyFlowCanvasInner({
   selection,
   viewport,
 }: TopologyFlowCanvasProps) {
+  const isReadonly = mode === 'readonly';
   const [connectMode, setConnectMode] = React.useState(false);
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [isMiniMapVisible, setIsMiniMapVisible] = React.useState(false);
   const canvasRef = React.useRef<HTMLDivElement>(null);
   const workbenchRef = React.useRef<HTMLElement>(null);
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
+  const isConnectMode = !isReadonly && connectMode;
   const topologyFlowNodes = React.useMemo(
-    () => toFlowNodes(nodes, connectMode),
-    [connectMode, nodes],
+    () => toFlowNodes(nodes, isConnectMode),
+    [isConnectMode, nodes],
   );
   const externalFlowNodes = React.useMemo(
     () => applyNodeSelection(topologyFlowNodes, selection),
@@ -211,7 +219,7 @@ function TopologyFlowCanvasInner({
     }));
   }, [edges, selection.edgeIds]);
   const syncedTopologyNodesRef = React.useRef(nodes);
-  const syncedConnectModeRef = React.useRef(connectMode);
+  const syncedConnectModeRef = React.useRef(isConnectMode);
   const selectionRef = React.useRef(selection);
   const pendingExternalSelectionRef = React.useRef<TopologySelection | null>(null);
   const previousSelectionRef = React.useRef(selection);
@@ -244,9 +252,9 @@ function TopologyFlowCanvasInner({
 
   React.useEffect(() => {
     const shouldSyncTopology = syncedTopologyNodesRef.current !== nodes;
-    const shouldSyncConnectMode = syncedConnectModeRef.current !== connectMode;
+    const shouldSyncConnectMode = syncedConnectModeRef.current !== isConnectMode;
     syncedTopologyNodesRef.current = nodes;
-    syncedConnectModeRef.current = connectMode;
+    syncedConnectModeRef.current = isConnectMode;
 
     setFlowNodes((currentNodes) => {
       const currentNodesById = new Map(currentNodes.map((node) => [node.id, node]));
@@ -287,7 +295,7 @@ function TopologyFlowCanvasInner({
 
       return hasChanges ? nextNodes : currentNodes;
     });
-  }, [connectMode, externalFlowNodes, nodes, setFlowNodes]);
+  }, [externalFlowNodes, isConnectMode, nodes, setFlowNodes]);
 
   React.useEffect(() => {
     function syncFullscreenState() {
@@ -318,7 +326,7 @@ function TopologyFlowCanvasInner({
   }, [fitView, setViewport, viewport]);
 
   function handleConnect(connection: Connection) {
-    if (connection.source && connection.target) {
+    if (!isReadonly && connection.source && connection.target) {
       onConnect({ source: connection.source, target: connection.target });
     }
   }
@@ -361,6 +369,10 @@ function TopologyFlowCanvasInner({
   }
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (isReadonly) {
+      return;
+    }
+
     event.preventDefault();
 
     const kind = event.dataTransfer.getData('application/x-topology-node-kind');
@@ -375,6 +387,10 @@ function TopologyFlowCanvasInner({
   }
 
   function handleResourceAddNode(kind: TopologyResourceKind) {
+    if (isReadonly) {
+      return;
+    }
+
     const bounds = canvasRef.current?.getBoundingClientRect();
 
     if (!bounds) {
@@ -405,6 +421,10 @@ function TopologyFlowCanvasInner({
   }
 
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (isReadonly) {
+      return;
+    }
+
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
   }
@@ -412,7 +432,7 @@ function TopologyFlowCanvasInner({
   function readFullscreenTarget() {
     const workbench = workbenchRef.current;
 
-    return workbench?.closest<HTMLElement>('.template-editor-grid') ?? workbench;
+    return workbench?.closest<HTMLElement>(fullscreenTargetSelector) ?? workbench;
   }
 
   async function handleFullscreenToggle() {
@@ -444,6 +464,10 @@ function TopologyFlowCanvasInner({
       return;
     }
 
+    if (isReadonly) {
+      return;
+    }
+
     if (event.key === 'Delete') {
       event.preventDefault();
       onDeleteSelection();
@@ -469,62 +493,67 @@ function TopologyFlowCanvasInner({
   return (
     <section
       className="topology-flow-workbench"
-      data-connect-mode={connectMode ? 'true' : 'false'}
+      data-connect-mode={isConnectMode ? 'true' : 'false'}
+      data-mode={mode}
       data-testid="topology-flow-workbench"
       onKeyDown={handleKeyboardShortcut}
       ref={workbenchRef}
       tabIndex={0}
     >
       <div className="topology-flow-toolbar" data-testid="topology-flow-toolbar">
-        <button
-          aria-label="选择模式"
-          aria-pressed={!connectMode}
-          className="topology-flow-tool-button"
-          data-active={!connectMode ? 'true' : 'false'}
-          onClick={() => setConnectMode(false)}
-          title="选择模式"
-          type="button"
-        >
-          <MousePointer2 aria-hidden="true" />
-        </button>
-        <button
-          aria-label="连线模式"
-          aria-pressed={connectMode}
-          className="topology-flow-tool-button"
-          data-active={connectMode ? 'true' : 'false'}
-          onClick={() => setConnectMode(true)}
-          title="连线模式"
-          type="button"
-        >
-          <GitBranch aria-hidden="true" />
-        </button>
-        <button
-          aria-label="全部自动布局"
-          className="topology-flow-tool-button"
-          onClick={onLayoutAll}
-          title="全部自动布局"
-          type="button"
-        >
-          <LayoutGrid aria-hidden="true" />
-        </button>
-        <button
-          aria-label="撤销"
-          className="topology-flow-tool-button"
-          onClick={onUndo}
-          title="撤销"
-          type="button"
-        >
-          <Undo2 aria-hidden="true" />
-        </button>
-        <button
-          aria-label="重做"
-          className="topology-flow-tool-button"
-          onClick={onRedo}
-          title="重做"
-          type="button"
-        >
-          <Redo2 aria-hidden="true" />
-        </button>
+        {!isReadonly ? (
+          <>
+            <button
+              aria-label="选择模式"
+              aria-pressed={!isConnectMode}
+              className="topology-flow-tool-button"
+              data-active={!isConnectMode ? 'true' : 'false'}
+              onClick={() => setConnectMode(false)}
+              title="选择模式"
+              type="button"
+            >
+              <MousePointer2 aria-hidden="true" />
+            </button>
+            <button
+              aria-label="连线模式"
+              aria-pressed={isConnectMode}
+              className="topology-flow-tool-button"
+              data-active={isConnectMode ? 'true' : 'false'}
+              onClick={() => setConnectMode(true)}
+              title="连线模式"
+              type="button"
+            >
+              <GitBranch aria-hidden="true" />
+            </button>
+            <button
+              aria-label="全部自动布局"
+              className="topology-flow-tool-button"
+              onClick={onLayoutAll}
+              title="全部自动布局"
+              type="button"
+            >
+              <LayoutGrid aria-hidden="true" />
+            </button>
+            <button
+              aria-label="撤销"
+              className="topology-flow-tool-button"
+              onClick={onUndo}
+              title="撤销"
+              type="button"
+            >
+              <Undo2 aria-hidden="true" />
+            </button>
+            <button
+              aria-label="重做"
+              className="topology-flow-tool-button"
+              onClick={onRedo}
+              title="重做"
+              type="button"
+            >
+              <Redo2 aria-hidden="true" />
+            </button>
+          </>
+        ) : null}
         <button
           aria-label="适应视图"
           className="topology-flow-tool-button"
@@ -546,7 +575,11 @@ function TopologyFlowCanvasInner({
           {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
         </button>
       </div>
-      <TopologyFlowResourceRail initialExpanded={nodes.length === 0} onAddNode={handleResourceAddNode} />
+      <TopologyFlowResourceRail
+        disabled={isReadonly}
+        initialExpanded={nodes.length === 0}
+        onAddNode={handleResourceAddNode}
+      />
       <div className="topology-flow-canvas" data-testid="topology-flow-canvas" ref={canvasRef}>
         <ReactFlow
           defaultViewport={viewport ?? undefined}
@@ -556,6 +589,8 @@ function TopologyFlowCanvasInner({
           fitViewOptions={topologyFitViewOptions}
           minZoom={0.25}
           nodes={flowNodes}
+          nodesConnectable={!isReadonly}
+          nodesDraggable={!isReadonly}
           nodeTypes={topologyNodeTypes}
           onlyRenderVisibleElements
           onConnect={handleConnect}
@@ -563,14 +598,16 @@ function TopologyFlowCanvasInner({
           onDrop={handleDrop}
           onMoveEnd={(_event, nextViewport) => handleMoveEnd(nextViewport)}
           onNodeDragStop={(_event, _node, movedNodes) => {
-            onPositionsCommit(movedNodes.map((node) => ({ id: node.id, position: node.position })));
+            if (!isReadonly) {
+              onPositionsCommit(movedNodes.map((node) => ({ id: node.id, position: node.position })));
+            }
           }}
           onNodeClick={handleNodeClick}
           onNodesChange={onNodesChange}
           onSelectionChange={handleSelectionChange}
           multiSelectionKeyCode="Shift"
           panActivationKeyCode="Space"
-          panOnDrag={connectMode ? [1] : [0, 1]}
+          panOnDrag={isConnectMode ? [1] : [0, 1]}
           selectionOnDrag={false}
         >
           <Background gap={20} size={1} />

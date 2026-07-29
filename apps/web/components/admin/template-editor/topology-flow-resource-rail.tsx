@@ -16,6 +16,7 @@ type ResourceEntry = {
 };
 
 type TopologyFlowResourceRailProps = {
+  disabled?: boolean;
   initialExpanded?: boolean;
   onAddNode: (kind: TopologyResourceKind) => void;
   onDragStart?: (event: React.DragEvent<HTMLButtonElement>, kind: TopologyResourceKind) => void;
@@ -43,6 +44,7 @@ const resourceEntries: readonly ResourceEntry[] = [
 ];
 
 export function TopologyFlowResourceRail({
+  disabled = false,
   initialExpanded = false,
   onAddNode,
   onDragStart,
@@ -50,6 +52,10 @@ export function TopologyFlowResourceRail({
   const [expanded, setExpanded] = React.useState(initialExpanded);
 
   function handleDragStart(event: React.DragEvent<HTMLButtonElement>, kind: TopologyResourceKind) {
+    if (disabled) {
+      return;
+    }
+
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('application/x-topology-node-kind', kind);
     onDragStart?.(event, kind);
@@ -85,9 +91,14 @@ export function TopologyFlowResourceRail({
               className="topology-resource-entry"
               data-kind={kind}
               data-testid="topology-resource-entry"
-              draggable
+              disabled={disabled}
+              draggable={!disabled}
               key={kind}
-              onClick={() => onAddNode(kind)}
+              onClick={() => {
+                if (!disabled) {
+                  onAddNode(kind);
+                }
+              }}
               onDragStart={(event) => handleDragStart(event, kind)}
               type="button"
             >

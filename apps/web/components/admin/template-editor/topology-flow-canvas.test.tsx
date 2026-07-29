@@ -552,6 +552,71 @@ describe('TopologyFlowCanvas', () => {
     expect(screen.getByRole('button', { name: '显示导航图' }).getAttribute('aria-pressed')).toBe('false');
   });
 
+  it('只读模式保留选择、平移、缩放、全屏和导航图，并禁止结构编辑', async () => {
+    const canvasProps = createCanvasProps();
+    render(
+      <div className="instance-detail-three-column" data-testid="instance-detail-three-column">
+        <TopologyFlowCanvas
+          {...canvasProps}
+          fullscreenTargetSelector=".instance-detail-three-column"
+          mode="readonly"
+        />
+      </div>,
+    );
+
+    const workbench = screen.getByTestId('topology-flow-workbench');
+    expect(workbench.getAttribute('data-mode')).toBe('readonly');
+    expect(flowState.props).toMatchObject({
+      nodesConnectable: false,
+      nodesDraggable: false,
+      panOnDrag: [0, 1],
+    });
+    expect(screen.queryByRole('button', { name: '连线模式' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '全部自动布局' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '撤销' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重做' })).toBeNull();
+
+    flowState.props?.onConnect({ source: 'switch-1', target: 'ecs-1' });
+    flowState.props?.onDrop({
+      clientX: 240,
+      clientY: 180,
+      dataTransfer: { getData: () => 'ecs' },
+      preventDefault: vi.fn(),
+    });
+    flowState.props?.onNodeDragStop(new MouseEvent('mouseup'), {}, [
+      { id: 'switch-1', position: { x: 260, y: 140 } },
+    ]);
+    fireEvent.keyDown(workbench, { key: 'Delete' });
+    fireEvent.keyDown(workbench, { key: 'z', metaKey: true });
+
+    expect(canvasProps.onConnect).not.toHaveBeenCalled();
+    expect(canvasProps.onAddNode).not.toHaveBeenCalled();
+    expect(canvasProps.onPositionsCommit).not.toHaveBeenCalled();
+    expect(canvasProps.onDeleteSelection).not.toHaveBeenCalled();
+    expect(canvasProps.onUndo).not.toHaveBeenCalled();
+
+    flowState.props?.onSelectionChange({
+      edges: [],
+      nodes: [{ id: 'switch-1' }],
+    });
+    expect(canvasProps.onSelectionChange).toHaveBeenCalledWith({
+      edgeIds: [],
+      nodeIds: ['switch-1'],
+    });
+
+    fireEvent.keyDown(workbench, { key: 'Escape' });
+    await waitFor(() => expect(canvasProps.onSelectionChange).toHaveBeenLastCalledWith({
+      edgeIds: [],
+      nodeIds: [],
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '显示导航图' }));
+    expect(screen.getByTestId('flow-mini-map')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '进入全屏编辑模式' }));
+    expect(fullscreenRequestTarget).toBe(screen.getByTestId('instance-detail-three-column'));
+  });
+
   it('没有编辑网格容器时回退工作区全屏，并根据浏览器状态切换按钮', () => {
     const canvasProps = createCanvasProps();
     render(<TopologyFlowCanvas {...canvasProps} />);
