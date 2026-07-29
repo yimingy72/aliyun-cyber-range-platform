@@ -2,7 +2,7 @@
 
 import React from 'react';
 import dynamic from 'next/dynamic';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
@@ -10,25 +10,48 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
   applyRangeInstanceDraft,
+  fetchInstanceTypeAvailability,
+  fetchPlatformImages,
   fetchRangeInstanceDetail,
   runRangeInstanceNodeAction,
   saveRangeInstanceDraft,
   syncRangeInstanceTemplate,
 } from '../../lib/admin-api';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
-import type { RangeInstanceDetail, RangeInstanceNodeActionResult } from '../../lib/admin-types';
+import type {
+  InstanceTypeAvailabilitySnapshot,
+  PlatformImageAsset,
+  RangeInstanceDetail,
+} from '../../lib/admin-types';
+import { resolvePreferredInstanceTypes } from '../../lib/instance-type-catalog';
 import {
   findDuplicateDnatExternalPorts,
   isPhaseOneNodeKind,
+  type EcsTemplateNode,
   type ScenarioGraphDraft,
+  type SwitchTemplateNode,
   type TemplateNode,
 } from '../../lib/scenario-graph';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
-import { readTopologyViewport } from './template-editor/topology-flow-adapter';
+import { readTopologyViewport, writeTopologyViewport } from './template-editor/topology-flow-adapter';
+import {
+  createTopologyHistory,
+  pushTopologySnapshot,
+  redoTopology,
+  undoTopology,
+  type TopologyHistory,
+} from './template-editor/topology-flow-history';
+import { layoutTopology } from './template-editor/topology-flow-layout';
+import type {
+  TopologySelection,
+  TopologySnapshot,
+  TopologyViewport,
+} from './template-editor/topology-flow-types';
 import { useAdminSession } from './use-admin-session';
 
 type RangeInstanceDetailScreenProps = {
@@ -38,6 +61,10 @@ type RangeInstanceDetailScreenProps = {
 
 type WorkbenchTab = 'directory' | 'topology';
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
+type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
+
+const INSTANCE_TOPOLOGY_SCHEMA_VERSION = '2.0.0';
+const DEFAULT_SWITCH_CIDRS = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'] as const;
 
 function TopologyWorkspaceLoading() {
   return (
@@ -342,6 +369,187 @@ function readDefaultPackImageName(nodeLabel: string) {
   return `${nodeLabel || 'ecs'}-snapshot-${suffix}`;
 }
 
+function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
+  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
+    return false;
+  }
+
+  const leftNodeIds = new Set(left.nodeIds);
+  const leftEdgeIds = new Set(left.edgeIds);
+
+  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
+    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
+}
+
+function readDefaultSwitchCidr(ordinal: number) {
+  return DEFAULT_SWITCH_CIDRS[ordinal - 1] ?? `10.${Math.max(ordinal - 3, 1)}.0.0/24`;
+}
+
+function readDefaultNodeLabel(kind: TemplateNode['kind'], ordinal: number) {
+  if (kind === 'router') {
+    return 'Router';
+  }
+
+  return kind === 'switch' ? `交换机 ${ordinal}` : `ECS ${ordinal}`;
+}
+
+function createNodePosition(kind: TemplateNode['kind'], ordinal: number) {
+  const columnX = kind === 'router' ? 120 : kind === 'switch' ? 360 : 620;
+  const rowOffset = Math.floor(Math.max(ordinal - 1, 0) / 3) * 150;
+  const staggerOffset = ((Math.max(ordinal - 1, 0) % 3) - 1) * 24;
+
+  return {
+    x: columnX,
+    y: 180 + rowOffset + staggerOffset,
+  };
+}
+
+function createDefaultSwitchNode(id: string, label: string, ordinal: number): SwitchTemplateNode {
+  return {
+    id,
+    kind: 'switch',
+    label,
+    position: createNodePosition('switch', ordinal),
+    zoneKey: `zone-${ordinal}`,
+    cidr: readDefaultSwitchCidr(ordinal),
+    purpose: 'business-zone',
+    description: '',
+    aclRules: [],
+    nat: {
+      snatEnabled: false,
+      dnatMappings: [],
+    },
+  };
+}
+
+function createDefaultEcsNode(id: string, label: string, ordinal: number): EcsTemplateNode {
+  const preferredInstanceTypes = resolvePreferredInstanceTypes(2, 2);
+
+  return {
+    id,
+    kind: 'ecs',
+    label,
+    position: createNodePosition('ecs', ordinal),
+    instanceName: label,
+    hostName: `ecs-${ordinal}`,
+    zoneKey: 'core',
+    role: 'host',
+    privateIp: '',
+    customPassword: '',
+    exposePublic: false,
+    image: '',
+    imageName: '',
+    imageId: '',
+    cpu: 2,
+    memory: 2,
+    description: '',
+    bootPriority: 1,
+    bootWaitSeconds: 0,
+    dnatMappings: [],
+    networkInterfaces: [{ zoneKey: 'core', privateIp: '' }],
+    portGroups: [],
+    nics: [{
+      id: `${id}-nic-1`,
+      switchId: '',
+      privateIp: '',
+      secondaryIps: [],
+      securityGroupRules: [],
+    }],
+    initScript: '',
+    imageStrategy: { mode: 'fixed' },
+    instanceType: preferredInstanceTypes[0],
+    instanceTypeStrategy: preferredInstanceTypes.length > 0
+      ? { mode: 'prefer-list', preferredInstanceTypes: [...preferredInstanceTypes] }
+      : { mode: 'auto', preferredInstanceTypes: [] },
+  };
+}
+
+function syncHostNicsWithLinkedSwitch(hostNode: EcsTemplateNode, switchNode: SwitchTemplateNode): EcsTemplateNode {
+  const nics = hostNode.nics && hostNode.nics.length > 0
+    ? hostNode.nics
+    : [{
+        id: `${hostNode.id}-nic-1`,
+        switchId: '',
+        privateIp: '',
+        secondaryIps: [],
+        securityGroupRules: [],
+      }];
+  const linkedNicIndex = nics.findIndex((nic) => nic.switchId === switchNode.id);
+
+  if (linkedNicIndex >= 0) {
+    return linkedNicIndex === 0 && hostNode.zoneKey !== switchNode.zoneKey
+      ? { ...hostNode, zoneKey: switchNode.zoneKey }
+      : hostNode;
+  }
+
+  const emptyNicIndex = nics.findIndex((nic) => !nic.switchId);
+
+  if (emptyNicIndex >= 0) {
+    return {
+      ...hostNode,
+      ...(emptyNicIndex === 0 ? { zoneKey: switchNode.zoneKey } : {}),
+      nics: nics.map((nic, index) => index === emptyNicIndex ? { ...nic, switchId: switchNode.id } : nic),
+    };
+  }
+
+  return {
+    ...hostNode,
+    nics: [
+      ...nics,
+      {
+        id: `${hostNode.id}-nic-${nics.length + 1}`,
+        switchId: switchNode.id,
+        privateIp: '',
+        secondaryIps: [],
+        securityGroupRules: [],
+      },
+    ],
+  };
+}
+
+function cleanupNodeReferencesAfterDeletion(nodes: TemplateNode[], deletedNode: TemplateNode) {
+  return nodes.map((node) => {
+    if (deletedNode.kind === 'switch' && node.kind === 'ecs') {
+      return {
+        ...node,
+        nics: (node.nics ?? []).map((nic) => nic.switchId === deletedNode.id ? { ...nic, switchId: '' } : nic),
+      } satisfies TemplateNode;
+    }
+
+    if (deletedNode.kind === 'ecs' && node.kind === 'switch') {
+      return {
+        ...node,
+        nat: {
+          snatEnabled: node.nat?.snatEnabled ?? false,
+          dnatMappings: (node.nat?.dnatMappings ?? []).filter((mapping) => mapping.targetHostId !== deletedNode.id),
+        },
+      } satisfies TemplateNode;
+    }
+
+    return node;
+  });
+}
+
+function cleanupEdgeReferencesAfterDeletion(nodes: TemplateNode[], edge: TemplateEdge) {
+  const sourceNode = nodes.find((node) => node.id === edge.fromNodeId) ?? null;
+  const targetNode = nodes.find((node) => node.id === edge.toNodeId) ?? null;
+  const switchNode = sourceNode?.kind === 'switch' ? sourceNode : targetNode?.kind === 'switch' ? targetNode : null;
+  const hostNode = sourceNode?.kind === 'ecs' ? sourceNode : targetNode?.kind === 'ecs' ? targetNode : null;
+
+  if (!switchNode || !hostNode) {
+    return nodes;
+  }
+
+  return nodes.map((node) =>
+    node.id === hostNode.id && node.kind === 'ecs'
+      ? {
+          ...node,
+          nics: (node.nics ?? []).map((nic) => nic.switchId === switchNode.id ? { ...nic, switchId: '' } : nic),
+        }
+      : node,
+  );
+}
+
 function normalizeTopologyNode(value: Record<string, unknown>): TemplateNode | null {
   if (typeof value.id !== 'string' || !isPhaseOneNodeKind(value.kind)) {
     return null;
@@ -460,10 +668,12 @@ function normalizeTopologyNode(value: Record<string, unknown>): TemplateNode | n
             mode: 'auto',
             preferredInstanceTypes: [],
           },
-  };
+    ...(typeof value.account === 'string' ? { account: value.account } : {}),
+    ...(typeof value.password === 'string' ? { password: value.password } : {}),
+  } as EcsTemplateNode;
 }
 
-function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefined): ScenarioGraphDraft | null {
+function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefined): DraftTopologyGraph | null {
   if (!graph || typeof graph !== 'object') {
     return null;
   }
@@ -501,11 +711,11 @@ function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefine
       })
     : [];
 
-  return {
-    schemaVersion: typeof graph.schemaVersion === 'string' ? graph.schemaVersion : '1',
+  return writeTopologyViewport({
+    schemaVersion: typeof graph.schemaVersion === 'string' ? graph.schemaVersion : INSTANCE_TOPOLOGY_SCHEMA_VERSION,
     nodes,
     edges,
-  };
+  }, readTopologyViewport(graph.viewport));
 }
 
 function readWorkbenchNodesFromGraph(
@@ -616,16 +826,48 @@ export function RangeInstanceDetailScreen({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('directory');
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
   const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(null);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSyncingTemplate, setIsSyncingTemplate] = useState(false);
+  const [isTemplateSyncDialogOpen, setIsTemplateSyncDialogOpen] = useState(false);
+  const [platformImageAssets, setPlatformImageAssets] = useState<PlatformImageAsset[]>([]);
+  const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [pendingNodeAction, setPendingNodeAction] = useState<{
     nodeId: string;
     action: NodeActionName;
   } | null>(null);
   const [nodeStatusOverrides, setNodeStatusOverrides] = useState<Record<string, string>>({});
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogDraft | null>(null);
+  const historyRef = useRef<TopologyHistory | null>(null);
+  const [, setHistoryState] = useState<TopologyHistory | null>(null);
+  const instanceTypeAvailabilityRequestRef = useRef(0);
+
+  function replaceTopologyDraft(nextGraph: Record<string, unknown> | null) {
+    const parsed = readTopologyGraphDraft(nextGraph);
+
+    if (!parsed) {
+      historyRef.current = null;
+      setHistoryState(null);
+      setDraftGraph(nextGraph);
+      setSelection({ nodeIds: [], edgeIds: [] });
+      return;
+    }
+
+    const snapshot: TopologySnapshot = {
+      nodes: parsed.nodes,
+      edges: parsed.edges,
+      viewport: readTopologyViewport(parsed.viewport),
+    };
+    historyRef.current = createTopologyHistory(snapshot);
+    setHistoryState(historyRef.current);
+    setDraftGraph(writeTopologyViewport({
+      schemaVersion: parsed.schemaVersion,
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+    }, snapshot.viewport));
+    setSelection({ nodeIds: [], edgeIds: [] });
+  }
 
   async function reloadDetailSnapshot() {
     if (!session.token) {
@@ -634,11 +876,13 @@ export function RangeInstanceDetailScreen({
 
     const payload = await fetchRangeInstanceDetail(apiBaseUrl, session.token, rangeId);
     setDetail(payload);
-    setDraftGraph(
-      (payload.draftTopologyGraph as Record<string, unknown> | null) ??
-        (payload.runtimeTopologyGraph as Record<string, unknown> | null) ??
-        null,
-    );
+    if (!historyRef.current) {
+      replaceTopologyDraft(
+        (payload.draftTopologyGraph as Record<string, unknown> | null) ??
+          (payload.runtimeTopologyGraph as Record<string, unknown> | null) ??
+          null,
+      );
+    }
     return payload;
   }
 
@@ -656,7 +900,11 @@ export function RangeInstanceDetailScreen({
         }
 
         setDetail(payload);
-        setDraftGraph((payload.draftTopologyGraph as Record<string, unknown> | null) ?? (payload.runtimeTopologyGraph as Record<string, unknown> | null) ?? null);
+        replaceTopologyDraft(
+          (payload.draftTopologyGraph as Record<string, unknown> | null) ??
+            (payload.runtimeTopologyGraph as Record<string, unknown> | null) ??
+            null,
+        );
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -705,9 +953,13 @@ export function RangeInstanceDetailScreen({
 
   const topologyNodes = topologyDraft?.nodes ?? [];
   const topologyEdges = useMemo<TemplateEdge[]>(() => topologyDraft?.edges ?? [], [topologyDraft]);
+  const topologyViewport = readTopologyViewport(topologyDraft?.viewport);
   const selectedTopologyNode = useMemo(
-    () => topologyNodes.find((node) => node.id === selectedNodeId) ?? null,
-    [topologyNodes, selectedNodeId],
+    () =>
+      selection.nodeIds.length === 1 && selection.edgeIds.length === 0
+        ? topologyNodes.find((node) => node.id === selection.nodeIds[0]) ?? null
+        : null,
+    [selection, topologyNodes],
   );
   const canOperateInstance = detail?.status === 'running';
   const linkedSwitchIdsByHostId = useMemo(() => {
@@ -727,26 +979,120 @@ export function RangeInstanceDetailScreen({
 
     return nextMap;
   }, [topologyEdges, topologyNodes]);
-  const topologyStatusMessage = !canOperateInstance
-    ? '历史实例只读预览。'
-    : detail?.draftUpdatedAt
-      ? '存在未应用草稿变更，可继续编辑并保存。'
-      : '点击节点后可在右侧编辑属性。';
+  useEffect(() => {
+    if (
+      selection.nodeIds.length === 0 &&
+      selection.edgeIds.length === 0 &&
+      topologyNodes.length > 0
+    ) {
+      setSelection({ nodeIds: [topologyNodes[0]!.id], edgeIds: [] });
+    }
+  }, [selection, topologyNodes]);
 
   useEffect(() => {
-    if (!selectedNodeId && topologyNodes.length > 0) {
-      setSelectedNodeId(topologyNodes[0].id);
+    if (!session.isReady || !session.token || !canOperateInstance) {
+      return;
     }
-  }, [topologyNodes, selectedNodeId]);
+
+    let isActive = true;
+
+    Promise.all([
+      fetchPlatformImages(apiBaseUrl, session.token, 'platform'),
+      fetchPlatformImages(apiBaseUrl, session.token, 'mine'),
+    ])
+      .then(([platformPayload, minePayload]) => {
+        if (!isActive) {
+          return;
+        }
+
+        setPlatformImageAssets(
+          [...platformPayload.items, ...minePayload.items]
+            .filter((item) => item.enabled)
+            .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index),
+        );
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (isUnauthorizedAdminError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+
+        setErrorMessage(error instanceof Error ? error.message : '平台镜像加载失败，请稍后重试。');
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [apiBaseUrl, canOperateInstance, router, session.isReady, session.token]);
+
+  useEffect(() => {
+    if (!selectedTopologyNode || selectedTopologyNode.kind !== 'ecs') {
+      setInstanceTypeAvailability(null);
+      return;
+    }
+
+    if (!session.isReady || !session.token) {
+      return;
+    }
+
+    const cpu = Number(selectedTopologyNode.cpu ?? 0);
+    const memory = Number(selectedTopologyNode.memory ?? 0);
+
+    if (!Number.isInteger(cpu) || cpu <= 0 || !Number.isInteger(memory) || memory <= 0) {
+      setInstanceTypeAvailability(null);
+      return;
+    }
+
+    let isActive = true;
+    const requestId = instanceTypeAvailabilityRequestRef.current + 1;
+    instanceTypeAvailabilityRequestRef.current = requestId;
+
+    fetchInstanceTypeAvailability(apiBaseUrl, session.token, cpu, memory)
+      .then((payload) => {
+        if (isActive && requestId === instanceTypeAvailabilityRequestRef.current) {
+          setInstanceTypeAvailability(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!isActive || requestId !== instanceTypeAvailabilityRequestRef.current) {
+          return;
+        }
+
+        if (isUnauthorizedAdminError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+
+        setInstanceTypeAvailability({
+          cpu,
+          memory,
+          regionId: '',
+          zoneId: '',
+          exactAvailable: false,
+          matches: [],
+          warning: error instanceof Error ? `规格校验失败：${error.message}` : '规格校验失败，请稍后重试。',
+        });
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [apiBaseUrl, router, selectedTopologyNode, session.isReady, session.token]);
 
   async function persistDraftChanges() {
-    if (!session.token || !detail || !draftGraph) {
+    if (!session.token || !detail || !topologyDraft) {
       return null;
     }
 
     setErrorMessage(null);
 
-    const duplicateDnatPorts = findDuplicateDnatExternalPorts(topologyDraft?.nodes ?? []);
+    const duplicateDnatPorts = findDuplicateDnatExternalPorts(topologyDraft.nodes);
 
     if (duplicateDnatPorts.length > 0) {
       const conflict = duplicateDnatPorts[0]!;
@@ -760,63 +1106,46 @@ export function RangeInstanceDetailScreen({
 
     try {
       const currentSpec = readScenarioTemplateSpec(detail);
-      let nextTopologyGraph = draftGraph;
-      let nextTopologySpec =
-        (detail.draftTopologySpec as Record<string, unknown> | null) ??
-        {};
-      let nextScenarioTemplateSpec =
-        (detail.draftScenarioTemplateSpec as Record<string, unknown> | null) ??
-        (detail.runtimeScenarioTemplateSpec as Record<string, unknown> | null) ??
-        {};
-      let nextCompiledProvisionSpec =
-        (detail.draftCompiledProvisionSpec as Record<string, unknown> | null) ??
-        (detail.runtimeCompiledProvisionSpec as Record<string, unknown> | null) ??
-        {};
-
-      try {
-        const metadata =
-          currentSpec && typeof currentSpec.metadata === 'object'
-            ? (currentSpec.metadata as {
-                name?: string;
-                slug?: string;
-                version?: string;
-                cloudProvider?: 'alibaba_cloud';
-                iacType?: 'opentofu' | 'terraform';
-              })
-            : {};
-        const primaryVpcCidr =
-          currentSpec &&
-          currentSpec.topology &&
-          typeof currentSpec.topology === 'object' &&
-          typeof (currentSpec.topology as Record<string, unknown>).vpcCidr === 'string'
-            ? ((currentSpec.topology as Record<string, unknown>).vpcCidr as string)
-            : detail.resourceSummary?.topologySpec?.vpcCidr ?? '10.0.0.0/16';
-        const payload = buildTopologyDraftPayload({
-          graph: draftGraph as unknown as ScenarioGraphDraft,
-          metadata: {
-            name: metadata.name ?? detail.name ?? 'instance-draft',
-            slug: metadata.slug ?? detail.id,
-            version: metadata.version ?? 'v1',
-            cloudProvider: metadata.cloudProvider ?? 'alibaba_cloud',
-            iacType: metadata.iacType ?? 'opentofu',
-            modulePathOrRef: detail.templateModulePathSnapshot ?? 'runtime/range-instance',
-            primaryVpcCidr,
-          },
-          viewport: readTopologyViewport(draftGraph.viewport),
-        });
-        nextTopologyGraph = payload.topologyGraph;
-        nextTopologySpec = payload.topologySpec;
-        nextScenarioTemplateSpec = payload.scenarioTemplateSpec;
-        nextCompiledProvisionSpec = payload.compiledProvisionSpec;
-      } catch {
-        // Fall back to the current runtime/draft spec when the draft graph is too incomplete to recompile.
-      }
+      const metadata =
+        currentSpec && typeof currentSpec.metadata === 'object'
+          ? (currentSpec.metadata as {
+              name?: string;
+              slug?: string;
+              version?: string;
+              cloudProvider?: 'alibaba_cloud';
+              iacType?: 'opentofu' | 'terraform';
+            })
+          : {};
+      const primaryVpcCidr =
+        currentSpec &&
+        currentSpec.topology &&
+        typeof currentSpec.topology === 'object' &&
+        typeof (currentSpec.topology as Record<string, unknown>).vpcCidr === 'string'
+          ? ((currentSpec.topology as Record<string, unknown>).vpcCidr as string)
+          : detail.resourceSummary?.topologySpec?.vpcCidr ?? '10.0.0.0/16';
+      const payload = buildTopologyDraftPayload({
+        graph: {
+          schemaVersion: topologyDraft.schemaVersion,
+          nodes: topologyDraft.nodes,
+          edges: topologyDraft.edges,
+        },
+        metadata: {
+          name: metadata.name ?? detail.name ?? 'instance-draft',
+          slug: metadata.slug ?? detail.id,
+          version: metadata.version ?? 'v1',
+          cloudProvider: metadata.cloudProvider ?? 'alibaba_cloud',
+          iacType: metadata.iacType ?? 'opentofu',
+          modulePathOrRef: detail.templateModulePathSnapshot ?? 'runtime/range-instance',
+          primaryVpcCidr,
+        },
+        viewport: topologyViewport,
+      });
 
       const updated = await saveRangeInstanceDraft(apiBaseUrl, session.token, detail.id, {
-        draftTopologyGraph: nextTopologyGraph,
-        draftTopologySpec: nextTopologySpec,
-        draftScenarioTemplateSpec: nextScenarioTemplateSpec,
-        draftCompiledProvisionSpec: nextCompiledProvisionSpec,
+        draftTopologyGraph: payload.topologyGraph,
+        draftTopologySpec: payload.topologySpec,
+        draftScenarioTemplateSpec: payload.scenarioTemplateSpec,
+        draftCompiledProvisionSpec: payload.compiledProvisionSpec,
         expectedDraftRevision: detail.draftRevision ?? 0,
       });
 
@@ -825,7 +1154,10 @@ export function RangeInstanceDetailScreen({
         sourceTemplateRevision: updated.sourceTemplateRevision ?? detail.sourceTemplateRevision ?? null,
       };
       setDetail(nextDetail);
-      setDraftGraph((nextDetail.draftTopologyGraph as Record<string, unknown> | null) ?? nextTopologyGraph);
+      replaceTopologyDraft(
+        (nextDetail.draftTopologyGraph as Record<string, unknown> | null) ??
+          payload.topologyGraph,
+      );
       return nextDetail;
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
@@ -834,7 +1166,7 @@ export function RangeInstanceDetailScreen({
         return null;
       }
 
-      setErrorMessage('保存变更草稿失败，请稍后重试。');
+      setErrorMessage(error instanceof Error ? error.message : '保存变更草稿失败，请稍后重试。');
       return null;
     }
   }
@@ -902,15 +1234,8 @@ export function RangeInstanceDetailScreen({
     }
   }
 
-  async function handleSyncTemplate() {
+  async function handleConfirmSyncTemplate() {
     if (!session.token || !detail) {
-      return;
-    }
-
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('将当前实例拓扑与配置覆盖为模板当前草稿。该操作不会自动创建或修改实例，是否继续？')
-    ) {
       return;
     }
 
@@ -944,6 +1269,7 @@ export function RangeInstanceDetailScreen({
         saved.sourceTemplateRevision,
       );
       setSuccessMessage('当前实例拓扑已更新到模板草稿。');
+      setIsTemplateSyncDialogOpen(false);
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
@@ -1110,64 +1436,295 @@ export function RangeInstanceDetailScreen({
     }
   }
 
-  function updateDraftTopologyNode(nodeId: string, updater: (node: TemplateNode) => TemplateNode) {
-    if (!canOperateInstance || !draftGraph || typeof draftGraph !== 'object') {
+  function commitTopologySnapshot(snapshot: TopologySnapshot, message: string) {
+    if (!canOperateInstance) {
       return;
     }
 
-    const existingNodes = Array.isArray((draftGraph as Record<string, unknown>).nodes)
-      ? ((draftGraph as Record<string, unknown>).nodes as unknown[])
-      : [];
-
-    setDraftGraph({
-      ...draftGraph,
-      nodes: existingNodes.map((valueItem) => {
-        if (!valueItem || typeof valueItem !== 'object') {
-          return valueItem;
-        }
-
-        const node = valueItem as Record<string, unknown>;
-
-        if (node.id !== nodeId || !isPhaseOneNodeKind(node.kind)) {
-          return node;
-        }
-
-        const nextNode = updater(normalizeTopologyNode(node) ?? (node as unknown as TemplateNode));
-        const synchronizedNode =
-          nextNode.kind === 'ecs'
-            ? {
-                ...nextNode,
-                privateIp: nextNode.nics?.[0]?.privateIp?.trim() || nextNode.privateIp.trim(),
-              }
-            : nextNode;
-        const nextData =
-          node.data && typeof node.data === 'object'
-            ? {
-                ...(node.data as Record<string, unknown>),
-                label: synchronizedNode.label,
-              }
-            : {
-                label: synchronizedNode.label,
-              };
-
-        return {
-          ...node,
-          ...synchronizedNode,
-          data: nextData,
-        };
-      }),
+    const baseHistory = historyRef.current ?? createTopologyHistory({
+      nodes: topologyNodes,
+      edges: topologyEdges,
+      viewport: topologyViewport,
     });
+    const nextHistory = pushTopologySnapshot(baseHistory, snapshot);
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
+    setDraftGraph(writeTopologyViewport({
+      schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
+      nodes: nextHistory.present.nodes,
+      edges: nextHistory.present.edges,
+    }, nextHistory.present.viewport));
+    setSuccessMessage(null);
+    setErrorMessage(null);
+  }
+
+  function restoreTopologyHistory(nextHistory: TopologyHistory, message: string) {
+    if (!canOperateInstance || nextHistory === historyRef.current) {
+      return;
+    }
+
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
+    setDraftGraph(writeTopologyViewport({
+      schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
+      nodes: nextHistory.present.nodes,
+      edges: nextHistory.present.edges,
+    }, nextHistory.present.viewport));
+    setSelection({ nodeIds: [], edgeIds: [] });
+    setSuccessMessage(message);
+    setErrorMessage(null);
+  }
+
+  function handleSelectionChange(nextSelection: TopologySelection) {
+    const validSelection: TopologySelection = {
+      nodeIds: [...new Set(nextSelection.nodeIds.filter((nodeId) => topologyNodes.some((node) => node.id === nodeId)))],
+      edgeIds: [...new Set(nextSelection.edgeIds.filter((edgeId) => topologyEdges.some((edge) => edge.id === edgeId)))],
+    };
+
+    setSelection((current) => hasSameTopologySelection(current, validSelection) ? current : validSelection);
+  }
+
+  function handleFlowNodeActivate(nodeId: string) {
+    if (!topologyNodes.some((node) => node.id === nodeId)) {
+      return;
+    }
+
+    setSelection({ nodeIds: [nodeId], edgeIds: [] });
+  }
+
+  function handleAddTopologyNode(kind: 'router' | 'switch' | 'ecs', position?: { x: number; y: number }) {
+    if (!canOperateInstance) {
+      return;
+    }
+
+    if (kind === 'router' && topologyNodes.some((node) => node.kind === 'router')) {
+      setErrorMessage('当前拓扑只允许一个 Router。');
+      return;
+    }
+
+    const kindOrdinal = topologyNodes.filter((node) => node.kind === kind).length + 1;
+    const nextIndex = topologyNodes.length + 1;
+    const nextNode: TemplateNode =
+      kind === 'router'
+        ? {
+            id: `router-${nextIndex}`,
+            kind: 'router',
+            label: readDefaultNodeLabel('router', kindOrdinal),
+            position: createNodePosition('router', kindOrdinal),
+            description: '',
+            routeRole: 'egress',
+            egressType: 'internet',
+            bindEip: false,
+          }
+        : kind === 'switch'
+          ? createDefaultSwitchNode(
+              `switch-${nextIndex}`,
+              readDefaultNodeLabel('switch', kindOrdinal),
+              kindOrdinal,
+            )
+          : createDefaultEcsNode(`ecs-${nextIndex}`, readDefaultNodeLabel('ecs', kindOrdinal), kindOrdinal);
+    const positionedNode =
+      position && Number.isFinite(position.x) && Number.isFinite(position.y)
+        ? { ...nextNode, position }
+        : nextNode;
+
+    commitTopologySnapshot(
+      { nodes: [...topologyNodes, positionedNode], edges: topologyEdges, viewport: topologyViewport },
+      `已添加 ${positionedNode.label}，请补充属性和连接关系。`,
+    );
+    setSelection({ nodeIds: [positionedNode.id], edgeIds: [] });
+  }
+
+  function handleConnectTopologyNodes(connection: { source: string; target: string }) {
+    if (!canOperateInstance) {
+      return;
+    }
+
+    const sourceNode = topologyNodes.find((node) => node.id === connection.source) ?? null;
+    const targetNode = topologyNodes.find((node) => node.id === connection.target) ?? null;
+
+    if (!sourceNode || !targetNode) {
+      setErrorMessage('连线节点不存在，请重新选择。');
+      return;
+    }
+
+    const isRouterSwitchPair =
+      (sourceNode.kind === 'router' && targetNode.kind === 'switch')
+      || (sourceNode.kind === 'switch' && targetNode.kind === 'router');
+    const isSwitchEcsPair =
+      (sourceNode.kind === 'switch' && targetNode.kind === 'ecs')
+      || (sourceNode.kind === 'ecs' && targetNode.kind === 'switch');
+
+    if (!isRouterSwitchPair && !isSwitchEcsPair) {
+      setErrorMessage('第一阶段仅允许 Router -> Switch 或 Switch -> ECS 连线。');
+      return;
+    }
+
+    const canonicalSource = sourceNode.kind === 'router' || sourceNode.kind === 'switch' && targetNode.kind === 'ecs'
+      ? sourceNode
+      : targetNode;
+    const canonicalTarget = canonicalSource === sourceNode ? targetNode : sourceNode;
+    const alreadyLinked = topologyEdges.some(
+      (edge) => edge.fromNodeId === canonicalSource.id && edge.toNodeId === canonicalTarget.id,
+    );
+
+    if (alreadyLinked) {
+      setErrorMessage('已存在相同连线。');
+      return;
+    }
+
+    const nextNodes =
+      canonicalSource.kind === 'switch' && canonicalTarget.kind === 'ecs'
+        ? topologyNodes.map((node) =>
+            node.id === canonicalTarget.id && node.kind === 'ecs'
+              ? syncHostNicsWithLinkedSwitch(node, canonicalSource)
+              : node,
+          )
+        : topologyNodes;
+    const nextEdge: TemplateEdge = {
+      id: `edge-${canonicalSource.id}-${canonicalTarget.id}`,
+      fromNodeId: canonicalSource.id,
+      toNodeId: canonicalTarget.id,
+      relationType: 'manual',
+      label: `${canonicalSource.label} -> ${canonicalTarget.label}`,
+    };
+
+    commitTopologySnapshot(
+      { nodes: nextNodes, edges: [...topologyEdges, nextEdge], viewport: topologyViewport },
+      `已创建连线：${canonicalSource.label} -> ${canonicalTarget.label}`,
+    );
+    setSelection({ nodeIds: [canonicalTarget.id], edgeIds: [] });
+  }
+
+  function handleDeleteTopologySelection() {
+    if (!canOperateInstance) {
+      return;
+    }
+
+    const nodeIds = new Set(selection.nodeIds);
+    const edgeIds = new Set(selection.edgeIds);
+    const deletedNodes = topologyNodes.filter((node) => nodeIds.has(node.id));
+    const deletedEdges = topologyEdges.filter(
+      (edge) => edgeIds.has(edge.id) || nodeIds.has(edge.fromNodeId) || nodeIds.has(edge.toNodeId),
+    );
+
+    if (deletedNodes.length === 0 && deletedEdges.length === 0) {
+      setErrorMessage('请先选择节点或连线，再执行删除。');
+      return;
+    }
+
+    let nextNodes = topologyNodes.filter((node) => !nodeIds.has(node.id));
+    deletedNodes.forEach((node) => {
+      nextNodes = cleanupNodeReferencesAfterDeletion(nextNodes, node);
+    });
+    deletedEdges.forEach((edge) => {
+      nextNodes = cleanupEdgeReferencesAfterDeletion(nextNodes, edge);
+    });
+    const nextEdges = topologyEdges.filter((edge) => !deletedEdges.includes(edge));
+
+    commitTopologySnapshot(
+      { nodes: nextNodes, edges: nextEdges, viewport: topologyViewport },
+      deletedNodes.length > 0 ? `已删除 ${deletedNodes.length} 个节点。` : '已删除连线。',
+    );
+    setSelection({ nodeIds: [], edgeIds: [] });
   }
 
   function handleUpdateTopologyNode(nodeId: string, nextNode: TemplateNode) {
-    updateDraftTopologyNode(nodeId, () => nextNode);
+    if (!canOperateInstance) {
+      return;
+    }
+
+    const nextNodes = topologyNodes.map((node) => {
+      if (node.id !== nodeId) {
+        return node;
+      }
+
+      if (node.kind !== 'ecs' || nextNode.kind !== 'ecs') {
+        return nextNode;
+      }
+
+      const privateIp = nextNode.nics?.[0]?.privateIp.trim() || nextNode.privateIp.trim();
+      const preferredInstanceTypes = resolvePreferredInstanceTypes(nextNode.cpu, nextNode.memory);
+      return {
+        ...nextNode,
+        privateIp,
+        instanceType: preferredInstanceTypes[0],
+        instanceTypeStrategy: preferredInstanceTypes.length > 0
+          ? { mode: 'prefer-list' as const, preferredInstanceTypes: [...preferredInstanceTypes] }
+          : { mode: 'auto' as const, preferredInstanceTypes: [] },
+      };
+    });
+
+    commitTopologySnapshot({ nodes: nextNodes, edges: topologyEdges, viewport: topologyViewport }, '已更新节点属性。');
   }
 
-  function handleMoveTopologyNode(nodeId: string, position: { x: number; y: number }) {
-    updateDraftTopologyNode(nodeId, (node) => ({
-      ...node,
-      position,
-    }));
+  function handlePositionsCommit(positions: Array<{ id: string; position: { x: number; y: number } }>) {
+    if (!canOperateInstance) {
+      return;
+    }
+
+    const positionsById = new Map(
+      positions
+        .filter(({ position }) => Number.isFinite(position.x) && Number.isFinite(position.y))
+        .map(({ id, position }) => [id, position]),
+    );
+    const nextNodes = topologyNodes.map((node) =>
+      positionsById.has(node.id) ? { ...node, position: positionsById.get(node.id)! } : node,
+    );
+
+    commitTopologySnapshot({ nodes: nextNodes, edges: topologyEdges, viewport: topologyViewport }, '已更新节点位置。');
+  }
+
+  function handleViewportCommit(viewport: TopologyViewport) {
+    if (!canOperateInstance || !readTopologyViewport(viewport)) {
+      return;
+    }
+
+    const currentHistory = historyRef.current ?? createTopologyHistory({
+      nodes: topologyNodes,
+      edges: topologyEdges,
+      viewport: topologyViewport,
+    });
+    historyRef.current = {
+      ...currentHistory,
+      present: {
+        ...currentHistory.present,
+        viewport,
+      },
+    };
+    setHistoryState(historyRef.current);
+    setDraftGraph(writeTopologyViewport({
+      schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
+      nodes: topologyNodes,
+      edges: topologyEdges,
+    }, viewport));
+  }
+
+  function handleLayoutAll() {
+    if (!canOperateInstance || topologyNodes.length === 0) {
+      return;
+    }
+
+    try {
+      commitTopologySnapshot(
+        { nodes: layoutTopology(topologyNodes, topologyEdges), edges: topologyEdges, viewport: topologyViewport },
+        '',
+      );
+    } catch {
+      setErrorMessage('自动布局失败，请保留当前节点位置。');
+    }
+  }
+
+  function handleUndo() {
+    if (historyRef.current) {
+      restoreTopologyHistory(undoTopology(historyRef.current), '已撤销上一步拓扑操作。');
+    }
+  }
+
+  function handleRedo() {
+    if (historyRef.current) {
+      restoreTopologyHistory(redoTopology(historyRef.current), '已重做上一步拓扑操作。');
+    }
   }
 
   return (
@@ -1258,7 +1815,7 @@ export function RangeInstanceDetailScreen({
                   </Button>
                   <Button
                     disabled={isSavingDraft || isSyncingTemplate}
-                    onClick={() => void handleSyncTemplate()}
+                    onClick={() => setIsTemplateSyncDialogOpen(true)}
                     size="sm"
                     type="button"
                   >
@@ -1291,18 +1848,26 @@ export function RangeInstanceDetailScreen({
                 </div>
               ) : (
                 <RangeInstanceTopologyWorkspace
-                  topologyGraph={draftGraph}
+                  editable={canOperateInstance}
                   nodes={topologyNodes}
                   edges={topologyEdges}
-                  selectedNodeId={selectedNodeId}
-                  selectedNode={selectedTopologyNode}
                   linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
-                  canOperateInstance={canOperateInstance}
+                  instanceTypeAvailability={instanceTypeAvailability}
+                  platformImageAssets={platformImageAssets}
                   runtimeNodeStatus={selectedTopologyNode ? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
-                  statusMessage={topologyStatusMessage}
-                  onSelectNode={setSelectedNodeId}
-                  onMoveNode={handleMoveTopologyNode}
+                  selection={selection}
+                  viewport={topologyViewport}
+                  onAddNode={handleAddTopologyNode}
+                  onConnect={handleConnectTopologyNodes}
+                  onDeleteSelection={handleDeleteTopologySelection}
+                  onLayoutAll={handleLayoutAll}
+                  onNodeActivate={handleFlowNodeActivate}
+                  onPositionsCommit={handlePositionsCommit}
+                  onRedo={handleRedo}
+                  onSelectionChange={handleSelectionChange}
+                  onUndo={handleUndo}
                   onUpdateNode={handleUpdateTopologyNode}
+                  onViewportCommit={handleViewportCommit}
                 />
               )}
             </div>
@@ -1313,6 +1878,16 @@ export function RangeInstanceDetailScreen({
           </div>
         )}
       </section>
+
+      <ConfirmActionDialog
+        confirmLabel="确认更新模板草稿"
+        description="将当前实例已保存的拓扑草稿覆盖到来源模板的当前草稿版本。此操作不会自动发布模板，也不会影响其他已运行实例。"
+        onConfirm={() => void handleConfirmSyncTemplate()}
+        onOpenChange={setIsTemplateSyncDialogOpen}
+        open={isTemplateSyncDialogOpen}
+        pending={isSyncingTemplate}
+        title="更新编排拓扑"
+      />
 
       {packImageDialog ? (
         <AdminDialog

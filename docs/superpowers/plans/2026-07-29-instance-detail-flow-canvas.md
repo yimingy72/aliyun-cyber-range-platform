@@ -964,7 +964,7 @@ git commit -m "feat(web): use flow canvas in instance topology"
 - Modify: `apps/web/components/admin/range-instance-detail-screen.tsx:610-1269`
 - Modify: `apps/web/components/admin/range-instance-detail-screen.test.tsx`
 
-- [ ] **Step 1: 写出实例详情的失败交互测试**
+- [x] **Step 1: 写出实例详情的失败交互测试**
 
 扩展详情页测试，分别覆盖结构编辑、视口、保存、应用和模板回写：
 
@@ -1011,7 +1011,7 @@ it('confirms and syncs only a saved draft with the displayed template revision',
 
 同时写历史实例断言：没有资源新增、连线、保存、应用或更新模板按钮，但能操作适应视图、全屏和导航图。
 
-- [ ] **Step 2: 在容器中确认实例详情测试为红**
+- [x] **Step 2: 在容器中确认实例详情测试为红**
 
 Run:
 
@@ -1025,7 +1025,7 @@ docker compose run --rm --no-deps -e NODE_ENV=test web \
 
 Expected: FAIL，详情页尚未维护 `TopologyHistory`、视口、结构编辑回调、确认对话框或带修订号的回写调用。
 
-- [ ] **Step 3: 实现实例草稿状态和 Flow 回调**
+- [x] **Step 3: 实现实例草稿状态和 Flow 回调**
 
 将 `readTopologyGraphDraft` 扩展为读取 `viewport`，并用 `readTopologyViewport` / `writeTopologyViewport` 保存。初始化时创建：
 
@@ -1057,7 +1057,7 @@ function commitSnapshot(snapshot: TopologySnapshot, message: string) {
 
 “应用变更”保持先保存、后调用 `applyRangeInstanceDraft` 的顺序。每次保存用 `detail.draftRevision` 发送 `expectedDraftRevision`，并用 API 返回的递增值替换本地详情。替换原生 `window.confirm` 为已有确认对话框样式，说明“只覆盖来源模板当前草稿，不发布，不影响已运行实例”；确认后调用带 `expectedDraftRevision` 和 `expectedTemplateRevision` 的客户端函数。成功后显示返回模板的修订号；草稿或模板 `409` 均显示“草稿或模板已被更新，请刷新详情后重新确认”。
 
-- [ ] **Step 4: 在容器中验证实例详情全量交互**
+- [x] **Step 4: 在容器中验证实例详情全量交互**
 
 Run:
 

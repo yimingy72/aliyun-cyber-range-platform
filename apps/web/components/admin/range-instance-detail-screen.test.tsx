@@ -2,8 +2,150 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type TopologyFlowCanvasMockProps = {
+  mode?: 'edit' | 'readonly';
+  edges: Array<{ id: string }>;
+  nodes: Array<{ id: string; label: string; kind: string }>;
+  onAddNode?: (kind: 'router' | 'switch' | 'ecs') => void;
+  onConnect?: (connection: { source: string; target: string }) => void;
+  onDeleteSelection?: () => void;
+  onLayoutAll?: () => void;
+  onNodeActivate?: (nodeId: string) => void;
+  onPositionsCommit?: (positions: Array<{ id: string; position: { x: number; y: number } }>) => void;
+  onRedo?: () => void;
+  onSelectionChange?: (selection: { nodeIds: string[]; edgeIds: string[] }) => void;
+  onUndo?: () => void;
+  onViewportCommit?: (viewport: { x: number; y: number; zoom: number }) => void;
+};
+
+function TopologyFlowCanvasMock({
+  edges,
+  mode = 'edit',
+  nodes,
+  onAddNode,
+  onConnect,
+  onDeleteSelection,
+  onLayoutAll,
+  onNodeActivate,
+  onPositionsCommit,
+  onRedo,
+  onSelectionChange,
+  onUndo,
+  onViewportCommit,
+}: TopologyFlowCanvasMockProps) {
+  const switchNode = nodes.find((node) => node.kind === 'switch');
+  const ecsNode = nodes.find((node) => node.kind === 'ecs');
+
+  return (
+    <section data-mode={mode} data-testid="topology-flow-workbench">
+      <output data-testid="flow-edge-count">{edges.length}</output>
+      <button onClick={() => onAddNode?.('ecs')} type="button">flow add ecs</button>
+      <button
+        disabled={!switchNode || !ecsNode}
+        onClick={() => {
+          if (switchNode && ecsNode) {
+            onConnect?.({ source: switchNode.id, target: ecsNode.id });
+          }
+        }}
+        type="button"
+      >
+        flow connect switch ecs
+      </button>
+      <button onClick={() => onDeleteSelection?.()} type="button">flow delete selection</button>
+      <button
+        onClick={() => onPositionsCommit?.(
+          nodes.map((node, index) => ({
+            id: node.id,
+            position: { x: 160 + index * 120, y: 220 + index * 80 },
+          })),
+        )}
+        type="button"
+      >
+        flow commit positions
+      </button>
+      <button onClick={() => onViewportCommit?.({ x: -80, y: 40, zoom: 1.2 })} type="button">
+        flow commit viewport
+      </button>
+      <button onClick={() => onLayoutAll?.()} type="button">flow layout all</button>
+      <button onClick={() => onUndo?.()} type="button">flow undo</button>
+      <button onClick={() => onRedo?.()} type="button">flow redo</button>
+      {nodes.map((node) => (
+        <button
+          key={node.id}
+          onClick={() => {
+            onSelectionChange?.({ nodeIds: [node.id], edgeIds: [] });
+            onNodeActivate?.(node.id);
+          }}
+          type="button"
+        >
+          {node.label}
+        </button>
+      ))}
+    </section>
+  );
+}
+
+function createValidTopologyGraph(ecsLabel = 'checker') {
+  return {
+    schemaVersion: '2.0.0',
+    nodes: [
+      {
+        id: 'router-1',
+        kind: 'router',
+        label: 'Router',
+        routeRole: 'egress',
+        egressType: 'internet',
+        bindEip: false,
+      },
+      {
+        id: 'switch-1',
+        kind: 'switch',
+        label: 'DMZ 交换机',
+        zoneKey: 'dmz',
+        cidr: '10.0.10.0/24',
+        purpose: 'public-entry',
+        nat: {
+          snatEnabled: false,
+          dnatMappings: [{
+            key: 'dnat-entry',
+            targetHostId: 'host-1',
+            externalPort: 22,
+            internalPort: 22,
+            protocol: 'tcp',
+          }],
+        },
+      },
+      {
+        id: 'host-1',
+        kind: 'ecs',
+        label: ecsLabel,
+        zoneKey: 'dmz',
+        role: 'entry',
+        privateIp: '10.0.10.10',
+        image: 'aliyun_linux_3_x64_20G_alibase',
+        imageId: 'aliyun_linux_3_x64_20G_alibase',
+        imageStrategy: { mode: 'fixed', imageId: 'aliyun_linux_3_x64_20G_alibase' },
+        instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+        nics: [{
+          id: 'host-1-nic-1',
+          switchId: 'switch-1',
+          privateIp: '10.0.10.10',
+          secondaryIps: [],
+          securityGroupRules: [],
+        }],
+      },
+    ],
+    edges: [
+      { id: 'edge-router-switch', fromNodeId: 'router-1', toNodeId: 'switch-1' },
+      { id: 'edge-switch-ecs', fromNodeId: 'switch-1', toNodeId: 'host-1' },
+    ],
+  };
+}
+
 const {
   fetchRangeInstanceDetailMock,
+  fetchInstanceTypeAvailabilityMock,
+  fetchPlatformImagesMock,
   saveRangeInstanceDraftMock,
   discardRangeInstanceDraftMock,
   applyRangeInstanceDraftMock,
@@ -19,6 +161,8 @@ const {
 
   return {
     fetchRangeInstanceDetailMock: vi.fn(),
+    fetchInstanceTypeAvailabilityMock: vi.fn(),
+    fetchPlatformImagesMock: vi.fn(),
     saveRangeInstanceDraftMock: vi.fn(),
     discardRangeInstanceDraftMock: vi.fn(),
     applyRangeInstanceDraftMock: vi.fn(),
@@ -48,6 +192,8 @@ vi.mock('../../lib/admin-api', () => ({
     }
   },
   fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
+  fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
+  fetchPlatformImages: fetchPlatformImagesMock,
   saveRangeInstanceDraft: saveRangeInstanceDraftMock,
   discardRangeInstanceDraft: discardRangeInstanceDraftMock,
   applyRangeInstanceDraft: applyRangeInstanceDraftMock,
@@ -63,15 +209,24 @@ vi.mock('./use-admin-session', () => ({
   }),
 }));
 
+vi.mock('./template-editor/topology-flow-canvas', () => ({
+  TopologyFlowCanvas: TopologyFlowCanvasMock,
+}));
+
 import { RangeInstanceDetailScreen } from './range-instance-detail-screen';
 
 describe('RangeInstanceDetailScreen', () => {
   beforeEach(() => {
-    vi.stubGlobal('ResizeObserver', class ResizeObserver {
-      disconnect() {}
-      observe() {}
-      unobserve() {}
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 2,
+      memory: 2,
+      regionId: 'cn-hangzhou',
+      zoneId: 'cn-hangzhou-h',
+      exactAvailable: true,
+      matches: [],
+      warning: null,
     });
+    fetchPlatformImagesMock.mockResolvedValue({ items: [] });
     writeTextMock.mockReset();
     writeTextMock.mockResolvedValue(undefined);
     Object.assign(navigator, {
@@ -84,7 +239,6 @@ describe('RangeInstanceDetailScreen', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
   });
 
   it('renders overview, node directory, and topology tabs from the runtime snapshot', async () => {
@@ -295,8 +449,6 @@ describe('RangeInstanceDetailScreen', () => {
     const topologyButton = await screen.findByRole('tab', { name: '拓扑结构' });
     fireEvent.mouseDown(topologyButton);
     await waitFor(() => expect(screen.getByTestId('topology-flow-workbench')).toBeTruthy());
-    expect(screen.getByTestId('topology-resource-rail')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '连线模式' })).toBeTruthy();
     fireEvent.click(screen.getByText('ECS 1'));
     expect(screen.getByText('基础信息')).toBeTruthy();
     expect(screen.getByText('ECS')).toBeTruthy();
@@ -450,6 +602,148 @@ describe('RangeInstanceDetailScreen', () => {
     expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps Flow resource additions, connections, and history inside the instance draft', async () => {
+    const graph = createValidTopologyGraph();
+    graph.edges = [graph.edges[0]!];
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      runtimeTopologyGraph: graph,
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    expect(screen.getByTestId('flow-edge-count').textContent).toBe('1');
+    fireEvent.click(screen.getByRole('button', { name: 'flow connect switch ecs' }));
+    expect(screen.getByTestId('flow-edge-count').textContent).toBe('2');
+    fireEvent.click(screen.getByRole('button', { name: 'flow add ecs' }));
+    expect(screen.getByRole('button', { name: 'ECS 2' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'flow undo' }));
+    expect(screen.queryByRole('button', { name: 'ECS 2' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'flow redo' }));
+    expect(screen.getByRole('button', { name: 'ECS 2' })).toBeTruthy();
+    expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits Flow position history and viewport into the saved instance draft', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      draftRevision: 0,
+      createdBy: 'admin',
+      templateNameSnapshot: '浏览器验证模板',
+      templateModulePathSnapshot: 'infra/opentofu/modules/alicloud-enterprise-range',
+      createdAt: '2026-07-06T10:00:00.000Z',
+      expiresAt: '2026-07-09T12:00:00.000Z',
+      runtimeTopologyGraph: {
+        schemaVersion: '2.0.0',
+        nodes: [
+          {
+            id: 'router-1',
+            kind: 'router',
+            label: 'Router',
+            routeRole: 'egress',
+            egressType: 'internet',
+            bindEip: false,
+          },
+          {
+            id: 'switch-1',
+            kind: 'switch',
+            label: 'DMZ 交换机',
+            zoneKey: 'dmz',
+            cidr: '10.70.10.0/24',
+            purpose: 'public-entry',
+            nat: {
+              snatEnabled: false,
+              dnatMappings: [{
+                key: 'dnat-entry',
+                targetHostId: 'ecs-entry',
+                externalPort: 22,
+                internalPort: 22,
+                protocol: 'tcp',
+              }],
+            },
+          },
+          {
+            id: 'ecs-entry',
+            kind: 'ecs',
+            label: '入口 ECS',
+            zoneKey: 'dmz',
+            role: 'entry',
+            privateIp: '10.70.10.10',
+            image: 'aliyun_linux_3_x64_20G_alibase',
+            imageId: 'aliyun_linux_3_x64_20G_alibase',
+            imageStrategy: { mode: 'fixed', imageId: 'aliyun_linux_3_x64_20G_alibase' },
+            instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] },
+            nics: [{
+              id: 'ecs-entry-nic-1',
+              switchId: 'switch-1',
+              privateIp: '10.70.10.10',
+              secondaryIps: [],
+              securityGroupRules: [],
+            }],
+          },
+        ],
+        edges: [
+          { id: 'edge-router-switch', fromNodeId: 'router-1', toNodeId: 'switch-1' },
+          { id: 'edge-switch-ecs', fromNodeId: 'switch-1', toNodeId: 'ecs-entry' },
+        ],
+      },
+      runtimeScenarioTemplateSpec: {
+        metadata: {
+          name: '浏览器验证模板',
+          slug: 'range-1',
+          version: 'v1',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: { vpcCidr: '10.70.0.0/16' },
+      },
+      runtimeCompiledProvisionSpec: { topology: { vpcCidr: '10.70.0.0/16' } },
+    });
+    saveRangeInstanceDraftMock.mockResolvedValue({
+      id: 'range-1',
+      name: '攻防实例-一号',
+      status: 'running',
+      draftRevision: 1,
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'flow commit positions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow undo' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow redo' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow commit viewport' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() =>
+      expect(saveRangeInstanceDraftMock).toHaveBeenCalledWith(
+        'http://localhost:3001',
+        'dev-admin-token',
+        'range-1',
+        expect.objectContaining({
+          draftTopologyGraph: expect.objectContaining({
+            viewport: { x: -80, y: 40, zoom: 1.2 },
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'router-1',
+                position: { x: 160, y: 220 },
+              }),
+            ]),
+          }),
+        }),
+      ),
+    );
+  });
+
   it('saves and applies instance draft changes without client actor fields', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
@@ -464,12 +758,17 @@ describe('RangeInstanceDetailScreen', () => {
       nodeStatuses: {
         'host-1': 'Stopped',
       },
-      runtimeTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'checker' } }],
-        edges: [],
+      runtimeTopologyGraph: createValidTopologyGraph(),
+      runtimeScenarioTemplateSpec: {
+        metadata: {
+          name: 'checker',
+          slug: 'checker',
+          version: 'v1',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: { vpcCidr: '10.0.0.0/16' },
       },
-      runtimeScenarioTemplateSpec: { metadata: { name: 'checker' } },
       runtimeCompiledProvisionSpec: { topology: { vpcCidr: '10.0.0.0/16' } },
     });
     saveRangeInstanceDraftMock.mockResolvedValue({
@@ -477,11 +776,7 @@ describe('RangeInstanceDetailScreen', () => {
       name: '攻防实例-一号',
       status: 'running',
       draftRevision: 1,
-      draftTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'checker-updated' }, label: 'checker-updated' }],
-        edges: [],
-      },
+      draftTopologyGraph: createValidTopologyGraph(),
     });
     discardRangeInstanceDraftMock.mockResolvedValue({
       id: 'range-1',
@@ -509,6 +804,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     await screen.findByRole('tab', { name: '拓扑结构' });
     fireEvent.mouseDown(screen.getByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: 'checker' }));
     await waitFor(() => expect(screen.getByLabelText('CPU')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
@@ -540,7 +836,6 @@ describe('RangeInstanceDetailScreen', () => {
   });
 
   it('syncs the current instance draft back into the template without client actor fields', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -556,11 +851,7 @@ describe('RangeInstanceDetailScreen', () => {
       nodeStatuses: {
         'host-1': 'Stopped',
       },
-      runtimeTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'checker' }, cpu: 2, memory: 2 }],
-        edges: [],
-      },
+      runtimeTopologyGraph: createValidTopologyGraph(),
       runtimeScenarioTemplateSpec: { metadata: { name: 'checker' }, topology: { vpcCidr: '10.0.0.0/16' } },
       runtimeCompiledProvisionSpec: { topology: { vpcCidr: '10.0.0.0/16' } },
     });
@@ -570,12 +861,17 @@ describe('RangeInstanceDetailScreen', () => {
       status: 'running',
       draftRevision: 1,
       sourceTemplateRevision: 12,
-      draftTopologyGraph: {
-        schemaVersion: '1',
-        nodes: [{ id: 'host-1', kind: 'ecs', data: { label: 'checker' }, cpu: 4, memory: 2 }],
-        edges: [],
+      draftTopologyGraph: createValidTopologyGraph(),
+      draftScenarioTemplateSpec: {
+        metadata: {
+          name: 'checker',
+          slug: 'checker',
+          version: 'v1',
+          cloudProvider: 'alibaba_cloud',
+          iacType: 'opentofu',
+        },
+        topology: { vpcCidr: '10.0.0.0/16' },
       },
-      draftScenarioTemplateSpec: { metadata: { name: 'checker' } },
       draftCompiledProvisionSpec: { topology: { vpcCidr: '10.0.0.0/16' } },
     });
     syncRangeInstanceTemplateMock.mockResolvedValue({
@@ -586,8 +882,11 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: 'checker' }));
     fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: '更新编排拓扑' }));
+    expect(screen.getByRole('dialog', { name: '更新编排拓扑' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '确认更新模板草稿' }));
 
     await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalled());
     await waitFor(() =>
