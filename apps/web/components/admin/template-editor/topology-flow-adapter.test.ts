@@ -91,6 +91,26 @@ describe('topology flow adapter', () => {
       .toEqual(ordered.find((node) => node.id === 'ecs-1')?.data.targetPorts);
   });
 
+  it('忽略指向不存在节点的边，不为已知节点生成端点', () => {
+    const nodes = [switchA, ecs];
+    const edges: TemplateEdge[] = [{
+      ...edgeA,
+      toNodeId: 'switch-missing',
+    }];
+
+    expect(toFlowNodes(nodes, edges).map(({ data }) => ({
+      sourcePorts: data.sourcePorts,
+      targetPorts: data.targetPorts,
+    }))).toEqual([{
+      sourcePorts: [],
+      targetPorts: [],
+    }, {
+      sourcePorts: [],
+      targetPorts: [],
+    }]);
+    expect(toFlowEdges(nodes, edges)).toEqual([]);
+  });
+
   it('将 router、switch 和 ecs 映射到各自的 Flow 节点类型，并保留领域节点字段与负坐标', () => {
     const nodes: TemplateNode[] = [{
       id: 'router-1',
