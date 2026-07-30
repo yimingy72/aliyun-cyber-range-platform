@@ -616,7 +616,7 @@ describe('TopologyFlowCanvas', () => {
     expect(canvasProps.onAddNode).toHaveBeenCalledOnce();
   });
 
-  it('连线模式传入节点，工具栏保留全部布局并移除局部布局与专注模式', () => {
+  it('连线模式传入节点，工具栏保留全部布局并移除局部布局与专注模式', async () => {
     const canvasProps = createCanvasProps();
     const { rerender } = render(<TopologyFlowCanvas {...canvasProps} />);
     const initialNodeTypes = flowState.props?.nodeTypes;
@@ -637,10 +637,16 @@ describe('TopologyFlowCanvas', () => {
     expect(flowState.props?.panOnDrag).toEqual([0, 1]);
 
     fireEvent.click(screen.getByRole('button', { name: '全部自动布局' }));
-    fireEvent.click(screen.getByRole('button', { name: '适应视图' }));
 
     expect(canvasProps.onLayoutAll).toHaveBeenCalledOnce();
-    expect(flowState.fitView).toHaveBeenCalledOnce();
+    await waitFor(() => expect(flowState.fitView).toHaveBeenCalledWith({
+      duration: 180,
+      maxZoom: 1.2,
+      padding: 0.45,
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '适应视图' }));
+    expect(flowState.fitView).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('button', { name: '选中自动布局' })).toBeNull();
     expect(screen.queryByRole('button', { name: '切换专注模式' })).toBeNull();
 

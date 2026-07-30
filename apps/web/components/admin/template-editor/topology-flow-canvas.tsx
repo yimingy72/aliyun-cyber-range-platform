@@ -227,6 +227,8 @@ function TopologyFlowCanvasInner({
   const onSelectionChangeRef = React.useRef(onSelectionChange);
   const knownViewportRef = React.useRef<TopologyViewport | null>(viewport);
   const pendingExternalViewportRef = React.useRef<TopologyViewport | null>(null);
+  const pendingFitViewAfterLayoutRef = React.useRef(false);
+  const [layoutFitRequestId, setLayoutFitRequestId] = React.useState(0);
 
   if (!hasSameTopologySelection(previousSelectionRef.current, selection)) {
     previousSelectionRef.current = selection;
@@ -457,6 +459,37 @@ function TopologyFlowCanvasInner({
     }
   }
 
+  React.useEffect(() => {
+    if (!pendingFitViewAfterLayoutRef.current || layoutFitRequestId === 0) {
+      return;
+    }
+
+    const externalPositions = new Map(
+      externalFlowNodes.map((node) => [node.id, node.position] as const),
+    );
+    const hasSyncedLayoutPositions = flowNodes.length === externalFlowNodes.length
+      && flowNodes.every((node) => {
+        const position = externalPositions.get(node.id);
+
+        return position != null
+          && node.position.x === position.x
+          && node.position.y === position.y;
+      });
+
+    if (!hasSyncedLayoutPositions) {
+      return;
+    }
+
+    pendingFitViewAfterLayoutRef.current = false;
+    fitView({ duration: 180, ...topologyFitViewOptions });
+  }, [externalFlowNodes, fitView, flowNodes, layoutFitRequestId]);
+
+  function handleLayoutAll() {
+    pendingFitViewAfterLayoutRef.current = true;
+    onLayoutAll();
+    setLayoutFitRequestId((current) => current + 1);
+  }
+
   function handleKeyboardShortcut(event: React.KeyboardEvent<HTMLElement>) {
     if (event.key === 'Escape') {
       if (isFullscreen) {
@@ -533,7 +566,7 @@ function TopologyFlowCanvasInner({
             <button
               aria-label="全部自动布局"
               className="topology-flow-tool-button"
-              onClick={onLayoutAll}
+              onClick={handleLayoutAll}
               title="全部自动布局"
               type="button"
             >
