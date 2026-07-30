@@ -199,4 +199,83 @@ describe('topology flow layout', () => {
 
     expect(positionsById(reordered)).toEqual(positionsById(ordered));
   });
+
+  it('同一交换机下的 ECS 按添加顺序从上到下排列', () => {
+    const nodes: TemplateNode[] = [{
+      id: 'switch-1',
+      kind: 'switch',
+      label: '交换机 1',
+      zoneKey: 'zone-1',
+      cidr: '10.0.0.0/24',
+      purpose: 'business',
+    }, {
+      id: 'ecs-1',
+      kind: 'ecs',
+      label: 'ECS 1',
+      zoneKey: 'zone-1',
+      role: 'web',
+      privateIp: '10.0.0.11',
+      exposePublic: false,
+      image: 'aliyun_linux_3_x64_20G_alibase',
+      dnatMappings: [],
+      networkInterfaces: [],
+      portGroups: [],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'aliyun_linux_3_x64_20G_alibase' },
+      instanceTypeStrategy: { mode: 'auto' },
+    }, {
+      id: 'ecs-2',
+      kind: 'ecs',
+      label: 'ECS 2',
+      zoneKey: 'zone-1',
+      role: 'web',
+      privateIp: '10.0.0.12',
+      exposePublic: false,
+      image: 'aliyun_linux_3_x64_20G_alibase',
+      dnatMappings: [],
+      networkInterfaces: [],
+      portGroups: [],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'aliyun_linux_3_x64_20G_alibase' },
+      instanceTypeStrategy: { mode: 'auto' },
+    }, {
+      id: 'ecs-3',
+      kind: 'ecs',
+      label: 'ECS 3',
+      zoneKey: 'zone-1',
+      role: 'web',
+      privateIp: '10.0.0.13',
+      exposePublic: false,
+      image: 'aliyun_linux_3_x64_20G_alibase',
+      dnatMappings: [],
+      networkInterfaces: [],
+      portGroups: [],
+      initScript: '',
+      imageStrategy: { mode: 'fixed', imageId: 'aliyun_linux_3_x64_20G_alibase' },
+      instanceTypeStrategy: { mode: 'auto' },
+    }];
+    const edges: TemplateEdge[] = [{
+      id: 'edge-1',
+      fromNodeId: 'switch-1',
+      toNodeId: 'ecs-1',
+      relationType: 'manual',
+    }, {
+      id: 'edge-2',
+      fromNodeId: 'switch-1',
+      toNodeId: 'ecs-2',
+      relationType: 'manual',
+    }, {
+      id: 'edge-3',
+      fromNodeId: 'switch-1',
+      toNodeId: 'ecs-3',
+      relationType: 'manual',
+    }];
+
+    const result = layoutTopology(nodes, edges);
+    const ecsY = ['ecs-1', 'ecs-2', 'ecs-3'].map((id) => result.find((node) => node.id === id)?.position?.y ?? Number.NaN);
+
+    expect(ecsY[0]).toBeLessThan(ecsY[1]);
+    expect(ecsY[1]).toBeLessThan(ecsY[2]);
+  });
+
 });

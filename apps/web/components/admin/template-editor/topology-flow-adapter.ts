@@ -60,20 +60,23 @@ export function toFlowNodes(
     data: {
       topologyNode,
       connectMode: resolvedConnectMode,
-      sourcePorts: knownEdges
-        .filter((edge) => edge.fromNodeId === topologyNode.id)
-        .sort((left, right) => compareConnectedEdges('source', left, right))
-        .map((edge, portIndex, sourceEdges) => ({
-          id: `${sourceHandlePrefix}${edge.id}`,
-          offset: readPortOffset(portIndex, sourceEdges.length),
-        })),
-      targetPorts: knownEdges
-        .filter((edge) => edge.toNodeId === topologyNode.id)
-        .sort((left, right) => compareConnectedEdges('target', left, right))
-        .map((edge, portIndex, targetEdges) => ({
+      // Switch fan-out keeps a shared right-side handle to avoid crossed trunks.
+      sourcePorts: [],
+      targetPorts: (() => {
+        const targetEdges = knownEdges
+          .filter((edge) => edge.toNodeId === topologyNode.id)
+          .sort((left, right) => compareConnectedEdges('target', left, right));
+
+        // Only multi-homed nodes (typically multi-NIC ECS) need split entry ports.
+        if (targetEdges.length <= 1) {
+          return [];
+        }
+
+        return targetEdges.map((edge, portIndex) => ({
           id: `${targetHandlePrefix}${edge.id}`,
           offset: readPortOffset(portIndex, targetEdges.length),
-        })),
+        }));
+      })(),
     },
   }));
 }
@@ -92,18 +95,29 @@ export function toFlowEdges(
     ? readKnownEdges(nodesOrEdges as TemplateNode[], edges)
     : nodesOrEdges as TemplateEdge[];
 
-  return knownEdges.map((topologyEdge) => ({
-    id: topologyEdge.id,
-    type: 'bezier',
-    source: topologyEdge.fromNodeId,
-    sourceHandle: `${sourceHandlePrefix}${topologyEdge.id}`,
-    target: topologyEdge.toNodeId,
-    targetHandle: `${targetHandlePrefix}${topologyEdge.id}`,
-    selectable: true,
-    focusable: true,
-    interactionWidth: 24,
-    data: { topologyEdge },
-  }));
+  const targetCountByNodeId = new Map<string, number>();
+  for (const edge of knownEdges) {
+    targetCountByNodeId.set(edge.toNodeId, (targetCountByNodeId.get(edge.toNodeId) ?? 0) + 1);
+  }
+
+  return knownEdges.map((topologyEdge) => {
+    const multiTarget = (targetCountByNodeId.get(topologyEdge.toNodeId) ?? 0) > 1;
+
+    return {
+      id: topologyEdge.id,
+      type: 'bezier' as const,
+      source: topologyEdge.fromNodeId,
+      sourceHandle: 'source-default',
+      target: topologyEdge.toNodeId,
+      targetHandle: multiTarget
+        ? `${targetHandlePrefix}${topologyEdge.id}`
+        : 'target-default',
+      selectable: true,
+      focusable: true,
+      interactionWidth: 24,
+      data: { topologyEdge },
+    };
+  });
 }
 
 export function readTopologyViewport(value: unknown): TopologyViewport | null {
