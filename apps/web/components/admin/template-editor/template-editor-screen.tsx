@@ -1969,17 +1969,17 @@ export function TemplateEditorScreen({
             <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
               {template.status === 'published' ? '已发布' : '私有'}
             </Badge>
+            {statusMessage ? (
+              <p
+                aria-live="polite"
+                className="template-editor-toolbar-secondary template-editor-feedback"
+                role="status"
+                title={statusMessage}
+              >
+                {statusMessage}
+              </p>
+            ) : null}
           </div>
-          {statusMessage ? (
-            <p
-              aria-live="polite"
-              className="template-editor-toolbar-secondary template-editor-feedback"
-              role="status"
-              title={statusMessage}
-            >
-              {statusMessage}
-            </p>
-          ) : null}
         </div>
         <div className="template-editor-toolbar-actions">
           <Button

@@ -235,4 +235,17 @@ describe('admin page scroll ownership', () => {
     expect(credentialTooltip).toContain('border: 1px solid #c7ddf7');
     expect(credentialTooltip).not.toContain('background: #1f2f49');
   });
+
+  it('keeps inline topology editor feedback from expanding the desktop toolbar', () => {
+    const toolbarTitle = getRuleBlock(stylesheet, '.template-editor-toolbar-copy h1');
+    const toolbarActions = getRuleBlock(stylesheet, '.template-editor-toolbar-actions');
+    const feedback = getRuleBlock(stylesheet, '.template-editor-feedback');
+
+    expect(toolbarTitle).toContain('min-width: 0');
+    expect(toolbarTitle).toContain('overflow: hidden');
+    expect(toolbarTitle).toContain('text-overflow: ellipsis');
+    expect(toolbarTitle).toContain('white-space: nowrap');
+    expect(toolbarActions).toContain('flex-wrap: nowrap');
+    expect(feedback).toContain('min-width: 0');
+  });
 });

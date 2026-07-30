@@ -2433,7 +2433,7 @@ describe('TemplateEditorScreen', () => {
     expect(screen.queryByRole('button', { name: '保存属性' })).toBeNull();
   });
 
-  it('places 检测与保存 failure feedback beneath the toolbar title', () => {
+  it('places 检测与保存 failure feedback beside the toolbar title', () => {
     const { container } = render(
       <TemplateEditorScreen
         template={{
@@ -2469,7 +2469,8 @@ describe('TemplateEditorScreen', () => {
 
     expect(status.textContent).toContain(message);
     expect(status.getAttribute('title')).toBe(status.textContent);
-    expect(container.querySelector('.template-editor-toolbar-copy [role="status"]')).toBe(status);
+    expect(container.querySelector('.template-editor-toolbar-identity [role="status"]')).toBe(status);
+    expect(container.querySelector('.template-editor-toolbar-copy > [role="status"]')).toBeNull();
     expect(container.querySelector('.template-editor-screen > p[role="status"]')).toBeNull();
   });
 
