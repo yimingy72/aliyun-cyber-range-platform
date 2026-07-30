@@ -202,8 +202,8 @@ function TopologyFlowCanvasInner({
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
   const isConnectMode = !isReadonly && connectMode;
   const topologyFlowNodes = React.useMemo(
-    () => toFlowNodes(nodes, isConnectMode),
-    [isConnectMode, nodes],
+    () => toFlowNodes(nodes, edges, isConnectMode),
+    [edges, isConnectMode, nodes],
   );
   const externalFlowNodes = React.useMemo(
     () => applyNodeSelection(topologyFlowNodes, selection),
@@ -213,13 +213,14 @@ function TopologyFlowCanvasInner({
   const flowEdges = React.useMemo(() => {
     const selectedEdgeIds = new Set(selection.edgeIds);
 
-    return toFlowEdges(edges).map((edge) => ({
+    return toFlowEdges(nodes, edges).map((edge) => ({
       ...edge,
       selected: selectedEdgeIds.has(edge.id),
     }));
-  }, [edges, selection.edgeIds]);
+  }, [edges, nodes, selection.edgeIds]);
   const syncedTopologyNodesRef = React.useRef(nodes);
   const syncedConnectModeRef = React.useRef(isConnectMode);
+  const syncedEdgesRef = React.useRef(edges);
   const selectionRef = React.useRef(selection);
   const pendingExternalSelectionRef = React.useRef<TopologySelection | null>(null);
   const previousSelectionRef = React.useRef(selection);
@@ -253,8 +254,10 @@ function TopologyFlowCanvasInner({
   React.useEffect(() => {
     const shouldSyncTopology = syncedTopologyNodesRef.current !== nodes;
     const shouldSyncConnectMode = syncedConnectModeRef.current !== isConnectMode;
+    const shouldSyncEdges = syncedEdgesRef.current !== edges;
     syncedTopologyNodesRef.current = nodes;
     syncedConnectModeRef.current = isConnectMode;
+    syncedEdgesRef.current = edges;
 
     setFlowNodes((currentNodes) => {
       const currentNodesById = new Map(currentNodes.map((node) => [node.id, node]));
@@ -272,11 +275,13 @@ function TopologyFlowCanvasInner({
             currentNode.position.x !== externalNode.position.x
             || currentNode.position.y !== externalNode.position.y
           );
-        const shouldSyncNodeData = (shouldSyncTopology || shouldSyncConnectMode)
+        const shouldSyncNodeData = (shouldSyncTopology || shouldSyncConnectMode || shouldSyncEdges)
           && (
             currentNode.type !== externalNode.type
             || currentNode.data.topologyNode !== externalNode.data.topologyNode
             || currentNode.data.connectMode !== externalNode.data.connectMode
+            || currentNode.data.sourcePorts !== externalNode.data.sourcePorts
+            || currentNode.data.targetPorts !== externalNode.data.targetPorts
           );
         const shouldSyncSelection = currentNode.selected !== externalNode.selected;
 

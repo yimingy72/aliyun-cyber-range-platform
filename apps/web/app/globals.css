@@ -4059,9 +4059,27 @@ body {
   background: #13795b;
 }
 
-.topology-flow-node[data-connect-mode='false'] .react-flow__handle {
+.topology-flow-canvas .react-flow__handle.topology-flow-node-assigned-handle {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  min-height: 8px;
+  z-index: 2;
+}
+
+.topology-flow-node[data-connect-mode='false'] .topology-flow-node-default-handle {
   opacity: 0;
   pointer-events: none;
+}
+
+.topology-flow-node[data-connect-mode='false'] .topology-flow-node-assigned-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.topology-flow-node[data-connect-mode='false'][data-has-multiple-targets='true'] .topology-flow-node-target-port,
+.topology-flow-node[data-connect-mode='false'][data-has-multiple-sources='true'] .topology-flow-node-source-port {
+  opacity: 1;
 }
 
 .topology-flow-canvas .react-flow__panel {

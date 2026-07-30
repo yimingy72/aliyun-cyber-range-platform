@@ -163,6 +163,37 @@ const edges: TemplateEdge[] = [{
   relationType: 'manual',
 }];
 
+const multiNetworkNodes: TemplateNode[] = [{
+  ...nodes[0]!,
+  id: 'switch-a',
+  label: '交换机 A',
+  position: { x: 120, y: 80 },
+}, {
+  ...nodes[0]!,
+  id: 'switch-b',
+  label: '交换机 B',
+  zoneKey: 'office',
+  cidr: '10.70.20.0/24',
+  position: { x: 120, y: 280 },
+}, {
+  ...nodes[1]!,
+  id: 'ecs-1',
+  label: '双网卡 ECS',
+  position: { x: 440, y: 180 },
+}];
+
+const multiNetworkEdges: TemplateEdge[] = [{
+  id: 'edge-switch-a-ecs',
+  fromNodeId: 'switch-a',
+  toNodeId: 'ecs-1',
+  relationType: 'manual',
+}, {
+  id: 'edge-switch-b-ecs',
+  fromNodeId: 'switch-b',
+  toNodeId: 'ecs-1',
+  relationType: 'manual',
+}];
+
 function createCanvasProps() {
   return {
     edges,
@@ -253,6 +284,51 @@ describe('TopologyFlowCanvas', () => {
     });
   });
 
+  it('将多交换机到同一 ECS 的边作为独立 bezier 端点传给 React Flow', () => {
+    render(
+      <TopologyFlowCanvas
+        {...createCanvasProps()}
+        nodes={multiNetworkNodes}
+        edges={multiNetworkEdges}
+      />,
+    );
+
+    expect(flowState.props?.edges).toMatchObject([{
+      id: 'edge-switch-a-ecs',
+      type: 'bezier',
+      targetHandle: 'target-edge-switch-a-ecs',
+    }, {
+      id: 'edge-switch-b-ecs',
+      type: 'bezier',
+      targetHandle: 'target-edge-switch-b-ecs',
+    }]);
+    expect(flowState.props?.nodes.find((node: { id: string }) => node.id === 'ecs-1')?.data.targetPorts)
+      .toHaveLength(2);
+  });
+
+  it('边变化时同步节点端点布局', async () => {
+    const { rerender } = render(
+      <TopologyFlowCanvas
+        {...createCanvasProps()}
+        nodes={multiNetworkNodes}
+        edges={[multiNetworkEdges[0]!]}
+      />,
+    );
+
+    rerender(
+      <TopologyFlowCanvas
+        {...createCanvasProps()}
+        nodes={multiNetworkNodes}
+        edges={multiNetworkEdges}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(flowState.props?.nodes.find((node: { id: string }) => node.id === 'ecs-1')?.data.targetPorts)
+        .toHaveLength(2);
+    });
+  });
+
   it('declares a viewport-filling editor grid and compact navigation map layout contract', () => {
     const styles = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
     const desktopRules = getAtRuleBlock(styles, '@media (min-width: 1024px)');
@@ -278,6 +354,9 @@ describe('TopologyFlowCanvas', () => {
     expect(styles).toContain(".admin-workspace[data-topology-editor='true'] .admin-topbar");
     expect(desktopMainShell).toContain('grid-template-rows: minmax(0, 1fr)');
     expect(styles).toContain('.topology-flow-mini-map-toggle');
+    expect(styles).toContain('.topology-flow-node-assigned-handle');
+    expect(styles).toContain(".topology-flow-node[data-connect-mode='false'] .topology-flow-node-default-handle");
+    expect(styles).toContain("[data-has-multiple-targets='true'] .topology-flow-node-target-port");
     expect(styles).toMatch(
       /\.topology-flow-mini-map\s*\{[\s\S]*?width:\s*120px;[\s\S]*?height:\s*80px;/,
     );
