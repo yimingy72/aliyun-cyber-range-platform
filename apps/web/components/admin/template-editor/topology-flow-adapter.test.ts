@@ -222,6 +222,9 @@ describe('topology flow adapter', () => {
       target: 'switch-dmz',
       targetHandle: 'target-edge-router-dmz',
       type: 'bezier',
+      selectable: true,
+      focusable: true,
+      interactionWidth: 24,
       data: { topologyEdge: edges[0] },
     }]);
     expect(toFlowEdges(nodes, edges)[0]?.data.topologyEdge.label).toBe('router -> dmz');

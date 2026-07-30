@@ -440,6 +440,29 @@ describe('TopologyFlowCanvas', () => {
     });
   });
 
+  it('点击连线时只选中该边，并保留可点击命中区', () => {
+    const canvasProps = createCanvasProps();
+    render(<TopologyFlowCanvas {...canvasProps} />);
+
+    expect(flowState.props?.edges[0]).toMatchObject({
+      id: 'edge-switch-ecs',
+      selectable: true,
+      focusable: true,
+      interactionWidth: 24,
+    });
+    expect(flowState.props?.onEdgeClick).toEqual(expect.any(Function));
+
+    flowState.props?.onEdgeClick?.(
+      { ctrlKey: false, metaKey: false, shiftKey: false },
+      { id: 'edge-switch-ecs' },
+    );
+
+    expect(canvasProps.onSelectionChange).toHaveBeenCalledWith({
+      edgeIds: ['edge-switch-ecs'],
+      nodeIds: [],
+    });
+  });
+
   it('同步父编辑器的节点选择，保持新增资源的属性面板选择状态', async () => {
     const canvasProps = createCanvasProps();
     const { rerender } = render(
@@ -564,12 +587,28 @@ describe('TopologyFlowCanvas', () => {
     const flow = screen.getByTestId('react-flow');
 
     fireEvent.keyDown(flow, { key: 'Delete' });
+    fireEvent.keyDown(flow, { key: 'Backspace' });
     fireEvent.keyDown(flow, { key: 'z', metaKey: true });
     fireEvent.keyDown(flow, { key: 'z', metaKey: true, shiftKey: true });
 
-    expect(canvasProps.onDeleteSelection).toHaveBeenCalledOnce();
+    expect(canvasProps.onDeleteSelection).toHaveBeenCalledTimes(2);
     expect(canvasProps.onUndo).toHaveBeenCalledOnce();
     expect(canvasProps.onRedo).toHaveBeenCalledOnce();
+  });
+
+  it('在窗口级监听删除快捷键，避免未聚焦时无法删除选中资源', () => {
+    const canvasProps = createCanvasProps();
+    render(
+      <TopologyFlowCanvas
+        {...canvasProps}
+        selection={{ nodeIds: [], edgeIds: ['edge-switch-ecs'] }}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: 'Delete' });
+    fireEvent.keyDown(window, { key: 'Backspace' });
+
+    expect(canvasProps.onDeleteSelection).toHaveBeenCalledTimes(2);
   });
 
   it('按 Escape 清空本地节点选中并上报空选择', async () => {

@@ -83,6 +83,19 @@ function isTopologyResourceKind(value: string): value is TopologyResourceKind {
   return value === 'router' || value === 'switch' || value === 'ecs';
 }
 
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName;
+  return tagName === 'INPUT'
+    || tagName === 'TEXTAREA'
+    || tagName === 'SELECT'
+    || target.isContentEditable;
+}
+
 function hasSameViewport(
   left: TopologyViewport | null,
   right: TopologyViewport | null,
@@ -375,6 +388,18 @@ function TopologyFlowCanvasInner({
     onNodeActivate(node.id);
   }
 
+  function handleEdgeClick(event: React.MouseEvent, edge: { id: string }) {
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+
+    setFlowNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: false })));
+    reportSelectionChange({
+      edgeIds: [edge.id],
+      nodeIds: [],
+    });
+  }
+
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     if (isReadonly) {
       return;
@@ -490,6 +515,28 @@ function TopologyFlowCanvasInner({
     setLayoutFitRequestId((current) => current + 1);
   }
 
+  React.useEffect(() => {
+    if (isReadonly) {
+      return;
+    }
+
+    function handleWindowKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') {
+        return;
+      }
+
+      if (isEditableKeyboardTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      onDeleteSelection();
+    }
+
+    window.addEventListener('keydown', handleWindowKeyDown);
+    return () => window.removeEventListener('keydown', handleWindowKeyDown);
+  }, [isReadonly, onDeleteSelection]);
+
   function handleKeyboardShortcut(event: React.KeyboardEvent<HTMLElement>) {
     if (event.key === 'Escape') {
       if (isFullscreen) {
@@ -503,12 +550,6 @@ function TopologyFlowCanvasInner({
     }
 
     if (isReadonly) {
-      return;
-    }
-
-    if (event.key === 'Delete') {
-      event.preventDefault();
-      onDeleteSelection();
       return;
     }
 
@@ -640,6 +681,7 @@ function TopologyFlowCanvasInner({
               onPositionsCommit(movedNodes.map((node) => ({ id: node.id, position: node.position })));
             }
           }}
+          onEdgeClick={handleEdgeClick}
           onNodeClick={handleNodeClick}
           onNodesChange={onNodesChange}
           onSelectionChange={handleSelectionChange}

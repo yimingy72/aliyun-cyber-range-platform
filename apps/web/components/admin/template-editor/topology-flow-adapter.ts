@@ -99,6 +99,9 @@ export function toFlowEdges(
     sourceHandle: `${sourceHandlePrefix}${topologyEdge.id}`,
     target: topologyEdge.toNodeId,
     targetHandle: `${targetHandlePrefix}${topologyEdge.id}`,
+    selectable: true,
+    focusable: true,
+    interactionWidth: 24,
     data: { topologyEdge },
   }));
 }
