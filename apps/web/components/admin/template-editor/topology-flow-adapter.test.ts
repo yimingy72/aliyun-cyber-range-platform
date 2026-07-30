@@ -10,7 +10,87 @@ import {
   writeTopologyViewport,
 } from './topology-flow-adapter';
 
+const switchA: TemplateNode = {
+  id: 'switch-a',
+  kind: 'switch',
+  label: '交换机 A',
+  zoneKey: 'zone-a',
+  cidr: '10.70.10.0/24',
+  purpose: 'business',
+  aclRules: [],
+  nat: { snatEnabled: false, dnatMappings: [] },
+};
+const switchB: TemplateNode = {
+  id: 'switch-b',
+  kind: 'switch',
+  label: '交换机 B',
+  zoneKey: 'zone-b',
+  cidr: '10.70.20.0/24',
+  aclRules: [],
+  nat: { snatEnabled: false, dnatMappings: [] },
+};
+const ecs: TemplateNode = {
+  id: 'ecs-1',
+  kind: 'ecs',
+  label: 'ECS 1',
+  zoneKey: 'zone-a',
+  role: 'web',
+  privateIp: '10.70.10.10',
+  exposePublic: false,
+  image: 'aliyun_linux_3_x64_20G_alibase',
+  dnatMappings: [],
+  networkInterfaces: [],
+  portGroups: [],
+  initScript: '',
+  imageStrategy: { mode: 'fixed', imageId: 'aliyun_linux_3_x64_20G_alibase' },
+  instanceTypeStrategy: { mode: 'auto' },
+};
+const edgeA: TemplateEdge = {
+  id: 'edge-switch-a-ecs',
+  fromNodeId: 'switch-a',
+  toNodeId: 'ecs-1',
+  relationType: 'manual',
+};
+const edgeB: TemplateEdge = {
+  id: 'edge-switch-b-ecs',
+  fromNodeId: 'switch-b',
+  toNodeId: 'ecs-1',
+  relationType: 'manual',
+};
+
 describe('topology flow adapter', () => {
+  it('为同一 ECS 的多条交换机连线分配不同且稳定的端点', () => {
+    const nodes = [switchA, switchB, ecs];
+    const edges = [edgeA, edgeB];
+
+    const flowEcs = toFlowNodes(nodes, edges).find((node) => node.id === 'ecs-1');
+    const flowEdges = toFlowEdges(nodes, edges);
+
+    expect(flowEcs?.data.targetPorts).toEqual([
+      { id: 'target-edge-switch-a-ecs', offset: 26 },
+      { id: 'target-edge-switch-b-ecs', offset: 74 },
+    ]);
+    expect(flowEdges).toMatchObject([{
+      id: 'edge-switch-a-ecs',
+      type: 'bezier',
+      sourceHandle: 'source-edge-switch-a-ecs',
+      targetHandle: 'target-edge-switch-a-ecs',
+    }, {
+      id: 'edge-switch-b-ecs',
+      type: 'bezier',
+      sourceHandle: 'source-edge-switch-b-ecs',
+      targetHandle: 'target-edge-switch-b-ecs',
+    }]);
+  });
+
+  it('端点分配不受节点和边输入顺序影响', () => {
+    const ordered = toFlowNodes([switchA, switchB, ecs], [edgeA, edgeB]);
+    const reordered = toFlowNodes([ecs, switchB, switchA], [edgeB, edgeA]);
+
+    expect(reordered.find((node) => node.id === 'ecs-1')?.data.targetPorts)
+      .toEqual(ordered.find((node) => node.id === 'ecs-1')?.data.targetPorts);
+  });
+
   it('将 router、switch 和 ecs 映射到各自的 Flow 节点类型，并保留领域节点字段与负坐标', () => {
     const nodes: TemplateNode[] = [{
       id: 'router-1',
@@ -97,15 +177,34 @@ describe('topology flow adapter', () => {
       relationType: 'manual',
       label: 'router -> dmz',
     }];
+    const nodes: TemplateNode[] = [{
+      id: 'router-1',
+      kind: 'router',
+      label: '主路由器',
+      routeRole: 'core',
+      egressType: 'internet',
+      bindEip: true,
+    }, {
+      id: 'switch-dmz',
+      kind: 'switch',
+      label: 'DMZ 交换机',
+      zoneKey: 'dmz',
+      cidr: '10.70.10.0/24',
+      purpose: 'dmz',
+      aclRules: [],
+      nat: { snatEnabled: false, dnatMappings: [] },
+    }];
 
-    expect(toFlowEdges(edges)).toMatchObject([{
+    expect(toFlowEdges(nodes, edges)).toMatchObject([{
       id: 'edge-router-dmz',
       source: 'router-1',
+      sourceHandle: 'source-edge-router-dmz',
       target: 'switch-dmz',
-      type: 'smoothstep',
+      targetHandle: 'target-edge-router-dmz',
+      type: 'bezier',
       data: { topologyEdge: edges[0] },
     }]);
-    expect(toFlowEdges(edges)[0]?.data.topologyEdge.label).toBe('router -> dmz');
+    expect(toFlowEdges(nodes, edges)[0]?.data.topologyEdge.label).toBe('router -> dmz');
   });
 
   it('只接受有限数值视口，并兼容无视口旧图', () => {
