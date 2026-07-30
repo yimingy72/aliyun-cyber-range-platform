@@ -2008,12 +2008,20 @@ body {
   font-weight: 600;
 }
 
-.billing-detail-panel-header {
-  min-height: 7.8125rem;
+@media (min-width: 64rem) and (max-width: 87.9375rem) {
+  .billing-detail-panel-header {
+    min-height: 7.8125rem;
+  }
+
+  .billing-users-panel {
+    margin-top: 3.5625rem;
+  }
 }
 
-.billing-users-panel-header {
-  min-height: 8.5rem;
+@media (min-width: 88rem) {
+  .billing-users-panel-header {
+    padding-bottom: calc(0.75rem - 3px);
+  }
 }
 
 .admin-dialog-content {

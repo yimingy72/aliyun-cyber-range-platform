@@ -696,7 +696,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           </AdminPaginatedList>
         </section>
 
-      <aside aria-label="用户账单" className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+      <aside aria-label="用户账单" className="billing-users-panel flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
         <div className="billing-users-panel-header flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-3">
           <div>
             <h2 className="font-heading text-base font-semibold text-foreground">用户账单</h2>
