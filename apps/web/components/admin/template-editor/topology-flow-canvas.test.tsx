@@ -9,6 +9,38 @@ import { TopologyFlowCanvas } from './topology-flow-canvas';
 import type { TemplateEdge } from './template-editor-screen';
 import type { TemplateNode } from '../../../lib/scenario-graph';
 
+function getRuleBlock(styles: string, selector: string) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = styles.match(new RegExp(`${escapedSelector}\\s*\\{[\\s\\S]*?\\}`, 'm'));
+
+  return match?.[0] ?? '';
+}
+
+function getAtRuleBlock(styles: string, atRule: string) {
+  const atRuleStart = styles.indexOf(atRule);
+  const openingBrace = styles.indexOf('{', atRuleStart);
+
+  if (atRuleStart === -1 || openingBrace === -1) {
+    return '';
+  }
+
+  let depth = 0;
+
+  for (let index = openingBrace; index < styles.length; index += 1) {
+    if (styles[index] === '{') {
+      depth += 1;
+    } else if (styles[index] === '}') {
+      depth -= 1;
+
+      if (depth === 0) {
+        return styles.slice(openingBrace + 1, index);
+      }
+    }
+  }
+
+  return '';
+}
+
 const flowState = vi.hoisted(() => ({
   emitSelectionEvents: false,
   props: null as Record<string, any> | null,
@@ -221,18 +253,30 @@ describe('TopologyFlowCanvas', () => {
     });
   });
 
-  it('declares the full-screen editor grid and compact navigation map layout contract', () => {
+  it('declares a viewport-filling editor grid and compact navigation map layout contract', () => {
     const styles = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+    const desktopRules = getAtRuleBlock(styles, '@media (min-width: 1024px)');
+    const editorGrid = getRuleBlock(styles, '.template-editor-grid');
+    const loadingGrid = getRuleBlock(styles, '.template-editor-grid:not(:has(.topology-flow-workbench))');
+    const transition = getRuleBlock(styles, '.admin-content-transition:has(.template-editor-screen)');
+    const workbench = getRuleBlock(styles, '.topology-flow-workbench');
+    const desktopMainShell = getRuleBlock(
+      desktopRules,
+      ".admin-workspace[data-topology-editor='true'] .admin-main-shell",
+    );
 
     expect(styles).toContain('@import url("@xyflow/react/dist/style.css");');
-    expect(styles).toMatch(
-      /\.template-editor-grid\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/,
-    );
-    expect(styles).toMatch(
-      /\.topology-flow-workbench\s*\{[\s\S]*?min-height:\s*680px;/,
-    );
+    expect(transition).toContain('height: 100%');
+    expect(editorGrid).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(editorGrid).toContain('height: 100%');
+    expect(editorGrid).toContain('min-height: 0');
+    expect(editorGrid).not.toContain('height: max(680px, calc(100dvh - 176px))');
+    expect(loadingGrid).toContain('height: 100%');
+    expect(loadingGrid).not.toContain('height: calc(100vh - 176px)');
+    expect(workbench).toContain('min-height: 0');
     expect(styles).toContain('.template-editor-grid:fullscreen');
     expect(styles).toContain(".admin-workspace[data-topology-editor='true'] .admin-topbar");
+    expect(desktopMainShell).toContain('grid-template-rows: minmax(0, 1fr)');
     expect(styles).toContain('.topology-flow-mini-map-toggle');
     expect(styles).toMatch(
       /\.topology-flow-mini-map\s*\{[\s\S]*?width:\s*120px;[\s\S]*?height:\s*80px;/,
