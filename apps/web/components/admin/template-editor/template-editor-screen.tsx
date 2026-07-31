@@ -114,56 +114,6 @@ function TemplatePropertyPanelPlaceholder() {
   );
 }
 
-function TemplateEditorLoadingState() {
-  return (
-    <section aria-busy="true" className="template-editor-screen">
-      <span aria-label="正在加载靶场编排页" className="sr-only" role="status">
-        正在加载靶场编排页
-      </span>
-      <div className="template-editor-toolbar admin-workbench-surface">
-        <div className="template-editor-toolbar-copy">
-          <h1>正在加载靶场编排页...</h1>
-          <p className="template-editor-toolbar-status">正在读取当前拓扑</p>
-        </div>
-        <div aria-hidden="true" className="flex gap-2">
-          <div className="h-8 w-20 animate-pulse rounded-md bg-muted" />
-          <div className="h-8 w-24 animate-pulse rounded-md bg-muted" />
-        </div>
-      </div>
-      <div className="template-editor-grid" data-testid="template-editor-loading-grid">
-        <aside className="template-editor-panel">
-          <div className="admin-section-header">
-            <h2>资源面板</h2>
-          </div>
-          <div className="space-y-3">
-            <div className="h-14 animate-pulse rounded-md bg-muted" />
-            <div className="h-14 animate-pulse rounded-md bg-muted" />
-            <div className="h-14 animate-pulse rounded-md bg-muted" />
-          </div>
-        </aside>
-        <section className="template-editor-panel">
-          <div className="admin-section-header">
-            <h2>拓扑画布</h2>
-          </div>
-          <div className="h-[calc(100%-3rem)] min-h-72 animate-pulse rounded-md bg-muted/70" />
-        </section>
-        <aside className="template-editor-panel template-property-panel">
-          <div className="admin-section-header template-property-panel-header">
-            <h2>属性面板</h2>
-          </div>
-          <div className="template-property-shell">
-            <div className="space-y-3 p-3">
-              <div className="h-4 w-2/5 animate-pulse rounded-sm bg-muted" />
-              <div className="h-8 animate-pulse rounded-md bg-muted" />
-              <div className="h-8 animate-pulse rounded-md bg-muted" />
-            </div>
-          </div>
-        </aside>
-      </div>
-    </section>
-  );
-}
-
 const TemplatePropertyPanel = dynamic(
   () => import('./template-property-panel').then(({ TemplatePropertyPanel: Component }) => Component),
   {
@@ -1961,7 +1911,7 @@ export function TemplateEditorScreen({
   }
 
   if (!template) {
-    return <TemplateEditorLoadingState />;
+    return null;
   }
 
   return (

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminApiError } from '../../lib/admin-api';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
+import { AdminPageCache } from './admin-page-cache';
 
 const {
   cloneRangeTemplateMock,
@@ -614,6 +615,34 @@ describe('TemplatesScreen', () => {
     expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-2');
     expect(enterButton.disabled).toBe(true);
     expect(within(row).getByRole('button', { name: '正在进入编排...' })).toBeTruthy();
+  });
+
+  it('clears the pending editor action after returning to the retained list page', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    const renderPage = (pathname: string) => (
+      <AdminPageCache
+        createPage={(route) =>
+          route === '/admin/scenarios' ? <TemplatesScreen apiBaseUrl="http://localhost:3001" /> : <div>拓扑编辑</div>
+        }
+        pathname={pathname}
+      >
+        <div>拓扑编辑</div>
+      </AdminPageCache>
+    );
+    const { rerender } = render(renderPage('/admin/scenarios'));
+
+    await screen.findByText('办公网横向移动靶场');
+    const row = screen.getByRole('row', { name: /办公网横向移动靶场/ });
+
+    fireEvent.click(within(row).getByRole('button', { name: '进入编排' }));
+    expect(within(row).getByRole('button', { name: '正在进入编排...' })).toBeTruthy();
+
+    rerender(renderPage('/admin/scenarios/template-2'));
+    rerender(renderPage('/admin/scenarios'));
+
+    await waitFor(() => {
+      expect(within(screen.getByRole('row', { name: /办公网横向移动靶场/ })).getByRole('button', { name: '进入编排' })).toBeTruthy();
+    });
   });
 
   it('lets admins edit a platform template they do not own without moving it into 我的拓扑', async () => {

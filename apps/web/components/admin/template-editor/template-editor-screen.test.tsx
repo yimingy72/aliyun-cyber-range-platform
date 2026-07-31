@@ -408,21 +408,18 @@ afterEach(() => {
 });
 
 describe('TemplateEditorScreen', () => {
-  it('keeps the editor workspace shape while loading a routed template', () => {
+  it('does not render a standalone loading page while loading a routed template', () => {
     fetchRangeTemplateByIdMock.mockImplementation(
       () =>
         new Promise(() => {
-          // Keep the route request pending to verify the destination loading frame.
+          // Keep the route request pending to verify that no loading page is shown.
         }),
     );
 
     render(<TemplateEditorScreen templateId="template-1" />);
 
-    expect(screen.getByRole('status', { name: '正在加载靶场编排页' })).toBeTruthy();
-    expect(screen.getByTestId('template-editor-loading-grid')).toBeTruthy();
-    expect(screen.getByText('资源面板')).toBeTruthy();
-    expect(screen.getByText('拓扑画布')).toBeTruthy();
-    expect(screen.getByText('属性面板')).toBeTruthy();
+    expect(screen.queryByRole('status', { name: '正在加载靶场编排页' })).toBeNull();
+    expect(screen.queryByTestId('template-editor-loading-grid')).toBeNull();
   });
 
   it('renders the topology-flow editor workspace instead of the retired template canvas', () => {

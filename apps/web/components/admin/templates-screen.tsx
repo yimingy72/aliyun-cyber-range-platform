@@ -1,6 +1,6 @@
 'use client';
 
-import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
@@ -230,6 +230,12 @@ export function TemplatesScreen({
       [view]: current[view] + 1,
     }));
   }
+
+  useLayoutEffect(() => {
+    if (isPageActive) {
+      setPendingEditorTemplateId(null);
+    }
+  }, [isPageActive]);
 
   useEffect(() => {
     if (!isPageActive || !session.isReady) {
