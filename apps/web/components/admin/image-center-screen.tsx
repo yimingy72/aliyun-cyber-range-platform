@@ -1871,6 +1871,7 @@ export function ImageCenterScreen({
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             activeView={activeMainView}
+            compactViewAction
             onSearchChange={setSearchName}
             onViewChange={(view) => {
               if (view === 'platform' || view === 'mine' || view === 'cloud') {
@@ -1946,7 +1947,7 @@ export function ImageCenterScreen({
                   variant="outline"
                 >
                   <RefreshCw aria-hidden="true" />
-                  同步自定义镜像
+                  同步镜像
                 </Button>
               ) : activeTab === 'public' && session.isAdmin ? (
                 <Button

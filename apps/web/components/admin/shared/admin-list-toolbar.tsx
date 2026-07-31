@@ -5,6 +5,7 @@ import { Search } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
 
 export type AdminListToolbarView = {
   value: string;
@@ -19,6 +20,7 @@ interface AdminListToolbarBaseProps {
   children: ReactNode;
   action?: ReactNode;
   searchControls?: ReactNode;
+  compactViewAction?: boolean;
 }
 
 type AdminListToolbarProps =
@@ -87,7 +89,13 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
                   </TabsTrigger>
                 ))}
               </TabsList>
-              <div className="flex w-36 shrink-0 justify-end" data-testid="admin-list-toolbar-view-action">
+              <div
+                className={cn(
+                  'flex shrink-0',
+                  props.compactViewAction ? 'justify-start' : 'w-36 justify-end',
+                )}
+                data-testid="admin-list-toolbar-view-action"
+              >
                 {props.action}
               </div>
             </>

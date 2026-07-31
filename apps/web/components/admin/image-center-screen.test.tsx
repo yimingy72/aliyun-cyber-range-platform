@@ -441,6 +441,7 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByRole('tab', { name: '平台镜像' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '我的镜像' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '云上镜像来源' })).toBeTruthy();
+    expect(screen.getByTestId('admin-list-toolbar-view-action').className).not.toContain('w-36');
     expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
@@ -463,6 +464,8 @@ describe('ImageCenterScreen', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
     expect(await screen.findByRole('tab', { name: '阿里云自定义镜像' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '阿里云公共镜像' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '同步镜像' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '同步自定义镜像' })).toBeNull();
 
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'platform');
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');

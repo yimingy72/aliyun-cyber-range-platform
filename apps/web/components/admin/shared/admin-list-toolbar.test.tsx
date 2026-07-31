@@ -112,4 +112,31 @@ describe('AdminListToolbar', () => {
     expect(actionSlot.className).toContain('w-36');
     expect(actionSlot.textContent).toBe('');
   });
+
+  it('can keep a tabbed action adjacent to the view labels', () => {
+    render(
+      <AdminListToolbar
+        action={<button type="button">上传镜像</button>}
+        activeView="platform"
+        compactViewAction
+        onSearchChange={vi.fn()}
+        onViewChange={vi.fn()}
+        searchLabel="筛选镜像名"
+        searchPlaceholder="搜索镜像名"
+        searchValue=""
+        views={[
+          { value: 'platform', label: '平台镜像' },
+          { value: 'mine', label: '我的镜像' },
+        ]}
+      >
+        <div>镜像列表</div>
+      </AdminListToolbar>,
+    );
+
+    const actionSlot = screen.getByTestId('admin-list-toolbar-view-action');
+
+    expect(actionSlot.className).not.toContain('w-36');
+    expect(actionSlot.className).toContain('justify-start');
+    expect(actionSlot.textContent).toBe('上传镜像');
+  });
 });
