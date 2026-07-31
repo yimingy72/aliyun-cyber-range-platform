@@ -100,6 +100,32 @@ const activeInstance = {
   },
 };
 
+const historyBatch = {
+  batch: {
+    id: 'history-batch-1',
+    name: 'history-batch',
+    platformImageAssetId: 'platform-image-1',
+    imageId: 'm-123',
+    imageDisplayName: 'Ubuntu 24.04 LTS',
+    cpu: 2,
+    memory: 2,
+    systemDiskSize: 40,
+    quantity: 1,
+    createdBy: 'admin',
+    createdAt: '2026-07-28T20:51:28.000Z',
+    expiresAt: '2026-07-28T23:59:00.000Z',
+  },
+  instances: [
+    {
+      ...activeInstance,
+      id: 'single-history-1',
+      name: 'history-instance-1',
+      status: 'destroyed',
+      createdAt: '2026-07-28T20:51:28.000Z',
+    },
+  ],
+};
+
 describe('SingleInstancesScreen list states', () => {
   beforeEach(() => {
     fetchSingleInstancesMock.mockReset();
@@ -149,6 +175,31 @@ describe('SingleInstancesScreen list states', () => {
     });
 
     expect(await screen.findByText('暂无实例历史')).toBeTruthy();
+  });
+
+  it('aligns every historical batch value with its matching header', async () => {
+    searchParamsState.value = 'view=history';
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [historyBatch],
+      standaloneInstances: [],
+    });
+
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    await screen.findByText('history-batch');
+
+    const table = screen.getByRole('table', { name: '实例历史' });
+    const headers = Array.from(table.querySelectorAll('thead th')).map((header) => header.textContent?.trim());
+    const batchCells = Array.from(table.querySelector('tbody tr')?.querySelectorAll('td') ?? []);
+    const cellFor = (header: string) => batchCells[headers.indexOf(header)]?.textContent?.trim();
+
+    expect(batchCells).toHaveLength(headers.length);
+    expect(cellFor('公网 IP')).toBe('批次实例');
+    expect(cellFor('状态')).toBe('1 已关闭');
+    expect(cellFor('开启时间')).toContain('2026-07-28');
+    expect(cellFor('结束时间')).toContain('2026-07-28');
+    expect(cellFor('运行时长')).toContain('3 小时');
+    expect(cellFor('创建人')).toBe('admin');
   });
 
   it('renders an active-list error inside the table body and retries in place', async () => {

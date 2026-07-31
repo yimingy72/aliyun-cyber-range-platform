@@ -1674,12 +1674,15 @@ export function SingleInstancesScreen({
                                 <AdminDataTableCell column={columns[3]}>批次实例</AdminDataTableCell>
                                 {isHistoryGroup ? (
                                   <>
-                                    <AdminDataTableCell column={columns[4]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[6]}>
+                                    <AdminDataTableCell column={columns[4]}>
+                                      {formatBatchSummary(group.instances)}
+                                    </AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[6]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[7]}>
                                       {formatDuration(group.batch.createdAt, group.batch.expiresAt)}
                                     </AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[7]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[8]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
                                   </>
                                 ) : (
                                   <>
