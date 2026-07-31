@@ -15,6 +15,7 @@ import {
   fetchPlatformBillingGroups,
   triggerBillingSync,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type { AdminUser, BillingLaunchGroup, BillingSummary, BillingUserSummary, PaginatedResult } from '../../lib/admin-types';
 import { Button } from '../ui/button';
@@ -30,6 +31,7 @@ import { AdminSelectField } from './shared/admin-select-field';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { StatusBadge } from './shared/status-badge';
+import { useAdminRouteIsActive } from './admin-page-cache';
 import { useAdminSession } from './use-admin-session';
 
 type BillingScreenProps = {
@@ -43,6 +45,11 @@ type BillingRange = {
 
 type DetailView = 'users' | 'platform';
 type BillingExportKind = 'platform' | 'users' | 'user';
+type BillingOverviewSnapshot = {
+  summary: BillingSummary;
+  users: PaginatedResult<BillingUserSummary>;
+  filterUsers: AdminUser[];
+};
 
 const preciseMoneyFormatter = new Intl.NumberFormat('zh-CN', {
   minimumFractionDigits: 2,
@@ -134,37 +141,63 @@ function downloadCsv(contents: string, fileName: string) {
 export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingScreenProps) {
   const router = useRouter();
   const { isAdmin, isReady, logout, token } = useAdminSession();
+  const isPageActive = useAdminRouteIsActive('/admin/billing');
+  const screenCache = useAdminScreenCache();
   const [range, setRange] = useState<BillingRange>(getDefaultRange);
-  const [summary, setSummary] = useState<BillingSummary | null>(null);
-  const [usersResult, setUsersResult] = useState<PaginatedResult<BillingUserSummary>>({
-    items: [],
-    page: 1,
-    pageSize: 100,
-    total: 0,
-  });
-  const [groupsResult, setGroupsResult] = useState<PaginatedResult<BillingLaunchGroup>>({
-    items: [],
-    page: 1,
-    pageSize: 20,
-    total: 0,
-  });
-  const [filterUsers, setFilterUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
   const [detailView, setDetailView] = useState<DetailView>('users');
-  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
-  const [groupsRevision, setGroupsRevision] = useState(0);
   const [groupsPage, setGroupsPage] = useState(1);
+  const { pageSize, setPageSize } = useAdminPageSize();
+  const overviewResource = `billing:overview:${range.startAt}:${range.endAt}`;
+  const groupsResource =
+    detailView === 'users'
+      ? `billing:user-groups:${selectedUserId || 'all'}:${range.startAt}:${range.endAt}:${groupsPage}:${pageSize}`
+      : `billing:platform-groups:${range.startAt}:${range.endAt}:${groupsPage}:${pageSize}`;
+  const cachedOverview = screenCache?.read<BillingOverviewSnapshot>(apiBaseUrl, token, overviewResource);
+  const cachedGroups = screenCache?.read<PaginatedResult<BillingLaunchGroup>>(apiBaseUrl, token, groupsResource);
+  const [summary, setSummary] = useState<BillingSummary | null>(() => cachedOverview?.data.summary ?? null);
+  const [usersResult, setUsersResult] = useState<PaginatedResult<BillingUserSummary>>(
+    () =>
+      cachedOverview?.data.users ?? {
+        items: [],
+        page: 1,
+        pageSize: 100,
+        total: 0,
+      },
+  );
+  const [groupsResult, setGroupsResult] = useState<PaginatedResult<BillingLaunchGroup>>(
+    () =>
+      cachedGroups?.data ?? {
+        items: [],
+        page: 1,
+        pageSize: 20,
+        total: 0,
+      },
+  );
+  const [filterUsers, setFilterUsers] = useState<AdminUser[]>(() => cachedOverview?.data.filterUsers ?? []);
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  const [loadedOverviewResource, setLoadedOverviewResource] = useState<string | null>(() =>
+    cachedOverview ? overviewResource : null,
+  );
+  const [loadedGroupsResource, setLoadedGroupsResource] = useState<string | null>(() =>
+    cachedGroups ? groupsResource : null,
+  );
+  const [overviewLoadAttempt, setOverviewLoadAttempt] = useState(0);
+  const [groupsLoadAttempt, setGroupsLoadAttempt] = useState(0);
   const [groupsJumpPageValue, setGroupsJumpPageValue] = useState('1');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [overviewRevalidationErrorMessage, setOverviewRevalidationErrorMessage] = useState<string | null>(null);
   const [groupsErrorMessage, setGroupsErrorMessage] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingGroups, setIsLoadingGroups] = useState(false);
+  const [isLoading, setIsLoading] = useState(() => !cachedOverview);
+  const [isRefreshingOverview, setIsRefreshingOverview] = useState(false);
+  const [isLoadingGroups, setIsLoadingGroups] = useState(() => !cachedGroups);
   const [isSyncing, setIsSyncing] = useState(false);
-  const { pageSize, setPageSize } = useAdminPageSize();
 
   const users = usersResult.items;
   const groups = groupsResult.items;
+  const hasOverviewSnapshot = loadedOverviewResource !== null;
+  const hasGroupsSnapshot = loadedGroupsResource !== null;
   const userNameById = useMemo(
     () =>
       new Map([
@@ -174,7 +207,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     [filterUsers, users],
   );
   useEffect(() => {
-    if (!isReady) {
+    if (!isPageActive || !isReady) {
       return;
     }
 
@@ -183,9 +216,17 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
       setUsersResult({ items: [], page: 1, pageSize: 100, total: 0 });
       setGroupsResult({ items: [], page: 1, pageSize, total: 0 });
       setFilterUsers([]);
+      setLoadedOverviewResource(null);
+      setLoadedGroupsResource(null);
+      setOverviewLoadAttempt(0);
+      setGroupsLoadAttempt(0);
       setErrorMessage(null);
+      setOverviewRevalidationErrorMessage(null);
+      setGroupsErrorMessage(null);
       setSyncMessage(null);
       setIsLoading(false);
+      setIsRefreshingOverview(false);
+      setIsLoadingGroups(false);
       return;
     }
 
@@ -195,23 +236,73 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     }
 
     let isActive = true;
-    setErrorMessage(null);
-    setIsLoading(true);
+    const cachedSnapshot = screenCache?.read<BillingOverviewSnapshot>(apiBaseUrl, token, overviewResource);
 
-    Promise.all([
-      fetchBillingSummary(apiBaseUrl, token, range),
-      fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
-      fetchAdminUsers(apiBaseUrl, token),
-    ])
-      .then(([summaryPayload, usersPayload, allUsersPayload]) => {
+    if (cachedSnapshot?.isFresh && overviewLoadAttempt === 0) {
+      setSummary(cachedSnapshot.data.summary);
+      setUsersResult(cachedSnapshot.data.users);
+      setFilterUsers(cachedSnapshot.data.filterUsers);
+      setLoadedOverviewResource(overviewResource);
+      setSelectedUserId((current) =>
+        current && cachedSnapshot.data.filterUsers.some((user) => user.id === current) ? current : '',
+      );
+      setErrorMessage(null);
+      setOverviewRevalidationErrorMessage(null);
+      setIsLoading(false);
+      setIsRefreshingOverview(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
+    if (loadedOverviewResource === overviewResource && !screenCache && overviewLoadAttempt === 0) {
+      setIsLoading(false);
+      setIsRefreshingOverview(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
+    if (hasOverviewSnapshot) {
+      setOverviewRevalidationErrorMessage(null);
+    } else {
+      setErrorMessage(null);
+    }
+    setIsLoading(!hasOverviewSnapshot);
+    setIsRefreshingOverview(hasOverviewSnapshot);
+
+    const loadOverview = async (): Promise<BillingOverviewSnapshot> => {
+      const [summary, users, filterUsers] = await Promise.all([
+        fetchBillingSummary(apiBaseUrl, token, range),
+        fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
+        fetchAdminUsers(apiBaseUrl, token),
+      ]);
+
+      return { summary, users, filterUsers };
+    };
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, overviewResource, loadOverview, { force: overviewLoadAttempt > 0 })
+      : loadOverview();
+
+    request
+      .then((snapshot) => {
         if (!isActive) {
           return;
         }
 
-        setSummary(summaryPayload);
-        setUsersResult(usersPayload);
-        setFilterUsers(allUsersPayload);
-        setSelectedUserId((current) => (current && allUsersPayload.some((user) => user.id === current) ? current : ''));
+        setSummary(snapshot.summary);
+        setUsersResult(snapshot.users);
+        setFilterUsers(snapshot.filterUsers);
+        setLoadedOverviewResource(overviewResource);
+        setSelectedUserId((current) =>
+          current && snapshot.filterUsers.some((user) => user.id === current) ? current : '',
+        );
+        setOverviewRevalidationErrorMessage(null);
+        if (overviewLoadAttempt > 0) {
+          setOverviewLoadAttempt(0);
+        }
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -224,30 +315,73 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           return;
         }
 
-        setErrorMessage('账单费用加载失败，请稍后重试。');
+        const message = '账单费用加载失败，请稍后重试。';
+
+        if (hasOverviewSnapshot) {
+          setOverviewRevalidationErrorMessage(message);
+          return;
+        }
+
+        setErrorMessage(message);
       })
       .finally(() => {
         if (isActive) {
           setIsLoading(false);
+          setIsRefreshingOverview(false);
         }
       });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isAdmin, isReady, logout, range, router, token]);
+  }, [
+    apiBaseUrl,
+    hasOverviewSnapshot,
+    isAdmin,
+    isPageActive,
+    isReady,
+    loadedOverviewResource,
+    logout,
+    overviewLoadAttempt,
+    overviewResource,
+    range,
+    router,
+    screenCache,
+    token,
+  ]);
 
   useEffect(() => {
-    if (!token || !isAdmin) {
+    if (!isPageActive || !isReady || !token || !isAdmin) {
       return;
     }
 
     let isActive = true;
+    const cachedSnapshot = screenCache?.read<PaginatedResult<BillingLaunchGroup>>(apiBaseUrl, token, groupsResource);
+
+    if (cachedSnapshot?.isFresh && groupsLoadAttempt === 0) {
+      setGroupsResult(cachedSnapshot.data);
+      setGroupsPage(cachedSnapshot.data.page);
+      setLoadedGroupsResource(groupsResource);
+      setGroupsErrorMessage(null);
+      setIsLoadingGroups(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
+    if (loadedGroupsResource === groupsResource && !screenCache && groupsLoadAttempt === 0) {
+      setIsLoadingGroups(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
     setIsLoadingGroups(true);
     setGroupsErrorMessage(null);
-    setExpandedGroupIds(new Set());
 
-    const request =
+    const loadGroups = () =>
       detailView === 'users'
         ? fetchBillingUserGroups(apiBaseUrl, token, {
             ...range,
@@ -256,12 +390,19 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
             userId: selectedUserId || undefined,
           })
         : fetchPlatformBillingGroups(apiBaseUrl, token, { ...range, page: groupsPage, pageSize });
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, groupsResource, loadGroups, { force: groupsLoadAttempt > 0 })
+      : loadGroups();
 
     request
       .then((payload) => {
         if (isActive) {
           setGroupsResult(payload);
           setGroupsPage(payload.page);
+          setLoadedGroupsResource(groupsResource);
+          if (groupsLoadAttempt > 0) {
+            setGroupsLoadAttempt(0);
+          }
         }
       })
       .catch((error: unknown) => {
@@ -286,7 +427,24 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, detailView, groupsPage, groupsRevision, isAdmin, logout, pageSize, range, router, selectedUserId, token]);
+  }, [
+    apiBaseUrl,
+    detailView,
+    groupsLoadAttempt,
+    groupsPage,
+    groupsResource,
+    isAdmin,
+    isPageActive,
+    isReady,
+    loadedGroupsResource,
+    logout,
+    pageSize,
+    range,
+    router,
+    screenCache,
+    selectedUserId,
+    token,
+  ]);
 
   const groupsPagination = getPagination(groupsResult.total, groupsResult.page, groupsResult.pageSize);
   const groupsVisiblePages = buildVisiblePages(groupsPagination.totalPages, groupsPagination.page);
@@ -321,17 +479,31 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     );
   }
 
-  const refreshOverview = async () => {
+  const refreshOverview = async (force = false) => {
     if (!token) {
       return;
     }
 
-    const [summaryPayload, usersPayload] = await Promise.all([
-      fetchBillingSummary(apiBaseUrl, token, range),
-      fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
-    ]);
-    setSummary(summaryPayload);
-    setUsersResult(usersPayload);
+    const loadOverview = async (): Promise<BillingOverviewSnapshot> => {
+      const [summary, users, filterUsers] = await Promise.all([
+        fetchBillingSummary(apiBaseUrl, token, range),
+        fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
+        fetchAdminUsers(apiBaseUrl, token),
+      ]);
+
+      return { summary, users, filterUsers };
+    };
+    const snapshot = screenCache
+      ? await screenCache.load(apiBaseUrl, token, overviewResource, loadOverview, { force })
+      : await loadOverview();
+
+    setSummary(snapshot.summary);
+    setUsersResult(snapshot.users);
+    setFilterUsers(snapshot.filterUsers);
+    setLoadedOverviewResource(overviewResource);
+    setSelectedUserId((current) =>
+      current && snapshot.filterUsers.some((user) => user.id === current) ? current : '',
+    );
   };
 
   const handleSync = async () => {
@@ -345,9 +517,10 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     try {
       const result = await triggerBillingSync(apiBaseUrl, token, range);
+      screenCache?.invalidate(apiBaseUrl, token, 'billing:');
       setGroupsPage(1);
-      await refreshOverview();
-      setGroupsRevision((current) => current + 1);
+      setGroupsLoadAttempt((current) => current + 1);
+      await refreshOverview(true);
       setSyncMessage(`已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。`);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -422,7 +595,13 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const retryGroups = () => {
     setIsLoadingGroups(true);
     setGroupsErrorMessage(null);
-    setGroupsRevision((current) => current + 1);
+    setGroupsLoadAttempt((current) => current + 1);
+  };
+
+  const retryOverview = () => {
+    setErrorMessage(null);
+    setOverviewRevalidationErrorMessage(null);
+    setOverviewLoadAttempt((current) => current + 1);
   };
 
   const toggleGroup = (groupId: string) => {
@@ -469,7 +648,11 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           title="账单费用"
         />
 
-        <dl aria-label="账单概览" className="mt-4 flex flex-wrap items-stretch border-l border-border">
+        <dl
+          aria-busy={isRefreshingOverview || undefined}
+          aria-label="账单概览"
+          className="mt-4 flex flex-wrap items-stretch border-l border-border"
+        >
           <div className="grid min-w-36 gap-1 border-r border-border px-4">
             <dt className="text-xs font-medium text-muted-foreground">平台总应付</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
@@ -484,11 +667,24 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           </div>
         </dl>
 
-      {errorMessage ? (
-        <p className="mt-4 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
-          {errorMessage}
-        </p>
-      ) : null}
+        {errorMessage ? (
+          <p className="mt-4 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
+            {errorMessage}
+          </p>
+        ) : null}
+        {overviewRevalidationErrorMessage ? (
+          <div
+            className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm"
+            role="alert"
+          >
+            <span className="text-destructive">
+              {overviewRevalidationErrorMessage} 正在显示上次成功加载的账单数据。
+            </span>
+            <Button aria-label="重试加载账单概览" onClick={retryOverview} size="sm" type="button" variant="outline">
+              重试加载
+            </Button>
+          </div>
+        ) : null}
       {syncMessage ? (
         <p className="mt-4 border border-emerald-700/20 bg-emerald-700/5 px-3 py-2 text-sm text-emerald-800" role="status">
           {syncMessage}
@@ -577,7 +773,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           <AdminPaginatedList
             className="mt-3"
             footer={
-              groupsResult.total > 0 && !isLoadingGroups && !groupsErrorMessage ? (
+              groupsResult.total > 0 && !groupsErrorMessage ? (
                 <AdminPaginationControls
                   jumpPageValue={groupsJumpPageValue}
                   label="费用明细分页"
@@ -594,7 +790,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               ) : null
             }
           >
-          <div aria-live="polite" className="border-y border-border">
+          <div aria-live="polite" className="overflow-hidden rounded border border-border bg-background">
             {groupsErrorMessage ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-destructive/15 bg-destructive/5 px-3 py-2 text-sm" role="alert">
                 <span className="text-destructive">
@@ -607,16 +803,18 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               </div>
             ) : null}
 
-            {isLoadingGroups && !groups.length ? (
+            {isLoadingGroups && !hasGroupsSnapshot ? (
               <div className="space-y-3 px-3 py-5" role="status" aria-label="正在加载费用明细">
                 <Skeleton className="h-4 w-48" />
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
                 <Skeleton className="h-12 w-full" />
                 <Skeleton className="h-12 w-full" />
                 <Skeleton className="h-12 w-full" />
               </div>
             ) : null}
 
-            {isLoadingGroups && groups.length ? (
+            {isLoadingGroups && hasGroupsSnapshot ? (
               <p className="border-b border-border px-3 py-2 text-sm text-muted-foreground" role="status">
                 正在更新费用明细...
               </p>
@@ -705,12 +903,19 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         </div>
 
         <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
-          {isLoading && !users.length ? (
+          {isLoading && !hasOverviewSnapshot ? (
             <div className="space-y-3 px-3 py-4" role="status" aria-label="正在加载用户账单">
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
             </div>
+          ) : null}
+          {isLoading && hasOverviewSnapshot ? (
+            <p className="border-b border-border px-3 py-2 text-sm text-muted-foreground" role="status">
+              正在更新用户账单...
+            </p>
           ) : null}
           {users.map((user) => (
             <button

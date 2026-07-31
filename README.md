@@ -132,12 +132,16 @@ MCP 服务使用 Streamable HTTP：`POST /mcp`，健康检查为 `GET /healthz`�
 
 ## 文档导航
 
-- [MCP 客户端接入手册](docs/product/2026-07-15-MCP客户端接入示例.md)
-- [MCP 服务开发说明](apps/mcp/README.md)
-- [当前系统部署说明](deploy/current-system/README.md)
-- [产品规划与系统能力说明](docs/product/2026-07-08-综合靶场平台-产品规划与系统能力说明.md)
-- [设计文档](docs/superpowers/specs/)
-- [实施计划](docs/superpowers/plans/)
+| 文档 | 定位 |
+| --- | --- |
+| [PRODUCT.md](PRODUCT.md) | 产品定位、体验原则与当前交付快照 |
+| [产品规划与系统能力说明](docs/product/2026-07-08-综合靶场平台-产品规划与系统能力说明.md) | **当前能力完成度与模块看板**（以代码为准） |
+| [DESIGN.md](DESIGN.md) | 后台 UI 设计规范 |
+| [MCP 客户端接入手册](docs/product/2026-07-15-MCP客户端接入示例.md) | MCP 连接唯一详细手册 |
+| [MCP 服务开发说明](apps/mcp/README.md) | MCP 服务开发与 smoke |
+| [当前系统部署说明](deploy/current-system/README.md) | 部署交接 |
+| [历史设计快照](docs/superpowers/specs/) | 当时决策上下文，**不是**当前完成度事实源 |
+| [历史实施计划](docs/superpowers/plans/) | 当时排期上下文，可能落后于实现 |
 
 ## 安全与运行边界
 

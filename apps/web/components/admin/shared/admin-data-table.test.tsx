@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TableRow } from '@/components/ui/table';
 
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState } from './admin-data-table';
+import {
+  AdminDataTable,
+  AdminDataTableCell,
+  AdminDataTableRevalidationNotice,
+  AdminDataTableState,
+} from './admin-data-table';
 
 class ResizeObserverMock {
   private static readonly observers = new Set<ResizeObserverMock>();
@@ -93,6 +98,33 @@ describe('AdminDataTable', () => {
 
     expect(screen.getByRole('table', { name: '实例列表' }).getAttribute('aria-busy')).toBe('true');
     expect(screen.getByText('alpha')).toBeTruthy();
+  });
+
+  it('keeps retained rows with one compact retry notice after a refresh failure', () => {
+    const retry = vi.fn();
+    const columns = [{ id: 'name', label: '实例名称', priority: 'primary' as const }];
+
+    render(
+      <AdminDataTable columns={columns} label="实例列表">
+        {(tableColumns) => (
+          <>
+            <AdminDataTableRevalidationNotice
+              columns={tableColumns}
+              description="实例列表刷新失败。"
+              onRetry={retry}
+            />
+            <TableRow>
+              <AdminDataTableCell column={tableColumns[0]}>alpha</AdminDataTableCell>
+            </TableRow>
+          </>
+        )}
+      </AdminDataTable>,
+    );
+
+    expect(screen.getByRole('alert').textContent).toContain('正在显示上次成功加载的数据。');
+    expect(screen.getByText('alpha')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
+    expect(retry).toHaveBeenCalledTimes(1);
   });
 
   it('announces refresh immediately, delays only the visual indicator, and keys a completed body replacement', () => {

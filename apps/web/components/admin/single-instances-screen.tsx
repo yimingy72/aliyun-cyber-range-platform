@@ -15,9 +15,11 @@ import {
   launchSingleInstances,
   triggerSingleInstanceAction,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
+  PlatformImageAssetListPayload,
   ProvisionJob,
   RangeInstance,
   SingleInstanceBatchGroup,
@@ -31,9 +33,11 @@ import {
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
+import { useAdminRouteIsActive } from './admin-page-cache';
 import {
   AdminDataTable,
   AdminDataTableCell,
+  AdminDataTableRevalidationNotice,
   AdminDataTableState,
   AdminDataTableText,
   type AdminDataColumn,
@@ -105,6 +109,12 @@ type CsvExportRow = {
   publicIp: string;
   username: string;
   password: string;
+};
+
+type SingleInstanceRows = {
+  batchGroups: SingleInstanceBatchGroup[];
+  instances: RangeInstance[];
+  jobs: ProvisionJob[];
 };
 
 function detectDefaultAccount(instance: RangeInstance) {
@@ -502,16 +512,26 @@ export function SingleInstancesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
+  const isPageActive = useAdminRouteIsActive('/admin/instances');
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
+  const screenCache = useAdminScreenCache();
+  const cachedActiveRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, 'single-instances:active');
+  const cachedHistoryRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, 'single-instances:history');
+  const cachedPlatformImages = screenCache?.read<PlatformImageAssetListPayload>(
+    apiBaseUrl,
+    session.token,
+    'platform-images:platform',
+  );
+  const cachedCurrentRows = listMode === 'active' ? cachedActiveRows : cachedHistoryRows;
   const [searchName, setSearchName] = useState('');
-  const [instances, setInstances] = useState<RangeInstance[]>([]);
-  const [batchGroups, setBatchGroups] = useState<SingleInstanceBatchGroup[]>([]);
-  const [jobs, setJobs] = useState<ProvisionJob[]>([]);
-  const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>([]);
-  const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [instances, setInstances] = useState<RangeInstance[]>(() => cachedCurrentRows?.data.instances ?? []);
+  const [batchGroups, setBatchGroups] = useState<SingleInstanceBatchGroup[]>(() => cachedCurrentRows?.data.batchGroups ?? []);
+  const [jobs, setJobs] = useState<ProvisionJob[]>(() => cachedCurrentRows?.data.jobs ?? []);
+  const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>(() => cachedPlatformImages?.data.items ?? []);
+  const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(Boolean(cachedPlatformImages));
+  const [isLoading, setIsLoading] = useState(() => !cachedCurrentRows);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [loadedListMode, setLoadedListMode] = useState<ListMode | null>(null);
+  const [loadedListMode, setLoadedListMode] = useState<ListMode | null>(() => (cachedCurrentRows ? listMode : null));
   const [tableContentVersions, setTableContentVersions] = useState<Record<ListMode, number>>({
     active: 0,
     history: 0,
@@ -545,32 +565,50 @@ export function SingleInstancesScreen({
     }));
   }
 
-  async function fetchSingleInstanceRows(token: string, nextListMode: ListMode) {
-    const [nextPayload, nextJobs] = await Promise.all([
-      fetchSingleInstances(apiBaseUrl, token, {
-        view: nextListMode === 'history' ? 'history' : 'active',
-      }),
-      nextListMode === 'history'
-        ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'single' })
-        : Promise.resolve([] as ProvisionJob[]),
-    ]);
-    const normalizedPayload = normalizeSingleInstanceListPayload(nextPayload);
-    const singleInstances = normalizedPayload.standaloneInstances.filter((instance) => instance.instanceMode === 'single');
-    const batchInstanceIds = normalizedPayload.batches.flatMap((group) => group.instances.map((instance) => instance.id));
-    const trackedInstanceIds = new Set([...singleInstances.map((instance) => instance.id), ...batchInstanceIds]);
+  async function fetchSingleInstanceRows(token: string, nextListMode: ListMode, force = false) {
+    const load = async (): Promise<SingleInstanceRows> => {
+      const [nextPayload, nextJobs] = await Promise.all([
+        fetchSingleInstances(apiBaseUrl, token, {
+          view: nextListMode === 'history' ? 'history' : 'active',
+        }),
+        nextListMode === 'history'
+          ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'single' })
+          : Promise.resolve([] as ProvisionJob[]),
+      ]);
+      const normalizedPayload = normalizeSingleInstanceListPayload(nextPayload);
+      const singleInstances = normalizedPayload.standaloneInstances.filter((instance) => instance.instanceMode === 'single');
+      const batchInstanceIds = normalizedPayload.batches.flatMap((group) => group.instances.map((instance) => instance.id));
+      const trackedInstanceIds = new Set([...singleInstances.map((instance) => instance.id), ...batchInstanceIds]);
 
-    return {
-      batchGroups: normalizedPayload.batches,
-      instances: singleInstances,
-      jobs: nextJobs.filter((job) => trackedInstanceIds.has(job.rangeInstanceId)),
+      return {
+        batchGroups: normalizedPayload.batches,
+        instances: singleInstances,
+        jobs: nextJobs.filter((job) => trackedInstanceIds.has(job.rangeInstanceId)),
+      };
     };
+
+    return screenCache
+      ? screenCache.load(apiBaseUrl, token, `single-instances:${nextListMode}`, load, { force })
+      : load();
   }
 
-  async function refreshSingleInstanceRows(token: string, nextListMode: ListMode) {
+  async function refreshSingleInstanceRows(token: string, nextListMode: ListMode, force = false) {
     const requestId = listRequestIdRef.current + 1;
     const hasCurrentSnapshot = loadedListModeRef.current === nextListMode;
+    const cachedRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, token, `single-instances:${nextListMode}`);
     listRequestIdRef.current = requestId;
     setListErrorMessage(null);
+
+    if (cachedRows?.isFresh && !force) {
+      setBatchGroups(cachedRows.data.batchGroups);
+      setInstances(cachedRows.data.instances);
+      setJobs(cachedRows.data.jobs);
+      loadedListModeRef.current = nextListMode;
+      setLoadedListMode(nextListMode);
+      setIsLoading(false);
+      setIsRefreshing(false);
+      return cachedRows.data;
+    }
 
     if (hasCurrentSnapshot) {
       setIsRefreshing(true);
@@ -579,7 +617,7 @@ export function SingleInstancesScreen({
     }
 
     try {
-      const nextRows = await fetchSingleInstanceRows(token, nextListMode);
+      const nextRows = await fetchSingleInstanceRows(token, nextListMode, force);
 
       if (requestId !== listRequestIdRef.current) {
         return nextRows;
@@ -607,6 +645,10 @@ export function SingleInstancesScreen({
   }
 
   useEffect(() => {
+    if (!isPageActive) {
+      return;
+    }
+
     if (!session.isReady || !session.token) {
       setBatchGroups([]);
       setInstances([]);
@@ -639,10 +681,10 @@ export function SingleInstancesScreen({
       isActive = false;
       listRequestIdRef.current += 1;
     };
-  }, [apiBaseUrl, listMode, router, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, listMode, router, screenCache, session.isReady, session.token]);
 
   useEffect(() => {
-    if (!session.isReady) {
+    if (!isPageActive || !session.isReady) {
       return;
     }
 
@@ -653,11 +695,33 @@ export function SingleInstancesScreen({
     }
 
     let isActive = true;
+    const token = session.token;
+    const cachedImages = screenCache?.read<PlatformImageAssetListPayload>(
+      apiBaseUrl,
+      token,
+      'platform-images:platform',
+    );
 
-    setPlatformImages([]);
-    setHasLoadedPlatformImages(false);
+    if (cachedImages?.isFresh) {
+      setPlatformImages(cachedImages.data.items);
+      setHasLoadedPlatformImages(true);
+      setCreateForm((current) =>
+        current.platformImageQuery
+          ? current
+          : buildDefaultDialogState(cachedImages.data.items.filter((item) => item.enabled)),
+      );
 
-    void fetchPlatformImages(apiBaseUrl, session.token)
+      return () => {
+        isActive = false;
+      };
+    }
+
+    const loadPlatformImages = () => fetchPlatformImages(apiBaseUrl, token);
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, 'platform-images:platform', loadPlatformImages)
+      : loadPlatformImages();
+
+    void request
       .then((nextImages) => {
         if (!isActive) {
           return;
@@ -686,16 +750,16 @@ export function SingleInstancesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, router, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, router, screenCache, session.isReady, session.token]);
 
   useEffect(() => {
-    if (!session.isReady || !session.token || pollIntervalMs <= 0 || listMode === 'history') {
+    if (!isPageActive || !session.isReady || !session.token || pollIntervalMs <= 0 || listMode === 'history') {
       return;
     }
 
     const token = session.token;
     const timer = window.setInterval(() => {
-      void refreshSingleInstanceRows(token, listMode).catch((error: unknown) => {
+      void refreshSingleInstanceRows(token, listMode, true).catch((error: unknown) => {
         if (isUnauthorizedError(error)) {
           session.logout();
           router.replace('/admin/login');
@@ -706,7 +770,7 @@ export function SingleInstancesScreen({
     return () => {
       window.clearInterval(timer);
     };
-  }, [listMode, loadedListMode, pollIntervalMs, router, session, session.isReady, session.token]);
+  }, [isPageActive, listMode, loadedListMode, pollIntervalMs, router, session, session.isReady, session.token]);
 
   useEffect(() => {
     return () => {
@@ -987,7 +1051,8 @@ export function SingleInstancesScreen({
 
     try {
       await launchSingleInstances(apiBaseUrl, session.token, payload);
-      await refreshSingleInstanceRows(session.token, listMode);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
+      await refreshSingleInstanceRows(session.token, listMode, true);
       setIsCreateOpen(false);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
@@ -1035,6 +1100,8 @@ export function SingleInstancesScreen({
           description: packImageDialog.description,
         },
       );
+      screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
 
       setPackImageDialog(null);
       setErrorMessage(
@@ -1045,7 +1112,7 @@ export function SingleInstancesScreen({
           ? `镜像打包完成，已保存到我的镜像：${packImageDialog.displayName}`
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
-      await refreshSingleInstanceRows(session.token, listMode);
+      await refreshSingleInstanceRows(session.token, listMode, true);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -1124,7 +1191,8 @@ export function SingleInstancesScreen({
         return;
       }
 
-      await refreshSingleInstanceRows(session.token, listMode);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
+      await refreshSingleInstanceRows(session.token, listMode, true);
     } catch (error: unknown) {
       openedWindow?.close();
       if (isUnauthorizedError(error)) {
@@ -1173,7 +1241,8 @@ export function SingleInstancesScreen({
 
     try {
       await destroySingleInstanceBatch(apiBaseUrl, session.token, batchId);
-      await refreshSingleInstanceRows(session.token, listMode);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
+      await refreshSingleInstanceRows(session.token, listMode, true);
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -1190,7 +1259,7 @@ export function SingleInstancesScreen({
       return;
     }
 
-    void refreshSingleInstanceRows(session.token, listMode).catch((error: unknown) => {
+    void refreshSingleInstanceRows(session.token, listMode, true).catch((error: unknown) => {
       if (isUnauthorizedError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1545,12 +1614,10 @@ export function SingleInstancesScreen({
 
                     const retainedSnapshotError =
                       listErrorMessage && hasCurrentViewSnapshot ? (
-                        <AdminDataTableState
+                        <AdminDataTableRevalidationNotice
                           columns={columns}
-                          description="已保留最近一次加载的实例数据。请重试刷新以获取最新状态。"
+                          description={listErrorMessage}
                           onRetry={handleListRetry}
-                          title={listErrorMessage}
-                          variant="error"
                         />
                       ) : null;
 

@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { TableCell, TableRow } from '@/components/ui/table';
+import { TableRow } from '@/components/ui/table';
 
 import {
   createAdminUser,
@@ -22,6 +22,7 @@ import {
   updateAdminUserRole,
   updateAdminUserStatus,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type { AdminUser, CreateAdminUserInput } from '../../lib/admin-types';
 import {
@@ -30,11 +31,13 @@ import {
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
+import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminSelectField } from './shared/admin-select-field';
 import {
   AdminDataTable,
   AdminDataTableCell,
+  AdminDataTableRevalidationNotice,
   AdminDataTableState,
   type AdminDataColumn,
 } from './shared/admin-data-table';
@@ -98,12 +101,18 @@ export function UsersScreen({
 }: UsersScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
-  const [users, setUsers] = useState<AdminUser[]>([]);
+  const isPageActive = useAdminRouteIsActive('/admin/users');
+  const screenCache = useAdminScreenCache();
+  const usersResource = 'users:list';
+  const usersSource = `${apiBaseUrl}\u0000${session.token ?? ''}`;
+  const cachedUsers = screenCache?.read<AdminUser[]>(apiBaseUrl, session.token, usersResource);
+  const [users, setUsers] = useState<AdminUser[]>(() => cachedUsers?.data ?? []);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasLoadedUsers, setHasLoadedUsers] = useState(false);
+  const [isLoading, setIsLoading] = useState(() => !cachedUsers);
+  const [hasLoadedUsers, setHasLoadedUsers] = useState(() => Boolean(cachedUsers));
+  const [loadedUsersSource, setLoadedUsersSource] = useState<string | null>(() => (cachedUsers ? usersSource : null));
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -117,7 +126,7 @@ export function UsersScreen({
   const { pageSize, setPageSize } = useAdminPageSize();
 
   useEffect(() => {
-    if (!session.isReady) {
+    if (!isPageActive || !session.isReady) {
       return;
     }
 
@@ -128,17 +137,44 @@ export function UsersScreen({
       setActionSuccessMessage(null);
       setIsLoading(false);
       setHasLoadedUsers(false);
+      setLoadedUsersSource(null);
       return;
     }
 
     let isActive = true;
+    const token = session.token;
+    const cachedSnapshot = screenCache?.read<AdminUser[]>(apiBaseUrl, token, usersResource);
+
+    if (cachedSnapshot?.isFresh && loadAttempt === 0) {
+      setUsers(cachedSnapshot.data);
+      setHasLoadedUsers(true);
+      setLoadedUsersSource(usersSource);
+      setErrorMessage(null);
+      setIsLoading(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
+    if (loadedUsersSource === usersSource && !screenCache && loadAttempt === 0) {
+      setIsLoading(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
 
     setErrorMessage(null);
-    setActionErrorMessage(null);
-    setActionSuccessMessage(null);
     setIsLoading(true);
 
-    fetchAdminUsers(apiBaseUrl, session.token)
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, usersResource, () => fetchAdminUsers(apiBaseUrl, token), {
+          force: loadAttempt > 0,
+        })
+      : fetchAdminUsers(apiBaseUrl, token);
+
+    request
       .then((payload) => {
         if (!isActive) {
           return;
@@ -146,6 +182,10 @@ export function UsersScreen({
 
         setUsers(payload);
         setHasLoadedUsers(true);
+        setLoadedUsersSource(usersSource);
+        if (loadAttempt > 0) {
+          setLoadAttempt(0);
+        }
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -171,7 +211,18 @@ export function UsersScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, loadAttempt, session.isAdmin, session.isReady, session.token]);
+  }, [
+    apiBaseUrl,
+    isPageActive,
+    loadAttempt,
+    loadedUsersSource,
+    screenCache,
+    session.isAdmin,
+    session.isReady,
+    session.token,
+    usersResource,
+    usersSource,
+  ]);
 
   const counts = useMemo(() => {
     let adminCount = 0;
@@ -279,8 +330,10 @@ export function UsersScreen({
 
     try {
       const createdUser = await createAdminUser(apiBaseUrl, session.token, payload);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => [createdUser, ...currentUsers]);
       setHasLoadedUsers(true);
+      setLoadedUsersSource(usersSource);
       setErrorMessage(null);
       closeCreateDialog();
       setActionSuccessMessage(`用户 ${createdUser.username} 已创建。`);
@@ -308,6 +361,7 @@ export function UsersScreen({
 
     try {
       const updatedUser = await updateAdminUserRole(apiBaseUrl, session.token, user.id, { role });
+      screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
 
       if (updatedUser.isCurrentUser && updatedUser.role !== 'admin') {
@@ -340,6 +394,7 @@ export function UsersScreen({
 
     try {
       const updatedUser = await updateAdminUserStatus(apiBaseUrl, session.token, user.id, { status });
+      screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
 
       if (updatedUser.isCurrentUser && updatedUser.status === 'disabled') {
@@ -380,6 +435,7 @@ export function UsersScreen({
 
     try {
       const updatedUser = await resetAdminUserPassword(apiBaseUrl, session.token, resetPasswordState.userId, { password });
+      screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
       closeResetPasswordDialog();
 
@@ -513,18 +569,12 @@ export function UsersScreen({
 
                   const retainedListErrorRow =
                     errorMessage && hasLoadedUsers ? (
-                      <TableRow className="hover:bg-transparent" key="retained-user-list-error">
-                        <TableCell className="px-3 py-3 text-sm whitespace-normal" colSpan={columns.length}>
-                          <div className="flex flex-wrap items-center justify-between gap-3" role="alert">
-                            <span className="text-destructive">
-                              {errorMessage} 正在显示上次成功加载的用户列表。
-                            </span>
-                            <Button onClick={retryUserLoad} size="sm" type="button" variant="outline">
-                              重试加载
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
+                      <AdminDataTableRevalidationNotice
+                        columns={columns}
+                        description={errorMessage}
+                        key="retained-user-list-error"
+                        onRetry={retryUserLoad}
+                      />
                     ) : null;
 
                   if (retainedListErrorRow && !hasVisibleUsers) {

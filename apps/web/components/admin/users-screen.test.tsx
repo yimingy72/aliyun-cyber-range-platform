@@ -40,6 +40,7 @@ vi.mock('../../lib/admin-api', async () => {
 });
 
 import * as adminSessionModule from './use-admin-session';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import { UsersScreen } from './users-screen';
 
 const adminUsersPayload = [
@@ -254,6 +255,41 @@ describe('UsersScreen', () => {
 
     expect(await within(table).findByRole('button', { name: '重试加载' })).toBeTruthy();
     expect(within(table).getByText('operator')).toBeTruthy();
+  });
+
+  it('restores a fresh cached user list without another request after returning', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      token: 'dev-admin-token',
+      profile: {
+        id: 'admin',
+        username: 'admin',
+        role: 'admin',
+      },
+      isAdmin: true,
+      isReady: true,
+      login: vi.fn(),
+      logout: logoutMock,
+    });
+    fetchAdminUsersMock.mockResolvedValue(adminUsersPayload);
+
+    function CachedUsersScreen({ visible }: { visible: boolean }) {
+      return (
+        <AdminScreenCacheProvider>
+          {visible ? <UsersScreen apiBaseUrl="http://localhost:3001" /> : null}
+        </AdminScreenCacheProvider>
+      );
+    }
+
+    const { rerender } = render(<CachedUsersScreen visible />);
+
+    await screen.findByText('operator');
+    expect(fetchAdminUsersMock).toHaveBeenCalledTimes(1);
+
+    rerender(<CachedUsersScreen visible={false} />);
+    rerender(<CachedUsersScreen visible />);
+
+    expect(screen.getByText('operator')).toBeTruthy();
+    await waitFor(() => expect(fetchAdminUsersMock).toHaveBeenCalledTimes(1));
   });
 
   it('creates a user from the create dialog', async () => {

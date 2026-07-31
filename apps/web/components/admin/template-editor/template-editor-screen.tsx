@@ -22,6 +22,7 @@ import {
   shareRangeTemplate,
   validateAndSaveRangeTemplate,
 } from '../../../lib/admin-api';
+import { useAdminScreenCache } from '../../../lib/admin-screen-cache';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset, RangeTemplate } from '../../../lib/admin-types';
 import { resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
 import {
@@ -1131,6 +1132,7 @@ export function TemplateEditorScreen({
 }: TemplateEditorScreenProps) {
   const session = useAdminSession();
   const router = useRouter();
+  const screenCache = useAdminScreenCache();
   const [template, setTemplate] = useState<RangeTemplate | null>(() =>
     readInitialTemplate(providedTemplate, templateId),
   );
@@ -1890,6 +1892,7 @@ export function TemplateEditorScreen({
       }
 
       applyTemplateState(nextTemplate);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
       setStatusMessage('拓扑检测通过，已保存');
 
       if (template.id === 'new') {
@@ -1938,6 +1941,7 @@ export function TemplateEditorScreen({
       }
 
       applyTemplateState(nextTemplate);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
       setStatusMessage('拓扑已发布到平台。');
     } catch (error) {
       setStatusMessage(readPublishErrorMessage(error));

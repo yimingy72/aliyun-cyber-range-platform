@@ -35,6 +35,7 @@ vi.mock('../../../lib/admin-api', async () => {
 });
 
 import { AdminApiError } from '../../../lib/admin-api';
+import { AdminScreenCacheProvider } from '../../../lib/admin-screen-cache';
 import * as adminSessionModule from '../use-admin-session';
 import { SettingsScreen } from './settings-screen';
 
@@ -175,6 +176,30 @@ describe('SettingsScreen', () => {
     await waitFor(() => expect(resolveCloudConfig).not.toBeNull());
     resolveCloudConfig?.(cloudConfigPayload);
     await screen.findByDisplayValue('cn-hangzhou');
+  });
+
+  it('restores fresh cloud configuration without another request after returning', async () => {
+    mockAdminSession();
+    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
+
+    function CachedSettingsScreen({ visible }: { visible: boolean }) {
+      return (
+        <AdminScreenCacheProvider>
+          {visible ? <SettingsScreen apiBaseUrl="http://localhost:3001" /> : null}
+        </AdminScreenCacheProvider>
+      );
+    }
+
+    const { rerender } = render(<CachedSettingsScreen visible />);
+
+    await screen.findByDisplayValue('cn-hangzhou');
+    expect(fetchCloudConfigMock).toHaveBeenCalledTimes(1);
+
+    rerender(<CachedSettingsScreen visible={false} />);
+    rerender(<CachedSettingsScreen visible />);
+
+    expect(screen.getByDisplayValue('cn-hangzhou')).toBeTruthy();
+    await waitFor(() => expect(fetchCloudConfigMock).toHaveBeenCalledTimes(1));
   });
 
   it('keeps cloud configuration load failures inside the form and retries from there', async () => {

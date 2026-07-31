@@ -56,6 +56,7 @@ vi.mock('../../lib/admin-api', async () => {
 });
 
 import { AdminApiError } from '../../lib/admin-api';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import * as adminSessionModule from './use-admin-session';
 import { BillingScreen } from './billing-screen';
 
@@ -242,7 +243,7 @@ describe('BillingScreen', () => {
     expect(fetchBillingUsersMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
-      expect.objectContaining({ page: 1, pageSize: 20 }),
+      expect.objectContaining({ page: 1, pageSize: 100 }),
     );
 
     fireEvent.click(rangeGroupButtons[0]!);
@@ -328,6 +329,53 @@ describe('BillingScreen', () => {
 
     expect(detailWorkspace.getAttribute('aria-busy')).toBe('true');
     expect(screen.getByRole('status', { name: '正在加载费用明细' })).toBeTruthy();
+  });
+
+  it('restores cached billing data without skeletons or duplicate requests after returning', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({
+      startAt: '2026-06-17',
+      endAt: '2026-07-16',
+      totalPretaxAmount: 8.9,
+      platformPretaxAmount: 0.5,
+      anomalyCount: 0,
+      resourceTypeTotals: [],
+      dailyTotals: [],
+    });
+    fetchBillingUsersMock.mockResolvedValue([
+      { userId: 'user-1', username: 'alice', pretaxAmount: 8.4, itemCount: 1, launchCount: 1 },
+    ]);
+    fetchBillingUserGroupsMock.mockResolvedValue(userGroups);
+
+    function CachedBillingScreen({ visible }: { visible: boolean }) {
+      return (
+        <AdminScreenCacheProvider>
+          {visible ? <BillingScreen apiBaseUrl="http://localhost:3001" /> : null}
+        </AdminScreenCacheProvider>
+      );
+    }
+
+    const { rerender } = render(<CachedBillingScreen visible />);
+
+    await screen.findByRole('button', { name: /编排实例/ });
+    expect(fetchBillingSummaryMock).toHaveBeenCalledTimes(1);
+    expect(fetchBillingUsersMock).toHaveBeenCalledTimes(1);
+    expect(fetchAdminUsersMock).toHaveBeenCalledTimes(1);
+    expect(fetchBillingUserGroupsMock).toHaveBeenCalledTimes(1);
+
+    rerender(<CachedBillingScreen visible={false} />);
+    rerender(<CachedBillingScreen visible />);
+
+    expect(screen.getByRole('button', { name: /编排实例/ })).toBeTruthy();
+    expect(screen.queryByRole('status', { name: '正在加载费用明细' })).toBeNull();
+    expect(screen.queryByRole('status', { name: '正在加载用户账单' })).toBeNull();
+
+    await waitFor(() => {
+      expect(fetchBillingSummaryMock).toHaveBeenCalledTimes(1);
+      expect(fetchBillingUsersMock).toHaveBeenCalledTimes(1);
+      expect(fetchAdminUsersMock).toHaveBeenCalledTimes(1);
+      expect(fetchBillingUserGroupsMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('renders empty launch groups within the fee detail workspace', async () => {

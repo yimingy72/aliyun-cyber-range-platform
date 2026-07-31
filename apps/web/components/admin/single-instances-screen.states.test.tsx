@@ -263,8 +263,8 @@ describe('SingleInstancesScreen list states', () => {
     });
 
     const table = screen.getByRole('table', { name: '实例列表' });
-    const errorTitle = await screen.findByRole('heading', { name: '实例管理数据加载失败，请稍后重试。' });
-    const errorRow = errorTitle.closest('tr');
+    const errorNotice = await screen.findByRole('alert');
+    const errorRow = errorNotice.closest('tr');
 
     expect(errorRow).toBeTruthy();
     expect(table.querySelector('tbody tr')?.textContent).toContain('实例管理数据加载失败，请稍后重试。');
@@ -308,8 +308,8 @@ describe('SingleInstancesScreen list states', () => {
     });
 
     const table = screen.getByRole('table', { name: '实例列表' });
-    const errorTitle = await screen.findByRole('heading', { name: '实例管理数据加载失败，请稍后重试。' });
-    const errorRow = errorTitle.closest('tr');
+    const errorNotice = await screen.findByRole('alert');
+    const errorRow = errorNotice.closest('tr');
 
     expect(table.querySelector('tbody tr')?.textContent).toContain('实例管理数据加载失败，请稍后重试。');
     expect(errorRow?.querySelector('td')?.getAttribute('colspan')).toBe(String(table.querySelectorAll('thead th').length));

@@ -10,6 +10,7 @@ import {
   fetchRangeInstances,
   triggerRangeAction,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   ProvisionJob,
@@ -21,7 +22,14 @@ import {
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
+import { useAdminRouteIsActive } from './admin-page-cache';
+import {
+  AdminDataTable,
+  AdminDataTableCell,
+  AdminDataTableRevalidationNotice,
+  AdminDataTableState,
+  type AdminDataColumn,
+} from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminPageHeader } from './shared/admin-page-header';
@@ -45,6 +53,11 @@ type ExtendedProvisionJob = ProvisionJob & {
 type RangeListMode = 'active' | 'history';
 
 type RangeListRecord<T> = Record<RangeListMode, T>;
+
+type RangeListSnapshot = {
+  instances: ExtendedRangeInstance[];
+  jobs: ExtendedProvisionJob[];
+};
 
 const RANGE_ACTIVE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '实例名称', priority: 'primary' },
@@ -157,15 +170,19 @@ export function RangeInstancesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
-  const [instancesByView, setInstancesByView] = useState<RangeListRecord<ExtendedRangeInstance[]>>({
-    active: [],
-    history: [],
-  });
-  const [jobsByView, setJobsByView] = useState<RangeListRecord<ExtendedProvisionJob[]>>({
-    active: [],
-    history: [],
-  });
+  const isPageActive = useAdminRouteIsActive('/admin/ranges');
   const [listMode, setListMode] = useState<RangeListMode>(() => readRangeListMode(searchParams.get('view')));
+  const screenCache = useAdminScreenCache();
+  const cachedActiveSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, 'range-instances:active');
+  const cachedHistorySnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, 'range-instances:history');
+  const [instancesByView, setInstancesByView] = useState<RangeListRecord<ExtendedRangeInstance[]>>(() => ({
+    active: cachedActiveSnapshot?.data.instances ?? [],
+    history: cachedHistorySnapshot?.data.instances ?? [],
+  }));
+  const [jobsByView, setJobsByView] = useState<RangeListRecord<ExtendedProvisionJob[]>>(() => ({
+    active: cachedActiveSnapshot?.data.jobs ?? [],
+    history: cachedHistorySnapshot?.data.jobs ?? [],
+  }));
   const [searchName, setSearchName] = useState('');
   const [listErrors, setListErrors] = useState<RangeListRecord<string | null>>({
     active: null,
@@ -173,16 +190,16 @@ export function RangeInstancesScreen({
   });
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [loadedViews, setLoadedViews] = useState<RangeListRecord<boolean>>({
-    active: false,
-    history: false,
+    active: Boolean(cachedActiveSnapshot),
+    history: Boolean(cachedHistorySnapshot),
   });
   const [tableContentVersions, setTableContentVersions] = useState<RangeListRecord<number>>({
     active: 0,
     history: 0,
   });
   const [loadingViews, setLoadingViews] = useState<RangeListRecord<boolean>>({
-    active: true,
-    history: true,
+    active: !cachedActiveSnapshot,
+    history: !cachedHistorySnapshot,
   });
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'destroy' | null>(null);
@@ -197,24 +214,30 @@ export function RangeInstancesScreen({
     }));
   }
 
-  async function reloadRangeInstanceRows(token: string, nextListMode: RangeListMode) {
-    const [nextInstances, nextJobs] = await Promise.all([
-      fetchRangeInstances(apiBaseUrl, token, {
-        view: nextListMode === 'history' ? 'history' : 'active',
-      }),
-      nextListMode === 'history'
-        ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'range' })
-        : Promise.resolve([] as ProvisionJob[]),
-    ]);
+  async function reloadRangeInstanceRows(token: string, nextListMode: RangeListMode, force = false) {
+    const load = async (): Promise<RangeListSnapshot> => {
+      const [nextInstances, nextJobs] = await Promise.all([
+        fetchRangeInstances(apiBaseUrl, token, {
+          view: nextListMode === 'history' ? 'history' : 'active',
+        }),
+        nextListMode === 'history'
+          ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'range' })
+          : Promise.resolve([] as ProvisionJob[]),
+      ]);
 
-    return {
-      instances: nextInstances as ExtendedRangeInstance[],
-      jobs: nextJobs as ExtendedProvisionJob[],
+      return {
+        instances: nextInstances as ExtendedRangeInstance[],
+        jobs: nextJobs as ExtendedProvisionJob[],
+      };
     };
+
+    return screenCache
+      ? screenCache.load(apiBaseUrl, token, `range-instances:${nextListMode}`, load, { force })
+      : load();
   }
 
   useEffect(() => {
-    if (!session.isReady) {
+    if (!isPageActive || !session.isReady) {
       return;
     }
 
@@ -231,17 +254,42 @@ export function RangeInstancesScreen({
 
     const token = session.token;
     let isActive = true;
+    const cachedSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, token, `range-instances:${listMode}`);
 
     setListErrors((current) => ({
       ...current,
       [listMode]: null,
     }));
+
+    if (cachedSnapshot?.isFresh && loadAttempt === 0) {
+      setInstancesByView((current) => ({
+        ...current,
+        [listMode]: cachedSnapshot.data.instances,
+      }));
+      setJobsByView((current) => ({
+        ...current,
+        [listMode]: cachedSnapshot.data.jobs,
+      }));
+      setLoadedViews((current) => ({
+        ...current,
+        [listMode]: true,
+      }));
+      setLoadingViews((current) => ({
+        ...current,
+        [listMode]: false,
+      }));
+
+      return () => {
+        isActive = false;
+      };
+    }
+
     setLoadingViews((current) => ({
       ...current,
       [listMode]: true,
     }));
 
-    void reloadRangeInstanceRows(token, listMode)
+    void reloadRangeInstanceRows(token, listMode, loadAttempt > 0)
       .then((nextSnapshot) => {
         if (!isActive) {
           return;
@@ -260,6 +308,9 @@ export function RangeInstancesScreen({
           [listMode]: true,
         }));
         markTableContentUpdated(listMode);
+        if (loadAttempt > 0) {
+          setLoadAttempt(0);
+        }
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -291,7 +342,7 @@ export function RangeInstancesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, listMode, loadAttempt, router, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, listMode, loadAttempt, router, screenCache, session.isReady, session.token]);
 
   const currentJobs = jobsByView[listMode];
   const currentInstances = instancesByView[listMode];
@@ -402,6 +453,7 @@ export function RangeInstancesScreen({
     try {
       const trigger = getActionTrigger(instance);
       const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger)) as ExtendedProvisionJob;
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
 
       upsertInstanceInSnapshot({
         ...instance,
@@ -565,18 +617,12 @@ export function RangeInstancesScreen({
                   }
 
                   const retainedErrorRow = listErrorMessage && hasLoadedList ? (
-                    <TableRow className="hover:bg-transparent" key="retained-list-error">
-                      <TableCell className="px-3 py-2" colSpan={tableColumns.length}>
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-sm" role="alert">
-                          <span className="text-destructive">
-                            {listErrorMessage} 正在显示上次成功加载的列表。
-                          </span>
-                          <Button onClick={retryListLoad} size="sm" type="button" variant="outline">
-                            重试加载
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                    <AdminDataTableRevalidationNotice
+                      columns={tableColumns}
+                      description={listErrorMessage}
+                      key="retained-list-error"
+                      onRetry={retryListLoad}
+                    />
                   ) : null;
 
                   if (!visibleListInstances.length) {

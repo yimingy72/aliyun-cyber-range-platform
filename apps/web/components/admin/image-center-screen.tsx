@@ -44,6 +44,7 @@ import {
   syncPublicImages,
   unpublishPlatformImage,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   ImageCatalogScopePayload,
@@ -51,6 +52,7 @@ import type {
   CloudAccountContext,
   ImageImportJob,
   PlatformImageAsset,
+  PlatformImageAssetListPayload,
   PlatformImageTag,
 } from '../../lib/admin-types';
 import {
@@ -59,11 +61,13 @@ import {
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
+import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminSelectField } from './shared/admin-select-field';
 import {
   AdminDataTable,
   AdminDataTableCell,
+  AdminDataTableRevalidationNotice,
   AdminDataTableState,
   AdminDataTableText,
   type AdminDataColumn,
@@ -81,6 +85,15 @@ type ImageCenterScreenProps = {
 type ActiveTab = 'platform' | 'mine' | 'custom' | 'public';
 type TabPageMap = Record<ActiveTab, number>;
 type TabErrorMap = Partial<Record<ActiveTab, string>>;
+type ImageCenterMineSnapshot = {
+  assets: PlatformImageAsset[];
+  jobs: ImageImportJob[];
+};
+type ImageCenterMetadata = {
+  cloudContexts: CloudAccountContext[];
+  imageImportJobs: ImageImportJob[];
+  platformImageTags: PlatformImageTag[];
+};
 type ImageCenterConfirmState =
   | { type: 'remove-platform'; asset: PlatformImageAsset }
   | { type: 'delete-custom'; snapshot: ImageSnapshot }
@@ -526,26 +539,47 @@ export function ImageCenterScreen({
 }: ImageCenterScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
+  const isPageActive = useAdminRouteIsActive('/admin/image-center');
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
+  const screenCache = useAdminScreenCache();
+  const cachedPlatformAssets = screenCache?.read<PlatformImageAssetListPayload>(
+    apiBaseUrl,
+    session.token,
+    'platform-images:platform',
+  );
+  const cachedMineAssets = screenCache?.read<ImageCenterMineSnapshot>(apiBaseUrl, session.token, 'image-center:mine');
+  const cachedCustomScope = screenCache?.read<ImageCatalogScopePayload>(apiBaseUrl, session.token, 'image-center:custom');
+  const cachedPublicScope = screenCache?.read<ImageCatalogScopePayload>(apiBaseUrl, session.token, 'image-center:public');
+  const cachedMetadata = screenCache?.read<ImageCenterMetadata>(apiBaseUrl, session.token, 'image-center:metadata');
+  const cachedActiveTab =
+    activeTab === 'platform'
+      ? cachedPlatformAssets
+      : activeTab === 'mine'
+        ? cachedMineAssets
+        : activeTab === 'custom'
+          ? cachedCustomScope
+          : cachedPublicScope;
   const [searchName, setSearchName] = useState('');
-  const [platformAssets, setPlatformAssets] = useState<PlatformImageAsset[]>([]);
-  const [myAssets, setMyAssets] = useState<PlatformImageAsset[]>([]);
-  const [platformImageTags, setAvailablePlatformImageTags] = useState<PlatformImageTag[]>([]);
+  const [platformAssets, setPlatformAssets] = useState<PlatformImageAsset[]>(() => cachedPlatformAssets?.data.items ?? []);
+  const [myAssets, setMyAssets] = useState<PlatformImageAsset[]>(() => cachedMineAssets?.data.assets ?? []);
+  const [platformImageTags, setAvailablePlatformImageTags] = useState<PlatformImageTag[]>(
+    () => cachedMetadata?.data.platformImageTags ?? [],
+  );
   const [platformCreatedByFilter, setPlatformCreatedByFilter] = useState('');
   const [platformTagFilter, setPlatformTagFilter] = useState('');
   const [myTagFilter, setMyTagFilter] = useState('');
-  const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(null);
-  const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(null);
-  const [loadedTabs, setLoadedTabs] = useState<Record<ActiveTab, boolean>>({
-    platform: false,
-    mine: false,
-    custom: false,
-    public: false,
-  });
+  const [publicScope, setPublicScope] = useState<ImageCatalogScopePayload | null>(() => cachedPublicScope?.data ?? null);
+  const [customScope, setCustomScope] = useState<ImageCatalogScopePayload | null>(() => cachedCustomScope?.data ?? null);
+  const [loadedTabs, setLoadedTabs] = useState<Record<ActiveTab, boolean>>(() => ({
+    platform: Boolean(cachedPlatformAssets),
+    mine: Boolean(cachedMineAssets),
+    custom: Boolean(cachedCustomScope),
+    public: Boolean(cachedPublicScope),
+  }));
   const [tabErrors, setTabErrors] = useState<TabErrorMap>({});
   const [revalidationErrors, setRevalidationErrors] = useState<TabErrorMap>({});
   const [actionErrorMessage, setActionErrorMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => !cachedActiveTab);
   const [refreshingTabs, setRefreshingTabs] = useState<Record<ActiveTab, boolean>>({
     platform: false,
     mine: false,
@@ -565,8 +599,10 @@ export function ImageCenterScreen({
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
-  const [cloudContexts, setCloudContexts] = useState<CloudAccountContext[]>([]);
-  const [imageImportJobs, setImageImportJobs] = useState<ImageImportJob[]>([]);
+  const [cloudContexts, setCloudContexts] = useState<CloudAccountContext[]>(() => cachedMetadata?.data.cloudContexts ?? []);
+  const [imageImportJobs, setImageImportJobs] = useState<ImageImportJob[]>(
+    () => cachedMetadata?.data.imageImportJobs ?? cachedMineAssets?.data.jobs ?? [],
+  );
   const [imageImportDraft, setImageImportDraft] = useState<ImageImportDialogDraft | null>(null);
   const [imageImportErrorMessage, setImageImportErrorMessage] = useState('');
   const [imageImportSuccessMessage, setImageImportSuccessMessage] = useState('');
@@ -581,6 +617,8 @@ export function ImageCenterScreen({
   const { pageSize, setPageSize } = useAdminPageSize();
 
   function beginAction(actionKey: string) {
+    screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
+    screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
     setPendingActionKeys((previous) => (previous.includes(actionKey) ? previous : [...previous, actionKey]));
   }
 
@@ -734,6 +772,7 @@ export function ImageCenterScreen({
     isActive = () => true,
     options: {
       isRevalidation?: boolean;
+      force?: boolean;
     } = {},
   ) {
     const requestVersion = mineRequestVersionRef.current + 1;
@@ -747,10 +786,37 @@ export function ImageCenterScreen({
     }
 
     try {
-      const [jobsPayload, myAssetsPayload] = await Promise.all([
-        fetchImageImportJobs(apiBaseUrl, token),
-        fetchPlatformImages(apiBaseUrl, token, 'mine'),
-      ]);
+      const cachedMineSnapshot = screenCache?.read<ImageCenterMineSnapshot>(apiBaseUrl, token, 'image-center:mine');
+      const snapshot =
+        cachedMineSnapshot?.isFresh && !options.force
+          ? cachedMineSnapshot.data
+          : await (
+              screenCache
+                ? screenCache.load(
+                    apiBaseUrl,
+                    token,
+                    'image-center:mine',
+                    async (): Promise<ImageCenterMineSnapshot> => {
+                      const [jobsPayload, myAssetsPayload] = await Promise.all([
+                        fetchImageImportJobs(apiBaseUrl, token),
+                        fetchPlatformImages(apiBaseUrl, token, 'mine'),
+                      ]);
+
+                      return {
+                        assets: myAssetsPayload.items,
+                        jobs: jobsPayload.items,
+                      };
+                    },
+                    { force: options.force },
+                  )
+                : Promise.all([
+                    fetchImageImportJobs(apiBaseUrl, token),
+                    fetchPlatformImages(apiBaseUrl, token, 'mine'),
+                  ]).then(([jobsPayload, myAssetsPayload]) => ({
+                    assets: myAssetsPayload.items,
+                    jobs: jobsPayload.items,
+                  }))
+            );
 
       if (
         !isActive() ||
@@ -760,9 +826,11 @@ export function ImageCenterScreen({
         return false;
       }
 
-      setImageImportJobs(jobsPayload.items);
-      setMyAssets(myAssetsPayload.items);
-      markTableContentUpdated('mine');
+      setImageImportJobs(snapshot.jobs);
+      setMyAssets(snapshot.assets);
+      if (!cachedMineSnapshot?.isFresh || options.force) {
+        markTableContentUpdated('mine');
+      }
       markTabLoaded('mine');
       return true;
     } catch (error) {
@@ -787,6 +855,10 @@ export function ImageCenterScreen({
   }
 
   useEffect(() => {
+    if (!isPageActive) {
+      return;
+    }
+
     if (!session.isReady || !session.token) {
       setCloudContexts([]);
       setImageImportJobs([]);
@@ -795,26 +867,51 @@ export function ImageCenterScreen({
     }
 
     let isActive = true;
+    const token = session.token;
     const imageImportJobsRequestVersion = imageImportJobsRequestVersionRef.current + 1;
     imageImportJobsRequestVersionRef.current = imageImportJobsRequestVersion;
     const platformImageTagsRequestVersion = platformImageTagsRequestVersionRef.current + 1;
     platformImageTagsRequestVersionRef.current = platformImageTagsRequestVersion;
+    const cachedMetadata = screenCache?.read<ImageCenterMetadata>(apiBaseUrl, token, 'image-center:metadata');
 
-    Promise.all([
-      fetchCloudAccountContexts(apiBaseUrl, session.token),
-      fetchImageImportJobs(apiBaseUrl, session.token),
-      fetchPlatformImageTags(apiBaseUrl, session.token),
-    ])
-      .then(([contextsPayload, jobsPayload, tagsPayload]) => {
+    if (cachedMetadata?.isFresh) {
+      setCloudContexts(cachedMetadata.data.cloudContexts);
+      setImageImportJobs(cachedMetadata.data.imageImportJobs);
+      setAvailablePlatformImageTags(cachedMetadata.data.platformImageTags);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
+    const loadMetadata = async (): Promise<ImageCenterMetadata> => {
+      const [cloudContexts, imageImportJobs, platformImageTags] = await Promise.all([
+        fetchCloudAccountContexts(apiBaseUrl, token),
+        fetchImageImportJobs(apiBaseUrl, token),
+        fetchPlatformImageTags(apiBaseUrl, token),
+      ]);
+
+      return {
+        cloudContexts,
+        imageImportJobs: imageImportJobs.items,
+        platformImageTags: platformImageTags.items,
+      };
+    };
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, 'image-center:metadata', loadMetadata)
+      : loadMetadata();
+
+    request
+      .then((metadata) => {
         if (!isActive) {
           return;
         }
-        setCloudContexts(contextsPayload);
+        setCloudContexts(metadata.cloudContexts);
         if (imageImportJobsRequestVersionRef.current === imageImportJobsRequestVersion) {
-          setImageImportJobs(jobsPayload.items);
+          setImageImportJobs(metadata.imageImportJobs);
         }
         if (platformImageTagsRequestVersionRef.current === platformImageTagsRequestVersion) {
-          setAvailablePlatformImageTags(tagsPayload.items);
+          setAvailablePlatformImageTags(metadata.platformImageTags);
         }
       })
       .catch((error) => {
@@ -831,12 +928,12 @@ export function ImageCenterScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, screenCache, session.isReady, session.token]);
 
   const hasImportingJobs = imageImportJobs.some((job) => job.status === 'importing');
 
   useEffect(() => {
-    if (!session.token || !hasImportingJobs) {
+    if (!isPageActive || !session.token || !hasImportingJobs) {
       return;
     }
 
@@ -849,7 +946,7 @@ export function ImageCenterScreen({
         return;
       }
       refreshing = true;
-      await refreshMyAssets(token, () => isActive, { isRevalidation: true });
+      await refreshMyAssets(token, () => isActive, { isRevalidation: true, force: true });
       refreshing = false;
     };
 
@@ -860,10 +957,10 @@ export function ImageCenterScreen({
       isActive = false;
       window.clearInterval(interval);
     };
-  }, [apiBaseUrl, hasImportingJobs, session.token]);
+  }, [apiBaseUrl, hasImportingJobs, isPageActive, session.token]);
 
   useEffect(() => {
-    if (!session.isReady) {
+    if (!isPageActive || !session.isReady) {
       return;
     }
 
@@ -886,7 +983,20 @@ export function ImageCenterScreen({
       return;
     }
 
-    if (loadedTabs[activeTab]) {
+    const cachedActiveTab = screenCache?.read(
+      apiBaseUrl,
+      session.token,
+      activeTab === 'platform'
+        ? 'platform-images:platform'
+        : activeTab === 'mine'
+          ? 'image-center:mine'
+          : `image-center:${activeTab}`,
+    );
+
+    if (
+      loadedTabs[activeTab] &&
+      (!screenCache || (cachedActiveTab?.isFresh && loadAttempt === 0))
+    ) {
       setIsLoading(false);
       return;
     }
@@ -901,12 +1011,22 @@ export function ImageCenterScreen({
     customScopeRequestVersionRef.current = customRequestVersion;
     const token = session.token;
     let isActive = true;
-    setIsLoading(true);
+    setIsLoading(!loadedTabs[activeTab]);
     clearTabError(activeTab);
 
     const request =
       activeTab === 'platform'
-        ? fetchPlatformImages(apiBaseUrl, token, 'platform').then((payload) => {
+        ? (
+            screenCache
+              ? screenCache.load(
+                  apiBaseUrl,
+                  token,
+                  'platform-images:platform',
+                  () => fetchPlatformImages(apiBaseUrl, token, 'platform'),
+                  { force: loadAttempt > 0 },
+                )
+              : fetchPlatformImages(apiBaseUrl, token, 'platform')
+          ).then((payload) => {
             if (!isActive || platformRequestVersionRef.current !== platformRequestVersion) {
               return;
             }
@@ -915,9 +1035,19 @@ export function ImageCenterScreen({
             markTableContentUpdated('platform');
           })
         : activeTab === 'mine'
-          ? refreshMyAssets(token, () => isActive)
+          ? refreshMyAssets(token, () => isActive, { force: loadAttempt > 0 })
           : activeTab === 'custom'
-            ? fetchCustomImageCatalogScope(apiBaseUrl, token).then((scope) => {
+            ? (
+                screenCache
+                  ? screenCache.load(
+                      apiBaseUrl,
+                      token,
+                      'image-center:custom',
+                      () => fetchCustomImageCatalogScope(apiBaseUrl, token),
+                      { force: loadAttempt > 0 },
+                    )
+                  : fetchCustomImageCatalogScope(apiBaseUrl, token)
+              ).then((scope) => {
                 if (!isActive || customScopeRequestVersionRef.current !== customRequestVersion) {
                   return;
                 }
@@ -925,7 +1055,17 @@ export function ImageCenterScreen({
                 setCustomScope(scope);
                 markTableContentUpdated('custom');
               })
-            : fetchPublicImageCatalogScope(apiBaseUrl, token).then((scope) => {
+            : (
+                screenCache
+                  ? screenCache.load(
+                      apiBaseUrl,
+                      token,
+                      'image-center:public',
+                      () => fetchPublicImageCatalogScope(apiBaseUrl, token),
+                      { force: loadAttempt > 0 },
+                    )
+                  : fetchPublicImageCatalogScope(apiBaseUrl, token)
+              ).then((scope) => {
                 if (!isActive || publicScopeRequestVersionRef.current !== publicRequestVersion) {
                   return;
                 }
@@ -945,6 +1085,9 @@ export function ImageCenterScreen({
         }
 
         markTabLoaded(activeTab);
+        if (loadAttempt > 0) {
+          setLoadAttempt(0);
+        }
       })
       .catch((error) => {
         if (!isActive) {
@@ -969,7 +1112,16 @@ export function ImageCenterScreen({
     return () => {
       isActive = false;
     };
-  }, [activeTab, apiBaseUrl, loadAttempt, loadedTabs[activeTab], session.isReady, session.token]);
+  }, [
+    activeTab,
+    apiBaseUrl,
+    isPageActive,
+    loadAttempt,
+    loadedTabs[activeTab],
+    screenCache,
+    session.isReady,
+    session.token,
+  ]);
 
   async function handleSyncPublicImages() {
     if (!session.token) {
@@ -1698,7 +1850,7 @@ export function ImageCenterScreen({
     clearRevalidationError(tab);
 
     if (tab === 'mine' && session.token) {
-      void refreshMyAssets(session.token, () => true, { isRevalidation: true });
+      void refreshMyAssets(session.token, () => true, { isRevalidation: true, force: true });
     }
   }
 
@@ -1875,24 +2027,12 @@ export function ImageCenterScreen({
                           </TableRow>
                         ) : null;
                         const revalidationErrorRow = activeRevalidationError ? (
-                          <TableRow className="hover:bg-transparent">
-                            <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
-                              <div className="flex flex-wrap items-center justify-between gap-3">
-                                <p role="alert">{activeRevalidationError}</p>
-                                {activeTab === 'mine' ? (
-                                  <Button
-                                    aria-label="重试加载我的镜像"
-                                    onClick={() => retryRevalidation('mine')}
-                                    size="sm"
-                                    type="button"
-                                    variant="outline"
-                                  >
-                                    重试
-                                  </Button>
-                                ) : null}
-                              </div>
-                            </TableCell>
-                          </TableRow>
+                          <AdminDataTableRevalidationNotice
+                            columns={columns}
+                            description={activeRevalidationError}
+                            onRetry={activeTab === 'mine' ? () => retryRevalidation('mine') : undefined}
+                            retryAriaLabel={activeTab === 'mine' ? '重试加载我的镜像' : undefined}
+                          />
                         ) : null;
 
                         if (activeTabError) {

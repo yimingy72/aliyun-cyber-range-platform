@@ -1,10 +1,12 @@
 ---
 schemaVersion: 3
 documentRole: ui-design-spec
-lastAlignedAt: 2026-07-08
+lastAlignedAt: 2026-07-30
 sourceOfTruth:
   shell: "apps/web/components/admin/admin-workspace-shell.tsx"
   styles: "apps/web/app/globals.css"
+  productStatus: "PRODUCT.md"
+  capabilityBoard: "docs/product/2026-07-08-综合靶场平台-产品规划与系统能力说明.md"
 designTokens:
   colors:
     bg-canvas: "#eff4fb"
@@ -52,16 +54,24 @@ designTokens:
 
 这份设计规范当前以已经落地的实现为准，主要对齐：
 
-- `admin-workspace` 后台壳
+- `admin-workspace` 后台壳（导航：镜像中心、实例管理、靶场编排、编排实例、用户管理、账单费用、基础配置）
 - `template-workbench` 工作台列表体系
-- `template-editor` 在线编排页
-- `range-instance-detail` 实例详情页
+- `template-editor` 在线编排页（含 Flow 拓扑画布）
+- `range-instance-detail` 实例详情工作台
 - `image-center` 镜像中心
+- `instances` 单实例管理
+- `billing` 账单费用
 - `template-property-panel` 属性面板
 
-## 1.1 当前设计状态补充（2026-07-14）
+## 1.1 设计状态补充
 
-最近一轮实现后，UI 设计规范需要明确新增三条约束：
+### 2026-07-30
+
+1. **导航模块已完整**：后台壳导航包含 7 个入口；`用户管理` / `账单费用` / `基础配置` 仅 admin 可见，版式与普通用户共用同一壳。
+2. **拓扑编辑器以 Flow 画布为主**：多网络连线、边端口、自动布局与全屏工作区是当前 UX 主迭代面，视觉仍服从「编辑器工具感」，不引入装饰性科技风。
+3. **能力完成度不在本文件维护**：模块是否「已完成」以 `PRODUCT.md` 与产品能力说明为准；本文件只约束 UI。
+
+### 2026-07-14
 
 1. **多账号工作台视角一致性**
    - `admin` 和普通用户共用同一套后台壳和工作台版式
@@ -170,8 +180,11 @@ designTokens:
 代表页面：
 
 - 靶场编排
-- 靶场实例
+- 编排实例
+- 实例管理
 - 镜像中心
+- 用户管理
+- 账单费用
 - 基础配置
 
 结构特征：
@@ -187,7 +200,7 @@ designTokens:
 
 代表页面：
 
-- 在线编排页
+- 在线编排页（拓扑 Flow 画布）
 
 结构特征：
 
@@ -201,7 +214,7 @@ designTokens:
 
 代表页面：
 
-- 靶场实例详情
+- 编排实例详情
 
 结构特征：
 

@@ -150,6 +150,20 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
+vi.mock('./admin-page-cache', () => ({
+  AdminPageCache: ({
+    children,
+    pathname,
+  }: {
+    children: React.ReactNode;
+    pathname: string;
+  }) => (
+    <div className="admin-content-transition" data-route={pathname} data-testid="admin-content-transition">
+      {children}
+    </div>
+  ),
+}));
+
 vi.mock('./use-admin-session', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./use-admin-session')>();
 

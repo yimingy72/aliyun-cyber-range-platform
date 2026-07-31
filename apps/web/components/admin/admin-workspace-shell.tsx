@@ -22,7 +22,8 @@ import {
   readAdminSession,
   writeAdminSession,
 } from '../../lib/admin-auth-storage';
-import { AdminContentTransition } from './admin-content-transition';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
+import { AdminPageCache } from './admin-page-cache';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { PlatformBrand } from './platform-brand';
 import { useAdminSession } from './use-admin-session';
@@ -118,6 +119,7 @@ function AdminNavigation({ items, onNavigate, pathname, pendingHref, className }
             )}
             data-pending={isPending || undefined}
             href={item.href}
+            scroll={false}
             onClick={(event) => {
               if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
                 return;
@@ -397,7 +399,9 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
 
         <div className="admin-main-content-shell">
           <section className="admin-main-content">
-            <AdminContentTransition pathname={pathname}>{children}</AdminContentTransition>
+            <AdminScreenCacheProvider>
+              <AdminPageCache pathname={pathname}>{children}</AdminPageCache>
+            </AdminScreenCacheProvider>
           </section>
         </div>
       </div>

@@ -25,6 +25,7 @@ import {
   unshareRangeTemplate,
   updateRangeTemplate,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   RangeTemplateView,
@@ -37,10 +38,12 @@ import {
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
+import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminPageHeader } from './shared/admin-page-header';
 import {
   AdminDataTable,
   AdminDataTableCell,
+  AdminDataTableRevalidationNotice,
   AdminDataTableState,
   type AdminDataColumn,
 } from './shared/admin-data-table';
@@ -183,22 +186,28 @@ export function TemplatesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
+  const isPageActive = useAdminRouteIsActive('/admin/scenarios');
   const [activeView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
-  const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>([]);
-  const [myTemplates, setMyTemplates] = useState<Scenario[]>([]);
-  const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>({
-    platform: false,
-    mine: false,
-  });
+  const screenCache = useAdminScreenCache();
+  const cachedPlatformTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:platform');
+  const cachedMyTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:mine');
+  const cachedActiveTemplates = activeView === 'platform' ? cachedPlatformTemplates : cachedMyTemplates;
+  const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>(() => cachedPlatformTemplates?.data ?? []);
+  const [myTemplates, setMyTemplates] = useState<Scenario[]>(() => cachedMyTemplates?.data ?? []);
+  const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>(() => ({
+    platform: cachedPlatformTemplates !== null && cachedPlatformTemplates !== undefined,
+    mine: cachedMyTemplates !== null && cachedMyTemplates !== undefined,
+  }));
   const [tableContentVersions, setTableContentVersions] = useState<Record<RangeTemplateView, number>>({
     platform: 0,
     mine: 0,
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [revalidationErrorMessage, setRevalidationErrorMessage] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => !cachedActiveTemplates);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
@@ -223,7 +232,7 @@ export function TemplatesScreen({
   }
 
   useEffect(() => {
-    if (!session.isReady) {
+    if (!isPageActive || !session.isReady) {
       return;
     }
 
@@ -233,31 +242,51 @@ export function TemplatesScreen({
       setLoadedViews({ platform: false, mine: false });
       setTableContentVersions({ platform: 0, mine: 0 });
       setErrorMessage(null);
+      setRevalidationErrorMessage(null);
       setActionErrorMessage(null);
       setActionSuccessMessage(null);
       setIsLoading(false);
       return;
     }
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, session.isReady, session.token]);
 
   useEffect(() => {
-    if (!session.isReady || !session.token) {
+    if (!isPageActive || !session.isReady || !session.token) {
       return;
     }
 
-    if (loadedViews[activeView]) {
+    const cachedTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, `templates:${activeView}`);
+
+    if (
+      loadedViews[activeView] &&
+      (!screenCache || (cachedTemplates?.isFresh && loadAttempt === 0))
+    ) {
       setIsLoading(false);
       return;
     }
 
     let isActive = true;
+    const token = session.token;
 
-    setErrorMessage(null);
+    const hasActiveViewSnapshot = loadedViews[activeView];
+
+    if (hasActiveViewSnapshot) {
+      setRevalidationErrorMessage(null);
+    } else {
+      setErrorMessage(null);
+    }
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
     setIsLoading(true);
 
-    fetchRangeTemplates(apiBaseUrl, session.token, activeView)
+    const loadTemplates = () => fetchRangeTemplates(apiBaseUrl, token, activeView);
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, `templates:${activeView}`, loadTemplates, {
+          force: loadAttempt > 0,
+        })
+      : loadTemplates();
+
+    request
       .then((nextTemplates) => {
         if (!isActive) {
           return;
@@ -273,6 +302,9 @@ export function TemplatesScreen({
           [activeView]: true,
         }));
         markTableContentUpdated(activeView);
+        if (loadAttempt > 0) {
+          setLoadAttempt(0);
+        }
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -285,7 +317,14 @@ export function TemplatesScreen({
           return;
         }
 
-        setErrorMessage('靶场编排加载失败，请刷新页面后重试。');
+        const message = '靶场编排加载失败，请刷新页面后重试。';
+
+        if (hasActiveViewSnapshot) {
+          setRevalidationErrorMessage(message);
+          return;
+        }
+
+        setErrorMessage(message);
       })
       .finally(() => {
         if (!isActive) {
@@ -298,7 +337,18 @@ export function TemplatesScreen({
     return () => {
       isActive = false;
     };
-  }, [activeView, apiBaseUrl, loadAttempt, loadedViews.mine, loadedViews.platform, router, session.isReady, session.token]);
+  }, [
+    activeView,
+    apiBaseUrl,
+    isPageActive,
+    loadAttempt,
+    loadedViews.mine,
+    loadedViews.platform,
+    router,
+    screenCache,
+    session.isReady,
+    session.token,
+  ]);
 
   const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
 
@@ -340,6 +390,7 @@ export function TemplatesScreen({
 
   function setActiveViewWithUrl(nextView: RangeTemplateView) {
     setErrorMessage(null);
+    setRevalidationErrorMessage(null);
     setActiveView(nextView);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
@@ -359,10 +410,7 @@ export function TemplatesScreen({
 
   function retryActiveView() {
     setErrorMessage(null);
-    setLoadedViews((current) => ({
-      ...current,
-      [activeView]: false,
-    }));
+    setRevalidationErrorMessage(null);
     setLoadAttempt((current) => current + 1);
   }
 
@@ -393,6 +441,7 @@ export function TemplatesScreen({
   }, [editingTemplateId, myTemplates, platformTemplates]);
 
   function syncOwnedTemplate(savedScenario: Scenario, options: { addToMyTemplates?: boolean } = {}) {
+    screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
     setMyTemplates((previous) =>
       previous.some((scenario) => scenario.id === savedScenario.id) || options.addToMyTemplates
         ? upsertScenario(previous, savedScenario)
@@ -404,6 +453,7 @@ export function TemplatesScreen({
   }
 
   function removeTemplateFromViews(id: string) {
+    screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
     setMyTemplates((previous) => removeScenario(previous, id));
     setPlatformTemplates((previous) => removeScenario(previous, id));
   }
@@ -682,6 +732,7 @@ export function TemplatesScreen({
         name,
         expiresAt: new Date(expiresAt).toISOString(),
       });
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       closeLaunchDialog();
       router.push(`/admin/ranges/${instance.id}`);
     } catch (error: unknown) {
@@ -799,25 +850,37 @@ export function TemplatesScreen({
                   }
 
                   if (isActiveViewLoading) {
-                    return <TableLoadingState columnCount={columns.length} label="正在加载靶场列表" rowCount={pageSize} />;
+                    return <TableLoadingState columnCount={columns.length} label="正在加载靶场列表" rowCount={5} />;
                   }
+
+                  const revalidationErrorRow = revalidationErrorMessage ? (
+                    <AdminDataTableRevalidationNotice
+                      columns={columns}
+                      description={revalidationErrorMessage}
+                      key="revalidation-error"
+                      onRetry={retryActiveView}
+                    />
+                  ) : null;
 
                   if (!pagedTemplates.length) {
                     return (
-                      <AdminDataTableState
-                        columns={columns}
-                        description={
-                          activeView === 'mine'
-                            ? '你可以新建一个靶场并开始编排。'
-                            : '平台暂时没有可用的已发布拓扑。'
-                        }
-                        title="当前筛选条件下没有靶场"
-                        variant="empty"
-                      />
+                      <>
+                        {revalidationErrorRow}
+                        <AdminDataTableState
+                          columns={columns}
+                          description={
+                            activeView === 'mine'
+                              ? '你可以新建一个靶场并开始编排。'
+                              : '平台暂时没有可用的已发布拓扑。'
+                          }
+                          title="当前筛选条件下没有靶场"
+                          variant="empty"
+                        />
+                      </>
                     );
                   }
 
-                  return pagedTemplates.map((template) => {
+                  const rows = pagedTemplates.map((template) => {
                     const isPublished = isPublishedScenario(template);
                     const isShared = template.visibility === 'platform';
                     const canManageCurrentTemplate = canManageTemplate(template);
@@ -910,6 +973,8 @@ export function TemplatesScreen({
                       </TableRow>
                     );
                   });
+
+                  return revalidationErrorRow ? [revalidationErrorRow, ...rows] : rows;
                 }}
               </AdminDataTable>
             </AdminPaginatedList>

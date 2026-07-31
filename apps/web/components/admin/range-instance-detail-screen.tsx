@@ -17,6 +17,7 @@ import {
   saveRangeInstanceDraft,
   syncRangeInstanceTemplate,
 } from '../../lib/admin-api';
+import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   InstanceTypeAvailabilitySnapshot,
@@ -822,6 +823,7 @@ export function RangeInstanceDetailScreen({
 }: RangeInstanceDetailScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
+  const screenCache = useAdminScreenCache();
   const [detail, setDetail] = useState<RangeInstanceDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -1153,6 +1155,7 @@ export function RangeInstanceDetailScreen({
         ...updated,
         sourceTemplateRevision: updated.sourceTemplateRevision ?? detail.sourceTemplateRevision ?? null,
       };
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       setDetail(nextDetail);
       replaceTopologyDraft(
         (nextDetail.draftTopologyGraph as Record<string, unknown> | null) ??
@@ -1198,6 +1201,7 @@ export function RangeInstanceDetailScreen({
       }
 
       await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, expectedDraftRevision);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       setSuccessMessage('实例配置变更已提交应用。');
     } catch (error: unknown) {
       if (isUnauthorizedAdminError(error)) {
@@ -1268,6 +1272,8 @@ export function RangeInstanceDetailScreen({
         saved.draftRevision,
         saved.sourceTemplateRevision,
       );
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
       setSuccessMessage('当前实例拓扑已更新到模板草稿。');
       setIsTemplateSyncDialogOpen(false);
     } catch (error: unknown) {
@@ -1322,6 +1328,9 @@ export function RangeInstanceDetailScreen({
         description: packImageDialog.description,
       });
 
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
+      screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
       setPackImageDialog(null);
       setSuccessMessage(
         result.imageReady
@@ -1372,6 +1381,7 @@ export function RangeInstanceDetailScreen({
       }
 
       const result = await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, nodeId, action, {});
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
 
       if (action === 'start') {
         setNodeStatusOverrides((current) => ({

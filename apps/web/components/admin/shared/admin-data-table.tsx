@@ -4,6 +4,7 @@ import { type ComponentProps, type ReactNode, useCallback, useLayoutEffect, useS
 import { CircleAlert, Inbox } from 'lucide-react';
 
 import { AsyncContentState } from '@/components/admin/shared/async-content-state';
+import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -31,6 +32,13 @@ interface AdminDataTableStateProps {
   variant: 'empty' | 'error';
   action?: ReactNode;
   onRetry?: () => void;
+}
+
+interface AdminDataTableRevalidationNoticeProps {
+  columns: readonly AdminDataColumn[];
+  description: string;
+  onRetry?: () => void;
+  retryAriaLabel?: string;
 }
 
 interface AdminDataTableCellProps extends ComponentProps<typeof TableCell> {
@@ -218,6 +226,31 @@ export function AdminDataTableState({
             title={title}
             variant={variant}
           />
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+export function AdminDataTableRevalidationNotice({
+  columns,
+  description,
+  onRetry,
+  retryAriaLabel,
+}: AdminDataTableRevalidationNoticeProps) {
+  return (
+    <TableRow className="hover:bg-transparent">
+      <TableCell className="px-3 py-2" colSpan={columns.length}>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm" role="alert">
+          <span className="text-destructive">
+            <span>{description}</span>
+            <span> 正在显示上次成功加载的数据。</span>
+          </span>
+          {onRetry ? (
+            <Button aria-label={retryAriaLabel} onClick={onRetry} size="sm" type="button" variant="outline">
+              重试加载
+            </Button>
+          ) : null}
         </div>
       </TableCell>
     </TableRow>

@@ -2,6 +2,7 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminApiError } from '../../lib/admin-api';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 const {
   cloneRangeTemplateMock,
@@ -178,6 +179,29 @@ function selectTemplateView(view: 'mine' | 'platform') {
 }
 
 describe('TemplatesScreen', () => {
+  it('restores a fresh cached view after returning to the page', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue([bootstrapPayload.rangeTemplates[0]]);
+
+    function CachedTemplatesScreen({ visible }: { visible: boolean }) {
+      return (
+        <AdminScreenCacheProvider>
+          {visible ? <TemplatesScreen apiBaseUrl="http://localhost:3001" /> : null}
+        </AdminScreenCacheProvider>
+      );
+    }
+
+    const { rerender } = render(<CachedTemplatesScreen visible />);
+
+    expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
+    expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
+
+    rerender(<CachedTemplatesScreen visible={false} />);
+    rerender(<CachedTemplatesScreen visible />);
+
+    expect(await screen.findByText('企业攻防靶场')).toBeTruthy();
+    expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
+  });
+
   it('renders the scenario workbench as the default admin home surface', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
@@ -344,6 +368,7 @@ describe('TemplatesScreen', () => {
     fireEvent.click(retryButton);
 
     expect(await screen.findByRole('status', { name: '正在加载靶场列表' })).toBeTruthy();
+    expect(screen.getAllByTestId('table-loading-row')).toHaveLength(5);
     expect(screen.queryByText('无法加载靶场列表')).toBeNull();
     expect(screen.queryByText('当前筛选条件下没有靶场')).toBeNull();
   });

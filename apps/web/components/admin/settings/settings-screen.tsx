@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { fetchCloudConfig, saveCloudConfig } from '../../../lib/admin-api';
+import { useAdminScreenCache } from '../../../lib/admin-screen-cache';
 import { isUnauthorizedAdminError } from '../../../lib/admin-screen';
 import type { CloudConfigSnapshot } from '../../../lib/admin-types';
 import { Button } from '../../ui/button';
+import { useAdminRouteIsActive } from '../admin-page-cache';
 import { useAdminSession } from '../use-admin-session';
 import { AdminPageHeader } from '../shared/admin-page-header';
 import { CloudConfigPanel } from './cloud-config-panel';
@@ -21,16 +23,24 @@ export function SettingsScreen({
   const router = useRouter();
   const session = useAdminSession();
   const { isAdmin, isReady, logout, token } = session;
-  const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot | null>(null);
+  const isPageActive = useAdminRouteIsActive('/admin/settings/cloud');
+  const screenCache = useAdminScreenCache();
+  const cloudConfigResource = 'settings:cloud-config';
+  const cloudConfigSource = `${apiBaseUrl}\u0000${token ?? ''}`;
+  const cachedCloudConfig = screenCache?.read<CloudConfigSnapshot>(apiBaseUrl, token, cloudConfigResource);
+  const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot | null>(() => cachedCloudConfig?.data ?? null);
   const [cloudConfigErrorMessage, setCloudConfigErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveErrorMessage, setCloudConfigSaveErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveSuccessMessage, setCloudConfigSaveSuccessMessage] = useState<string | null>(null);
-  const [isLoadingCloudConfig, setIsLoadingCloudConfig] = useState(false);
+  const [isLoadingCloudConfig, setIsLoadingCloudConfig] = useState(() => !cachedCloudConfig);
   const [isSavingCloudConfig, setIsSavingCloudConfig] = useState(false);
   const [cloudConfigLoadAttempt, setCloudConfigLoadAttempt] = useState(0);
+  const [loadedCloudConfigSource, setLoadedCloudConfigSource] = useState<string | null>(() =>
+    cachedCloudConfig ? cloudConfigSource : null,
+  );
 
   useEffect(() => {
-    if (!isReady) {
+    if (!isPageActive || !isReady) {
       return;
     }
 
@@ -41,6 +51,7 @@ export function SettingsScreen({
       setCloudConfigSaveSuccessMessage(null);
       setIsLoadingCloudConfig(false);
       setIsSavingCloudConfig(false);
+      setLoadedCloudConfigSource(null);
       return;
     }
 
@@ -51,23 +62,52 @@ export function SettingsScreen({
       setCloudConfigSaveSuccessMessage(null);
       setIsLoadingCloudConfig(false);
       setIsSavingCloudConfig(false);
+      setLoadedCloudConfigSource(null);
       router.replace('/admin/scenarios');
       return;
     }
 
     let isActive = true;
+    const cachedSnapshot = screenCache?.read<CloudConfigSnapshot>(apiBaseUrl, token, cloudConfigResource);
+
+    if (cachedSnapshot?.isFresh && cloudConfigLoadAttempt === 0) {
+      setCloudConfig(cachedSnapshot.data);
+      setLoadedCloudConfigSource(cloudConfigSource);
+      setCloudConfigErrorMessage(null);
+      setIsLoadingCloudConfig(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
+
+    if (loadedCloudConfigSource === cloudConfigSource && !screenCache && cloudConfigLoadAttempt === 0) {
+      setIsLoadingCloudConfig(false);
+
+      return () => {
+        isActive = false;
+      };
+    }
 
     setCloudConfigErrorMessage(null);
-    setCloudConfigSaveErrorMessage(null);
-    setCloudConfigSaveSuccessMessage(null);
     setIsLoadingCloudConfig(true);
-    fetchCloudConfig(apiBaseUrl, token)
+    const request = screenCache
+      ? screenCache.load(apiBaseUrl, token, cloudConfigResource, () => fetchCloudConfig(apiBaseUrl, token), {
+          force: cloudConfigLoadAttempt > 0,
+        })
+      : fetchCloudConfig(apiBaseUrl, token);
+
+    request
       .then((cloudConfigPayload) => {
         if (!isActive) {
           return;
         }
 
         setCloudConfig(cloudConfigPayload);
+        setLoadedCloudConfigSource(cloudConfigSource);
+        if (cloudConfigLoadAttempt > 0) {
+          setCloudConfigLoadAttempt(0);
+        }
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -93,7 +133,19 @@ export function SettingsScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, cloudConfigLoadAttempt, isAdmin, isReady, router, token]);
+  }, [
+    apiBaseUrl,
+    cloudConfigLoadAttempt,
+    cloudConfigResource,
+    cloudConfigSource,
+    isAdmin,
+    isPageActive,
+    isReady,
+    loadedCloudConfigSource,
+    router,
+    screenCache,
+    token,
+  ]);
 
   const handleFieldChange = (field: keyof CloudConfigSnapshot, value: string) => {
     setCloudConfig((currentValue) => {
@@ -121,7 +173,11 @@ export function SettingsScreen({
 
     try {
       const savedConfig = await saveCloudConfig(apiBaseUrl, token, cloudConfig);
+      screenCache?.invalidate(apiBaseUrl, token, 'settings:');
+      screenCache?.invalidate(apiBaseUrl, token, 'image-center:');
+      screenCache?.invalidate(apiBaseUrl, token, 'platform-images:');
       setCloudConfig(savedConfig);
+      setLoadedCloudConfigSource(cloudConfigSource);
       setCloudConfigSaveSuccessMessage('云配置已保存。');
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
