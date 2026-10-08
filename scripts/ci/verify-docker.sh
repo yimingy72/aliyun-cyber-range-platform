@@ -6,11 +6,13 @@ RUN_ID="${GITHUB_RUN_ID:-$$}-${GITHUB_RUN_ATTEMPT:-1}"
 CI_IMAGE="${CI_IMAGE:-cyber-range-ci:$RUN_ID}"
 CI_NETWORK="cyber-range-ci-$RUN_ID"
 CI_DB="cyber-range-ci-postgres-$RUN_ID"
+CI_PACKED_DB="cyber-range-ci-packed-postgres-$RUN_ID"
 CONTEXT_DIR="$(mktemp -d)"
 CONTEXT_IMAGE="cyber-range-ci-context:$RUN_ID"
 
 cleanup() {
   docker rm -f "$CI_DB" >/dev/null 2>&1 || true
+  docker rm -f "$CI_PACKED_DB" >/dev/null 2>&1 || true
   docker network rm "$CI_NETWORK" >/dev/null 2>&1 || true
   docker image rm "$CONTEXT_IMAGE" >/dev/null 2>&1 || true
   rm -rf "$CONTEXT_DIR"
@@ -46,15 +48,22 @@ docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
   -e POSTGRES_DB=cyber_range -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
   postgres:16-alpine >/dev/null
-for attempt in $(seq 1 40); do
-  if [ "$(docker inspect --format '{{.State.Health.Status}}' "$CI_DB")" = healthy ]; then
-    break
-  fi
-  if [ "$attempt" = 40 ]; then
-    docker logs "$CI_DB"
-    exit 1
-  fi
-  sleep 1
+docker run -d --name "$CI_PACKED_DB" --network "$CI_NETWORK" --network-alias packed-image-test-postgres \
+  --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_DB=packed_image_test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d packed_image_test' --health-interval 1s --health-retries 30 \
+  postgres:16-alpine >/dev/null
+for task_db in "$CI_DB" "$CI_PACKED_DB"; do
+  for attempt in $(seq 1 40); do
+    if [ "$(docker inspect --format '{{.State.Health.Status}}' "$task_db")" = healthy ]; then
+      break
+    fi
+    if [ "$attempt" = 40 ]; then
+      docker logs "$task_db"
+      exit 1
+    fi
+    sleep 1
+  done
 done
 
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
@@ -72,6 +81,7 @@ docker run --rm --network "$CI_NETWORK" \
   -e BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/billing_test?schema=public' \
   -e NATIVE_BATCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/native_batch_test?schema=public' \
   -e USER_AUTH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/user_auth_test?schema=public' \
+  -e PACKED_IMAGE_TEST_DATABASE_URL='postgresql://postgres:postgres@packed-image-test-postgres:5432/packed_image_test?schema=public' \
   -e NODE_ENV=test -e ADMIN_USERNAME=admin -e ADMIN_TOKEN=dev-admin-token \
   -e OIDC_ISSUER=https://test-issuer.example/realms/cyber-range \
   -e OIDC_JWKS_URL=https://test-issuer.example/realms/cyber-range/certs \
@@ -83,6 +93,7 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$BILLING_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$NATIVE_BATCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$USER_AUTH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$PACKED_IMAGE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
     pnpm provider:download

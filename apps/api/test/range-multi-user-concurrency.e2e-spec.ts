@@ -9,6 +9,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { RangeInstancesService } from '../src/admin/range-instances.service';
 import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { RangeInstanceNodeActionsService } from '../src/admin/range-instance-node-actions.service';
+import { PackedImagesService } from '../src/admin/packed-images.service';
 import { ProvisionJobsService } from '../src/admin/provision-jobs.service';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { OpenTofuRangeProvisioner } from '../src/provisioning/open-tofu-range-provisioner';
@@ -186,7 +187,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     await expect(service.getAccessById(a.id, bob)).rejects.toMatchObject({ status: 403 });
     await expect(service.triggerDestroy(a.id, bob)).rejects.toMatchObject({ status: 403 });
     await expect(service.discardDraft(a.id, bob)).rejects.toMatchObject({ status: 403 });
-    const nodeActions = new RangeInstanceNodeActionsService(repository, config);
+    const nodeActions = new RangeInstanceNodeActionsService(repository, config, {} as PackedImagesService);
     const callsBefore = cloudCalls.length;
     await expect(nodeActions.run(a.id, 'dmz-entry', 'stop', {}, bob)).rejects.toMatchObject({ status: 403 });
     expect(cloudCalls).toHaveLength(callsBefore);
@@ -263,7 +264,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
     const update = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice);
     await repository.updateRangeInstance(a.id, { expiresAt: new Date(Date.now() - 1000) });
-    const actions = new RangeInstanceNodeActionsService(repository, config);
+    const actions = new RangeInstanceNodeActionsService(repository, config, {} as PackedImagesService);
     await expect(actions.run(a.id, 'dmz-entry', 'stop', {}, alice)).rejects.toMatchObject({ status: 409 });
     await workers[0].processExpiredInstances(new Date());
     expect((await repository.listProvisionJobs()).filter(job => job.rangeInstanceId === a.id && ['pending', 'running'].includes(job.status))).toHaveLength(1);
@@ -334,7 +335,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     const next = await service.saveDraft(a.id, draftInput(compile(graph()), (await repository.getRangeInstanceById(a.id))!.draftRevision!), alice);
     const windowsJob = await service.applyDraft(a.id, { expectedDraftRevision: next.draftRevision! }, alice); await workers[0].process(windowsJob.id);
     expect((await repository.getRangeInstanceById(a.id))!.runtimeCredentials!['dmz-entry'].username).toBe('Administrator');
-    const vnc = await new RangeInstanceNodeActionsService(repository, config).run(a.id, 'dmz-entry', 'open-vnc', {}, alice);
+    const vnc = await new RangeInstanceNodeActionsService(repository, config, {} as PackedImagesService).run(a.id, 'dmz-entry', 'open-vnc', {}, alice);
     expect((vnc as { webTerminalUrl: string }).webTerminalUrl).toContain('isWindows=true');
   });
 });

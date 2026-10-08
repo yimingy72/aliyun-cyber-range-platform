@@ -1,7 +1,6 @@
 import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { billingDayText } from '../src/admin/billing-window';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
-import { billingDayText } from '../src/admin/billing-window';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
