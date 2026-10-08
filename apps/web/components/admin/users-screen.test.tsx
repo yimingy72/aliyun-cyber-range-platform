@@ -42,6 +42,7 @@ vi.mock('../../lib/admin-api', async () => {
 import * as adminSessionModule from './use-admin-session';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import { UsersScreen } from './users-screen';
+import { AdminPageCache } from './admin-page-cache';
 
 const adminUsersPayload = [
   {
@@ -581,5 +582,50 @@ describe('UsersScreen', () => {
     expect(within(row!).getByRole('button', { hidden: true, name: '禁用用户' })).toBeTruthy();
     expect(await screen.findByRole('menuitem', { name: '设为管理员' })).toBeTruthy();
     expect(await screen.findByRole('menuitem', { name: '重置密码' })).toBeTruthy();
+  });
+});
+
+
+describe('UsersScreen mutation and form recovery', () => {
+  beforeEach(() => {
+    fetchAdminUsersMock.mockReset(); createAdminUserMock.mockReset(); updateAdminUserStatusMock.mockReset();
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({token:'synthetic-ui-token', profile:{id:'admin',username:'admin',role:'admin'},isAdmin:true,isReady:true,login:vi.fn(),logout:logoutMock});
+  });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+  it('shows empty-input and server errors inside the active create dialog', async () => {
+    fetchAdminUsersMock.mockResolvedValue([]);
+    createAdminUserMock.mockRejectedValue(new Error('Username already exists'));
+    render(<UsersScreen />);
+    await screen.findByRole('button', {name:'创建用户'});
+    fireEvent.click(screen.getByRole('button', {name:'创建用户'}));
+    const dialog=screen.getByRole('dialog', {name:'创建用户'});
+    fireEvent.click(within(dialog).getByRole('button', {name:'确认创建'}));
+    expect(within(dialog).getByRole('alert').textContent).toBe('请填写用户名和初始密码。');
+    expect(createAdminUserMock).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText('用户名'), {target:{value:'synthetic-user'}});
+    fireEvent.change(within(dialog).getByLabelText('初始密码'), {target:{value:'SyntheticOnly123!'}});
+    fireEvent.click(within(dialog).getByRole('button', {name:'确认创建'}));
+    await waitFor(()=>expect(within(dialog).getByRole('alert').textContent).toBe('Username already exists'));
+    fireEvent.click(within(dialog).getByRole('button', {name:'取消'}));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a pre-mutation revalidation response after successfully disabling a user', async () => {
+    let resolveList!: (value: typeof adminUsersPayload) => void;
+    let currentTime=Date.now(); vi.spyOn(Date,'now').mockImplementation(()=>currentTime);
+    fetchAdminUsersMock.mockResolvedValueOnce(adminUsersPayload).mockImplementationOnce(() => new Promise(resolve=>{resolveList=resolve;}));
+    updateAdminUserStatusMock.mockResolvedValue({...adminUsersPayload[1],status:'disabled',isCurrentUser:false});
+    const page=(pathname:string)=><AdminScreenCacheProvider><AdminPageCache pathname={pathname} createPage={()=> <UsersScreen />}><div>Other page</div></AdminPageCache></AdminScreenCacheProvider>;
+    const {rerender}=render(page('/admin/users'));
+    await screen.findByText('operator');
+    rerender(page('/admin/away')); currentTime+=30_000; rerender(page('/admin/users'));
+    await waitFor(()=>expect(fetchAdminUsersMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(within(screen.getByRole('row',{name:/operator/})).getByRole('button',{name:'禁用用户'}));
+    await waitFor(()=>expect(within(screen.getByRole('row',{name:/operator/})).getByRole('button',{name:'启用用户'})).toBeTruthy());
+    resolveList(adminUsersPayload);
+    await waitFor(()=>expect(screen.queryByLabelText('正在后台刷新用户列表')).toBeNull());
+    expect(within(screen.getByRole('row',{name:/operator/})).getByRole('button',{name:'启用用户'})).toBeTruthy();
+    expect(screen.getByText('已更新 operator 的状态。')).toBeTruthy();
   });
 });
