@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -85,7 +86,7 @@ describe('OpenTofuRunner', () => {
       1,
       'tofu',
       ['init', '-input=false', '-no-color'],
-      expect.objectContaining({ cwd: workspaceDir }),
+      expect.objectContaining({ cwd: workspaceDir, timeout: 600_000 }),
     );
     expect(executor).toHaveBeenNthCalledWith(
       2,
@@ -117,5 +118,47 @@ describe('OpenTofuRunner', () => {
       ['destroy', '-input=false', '-no-color', '-auto-approve', '-var-file', varsFilePath],
       expect.objectContaining({ cwd: workspaceDir }),
     );
+  });
+
+  it('keeps stdio open and waits for graceful state persistence before reporting a timeout', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-runner-interrupt-'));
+    const binaryPath = path.join(workspaceDir, 'graceful-runner');
+    await fs.writeFile(binaryPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+process.on('SIGTERM', () => {
+  console.log('Graceful shutdown');
+  setTimeout(() => { fs.writeFileSync('persisted-state', 'complete'); process.exit(0); }, 100);
+});
+setInterval(() => {}, 1000);
+`, { mode: 0o755 });
+    const runner = new OpenTofuRunner({ binaryPath, commandTimeoutMs: 500 });
+    const error = await runner.init({ workspaceDir }).catch(error => error);
+    expect(error.message).toContain('timed out after 500 ms');
+    expect(error.stdout).toContain('Graceful shutdown');
+    expect(await fs.readFile(path.join(workspaceDir, 'persisted-state'), 'utf8')).toBe('complete');
+  });
+
+  it.skipIf(!existsSync('/usr/local/bin/tofu'))('soft-interrupts real OpenTofu and destroys its persisted partial state without a cloud provider', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-runner-tofu-interrupt-'));
+    await fs.writeFile(path.join(workspaceDir, 'main.tf'), `
+resource "terraform_data" "ready" { input = "ready" }
+resource "terraform_data" "slow" {
+  depends_on = [terraform_data.ready]
+  provisioner "local-exec" { command = "sleep 60" }
+}
+`);
+    const runner = new OpenTofuRunner({ binaryPath: '/usr/local/bin/tofu', commandTimeoutMs: 3000 });
+    const planFilePath = path.join(workspaceDir, 'local.tfplan');
+    await runner.init({ workspaceDir });
+    await runner.plan({ workspaceDir, planFilePath });
+    await expect(runner.apply({ workspaceDir, planFilePath })).rejects.toThrow('timed out after 3000 ms');
+    const partialState = JSON.parse(await fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8'));
+    expect(partialState.resources.map((resource: { name: string }) => resource.name)).toEqual(expect.arrayContaining(['ready', 'slow']));
+    await runner.destroy({ workspaceDir });
+    expect(JSON.parse(await fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8')).resources).toEqual([]);
+  }, 20_000);
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects invalid command timeout %s', commandTimeoutMs => {
+    expect(() => new OpenTofuRunner({ commandTimeoutMs })).toThrow('timeout must be a positive number');
   });
 });
