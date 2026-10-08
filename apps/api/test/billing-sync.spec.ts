@@ -1,5 +1,6 @@
 import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
+import { billingDayText } from '../src/admin/billing-window';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
@@ -615,6 +616,7 @@ describe('BillingSyncService', () => {
   });
 
   it('backfills platform image ledgers before matching direct image bills', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-16T16:10:00.000Z'));
     const repository = createMemoryAdminRepository();
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
@@ -644,7 +646,8 @@ describe('BillingSyncService', () => {
       ownerUserId: null,
       visibility: 'platform',
     });
-    const billingDate = asset.createdAt.toISOString().slice(0, 10);
+    const billingDate = billingDayText(asset.createdAt);
+    expect(billingDate).toBe('2026-07-17');
     jest.useFakeTimers().setSystemTime(new Date(asset.createdAt.getTime() + 86_400_000));
     const service = new BillingSyncService(
       repository,
