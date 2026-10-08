@@ -31,6 +31,7 @@ describe('Image catalog preservation and collection', () => {
     { TotalCount: 0, Images: 'malformed' },
     { TotalCount: 1, PageNumber: 2, PageSize: 100, Images: { Image: [{ ImageId: 'm-other', Status: 'Available' }] } },
     { TotalCount: null, Images: { Image: [] } },
+    { TotalCount: 0 },
     { TotalCount: 2, Images: { Image: [] } },
     { TotalCount: 1, Images: { Image: [{ ImageId: 'm-other' }] } },
     { TotalCount: 2, Images: { Image: [{ ImageId: 'm-other', Status: 'Available' }, { ImageId: 'm-other', Status: 'Creating' }] } },

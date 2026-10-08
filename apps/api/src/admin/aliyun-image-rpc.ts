@@ -22,7 +22,7 @@ export function cloudItems<T>(body: unknown, container: string, item: string): T
   if (!body || typeof body !== 'object') throw new BadGatewayException('Invalid image query response');
   const payload = body as Record<string, unknown>;
   const nested = payload[container];
-  if (nested !== undefined && (!nested || typeof nested !== 'object' || Array.isArray(nested))) throw new BadGatewayException('Invalid cloud query container');
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) throw new BadGatewayException('Invalid cloud query container');
   const values = nested && typeof nested === 'object' ? (nested as Record<string, unknown>)[item] : undefined;
   if (values === undefined && (payload.TotalCount === 0 || payload.TotalCount === '0')) return [];
   const items = Array.isArray(values) ? values : values && typeof values === 'object' ? [values] : null;
