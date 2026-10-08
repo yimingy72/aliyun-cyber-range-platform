@@ -13,7 +13,7 @@ const PAGE_LIMIT = 20;
 function fail(phase: string, reason: string): never { throw new BadGatewayException(`Network diagnostics failed at ${phase}: ${reason}`); }
 function object(value: unknown, phase: string): Row { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(phase, 'invalid response object'); return value as Row; }
 function string(value: unknown, phase: string): string { if (typeof value !== 'string' || !value.trim() || value.length > 256) fail(phase, 'missing or invalid identity field'); return value; }
-function number(value: unknown, phase: string): number { if (!['string','number'].includes(typeof value) || !/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value))) fail(phase, 'invalid numeric field'); return Number(value); }
+function number(value: unknown, phase: string, field = 'numeric value'): number { if (!['string','number'].includes(typeof value) || !/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value))) fail(phase, `invalid numeric field: ${field}`); return Number(value); }
 function array(value: unknown, phase: string): Row[] { if (!Array.isArray(value)) fail(phase, 'missing response array'); return value.map((item) => object(item, phase)); }
 function path(value: Row, names: string[], phase: string): any { let item: any = value; for (const name of names) item = object(item, phase)[name]; return item; }
 function ids(value: unknown, phase: string): string[] { if (!Array.isArray(value)) fail(phase, 'missing identity array'); const result = value.map((item) => string(item, phase)); if (new Set(result).size !== result.length) fail(phase, 'duplicate identity'); return result; }
@@ -78,7 +78,7 @@ export class RangeNetworkDiagnosticsService {
       const attachment = row.Attachment === undefined ? {} : object(row.Attachment, phase);
       const privateIps = array(path(row, ['PrivateIpSets','PrivateIpSet'], phase), phase).map((item) => ({ privateIp: ip(item.PrivateIpAddress, phase), primary: item.Primary === true }));
       if (!privateIps.length || privateIps.filter((item) => item.primary).length !== 1) fail(phase, 'invalid ENI private IP set');
-      return { networkInterfaceId: row.NetworkInterfaceId as string, type: row.Type as string, instanceId, deviceIndex: attachment.DeviceIndex === undefined ? null : number(attachment.DeviceIndex, phase), privateIp: ip(row.PrivateIpAddress, phase), privateIps, vswitchId: row.VSwitchId as string, vpcId, securityGroupIds: ids(path(row, ['SecurityGroupIds','SecurityGroupId'], phase), phase), macAddress: string(row.MacAddress, phase), sourceDestCheck: typeof row.SourceDestCheck === 'boolean' ? row.SourceDestCheck : null };
+      return { networkInterfaceId: row.NetworkInterfaceId as string, type: row.Type as string, instanceId, deviceIndex: attachment.DeviceIndex === undefined ? null : number(attachment.DeviceIndex, phase, 'Attachment.DeviceIndex'), privateIp: ip(row.PrivateIpAddress, phase), privateIps, vswitchId: row.VSwitchId as string, vpcId, securityGroupIds: ids(path(row, ['SecurityGroupIds','SecurityGroupId'], phase), phase), macAddress: string(row.MacAddress, phase), sourceDestCheck: typeof row.SourceDestCheck === 'boolean' ? row.SourceDestCheck : null };
     });
     const switches = await Promise.all(switchIds.map(async (id) => {
       const row = await this.rpc(credentials, 'vpc', 'DescribeVSwitchAttributes', { VSwitchId: id }); same(row.VSwitchId, id, 'DescribeVSwitchAttributes'); same(row.VpcId, vpcId, 'DescribeVSwitchAttributes');
@@ -94,7 +94,7 @@ export class RangeNetworkDiagnosticsService {
     const securityGroups = await Promise.all(securityIds.map(async (id) => {
       let innerAccessPolicy: string | null = null;
       const rows = await this.tokens(credentials, 'ecs', 'DescribeSecurityGroupAttribute', { SecurityGroupId: id, Direction: 'all', NicType: 'intranet' }, ['Permissions','Permission'], 'MaxResults', (row) => { same(row.SecurityGroupId, id, 'DescribeSecurityGroupAttribute'); same(row.VpcId, vpcId, 'DescribeSecurityGroupAttribute'); same(row.RegionId, regionId, 'DescribeSecurityGroupAttribute'); if (row.InnerAccessPolicy !== undefined) { if (!['Accept','Drop'].includes(row.InnerAccessPolicy)) fail('DescribeSecurityGroupAttribute', 'invalid inner-access policy'); if (innerAccessPolicy && innerAccessPolicy !== row.InnerAccessPolicy) fail('DescribeSecurityGroupAttribute', 'group policy changed between pages'); innerAccessPolicy = row.InnerAccessPolicy; } });
-      return { securityGroupId: id, innerAccessPolicy, rules: rows.map((row) => ({ direction: string(row.Direction, 'DescribeSecurityGroupAttribute'), protocol: string(row.IpProtocol, 'DescribeSecurityGroupAttribute'), portRange: string(row.PortRange, 'DescribeSecurityGroupAttribute'), cidr: optionalCidr(row.Direction === 'egress' ? row.DestCidrIp : row.SourceCidrIp, 'DescribeSecurityGroupAttribute'), policy: string(row.Policy, 'DescribeSecurityGroupAttribute'), priority: number(row.Priority, 'DescribeSecurityGroupAttribute') })) };
+      return { securityGroupId: id, innerAccessPolicy, rules: rows.map((row) => ({ direction: string(row.Direction, 'DescribeSecurityGroupAttribute'), protocol: string(row.IpProtocol, 'DescribeSecurityGroupAttribute'), portRange: string(row.PortRange, 'DescribeSecurityGroupAttribute'), cidr: optionalCidr(row.Direction === 'egress' ? row.DestCidrIp : row.SourceCidrIp, 'DescribeSecurityGroupAttribute'), policy: string(row.Policy, 'DescribeSecurityGroupAttribute'), priority: number(row.Priority, 'DescribeSecurityGroupAttribute', 'Priority') })) };
     }));
     const networkAcls = await Promise.all(aclIds.map(async (id) => {
       const payload = await this.rpc(credentials, 'vpc', 'DescribeNetworkAclAttributes', { NetworkAclId: id }); const row = object(payload.NetworkAclAttribute, 'DescribeNetworkAclAttributes'); same(row.NetworkAclId, id, 'DescribeNetworkAclAttributes'); same(row.VpcId, vpcId, 'DescribeNetworkAclAttributes'); same(row.RegionId, regionId, 'DescribeNetworkAclAttributes'); if (row.OwnerId !== undefined) same(uid(row.OwnerId, 'DescribeNetworkAclAttributes'), accountUid, 'DescribeNetworkAclAttributes');
@@ -137,7 +137,7 @@ export class RangeNetworkDiagnosticsService {
   private async pages(context: Context, service: 'ecs' | 'vpc', action: string, parameters: Record<string,string>, listPath: string[]): Promise<Row[]> {
     const all: Row[] = []; let expected: number | null = null;
     for (let page = 1; page <= PAGE_LIMIT; page++) {
-      const payload = await this.rpc(context, service, action, { ...parameters, PageNumber: String(page), PageSize: String(PAGE_SIZE) }); const total = number(payload.TotalCount, action); same(String(payload.PageNumber), String(page), action); same(String(payload.PageSize), String(PAGE_SIZE), action);
+      const payload = await this.rpc(context, service, action, { ...parameters, PageNumber: String(page), PageSize: String(PAGE_SIZE) }); const total = number(payload.TotalCount, action, 'TotalCount'); same(String(payload.PageNumber), String(page), action); same(String(payload.PageSize), String(PAGE_SIZE), action);
       if (expected !== null && total !== expected) fail(action, 'pagination total changed'); expected = total;
       const rows = array(path(payload, listPath, action), action); if (rows.length !== Math.min(PAGE_SIZE, total - all.length)) fail(action, 'incomplete pagination response'); all.push(...rows);
       if (all.length === total) return all;
@@ -146,16 +146,10 @@ export class RangeNetworkDiagnosticsService {
   }
 
   private async tokens(context: Context, service: 'ecs' | 'vpc', action: string, parameters: Record<string,string>, listPath: string[], sizeKey = 'MaxResults', validate?: (row: Row) => void): Promise<Row[]> {
-    const all: Row[] = []; const seen = new Set<string>(); let token: string | undefined; let expected: number | null = null;
+    const all: Row[] = []; const seen = new Set<string>(); let token: string | undefined;
     for (let page = 0; page < PAGE_LIMIT; page++) {
       const payload = await this.rpc(context, service, action, { ...parameters, [sizeKey]: '100', ...(token ? { NextToken: token } : {}) }); validate?.(payload); const rows = array(path(payload, listPath, action), action); if (rows.length > 100) fail(action, 'oversized page'); all.push(...rows);
-      if (action === 'DescribeRouteEntryList') {
-        const count = number(payload.TotalCount, action);
-        if (expected !== null && count !== expected) fail(action, 'pagination total changed');
-        expected = count;
-      }
       if (payload.NextToken === undefined || payload.NextToken === null || payload.NextToken === '') {
-        if (expected !== null && all.length !== expected) fail(action, 'incomplete pagination response');
         return all;
       }
       token = string(payload.NextToken, action); if (!rows.length || seen.has(token)) fail(action, 'invalid repeated pagination token'); seen.add(token);

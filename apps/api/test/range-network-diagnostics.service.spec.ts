@@ -28,7 +28,7 @@ function fixture() {
     if (action === 'DescribeInstances') return list('Instances','Instance',instanceRows);
     if (action === 'DescribeNetworkInterfaces') return { RequestId: 'request', NextToken: '', NetworkInterfaceSets: { NetworkInterfaceSet: eniRows } };
     if (action === 'DescribeVSwitchAttributes') return { RequestId: 'request', VSwitchId: query.get('VSwitchId'), VpcId: 'vpc-owned', RouteTable: { RouteTableId: 'vtb-owned', RouteTableType: 'System' } };
-    if (action === 'DescribeRouteEntryList') return { RequestId: 'request', TotalCount: 1, NextToken: '', RouteEntrys: { RouteEntry: [{ RouteTableId: 'vtb-owned', DestinationCidrBlock: '0.0.0.0/0', Status: 'Available', NextHops: { NextHop: [{ NextHopId: 'ngw-owned', NextHopType: 'NatGateway' }] } }] } };
+    if (action === 'DescribeRouteEntryList') return { RequestId: 'request', NextToken: '', RouteEntrys: { RouteEntry: [{ RouteTableId: 'vtb-owned', DestinationCidrBlock: '0.0.0.0/0', Status: 'Available', NextHops: { NextHop: [{ NextHopId: 'ngw-owned', NextHopType: 'NatGateway' }] } }] } };
     if (action === 'DescribeSecurityGroupAttribute') return { RequestId: 'request', SecurityGroupId: query.get('SecurityGroupId'), VpcId: 'vpc-owned', RegionId: 'cn-hangzhou', InnerAccessPolicy: 'Drop', NextToken: '', Permissions: { Permission: [{ Direction: 'ingress', IpProtocol: 'tcp', PortRange: '22/22', SourceCidrIp: '0.0.0.0/0', Policy: 'Accept', Priority: '10' }] } };
     if (action === 'DescribeNetworkAclAttributes') return { RequestId: 'request', NetworkAclAttribute: { NetworkAclId: 'nacl-owned', VpcId: 'vpc-owned', OwnerId: accountUid, RegionId: 'cn-hangzhou', Status: 'Available', Resources: { Resource: [{ ResourceId: 'vsw-entry', ResourceType: 'VSwitch', Status: 'BINDED' }] }, IngressAclEntries: { IngressAclEntry: [{ NetworkAclEntryName: 'allow-ssh', EntryType: 'custom', Policy: 'accept', Protocol: 'tcp', Port: '22/22', SourceCidrIp: '0.0.0.0/0' }, { NetworkAclEntryName: 'default-drop', EntryType: 'system', Policy: 'drop', Protocol: 'all', Port: '-1/-1', SourceCidrIp: '0.0.0.0/0' }] }, EgressAclEntries: { EgressAclEntry: [{ NetworkAclEntryName: 'return', EntryType: 'custom', Policy: 'accept', Protocol: 'all', Port: '-1/-1', DestinationCidrIp: '0.0.0.0/0' }] } } };
     if (action === 'DescribeNatGateways') return list('NatGateways','NatGateway',[{ NatGatewayId: 'ngw-owned', VpcId: 'vpc-owned', RegionId: 'cn-hangzhou', Status: 'Available', NatType: 'Enhanced', NatGatewayPrivateInfo: { VswitchId: 'vsw-entry', PrivateIpAddress: '10.0.40.253' }, IpLists: { IpList: [{ AllocationId: 'eip-dnat', IpAddress: '192.0.2.1', UsingStatus: 'UsedByForwardTable' }, { AllocationId: 'eip-snat', IpAddress: '192.0.2.2', UsingStatus: 'UsedBySnatTable' }] }, ForwardTableIds: { ForwardTableId: ['ftb-owned'] }, SnatTableIds: { SnatTableId: ['stb-owned'] } }]);
@@ -91,8 +91,28 @@ describe('Range network diagnostics scope and data', () => {
   it('rejects truncated page-number responses instead of silently returning a subset', async () => {
     const s = fixture(); s.changes.set('DescribeInstances', (value) => ({ ...value, TotalCount: 3 })); await expect(s.service.get(range as never, user)).rejects.toThrow('incomplete pagination'); expect(s.requests.some((request) => request.searchParams.get('Action') === 'DescribeNetworkInterfaces')).toBe(false);
   });
+  it('accepts the real route token shape without TotalCount and follows MaxResult/NextToken', async () => {
+    const s = fixture(); s.changes.set('DescribeRouteEntryList', (value, query) => {
+      expect(query.get('MaxResult')).toBe('100'); expect(query.has('PageNumber')).toBe(false);
+      return { ...value, NextToken: query.has('NextToken') ? '' : 'next-page', RouteEntrys: { RouteEntry: [{ ...value.RouteEntrys.RouteEntry[0], DestinationCidrBlock: query.has('NextToken') ? '10.0.0.0/16' : '0.0.0.0/0' }] } };
+    });
+    const result = await s.service.get(range as never, user); expect(result.routeTables[0].routeEntries).toHaveLength(2);
+    expect(s.requests.filter((request) => request.searchParams.get('Action') === 'DescribeRouteEntryList').map((request) => request.searchParams.get('NextToken'))).toEqual([null,'next-page']);
+  });
+  it.each([17, {}, ['unexpected-token']])('rejects malformed route pagination token without returning provider values', async (token) => {
+    const s = fixture(); s.changes.set('DescribeRouteEntryList', (value) => ({ ...value, NextToken: token }));
+    await expect(s.service.get(range as never, user)).rejects.toThrow('missing or invalid identity field');
+  });
+  it('rejects an empty route page with a continuation token', async () => {
+    const s = fixture(); s.changes.set('DescribeRouteEntryList', (value) => ({ ...value, NextToken: 'next-page', RouteEntrys: { RouteEntry: [] } }));
+    await expect(s.service.get(range as never, user)).rejects.toThrow('invalid repeated pagination token');
+  });
+  it('limits route token pagination even if the provider never terminates', async () => {
+    const s = fixture(); let page = 0; s.changes.set('DescribeRouteEntryList', (value) => ({ ...value, NextToken: `page-${++page}` }));
+    await expect(s.service.get(range as never, user)).rejects.toThrow('pagination bound exceeded'); expect(page).toBe(20);
+  });
   it('rejects repeated NextToken without unbounded paging', async () => {
-    const s = fixture(); s.changes.set('DescribeRouteEntryList', (value) => ({ ...value, TotalCount: 2, NextToken: 'repeated-token' })); await expect(s.service.get(range as never, user)).rejects.toThrow('repeated pagination'); expect(s.requests.filter((request) => request.searchParams.get('Action') === 'DescribeRouteEntryList')).toHaveLength(2);
+    const s = fixture(); s.changes.set('DescribeRouteEntryList', (value) => ({ ...value, NextToken: 'repeated-token' })); await expect(s.service.get(range as never, user)).rejects.toThrow('repeated pagination'); expect(s.requests.filter((request) => request.searchParams.get('Action') === 'DescribeRouteEntryList')).toHaveLength(2);
   });
   it('never leaks a vendor business error message', async () => {
     const s = fixture(); s.changes.set('GetCallerIdentity', () => ({ RequestId: 'request', Code: 'Denied', Message: s.context.accessKeySecret })); await expect(s.service.get(range as never, user)).rejects.toThrow('cloud business failure');
