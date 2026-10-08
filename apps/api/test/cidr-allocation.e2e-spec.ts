@@ -1,247 +1,79 @@
-import { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
-import { ADMIN_REPOSITORY } from '../src/admin/admin.repository';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap/configure-app';
-import { RANGE_PROVISIONER, RangeProvisioner } from '../src/provisioning/provisioning.types';
-import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
+import { collectRangeFixtureImage, createRangeApiFixture, futureExpiration, rangeTemplatePayload } from './support/range-api-fixture';
 
 describe('CIDR allocation', () => {
-  let app: INestApplication;
+  let fixture: Awaited<ReturnType<typeof createRangeApiFixture>>;
   let templateId: string;
   let rangeInstanceId: string;
-  const envBackup = {
-    ADMIN_USERNAME: process.env.ADMIN_USERNAME,
-    ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
-    ADMIN_TOKEN: process.env.ADMIN_TOKEN,
-    RANGE_PROVISIONER_MODE: process.env.RANGE_PROVISIONER_MODE,
-    RANGE_CIDR_POOL: process.env.RANGE_CIDR_POOL,
-  };
-  const provisionerSpy: RangeProvisioner & {
-    create: jest.Mock;
-    destroy: jest.Mock;
-  } = {
+  const originalCidrPool = process.env.RANGE_CIDR_POOL;
+  const provisionerSpy: RangeProvisioner & { create: jest.Mock; destroy: jest.Mock } = {
     create: jest.fn().mockResolvedValue({
-      accessEntry: {
-        url: 'https://range.local/fake',
-        ssh: 'ssh root@range.local',
-      },
-      resourceSummary: {
-        mode: 'fake-provisioner',
-      },
+      accessEntry: { url: 'https://range.local/fake', ssh: 'ssh root@range.local' },
+      resourceSummary: { mode: 'fake-provisioner' },
     }),
     destroy: jest.fn().mockResolvedValue(undefined),
   };
 
+  async function createInstance(name: string) {
+    const response = await request(fixture.app.getHttpServer()).post('/admin/ranges')
+      .set('authorization', `Bearer ${fixture.adminToken}`)
+      .send({ name, templateId, expiresAt: futureExpiration() }).expect(201);
+    return response.body.id as string;
+  }
+  async function processCreate(id: string) {
+    const job = await request(fixture.app.getHttpServer()).post(`/admin/ranges/${id}/create`)
+      .set('authorization', `Bearer ${fixture.adminToken}`).send({}).expect(201);
+    expect(job.body.jobType).toBe('create');
+    await fixture.worker.process(job.body.id);
+    expect((await fixture.repository.getRangeInstanceById(id))!.status).toBe('running');
+  }
+
   beforeAll(async () => {
-    process.env.ADMIN_USERNAME = 'admin';
-    process.env.ADMIN_PASSWORD = 'change-me';
-    process.env.ADMIN_TOKEN = 'dev-admin-token';
-    process.env.RANGE_PROVISIONER_MODE = 'dry-run';
-
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(ADMIN_REPOSITORY)
-      .useValue(createMemoryAdminRepository())
-      .overrideProvider(RANGE_PROVISIONER)
-      .useValue(provisionerSpy)
-      .compile();
-
-    app = moduleRef.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    const repository = app.get(ADMIN_REPOSITORY);
-    const templateResponse = await request(app.getHttpServer())
-      .post('/admin/scenarios')
-      .set('authorization', 'Bearer dev-admin-token')
+    fixture = await createRangeApiFixture(provisionerSpy);
+    const image = await collectRangeFixtureImage(fixture.repository);
+    const template = await request(fixture.app.getHttpServer()).post('/admin/scenarios')
+      .set('authorization', `Bearer ${fixture.adminToken}`)
       .send({
-        name: 'Enterprise Practice Range',
-        slug: 'enterprise-practice-range',
-        version: 'v1',
-        cloudProvider: 'alibaba_cloud',
-        iacType: 'opentofu',
-        modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
-        topologySpec: {
-          vpcCidr: '10.70.0.0/16',
-          networkZones: [
-            {
-              key: 'dmz',
-              name: 'DMZ',
-              purpose: 'public-entry',
-              cidr: '10.70.10.0/24',
-              isPublicEntry: true,
-            },
-            {
-              key: 'office',
-              name: 'Office',
-              purpose: 'user-workstations',
-              cidr: '10.70.20.0/24',
-            },
-            {
-              key: 'server',
-              name: 'Server',
-              purpose: 'application-servers',
-              cidr: '10.70.30.0/24',
-            },
-          ],
-          hosts: [
-            {
-              key: 'dmz-entry',
-              name: 'DMZ Entry',
-              zoneKey: 'dmz',
-              role: 'entry',
-              privateIp: '10.70.10.10',
-              exposePublic: true,
-            },
-            {
-              key: 'office-client',
-              name: 'Office Client',
-              zoneKey: 'office',
-              role: 'workstation',
-              privateIp: '10.70.20.10',
-            },
-            {
-              key: 'server-app',
-              name: 'Server App',
-              zoneKey: 'server',
-              role: 'app',
-              privateIp: '10.70.30.10',
-            },
-          ],
-          publicEntry: {
-            hostKey: 'dmz-entry',
-            protocols: [{ protocol: 'ssh', port: 22 }],
-          },
-        },
-        variableSchema: {
-          vpc_cidr: 'string',
-        },
-        outputSchema: {
-          public_entry: 'object',
-        },
-      })
-      .expect(201);
-
-    templateId = templateResponse.body.id as string;
-
-    await request(app.getHttpServer())
-      .post(`/admin/scenarios/${templateId}/publish`)
-      .set('authorization', 'Bearer dev-admin-token')
-      .expect(200);
-
-    const rangeInstanceResponse = await request(app.getHttpServer())
-      .post('/admin/ranges')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        name: 'CIDR 分配实例 A',
-        templateId,
-      })
-      .expect(201);
-
-    rangeInstanceId = rangeInstanceResponse.body.id as string;
+        ...rangeTemplatePayload(image, 'Enterprise Practice Range'),
+        variableSchema: { vpc_cidr: 'string' }, outputSchema: { public_entry: 'object' },
+      }).expect(201);
+    templateId = template.body.id;
+    await request(fixture.app.getHttpServer()).post(`/admin/scenarios/${templateId}/share`)
+      .set('authorization', `Bearer ${fixture.adminToken}`)
+      .send({ expectedRevision: template.body.revision }).expect(200);
+    rangeInstanceId = await createInstance('CIDR 分配实例 A');
   });
-
   afterAll(async () => {
-    process.env.ADMIN_USERNAME = envBackup.ADMIN_USERNAME;
-    process.env.ADMIN_PASSWORD = envBackup.ADMIN_PASSWORD;
-    process.env.ADMIN_TOKEN = envBackup.ADMIN_TOKEN;
-    process.env.RANGE_PROVISIONER_MODE = envBackup.RANGE_PROVISIONER_MODE;
-    process.env.RANGE_CIDR_POOL = envBackup.RANGE_CIDR_POOL;
-    await app.close();
+    if (originalCidrPool === undefined) delete process.env.RANGE_CIDR_POOL;
+    else process.env.RANGE_CIDR_POOL = originalCidrPool;
+    await fixture.app.close();
   });
 
   it('prefers the template vpc cidr over the optional cidr pool when creation starts', async () => {
     process.env.RANGE_CIDR_POOL = '10.80.0.0/16,10.81.0.0/16';
-
-    const triggerResponse = await request(app.getHttpServer())
-      .post(`/admin/ranges/${rangeInstanceId}/create`)
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' })
-      .expect(201);
-
-    expect(triggerResponse.body).toEqual(
-      expect.objectContaining({
-        jobType: 'create',
-      }),
-    );
-
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (provisionerSpy.create.mock.calls.length > 0) {
-        break;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    expect(provisionerSpy.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        allocatedCidr: '10.70.0.0/16',
-      }),
-    );
-
-    const instancesResponse = await request(app.getHttpServer())
-      .get('/admin/ranges')
-      .set('authorization', 'Bearer dev-admin-token')
-      .expect(200);
-
-    expect(instancesResponse.body[0]).toEqual(
-      expect.objectContaining({
-        allocatedCidr: '10.70.0.0/16',
-      }),
-    );
+    await processCreate(rangeInstanceId);
+    expect(provisionerSpy.create).toHaveBeenCalledWith(expect.objectContaining({ allocatedCidr: '10.70.0.0/16' }));
+    const instances = await request(fixture.app.getHttpServer()).get('/admin/ranges')
+      .set('authorization', `Bearer ${fixture.adminToken}`).expect(200);
+    expect(instances.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: rangeInstanceId, status: 'running' }),
+    ]));
+    const detail = await request(fixture.app.getHttpServer()).get(`/admin/ranges/${rangeInstanceId}`)
+      .set('authorization', `Bearer ${fixture.adminToken}`).expect(200);
+    expect(detail.body).toEqual(expect.objectContaining({ allocatedCidr: '10.70.0.0/16' }));
   });
 
   it('does not require a cidr pool when the template already defines a fixed vpc cidr', async () => {
     process.env.RANGE_CIDR_POOL = '';
-
-    const draftInstanceResponse = await request(app.getHttpServer())
-      .post('/admin/ranges')
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({
-        name: 'CIDR 分配实例 B',
-        templateId,
-      })
-      .expect(201);
-
-    await request(app.getHttpServer())
-      .post(`/admin/ranges/${draftInstanceResponse.body.id}/create`)
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({ triggeredBy: 'admin' })
-      .expect(201);
-
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const matchingCall = provisionerSpy.create.mock.calls.find(
-        ([input]) => input.rangeInstanceId === draftInstanceResponse.body.id,
-      );
-
-      if (matchingCall) {
-        break;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    expect(provisionerSpy.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rangeInstanceId: draftInstanceResponse.body.id,
-        allocatedCidr: '10.70.0.0/16',
-      }),
-    );
-
-    const instanceDetailResponse = await request(app.getHttpServer())
-      .get(`/admin/ranges/${draftInstanceResponse.body.id}`)
-      .set('authorization', 'Bearer dev-admin-token')
-      .expect(200);
-
-    expect(instanceDetailResponse.body).toEqual(
-      expect.objectContaining({
-        id: draftInstanceResponse.body.id,
-        allocatedCidr: '10.70.0.0/16',
-      }),
-    );
+    const id = await createInstance('CIDR 分配实例 B');
+    await processCreate(id);
+    expect(provisionerSpy.create).toHaveBeenCalledWith(expect.objectContaining({
+      rangeInstanceId: id, allocatedCidr: '10.70.0.0/16',
+    }));
+    const detail = await request(fixture.app.getHttpServer()).get(`/admin/ranges/${id}`)
+      .set('authorization', `Bearer ${fixture.adminToken}`).expect(200);
+    expect(detail.body).toEqual(expect.objectContaining({ id, allocatedCidr: '10.70.0.0/16' }));
   });
 });
