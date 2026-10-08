@@ -1,20 +1,21 @@
+import { ConflictException } from '@nestjs/common';
+
 import { PlatformImagesController } from '../src/admin/platform-images.controller';
+import { OperationControlService } from '../src/operations/operation-control.service';
+import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('PlatformImagesController', () => {
   it('uses a new request-scoped idempotency key for a new MCP image removal', async () => {
     const imageCatalogService = {
       removePlatformAsset: jest.fn().mockResolvedValue(undefined),
     };
-    const operationControlService = {
-      executeConfirmed: jest.fn().mockResolvedValue({}),
-    };
     const controller = new PlatformImagesController(
       imageCatalogService as never,
-      operationControlService as never,
+      new OperationControlService(createMemoryAdminRepository()),
     );
 
-    await controller.remove(
-      {
+    async function confirmedRemoval() {
+      const request = {
         headers: {},
         adminUser: { id: 'admin-1', username: 'admin', role: 'admin' },
         authContext: {
@@ -22,16 +23,21 @@ describe('PlatformImagesController', () => {
           user: { id: 'admin-1', username: 'admin', role: 'admin' },
           oauthClientId: 'mcp-client',
         },
-      } as never,
-      'asset-1',
-    );
+      };
+      let confirmationId: string | undefined;
+      try {
+        await controller.remove(request as never, 'asset-1');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConflictException);
+        confirmationId = ((error as ConflictException).getResponse() as { confirmationId: string }).confirmationId;
+      }
+      expect(confirmationId).toEqual(expect.any(String));
+      return controller.remove({ ...request, headers: { 'x-confirmation-id': confirmationId } } as never, 'asset-1');
+    }
 
-    expect(operationControlService.executeConfirmed).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          idempotencyKey: expect.stringMatching(/^platform_image_remove:asset-1:[0-9a-f-]{36}$/),
-        }),
-      }),
-    );
+    const first = await confirmedRemoval() as { operationId: string };
+    const second = await confirmedRemoval() as { operationId: string };
+    expect(first.operationId).not.toBe(second.operationId);
+    expect(imageCatalogService.removePlatformAsset).toHaveBeenCalledTimes(2);
   });
 });
