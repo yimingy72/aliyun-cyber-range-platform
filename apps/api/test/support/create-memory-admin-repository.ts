@@ -79,6 +79,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const operationAuditEvents: OperationAuditEventRecord[] = [];
 
   let idCounter = 1;
+  let singleControlQueue: Promise<unknown> = Promise.resolve();
 
   const nextId = () => `memory-${idCounter++}`;
   const now = () => new Date();
@@ -1379,10 +1380,29 @@ export function createMemoryAdminRepository(): AdminRepository {
         }
       }
     },
+    async withSingleInstanceControlLock(work) {
+      const run = singleControlQueue.then(work, work);
+      singleControlQueue = run.then(() => undefined, () => undefined);
+      return run;
+    },
+    async commitSingleInstanceClaim(job, instancePatch, jobPatch) {
+      const current = provisionJobs.find((value) => value.id === job.id);
+      const instance = rangeInstances.find((value) => value.id === job.rangeInstanceId);
+      if (!job.startedAt || current?.status !== 'running' || current.startedAt?.getTime() !== job.startedAt.getTime() || instance?.lastJobId !== job.id || instance.instanceMode !== 'single' || ['destroyed','create_failed'].includes(instance.status)) return false;
+      Object.assign(instance, clone(instancePatch), {updatedAt: now()});
+      if (jobPatch) Object.assign(current, clone(jobPatch), {updatedAt: now()});
+      return true;
+    },
+    async listSingleInstanceNetworkProfiles() { return clone(singleInstanceNetworkProfiles); },
+    async getSingleInstanceNetworkProfileById(id) { return clone(singleInstanceNetworkProfiles.find((value) => value.id === id) ?? null); },
+    async registerSingleInstanceNetworkCleanup(id,runId,adminId,ownerIds) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)Object.assign(profile,{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds});},
+    async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},
+    async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
     async getSingleInstanceNetworkProfile(input) {
       const record = singleInstanceNetworkProfiles.find(
         (profile) =>
           profile.provider === input.provider &&
+          (profile.cloudAccountUid ?? 'legacy-unbound') === (input.cloudAccountUid ?? 'legacy-unbound') &&
           profile.regionId === input.regionId &&
           profile.zoneId === input.zoneId,
       );
@@ -1393,12 +1413,17 @@ export function createMemoryAdminRepository(): AdminRepository {
       const existing = singleInstanceNetworkProfiles.find(
         (profile) =>
           profile.provider === input.provider &&
+          (profile.cloudAccountUid ?? 'legacy-unbound') === (input.cloudAccountUid ?? 'legacy-unbound') &&
           profile.regionId === input.regionId &&
           profile.zoneId === input.zoneId,
       );
 
       if (existing) {
         Object.assign(existing, {
+          status:input.status??existing.status,
+          cloudAccountContextId: input.cloudAccountContextId ?? existing.cloudAccountContextId,
+          workspaceKey: input.workspaceKey ?? existing.workspaceKey,
+          managedByPlatform: input.managedByPlatform ?? existing.managedByPlatform,
           vpcId: input.vpcId,
           vpcCidr: input.vpcCidr,
           vswitchIds: clone(input.vswitchIds),
@@ -1412,6 +1437,12 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
 
       const record: SingleInstanceNetworkProfileRecord = {
+        createdByUserId:input.createdByUserId??null,
+        status:input.status??'ready',
+        cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
+        cloudAccountContextId: input.cloudAccountContextId ?? null,
+        workspaceKey: input.workspaceKey ?? null,
+        managedByPlatform: input.managedByPlatform ?? false,
         id: nextId(),
         provider: input.provider,
         regionId: input.regionId,

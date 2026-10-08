@@ -9,7 +9,7 @@ async function nativeSetup() {
   const instance=await repo.createRangeInstance({name:'Audit failure',status:'pending_create',instanceMode:'single',singleInstanceConfig:{cpu:2,memory:4,imageId:'audit-image',systemDiskSize:40,hostKey:'ecs',quantityIndex:1},runtimeCredentials:{ecs:{password:'Audit-Test-Password-Only!'}}} as any);
   const job=await repo.createProvisionJob({rangeInstanceId:instance.id,jobType:'create',triggeredBy:'admin'});
   await repo.updateRangeInstance(instance.id,{lastJobId:job.id});
-  const sys={getSnapshot:jest.fn().mockResolvedValue(snapshot),getAccountContext:jest.fn().mockResolvedValue(snapshot)};
+  const sys={getInstanceTypeAvailabilityInContext:jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m2.large'}],warning:null}),getSnapshot:jest.fn().mockResolvedValue(snapshot),getAccountContext:jest.fn().mockResolvedValue(snapshot)};
   const batch=new SingleInstanceBatchExecutionService(repo,sys as any);
   (batch as any).performAliyunRpcRequest=jest.fn().mockRejectedValue(new Error('Injected RunInstances uncertain failure'));
   return {repo,instance,job,sys,batch};
@@ -18,20 +18,20 @@ describe('native cleanup and request boundaries',()=>{
   it('marks native cloud cleanup failure destroy_failed on the normal path',async()=>{
     const {repo,instance,job,batch}=await nativeSetup();
     (batch as any).findSingleInstanceIdsByRangeInstanceTag=jest.fn().mockRejectedValue(new Error('Injected tag lookup denied'));
-    await batch.executeCreateBatch([{instance,job}]);
+    await batch.executeCreateBatch([{instance,job:(await repo.claimProvisionJob(job.id,new Date()))!}]);
     expect((await repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
   });
   it('marks native cloud cleanup success create_failed and clears resource state',async()=>{
     const {repo,instance,job,batch}=await nativeSetup();
     (batch as any).findSingleInstanceIdsByRangeInstanceTag=jest.fn().mockResolvedValue([]);
-    await batch.executeCreateBatch([{instance,job}]);
+    await batch.executeCreateBatch([{instance,job:(await repo.claimProvisionJob(job.id,new Date()))!}]);
     expect(await repo.getRangeInstanceById(instance.id)).toMatchObject({status:'create_failed',resourceSummary:null,accessEntry:null});
   });
   it('preserves destroy_failed when the outer worker catch handles a transient job persistence failure',async()=>{
     const {repo,instance,job,sys,batch}=await nativeSetup();
     (batch as any).findSingleInstanceIdsByRangeInstanceTag=jest.fn().mockRejectedValue(new Error('Injected tag lookup denied'));
-    const original=repo.updateProvisionJob.bind(repo);let injected=false;
-    repo.updateProvisionJob=async(id,patch)=>{if(!injected&&patch.status==='failed'&&String(patch.errorSummary).includes('Automatic cleanup failed')){injected=true;throw new Error('Injected transient job persistence failure');}return original(id,patch);};
+    const original=repo.commitSingleInstanceClaim.bind(repo);let injected=false;
+    repo.commitSingleInstanceClaim=async(job,patch,jobPatch)=>{if(!injected&&jobPatch?.status==='failed'&&String(jobPatch.errorSummary).includes('Automatic cleanup failed')){injected=true;throw new Error('Injected transient job persistence failure');}return original(job,patch,jobPatch);};
     const worker=new ProvisioningWorkerService(repo,{create:jest.fn(),destroy:jest.fn()} as any,sys as any,batch,{reconcile:jest.fn()} as any);
     await worker.process(job.id);
     expect((batch as any).performAliyunRpcRequest).toHaveBeenCalled();

@@ -15,7 +15,7 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -43,6 +43,7 @@ export class RangeInstanceNodeActionsService {
     action: string,
     payload: Record<string, string>,
     currentUser?: AuthenticatedUser,
+    boundAccountContext?: SystemCloudAccountContext,
   ) {
     const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
 
@@ -66,7 +67,7 @@ export class RangeInstanceNodeActionsService {
 
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);
     const hostNode = this.resolveHostTopologyNode(instance, nodeId);
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = boundAccountContext ?? await this.systemConfigService.getAccountContext();
 
     if (action === 'start') {
       const response = await this.performAliyunRpcRequest({
@@ -267,7 +268,11 @@ export class RangeInstanceNodeActionsService {
       throw new NotFoundException('Range instance host node not found');
     }
 
-    return this.run(rangeInstanceId, hostKey, action, payload, currentUser);
+    if(instance.status !== 'running') throw new ConflictException('Single instance action requires running status');
+    const config=instance.singleInstanceConfig;
+    const account=config?.cloudAccountContextId?await this.systemConfigService.getAccountContextById(config.cloudAccountContextId):await this.systemConfigService.getAccountContext();
+    if((config?.cloudAccountUid && config.cloudAccountUid!==account.accountUid)||(config?.regionId && config.regionId!==account.defaultRegion)) throw new ConflictException('Instance cloud context does not match its launch identity');
+    return this.run(rangeInstanceId, hostKey, action, payload, currentUser, account);
   }
 
   private resolveHostInstanceId(instance: RangeInstanceRecord, nodeId: string) {

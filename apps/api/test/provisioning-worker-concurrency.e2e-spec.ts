@@ -1,3 +1,4 @@
+import { withEcsResponseContract } from './support/ecs-response-contract';
 import type { ProvisionJobRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
@@ -6,6 +7,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 
 function createSystemConfigServiceStub() {
   return {
+    getInstanceTypeAvailabilityInContext:jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m1.large'}],warning:null}),
     getSnapshot: jest.fn().mockResolvedValue({
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-hangzhou',
@@ -400,7 +402,7 @@ describe('ProvisioningWorkerService concurrency', () => {
   it('normalizes numeric-prefixed platform names before submitting single instances to Aliyun', async () => {
     const repository = createMemoryAdminRepository();
     const requestBodies: string[] = [];
-    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(withEcsResponseContract(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
 
@@ -439,7 +441,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       }
 
       throw new Error(`Unexpected Aliyun request: ${url} ${body}`);
-    });
+    }));
 
     try {
       const profile = await repository.upsertSingleInstanceNetworkProfile({
@@ -502,7 +504,9 @@ describe('ProvisioningWorkerService concurrency', () => {
         createSystemConfigServiceStub() as any,
       );
 
-      await executor.executeCreateBatch([{ instance, job }]);
+      await repository.updateRangeInstance(instance.id,{lastJobId:job.id});
+      const claimed=await repository.claimProvisionJob(job.id,new Date());
+      await executor.executeCreateBatch([{ instance, job:claimed! }]);
 
       expect(requestBodies).toHaveLength(1);
       expect(new URLSearchParams(requestBodies[0]).get('InstanceName')).toBe('cr-4层网络靶场-test-01');
@@ -520,7 +524,7 @@ describe('ProvisioningWorkerService concurrency', () => {
   it('tags the ECS system disk before persisting a single-instance create', async () => {
     const repository = createMemoryAdminRepository();
     const tagResourceBodies: string[] = [];
-    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(withEcsResponseContract(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
 
@@ -559,7 +563,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       }
 
       throw new Error(`Unexpected Aliyun request: ${url} ${body}`);
-    });
+    }));
 
     try {
       const profile = await repository.upsertSingleInstanceNetworkProfile({
@@ -608,7 +612,9 @@ describe('ProvisioningWorkerService concurrency', () => {
         createSystemConfigServiceStub() as any,
       );
 
-      await executor.executeCreateBatch([{ instance, job }]);
+      await repository.updateRangeInstance(instance.id,{lastJobId:job.id});
+      const claimed=await repository.claimProvisionJob(job.id,new Date());
+      await executor.executeCreateBatch([{ instance, job:claimed! }]);
 
       expect(tagResourceBodies).toEqual([expect.stringContaining('ResourceType=disk')]);
       expect(tagResourceBodies[0]).toContain('ResourceId.1=d-system-disk-tags-01');
@@ -623,7 +629,8 @@ describe('ProvisioningWorkerService concurrency', () => {
     const repository = createMemoryAdminRepository();
     const requestedUrls: string[] = [];
     const requestBodies: string[] = [];
-    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    let deleted=false;
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(withEcsResponseContract(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
       requestedUrls.push(url);
@@ -634,6 +641,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       }
 
       if (url.includes('Action=DescribeInstances')) {
+        if(deleted) return new Response(JSON.stringify({Instances:{Instance:[]}}),{status:200});
         return new Response(
           JSON.stringify({
             Instances: {
@@ -649,11 +657,12 @@ describe('ProvisioningWorkerService concurrency', () => {
       }
 
       if (body.includes('Action=DeleteInstances')) {
+        deleted=true;
         return new Response(JSON.stringify({ RequestId: 'delete-ok' }), { status: 200 });
       }
 
       throw new Error(`Unexpected Aliyun request: ${url} ${body}`);
-    });
+    }));
 
     try {
       const profile = await repository.upsertSingleInstanceNetworkProfile({
@@ -716,7 +725,9 @@ describe('ProvisioningWorkerService concurrency', () => {
         createSystemConfigServiceStub() as any,
       );
 
-      await executor.executeCreateBatch([{ instance, job }]);
+      await repository.updateRangeInstance(instance.id,{lastJobId:job.id});
+      const claimed=await repository.claimProvisionJob(job.id,new Date());
+      await executor.executeCreateBatch([{ instance, job:claimed! }]);
 
       const describeUrl = requestedUrls.find((url) => url.includes('Action=DescribeInstances'));
       expect(describeUrl).toBeDefined();

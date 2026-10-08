@@ -184,6 +184,14 @@ export type RangeRuntimeCredential = {
 export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
 
 export type SingleInstanceConfig = {
+  cloudAccountContextId?: string | null;
+  cloudAccountUid?: string | null;
+  regionId?: string;
+  zoneId?: string;
+  networkProfileId?: string;
+  resolvedInstanceType?: string;
+  nativeCreateJobId?: string;
+  autoReleaseTime?: string | null;
   baseName: string;
   quantityIndex: number;
   hostKey: string;
@@ -458,6 +466,15 @@ export type PlatformImageTagRecord = {
 };
 
 export type SingleInstanceNetworkProfileRecord = {
+  createdByUserId?:string|null;
+  cleanupRunId?:string|null;
+  cleanupRegisteredByUserId?:string|null;
+  cleanupOwnerUserIds?:string[]|null;
+  status?: string;
+  cloudAccountUid?: string;
+  cloudAccountContextId?: string | null;
+  workspaceKey?: string | null;
+  managedByPlatform?: boolean;
   id: string;
   provider: CloudProvider;
   regionId: string;
@@ -561,6 +578,12 @@ export type UpsertCloudResourceDriftInput = {
 };
 
 export type UpsertSingleInstanceNetworkProfileInput = {
+  createdByUserId?:string|null;
+  status?: string;
+  cloudAccountUid?: string;
+  cloudAccountContextId?: string | null;
+  workspaceKey?: string | null;
+  managedByPlatform?: boolean;
   provider: CloudProvider;
   regionId: string;
   zoneId: string;
@@ -1050,7 +1073,15 @@ export interface AdminRepository {
   }): Promise<boolean>;
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
+  withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T>;
+  commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput): Promise<boolean>;
+  listSingleInstanceNetworkProfiles(): Promise<SingleInstanceNetworkProfileRecord[]>;
+  getSingleInstanceNetworkProfileById(id: string): Promise<SingleInstanceNetworkProfileRecord | null>;
+  deleteSingleInstanceNetworkProfile(id: string): Promise<void>;
+  markSingleInstanceNetworkDestroying(id: string): Promise<void>;
+  registerSingleInstanceNetworkCleanup(id:string,runId:string,adminId:string,ownerIds:string[]):Promise<void>;
   getSingleInstanceNetworkProfile(input: {
+    cloudAccountUid?: string;
     provider: CloudProvider;
     regionId: string;
     zoneId: string;

@@ -276,6 +276,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     );
   }
 
+  listSingleInstanceNetworks() {return this.request<Record<string,unknown>[]>('/admin/instances/networks');}
+  registerSingleInstanceNetworkCleanup(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}) {return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/register-cleanup`,{method:'POST',body:JSON.stringify(payload)});}
+  destroySingleInstanceNetwork(id:string,cleanupRunId:string,operation?:OperationRequest) {
+    return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/destroy`,{method:'POST',body:JSON.stringify({cleanupRunId}),operation});
+  }
+
   listSingleInstances(view: InstanceView = 'active') {
     return this.request<SingleInstanceListPayload>(`/admin/instances?view=${encodeURIComponent(view)}`);
   }

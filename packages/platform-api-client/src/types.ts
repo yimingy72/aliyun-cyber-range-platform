@@ -131,6 +131,7 @@ export type SingleInstanceListPayload = {
   standaloneInstances: RangeInstance[];
 };
 export type SingleInstanceCloudResourceStatus = {
+  matchedInstances?:Array<{instanceId:string;ownerUserId:string|null;tags:Record<string,string>}>;
   singleInstanceId: string;
   regionId: string;
   exists: boolean;
@@ -267,6 +268,9 @@ export type PlatformApiClientLike = {
     payload?: RangeInstanceNodeActionPayload,
     operation?: OperationRequest,
   ): Promise<Record<string, unknown>>;
+  listSingleInstanceNetworks?():Promise<Record<string,unknown>[]>;
+  registerSingleInstanceNetworkCleanup?(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}):Promise<Record<string,unknown>>;
+  destroySingleInstanceNetwork?(id:string,cleanupRunId:string,operation?:OperationRequest):Promise<Record<string,unknown>>;
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
   getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus>;

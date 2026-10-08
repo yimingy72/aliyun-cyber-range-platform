@@ -1,0 +1,209 @@
+import { SingleInstancesService } from '../src/admin/single-instances.service';
+import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
+import { CidrPoolService } from '../src/provisioning/cidr-pool.service';
+import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
+import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
+import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+const alice = { id: 'alice', username: 'Alice', role: 'user' as const };
+const bob = { id: 'bob', username: 'Bob', role: 'user' as const };
+const admin = { id: 'admin', username: 'Admin', role: 'admin' as const };
+const account = { provider: 'alibaba_cloud' as const, cloudAccountContextId: 'account-context', accountUid: 'account-1', accountUidResolved: true, defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'synthetic-ak', accessKeySecret: 'synthetic-sk', imageImportBucket: '' };
+async function fixture(failDiskForOwner?: string) {
+  const repo = createMemoryAdminRepository();
+  await repo.upsertImageSnapshots({ provider: 'alibaba_cloud', accountUid: account.accountUid, regionId: account.defaultRegion, scope: 'custom', snapshots: [{ imageId: 'm-test', sourceImageName: 'Ubuntu', status: 'Available', isAvailable: true, lastSyncedAt: new Date() }] });
+  const [snapshot] = await repo.listImageSnapshots({ provider: 'alibaba_cloud', accountUid: account.accountUid, regionId: account.defaultRegion, scope: 'custom' });
+  const asset = await repo.collectPlatformImageAsset({ snapshotId: snapshot.id, displayName: 'Ubuntu', visibility: 'platform' });
+  const profile = await repo.upsertSingleInstanceNetworkProfile({ provider: 'alibaba_cloud', cloudAccountUid: account.accountUid, cloudAccountContextId: account.cloudAccountContextId, regionId: account.defaultRegion, zoneId: account.defaultZoneId, workspaceKey: 'single-instance-network-account-1-cn-hangzhou-cn-hangzhou-h', createdByUserId:alice.id,managedByPlatform: true, vpcId: 'vpc-test', vpcCidr: '10.99.0.0/16', vswitchIds: ['vsw-1', 'vsw-2', 'vsw-3'], vswitchCidrs: ['10.99.1.0/24', '10.99.2.0/24', '10.99.3.0/24'], securityGroupId: 'sg-test', securityGroupName: 'test' });
+  const config: any = { getSnapshot: jest.fn(async () => account), getAccountContext: jest.fn(async () => account), getAccountContextById: jest.fn(async () => account), getInstanceTypeAvailabilityInContext: jest.fn(async () => ({ exactAvailable: true, matches: [{ instanceTypeId: 'ecs.u1-c1m1.large' }], warning: null })) };
+  const native: any = new SingleInstanceBatchExecutionService(repo, config);
+  const cloud = new Map<string, any>();
+  const calls: any[] = [];
+  const tokens = new Map<string, {
+    id: string;
+    parameters: any;
+  }>();
+  let count = 0;
+  let failed = false;
+  native.performAliyunRpcRequest = async (input: any) => {
+    calls.push({ action: input.action, regionId: input.regionId, parameters: input.parameters });
+    expect(input.regionId).toBe(account.defaultRegion);
+    const p = input.parameters ?? {};
+    if (input.action === 'RunInstances') {
+      expect(p.InstanceType).toBe('ecs.u1-c1m1.large');
+      expect(p.PrivateIpAddress).toBeUndefined();
+      const previous = tokens.get(p.ClientToken);
+      if (previous) {
+        expect(p).toEqual(previous.parameters);
+        return { InstanceIdSets: { InstanceIdSet: [previous.id] } };
+      }
+      const tags: Object = Object.fromEntries(Object.keys(p).filter(key => /^Tag\.\d+\.Key$/.test(key)).map(key => [p[key], p[key.replace('.Key', '.Value')]]));
+      const id = `i-${++count}`;
+      tokens.set(p.ClientToken, { id, parameters: structuredClone(p) });
+      cloud.set(id, { id, tags, privateIp: `10.99.1.${count + 10}`, publicIp: `192.0.2.${count}`, diskId: `d-${count}` });
+      return { InstanceIdSets: { InstanceIdSet: [id] } };
+    }
+    if (input.action === 'DescribeInstances') {
+      const ids = p.InstanceIds ? JSON.parse(p.InstanceIds) : null;
+      const rows = [...cloud.values()].filter(entry => ids ? ids.includes(entry.id) : p['Tag.1.Value'] ? (entry.tags as any).RangeInstanceId === p['Tag.1.Value'] : true);
+      return { RequestId: 'test', TotalCount: rows.length, PageNumber:Number(p.PageNumber??1),PageSize:Number(p.PageSize??100), Instances: { Instance: rows.map(entry => ({ InstanceId: entry.id, Tags:{Tag:Object.entries(entry.tags).map(([TagKey,TagValue])=>({TagKey,TagValue}))},Status: 'Running', PublicIpAddress: { IpAddress: [entry.publicIp] }, VpcAttributes: { PrivateIpAddress: { IpAddress: [entry.privateIp] } } })) } };
+    }
+    if (input.action === 'DescribeDisks') {
+      const entry = cloud.get(p.InstanceId);
+      if (!failed && entry?.tags.PlatformUserId === failDiskForOwner) {
+        failed = true;
+        const records = await repo.listRangeInstances();
+        expect(records.find(instance => instance.id === entry.tags.RangeInstanceId)?.resourceSummary?.hostIds).toBeTruthy();
+        throw new Error('Synthetic disk lookup failure');
+      }
+      return { Disks: { Disk: entry ? [{ DiskId: entry.diskId }] : [] } };
+    }
+    if (input.action === 'DeleteInstances') {
+      for (const [key, value] of Object.entries(p))
+        if (key.startsWith('InstanceId.'))
+          cloud.delete(value as string);
+      return { RequestId: 'deleted' };
+    }
+    return { RequestId: 'ok' };
+  };
+  const network = new SingleInstanceNetworkService(repo, config, { destroyDefaultProfile: jest.fn(async () => { }) } as any, new CidrPoolService(), native);
+  const launchNetwork: any = { ensureDefaultProfile: async () => profile, allocateVswitch: network.allocateVswitch.bind(network) };
+  const worker: any = new ProvisioningWorkerService(repo, { create: async () => { }, destroy: async () => { } } as any, config, native, { reconcile: async () => { } } as any);
+  worker.dispatch = jest.fn();
+  const service = new SingleInstancesService(repo, config, launchNetwork, native, worker, {} as any);
+  await network.registerCleanup(profile.id,'synthetic-run','2020-01-01T00:00:00Z',[alice.id,bob.id],admin);
+  const launch = (actor: typeof alice) => service.launch({ name: actor.username, platformImageAssetId: asset.id, cpu: 2, memory: 2, quantity: 2, expiresAt: new Date(Date.now() + 60 * 60000).toISOString() }, actor.id);
+  const drain = async () => { for (let n = 0; n < 20; n++) {
+    const pending = (await repo.listProvisionJobs()).filter(job => job.status === 'pending');
+    if (!pending.length)
+      return;
+    await Promise.all(pending.map(job => worker.process(job.id)));
+  } throw new Error('Jobs did not settle'); };
+  return { repo, config, native, cloud, calls, profile, network, service, worker, launch, drain };
+}
+describe('native batches: real ECS response contract, two platform users and complete cleanup', () => {
+  it('runs Alice/Bob simultaneously with distinct IPs, ownership, batch tags and credentials; fixed context survives default changes', async () => {
+    const f = await fixture();
+    const [a, b] = await Promise.all([f.launch(alice), f.launch(bob)]);
+    expect(a.instances.map(instance => instance.runtimeCredentials)).not.toEqual(b.instances.map(instance => instance.runtimeCredentials));
+    expect(new Set([...a.instances, ...b.instances].map(instance => (instance.runtimeScenarioTemplateSpec as any).hosts[0].primaryPrivateIp)).size).toBe(4);
+    await expect(f.service.destroyBatch(a.batch.id, alice)).rejects.toThrow('仍在创建');
+    f.config.getAccountContext.mockResolvedValue({ ...account, defaultRegion: 'cn-shanghai' });
+    f.config.getSnapshot.mockResolvedValue({ ...account, defaultRegion: 'cn-shanghai' });
+    await f.drain();
+    const instances = await f.repo.listRangeInstances();
+    expect(instances.every(instance => instance.status === 'running')).toBe(true);
+    expect(new Set(instances.map(instance => instance.accessEntry?.privateIp)).size).toBe(4);
+    expect(f.cloud.size).toBe(4);
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(4);
+    expect((await f.service.list(alice)).batches.map(entry => entry.batch.id)).toEqual([a.batch.id]);
+    await expect(f.service.destroyBatch(a.batch.id, bob)).rejects.toThrow('access denied');
+    await expect(f.network.destroy(f.profile.id, alice,'synthetic-run')).rejects.toThrow('administrators');
+    await expect(f.network.destroy(f.profile.id, admin,'synthetic-run')).rejects.toThrow('referenced');
+    await Promise.all([f.service.destroyBatch(a.batch.id, alice), f.service.destroyBatch(a.batch.id, alice)]);
+    await f.drain();
+    expect(f.cloud.size).toBe(2);
+    await expect(f.network.destroy(f.profile.id, admin,'synthetic-run')).rejects.toThrow('referenced');
+    await f.service.destroyBatch(b.batch.id, bob);
+    expect((await f.repo.listProvisionJobs()).filter(job => job.jobType === 'destroy')).toHaveLength(4);
+    await f.drain();
+    expect(f.cloud.size).toBe(0);
+    expect((await f.repo.listRangeInstances()).every(instance => instance.status === 'destroyed')).toBe(true);
+    await f.network.destroy(f.profile.id, admin,'synthetic-run');
+    expect(await f.repo.getSingleInstanceNetworkProfileById(f.profile.id)).toBeNull();
+  });
+  it('saves returned ECS IDs before disk failure, cleans only that member, then keeps the other user running', async () => {
+    const f = await fixture(alice.id);
+    await Promise.all([f.launch(alice), f.launch(bob)]);
+    await f.drain();
+    const instances = await f.repo.listRangeInstances();
+    expect(instances.filter(instance => instance.ownerUserId === bob.id).every(instance => instance.status === 'running')).toBe(true);
+    expect(instances.filter(instance => instance.status === 'create_failed')).toHaveLength(1);
+    expect(f.cloud.size).toBe(3);
+    const failed = instances.find(instance => instance.status === 'create_failed')!;
+    expect(failed.resourceSummary).toBeNull();
+    expect([...f.cloud.values()].some(value => value.tags.RangeInstanceId === failed.id)).toBe(false);
+  });
+  it('fences an old refresh claim after destruction and never revives the member', async () => {
+    const f = await fixture();
+    const a = await f.launch(alice);
+    await f.drain();
+    const instance = await f.repo.getRangeInstanceById(a.instances[0].id);
+    const job = await f.repo.createProvisionJob({ rangeInstanceId: instance!.id, jobType: 'refresh_status', triggeredBy: alice.id });
+    await f.repo.updateRangeInstance(instance!.id, { lastJobId: job.id });
+    const claimed = await f.repo.claimProvisionJob(job.id, new Date());
+    await f.repo.updateRangeInstance(instance!.id, { status: 'destroyed', lastJobId: null });
+    await f.native.refreshSingleInstanceAccessEntry({ instance, job: claimed });
+    expect((await f.repo.getRangeInstanceById(instance!.id))?.status).toBe('destroyed');
+  });
+  it('replays a reclaimed create with identical parameters and forbids the old worker from cleanup', async () => {
+    const f = await fixture();
+    const a = await f.launch(alice);
+    const instance = a.instances[0];
+    const job = await f.repo.getProvisionJobById(instance.lastJobId!);
+    const claimed = await f.repo.claimProvisionJob(job!.id, new Date());
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>(resolve => release = resolve);
+    const ready = new Promise<void>(resolve => reached = resolve);
+    const base = f.native.performAliyunRpcRequest;
+    let pause = true;
+    f.native.performAliyunRpcRequest = async (input: any) => { const result = await base(input); if (input.action === 'RunInstances' && pause) {
+      pause = false;
+      reached();
+      await gate;
+    } return result; };
+    const old = f.native.executeCreateBatch([{ instance, job: claimed }]);
+    await ready;
+    await f.repo.requeueInterruptedProvisionJobs(new Date(Date.now() + 1000));
+    const reclaimed = await f.repo.claimProvisionJob(job!.id, new Date(Date.now() + 2000));
+    release();
+    await old;
+    expect(f.cloud.size).toBe(1);
+    expect(f.calls.some(call => call.action === 'DeleteInstances')).toBe(false);
+    f.config.getInstanceTypeAvailabilityInContext.mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m1.large'}],warning:null});
+    await f.native.executeCreateBatch([{ instance:await f.repo.getRangeInstanceById(instance.id), job: reclaimed }]);
+    expect(f.cloud.size).toBe(1);
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(2);
+    expect((await f.repo.getProvisionJobById(job!.id))?.status).toBe('succeeded');
+  });
+  it('recovers a late tagged ECS after an unknown create response instead of treating the first empty query as cleanup proof',async()=>{
+    const f=await fixture();const a=await f.launch(alice);const instance=a.instances[0];const job=await f.repo.claimProvisionJob(instance.lastJobId!,new Date());
+    const base=f.native.performAliyunRpcRequest;let missing=true;let firstTag=true;
+    f.native.performAliyunRpcRequest=async(input:any)=>{
+      if(input.action==='RunInstances'&&missing){missing=false;await base(input);throw new Error('Synthetic response lost after cloud creation');}
+      if(input.action==='DescribeInstances'&&input.parameters?.['Tag.1.Value']&&firstTag){firstTag=false;return{Instances:{Instance:[]}};}
+      return base(input);
+    };
+    await f.native.executeCreateBatch([{instance,job}]);
+    expect(f.cloud.size).toBe(0);expect(f.calls.some(call=>call.action==='DeleteInstances')).toBe(true);
+    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('create_failed');
+  });
+  it('blocks new launches into a profile whose destruction has been reserved',async()=>{
+    const f=await fixture();await f.repo.markSingleInstanceNetworkDestroying(f.profile.id);
+    await expect(f.network.ensureDefaultProfile(account,alice.id)).rejects.toThrow('cleanup is required');
+  });
+  it('requires the pre-registered run and declared temporary creator before any network destruction',async()=>{
+    const f=await fixture();
+    await expect(f.network.destroy(f.profile.id,admin,'different-run')).rejects.toThrow('pre-registered');
+    await expect(f.network.registerCleanup(f.profile.id,'another-run','2020-01-01T00:00:00Z',['unrelated-owner'],admin)).rejects.toThrow('this-run');
+    await expect(f.network.registerCleanup(f.profile.id,'another-run','2020-01-01T00:00:00Z',[alice.id,bob.id],bob)).rejects.toThrow('administrators');
+  });
+  it('returns verified real owner/batch tags without credentials and rejects malformed cloud status proofs',async()=>{
+    const f=await fixture();const a=await f.launch(alice);await f.drain();
+    const result=await f.service.getCloudResourceStatus(a.instances[0].id,alice);
+    expect(result.matchedInstances).toEqual([expect.objectContaining({ownerUserId:alice.id,tags:expect.objectContaining({PlatformUserId:alice.id,RangeInstanceId:a.instances[0].id,SingleInstanceBatchId:a.batch.id,CreatedBy:'cyber-range-platform',PlatformScope:'user'})})]);
+    expect(JSON.stringify(result)).not.toContain('password');
+    f.native.performAliyunRpcRequest=async()=>({Instances:{Instance:[]},TotalCount:0});
+    await expect(f.service.getCloudResourceStatus(a.instances[0].id,alice)).rejects.toThrow('incomplete or malformed');
+  });
+  it('does not falsely clear failed cleanup when a cloud query is malformed', async () => {
+    const f = await fixture();
+    const a = await f.launch(alice);
+    await f.drain();
+    f.native.performAliyunRpcRequest = async () => ({ RequestId: 'ambiguous' });
+    await f.service.destroyBatch(a.batch.id, alice);
+    await f.drain();
+    expect((await f.repo.listRangeInstances()).every(instance => instance.status === 'destroy_failed')).toBe(true);
+    await expect(f.network.destroy(f.profile.id, admin,'synthetic-run')).rejects.toThrow('referenced');
+  });
+});

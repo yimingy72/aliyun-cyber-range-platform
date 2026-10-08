@@ -523,6 +523,15 @@ model RangeInstance {
 }
 
 model SingleInstanceNetworkProfile {
+  createdByUserId    String?
+  cleanupRunId       String?
+  cleanupRegisteredByUserId String?
+  cleanupOwnerUserIds Json?
+  status            String        @default("ready")
+  cloudAccountUid   String        @default("legacy-unbound")
+  cloudAccountContextId String?
+  workspaceKey      String?
+  managedByPlatform Boolean       @default(false)
   id                String        @id @default(cuid())
   provider          CloudProvider @default(alibaba_cloud)
   regionId          String
@@ -536,7 +545,7 @@ model SingleInstanceNetworkProfile {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  @@unique([provider, regionId, zoneId])
+  @@unique([provider, cloudAccountUid, regionId, zoneId])
 }
 
 model ProvisionJob {

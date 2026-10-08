@@ -25,11 +25,6 @@ import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
-function detectDefaultRuntimeUsername(imageDisplayName: string | null | undefined) {
-  const normalizedImageName = imageDisplayName?.trim().toLowerCase() ?? '';
-  return normalizedImageName.includes('windows') ? 'Administrator' : 'root';
-}
-
 @Injectable()
 export class SingleInstancesService {
   constructor(
@@ -113,13 +108,14 @@ export class SingleInstancesService {
 
   async getCloudResourceStatus(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
-    const result = await this.singleInstanceBatchExecutionService.findCloudInstanceIdsByRangeInstanceId(instance.id);
+    const result = await this.singleInstanceBatchExecutionService.findCloudInstanceIdsByRangeInstanceId(instance.id, instance);
 
     return {
       singleInstanceId: instance.id,
       regionId: result.regionId,
       exists: result.instanceIds.length > 0,
       instanceIds: result.instanceIds,
+      matchedInstances:result.matchedInstances,
       checkedAt: new Date().toISOString(),
     };
   }
@@ -217,9 +213,20 @@ export class SingleInstancesService {
 
   async launch(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     this.assertFutureInstanceExpiration(input.expiresAt);
+    return this.adminRepository.withSingleInstanceControlLock(() => this.launchLocked(input, currentUserId));
+  }
 
-    const profile = await this.singleInstanceNetworkService.ensureDefaultProfile();
+  private async launchLocked(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
+    this.assertFutureInstanceExpiration(input.expiresAt);
+
+    const accountContext = await this.systemConfigService.getAccountContext();
+    if (!accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('创建实例前必须配置并验证云账号。');
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
+    const availability = await this.systemConfigService.getInstanceTypeAvailabilityInContext({cpu:input.cpu,memory:input.memory},accountContext);
+    if (!availability.exactAvailable || !availability.matches.length) throw new ConflictException(availability.warning ?? '规格不可售');
+    const profile = await this.singleInstanceNetworkService.ensureDefaultProfile(accountContext,currentUserId);
+    const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
+    const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
@@ -283,11 +290,15 @@ export class SingleInstancesService {
           runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as Record<string, unknown>,
           runtimeCredentials: {
             [hostKey]: {
-              username: detectDefaultRuntimeUsername(image.displayName),
+              username: runtimeUsername,
               password,
             },
           },
           singleInstanceConfig: {
+            cloudAccountContextId: accountContext.cloudAccountContextId,
+            cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
+            networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
+            autoReleaseTime: new Date(input.expiresAt).getTime()-Date.now()>=30*60_000 ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
             baseName: input.name,
             quantityIndex,
             hostKey,
@@ -314,6 +325,16 @@ export class SingleInstancesService {
 
         created.push(updated);
       }
+    } catch(error) {
+      // Intake holds the native control lock: workers cannot enter cloud execution until it commits.
+      const members=(await this.adminRepository.listRangeInstances()).filter(instance=>instance.singleInstanceBatchId===batch.id);
+      const jobs=(await this.adminRepository.listProvisionJobs()).filter(job=>jobIds.includes(job.id));
+      for(const member of members) {
+        const job=jobs.find(value=>value.rangeInstanceId===member.id);
+        if(job) await this.adminRepository.updateProvisionJob(job.id,{status:'failed',finishedAt:new Date(),errorSummary:'Batch intake aborted before cloud execution'});
+        await this.adminRepository.updateRangeInstance(member.id,{status:'create_failed',lastJobId:job?.id??null,errorSummary:'Batch intake aborted before cloud execution'});
+      }
+      throw error;
     } finally {
       for (const jobId of jobIds) {
         this.provisioningWorkerService.dispatch(jobId);
@@ -329,6 +350,10 @@ export class SingleInstancesService {
   }
 
   async destroyBatch(batchId: string, currentUser: SessionUserProfile) {
+    return this.adminRepository.withSingleInstanceControlLock(() => this.destroyBatchLocked(batchId, currentUser));
+  }
+
+  private async destroyBatchLocked(batchId: string, currentUser: SessionUserProfile) {
     const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
     const group = groups.find((entry) => entry.batch.id === batchId);
 
@@ -338,7 +363,9 @@ export class SingleInstancesService {
 
     this.assertBatchAccess(group.batch.ownerUserId, group.batch.createdBy, currentUser);
 
-    const targetInstances = group.instances.filter((instance) => !isSingleInstanceHistoryStatus(instance.status));
+    if(currentUser.role !== 'admin' && group.instances.some(instance=>!this.isOwnedBy(instance.ownerUserId,instance.createdBy,currentUser.id))) throw new ForbiddenException('Single instance batch member access denied');
+    if (group.instances.some(instance => ['pending_create','creating'].includes(instance.status))) throw new ConflictException('批次仍在创建，请等待创建完成后销毁。');
+    const targetInstances = group.instances.filter((instance) => ['running','destroy_failed'].includes(instance.status));
     const jobIds: string[] = [];
 
     try {
@@ -368,6 +395,10 @@ export class SingleInstancesService {
   }
 
   async destroy(id: string, currentUser: SessionUserProfile) {
+    return this.adminRepository.withSingleInstanceControlLock(() => this.destroyLocked(id, currentUser));
+  }
+
+  private async destroyLocked(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
 
     if (!['running', 'destroy_failed'].includes(instance.status)) {
@@ -390,12 +421,19 @@ export class SingleInstancesService {
   }
 
   async retry(id: string, currentUser: SessionUserProfile) {
+    return this.adminRepository.withSingleInstanceControlLock(() => this.retryLocked(id, currentUser));
+  }
+
+  private async retryLocked(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
 
+    if (instance.status === 'create_failed') this.assertFutureInstanceExpiration(instance.expiresAt?.toISOString() ?? '');
     if (!['create_failed', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Single instance cannot start a retry job from the current status');
     }
 
+    if (instance.singleInstanceConfig?.networkProfileId && !(await this.adminRepository.getSingleInstanceNetworkProfileById(instance.singleInstanceConfig.networkProfileId))) throw new ConflictException('实例来源网络已回收，请创建新的实例。');
+    await this.singleInstanceBatchExecutionService.resolveInstanceAccount(instance);
     const previousJob = instance.lastJobId
       ? await this.adminRepository.getProvisionJobById(instance.lastJobId)
       : null;
@@ -536,6 +574,9 @@ function toSingleInstanceListItem(instance: RangeInstanceRecord) {
     singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
     singleInstanceConfig: instance.singleInstanceConfig
       ? {
+          networkProfileId: instance.singleInstanceConfig.networkProfileId,
+          cloudAccountUid: instance.singleInstanceConfig.cloudAccountUid,
+          regionId: instance.singleInstanceConfig.regionId,
           hostKey: instance.singleInstanceConfig.hostKey,
           hostName: instance.singleInstanceConfig.hostName ?? null,
           imageDisplayName: instance.singleInstanceConfig.imageDisplayName,

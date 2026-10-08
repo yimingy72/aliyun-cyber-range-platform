@@ -139,6 +139,18 @@ export class ProvisioningWorkerService {
     const instances = await this.adminRepository.listRangeInstances();
 
     for (const instance of instances) {
+      if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
+        await this.adminRepository.withSingleInstanceControlLock(async () => {
+          const current=await this.adminRepository.getRangeInstanceById(instance.id);
+          if(!current || !['running','creating'].includes(current.status)) return;
+          const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
+          if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
+          if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
+          const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
+          await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
+        });
+        continue;
+      }
       if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
         continue;
       }
@@ -208,7 +220,7 @@ export class ProvisioningWorkerService {
       return;
     }
 
-    await this.adminRepository.updateRangeInstance(instance.id, {
+    if (instance.instanceMode !== 'single') await this.adminRepository.updateRangeInstance(instance.id, {
       errorSummary: null,
     });
     const reportStep = this.createStepReporter(job.id);
@@ -220,9 +232,22 @@ export class ProvisioningWorkerService {
       const runtimeConfig = await this.systemConfigService.getSnapshot();
 
       if (instance.instanceMode === 'single') {
+        const current = await this.adminRepository.withSingleInstanceControlLock(async () => {
+          let latest = await this.adminRepository.getRangeInstanceById(instance.id);
+          if (latest && !latest.lastJobId) {
+            const active = (await this.adminRepository.listProvisionJobs()).filter(value => value.rangeInstanceId === instance.id && ['pending','running'].includes(value.status));
+            if (active.length === 1 && active[0].id === job.id) latest = await this.adminRepository.updateRangeInstance(instance.id,{lastJobId:job.id});
+          }
+          return latest;
+        });
+        if (!current || current.lastJobId !== job.id || !(await this.ownsProvisionJobClaim(job))
+          || ['destroyed','create_failed'].includes(current.status) && job.jobType !== 'retry') {
+          if (await this.ownsProvisionJobClaim(job)) await this.adminRepository.updateProvisionJob(job.id,{status:'failed',finishedAt:new Date(),errorSummary:'Superseded single-instance job'});
+          return;
+        }
         await this.processSingleInstanceJob({
           job,
-          instance,
+          instance: current,
           effectiveJobType,
           runtimeConfig,
           reportStep,
@@ -742,14 +767,7 @@ export class ProvisioningWorkerService {
 
       const refreshedInstance = await this.adminRepository.getRangeInstanceById(item.instance.id);
 
-      if (needsSingleInstancePublicIpRefresh(refreshedInstance)) {
-        const refreshJob = await this.adminRepository.createProvisionJob({
-          rangeInstanceId: item.instance.id,
-          jobType: 'refresh_status',
-          triggeredBy: item.job.triggeredBy,
-        });
-        this.dispatch(refreshJob.id);
-      }
+      if (needsSingleInstancePublicIpRefresh(refreshedInstance)) await this.queueSingleInstanceRefresh(item);
 
       return;
     }
@@ -757,9 +775,7 @@ export class ProvisioningWorkerService {
     if (input.effectiveJobType === 'create') {
       await this.runWorkerStep(input.reportStep, 'prepare', async () => {
         for (const item of items) {
-          await this.adminRepository.updateRangeInstance(item.instance.id, {
-            status: 'creating',
-          });
+          await this.adminRepository.commitSingleInstanceClaim(item.job, {status:'creating',errorSummary:null});
         }
       });
 
@@ -772,12 +788,7 @@ export class ProvisioningWorkerService {
           continue;
         }
 
-        const refreshJob = await this.adminRepository.createProvisionJob({
-          rangeInstanceId: item.instance.id,
-          jobType: 'refresh_status',
-          triggeredBy: item.job.triggeredBy,
-        });
-        this.dispatch(refreshJob.id);
+        await this.queueSingleInstanceRefresh(item);
       }
 
       return;
@@ -785,13 +796,23 @@ export class ProvisioningWorkerService {
 
     await this.runWorkerStep(input.reportStep, 'prepare', async () => {
       for (const item of items) {
-        await this.adminRepository.updateRangeInstance(item.instance.id, {
-          status: 'destroying',
-        });
+        await this.adminRepository.commitSingleInstanceClaim(item.job, {status:'destroying',errorSummary:null});
       }
     });
 
     await this.singleInstanceBatchExecutionService.executeDestroyBatch(items);
+  }
+
+  private async queueSingleInstanceRefresh(item: SingleInstanceExecutionItem) {
+    await this.adminRepository.withSingleInstanceControlLock(async () => {
+      const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
+      if (!needsSingleInstancePublicIpRefresh(current) || current?.lastJobId !== item.job.id) return;
+      const previous = await this.adminRepository.getProvisionJobById(item.job.id);
+      if (!previous || !['succeeded','failed'].includes(previous.status)) return;
+      const job=await this.adminRepository.createProvisionJob({rangeInstanceId:item.instance.id,jobType:'refresh_status',triggeredBy:item.job.triggeredBy});
+      await this.adminRepository.updateRangeInstance(item.instance.id,{lastJobId:job.id});
+      this.dispatch(job.id);
+    });
   }
 
   private async collectSingleInstanceExecutionItems(input: {
@@ -822,7 +843,10 @@ export class ProvisioningWorkerService {
     }
 
     const targetStatus = input.effectiveJobType === 'create' ? 'pending_create' : 'pending_destroy';
-    const candidateInstances = group.instances.filter((instance) => instance.status === targetStatus);
+    const candidateInstances = group.instances.filter((instance) => instance.status === targetStatus
+      && instance.ownerUserId === input.instance.ownerUserId
+      && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId])
+        === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId]));
     const jobsById = new Map(
       (
         await Promise.all(
@@ -854,7 +878,7 @@ export class ProvisioningWorkerService {
     itemsByInstanceId.set(currentItem.instance.id, currentItem);
 
     for (const item of groupedItems) {
-      if (item.job.id === input.job.id) {
+      if (item.instance.id === input.instance.id || item.job.id === input.job.id) {
         continue;
       }
 
@@ -1652,7 +1676,7 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
       (instance.status === 'creating' || instance.status === 'running') &&
       instance.resourceSummary?.mode === 'ecs-native' &&
       instance.resourceSummary?.hostIds &&
-      !instance.accessEntry?.publicIp,
+      (instance.status === 'creating' || !instance.accessEntry?.publicIp),
   );
 }
 

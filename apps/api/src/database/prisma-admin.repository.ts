@@ -1836,14 +1836,56 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
+  async withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      // Serialize native job intake/network lifecycle across API processes, not cloud execution.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(714921, 1)`;
+      return work();
+    }, { timeout: 15 * 60_000, maxWait: 30_000 });
+  }
+
+  async commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT id FROM "ProvisionJob" WHERE id = ${job.id} FOR UPDATE`;
+      await tx.$executeRaw`SELECT id FROM "RangeInstance" WHERE id = ${job.rangeInstanceId} FOR UPDATE`;
+      const currentJob = await tx.provisionJob.findUnique({ where: { id: job.id } });
+      const instance = await tx.rangeInstance.findUnique({ where: { id: job.rangeInstanceId } });
+      if (!job.startedAt || currentJob?.status !== 'running'
+        || currentJob.startedAt?.getTime() !== job.startedAt.getTime()
+        || instance?.lastJobId !== job.id || instance.instanceMode !== 'single' || ['destroyed','create_failed'].includes(instance.status)) return false;
+      const jsonFields = new Set(['accessEntry', 'resourceSummary', 'singleInstanceConfig', 'runtimeTopologyGraph', 'runtimeScenarioTemplateSpec', 'runtimeCompiledProvisionSpec']);
+      const data = Object.fromEntries(Object.entries(instancePatch).map(([key, value]) => [key, jsonFields.has(key) && value === null ? Prisma.DbNull : value]));
+      await tx.rangeInstance.update({ where: { id: instance.id }, data: data as Prisma.RangeInstanceUncheckedUpdateInput });
+      if (jobPatch) await tx.provisionJob.update({ where: { id: job.id }, data: jobPatch });
+      return true;
+    });
+  }
+
+  async listSingleInstanceNetworkProfiles() {
+    return this.prisma.singleInstanceNetworkProfile.findMany() as unknown as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord[]>;
+  }
+  async getSingleInstanceNetworkProfileById(id: string) {
+    return this.prisma.singleInstanceNetworkProfile.findUnique({ where: { id } }) as unknown as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord | null>;
+  }
+  async registerSingleInstanceNetworkCleanup(id:string,runId:string,adminId:string,ownerIds:string[]) {
+    await this.prisma.singleInstanceNetworkProfile.update({where:{id},data:{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds}});
+  }
+  async markSingleInstanceNetworkDestroying(id: string) {
+    await this.prisma.singleInstanceNetworkProfile.update({where:{id},data:{status:'destroying'}});
+  }
+  async deleteSingleInstanceNetworkProfile(id: string) {
+    await this.prisma.singleInstanceNetworkProfile.delete({ where: { id } });
+  }
+
   async getSingleInstanceNetworkProfile(input: {
+    cloudAccountUid?: string;
     provider: 'alibaba_cloud';
     regionId: string;
     zoneId: string;
   }) {
     return this.prisma.singleInstanceNetworkProfile.findUnique({
       where: {
-        provider_regionId_zoneId: input,
+        provider_cloudAccountUid_regionId_zoneId: { ...input, cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound' },
       },
     }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord | null>;
   }
@@ -1851,13 +1893,18 @@ export class PrismaAdminRepository implements AdminRepository {
   async upsertSingleInstanceNetworkProfile(input: import('../admin/admin.repository').UpsertSingleInstanceNetworkProfileInput) {
     return this.prisma.singleInstanceNetworkProfile.upsert({
       where: {
-        provider_regionId_zoneId: {
+        provider_cloudAccountUid_regionId_zoneId: {
+          cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
           provider: input.provider,
           regionId: input.regionId,
           zoneId: input.zoneId,
         },
       },
       update: {
+        status:input.status,
+        cloudAccountContextId: input.cloudAccountContextId,
+        workspaceKey: input.workspaceKey,
+        managedByPlatform: input.managedByPlatform,
         vpcId: input.vpcId,
         vpcCidr: input.vpcCidr,
         vswitchIds: input.vswitchIds as Prisma.InputJsonValue,
@@ -1866,6 +1913,12 @@ export class PrismaAdminRepository implements AdminRepository {
         securityGroupName: input.securityGroupName,
       },
       create: {
+        createdByUserId:input.createdByUserId,
+        status:input.status??'ready',
+        cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
+        cloudAccountContextId: input.cloudAccountContextId ?? null,
+        workspaceKey: input.workspaceKey ?? null,
+        managedByPlatform: input.managedByPlatform ?? false,
         provider: input.provider,
         regionId: input.regionId,
         zoneId: input.zoneId,

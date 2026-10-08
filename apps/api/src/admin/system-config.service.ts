@@ -214,6 +214,10 @@ export class SystemConfigService {
     memory: number;
   }): Promise<InstanceTypeAvailabilitySnapshot> {
     const accountContext = await this.getAccountContext();
+    return this.getInstanceTypeAvailabilityInContext(input, accountContext);
+  }
+
+  async getInstanceTypeAvailabilityInContext(input: { cpu: number; memory: number }, accountContext: SystemCloudAccountContext): Promise<InstanceTypeAvailabilitySnapshot> {
     const supportedInstanceTypeIds = new Set(resolvePreferredInstanceTypes(input.cpu, input.memory));
 
     if (supportedInstanceTypeIds.size === 0) {
@@ -271,6 +275,15 @@ export class SystemConfigService {
           ? null
           : `当前默认可用区 ${accountContext.defaultZoneId} 没有可供单实例执行器使用的 ${input.cpu}C${input.memory}G X86 按量付费实例规格。`,
     };
+  }
+
+  async getAccountContextById(id: string): Promise<SystemCloudAccountContext> {
+    const context = await this.cloudAccountContextsService.getCredentials(id, { requireReady: true });
+    return { provider: context.provider, cloudAccountContextId: context.id,
+      accountUid: context.accountUid, accountUidResolved: true,
+      defaultRegion: context.regionId, defaultZoneId: context.zoneId,
+      accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret,
+      imageImportBucket: context.imageImportBucket };
   }
 
   private resolveSecretValue(nextValue: string | null | undefined, currentValue: string) {
