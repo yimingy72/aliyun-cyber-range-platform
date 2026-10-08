@@ -42,7 +42,17 @@ export class PlatformImagesController {
   @HttpCode(200)
   @UseGuards(AdminAuthGuard)
   setTags(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: SetPlatformImageTagsDto) {
-    return this.imageCatalogService.setPlatformAssetTags(id, body, request.adminUser);
+    const execute = () => this.imageCatalogService.setPlatformAssetTags(id, body, request.adminUser);
+    if (request.authContext.source !== 'mcp') return execute();
+    return this.operationControlService.executeConfirmed({
+      context: request.authContext, metadata: readOperationRequestMetadata(request),
+      toolName: 'platform_image_tags_set', arguments: { platformImageAssetId: id, tagIds: body.tagIds }, targetType: 'platform_image', targetId: id,
+      resolveConfirmation: async () => {
+        const target = await this.imageCatalogService.preparePlatformAssetTags(id, body, request.adminUser);
+        return { targetId: id, targetSnapshot: target, summary: { targetName: target.displayName, action: 'replace_all_image_tag_associations', tagIds: target.tagIds, destructive: false } };
+      },
+      execute: async () => ({ result: await execute() }),
+    });
   }
 
   @Post(':id/enable')

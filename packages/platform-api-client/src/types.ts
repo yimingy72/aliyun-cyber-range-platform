@@ -58,6 +58,7 @@ export type SyncRangeInstanceTemplateInput = {
   expectedTemplateRevision: number;
 };
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
+export type PlatformImageTag = { id: string; name: string };
 export type ImageCatalogScopePayload = {
   snapshots: Array<Record<string, unknown> & { id: string }>;
   catalogItems: Array<Record<string, unknown> & { id: string }>;
@@ -233,6 +234,9 @@ export type PlatformApiClientLike = {
   returnRangeTemplateToPrivate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
   removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
+  listPlatformImageTags(): Promise<PlatformImageTag[]>;
+  createPlatformImageTag(name: string, operation?: OperationRequest): Promise<PlatformImageTag>;
+  setPlatformImageTags(id: string, tagIds: string[], operation?: OperationRequest): Promise<PlatformImageAsset>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;
   renamePlatformImage(id: string, displayName: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
   publishPlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;

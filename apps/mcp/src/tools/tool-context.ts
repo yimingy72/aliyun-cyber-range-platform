@@ -36,6 +36,7 @@ export type ToolDefinition<TArgs = Record<string, unknown>> = {
   title?: string;
   description: string;
   requiredScopes: PlatformScope[];
+  adminOnly?: boolean;
   readOnlyHint?: boolean;
   annotations?: {
     destructiveHint?: boolean;

@@ -9,7 +9,7 @@ import { PlatformApiClient } from '@aliyun-cyber-range/platform-api-client';
 import type { McpConfig } from './config';
 import { authenticateRequest } from './auth';
 import { resolvePlatformApiToken } from './platform-session';
-import { createSdkServer } from './sdk-server';
+import { createSdkServer, pickRole } from './sdk-server';
 
 type HttpAppDependencies = {
   authenticateRequest?: typeof authenticateRequest;
@@ -68,7 +68,7 @@ export function createHttpApp(config: McpConfig, dependencies: HttpAppDependenci
           token: await resolvePlatformApiToken(config, auth),
         });
 
-      server = createSdkServer(client, auth.scopes);
+      server = createSdkServer(client, auth.scopes, pickRole(auth));
       transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await server.connect(transport);
       await transport.handleRequest(req, res);

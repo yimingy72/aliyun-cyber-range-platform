@@ -30,14 +30,14 @@ const allScopes = [
   'settings:write',
 ] as const;
 
-export function createSdkServer(client: PlatformApiClientLike, scopes: string[] = [...allScopes]) {
+export function createSdkServer(client: PlatformApiClientLike, scopes: string[] = [...allScopes], role?: 'admin' | 'user') {
   const registry = createToolRegistry(client);
   const server = new McpServer({
     name: 'aliyun-cyber-range-platform',
     version: '0.0.0',
   });
 
-  for (const tool of registry.listTools(scopes)) {
+  for (const tool of registry.listTools(scopes, role)) {
     server.registerTool(
       tool.name,
       {
@@ -49,12 +49,17 @@ export function createSdkServer(client: PlatformApiClientLike, scopes: string[] 
       },
       async (args, extra) => {
         const authScopes = pickScopes(extra.authInfo);
-        return registry.callTool(tool.name, authScopes.length > 0 ? authScopes : scopes, args as Record<string, unknown>);
+        return registry.callTool(tool.name, authScopes.length > 0 ? authScopes : scopes, args as Record<string, unknown>, pickRole(extra.authInfo) ?? role);
       },
     );
   }
 
   return server;
+}
+
+export function pickRole(authInfo: unknown): 'admin' | 'user' | undefined {
+  const role = (authInfo as { extra?: { role?: unknown } } | undefined)?.extra?.role;
+  return role === 'admin' || role === 'user' ? role : undefined;
 }
 
 function pickScopes(authInfo: unknown) {

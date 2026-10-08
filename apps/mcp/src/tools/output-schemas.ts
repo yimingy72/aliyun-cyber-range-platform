@@ -16,6 +16,9 @@ export const resourceSchema = z
 export const nullableResourceOutputSchema = resultOutputSchema(resourceSchema.nullable());
 export const resourceOutputSchema = resultOutputSchema(resourceSchema);
 export const resourceListOutputSchema = resultOutputSchema(z.array(resourceSchema));
+const imageTagSchema = z.object({ id: nonEmptyString, name: nonEmptyString });
+export const imageTagOutputSchema = resultOutputSchema(imageTagSchema);
+export const imageTagListOutputSchema = resultOutputSchema(z.array(imageTagSchema));
 
 export const removedOutputSchema = (idField: string) =>
   resultOutputSchema(

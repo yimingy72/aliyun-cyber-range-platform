@@ -148,6 +148,9 @@ function createClientStub(): ClientStub {
     returnRangeTemplateToPrivate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
+    listPlatformImageTags: vi.fn().mockResolvedValue([{ id: 'tag-1', name: 'Web' }]),
+    createPlatformImageTag: vi.fn().mockResolvedValue({ id: 'tag-2', name: 'Service' }),
+    setPlatformImageTags: vi.fn().mockResolvedValue({ id: 'img-1', tags: [] }),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),
     renamePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', displayName: 'renamed' }),
     publishPlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', visibility: 'platform' }),
@@ -226,6 +229,35 @@ function createClientStub(): ClientStub {
 }
 
 describe('tool registry', () => {
+  it('filters admin-only image tools using the authenticated role without granting new scopes', async () => {
+    const client = createClientStub(); const registry = createToolRegistry(client);
+    const names = registry.listTools(['images:read', 'images:write'], 'user').map(tool => tool.name);
+    for (const name of ['platform_image_collect', 'platform_image_publish', 'platform_image_unpublish', 'platform_image_tag_create']) expect(names).not.toContain(name);
+    expect(names).toContain('platform_image_tag_list'); expect(names).toContain('platform_image_tags_set');
+    await expect(registry.callTool('platform_image_tag_create', ['images:write'], { name: 'blocked' }, 'user')).rejects.toThrow('Forbidden tool');
+    expect(client.createPlatformImageTag).not.toHaveBeenCalled();
+    expect(registry.listTools(['images:write'], 'admin').map(tool => tool.name)).toContain('platform_image_tag_create');
+  });
+
+  it('exposes existing tag capabilities with strict schemas and forwards full replacements and confirmations', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    expect(registry.listTools(['images:read']).map(tool => tool.name)).toContain('platform_image_tag_list');
+    expect(registry.listTools(['images:read']).map(tool => tool.name)).not.toContain('platform_image_tag_create');
+    expect(registry.listTools(['images:write']).map(tool => tool.name)).toContain('platform_image_tags_set');
+    await expect(registry.callTool('platform_image_tag_list', ['images:read'], {})).resolves.toMatchObject({ structuredContent: { result: [{ id: 'tag-1', name: 'Web' }] } });
+    await registry.callTool('platform_image_tag_create', ['images:write'], { name: ' Service ', idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' });
+    expect(client.createPlatformImageTag).toHaveBeenCalledWith('Service', { idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' });
+    await registry.callTool('platform_image_tags_set', ['images:write'], { platformImageAssetId: 'img-1', tagIds: [], idempotencyKey: 'clear-tags', confirmationId: 'confirm-clear' });
+    expect(client.setPlatformImageTags).toHaveBeenCalledWith('img-1', [], { idempotencyKey: 'clear-tags', confirmationId: 'confirm-clear' });
+    const schema = registry.listTools(['images:write']).find(tool => tool.name === 'platform_image_tags_set')!.inputSchema!;
+    expect(schema.safeParse({ platformImageAssetId: 'img-1', tagIds: ['tag-1', 'tag-1'] }).success).toBe(false);
+    expect(schema.safeParse({ platformImageAssetId: 'img-1' }).success).toBe(false);
+    const names = registry.listTools(['images:read', 'images:write']).map(tool => tool.name);
+    expect(names).not.toContain('platform_image_tag_delete');
+    expect(names).not.toContain('platform_image_tag_rename');
+  });
+
   it('publishes every template orchestration tool with a complete MCP definition', () => {
     const registry = createToolRegistry(createClientStub());
     const tools = registry.listTools([
@@ -1197,7 +1229,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(72);
+    expect(tools).toHaveLength(75);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

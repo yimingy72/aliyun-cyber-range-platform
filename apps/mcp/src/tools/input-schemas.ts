@@ -22,6 +22,14 @@ const singleInstanceActionFields = {
 export const imageListInputSchema = z.object({
   view: z.enum(['platform', 'mine']).optional().describe('platform 查询平台可用镜像；mine 查询当前用户可管理的镜像。'),
 });
+export const imageTagListInputSchema = z.object({}).strict();
+export const imageTagCreateInputSchema = operationSchema.extend({
+  name: z.string().trim().min(1).max(32).describe('全局镜像标签名称，最多32字符；仅管理员可创建。'),
+}).strict();
+export const imageTagsSetInputSchema = operationSchema.extend({
+  platformImageAssetId: identifier.describe('当前调用者可管理的准确镜像资产ID。'),
+  tagIds: z.array(identifier).refine(ids => new Set(ids).size === ids.length, 'tagIds不得重复').describe('完整的目标标签ID集合；空数组清空该资产的全部关联。'),
+}).strict();
 export const imageCollectInputSchema = operationSchema.extend({
   snapshotId: identifier.describe('镜像目录返回的快照 ID。'),
   displayName: identifier.describe('收录后显示给平台用户的镜像名称。'),

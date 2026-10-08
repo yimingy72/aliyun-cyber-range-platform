@@ -191,7 +191,7 @@ export class ImageCatalogService {
     };
   }
 
-  async createPlatformImageTag(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
+  async preparePlatformImageTagCreation(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
     if (currentUser.role !== 'admin') {
       throw new ForbiddenException('Admin access required to create platform image tags');
     }
@@ -203,6 +203,11 @@ export class ImageCatalogService {
     if (existingTags.some((tag) => tag.normalizedName === normalizedName)) {
       throw new ConflictException('镜像标签已存在');
     }
+    return { name, normalizedName };
+  }
+
+  async createPlatformImageTag(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
+    const { name, normalizedName } = await this.preparePlatformImageTagCreation(input, currentUser);
 
     try {
       const tag = await this.adminRepository.createPlatformImageTag({
@@ -220,14 +225,24 @@ export class ImageCatalogService {
     }
   }
 
-  async setPlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
-    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+  private async prepareTagAssociation(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
     const tagIds = [...new Set(input.tagIds)];
     const tags = await this.adminRepository.listPlatformImageTagsByIds(tagIds);
 
     if (tags.length !== tagIds.length) {
       throw new BadRequestException('镜像标签不存在');
     }
+    return { asset, tagIds };
+  }
+
+  async preparePlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    const { asset, tagIds } = await this.prepareTagAssociation(id, input, currentUser);
+    return { platformImageAssetId: asset.id, displayName: asset.displayName, ownerUserId: asset.ownerUserId, accountUid: asset.accountUid, regionId: asset.regionId, tagIds };
+  }
+
+  async setPlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    const { tagIds } = await this.prepareTagAssociation(id, input, currentUser);
 
     const updatedAsset = await this.adminRepository.replacePlatformImageAssetTags(id, tagIds);
     return this.withCreatorUsername(updatedAsset, currentUser);

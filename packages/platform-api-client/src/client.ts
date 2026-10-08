@@ -26,6 +26,7 @@ import type {
   PlatformApiClientLike,
   PlatformApiClientOptions,
   PlatformImageAsset,
+  PlatformImageTag,
   PlatformImageView,
   ProvisionJob,
   RangeAccessPayload,
@@ -125,6 +126,19 @@ export class PlatformApiClient implements PlatformApiClientLike {
   async listPlatformImages(view: PlatformImageView = 'platform') {
     const result = await this.request<{ items: PlatformImageAsset[] }>(`/admin/platform-images?view=${encodeURIComponent(view)}`);
     return result.items;
+  }
+
+  async listPlatformImageTags() {
+    const result = await this.request<{ items: PlatformImageTag[] }>('/admin/platform-image-tags');
+    return result.items;
+  }
+
+  createPlatformImageTag(name: string, operation?: OperationRequest) {
+    return this.request<PlatformImageTag>('/admin/platform-image-tags', { method: 'POST', body: JSON.stringify({ name }), operation });
+  }
+
+  setPlatformImageTags(id: string, tagIds: string[], operation?: OperationRequest) {
+    return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/tags`, { method: 'PUT', body: JSON.stringify({ tagIds }), operation });
   }
 
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest) {

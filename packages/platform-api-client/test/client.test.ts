@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('PlatformApiClient', () => {
+  it('maps existing global tag and asset association APIs, passes confirmation headers and unwraps writes', async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init });
+      if (init?.method === 'GET') return new Response(JSON.stringify({ items: [{ id: 'tag-1', name: 'Web' }] }), { status: 200 });
+      return new Response(JSON.stringify({ operationId: 'operation-tags', result: input.endsWith('/tags') ? { id: 'asset/1', tags: [] } : { id: 'tag-2', name: 'API' } }), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'mock', fetch: fetchMock as typeof fetch });
+    await expect(client.listPlatformImageTags()).resolves.toEqual([{ id: 'tag-1', name: 'Web' }]);
+    await expect(client.createPlatformImageTag('API', { idempotencyKey: 'tag-new', confirmationId: 'tag-confirm' })).resolves.toEqual({ id: 'tag-2', name: 'API' });
+    await expect(client.setPlatformImageTags('asset/1', [], { idempotencyKey: 'set-tags', confirmationId: 'set-confirm' })).resolves.toMatchObject({ id: 'asset/1', tags: [] });
+    expect(calls[1]).toMatchObject({ input: 'https://platform.example/admin/platform-image-tags', init: { method: 'POST', body: JSON.stringify({ name: 'API' }), headers: { 'x-idempotency-key': 'tag-new', 'x-confirmation-id': 'tag-confirm' } } });
+    expect(calls[2]).toMatchObject({ input: 'https://platform.example/admin/platform-images/asset%2F1/tags', init: { method: 'PUT', body: JSON.stringify({ tagIds: [] }), headers: { 'x-idempotency-key': 'set-tags', 'x-confirmation-id': 'set-confirm' } } });
+  });
+
   it('passes an explicit owned-snapshot cleanup flag and confirmation metadata and returns verified progress', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/image-catalog/custom/source%2Fnew?deleteOwnedSnapshots=true');

@@ -8,10 +8,15 @@ import {
   imageImportJobListInputSchema,
   imageImportJobRetryInputSchema,
   imageListInputSchema,
+  imageTagListInputSchema,
+  imageTagCreateInputSchema,
+  imageTagsSetInputSchema,
   imageRenameInputSchema,
 } from './input-schemas';
 import {
   imageCatalogOutputSchema,
+  imageTagOutputSchema,
+  imageTagListOutputSchema,
   customImageCleanupOutputSchema,
   imageImportJobListOutputSchema,
   imageImportJobSchema,
@@ -28,6 +33,33 @@ const operation = (args: { idempotencyKey?: string; confirmationId?: string }) =
 
 export const imageTools: ToolDefinition[] = [
   {
+    name: 'platform_image_tag_list', title: '查询镜像标签字典',
+    description: '查询现有全局镜像标签定义（id、name），用于选择资产关联标签。当前字典只提供查询和创建能力。',
+    requiredScopes: ['images:read'], readOnlyHint: true,
+    inputSchema: imageTagListInputSchema, outputSchema: imageTagListOutputSchema,
+    call(context) { return context.client.listPlatformImageTags(); },
+  },
+  {
+    name: 'platform_image_tag_create', title: '创建镜像标签定义',
+    description: '仅管理员创建全局镜像标签定义，不自动关联资产。名称唯一，当前没有全局标签重命名或删除能力；调用前明确该持久字典变更并取得用户确认。',
+    requiredScopes: ['images:write'], adminOnly: true, annotations: { destructiveHint: false, idempotentHint: false },
+    inputSchema: imageTagCreateInputSchema, outputSchema: imageTagOutputSchema,
+    call(context, args) {
+      const input = args as { name: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.createPlatformImageTag(input.name, operation(input));
+    },
+  },
+  {
+    name: 'platform_image_tags_set', title: '替换镜像标签关联',
+    description: 'owner或管理员按完整tagIds集合替换准确镜像资产的全部标签关联；[]清空关联。普通用户不能修改他人资产，公开可见不等于可修改。保留全局标签定义，不操作云标签/资源；调用前取得用户确认。',
+    requiredScopes: ['images:write'], annotations: { destructiveHint: false, idempotentHint: true },
+    inputSchema: imageTagsSetInputSchema, outputSchema: resourceOutputSchema,
+    call(context, args) {
+      const input = args as { platformImageAssetId: string; tagIds: string[]; idempotencyKey?: string; confirmationId?: string };
+      return context.client.setPlatformImageTags(input.platformImageAssetId, input.tagIds, operation(input));
+    },
+  },
+  {
     name: 'platform_image_list',
     title: '查询平台镜像',
     description: '对应镜像中心的“平台镜像/我的镜像”列表。返回当前调用者可见的平台镜像资产；创建独立实例或转换拓扑前，用返回的资产 ID 与 imageId 精确定位镜像。',
@@ -42,8 +74,8 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_collect',
     title: '收录镜像为平台资产',
-    description: '对应镜像中心的“收录”。将已同步的云镜像快照纳入平台镜像资产；会创建可管理资产，调用前必须取得用户确认。',
-    requiredScopes: ['images:write'],
+    description: '对应镜像中心的“收录”。仅管理员将已同步的云镜像快照纳入平台镜像资产；会创建可管理资产，调用前必须取得用户确认。',
+    requiredScopes: ['images:write'], adminOnly: true,
     inputSchema: imageCollectInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
@@ -90,8 +122,8 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_publish',
     title: '发布平台镜像',
-    description: '对应镜像中心的“发布到平台”。将当前用户拥有的镜像设为平台可见，供其他用户使用；调用前必须取得用户确认。',
-    requiredScopes: ['images:write'],
+    description: '对应镜像中心的“发布到平台”。仅管理员将有owner的镜像设为平台可见，供其他用户使用；调用前必须取得用户确认。',
+    requiredScopes: ['images:write'], adminOnly: true,
     inputSchema: imageAssetOperationInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
@@ -102,8 +134,8 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_unpublish',
     title: '取消发布平台镜像',
-    description: '对应镜像中心的“取消发布”。将镜像恢复为私有可见性；调用前必须取得用户确认。',
-    requiredScopes: ['images:write'],
+    description: '对应镜像中心的“取消发布”。仅管理员将有owner的镜像恢复为私有可见性；调用前必须取得用户确认。',
+    requiredScopes: ['images:write'], adminOnly: true,
     inputSchema: imageAssetOperationInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
