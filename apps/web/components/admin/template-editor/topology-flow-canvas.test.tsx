@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TopologyFlowCanvas } from './topology-flow-canvas';
+import { AdminPageCache } from '../admin-page-cache';
 import type { TemplateEdge } from './template-editor-screen';
 import type { TemplateNode } from '../../../lib/scenario-graph';
 
@@ -609,6 +610,25 @@ describe('TopologyFlowCanvas', () => {
     fireEvent.keyDown(window, { key: 'Backspace' });
 
     expect(canvasProps.onDeleteSelection).toHaveBeenCalledTimes(2);
+  });
+
+  it('只删除当前可见保留编辑器中的选择，不修改隐藏页面', () => {
+    const first = createCanvasProps();
+    const second = createCanvasProps();
+    const createPage = (route: string) => <TopologyFlowCanvas {...(route.endsWith('/a') ? first : second)} />;
+    const { rerender } = render(
+      <AdminPageCache createPage={createPage} pathname="/admin/scenarios/a">{null}</AdminPageCache>,
+    );
+    rerender(<AdminPageCache createPage={createPage} pathname="/admin/scenarios/b">{null}</AdminPageCache>);
+
+    fireEvent.keyDown(window, { key: 'Delete' });
+    expect(first.onDeleteSelection).not.toHaveBeenCalled();
+    expect(second.onDeleteSelection).toHaveBeenCalledOnce();
+
+    rerender(<AdminPageCache createPage={createPage} pathname="/admin/scenarios/a">{null}</AdminPageCache>);
+    fireEvent.keyDown(window, { key: 'Backspace' });
+    expect(first.onDeleteSelection).toHaveBeenCalledOnce();
+    expect(second.onDeleteSelection).toHaveBeenCalledOnce();
   });
 
   it('按 Escape 清空本地节点选中并上报空选择', async () => {

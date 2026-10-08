@@ -37,39 +37,39 @@ export function createHttpApp(config: McpConfig, dependencies: HttpAppDependenci
       return;
     }
 
-    const auth = await authenticate(req);
-
-    if (!auth) {
-      res.statusCode = 401;
-      res.setHeader('content-type', 'application/json');
-      res.end(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Missing or invalid platform token',
-          },
-          id: null,
-        }),
-      );
-      return;
-    }
-
-    (req as typeof req & { auth?: AuthInfo }).auth = auth;
-
-    const client =
-      dependencies.client ??
-      new PlatformApiClient({
-        baseUrl: config.platformApiBaseUrl,
-        token: await resolvePlatformApiToken(config, auth),
-      });
-
-    const server = createSdkServer(client, auth.scopes);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
+    let server: ReturnType<typeof createSdkServer> | undefined;
+    let transport: StreamableHTTPServerTransport | undefined;
 
     try {
+      const auth = await authenticate(req);
+
+      if (!auth) {
+        res.statusCode = 401;
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32001,
+              message: 'Missing or invalid platform token',
+            },
+            id: null,
+          }),
+        );
+        return;
+      }
+
+      (req as typeof req & { auth?: AuthInfo }).auth = auth;
+
+      const client =
+        dependencies.client ??
+        new PlatformApiClient({
+          baseUrl: config.platformApiBaseUrl,
+          token: await resolvePlatformApiToken(config, auth),
+        });
+
+      server = createSdkServer(client, auth.scopes);
+      transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await server.connect(transport);
       await transport.handleRequest(req, res);
     } catch (error) {
@@ -88,8 +88,7 @@ export function createHttpApp(config: McpConfig, dependencies: HttpAppDependenci
         );
       }
     } finally {
-      void transport.close();
-      void server.close();
+      await Promise.allSettled([transport?.close(), server?.close()]);
     }
   });
 }

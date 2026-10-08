@@ -146,6 +146,7 @@ const {
   fetchRangeInstanceDetailMock,
   fetchInstanceTypeAvailabilityMock,
   fetchPlatformImagesMock,
+  fetchProvisionJobDetailMock,
   saveRangeInstanceDraftMock,
   discardRangeInstanceDraftMock,
   applyRangeInstanceDraftMock,
@@ -155,6 +156,7 @@ const {
   pushMock,
   replaceMock,
   routerMock,
+  sessionState,
 } = vi.hoisted(() => {
   const pushMock = vi.fn();
   const replaceMock = vi.fn();
@@ -163,6 +165,7 @@ const {
     fetchRangeInstanceDetailMock: vi.fn(),
     fetchInstanceTypeAvailabilityMock: vi.fn(),
     fetchPlatformImagesMock: vi.fn(),
+    fetchProvisionJobDetailMock: vi.fn(),
     saveRangeInstanceDraftMock: vi.fn(),
     discardRangeInstanceDraftMock: vi.fn(),
     applyRangeInstanceDraftMock: vi.fn(),
@@ -175,6 +178,7 @@ const {
       push: pushMock,
       replace: replaceMock,
     },
+    sessionState: { token: 'dev-admin-token' },
   };
 });
 
@@ -194,6 +198,7 @@ vi.mock('../../lib/admin-api', () => ({
   fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
   fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   fetchPlatformImages: fetchPlatformImagesMock,
+  fetchProvisionJobDetail: fetchProvisionJobDetailMock,
   saveRangeInstanceDraft: saveRangeInstanceDraftMock,
   discardRangeInstanceDraft: discardRangeInstanceDraftMock,
   applyRangeInstanceDraft: applyRangeInstanceDraftMock,
@@ -203,7 +208,7 @@ vi.mock('../../lib/admin-api', () => ({
 
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
-    token: 'dev-admin-token',
+    token: sessionState.token,
     isReady: true,
     logout: vi.fn(),
   }),
@@ -214,9 +219,13 @@ vi.mock('./template-editor/topology-flow-canvas', () => ({
 }));
 
 import { RangeInstanceDetailScreen } from './range-instance-detail-screen';
+import { AdminPageCache } from './admin-page-cache';
 
 describe('RangeInstanceDetailScreen', () => {
   beforeEach(() => {
+    sessionState.token = 'dev-admin-token';
+    fetchProvisionJobDetailMock.mockReset();
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-1', jobType: 'update', status: 'succeeded' }, steps: [] });
     fetchInstanceTypeAvailabilityMock.mockResolvedValue({
       cpu: 2,
       memory: 2,
@@ -239,6 +248,96 @@ describe('RangeInstanceDetailScreen', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it('refreshes a retained detail on return while preserving unsaved edits and their original revision', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    const original = {
+      id: 'range-1', templateId: 'template-1', status: 'running', name: '原实例名', draftRevision: 3,
+      runtimeTopologyGraph: createValidTopologyGraph(),
+    };
+    fetchRangeInstanceDetailMock.mockResolvedValue(original);
+    saveRangeInstanceDraftMock.mockReset();
+    saveRangeInstanceDraftMock.mockResolvedValue({ ...original, draftRevision: 4 });
+    const createPage = (route: string) => route === '/admin/ranges/range-1'
+      ? <RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />
+      : <p>其他页面</p>;
+    const { rerender } = render(<AdminPageCache createPage={createPage} pathname="/admin/ranges/range-1">{null}</AdminPageCache>);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'checker' }));
+    fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
+    rerender(<AdminPageCache createPage={createPage} pathname="/admin/users">{null}</AdminPageCache>);
+    expect(fetchRangeInstanceDetailMock).toHaveBeenCalledOnce();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ ...original, name: '新实例名', draftRevision: 7 });
+    rerender(<AdminPageCache createPage={createPage} pathname="/admin/ranges/range-1">{null}</AdminPageCache>);
+    await screen.findByText('新实例名', { selector: 'strong' });
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('4');
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalledWith(
+      'http://localhost:3001', 'dev-admin-token', 'range-1', expect.objectContaining({ expectedDraftRevision: 3 }),
+    ));
+  });
+
+  it('keeps unsaved instance graph changes when the access token renews', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph(),
+    });
+    const { rerender } = render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'checker' }));
+    fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '4' } });
+    sessionState.token = 'renewed-token';
+    rerender(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    await waitFor(() => expect(fetchRangeInstanceDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'renewed-token', 'range-1'));
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('4');
+  });
+
+  it.each(['succeeded', 'failed'])('tracks apply through %s and refreshes the runtime snapshot', async (status) => {
+    const original = {
+      id: 'range-1', templateId: 'template-1', status: 'running', draftRevision: 0,
+      runtimeTopologyGraph: createValidTopologyGraph(),
+    };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(original).mockResolvedValue({
+      ...original, runtimeTopologyGraph: createValidTopologyGraph('应用后的主机'),
+    });
+    saveRangeInstanceDraftMock.mockResolvedValue({ ...original, draftRevision: 1, draftTopologyGraph: createValidTopologyGraph() });
+    const job = { id: 'job-apply', jobType: 'update', status: 'pending' };
+    applyRangeInstanceDraftMock.mockResolvedValue(job);
+    fetchProvisionJobDetailMock.mockResolvedValueOnce({ job, steps: [] }).mockResolvedValue({
+      job: { ...job, status, errorSummary: status === 'failed' ? '容量不足，应用失败' : null }, steps: [],
+    });
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: '应用变更' }));
+    await screen.findByText('实例配置变更正在应用。');
+    expect((screen.getByRole('button', { name: '应用变更' }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(screen.getByRole('button', { name: '应用后的主机' })).toBeTruthy(), { timeout: 4000 });
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledTimes(2);
+    expect((screen.getByRole('button', { name: '应用变更' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText(status === 'succeeded' ? '实例配置变更已应用。' : '容量不足，应用失败')).toBeTruthy();
+  });
+
+  it('pauses pending update polling while hidden and resumes it when the retained detail returns', async () => {
+    const payload = {
+      id: 'range-1', status: 'running', lastJobId: 'job-apply', runtimeTopologyGraph: createValidTopologyGraph(),
+    };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue(payload);
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-apply', jobType: 'update', status: 'running' }, steps: [] });
+    const createPage = (route: string) => route === '/admin/ranges/range-1'
+      ? <RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />
+      : <p>其他页面</p>;
+    const { rerender } = render(<AdminPageCache createPage={createPage} pathname="/admin/ranges/range-1">{null}</AdminPageCache>);
+    await screen.findByText('实例配置变更正在应用。');
+    rerender(<AdminPageCache createPage={createPage} pathname="/admin/users">{null}</AdminPageCache>);
+    await new Promise((resolve) => window.setTimeout(resolve, 2100));
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledOnce();
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-apply', jobType: 'update', status: 'succeeded' }, steps: [] });
+    rerender(<AdminPageCache createPage={createPage} pathname="/admin/ranges/range-1">{null}</AdminPageCache>);
+    await screen.findByText('实例配置变更已应用。');
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledTimes(2);
   });
 
   it('renders overview, node directory, and topology tabs from the runtime snapshot', async () => {

@@ -68,7 +68,17 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
       KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+      PLATFORM_ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      PLATFORM_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
       WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:3000}
+      KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
+      MCP_OIDC_CLIENT_ID: ${MCP_OIDC_CLIENT_ID:-mcp-gateway}
+      MCP_OIDC_CLIENT_SECRET: ${MCP_OIDC_CLIENT_SECRET:-mcp-gateway-dev-only}
+      MCP_SMOKE_CLIENT_ID: ${MCP_SMOKE_CLIENT_ID:-smoke-conf}
+      MCP_SMOKE_CLIENT_SECRET: ${MCP_SMOKE_CLIENT_SECRET:-smoke-secret}
+      MCP_SMOKE_OIDC_CLIENT_ID: ${MCP_SMOKE_OIDC_CLIENT_ID:-mcp-smoke-sa}
+      MCP_SMOKE_OIDC_CLIENT_SECRET: ${MCP_SMOKE_OIDC_CLIENT_SECRET:-mcp-smoke-secret}
     volumes:
       - ../../scripts/dev/bootstrap-keycloak.sh:/opt/keycloak/bootstrap-keycloak.sh:ro
 
@@ -87,10 +97,10 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
-      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
-      OIDC_JWKS_URL: http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs
-      OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token
-      KEYCLOAK_ADMIN_BASE_URL: http://keycloak:8080
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token}
+      KEYCLOAK_ADMIN_BASE_URL: ${KEYCLOAK_ADMIN_BASE_URL:-http://keycloak:8080}
       KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
@@ -109,6 +119,8 @@ services:
       OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT: ${OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT:-10}
       ALICLOUD_ACCESS_KEY: ${ALICLOUD_ACCESS_KEY:-}
       ALICLOUD_SECRET_KEY: ${ALICLOUD_SECRET_KEY:-}
+      PLATFORM_IMAGE_SECRET_KEY: ${PLATFORM_IMAGE_SECRET_KEY:-change-this-before-production}
+      IMAGE_IMPORT_ALLOWED_ORIGINS: ${IMAGE_IMPORT_ALLOWED_ORIGINS:-http://localhost:3000}
       ALICLOUD_REGION: ${ALICLOUD_REGION:-cn-hangzhou}
       ALICLOUD_ZONE_ID: ${ALICLOUD_ZONE_ID:-cn-hangzhou-h}
       ALICLOUD_IMAGE_ID: ${ALICLOUD_IMAGE_ID:-}
@@ -146,10 +158,10 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
-      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
-      OIDC_JWKS_URL: http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs
-      OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token
-      KEYCLOAK_ADMIN_BASE_URL: http://keycloak:8080
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token}
+      KEYCLOAK_ADMIN_BASE_URL: ${KEYCLOAK_ADMIN_BASE_URL:-http://keycloak:8080}
       KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
@@ -166,6 +178,8 @@ services:
       OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT: ${OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT:-10}
       ALICLOUD_ACCESS_KEY: ${ALICLOUD_ACCESS_KEY:-}
       ALICLOUD_SECRET_KEY: ${ALICLOUD_SECRET_KEY:-}
+      PLATFORM_IMAGE_SECRET_KEY: ${PLATFORM_IMAGE_SECRET_KEY:-change-this-before-production}
+      IMAGE_IMPORT_ALLOWED_ORIGINS: ${IMAGE_IMPORT_ALLOWED_ORIGINS:-http://localhost:3000}
       ALICLOUD_REGION: ${ALICLOUD_REGION:-cn-hangzhou}
       ALICLOUD_ZONE_ID: ${ALICLOUD_ZONE_ID:-cn-hangzhou-h}
       ALICLOUD_IMAGE_ID: ${ALICLOUD_IMAGE_ID:-}
@@ -186,7 +200,7 @@ services:
       NODE_ENV: production
       WEB_PORT: 3000
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
-      NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
+      NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
       NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-platform-web}
     ports:
       - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
@@ -206,9 +220,9 @@ services:
       MCP_STATIC_BEARER_TOKEN: ${MCP_STATIC_BEARER_TOKEN:-}
       MCP_STATIC_SCOPES: ${MCP_STATIC_SCOPES:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
-      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
-      OIDC_JWKS_URL: http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs
-      OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token}
       MCP_OIDC_CLIENT_ID: ${MCP_OIDC_CLIENT_ID:-mcp-gateway}
       MCP_OIDC_CLIENT_SECRET: ${MCP_OIDC_CLIENT_SECRET:-mcp-gateway-dev-only}
       MCP_OIDC_AUDIENCE: ${MCP_OIDC_AUDIENCE:-mcp-gateway}

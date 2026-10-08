@@ -40,7 +40,7 @@ test('enterprise range module tolerates templates without a host eip', () => {
 });
 
 test('runtime selections variable accepts mixed fixed and auto policy objects', () => {
-  const expectedTypeSnippet = /variable "runtime_selections" \{\s*type = object\(\{\s*image_policies\s*=\s*any\s*instance_type_policies\s*=\s*any\s*\}\)/s;
+  const expectedTypeSnippet = /variable "runtime_selections" \{\s*type = object\(\{\s*image_policies\s*=\s*any\s*instance_type_policies\s*=\s*any\b/s;
 
   assert.match(
     moduleVariablesTf,

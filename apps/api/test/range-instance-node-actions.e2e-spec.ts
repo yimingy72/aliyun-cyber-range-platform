@@ -305,6 +305,13 @@ describe('Range instance node actions API', () => {
         return new Response(JSON.stringify({ ImageId: 'm-image-single-456' }), { status: 200 });
       }
 
+      if (url.includes('DescribeImages')) {
+        return new Response(JSON.stringify({ Images: { Image: [{
+          ImageId: 'm-image-single-456',
+          DiskDeviceMappings: { DiskDeviceMapping: [{ SnapshotId: 's-image-single-456' }] },
+        }] } }), { status: 200 });
+      }
+
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
@@ -344,7 +351,7 @@ describe('Range instance node actions API', () => {
           platformImageAssetId: response.body.platformImageAsset.id,
         }),
         expect.objectContaining({
-          cloudResourceId: 'm-image-single-456',
+          cloudResourceId: 's-image-single-456',
           cloudResourceType: 'snapshot',
           platformImageAssetId: response.body.platformImageAsset.id,
         }),
@@ -397,6 +404,13 @@ describe('Range instance node actions API', () => {
         return new Response(JSON.stringify({ ImageId: 'm-image-owner-789' }), { status: 200 });
       }
 
+      if (url.includes('DescribeImages')) {
+        return new Response(JSON.stringify({ Images: { Image: [{
+          ImageId: 'm-image-owner-789',
+          DiskDeviceMappings: { DiskDeviceMapping: [{ SnapshotId: 's-image-owner-789' }] },
+        }] } }), { status: 200 });
+      }
+
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
@@ -424,13 +438,15 @@ describe('Range instance node actions API', () => {
           ownerUserId: owner.id,
           billingScope: 'user',
           rangeInstanceId: ownerInstance.id,
+          platformImageAssetId: response.body.platformImageAsset.id,
         }),
         expect.objectContaining({
-          cloudResourceId: 'm-image-owner-789',
+          cloudResourceId: 's-image-owner-789',
           cloudResourceType: 'snapshot',
           ownerUserId: owner.id,
           billingScope: 'user',
           rangeInstanceId: ownerInstance.id,
+          platformImageAssetId: response.body.platformImageAsset.id,
         }),
       ]),
     );
@@ -463,6 +479,13 @@ describe('Range instance node actions API', () => {
         return new Response(JSON.stringify({ ImageId: 'm-image-range-owner-790' }), { status: 200 });
       }
 
+      if (url.includes('DescribeImages')) {
+        return new Response(JSON.stringify({ Images: { Image: [{
+          ImageId: 'm-image-range-owner-790',
+          DiskDeviceMappings: { DiskDeviceMapping: [{ SnapshotId: 's-image-range-owner-790' }] },
+        }] } }), { status: 200 });
+      }
+
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
@@ -490,13 +513,15 @@ describe('Range instance node actions API', () => {
           ownerUserId: owner.id,
           billingScope: 'user',
           rangeInstanceId: ownerRange.id,
+          platformImageAssetId: response.body.platformImageAsset.id,
         }),
         expect.objectContaining({
-          cloudResourceId: 'm-image-range-owner-790',
+          cloudResourceId: 's-image-range-owner-790',
           cloudResourceType: 'snapshot',
           ownerUserId: owner.id,
           billingScope: 'user',
           rangeInstanceId: ownerRange.id,
+          platformImageAssetId: response.body.platformImageAsset.id,
         }),
       ]),
     );

@@ -89,7 +89,7 @@ export class AdminUsersController {
     const metadata = readOperationRequestMetadata(request);
     return this.operationControlService.executeConfirmed({
       context: request.authContext,
-      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${targetId}` },
+      metadata,
       toolName,
       arguments: argumentsValue,
       targetType: 'platform_user',

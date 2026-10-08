@@ -75,7 +75,7 @@ export class RangesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `launch:${body.templateId}:${body.name}` },
+        metadata,
         toolName: 'range_instance_launch',
         arguments: body as unknown as Record<string, unknown>,
         targetType: 'range_instance',
@@ -100,7 +100,7 @@ export class RangesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `destroy:${id}` },
+        metadata,
         toolName: 'range_instance_destroy',
         arguments: { rangeInstanceId: id },
         targetType: 'range_instance',
@@ -222,10 +222,9 @@ export class RangesController {
     details: Record<string, unknown> = {},
   ) {
     const metadata = readOperationRequestMetadata(request);
-    const nodeId = typeof argumentsValue.nodeId === 'string' ? `:${argumentsValue.nodeId}` : '';
     return this.operationControlService.executeConfirmed({
       context: request.authContext,
-      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${rangeInstanceId}${nodeId}` },
+      metadata,
       toolName,
       arguments: argumentsValue,
       targetType: 'range_instance',

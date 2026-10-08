@@ -16,6 +16,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
 
 let repositoryForLogin: AdminRepository;
+const futureExpiration = new Date(Date.now() + 48 * 60 * 60 * 1_000).toISOString();
 
 function createSystemConfigServiceStub() {
   return {
@@ -51,7 +52,7 @@ describe('single instances', () => {
   };
   let adminToken: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
@@ -133,13 +134,11 @@ describe('single instances', () => {
     adminToken = await loginAs(app);
   });
 
-  beforeEach(() => {
-    fetchMock.mockImplementation(async () => {
-      return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
-    });
-  });
-
-  afterAll(async () => {
+  afterEach(async () => {
+    const worker = app.get(ProvisioningWorkerService) as unknown as { activeTasks: Set<Promise<void>> };
+    while (worker.activeTasks.size > 0) {
+      await Promise.allSettled([...worker.activeTasks]);
+    }
     fetchMock.mockRestore();
     await app.close();
   });
@@ -155,7 +154,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 2,
         password: '',
         remark: 'single instance',
@@ -227,7 +226,7 @@ describe('single instances', () => {
           cpu: 2,
           memory: 4,
           quantity: 1,
-          expiresAt: '2026-07-21T08:00:00.000Z',
+          expiresAt: futureExpiration,
         },
         'admin',
       ),
@@ -236,13 +235,13 @@ describe('single instances', () => {
         cpu: 2,
         memory: 4,
         systemDiskSize: 40,
-        expiresAt: '2026-07-21T08:00:00.000Z',
+        expiresAt: futureExpiration,
       },
       summary: {
         cpu: 2,
         memory: 4,
         systemDiskSize: 40,
-        expiresAt: '2026-07-21T08:00:00.000Z',
+        expiresAt: futureExpiration,
         ingress: 'TCP 1-65535 from 0.0.0.0/0',
       },
     });
@@ -292,7 +291,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'private owner launch',
@@ -355,7 +354,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'private pending launch',
@@ -388,6 +387,7 @@ describe('single instances', () => {
               Instance: [
                 {
                   InstanceId: 'i-random-host-01',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-random-host-01' }] },
                   InstanceName: 'random-host-lab',
                   HostName: 'iZbp1randomhost',
                   Status: 'Running',
@@ -413,7 +413,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'no host name',
@@ -491,7 +491,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-20T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'billing tag launch',
@@ -571,6 +571,7 @@ describe('single instances', () => {
               Instance: [
                 {
                   InstanceId: 'i-default-host-01',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-default-host-01' }] },
                   InstanceName: 'default-host-lab',
                   HostName: 'packed-default-host',
                   Status: 'Running',
@@ -596,7 +597,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'image default host name',
@@ -668,7 +669,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'private foreign launch',
@@ -733,7 +734,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 2,
         password: '',
         remark: 'round robin offset',
@@ -787,7 +788,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'windows launch',
@@ -810,7 +811,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 2,
         password: '',
         remark: 'random passwords',
@@ -836,7 +837,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 2,
         password: 'SharedPassword123!',
         remark: 'shared password',
@@ -858,7 +859,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 5,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
       remark: 'grouped launch',
     });
 
@@ -1011,7 +1012,7 @@ describe('single instances', () => {
       quantity: 1,
       createdBy: 'test-user',
       ownerUserId: 'test-user',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     const userInstance = await repository.createRangeInstance({
@@ -1111,7 +1112,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 2,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     await repository.createRangeInstance({
@@ -1193,7 +1194,7 @@ describe('single instances', () => {
           cpu: 2,
           memory: 2,
           systemDiskSize: 40,
-          expiresAt: '2026-07-10T12:00:00.000Z',
+          expiresAt: futureExpiration,
           quantity: 2,
           password: '',
           remark: 'dispatch order',
@@ -1220,7 +1221,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 2,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     await repository.createRangeInstance({
@@ -1329,7 +1330,7 @@ describe('single instances', () => {
           cpu: 2,
           memory: 2,
           systemDiskSize: 40,
-          expiresAt: '2026-07-10T12:00:00.000Z',
+          expiresAt: futureExpiration,
           quantity: 2,
           password: '',
           remark: 'dispatch failure fallback',
@@ -1353,7 +1354,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 2,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     await repository.createRangeInstance({
@@ -1463,6 +1464,7 @@ describe('single instances', () => {
               Instance: [
                 {
                   InstanceId: 'i-batch-01',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-batch-01' }] },
                   InstanceName: 'web-lab-01',
                   HostName: 'web-host-01',
                   Status: 'Running',
@@ -1483,6 +1485,7 @@ describe('single instances', () => {
               Instance: [
                 {
                   InstanceId: 'i-batch-02',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-batch-02' }] },
                   InstanceName: 'web-lab-02',
                   HostName: 'web-host-02',
                   Status: 'Running',
@@ -1576,6 +1579,7 @@ describe('single instances', () => {
               Instance: [
                 {
                   InstanceId: 'i-public-ip-01',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-public-ip-01' }] },
                   InstanceName: 'public-ip-lab',
                   HostName: 'public-ip-host',
                   Status: 'Running',
@@ -1603,7 +1607,7 @@ describe('single instances', () => {
         cpu: 2,
         memory: 2,
         systemDiskSize: 40,
-        expiresAt: '2026-07-10T12:00:00.000Z',
+        expiresAt: futureExpiration,
         quantity: 1,
         password: '',
         remark: 'public ip readiness',
@@ -1648,6 +1652,7 @@ describe('single instances', () => {
               Instance: [
                 {
                   InstanceId: 'i-short-expire-01',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-short-expire-01' }] },
                   InstanceName: 'short-expire-lab',
                   HostName: 'short-expire-host',
                   Status: 'Running',
@@ -1712,7 +1717,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 2,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     const first = await repository.createRangeInstance({
@@ -1840,7 +1845,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 1,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     const instance = await repository.createRangeInstance({
@@ -1926,7 +1931,7 @@ describe('single instances', () => {
       systemDiskSize: 40,
       quantity: 2,
       createdBy: 'admin',
-      expiresAt: new Date('2026-07-10T12:00:00.000Z'),
+      expiresAt: new Date(futureExpiration),
     });
 
     const first = await repository.createRangeInstance({

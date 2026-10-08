@@ -67,7 +67,7 @@ export class SingleInstancesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `launch:${body.platformImageAssetId}:${body.name}` },
+        metadata,
         toolName: 'single_instance_batch_launch',
         arguments: input as unknown as Record<string, unknown>,
         targetType: 'single_instance_batch',
@@ -87,7 +87,7 @@ export class SingleInstancesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `destroy:${id}` },
+        metadata,
         toolName: 'single_instance_destroy',
         arguments: { singleInstanceId: id },
         targetType: 'single_instance',
@@ -112,7 +112,7 @@ export class SingleInstancesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `destroy-batch:${id}` },
+        metadata,
         toolName: 'single_instance_batch_destroy',
         arguments: { batchId: id },
         targetType: 'single_instance_batch',
@@ -130,7 +130,7 @@ export class SingleInstancesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `retry:${id}` },
+        metadata,
         toolName: 'single_instance_retry',
         arguments: { singleInstanceId: id },
         targetType: 'single_instance',
@@ -174,7 +174,7 @@ export class SingleInstancesController {
       const metadata = readOperationRequestMetadata(request);
       return this.operationControlService.executeConfirmed({
         context: request.authContext,
-        metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${action}:${id}` },
+        metadata,
         toolName: `single_instance_${action}`,
         arguments: { singleInstanceId: id, ...payload },
         targetType: 'single_instance',

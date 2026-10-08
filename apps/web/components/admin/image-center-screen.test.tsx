@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminApiError } from '../../lib/admin-api';
+import { ADMIN_PAGE_SIZE_STORAGE_KEY } from './admin-pagination';
 import type {
   ImageCatalogItem,
   ImageCatalogScopePayload,
@@ -252,6 +253,7 @@ const exportingMyImagesPayload: PlatformImageAssetListPayload = {
 };
 
 beforeEach(() => {
+  window.localStorage.removeItem(ADMIN_PAGE_SIZE_STORAGE_KEY);
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
   fetchPlatformImagesMock.mockReset();
@@ -776,6 +778,9 @@ describe('ImageCenterScreen', () => {
   });
 
   it('creates a direct-OSS upload session and completes the Alibaba Cloud import after a file upload', async () => {
+    const openUpload = vi.fn();
+    const setUploadHeader = vi.fn();
+    const sendUpload = vi.fn();
     class SuccessfulXmlHttpRequest {
       status = 200;
       upload: {
@@ -784,9 +789,10 @@ describe('ImageCenterScreen', () => {
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
 
-      open() {}
-      setRequestHeader() {}
-      send() {
+      open = openUpload;
+      setRequestHeader = setUploadHeader;
+      send(file: File) {
+        sendUpload(file);
         this.upload.onprogress?.({ lengthComputable: true, loaded: 4, total: 4 });
         this.onload?.();
       }
@@ -800,9 +806,9 @@ describe('ImageCenterScreen', () => {
       osType: 'linux',
       architecture: 'x86_64',
       bootMode: 'BIOS',
-      imageFormat: 'qcow2',
+      imageFormat: 'raw',
       systemDiskSize: 40,
-      sourceFileName: 'ubuntu.qcow2',
+      sourceFileName: 'ubuntu.raw',
       sourceContentType: 'application/octet-stream',
       sourceSizeBytes: 4,
       uploadExpiresAt: '2026-07-20T00:30:00.000Z',
@@ -812,7 +818,7 @@ describe('ImageCenterScreen', () => {
       job: createdJob,
       upload: {
         method: 'PUT',
-        url: 'https://example.oss-cn-hangzhou.aliyuncs.com/image-imports/ubuntu.qcow2',
+        url: 'https://example.oss-cn-hangzhou.aliyuncs.com/image-imports/ubuntu.raw',
         headers: { 'Content-Type': 'application/octet-stream' },
         expiresAt: '2026-07-20T00:30:00.000Z',
       },
@@ -849,7 +855,7 @@ describe('ImageCenterScreen', () => {
       fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
       fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
       fireEvent.change(screen.getByLabelText('系统盘镜像文件'), {
-        target: { files: [new File(['disk'], 'ubuntu.qcow2', { type: 'application/octet-stream' })] },
+        target: { files: [new File(['disk'], 'ubuntu.raw', { type: 'application/octet-stream' })] },
       });
       fireEvent.click(screen.getByRole('combobox', { name: '上传镜像操作系统' }));
       fireEvent.click(screen.getByRole('option', { name: 'Windows' }));
@@ -861,7 +867,9 @@ describe('ImageCenterScreen', () => {
       fireEvent.click(screen.getByRole('option', { name: 'RAW' }));
       expect(screen.getByRole('combobox', { name: '上传镜像格式' }).textContent).toContain('RAW');
       const submitButton = screen.getByRole('button', { name: '上传并导入' });
-      fireEvent.submit(submitButton.closest('form') as HTMLFormElement);
+      expect((submitButton as HTMLButtonElement).form?.id).toBe('image-import-form');
+      // Synthetic files in jsdom do not satisfy native file-input validation; submit the associated form.
+      fireEvent.submit((submitButton as HTMLButtonElement).form!);
 
       await waitFor(() => {
         expect(createImageImportMock).toHaveBeenCalledWith(
@@ -873,8 +881,8 @@ describe('ImageCenterScreen', () => {
             osType: 'windows',
             architecture: 'arm64',
             bootMode: 'UEFI',
-            imageFormat: 'qcow2',
-            sourceFileName: 'ubuntu.qcow2',
+            imageFormat: 'raw',
+            sourceFileName: 'ubuntu.raw',
             sourceSizeBytes: 4,
           }),
         );
@@ -886,6 +894,10 @@ describe('ImageCenterScreen', () => {
           'image-import-job-1',
         );
       });
+      expect(openUpload).toHaveBeenCalledWith('PUT', expect.stringContaining('image-imports/ubuntu.raw'));
+      expect(setUploadHeader).toHaveBeenCalledWith('Content-Type', 'application/octet-stream');
+      expect(sendUpload).toHaveBeenCalledWith(expect.objectContaining({ name: 'ubuntu.raw', size: 4 }));
+      expect(sendUpload.mock.invocationCallOrder[0]).toBeLessThan(completeImageImportMock.mock.invocationCallOrder[0]);
       expect(await screen.findByText('镜像文件已上传，阿里云正在导入；导入完成后会自动启用“我的镜像”。')).toBeTruthy();
       expect(screen.queryByRole('dialog', { name: '上传本地镜像' })).toBeNull();
       expect(await screen.findByText('ubuntu')).toBeTruthy();
@@ -893,6 +905,19 @@ describe('ImageCenterScreen', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('rejects a selected import format that does not match the file before creating an upload job', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+    fireEvent.change(screen.getByLabelText('系统盘镜像文件'), {
+      target: { files: [new File(['disk'], 'ubuntu.qcow2', { type: 'application/octet-stream' })] },
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: '上传镜像格式' }));
+    fireEvent.click(screen.getByRole('option', { name: 'RAW' }));
+    fireEvent.submit((screen.getByRole('button', { name: '上传并导入' }) as HTMLButtonElement).form!);
+    expect((await screen.findByRole('alert')).textContent).toContain('所选镜像格式与文件扩展名不一致，请选择 QCOW2。');
+    expect(createImageImportMock).not.toHaveBeenCalled();
   });
 
   it('hides fully cleaned cancelled import jobs from 我的镜像', async () => {
@@ -1638,13 +1663,9 @@ describe('ImageCenterScreen', () => {
 
   it('jumps to a page number from the jump-to-page input', async () => {
     fetchPublicImageCatalogScopeMock.mockResolvedValue({
-      snapshots: [
-        createSnapshot({ id: 'public-1', scope: 'public', imageId: 'public-1', sourceImageName: 'Public 1' }),
-        createSnapshot({ id: 'public-2', scope: 'public', imageId: 'public-2', sourceImageName: 'Public 2' }),
-        createSnapshot({ id: 'public-3', scope: 'public', imageId: 'public-3', sourceImageName: 'Public 3' }),
-        createSnapshot({ id: 'public-4', scope: 'public', imageId: 'public-4', sourceImageName: 'Public 4' }),
-        createSnapshot({ id: 'public-5', scope: 'public', imageId: 'public-5', sourceImageName: 'Public 5' }),
-      ],
+      snapshots: Array.from({ length: 45 }, (_, index) => createSnapshot({
+        id: `public-${index + 1}`, scope: 'public', imageId: `public-${index + 1}`, sourceImageName: `Public ${index + 1}`,
+      })),
       catalogItems: [],
     } satisfies ImageCatalogScopePayload);
 
@@ -1657,8 +1678,12 @@ describe('ImageCenterScreen', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: '跳转' }));
 
-    expect(await screen.findByText('Public 5')).toBeTruthy();
+    expect(await screen.findByText('Public 41')).toBeTruthy();
     expect(screen.queryByText('Public 1')).toBeNull();
+    expect(screen.getByRole('button', { name: '第 3 页' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.change(screen.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '99' } });
+    fireEvent.click(screen.getByRole('button', { name: '跳转' }));
+    expect(screen.getByText('Public 41')).toBeTruthy();
   });
 
   it('logs out when sync or collect receives a 401 response after initial load', async () => {

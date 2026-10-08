@@ -224,6 +224,10 @@ describe('Admin image catalog APIs', () => {
   let repository: AdminRepository;
   const originalFetch = global.fetch;
 
+  beforeEach(() => {
+    global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'ok' }));
+  });
+
   afterEach(async () => {
     if (app) {
       await app.close();
@@ -708,6 +712,11 @@ describe('Admin image catalog APIs', () => {
       .expect(200);
 
     expect(listResponse.body).toEqual({ items: [] });
+    expect(await repository.getImageSnapshotById(snapshot.id)).toBeNull();
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('Action=DeleteImage'),
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('requires admin privileges to publish a private image asset', async () => {
@@ -933,7 +942,7 @@ describe('Admin image catalog APIs', () => {
     );
   });
 
-  it('allows an owner to remove their own custom image asset while keeping the cloud image', async () => {
+  it('allows an owner to remove their own custom image and its platform asset', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
@@ -998,9 +1007,12 @@ describe('Admin image catalog APIs', () => {
       ownerUserId: 'image-owner-delete-1',
     });
 
-    expect(remainingSnapshot).toEqual(expect.objectContaining({ id: snapshot.id, imageId: snapshot.imageId }));
+    expect(remainingSnapshot).toBeUndefined();
     expect(remainingAssets).toEqual([]);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('Action=DeleteImage'),
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('prevents a non-owner user from deleting another user custom image asset', async () => {
@@ -1337,9 +1349,9 @@ describe('Admin image catalog APIs', () => {
     );
   });
 
-  it('DELETE /admin/platform-images/:id only removes the catalog asset and keeps the cloud image intact', async () => {
+  it('DELETE /admin/platform-images/:id removes a custom cloud image and its cached source snapshot', async () => {
     repository = createMemoryAdminRepository();
-    global.fetch = jest.fn();
+    global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
     await repository.reconcileImageSnapshots({
       provider: 'alibaba_cloud',
@@ -1386,9 +1398,57 @@ describe('Admin image catalog APIs', () => {
     });
     const remainingAsset = await repository.getPlatformImageAssetById(asset.id);
 
-    expect(remainingSnapshots).toEqual([expect.objectContaining({ id: snapshot.id, imageId: snapshot.imageId })]);
+    expect(remainingSnapshots).toEqual([]);
     expect(remainingAsset).toBeNull();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('Action=DeleteImage'),
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it.each(['platform-images', 'image-catalog/custom'])('keeps assets, snapshots, and billing ledgers when %s cloud deletion fails', async (route) => {
+    repository = createMemoryAdminRepository();
+    global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ Code: 'InternalError' }, 503));
+    await repository.reconcileImageSnapshots({
+      provider: 'alibaba_cloud', accountUid: '1234567890', regionId: 'cn-hangzhou', scope: 'custom',
+      snapshots: [{
+        imageId: 'm-delete-failure', sourceImageName: 'Keep On Failure', status: 'Available',
+        isAvailable: true, lastSyncedAt: new Date('2026-07-20T00:00:00.000Z'),
+      }],
+    });
+    const [snapshot] = await repository.listImageSnapshots({
+      provider: 'alibaba_cloud', accountUid: '1234567890', regionId: 'cn-hangzhou', scope: 'custom',
+    });
+    const asset = await repository.collectPlatformImageAsset({
+      snapshotId: snapshot.id, displayName: 'Keep On Failure', ownerUserId: 'admin', visibility: 'private',
+    });
+    const imageLedger = await repository.createBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud', cloudAccountUid: '1234567890', regionId: 'cn-hangzhou',
+      cloudResourceId: snapshot.imageId, cloudResourceType: 'image', billingScope: 'user', ownerUserId: 'admin',
+      platformImageAssetId: asset.id, billingStartAt: new Date('2026-07-20T00:00:00.000Z'), tagsSnapshot: {},
+    });
+    const snapshotLedger = await repository.createBillingLedgerResource({
+      cloudProvider: 'alibaba_cloud', cloudAccountUid: '1234567890', regionId: 'cn-hangzhou',
+      cloudResourceId: 's-delete-failure', cloudResourceType: 'snapshot', billingScope: 'user', ownerUserId: 'admin',
+      platformImageAssetId: asset.id, billingStartAt: new Date('2026-07-20T00:00:00.000Z'), tagsSnapshot: {},
+    });
+    app = await createApp(repository);
+    const adminToken = await loginAs(app);
+    await request(app.getHttpServer())
+      .delete(`/admin/${route}/${route === 'platform-images' ? asset.id : snapshot.id}`)
+      .set('authorization', `Bearer ${adminToken}`)
+      .expect(500);
+
+    expect(await repository.getImageSnapshotById(snapshot.id)).toEqual(expect.objectContaining({ imageId: snapshot.imageId }));
+    expect(await repository.getPlatformImageAssetById(asset.id)).toEqual(expect.objectContaining({ id: asset.id }));
+    expect(await repository.listBillingLedgerResources()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: imageLedger.id, releasedAt: null }),
+      expect.objectContaining({ id: snapshotLedger.id, releasedAt: null }),
+    ]));
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(String(url)).searchParams.get('Action')).toBe('DeleteImage');
+    expect(new URL(String(url)).searchParams.get('ImageId')).toBe(snapshot.imageId);
   });
 
   it('refuses to delete a cloud image that is still referenced by a live instance', async () => {

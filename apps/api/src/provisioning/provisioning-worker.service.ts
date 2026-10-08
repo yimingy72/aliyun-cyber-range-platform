@@ -40,6 +40,15 @@ const DESTROY_VERIFICATION_ATTEMPTS = 12;
 const DESTROY_VERIFICATION_INTERVAL_MS = 5_000;
 const SINGLE_INSTANCE_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-vpc-single-ecs';
 
+type SingleInstanceJobInput = {
+  job: ProvisionJobRecord;
+  instance: RangeInstanceRecord;
+  effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
+  runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
+  reportStep: RangeProvisionStepReporter;
+};
+type SingleInstanceExecutionItem = { instance: RangeInstanceRecord; job: ProvisionJobRecord };
+
 @Injectable()
 export class ProvisioningWorkerService {
   private readonly logger = new Logger(ProvisioningWorkerService.name);
@@ -78,6 +87,7 @@ export class ProvisioningWorkerService {
 
     while (true) {
       const now = new Date();
+      await this.recoverInterruptedJobs(now);
       await this.processExpiredInstances(now);
       await this.reconcilePlatformResourcesIfDue(now);
       const started = await this.startEligiblePendingJobs();
@@ -87,7 +97,7 @@ export class ProvisioningWorkerService {
       }
 
       if (this.activeTasks.size > 0) {
-        await Promise.race(this.activeTasks);
+        await Promise.race([...this.activeTasks, sleep(readWorkerPollIntervalMs())]);
         continue;
       }
 
@@ -146,12 +156,46 @@ export class ProvisioningWorkerService {
   }
 
   async process(jobId: string) {
-    const job = await this.adminRepository.claimProvisionJob(jobId, new Date());
+    const claimedAt = new Date();
+    const job = await this.adminRepository.claimProvisionJob(jobId, claimedAt);
 
     if (!job) {
       return;
     }
 
+    const heartbeat = this.startProvisionJobHeartbeat([job]);
+
+    try {
+      await this.processClaimedJob(job);
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private startProvisionJobHeartbeat(jobs: ProvisionJobRecord[]) {
+    const heartbeat = setInterval(() => {
+      for (const job of jobs) {
+        void this.ownsProvisionJobClaim(job);
+      }
+    }, Math.max(1, Math.min(30_000, readInterruptedJobStaleAfterMs() / 3)));
+    heartbeat.unref();
+    return heartbeat;
+  }
+
+  private async ownsProvisionJobClaim(job: ProvisionJobRecord) {
+    if (!job.startedAt) {
+      return false;
+    }
+
+    try {
+      return await this.adminRepository.heartbeatProvisionJob(job.id, job.startedAt, new Date());
+    } catch (error) {
+      this.logger.error(`Provision job heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  private async processClaimedJob(job: ProvisionJobRecord) {
     const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
 
     if (!instance) {
@@ -192,6 +236,9 @@ export class ProvisioningWorkerService {
           runtimeConfig,
           reportStep,
         });
+        if (!(await this.ownsProvisionJobClaim(job))) {
+          return;
+        }
         await this.adminRepository.updateProvisionJob(job.id, {
           status: 'succeeded',
           finishedAt: new Date(),
@@ -289,11 +336,18 @@ export class ProvisioningWorkerService {
           compiledSpec,
           billingTags,
         };
+        if (!(await this.ownsProvisionJobClaim(job))) {
+          return;
+        }
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
-          preserveWorkspaceState: job.jobType === 'retry',
+          preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
           reportStep,
         });
+
+        if (!(await this.ownsProvisionJobClaim(job))) {
+          return;
+        }
 
         await this.runWorkerStep(reportStep, 'persist_access_entry', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
@@ -327,6 +381,9 @@ export class ProvisioningWorkerService {
           });
         });
       } else if (effectiveJobType === 'destroy') {
+        if (!(await this.ownsProvisionJobClaim(job))) {
+          return;
+        }
         await this.runWorkerStep(reportStep, 'prepare', async () => {
           await this.adminRepository.updateRangeInstance(instance.id, {
             status: 'destroying',
@@ -348,6 +405,9 @@ export class ProvisioningWorkerService {
           await this.verifyDestroyCompletion(instance, runtimeConfig);
         });
 
+        if (!(await this.ownsProvisionJobClaim(job))) {
+          return;
+        }
         await this.adminRepository.updateRangeInstance(instance.id, {
           status: 'destroyed',
           accessEntry: null,
@@ -357,6 +417,9 @@ export class ProvisioningWorkerService {
         await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
       }
 
+      if (!(await this.ownsProvisionJobClaim(job))) {
+        return;
+      }
       await this.adminRepository.updateProvisionJob(job.id, {
         status: 'succeeded',
         finishedAt: new Date(),
@@ -365,6 +428,9 @@ export class ProvisioningWorkerService {
       await this.finalizeDispatchedOperation(job, 'succeeded');
       this.nextResourceReconciliationAt = 0;
     } catch (error) {
+      if (!(await this.ownsProvisionJobClaim(job))) {
+        return;
+      }
       const createFailureMessage = error instanceof Error ? error.message : 'Unknown provisioning error';
       const cleanupFailureMessage = failedCreateCleanupInput
         ? await this.cleanupFailedRangeCreate({
@@ -397,6 +463,9 @@ export class ProvisioningWorkerService {
       });
     });
 
+    if (!(await this.ownsProvisionJobClaim(input.job))) {
+      return;
+    }
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
       templateModulePath: topologySnapshot.templateModulePath,
@@ -419,6 +488,9 @@ export class ProvisioningWorkerService {
       reportStep: input.reportStep,
     });
 
+    if (!(await this.ownsProvisionJobClaim(input.job))) {
+      return;
+    }
     await this.runWorkerStep(input.reportStep, 'persist_update_result', async () => {
       await this.adminRepository.completeRangeInstanceDraftApply(input.instance.id, {
         runtimeTopologyGraph: topologySnapshot.topologyGraph,
@@ -631,18 +703,7 @@ export class ProvisioningWorkerService {
     );
   }
 
-  private async processSingleInstanceJob(input: {
-    job: ProvisionJobRecord;
-    instance: RangeInstanceRecord;
-    effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
-    runtimeConfig: {
-      accessKeyId: string;
-      accessKeySecret: string;
-      defaultRegion: string;
-      defaultZoneId: string;
-    };
-    reportStep: RangeProvisionStepReporter;
-  }) {
+  private async processSingleInstanceJob(input: SingleInstanceJobInput) {
     if (!input.instance.singleInstanceConfig) {
       throw new Error('Single instance config missing');
     }
@@ -652,24 +713,22 @@ export class ProvisioningWorkerService {
     }
 
     const items = await this.collectSingleInstanceExecutionItems(input);
+    const heartbeat = this.startProvisionJobHeartbeat(items.filter((item) => item.job.id !== input.job.id).map((item) => item.job));
 
+    try {
+      await this.executeClaimedSingleInstanceJob(input, items);
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private async executeClaimedSingleInstanceJob(input: SingleInstanceJobInput, items: SingleInstanceExecutionItem[]) {
     if (input.effectiveJobType === 'refresh_status') {
       const item = items[0];
 
       if (!item) {
         throw new Error('Single instance refresh job is missing its target item');
       }
-
-      await this.runWorkerStep(input.reportStep, 'refresh_access_entry', async () => {
-        if (item.job.status === 'pending') {
-          await this.adminRepository.updateProvisionJob(item.job.id, {
-            status: 'running',
-            startedAt: new Date(),
-            finishedAt: null,
-            errorSummary: null,
-          });
-        }
-      });
 
       await this.singleInstanceBatchExecutionService.refreshSingleInstanceAccessEntry(item);
 
@@ -693,14 +752,6 @@ export class ProvisioningWorkerService {
           await this.adminRepository.updateRangeInstance(item.instance.id, {
             status: 'creating',
           });
-          if (item.job.status === 'pending') {
-            await this.adminRepository.updateProvisionJob(item.job.id, {
-              status: 'running',
-              startedAt: new Date(),
-              finishedAt: null,
-              errorSummary: null,
-            });
-          }
         }
       });
 
@@ -729,14 +780,6 @@ export class ProvisioningWorkerService {
         await this.adminRepository.updateRangeInstance(item.instance.id, {
           status: 'destroying',
         });
-        if (item.job.status === 'pending') {
-          await this.adminRepository.updateProvisionJob(item.job.id, {
-            status: 'running',
-            startedAt: new Date(),
-            finishedAt: null,
-            errorSummary: null,
-          });
-        }
       }
     });
 
@@ -803,7 +846,14 @@ export class ProvisioningWorkerService {
     itemsByInstanceId.set(currentItem.instance.id, currentItem);
 
     for (const item of groupedItems) {
-      itemsByInstanceId.set(item.instance.id, item);
+      if (item.job.id === input.job.id) {
+        continue;
+      }
+
+      const claimedJob = await this.adminRepository.claimProvisionJob(item.job.id, new Date());
+      if (claimedJob) {
+        itemsByInstanceId.set(item.instance.id, { ...item, job: claimedJob });
+      }
     }
 
     return Array.from(itemsByInstanceId.values());

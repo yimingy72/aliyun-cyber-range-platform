@@ -496,6 +496,7 @@ describe('Admin resources', () => {
       .send({
         name: 'range-instance-01',
         templateId: template.body.id,
+        expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
       })
       .expect(201);
 
@@ -546,6 +547,7 @@ describe('Admin resources', () => {
       .send({
         name: 'worker-lifecycle-instance',
         templateId: template.body.id,
+        expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
       })
       .expect(201);
     const createJob = await request(app.getHttpServer())

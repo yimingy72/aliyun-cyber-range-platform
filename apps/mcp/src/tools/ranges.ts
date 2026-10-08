@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { RangeInstanceNodeActionPayload } from '@aliyun-cyber-range/platform-api-client';
 import type { ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime';
 
@@ -265,7 +267,22 @@ async function saveRangeInstanceTopology(
     ...metadataFromRangeInstance(instance),
     ...(input.publicEntryProtocols ? { publicEntryProtocols: input.publicEntryProtocols } : {}),
   };
-  const compiled = compileTemplateTopology(input.topologyGraph, metadata);
+  const compiled = JSON.parse(JSON.stringify(compileTemplateTopology(input.topologyGraph, metadata))) as
+    ReturnType<typeof compileTemplateTopology>;
+
+  if (input.confirmationId) {
+    const matchesSavedDraft =
+      isDeepStrictEqual(instance.draftTopologyGraph, compiled.topologyGraph) &&
+      isDeepStrictEqual(instance.draftTopologySpec, compiled.topologySpec) &&
+      isDeepStrictEqual(instance.draftScenarioTemplateSpec, compiled.scenarioTemplateSpec) &&
+      isDeepStrictEqual(instance.draftCompiledProvisionSpec, compiled.compiledProvisionSpec);
+
+    if (!matchesSavedDraft) {
+      throw new Error('确认请求的拓扑与已保存草稿不一致，请重新保存并取得确认');
+    }
+
+    return { saved: instance, sourceTemplateRevision: instance.sourceTemplateRevision };
+  }
 
   const saved = await context.client.saveRangeInstanceDraft(
     input.rangeInstanceId,

@@ -12,6 +12,7 @@ import {
   applyRangeInstanceDraft,
   fetchInstanceTypeAvailability,
   fetchPlatformImages,
+  fetchProvisionJobDetail,
   fetchRangeInstanceDetail,
   runRangeInstanceNodeAction,
   saveRangeInstanceDraft,
@@ -35,6 +36,7 @@ import {
 } from '../../lib/scenario-graph';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
+import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
@@ -824,6 +826,7 @@ export function RangeInstanceDetailScreen({
   const router = useRouter();
   const session = useAdminSession();
   const screenCache = useAdminScreenCache();
+  const isPageActive = useAdminRouteIsActive(`/admin/ranges/${rangeId}`);
   const [detail, setDetail] = useState<RangeInstanceDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -842,6 +845,9 @@ export function RangeInstanceDetailScreen({
   const [nodeStatusOverrides, setNodeStatusOverrides] = useState<Record<string, string>>({});
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogDraft | null>(null);
   const historyRef = useRef<TopologyHistory | null>(null);
+  const persistedSnapshotRef = useRef('');
+  const loadedRangeIdRef = useRef(rangeId);
+  const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
 
@@ -862,6 +868,7 @@ export function RangeInstanceDetailScreen({
       viewport: readTopologyViewport(parsed.viewport),
     };
     historyRef.current = createTopologyHistory(snapshot);
+    persistedSnapshotRef.current = JSON.stringify(snapshot);
     setHistoryState(historyRef.current);
     setDraftGraph(writeTopologyViewport({
       schemaVersion: parsed.schemaVersion,
@@ -871,25 +878,32 @@ export function RangeInstanceDetailScreen({
     setSelection({ nodeIds: [], edgeIds: [] });
   }
 
+  function receiveDetailSnapshot(payload: RangeInstanceDetail) {
+    const hasLocalChanges = loadedRangeIdRef.current === rangeId && historyRef.current !== null &&
+      JSON.stringify(historyRef.current.present) !== persistedSnapshotRef.current;
+
+    setDetail((current) => hasLocalChanges && current
+      ? { ...payload, draftRevision: current.draftRevision }
+      : payload);
+    setNodeStatusOverrides({});
+    if (!hasLocalChanges) {
+      replaceTopologyDraft(payload.draftTopologyGraph ?? payload.runtimeTopologyGraph ?? null);
+    }
+    loadedRangeIdRef.current = rangeId;
+  }
+
   async function reloadDetailSnapshot() {
     if (!session.token) {
       return null;
     }
 
     const payload = await fetchRangeInstanceDetail(apiBaseUrl, session.token, rangeId);
-    setDetail(payload);
-    if (!historyRef.current) {
-      replaceTopologyDraft(
-        (payload.draftTopologyGraph as Record<string, unknown> | null) ??
-          (payload.runtimeTopologyGraph as Record<string, unknown> | null) ??
-          null,
-      );
-    }
+    receiveDetailSnapshot(payload);
     return payload;
   }
 
   useEffect(() => {
-    if (!session.isReady || !session.token) {
+    if (!isPageActive || !session.isReady || !session.token) {
       return;
     }
 
@@ -901,12 +915,8 @@ export function RangeInstanceDetailScreen({
           return;
         }
 
-        setDetail(payload);
-        replaceTopologyDraft(
-          (payload.draftTopologyGraph as Record<string, unknown> | null) ??
-            (payload.runtimeTopologyGraph as Record<string, unknown> | null) ??
-            null,
-        );
+        receiveDetailSnapshot(payload);
+        setTrackedUpdateJobId(payload.lastJobId ?? null);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -925,7 +935,56 @@ export function RangeInstanceDetailScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, rangeId, router, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, rangeId, router, session.isReady, session.token]);
+
+  useEffect(() => {
+    if (!isPageActive || !session.token || !trackedUpdateJobId) {
+      return;
+    }
+
+    let isActive = true;
+    let timer: number | undefined;
+    const token = session.token;
+    const jobId = trackedUpdateJobId;
+
+    async function refreshUpdateJob() {
+      try {
+        const { job } = await fetchProvisionJobDetail(apiBaseUrl, token, jobId);
+        if (!isActive) return;
+        if (job.jobType !== 'update') {
+          setTrackedUpdateJobId(null);
+          return;
+        }
+
+        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+          const payload = await fetchRangeInstanceDetail(apiBaseUrl, token, rangeId);
+          if (!isActive) return;
+          receiveDetailSnapshot(payload);
+          setTrackedUpdateJobId(null);
+          screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
+          setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
+          setErrorMessage(job.status === 'succeeded' ? null : job.errorSummary || '实例配置变更未完成，请检查任务后重试。');
+          return;
+        }
+        setSuccessMessage('实例配置变更正在应用。');
+      } catch (error) {
+        if (!isActive) return;
+        if (isUnauthorizedAdminError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+        setErrorMessage('任务状态刷新失败，正在重试。');
+      }
+      if (isActive) timer = window.setTimeout(() => void refreshUpdateJob(), 2000);
+    }
+
+    void refreshUpdateJob();
+    return () => {
+      isActive = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, trackedUpdateJobId]);
 
   const topologyDraft = useMemo(() => {
     return (
@@ -1175,7 +1234,7 @@ export function RangeInstanceDetailScreen({
   }
 
   async function handleApplyDraft() {
-    if (!session.token || !detail) {
+    if (!session.token || !detail || trackedUpdateJobId) {
       return;
     }
 
@@ -1200,7 +1259,8 @@ export function RangeInstanceDetailScreen({
         throw new Error('Saved range instance draft revision is unavailable');
       }
 
-      await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, expectedDraftRevision);
+      const job = await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, expectedDraftRevision);
+      setTrackedUpdateJobId(job.id);
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       setSuccessMessage('实例配置变更已提交应用。');
     } catch (error: unknown) {
@@ -1815,7 +1875,7 @@ export function RangeInstanceDetailScreen({
                       {isSavingDraft ? '处理中...' : '保存草稿'}
                   </Button>
                   <Button
-                    disabled={isSavingDraft || isSyncingTemplate}
+                    disabled={isSavingDraft || isSyncingTemplate || Boolean(trackedUpdateJobId)}
                     onClick={() => void handleApplyDraft()}
                     size="sm"
                     type="button"

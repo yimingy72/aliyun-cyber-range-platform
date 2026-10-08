@@ -4,289 +4,140 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
-test('plan-only smoke script uses docker-safe tofu file paths', () => {
-  const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const sourceScript = new URL('../scripts/dev/smoke-opentofu-enterprise-range.sh', import.meta.url);
+const imageId = 'ubuntu_22_04_x64_20G_alibase_20260615.vhd';
+
+function createSmokeFixture(t, overrides = {}) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opentofu-smoke-script-'));
-  const fakeBinDir = path.join(tempRoot, 'bin');
-  const dockerLogPath = path.join(tempRoot, 'docker-commands.log');
-  const fakeDockerPath = path.join(fakeBinDir, 'docker');
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const binDir = path.join(tempRoot, 'bin');
+  const exampleDir = path.join(repoRoot, 'infra/opentofu/examples/alicloud-enterprise-range');
+  const scriptPath = path.join(repoRoot, 'scripts/dev/smoke-opentofu-enterprise-range.sh');
+  const dockerLogPath = path.join(tempRoot, 'docker.log');
+  const aliyunLogPath = path.join(tempRoot, 'aliyun.log');
+  const capturedTfvarsPath = path.join(tempRoot, 'tfvars.json');
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.mkdirSync(exampleDir, { recursive: true });
+  fs.mkdirSync(binDir);
+  fs.copyFileSync(sourceScript, scriptPath);
 
-  fs.mkdirSync(fakeBinDir, { recursive: true });
-  fs.writeFileSync(
-    fakeDockerPath,
-    `#!/usr/bin/env bash
+  fs.writeFileSync(path.join(binDir, 'docker'), `#!/usr/bin/env bash
 set -euo pipefail
-
-if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
-  exit 0
-fi
-
 if [ "$1" != "run" ]; then
   echo "unexpected docker invocation: $*" >&2
   exit 1
 fi
-
 shift
-
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "fake-image" ]; then
-    shift
-    printf '%s\\n' "$*" >> "${dockerLogPath}"
+while [ "$#" -gt 0 ] && [ "$1" != "fake-image" ]; do shift; done
+[ "$#" -gt 0 ] || exit 1
+shift
+printf '%s\\n' "$*" >> "$FIXTURE_DOCKER_LOG"
+for arg in "$@"; do
+  case "$arg" in "$FIXTURE_REPO_ROOT"/*) echo "host path leaked into tofu command" >&2; exit 42 ;; esac
+done
+case "$1" in
+  plan)
+    previous=""
     for arg in "$@"; do
-      case "$arg" in
-        ${repoRoot}/*)
-          echo "host path leaked into tofu command: $arg" >&2
-          exit 42
-          ;;
-      esac
+      if [ "$previous" = "-var-file" ]; then
+        cp "$FIXTURE_EXAMPLE_DIR/$arg" "$FIXTURE_TFVARS"
+      fi
+      previous="$arg"
     done
-    exit 0
-  fi
-  shift
-done
-
-echo "docker image marker not found" >&2
-exit 1
-`,
-    'utf8',
-  );
-  fs.chmodSync(fakeDockerPath, 0o755);
-
-  const scriptPath = path.join(repoRoot, 'scripts', 'dev', 'smoke-opentofu-enterprise-range.sh');
-
-  execFileSync('/bin/bash', [scriptPath, '--plan-only'], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PATH: `${fakeBinDir}:${process.env.PATH ?? '/usr/bin:/bin'}`,
-      TOFU_IMAGE: 'fake-image',
-      ALICLOUD_ACCESS_KEY: 'ak',
-      ALICLOUD_SECRET_KEY: 'sk',
-      ALICLOUD_REGION: 'cn-hangzhou',
-      ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
-      OPENTOFU_IMAGE_ID: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
-      DOCKER_TMP_DIR: path.join(tempRoot, 'docker-tmp'),
-      SMOKE_RUN_ID: 'test-smoke-script',
-    },
-    stdio: 'pipe',
-  });
-
-  const dockerCommands = fs.readFileSync(dockerLogPath, 'utf8');
-
-  assert.match(dockerCommands, /^init\b/m);
-  assert.match(dockerCommands, /^validate\b/m);
-  assert.match(dockerCommands, /^plan\b/m);
-});
-
-test('full smoke script destroys residual resources when apply fails after partial creation', () => {
-  const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opentofu-smoke-cleanup-'));
-  const fakeBinDir = path.join(tempRoot, 'bin');
-  const dockerLogPath = path.join(tempRoot, 'docker-commands.log');
-  const fakeDockerPath = path.join(fakeBinDir, 'docker');
-
-  fs.mkdirSync(fakeBinDir, { recursive: true });
-  fs.writeFileSync(
-    fakeDockerPath,
-    `#!/usr/bin/env bash
+    ;;
+  apply)
+    if [ "$FIXTURE_APPLY_FAILS" = "1" ]; then echo "simulated apply failure" >&2; exit 9; fi
+    ;;
+  state)
+    if [ "$FIXTURE_APPLY_FAILS" = "1" ]; then printf 'alicloud_vpc.range\\n'; fi
+    ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(binDir, 'aliyun'), `#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\\n' "$*" >> "$FIXTURE_ALIYUN_LOG"
+case "$1 $2" in
+  "ecs DescribeImages")
+    printf '%s\\n' '{"Images":{"Image":[{"ImageId":"${imageId}","Status":"Available"}]}}'
+    ;;
+  "ecs DescribeAvailableResource")
+    printf '%s\\n' '{"AvailableZones":{"AvailableZone":[{"AvailableResources":{"AvailableResource":[{"Type":"InstanceType","SupportedResources":{"SupportedResource":[{"Value":"ecs.c7.large","Status":"SoldOut"},{"Value":"ecs.u1-c1m2.large","Status":"Available"},{"Value":"ecs.sn1.medium","Status":"Available"}]}}]}}]}}'
+    ;;
+  *) echo "unexpected Aliyun invocation: $*" >&2; exit 1 ;;
+esac
+`, { mode: 0o755 });
 
-if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
-  exit 0
-fi
-
-if [ "$1" != "run" ]; then
-  echo "unexpected docker invocation: $*" >&2
-  exit 1
-fi
-
-shift
-
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "fake-image" ]; then
-    shift
-    printf '%s\\n' "$*" >> "${dockerLogPath}"
-
-    case "$1" in
-      state)
-        if [ "$2" = "list" ]; then
-          printf 'alicloud_vpc.range\\n'
-          exit 0
-        fi
-        ;;
-      apply)
-        echo "simulated apply failure" >&2
-        exit 9
-        ;;
-      destroy)
-        exit 0
-        ;;
-      *)
-        exit 0
-        ;;
-    esac
-  fi
-  shift
-done
-
-echo "docker image marker not found" >&2
-exit 1
-`,
-    'utf8',
-  );
-  fs.chmodSync(fakeDockerPath, 0o755);
-
-  const scriptPath = path.join(repoRoot, 'scripts', 'dev', 'smoke-opentofu-enterprise-range.sh');
-
-  assert.throws(
-    () =>
-      execFileSync('/bin/bash', [scriptPath, '--full'], {
+  return {
+    dockerLogPath,
+    aliyunLogPath,
+    capturedTfvarsPath,
+    exampleDir,
+    run(mode) {
+      return execFileSync('/bin/bash', [scriptPath, mode], {
         cwd: repoRoot,
         env: {
           ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+          PATH: `${binDir}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+          TOFU_MODE: 'docker',
           TOFU_IMAGE: 'fake-image',
-          ALICLOUD_ACCESS_KEY: 'ak',
-          ALICLOUD_SECRET_KEY: 'sk',
+          TOFU_BIN: '',
+          ALICLOUD_PROVIDER_ZIP_PATH: '',
+          ALICLOUD_ACCESS_KEY: 'fixture-access-key',
+          ALICLOUD_SECRET_KEY: 'fixture-secret-key',
           ALICLOUD_REGION: 'cn-hangzhou',
           ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
-          OPENTOFU_IMAGE_ID: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
+          OPENTOFU_IMAGE_ID: imageId,
           OPENTOFU_INSTANCE_TYPE: 'ecs.t6-c1m2.large',
+          SMOKE_KEEP_RESOURCES: '0',
           DOCKER_TMP_DIR: path.join(tempRoot, 'docker-tmp'),
-          SMOKE_RUN_ID: 'test-smoke-cleanup',
+          SMOKE_RUN_ID: 'fixture',
+          FIXTURE_REPO_ROOT: repoRoot,
+          FIXTURE_EXAMPLE_DIR: exampleDir,
+          FIXTURE_DOCKER_LOG: dockerLogPath,
+          FIXTURE_ALIYUN_LOG: aliyunLogPath,
+          FIXTURE_TFVARS: capturedTfvarsPath,
+          FIXTURE_APPLY_FAILS: '0',
+          ...overrides,
         },
         stdio: 'pipe',
-      }),
-    /Command failed/,
-  );
+      });
+    },
+  };
+}
 
-  const dockerCommands = fs.readFileSync(dockerLogPath, 'utf8');
-
-  assert.match(dockerCommands, /^apply\b/m);
-  assert.match(dockerCommands, /^state list\b/m);
-  assert.match(dockerCommands, /^destroy\b/m);
+test('plan-only smoke script uses docker-safe tofu file paths', (t) => {
+  const fixture = createSmokeFixture(t);
+  fixture.run('--plan-only');
+  const commands = fs.readFileSync(fixture.dockerLogPath, 'utf8');
+  assert.match(commands, /^init\b/m);
+  assert.match(commands, /^validate\b/m);
+  assert.match(commands, /^plan\b/m);
+  assert.doesNotMatch(commands, /^(apply|destroy)\b/m);
+  assert.equal(fs.existsSync(path.join(fixture.exampleDir, '.smoke/fixture')), false);
 });
 
-test('plan-only smoke script resolves auto instance type from zone-available ECS inventory', () => {
-  const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opentofu-smoke-auto-instance-'));
-  const fakeBinDir = path.join(tempRoot, 'bin');
-  const dockerLogPath = path.join(tempRoot, 'docker-commands.log');
-  const aliyunLogPath = path.join(tempRoot, 'aliyun-commands.log');
-  const capturedTfvarsPath = path.join(tempRoot, 'captured-smoke.auto.tfvars.json');
-  const fakeDockerPath = path.join(fakeBinDir, 'docker');
-  const fakeAliyunPath = path.join(fakeBinDir, 'aliyun');
+test('full smoke script destroys residual resources when apply fails after partial creation', (t) => {
+  const fixture = createSmokeFixture(t, { FIXTURE_APPLY_FAILS: '1' });
+  assert.throws(() => fixture.run('--full'), /Command failed/);
+  const commands = fs.readFileSync(fixture.dockerLogPath, 'utf8');
+  assert.match(commands, /^apply\b/m);
+  assert.match(commands, /^state list\b/m);
+  assert.match(commands, /^destroy\b/m);
+  assert.equal(fs.existsSync(path.join(fixture.exampleDir, '.smoke/fixture')), false);
+});
 
-  fs.mkdirSync(fakeBinDir, { recursive: true });
-  fs.writeFileSync(
-    fakeDockerPath,
-    `#!/usr/bin/env bash
-set -euo pipefail
-
-if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
-  exit 0
-fi
-
-if [ "$1" != "run" ]; then
-  echo "unexpected docker invocation: $*" >&2
-  exit 1
-fi
-
-shift
-
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "fake-image" ]; then
-    shift
-    printf '%s\\n' "$*" >> "${dockerLogPath}"
-
-    if [ "$1" = "plan" ]; then
-      previous=""
-      for arg in "$@"; do
-        if [ "$previous" = "-var-file" ]; then
-          cp "${repoRoot}/infra/opentofu/examples/alicloud-enterprise-range/$arg" "${capturedTfvarsPath}"
-          break
-        fi
-        previous="$arg"
-      done
-    fi
-
-    exit 0
-  fi
-  shift
-done
-
-echo "docker image marker not found" >&2
-exit 1
-`,
-    'utf8',
-  );
-  fs.chmodSync(fakeDockerPath, 0o755);
-
-  fs.writeFileSync(
-    fakeAliyunPath,
-    `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "$*" >> "${aliyunLogPath}"
-cat <<'EOF'
-{
-  "AvailableZones": {
-    "AvailableZone": [
-      {
-        "ZoneId": "cn-hangzhou-h",
-        "Status": "Available",
-        "AvailableResources": {
-          "AvailableResource": [
-            {
-              "Type": "InstanceType",
-              "Status": "Available",
-              "SupportedResources": {
-                "SupportedResource": [
-                  { "Value": "ecs.c7.large", "Status": "SoldOut" },
-                  { "Value": "ecs.u1-c1m2.large", "Status": "Available" },
-                  { "Value": "ecs.sn1.medium", "Status": "Available" }
-                ]
-              }
-            }
-          ]
-        }
-      }
-    ]
-  }
-}
-EOF
-`,
-    'utf8',
-  );
-  fs.chmodSync(fakeAliyunPath, 0o755);
-
-  const scriptPath = path.join(repoRoot, 'scripts', 'dev', 'smoke-opentofu-enterprise-range.sh');
-
-  execFileSync('/bin/bash', [scriptPath, '--plan-only'], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PATH: `${fakeBinDir}:${process.env.PATH ?? '/usr/bin:/bin'}`,
-      TOFU_IMAGE: 'fake-image',
-      ALICLOUD_ACCESS_KEY: 'ak',
-      ALICLOUD_SECRET_KEY: 'sk',
-      ALICLOUD_REGION: 'cn-hangzhou',
-      ALICLOUD_ZONE_ID: 'cn-hangzhou-h',
-      OPENTOFU_IMAGE_ID: 'ubuntu_22_04_x64_20G_alibase_20260615.vhd',
-      OPENTOFU_INSTANCE_TYPE: 'auto',
-      DOCKER_TMP_DIR: path.join(tempRoot, 'docker-tmp'),
-      SMOKE_RUN_ID: 'test-smoke-auto-instance',
-    },
-    stdio: 'pipe',
-  });
-
-  const tfvars = JSON.parse(fs.readFileSync(capturedTfvarsPath, 'utf8'));
-  const aliyunCommands = fs.readFileSync(aliyunLogPath, 'utf8');
-
+test('plan-only smoke script resolves auto instance type from zone-available ECS inventory', (t) => {
+  const fixture = createSmokeFixture(t, { OPENTOFU_INSTANCE_TYPE: 'auto' });
+  fixture.run('--plan-only');
+  const tfvars = JSON.parse(fs.readFileSync(fixture.capturedTfvarsPath, 'utf8'));
+  const commands = fs.readFileSync(fixture.aliyunLogPath, 'utf8');
   assert.equal(tfvars.instance_type, 'ecs.u1-c1m2.large');
-  assert.match(aliyunCommands, /ecs DescribeAvailableResource/);
-  assert.match(aliyunCommands, /--ZoneId cn-hangzhou-h/);
-  assert.match(aliyunCommands, /--RegionId cn-hangzhou/);
-  assert.match(aliyunCommands, /--DestinationResource InstanceType/);
+  assert.equal(tfvars.image_id, imageId);
+  assert.match(commands, /ecs DescribeImages/);
+  assert.match(commands, /ecs DescribeAvailableResource/);
+  assert.match(commands, /--ZoneId cn-hangzhou-h/);
+  assert.match(commands, /--RegionId cn-hangzhou/);
+  assert.match(commands, /--DestinationResource InstanceType/);
 });

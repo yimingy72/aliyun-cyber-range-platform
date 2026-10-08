@@ -1007,6 +1007,7 @@ export interface AdminRepository {
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   getProvisionJobById(id: string): Promise<ProvisionJobRecord | null>;
   claimProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
+  heartbeatProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;
   requeueInterruptedProvisionJobs(staleBefore: Date): Promise<number>;
   updateProvisionJob(id: string, input: UpdateProvisionJobInput): Promise<ProvisionJobRecord>;
   listProvisionJobStepLogs(jobId: string): Promise<ProvisionJobStepLogRecord[]>;

@@ -1,4 +1,5 @@
-FROM vdagxumcha4qdz-ghcr.xuanyuan.dev/opentofu/opentofu:1.12.3-minimal AS tofu
+ARG OPENTOFU_IMAGE=ghcr.io/opentofu/opentofu:1.12.3-minimal
+FROM ${OPENTOFU_IMAGE} AS tofu
 
 FROM node:22-alpine
 

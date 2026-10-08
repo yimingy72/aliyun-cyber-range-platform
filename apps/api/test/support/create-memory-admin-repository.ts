@@ -967,9 +967,21 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async heartbeatProvisionJob(id: string, startedAt: Date, heartbeatAt: Date) {
+      const record = provisionJobs.find((job) =>
+        job.id === id && job.status === 'running' && job.startedAt?.getTime() === startedAt.getTime(),
+      );
+
+      if (!record) {
+        return false;
+      }
+
+      record.updatedAt = heartbeatAt;
+      return true;
+    },
     async requeueInterruptedProvisionJobs(staleBefore: Date) {
       const interruptedJobs = provisionJobs.filter(
-        (job) => job.status === 'running' && job.startedAt !== null && job.startedAt <= staleBefore,
+        (job) => job.status === 'running' && job.updatedAt <= staleBefore,
       );
 
       for (const job of interruptedJobs) {

@@ -10,7 +10,7 @@ import { configureApp } from '../src/bootstrap/configure-app';
 import { PrismaService } from '../src/database/prisma.service';
 import { loginAsPrismaUser, overrideTestOidc } from './support/test-oidc';
 
-const DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
+const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
 
 describe('Admin users', () => {
   let app: INestApplication;

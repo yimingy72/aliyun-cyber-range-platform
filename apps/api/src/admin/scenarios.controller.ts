@@ -121,7 +121,7 @@ export class ScenariosController {
     const metadata = readOperationRequestMetadata(request);
     return this.operationControlService.executeConfirmed({
       context: request.authContext,
-      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? `${toolName}:${templateId}` },
+      metadata,
       toolName,
       arguments: argumentsValue,
       targetType: 'range_template',

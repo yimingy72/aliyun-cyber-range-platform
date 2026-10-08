@@ -62,44 +62,30 @@ function createImmutableUpdateTopologySnapshot(draftRevision = 1) {
 
 describe('ProvisioningWorkerService concurrency', () => {
   it('requeues a stale running provision job when the worker restarts', async () => {
-    const repository = createMemoryAdminRepository();
-    const instance = await repository.createRangeInstance({
-      name: 'interrupted-range',
-      status: 'creating',
-    });
-    const job = await repository.createProvisionJob({
-      rangeInstanceId: instance.id,
-      jobType: 'create',
-      triggeredBy: 'admin',
-    });
-    await repository.updateProvisionJob(job.id, {
-      status: 'running',
-      startedAt: new Date('2026-07-28T00:00:00.000Z'),
-    });
-    const worker = new ProvisioningWorkerService(
-      repository,
-      { create: jest.fn(), destroy: jest.fn() } as unknown as RangeProvisioner,
-      createSystemConfigServiceStub() as any,
-    );
+    jest.useFakeTimers({ now: new Date('2026-07-28T00:00:00.000Z') });
+    try {
+      const repository = createMemoryAdminRepository();
+      const instance = await repository.createRangeInstance({ name: 'interrupted-range', status: 'creating' });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin',
+      });
+      await repository.claimProvisionJob(job.id, new Date());
+      const worker = new ProvisioningWorkerService(
+        repository,
+        { create: jest.fn(), destroy: jest.fn() } as unknown as RangeProvisioner,
+        createSystemConfigServiceStub() as any,
+      );
 
-    const recovered = await (
-      worker as unknown as {
-        recoverInterruptedJobs(now: Date): Promise<number>;
-      }
-    ).recoverInterruptedJobs(new Date('2026-07-28T00:10:00.000Z'));
-
-    expect(recovered).toBe(1);
-    await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(
-      expect.objectContaining({
-        status: 'pending',
-        retryCount: 1,
-        startedAt: null,
-        finishedAt: null,
-      }),
-    );
+      await expect(worker.recoverInterruptedJobs(new Date('2026-07-28T00:10:00.000Z'))).resolves.toBe(1);
+      await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({
+        status: 'pending', retryCount: 1, startedAt: null, finishedAt: null,
+      }));
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  it('preserves the OpenTofu state directory when retrying a failed range create', async () => {
+  it.each(['retry', 'create'] as const)('preserves the OpenTofu state directory for a recovered %s job', async (jobType) => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({
       name: 'Retry state template',
@@ -121,7 +107,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
     const job = await repository.createProvisionJob({
       rangeInstanceId: instance.id,
-      jobType: 'retry',
+      jobType,
       triggeredBy: 'admin',
       retryCount: 1,
     });
@@ -150,6 +136,107 @@ describe('ProvisioningWorkerService concurrency', () => {
         preserveWorkspaceState: true,
       }),
     );
+  });
+
+  it('keeps a long-running job active while its current claim sends heartbeats', async () => {
+    jest.useFakeTimers({ now: new Date('2026-07-28T00:00:00.000Z') });
+    try {
+      const repository = createMemoryAdminRepository();
+      const instance = await repository.createRangeInstance({ name: 'active-range', status: 'creating' });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin',
+      });
+      const claimedAt = new Date();
+      await repository.claimProvisionJob(job.id, claimedAt);
+      jest.setSystemTime(new Date('2026-07-28T00:10:00.000Z'));
+      await expect(repository.heartbeatProvisionJob(job.id, claimedAt, new Date())).resolves.toBe(true);
+
+      const worker = new ProvisioningWorkerService(
+        repository,
+        { create: jest.fn(), destroy: jest.fn() } as unknown as RangeProvisioner,
+        createSystemConfigServiceStub() as any,
+      );
+      await expect(worker.recoverInterruptedJobs(new Date())).resolves.toBe(0);
+      await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({
+        status: 'running', startedAt: claimedAt, retryCount: 0,
+      }));
+
+      jest.setSystemTime(new Date('2026-07-28T00:16:00.000Z'));
+      await expect(worker.recoverInterruptedJobs(new Date())).resolves.toBe(1);
+      const reclaimedAt = new Date();
+      await repository.claimProvisionJob(job.id, reclaimedAt);
+      await expect(repository.heartbeatProvisionJob(job.id, claimedAt, new Date())).resolves.toBe(false);
+      await expect(repository.heartbeatProvisionJob(job.id, reclaimedAt, new Date())).resolves.toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('sends heartbeats during execution and stops them when execution ends', async () => {
+    jest.useFakeTimers({ now: new Date('2026-07-28T00:00:00.000Z') });
+    try {
+      const repository = createMemoryAdminRepository();
+      const instance = await repository.createRangeInstance({ name: 'heartbeat-range', status: 'creating' });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin',
+      });
+      const worker = new ProvisioningWorkerService(
+        repository,
+        { create: jest.fn(), destroy: jest.fn() } as unknown as RangeProvisioner,
+        createSystemConfigServiceStub() as any,
+      );
+      let finish!: () => void;
+      jest.spyOn(worker as any, 'processClaimedJob').mockImplementation(() => new Promise<void>((resolve) => {
+        finish = resolve;
+      }));
+      const heartbeat = jest.spyOn(repository, 'heartbeatProvisionJob');
+      const execution = worker.process(job.id);
+      await jest.advanceTimersByTimeAsync(6 * 60 * 1_000);
+      expect(heartbeat).toHaveBeenCalled();
+      await expect(worker.recoverInterruptedJobs(new Date())).resolves.toBe(0);
+
+      finish();
+      await execution;
+      const calls = heartbeat.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(heartbeat).toHaveBeenCalledTimes(calls);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('recovers a recent interrupted job after it becomes stale without another restart', async () => {
+    jest.useFakeTimers({ now: new Date('2026-07-28T00:00:00.000Z') });
+    try {
+      const repository = createMemoryAdminRepository();
+      const instance = await repository.createRangeInstance({ name: 'recent-interrupted-range', status: 'creating' });
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin',
+      });
+      await repository.claimProvisionJob(job.id, new Date());
+      const worker = new ProvisioningWorkerService(
+        repository,
+        { create: jest.fn(), destroy: jest.fn() } as unknown as RangeProvisioner,
+        createSystemConfigServiceStub() as any,
+      );
+      jest.spyOn(worker, 'reconcilePlatformResources').mockResolvedValue(undefined as never);
+      const pendingJob = jest.fn().mockImplementation(async () => {
+        if ((await repository.getProvisionJobById(job.id))?.status === 'pending') {
+          throw new Error('recovered');
+        }
+        return 0;
+      });
+      jest.spyOn(worker as any, 'startEligiblePendingJobs').mockImplementation(pendingJob);
+      const loop = worker.runLoop();
+      const recovered = expect(loop).rejects.toThrow('recovered');
+      await jest.advanceTimersByTimeAsync(6 * 60 * 1_000);
+      await recovered;
+      await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({
+        status: 'pending', retryCount: 1,
+      }));
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('destroys partially created range resources when a create job fails', async () => {
@@ -202,6 +289,89 @@ describe('ProvisioningWorkerService concurrency', () => {
         errorSummary: 'OpenTofu apply partially created resources.',
       }),
     );
+  });
+
+  it.each([false, true])('leaves a reclaimed range job and its state untouched when the old create fails=%s', async (fails) => {
+    const repository = createMemoryAdminRepository();
+    const template = await repository.createRangeTemplate({
+      name: 'Reclaimed range', slug: 'reclaimed-range', version: 'v1',
+      modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
+      topologySpec: {
+        vpcCidr: '10.91.0.0/16',
+        networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.91.10.0/24' }],
+        hosts: [{ key: 'entry', name: 'Entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.91.10.10' }],
+        publicEntry: { hostKey: 'entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+      },
+    });
+    const instance = await repository.createRangeInstance({ name: 'reclaimed-range', templateId: template.id, status: 'pending_create' });
+    const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin' });
+    let resolveCreate!: (result: any) => void;
+    let rejectCreate!: (error: Error) => void;
+    const create = jest.fn().mockImplementation(() => new Promise((resolve, reject) => {
+      resolveCreate = resolve;
+      rejectCreate = reject;
+    }));
+    const destroy = jest.fn();
+    const worker = new ProvisioningWorkerService(repository, { create, destroy }, createSystemConfigServiceStub() as any);
+    const execution = worker.process(job.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(create).toHaveBeenCalled();
+
+    await repository.requeueInterruptedProvisionJobs(new Date(Date.now() + 6 * 60_000));
+    const newClaim = new Date(Date.now() + 1_000);
+    await repository.claimProvisionJob(job.id, newClaim);
+    if (fails) {
+      rejectCreate(new Error('Old apply failed after losing its claim'));
+    } else {
+      resolveCreate({ accessEntry: null, resourceSummary: { hostIds: { entry: 'i-old-attempt' } } });
+    }
+    await execution;
+    expect(destroy).not.toHaveBeenCalled();
+    await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({ status: 'running', startedAt: newClaim }));
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(expect.objectContaining({ status: 'creating', resourceSummary: null }));
+  });
+
+  it('claims and heartbeats every batch member without stealing a sibling owned by another worker', async () => {
+    jest.useFakeTimers({ now: new Date('2026-07-28T00:00:00.000Z') });
+    try {
+      const repository = createMemoryAdminRepository();
+      const batch = await repository.createSingleInstanceBatch({
+        name: 'heartbeat-batch', platformImageAssetId: 'asset-1', imageId: 'm-1', imageDisplayName: 'Ubuntu',
+        cpu: 2, memory: 2, systemDiskSize: 40, quantity: 3, createdBy: 'admin',
+      });
+      const jobs: ProvisionJobRecord[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const instance = await repository.createRangeInstance({
+          name: `heartbeat-${index}`, instanceMode: 'single', singleInstanceBatchId: batch.id, status: 'pending_create',
+          singleInstanceConfig: {
+            baseName: batch.name, quantityIndex: index + 1, hostKey: `host-${index}`, hostName: `host-${index}`,
+            platformImageAssetId: batch.platformImageAssetId, imageId: batch.imageId, imageDisplayName: batch.imageDisplayName,
+            cpu: 2, memory: 2, systemDiskSize: 40,
+          },
+        });
+        const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin' });
+        await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
+        jobs.push(job);
+      }
+      const otherClaim = await repository.claimProvisionJob(jobs[2].id, new Date());
+      let finish!: () => void;
+      const executeCreateBatch = jest.fn().mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+      const worker = new ProvisioningWorkerService(
+        repository, { create: jest.fn(), destroy: jest.fn() }, createSystemConfigServiceStub() as any,
+        { executeCreateBatch } as unknown as SingleInstanceBatchExecutionService,
+      );
+      const execution = worker.process(jobs[0].id);
+      await jest.advanceTimersByTimeAsync(4 * 60_000);
+      const submitted = executeCreateBatch.mock.calls[0][0] as Array<{ job: ProvisionJobRecord }>;
+      expect(submitted.map((item) => item.job.id)).toEqual([jobs[0].id, jobs[1].id]);
+      await repository.heartbeatProvisionJob(jobs[2].id, otherClaim!.startedAt!, new Date());
+      await jest.advanceTimersByTimeAsync(2 * 60_000);
+      await expect(worker.recoverInterruptedJobs(new Date())).resolves.toBe(0);
+      finish();
+      await execution;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('limits single-instance batch execution concurrency to three', async () => {

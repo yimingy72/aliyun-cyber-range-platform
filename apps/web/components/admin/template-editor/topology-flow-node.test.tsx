@@ -103,7 +103,7 @@ function createFlowNode(
         nodeTypes={{ topology: TopologyFlowNode }}
         nodesDraggable={false}
       />
-    </div>,
+    </div>
   );
 }
 

@@ -412,6 +412,52 @@ describe('tool registry', () => {
     );
   });
 
+  it.each([
+    ['range_instance_topology_apply', ['ranges:write', 'ranges:control'], 'applyRangeInstanceDraft'],
+    ['range_instance_sync_template', ['ranges:write', 'templates:write'], 'syncRangeInstanceTemplate'],
+  ] as const)('replays %s confirmation without saving a new draft revision', async (toolName, scopes, method) => {
+    const client = createClientStub();
+    let instance: Record<string, unknown> = {
+      id: 'range-1', name: 'Web DMZ', draftRevision: 7, sourceTemplateRevision: 11,
+    };
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockImplementation(async () => instance);
+    (client.saveRangeInstanceDraft as ReturnType<typeof vi.fn>).mockImplementation(async (_id, payload) => {
+      instance = JSON.parse(JSON.stringify({ ...instance, ...payload, draftRevision: Number(instance.draftRevision) + 1 }));
+      return instance;
+    });
+    let confirmedRevision: number | undefined;
+    (client[method] as ReturnType<typeof vi.fn>).mockImplementation(async (_id, revision, ...rest) => {
+      const metadata = rest.at(-1) as { confirmationId?: string };
+      if (!metadata.confirmationId) {
+        confirmedRevision = revision;
+        throw new PlatformApiError(409, 'confirmation required', {
+          code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1',
+        });
+      }
+      if (revision !== confirmedRevision) {
+        throw new PlatformApiError(409, 'Operation confirmation does not match this request', null);
+      }
+      return { id: 'range-1', jobId: 'job-1' };
+    });
+    const registry = createToolRegistry(client);
+    const args = { rangeInstanceId: 'range-1', topologyGraph: authoringGraph };
+
+    await expect(registry.callTool(toolName, [...scopes], args)).resolves.toMatchObject({ isError: true });
+    await expect(registry.callTool(toolName, [...scopes], {
+      ...args, confirmationId: 'confirm-1', idempotencyKey: 'idem-1',
+    })).resolves.toMatchObject({ structuredContent: { result: { jobId: 'job-1' } } });
+    expect(client.saveRangeInstanceDraft).toHaveBeenCalledTimes(1);
+    expect(instance.draftRevision).toBe(8);
+
+    const changedGraph = structuredClone(authoringGraph);
+    changedGraph.nodes[0]!.label = 'Changed VPC';
+    await expect(registry.callTool(toolName, [...scopes], {
+      ...args, topologyGraph: changedGraph, confirmationId: 'confirm-1', idempotencyKey: 'idem-1',
+    })).rejects.toThrow('确认请求的拓扑与已保存草稿不一致');
+    expect(client.saveRangeInstanceDraft).toHaveBeenCalledTimes(1);
+    expect(client[method]).toHaveBeenCalledTimes(2);
+  });
+
   it('compiles a new topology graph before forwarding template creation', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);

@@ -1,6 +1,7 @@
 import type { AdminRepository } from '../src/admin/admin.repository';
 import { RangeInstanceNodeActionsService } from '../src/admin/range-instance-node-actions.service';
 import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
+import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { SingleInstancesService } from '../src/admin/single-instances.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
@@ -12,6 +13,7 @@ describe('SingleInstancesService', () => {
       {} as AdminRepository,
       {} as SystemConfigService,
       { ensureDefaultProfile } as unknown as SingleInstanceNetworkService,
+      {} as SingleInstanceBatchExecutionService,
       {} as ProvisioningWorkerService,
       {} as RangeInstanceNodeActionsService,
     );
