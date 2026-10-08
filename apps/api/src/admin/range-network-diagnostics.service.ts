@@ -8,6 +8,7 @@ import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 
 type Row = Record<string, any>;
 type Context = { regionId: string; accountUid: string; accessKeyId: string; accessKeySecret: string };
+type NatEntryId = { tableId: string | null; entryId: string };
 const PAGE_SIZE = 50;
 const PAGE_LIMIT = 20;
 function fail(phase: string, reason: string): never { throw new BadGatewayException(`Network diagnostics failed at ${phase}: ${reason}`); }
@@ -18,6 +19,19 @@ function array(value: unknown, phase: string): Row[] { if (!Array.isArray(value)
 function path(value: Row, names: string[], phase: string): any { let item: any = value; for (const name of names) item = object(item, phase)[name]; return item; }
 function ids(value: unknown, phase: string): string[] { if (!Array.isArray(value)) fail(phase, 'missing identity array'); const result = value.map((item) => string(item, phase)); if (new Set(result).size !== result.length) fail(phase, 'duplicate identity'); return result; }
 function mapIds(value: unknown, phase: string, required = false): string[] { if (value === null || value === undefined) { if (required) fail(phase, 'missing persisted resource IDs'); return []; } const result = ids(Object.values(object(value, phase)), phase); if (result.length > 100 || (required && !result.length)) fail(phase, 'unsupported resource count'); return result; }
+function natEntryIds(value: unknown, tablePrefix: 'ftb' | 'stb', entryPrefix: 'fwd' | 'snat', phase: string): NatEntryId[] {
+  const result = mapIds(value, phase).map((id) => {
+    const parts = id.split(':'); const entryId = parts.at(-1)!; const tableId = parts.length === 2 ? parts[0] : null;
+    if (parts.length > 2 || !new RegExp(`^${entryPrefix}-[a-z0-9]+$`, 'i').test(entryId) || (tableId !== null && !new RegExp(`^${tablePrefix}-[a-z0-9]+$`, 'i').test(tableId))) fail(phase, 'invalid persisted NAT entry identity');
+    return { tableId, entryId };
+  });
+  ids(result.map((entry) => entry.entryId), phase); return result;
+}
+function checkNatTables(expected: NatEntryId[], tables: string[], prefix: 'ftb' | 'stb', phase: string) { ids(tables, phase); if (tables.some((id) => !new RegExp(`^${prefix}-[a-z0-9]+$`, 'i').test(id))) fail(phase, 'invalid NAT parent table identity'); if (expected.some((entry) => entry.tableId !== null && !tables.includes(entry.tableId))) fail(phase, 'persisted parent table outside range NAT'); }
+function exactNatEntries(rows: Row[], key: string, expected: NatEntryId[], phase: string) {
+  exactIds(rows, key, expected.map((entry) => entry.entryId), phase);
+  for (const row of rows) { const entry = expected.find((item) => item.entryId === row[key])!; if (entry.tableId !== null) same(row.scopedTableId, entry.tableId, phase); }
+}
 function exactIds(rows: Row[], key: string, expected: string[], phase: string) { const actual = ids(rows.map((row) => row[key]), phase); if (actual.length !== expected.length || actual.some((id) => !expected.includes(id))) fail(phase, 'resource identity mismatch or incomplete response'); }
 function same(actual: unknown, expected: string, phase: string) { if (actual !== expected) fail(phase, 'resource identity mismatch'); }
 function ip(value: unknown, phase: string): string { const text = string(value, phase); if (!isIP(text)) fail(phase, 'invalid IP field'); return text; }
@@ -38,8 +52,8 @@ export class RangeNetworkDiagnosticsService {
     const secondaryIds = mapIds(summary.secondaryNetworkInterfaceIds, 'scope');
     const natIds = mapIds(summary.natGatewayIds, 'scope');
     const aclIds = mapIds(summary.networkAclIds, 'scope');
-    const forwardIds = mapIds(summary.dnatEntryIds, 'scope');
-    const snatIds = mapIds(summary.snatEntryIds, 'scope');
+    const forwardIds = natEntryIds(summary.dnatEntryIds, 'ftb', 'fwd', 'DescribeForwardTableEntries');
+    const snatIds = natEntryIds(summary.snatEntryIds, 'stb', 'snat', 'DescribeSnatTableEntries');
     const allocationIds = [...new Set([...mapIds(summary.eipAllocationIds, 'scope'), ...(summary.eipAllocationId ? [string(summary.eipAllocationId, 'scope')] : [])])];
     const ledgers = await this.prisma.billingLedgerResource.findMany({ where: { rangeInstanceId: instance.id, cloudProvider: 'alibaba_cloud', cloudResourceType: 'ecs', releasedAt: null } });
     exactIds(ledgers, 'cloudResourceId', hostIds, 'ledger');
@@ -114,12 +128,14 @@ export class RangeNetworkDiagnosticsService {
       });
       return { natGatewayId: row.NatGatewayId as string, status: string(row.Status, phase), natType: typeof row.NatType === 'string' ? row.NatType : null, vswitchId: gatewaySwitch as string | null, privateIp: privateInfo?.PrivateIpAddress ? ip(privateInfo.PrivateIpAddress, phase) : null, ipAssociations, forwardTableIds: ids(path(row, ['ForwardTableIds','ForwardTableId'], phase), phase), snatTableIds: ids(path(row, ['SnatTableIds','SnatTableId'], phase), phase) };
     });
+    checkNatTables(forwardIds, natGateways.flatMap((gateway) => gateway.forwardTableIds), 'ftb', 'DescribeForwardTableEntries');
+    checkNatTables(snatIds, natGateways.flatMap((gateway) => gateway.snatTableIds), 'stb', 'DescribeSnatTableEntries');
     const forwardRows: Row[] = []; const snatRows: Row[] = [];
     for (const gateway of natGateways) {
-      for (const id of gateway.forwardTableIds) for (const row of await this.pages(credentials, 'vpc', 'DescribeForwardTableEntries', { ForwardTableId: id }, ['ForwardTableEntries','ForwardTableEntry'])) { if (row.ForwardTableId !== undefined) same(row.ForwardTableId, id, 'DescribeForwardTableEntries'); forwardRows.push({ ...row, scopedGatewayId: gateway.natGatewayId }); }
-      for (const id of gateway.snatTableIds) for (const row of await this.pages(credentials, 'vpc', 'DescribeSnatTableEntries', { SnatTableId: id }, ['SnatTableEntries','SnatTableEntry'])) { if (row.SnatTableId !== undefined) same(row.SnatTableId, id, 'DescribeSnatTableEntries'); snatRows.push({ ...row, scopedGatewayId: gateway.natGatewayId }); }
+      for (const id of gateway.forwardTableIds) for (const row of await this.pages(credentials, 'vpc', 'DescribeForwardTableEntries', { ForwardTableId: id }, ['ForwardTableEntries','ForwardTableEntry'])) { if (row.ForwardTableId !== undefined) same(row.ForwardTableId, id, 'DescribeForwardTableEntries'); forwardRows.push({ ...row, scopedTableId: id, scopedGatewayId: gateway.natGatewayId }); }
+      for (const id of gateway.snatTableIds) for (const row of await this.pages(credentials, 'vpc', 'DescribeSnatTableEntries', { SnatTableId: id }, ['SnatTableEntries','SnatTableEntry'])) { if (row.SnatTableId !== undefined) same(row.SnatTableId, id, 'DescribeSnatTableEntries'); snatRows.push({ ...row, scopedTableId: id, scopedGatewayId: gateway.natGatewayId }); }
     }
-    exactIds(forwardRows, 'ForwardEntryId', forwardIds, 'DescribeForwardTableEntries'); exactIds(snatRows, 'SnatEntryId', snatIds, 'DescribeSnatTableEntries');
+    exactNatEntries(forwardRows, 'ForwardEntryId', forwardIds, 'DescribeForwardTableEntries'); exactNatEntries(snatRows, 'SnatEntryId', snatIds, 'DescribeSnatTableEntries');
     const forwardEntries = forwardRows.map((row) => ({ forwardEntryId: row.ForwardEntryId as string, natGatewayId: row.scopedGatewayId as string, protocol: string(row.IpProtocol, 'DescribeForwardTableEntries'), externalIp: ip(row.ExternalIp, 'DescribeForwardTableEntries'), externalPort: string(row.ExternalPort, 'DescribeForwardTableEntries'), internalIp: ip(row.InternalIp, 'DescribeForwardTableEntries'), internalPort: string(row.InternalPort, 'DescribeForwardTableEntries'), status: string(row.Status, 'DescribeForwardTableEntries') }));
     const snatEntries = snatRows.map((row) => { if (!switchIds.includes(string(row.SourceVSwitchId, 'DescribeSnatTableEntries'))) fail('DescribeSnatTableEntries', 'source vSwitch outside range'); return { snatEntryId: row.SnatEntryId as string, natGatewayId: row.scopedGatewayId as string, sourceVswitchId: row.SourceVSwitchId as string, sourceCidr: string(row.SourceCIDR, 'DescribeSnatTableEntries'), snatIp: string(row.SnatIp, 'DescribeSnatTableEntries'), status: string(row.Status, 'DescribeSnatTableEntries') }; });
     return { status: 'succeeded' as const, checkedAt: new Date().toISOString(), regionId, cloudAccountUid: accountUid, vpcId, instances, networkInterfaces, natGateways, forwardEntries, snatEntries, routeTables, networkAcls, securityGroups };

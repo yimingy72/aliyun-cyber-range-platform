@@ -5,7 +5,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 
 const accountUid = '1234567890123456';
 const user = { id: 'alice', role: 'user' as const };
-const range = { id: 'range-owned', ownerUserId: user.id, instanceMode: 'range', cloudProvider: 'alibaba_cloud', runtimeScenarioTemplateSpec: { topology: { defaultRegion: 'cn-hangzhou' } }, resourceSummary: { mode: 'opentofu', vpcId: 'vpc-owned', hostIds: { entry: 'i-entry', internal: 'i-internal' }, subnetIds: { entry: 'vsw-entry', internal: 'vsw-internal' }, secondaryNetworkInterfaceIds: { secondary: 'eni-secondary' }, securityGroupIds: { entry: 'sg-entry', internal: 'sg-internal' }, networkAclIds: { entry: 'nacl-owned' }, natGatewayIds: { shared: 'ngw-owned' }, dnatEntryIds: { ssh: 'fwd-owned' }, snatEntryIds: { internal: 'snat-owned' }, eipAllocationIds: { dnat: 'eip-dnat', snat: 'eip-snat' } } };
+const range = { id: 'range-owned', ownerUserId: user.id, instanceMode: 'range', cloudProvider: 'alibaba_cloud', runtimeScenarioTemplateSpec: { topology: { defaultRegion: 'cn-hangzhou' } }, resourceSummary: { mode: 'opentofu', vpcId: 'vpc-owned', hostIds: { entry: 'i-entry', internal: 'i-internal' }, subnetIds: { entry: 'vsw-entry', internal: 'vsw-internal' }, secondaryNetworkInterfaceIds: { secondary: 'eni-secondary' }, securityGroupIds: { entry: 'sg-entry', internal: 'sg-internal' }, networkAclIds: { entry: 'nacl-owned' }, natGatewayIds: { shared: 'ngw-owned' }, dnatEntryIds: { ssh: 'ftb-owned:fwd-owned', http: 'ftb-owned:fwd-http', udp: 'ftb-owned:fwd-udp' }, snatEntryIds: { internal: 'stb-owned:snat-owned' }, eipAllocationIds: { dnat: 'eip-dnat', snat: 'eip-snat' } } };
 const privateIps = (value: string) => ({ PrivateIpSets: { PrivateIpSet: [{ PrivateIpAddress: value, Primary: true }] }, PrivateIpAddress: value });
 const list = (field: string, item: string, rows: unknown[]) => ({ RequestId: 'safe-request-id', PageNumber: 1, PageSize: 50, TotalCount: rows.length, [field]: { [item]: rows } });
 function fixture() {
@@ -32,7 +32,10 @@ function fixture() {
     if (action === 'DescribeSecurityGroupAttribute') return { RequestId: 'request', SecurityGroupId: query.get('SecurityGroupId'), VpcId: 'vpc-owned', RegionId: 'cn-hangzhou', InnerAccessPolicy: 'Drop', NextToken: '', Permissions: { Permission: [{ Direction: 'ingress', IpProtocol: 'tcp', PortRange: '22/22', SourceCidrIp: '0.0.0.0/0', Policy: 'Accept', Priority: '10' }] } };
     if (action === 'DescribeNetworkAclAttributes') return { RequestId: 'request', NetworkAclAttribute: { NetworkAclId: 'nacl-owned', VpcId: 'vpc-owned', OwnerId: accountUid, RegionId: 'cn-hangzhou', Status: 'Available', Resources: { Resource: [{ ResourceId: 'vsw-entry', ResourceType: 'VSwitch', Status: 'BINDED' }] }, IngressAclEntries: { IngressAclEntry: [{ NetworkAclEntryName: 'allow-ssh', EntryType: 'custom', Policy: 'accept', Protocol: 'tcp', Port: '22/22', SourceCidrIp: '0.0.0.0/0' }, { NetworkAclEntryName: 'default-drop', EntryType: 'system', Policy: 'drop', Protocol: 'all', Port: '-1/-1', SourceCidrIp: '0.0.0.0/0' }] }, EgressAclEntries: { EgressAclEntry: [{ NetworkAclEntryName: 'return', EntryType: 'custom', Policy: 'accept', Protocol: 'all', Port: '-1/-1', DestinationCidrIp: '0.0.0.0/0' }] } } };
     if (action === 'DescribeNatGateways') return list('NatGateways','NatGateway',[{ NatGatewayId: 'ngw-owned', VpcId: 'vpc-owned', RegionId: 'cn-hangzhou', Status: 'Available', NatType: 'Enhanced', NatGatewayPrivateInfo: { VswitchId: 'vsw-entry', PrivateIpAddress: '10.0.40.253' }, IpLists: { IpList: [{ AllocationId: 'eip-dnat', IpAddress: '192.0.2.1', UsingStatus: 'UsedByForwardTable' }, { AllocationId: 'eip-snat', IpAddress: '192.0.2.2', UsingStatus: 'UsedBySnatTable' }] }, ForwardTableIds: { ForwardTableId: ['ftb-owned'] }, SnatTableIds: { SnatTableId: ['stb-owned'] } }]);
-    if (action === 'DescribeForwardTableEntries') return list('ForwardTableEntries','ForwardTableEntry',[{ ForwardEntryId: 'fwd-owned', ForwardTableId: 'ftb-owned', ExternalIp: '192.0.2.1', ExternalPort: '2222', InternalIp: '10.0.40.10', InternalPort: '22', IpProtocol: 'TCP', Status: 'Available' }]);
+    if (action === 'DescribeForwardTableEntries') return list('ForwardTableEntries','ForwardTableEntry',[
+      { ForwardEntryId: 'fwd-owned', ForwardTableId: 'ftb-owned', ExternalIp: '192.0.2.1', ExternalPort: '2222', InternalIp: '10.0.40.10', InternalPort: '22', IpProtocol: 'TCP', Status: 'Available' },
+      ...['TCP','UDP'].map((protocol) => ({ ForwardEntryId: protocol === 'TCP' ? 'fwd-http' : 'fwd-udp', ForwardTableId: 'ftb-owned', ExternalIp: '192.0.2.1', ExternalPort: '8080', InternalIp: '10.0.40.10', InternalPort: '80', IpProtocol: protocol, Status: 'Available' })),
+    ]);
     if (action === 'DescribeSnatTableEntries') return list('SnatTableEntries','SnatTableEntry',[{ SnatEntryId: 'snat-owned', SnatTableId: 'stb-owned', SourceVSwitchId: 'vsw-internal', SourceCIDR: '172.16.40.0/24', SnatIp: '192.0.2.2', Status: 'Available' }]);
     throw new Error('Unexpected cloud action');
   };
@@ -54,11 +57,69 @@ describe('Range network diagnostics scope and data', () => {
     expect(result).toMatchObject({ status: 'succeeded', regionId: 'cn-hangzhou', vpcId: 'vpc-owned', cloudAccountUid: accountUid });
     expect(result.networkInterfaces.find((nic) => nic.type === 'Secondary')).toMatchObject({ deviceIndex: 1, vswitchId: 'vsw-internal', securityGroupIds: ['sg-secondary'] });
     expect(result.forwardEntries[0]).toMatchObject({ externalPort: '2222', internalPort: '22', internalIp: '10.0.40.10' });
+    expect(result.forwardEntries.map((entry) => [entry.forwardEntryId, entry.protocol, entry.externalPort])).toEqual([['fwd-owned','TCP','2222'],['fwd-http','TCP','8080'],['fwd-udp','UDP','8080']]);
+    expect(result.snatEntries[0]).toMatchObject({ snatEntryId: 'snat-owned', natGatewayId: 'ngw-owned' });
     expect(result.networkAcls[0].inboundRules.map((rule) => [rule.name, rule.evaluationOrder])).toEqual([['allow-ssh',1],['default-drop',2]]);
     expect(result.natGateways[0].ipAssociations).toHaveLength(2);
     expect(JSON.stringify(result)).not.toMatch(/synthetic-bound|must-not-return|Password|AccessKeySecret|RawState/);
     expect(s.db.billingLedgerResource.findMany).toHaveBeenCalledWith({ where: { rangeInstanceId: range.id, cloudProvider: 'alibaba_cloud', cloudResourceType: 'ecs', releasedAt: null } });
     for (const request of s.requests) { expect(request.searchParams.get('Action')).toMatch(/^(Describe|GetCallerIdentity)/); if (request.hostname !== 'sts.aliyuncs.com') expect(request.searchParams.get('RegionId')).toBe('cn-hangzhou'); }
+  });
+  it('accepts legacy child-only IDs only inside the tables of the checked range NAT', async () => {
+    const s = fixture(); const legacy = structuredClone(range);
+    legacy.resourceSummary.dnatEntryIds = { ssh: 'fwd-owned', http: 'fwd-http', udp: 'fwd-udp' }; legacy.resourceSummary.snatEntryIds.internal = 'snat-owned';
+    await expect(s.service.get(legacy as never, user)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(s.requests.filter((request) => request.searchParams.get('Action') === 'DescribeForwardTableEntries').map((request) => request.searchParams.get('ForwardTableId'))).toEqual(['ftb-owned']);
+    expect(s.requests.filter((request) => request.searchParams.get('Action') === 'DescribeSnatTableEntries').map((request) => request.searchParams.get('SnatTableId'))).toEqual(['stb-owned']);
+  });
+  it.each([
+    ['dnatEntryIds','ssh','ftb-foreign:fwd-owned'],
+    ['snatEntryIds','internal','stb-foreign:snat-owned'],
+  ] as const)('rejects a foreign persisted parent in %s before querying any NAT entries', async (field, key, id) => {
+    const s = fixture(); const invalid = structuredClone(range); (invalid.resourceSummary[field] as Record<string,string>)[key] = id;
+    await expect(s.service.get(invalid as never, user)).rejects.toThrow('persisted parent table outside range NAT');
+    expect(s.requests.some((request) => ['DescribeForwardTableEntries','DescribeSnatTableEntries'].includes(request.searchParams.get('Action')!))).toBe(false);
+  });
+  it.each([
+    ['dnatEntryIds','ssh',':fwd-owned'], ['dnatEntryIds','ssh','ftb-owned:'], ['dnatEntryIds','ssh','ftb-owned:fwd-owned:extra'], ['dnatEntryIds','ssh','stb-owned:fwd-owned'], ['dnatEntryIds','ssh','ftb-owned:snat-owned'],
+    ['snatEntryIds','internal',':snat-owned'], ['snatEntryIds','internal','stb-owned:'], ['snatEntryIds','internal','stb-owned:snat-owned:extra'], ['snatEntryIds','internal','ftb-owned:snat-owned'], ['snatEntryIds','internal','stb-owned:fwd-owned'],
+  ] as const)('rejects malformed or cross-namespace persisted %s identity %s before cloud access', async (field, key, id) => {
+    const s = fixture(); const invalid = structuredClone(range); (invalid.resourceSummary[field] as Record<string,string>)[key] = id;
+    await expect(s.service.get(invalid as never, user)).rejects.toThrow('invalid persisted NAT entry identity'); expect(s.fetchMock).not.toHaveBeenCalled();
+  });
+  it('rejects a child listed under different persisted parents before cloud access', async () => {
+    const s = fixture(); const invalid = structuredClone(range); invalid.resourceSummary.dnatEntryIds.http = 'ftb-other:fwd-owned';
+    await expect(s.service.get(invalid as never, user)).rejects.toThrow('duplicate identity'); expect(s.fetchMock).not.toHaveBeenCalled();
+  });
+  it('rejects a legacy and compound ID referring to the same child before cloud access', async () => {
+    const s = fixture(); const invalid = structuredClone(range); invalid.resourceSummary.dnatEntryIds.http = 'fwd-owned';
+    await expect(s.service.get(invalid as never, user)).rejects.toThrow('duplicate identity'); expect(s.fetchMock).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['ForwardTableIds','ForwardTableId','ftb-owned','duplicate identity'],
+    ['SnatTableIds','SnatTableId','stb-owned','duplicate identity'],
+    ['ForwardTableIds','ForwardTableId','stb-wrong','invalid NAT parent table identity'],
+    ['SnatTableIds','SnatTableId','ftb-wrong','invalid NAT parent table identity'],
+  ] as const)('rejects duplicate or cross-namespace NAT table in %s before querying entries', async (field, item, id, reason) => {
+    const s = fixture(); s.changes.set('DescribeNatGateways', (value) => { value.NatGateways.NatGateway[0][field][item].push(id); return value; });
+    await expect(s.service.get(range as never, user)).rejects.toThrow(reason);
+    expect(s.requests.some((request) => ['DescribeForwardTableEntries','DescribeSnatTableEntries'].includes(request.searchParams.get('Action')!))).toBe(false);
+  });
+  it.each([
+    ['DescribeForwardTableEntries','ForwardTableEntries','ForwardTableEntry','ForwardTableId','ftb-foreign'],
+    ['DescribeSnatTableEntries','SnatTableEntries','SnatTableEntry','SnatTableId','stb-foreign'],
+  ] as const)('rejects a provider row claiming another parent at %s', async (action, field, item, key, id) => {
+    const s = fixture(); s.changes.set(action, (value) => { value[field][item][0][key] = id; return value; });
+    await expect(s.service.get(range as never, user)).rejects.toThrow('resource identity mismatch');
+  });
+  it('rejects a matching child returned by the wrong owned table even when the provider omits its parent field', async () => {
+    const s = fixture(); s.changes.set('DescribeNatGateways', (value) => { value.NatGateways.NatGateway[0].ForwardTableIds.ForwardTableId.push('ftb-other'); return value; });
+    s.changes.set('DescribeForwardTableEntries', (value, query) => {
+      if (query.get('ForwardTableId') === 'ftb-owned') return { ...value, TotalCount: 0, ForwardTableEntries: { ForwardTableEntry: [] } };
+      for (const row of value.ForwardTableEntries.ForwardTableEntry) delete row.ForwardTableId;
+      return value;
+    });
+    await expect(s.service.get(range as never, user)).rejects.toThrow('resource identity mismatch');
   });
   it('rejects another owner before any DB or cloud access', async () => {
     const s = fixture(); await expect(s.service.get(range as never, { id: 'bob', role: 'user' })).rejects.toThrow('access denied'); expect(s.db.billingLedgerResource.findMany).not.toHaveBeenCalled(); expect(s.fetchMock).not.toHaveBeenCalled();
