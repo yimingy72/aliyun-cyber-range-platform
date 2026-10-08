@@ -44,7 +44,7 @@ docker network create "$CI_NETWORK" >/dev/null
 docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
   --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_DB=cyber_range -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
-  --health-cmd 'pg_isready -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
+  --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
   postgres:16-alpine >/dev/null
 for attempt in $(seq 1 40); do
   if [ "$(docker inspect --format '{{.State.Health.Status}}' "$CI_DB")" = healthy ]; then
