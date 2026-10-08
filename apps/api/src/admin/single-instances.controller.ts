@@ -8,6 +8,7 @@ import {
   TriggerSingleInstanceDestroyDto,
 } from './dto/single-instance.dto';
 import { SingleInstancesService } from './single-instances.service';
+import { SingleInstanceNetworkService } from './single-instance-network.service';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
@@ -20,11 +21,30 @@ export class SingleInstancesController {
   constructor(
     private readonly singleInstancesService: SingleInstancesService,
     private readonly operationControlService: OperationControlService,
+    private readonly networks: SingleInstanceNetworkService,
   ) {}
 
   @Get()
   list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history') {
     return this.singleInstancesService.list(request.adminUser, view);
+  }
+
+  @Get('networks')
+  listNetworks(@Req() request:AuthenticatedAdminRequest) {return this.networks.list(request.adminUser);}
+
+  @Post('networks/:id/register-cleanup')
+  registerNetworkCleanup(@Req() request:AuthenticatedAdminRequest,@Param('id') id:string,@Body() body:{runId:string;createdAfter:string;ownerUserIds:string[]}) {
+    return this.networks.registerCleanup(id,body.runId,body.createdAfter,body.ownerUserIds,request.adminUser);
+  }
+
+  @Post('networks/:id/destroy')
+  destroyNetwork(@Req() request:AuthenticatedAdminRequest,@Param('id') id:string,@Body() body:{cleanupRunId:string}) {
+    if(request.authContext.source==='mcp') return this.operationControlService.executeConfirmed({
+      context:request.authContext,metadata:readOperationRequestMetadata(request),toolName:'single_instance_network_destroy',
+      arguments:{networkProfileId:id,cleanupRunId:body.cleanupRunId},targetType:'single_instance_network',targetId:id,
+      resolveConfirmation:()=>this.networks.prepareDestroy(id,request.adminUser),execute:()=>this.networks.destroy(id,request.adminUser,body.cleanupRunId),
+    });
+    return this.networks.destroy(id,request.adminUser,body.cleanupRunId);
   }
 
   @Get(':id/cloud-resource-status')

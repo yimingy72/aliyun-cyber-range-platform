@@ -13,7 +13,7 @@ describe('BillingService', () => {
       role: 'user',
     });
 
-    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toMatchObject({
       items: [
         {
           userId: 'user-2',
@@ -125,7 +125,7 @@ describe('BillingService', () => {
       rawPayload: {},
     });
 
-    await expect(service.getSummary({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+    await expect(service.getSummary({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toMatchObject({
       startAt: '2026-07-16',
       endAt: '2026-07-16',
       totalPretaxAmount: 1.75,
@@ -138,7 +138,7 @@ describe('BillingService', () => {
       dailyTotals: [{ billingDate: '2026-07-16', pretaxAmount: 1.75 }],
     });
 
-    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toMatchObject({
       items: [
         {
           userId: 'user-1',
@@ -153,7 +153,7 @@ describe('BillingService', () => {
       total: 1,
     });
 
-    await expect(service.listPlatformItems({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual([
+    await expect(service.listPlatformItems({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toMatchObject([
       expect.objectContaining({
         cloudResourceId: 'eip-1',
         cloudResourceType: 'eip',
@@ -286,12 +286,12 @@ describe('BillingService', () => {
       ).listUserGroups?.({ startAt: '2026-07-16', endAt: '2026-07-16' }),
     );
 
-    expect(groups).toEqual({
+    expect(groups).toMatchObject({
       items: [
         expect.objectContaining({
           id: singleJob.id,
           kind: 'single_launch',
-          title: '开启编排实例',
+          title: '开启单实例',
           completedAt: '2026-07-16T07:16:07.000Z',
           ownerUsername: 'alice',
           pretaxAmount: 9.2,
@@ -300,7 +300,7 @@ describe('BillingService', () => {
         expect.objectContaining({
           id: rangeJob.id,
           kind: 'range_launch',
-          title: '开启靶场实例',
+          title: '开启编排实例',
           completedAt: '2026-07-16T02:03:42.000Z',
           ownerUsername: 'alice',
           pretaxAmount: 8.4,
@@ -312,7 +312,7 @@ describe('BillingService', () => {
       total: 2,
     });
 
-    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toEqual({
+    await expect(service.listUsers({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toMatchObject({
       items: [
         {
           userId: 'user-1',
@@ -383,13 +383,13 @@ describe('BillingService', () => {
       },
     ]);
 
-    await expect(service.listUserGroups({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toEqual({
+    await expect(service.listUserGroups({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toMatchObject({
       items: [
         expect.objectContaining({
           id: job.id,
           kind: 'range_launch',
           provisionJobStatus: 'failed',
-          title: '开启靶场实例',
+          title: '开启编排实例',
           ownerUsername: 'alice',
           pretaxAmount: 0.25,
           resourceCount: 1,

@@ -2,7 +2,7 @@
 
 import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 import { PanelRightClose } from 'lucide-react';
-import { validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
+import { nextAvailableGraphId, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
 import type {
   DnatExternalPortConflict,
@@ -395,13 +395,12 @@ function renderHostFields(
   }
 
   function handleAddNic() {
-    const nextIndex = nicItems.length + 1;
     onUpdateNode(selectedNode.id, {
       ...selectedNode,
       nics: [
         ...nicItems,
         {
-          id: `${selectedNode.id}-nic-${nextIndex}`,
+          id: nextAvailableGraphId(`${selectedNode.id}-nic`, nicItems.map((nic) => nic.id)),
           switchId: '',
           privateIp: '',
           secondaryIps: [],
@@ -444,7 +443,7 @@ function renderHostFields(
     updateNicSecurityGroupRules(nicId, (rules) => [
       ...rules,
       {
-        key: `${nicId}-sg-${rules.length + 1}`,
+        key: nextAvailableGraphId(`${nicId}-sg`, rules.map((rule) => rule.key)),
         direction: 'ingress',
         protocol: 'tcp',
         portRange: '22/22',
@@ -840,7 +839,7 @@ function renderSwitchFields(
       aclRules: [
         ...aclRules,
         {
-          key: `${selectedNode.id}-acl-${nextIndex}`,
+          key: nextAvailableGraphId(`${selectedNode.id}-acl`, aclRules.map((rule) => rule.key)),
           direction: 'inbound',
           protocol: 'tcp',
           portRange: '22/22',
@@ -854,7 +853,6 @@ function renderSwitchFields(
   }
 
   function handleAddDnatRule() {
-    const nextIndex = dnatMappings.length + 1;
     onUpdateNode(selectedNode.id, {
       ...selectedNode,
       nat: {
@@ -862,7 +860,7 @@ function renderSwitchFields(
         dnatMappings: [
           ...dnatMappings,
           {
-            key: `${selectedNode.id}-dnat-${nextIndex}`,
+            key: nextAvailableGraphId(`${selectedNode.id}-dnat`, dnatMappings.map((mapping) => mapping.key)),
             targetHostId: '',
             externalPort: 8080,
             internalPort: 80,

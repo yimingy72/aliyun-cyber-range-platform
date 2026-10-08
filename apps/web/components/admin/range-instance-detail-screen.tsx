@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { defaultSwitchCidr as readDefaultSwitchCidr, nextAvailableGraphId } from '@aliyun-cyber-range/scenario-runtime';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -34,6 +35,7 @@ import {
   type SwitchTemplateNode,
   type TemplateNode,
 } from '../../lib/scenario-graph';
+import { nextAvailableSwitchCidr, reconcileHostNicConnections } from '../../lib/scenario-graph-linking';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { useAdminRouteIsActive } from './admin-page-cache';
@@ -67,7 +69,6 @@ type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack
 type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
 
 const INSTANCE_TOPOLOGY_SCHEMA_VERSION = '2.0.0';
-const DEFAULT_SWITCH_CIDRS = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'] as const;
 
 function TopologyWorkspaceLoading() {
   return (
@@ -384,10 +385,6 @@ function hasSameTopologySelection(left: TopologySelection, right: TopologySelect
     && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
 }
 
-function readDefaultSwitchCidr(ordinal: number) {
-  return DEFAULT_SWITCH_CIDRS[ordinal - 1] ?? `10.${Math.max(ordinal - 3, 1)}.0.0/24`;
-}
-
 function readDefaultNodeLabel(kind: TemplateNode['kind'], ordinal: number) {
   if (kind === 'router') {
     return 'Router';
@@ -500,7 +497,7 @@ function syncHostNicsWithLinkedSwitch(hostNode: EcsTemplateNode, switchNode: Swi
     nics: [
       ...nics,
       {
-        id: `${hostNode.id}-nic-${nics.length + 1}`,
+        id: nextAvailableGraphId(`${hostNode.id}-nic`, nics.map((nic) => nic.id)),
         switchId: switchNode.id,
         privateIp: '',
         secondaryIps: [],
@@ -1175,8 +1172,13 @@ export function RangeInstanceDetailScreen({
               version?: string;
               cloudProvider?: 'alibaba_cloud';
               iacType?: 'opentofu' | 'terraform';
+              description?: string;
             })
           : {};
+      const currentTopology = currentSpec?.topology && typeof currentSpec.topology === 'object'
+        ? currentSpec.topology as Record<string, unknown> : {};
+      const savedTopology = (detail.draftTopologySpec ?? detail.runtimeTopologySpec) as Record<string, unknown> | null;
+      const publicEntry = savedTopology?.publicEntry as { protocols?: Array<{ protocol: string; port: number }> } | undefined;
       const primaryVpcCidr =
         currentSpec &&
         currentSpec.topology &&
@@ -1196,8 +1198,12 @@ export function RangeInstanceDetailScreen({
           version: metadata.version ?? 'v1',
           cloudProvider: metadata.cloudProvider ?? 'alibaba_cloud',
           iacType: metadata.iacType ?? 'opentofu',
+          ...(metadata.description ? { description: metadata.description } : {}),
+          ...(typeof currentTopology.defaultRegion === 'string' ? { defaultRegion: currentTopology.defaultRegion } : {}),
+          ...(typeof currentTopology.defaultZoneId === 'string' ? { defaultZoneId: currentTopology.defaultZoneId } : {}),
           modulePathOrRef: detail.templateModulePathSnapshot ?? 'runtime/range-instance',
           primaryVpcCidr,
+          ...(publicEntry?.protocols ? { publicEntryProtocols: publicEntry.protocols } : {}),
         },
         viewport: topologyViewport,
       });
@@ -1572,12 +1578,22 @@ export function RangeInstanceDetailScreen({
       return;
     }
 
-    const kindOrdinal = topologyNodes.filter((node) => node.kind === kind).length + 1;
-    const nextIndex = topologyNodes.length + 1;
+    let kindOrdinal = topologyNodes.filter((node) => node.kind === kind).length + 1;
+    while (topologyNodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindOrdinal))) kindOrdinal += 1;
+    const nextNodeId = nextAvailableGraphId(kind, topologyNodes.map((node) => node.id));
+    let switchCidr = '';
+    if (kind === 'switch') {
+      try {
+        switchCidr = nextAvailableSwitchCidr(topologyNodes);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : '没有可用的交换机网段');
+        return;
+      }
+    }
     const nextNode: TemplateNode =
       kind === 'router'
         ? {
-            id: `router-${nextIndex}`,
+            id: nextNodeId,
             kind: 'router',
             label: readDefaultNodeLabel('router', kindOrdinal),
             position: createNodePosition('router', kindOrdinal),
@@ -1587,12 +1603,12 @@ export function RangeInstanceDetailScreen({
             bindEip: false,
           }
         : kind === 'switch'
-          ? createDefaultSwitchNode(
-              `switch-${nextIndex}`,
+          ? { ...createDefaultSwitchNode(
+              nextNodeId,
               readDefaultNodeLabel('switch', kindOrdinal),
               kindOrdinal,
-            )
-          : createDefaultEcsNode(`ecs-${nextIndex}`, readDefaultNodeLabel('ecs', kindOrdinal), kindOrdinal);
+            ), cidr: switchCidr, zoneKey: nextAvailableGraphId('zone', topologyNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch').map((node) => node.zoneKey)) }
+          : createDefaultEcsNode(nextNodeId, readDefaultNodeLabel('ecs', kindOrdinal), kindOrdinal);
     const positionedNode =
       position && Number.isFinite(position.x) && Number.isFinite(position.y)
         ? { ...nextNode, position }
@@ -1725,7 +1741,8 @@ export function RangeInstanceDetailScreen({
       };
     });
 
-    commitTopologySnapshot({ nodes: nextNodes, edges: topologyEdges, viewport: topologyViewport }, '已更新节点属性。');
+    const next = reconcileHostNicConnections(topologyNodes, nextNodes, topologyEdges, nodeId);
+    commitTopologySnapshot({ ...next, viewport: topologyViewport }, '已更新节点属性。');
   }
 
   function handlePositionsCommit(positions: Array<{ id: string; position: { x: number; y: number } }>) {

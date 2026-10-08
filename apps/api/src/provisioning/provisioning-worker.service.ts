@@ -13,10 +13,12 @@ import {
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
 import { buildBillingTags } from '../admin/billing-tagging';
+import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
+import { FAILED_CREATE_CLEANUP_PROOF_STEP, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
   AliyunEcsResourceClient,
   PlatformResourceReconciliationService,
@@ -138,10 +140,29 @@ export class ProvisioningWorkerService {
     const instances = await this.adminRepository.listRangeInstances();
 
     for (const instance of instances) {
+      if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
+        await this.adminRepository.withSingleInstanceControlLock(async () => {
+          const current=await this.adminRepository.getRangeInstanceById(instance.id);
+          if(!current || !['running','creating'].includes(current.status)) return;
+          const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
+          if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
+          if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
+          const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
+          await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
+        });
+        continue;
+      }
       if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
         continue;
       }
 
+      if (instance.instanceMode === 'range') {
+        await this.adminRepository.queueRangeInstanceJob({
+          rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'system:auto-expire',
+          expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
+        });
+        continue;
+      }
       const job = await this.adminRepository.createProvisionJob({
         rangeInstanceId: instance.id,
         jobType: 'destroy',
@@ -157,7 +178,11 @@ export class ProvisioningWorkerService {
 
   async process(jobId: string) {
     const claimedAt = new Date();
-    const job = await this.adminRepository.claimProvisionJob(jobId, claimedAt);
+    const pendingJob = await this.adminRepository.getProvisionJobById(jobId);
+    const pendingInstance = pendingJob ? await this.adminRepository.getRangeInstanceById(pendingJob.rangeInstanceId) : null;
+    const job = pendingInstance?.instanceMode === 'range'
+      ? await this.adminRepository.claimRangeProvisionJob(jobId, claimedAt)
+      : await this.adminRepository.claimProvisionJob(jobId, claimedAt);
 
     if (!job) {
       return;
@@ -188,7 +213,10 @@ export class ProvisioningWorkerService {
     }
 
     try {
-      return await this.adminRepository.heartbeatProvisionJob(job.id, job.startedAt, new Date());
+      const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
+      return instance?.instanceMode === 'range'
+        ? await this.adminRepository.heartbeatRangeProvisionJob(job.id, job.startedAt, new Date())
+        : await this.adminRepository.heartbeatProvisionJob(job.id, job.startedAt, new Date());
     } catch (error) {
       this.logger.error(`Provision job heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
       return false;
@@ -207,20 +235,35 @@ export class ProvisioningWorkerService {
       return;
     }
 
-    await this.adminRepository.updateRangeInstance(instance.id, {
-      errorSummary: null,
-    });
+    if (instance.instanceMode === 'range') {
+      if (!(await this.ownsProvisionJobClaim(job))) return;
+      await this.updateRangeForClaim(job, { errorSummary: null });
+    }
     const reportStep = this.createStepReporter(job.id);
     let failedCreateCleanupInput: RangeProvisionDestroyInput | null = null;
+    let failedCreateCleanupContext: { id: string; accountUid: string; regionId: string } | null = null;
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
       const runtimeConfig = await this.systemConfigService.getSnapshot();
 
       if (instance.instanceMode === 'single') {
+        const current = await this.adminRepository.withSingleInstanceControlLock(async () => {
+          let latest = await this.adminRepository.getRangeInstanceById(instance.id);
+          if (latest && !latest.lastJobId) {
+            const active = (await this.adminRepository.listProvisionJobs()).filter(value => value.rangeInstanceId === instance.id && ['pending','running'].includes(value.status));
+            if (active.length === 1 && active[0].id === job.id) latest = await this.adminRepository.updateRangeInstance(instance.id,{lastJobId:job.id});
+          }
+          return latest;
+        });
+        if (!current || current.lastJobId !== job.id || !(await this.ownsProvisionJobClaim(job))
+          || ['destroyed','create_failed'].includes(current.status) && job.jobType !== 'retry') {
+          if (await this.ownsProvisionJobClaim(job)) await this.adminRepository.updateProvisionJob(job.id,{status:'failed',finishedAt:new Date(),errorSummary:'Superseded single-instance job'});
+          return;
+        }
         await this.processSingleInstanceJob({
           job,
-          instance,
+          instance: current,
           effectiveJobType,
           runtimeConfig,
           reportStep,
@@ -239,59 +282,64 @@ export class ProvisioningWorkerService {
         if (!(await this.ownsProvisionJobClaim(job))) {
           return;
         }
-        await this.adminRepository.updateProvisionJob(job.id, {
-          status: 'succeeded',
-          finishedAt: new Date(),
-          errorSummary: null,
-        });
+        if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
+          status: 'succeeded', finishedAt: new Date(), errorSummary: null,
+        }))) return;
         await this.finalizeDispatchedOperation(job, 'succeeded');
         this.nextResourceReconciliationAt = 0;
         return;
       }
 
-      if (!instance.templateId) {
+      if (effectiveJobType === 'destroy') {
+        await this.processRangeDestroyJob(job, instance, runtimeConfig, reportStep);
+        return;
+      }
+
+      const frozen = job.topologySnapshot?.operation === 'create' ? job.topologySnapshot : null;
+      if (!frozen && !instance.templateId) {
         await this.failJob(job, instance, 'Template not found');
         return;
       }
 
-      const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
+      const template = !frozen && instance.templateId ? await this.adminRepository.getRangeTemplateById(instance.templateId) : null;
 
-      if (!template) {
+      if (!frozen && !template) {
         await this.failJob(job, instance, 'Template not found');
         return;
       }
 
-      const sourceVersion = instance.sourceTemplateVersionId
+      const sourceVersion = frozen ? null : instance.sourceTemplateVersionId
         ? await this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId)
-        : template.currentDraftVersion ?? template.currentPublishedVersion;
+        : template?.currentDraftVersion ?? template?.currentPublishedVersion;
 
-      if (instance.sourceTemplateVersionId && !sourceVersion) {
+      if (!frozen && instance.sourceTemplateVersionId && !sourceVersion) {
         await this.failJob(job, instance, 'Template source version not found');
         return;
       }
 
-      const allowTemplateFallback = !instance.sourceTemplateVersionId
-        && (await this.shouldAllowTemplateFallback(instance, template, job.triggeredBy));
+      const allowTemplateFallback = Boolean(!frozen && !instance.sourceTemplateVersionId && template
+        && await this.shouldAllowTemplateFallback(instance, template, job.triggeredBy));
       const templateModulePath =
-        sourceVersion?.modulePathOrRef ??
-        (allowTemplateFallback ? template.modulePathOrRef : null);
+        frozen?.templateModulePath ?? sourceVersion?.modulePathOrRef ??
+        (allowTemplateFallback ? template?.modulePathOrRef : null);
       const baseCompiledProvisionSpec =
-        this.getCompiledProvisionSpec(sourceVersion?.compiledProvisionSpec) ??
-        (allowTemplateFallback ? this.getCompiledProvisionSpec(template.compiledProvisionSpec) : null) ??
+        this.getCompiledProvisionSpec(frozen?.compiledProvisionSpec ?? sourceVersion?.compiledProvisionSpec) ??
+        (allowTemplateFallback ? this.getCompiledProvisionSpec(template?.compiledProvisionSpec) : null) ??
         this.getCompiledProvisionSpec(instance.runtimeCompiledProvisionSpec);
       const baseCompiledSpec =
-        this.getCompiledSpec(sourceVersion?.compiledSpec) ??
-        (allowTemplateFallback ? this.getCompiledSpec(template.compiledSpec) : null);
+        this.getCompiledSpec(frozen?.compiledSpec ?? sourceVersion?.compiledSpec) ??
+        (allowTemplateFallback ? this.getCompiledSpec(template?.compiledSpec) : null);
       const baseTopologyGraph =
-        sourceVersion?.topologyGraph ??
-        (allowTemplateFallback ? template.topologyGraph : null) ??
+        frozen?.topologyGraph ?? sourceVersion?.topologyGraph ??
+        (allowTemplateFallback ? template?.topologyGraph : null) ??
         instance.runtimeTopologyGraph ??
         null;
       const baseTopologySpec =
+        (frozen ? frozen.topologySpec as RangeTemplateTopologySpec : null) ??
         this.getTopologySpecFromCompiledProvisionSpec(baseCompiledProvisionSpec) ??
         this.getCompiledTopologySpec(baseCompiledSpec) ??
         sourceVersion?.topologySpec ??
-        (allowTemplateFallback ? template.topologySpec : null);
+        (allowTemplateFallback ? template?.topologySpec : null);
 
       if (!templateModulePath) {
         await this.failJob(job, instance, 'Template module path not found');
@@ -311,9 +359,7 @@ export class ProvisioningWorkerService {
 
       if (effectiveJobType === 'create') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
-          await this.adminRepository.updateRangeInstance(instance.id, {
-            status: 'creating',
-          });
+          await this.updateRangeForClaim(job, { status: 'creating' });
         });
 
         const billingTags = buildBillingTags({
@@ -324,12 +370,15 @@ export class ProvisioningWorkerService {
           platformResourceType: 'range',
           billingStartAt: new Date(),
         });
+        if (accountContext.cloudAccountContextId && accountContext.accountUid) {
+          failedCreateCleanupContext = { id: accountContext.cloudAccountContextId, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion };
+        }
         failedCreateCleanupInput = {
           rangeInstanceId: instance.id,
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
-          runtimeCredentials: instance.runtimeCredentials ?? undefined,
+          runtimeCredentials: frozen?.runtimeCredentials ?? instance.runtimeCredentials ?? undefined,
           topologyGraph,
           topologySpec,
           compiledProvisionSpec,
@@ -339,6 +388,7 @@ export class ProvisioningWorkerService {
         if (!(await this.ownsProvisionJobClaim(job))) {
           return;
         }
+        if (frozen) await this.assertRangeSnapshotImages(instance, frozen);
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
@@ -350,22 +400,23 @@ export class ProvisioningWorkerService {
         }
 
         await this.runWorkerStep(reportStep, 'persist_access_entry', async () => {
-          await this.adminRepository.updateRangeInstance(instance.id, {
+          await this.updateRangeForClaim(job, {
             status: 'running',
             runtimeTopologyGraph:
-              sourceVersion?.topologyGraph ??
-              (allowTemplateFallback ? template.topologyGraph : null) ??
+              frozen?.topologyGraph ?? sourceVersion?.topologyGraph ??
+              (allowTemplateFallback ? template?.topologyGraph : null) ??
               instance.runtimeTopologyGraph ??
               null,
             runtimeScenarioTemplateSpec:
-              sourceVersion?.scenarioTemplateSpec ??
-              (allowTemplateFallback ? template.scenarioTemplateSpec : null) ??
+              frozen?.scenarioTemplateSpec ?? sourceVersion?.scenarioTemplateSpec ??
+              (allowTemplateFallback ? template?.scenarioTemplateSpec : null) ??
               instance.runtimeScenarioTemplateSpec ??
               null,
             runtimeCompiledProvisionSpec:
               baseCompiledProvisionSpec ??
               instance.runtimeCompiledProvisionSpec ??
               null,
+            runtimeCredentials: frozen?.runtimeCredentials ?? instance.runtimeCredentials ?? null,
             accessEntry: result.accessEntry,
             resourceSummary: result.resourceSummary,
             errorSummary: null,
@@ -380,51 +431,14 @@ export class ProvisioningWorkerService {
             billingStartAt: new Date(),
           });
         });
-      } else if (effectiveJobType === 'destroy') {
-        if (!(await this.ownsProvisionJobClaim(job))) {
-          return;
-        }
-        await this.runWorkerStep(reportStep, 'prepare', async () => {
-          await this.adminRepository.updateRangeInstance(instance.id, {
-            status: 'destroying',
-          });
-        });
-
-        await this.rangeProvisioner.destroy({
-          rangeInstanceId: instance.id,
-          templateModulePath,
-          allocatedCidr: instance.allocatedCidr,
-          runtimeConfig,
-          topologySpec,
-          compiledProvisionSpec,
-          compiledSpec,
-          reportStep,
-        });
-
-        await this.runWorkerStep(reportStep, 'verify_destroy', async () => {
-          await this.verifyDestroyCompletion(instance, runtimeConfig);
-        });
-
-        if (!(await this.ownsProvisionJobClaim(job))) {
-          return;
-        }
-        await this.adminRepository.updateRangeInstance(instance.id, {
-          status: 'destroyed',
-          accessEntry: null,
-          resourceSummary: null,
-          errorSummary: null,
-        });
-        await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
       }
 
       if (!(await this.ownsProvisionJobClaim(job))) {
         return;
       }
-      await this.adminRepository.updateProvisionJob(job.id, {
-        status: 'succeeded',
-        finishedAt: new Date(),
-        errorSummary: null,
-      });
+      if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
+        status: 'succeeded', finishedAt: new Date(), errorSummary: null,
+      }))) return;
       await this.finalizeDispatchedOperation(job, 'succeeded');
       this.nextResourceReconciliationAt = 0;
     } catch (error) {
@@ -435,6 +449,8 @@ export class ProvisioningWorkerService {
       const cleanupFailureMessage = failedCreateCleanupInput
         ? await this.cleanupFailedRangeCreate({
             instance,
+            job,
+            cloudContext: failedCreateCleanupContext,
             cleanupInput: failedCreateCleanupInput,
             reportStep,
           })
@@ -443,6 +459,37 @@ export class ProvisioningWorkerService {
 
       await this.failJob(job, instance, message, cleanupFailureMessage ? 'destroy_failed' : undefined);
     }
+  }
+
+  private async updateRangeForClaim(job: ProvisionJobRecord, input: Parameters<AdminRepository['updateRangeInstance']>[1]) {
+    const updated = job.startedAt && await this.adminRepository.updateRangeInstanceForProvisionJob(job.id, job.startedAt, input);
+    if (!updated) throw new Error('Range operation claim is no longer active');
+    return updated;
+  }
+
+  private async assertRangeSnapshotImages(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot) {
+    const owner = instance.ownerUserId ? await this.adminRepository.getPlatformUserById(instance.ownerUserId) : undefined;
+    await new RangeTemplatesService(this.adminRepository, this.systemConfigService).assertTemplateEcsImageSelections({
+      ...snapshot, topologySpec: snapshot.topologySpec as RangeTemplateTopologySpec,
+    }, owner ?? undefined);
+  }
+
+  private async processRangeDestroyJob(job: ProvisionJobRecord, instance: RangeInstanceRecord,
+    runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>, reportStep: RangeProvisionStepReporter) {
+    if (!(await this.ownsProvisionJobClaim(job))) return;
+    await this.runWorkerStep(reportStep, 'prepare', async () => { await this.updateRangeForClaim(job, { status: 'destroying' }); });
+    await this.rangeProvisioner.destroy({
+      rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
+      allocatedCidr: instance.allocatedCidr, runtimeConfig, reportStep,
+    });
+    await this.runWorkerStep(reportStep, 'verify_destroy', async () => { await this.verifyDestroyCompletion(instance, runtimeConfig); });
+    await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null, resourceSummary: null, errorSummary: null });
+    await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
+    if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
+      status: 'succeeded', finishedAt: new Date(), errorSummary: null,
+    }))) return;
+    await this.finalizeDispatchedOperation(job, 'succeeded');
+    this.nextResourceReconciliationAt = 0;
   }
 
   private async processRangeInstanceUpdateJob(input: {
@@ -458,21 +505,20 @@ export class ProvisioningWorkerService {
     }
 
     await this.runWorkerStep(input.reportStep, 'prepare', async () => {
-      await this.adminRepository.updateRangeInstance(input.instance.id, {
-        errorSummary: null,
-      });
+      await this.updateRangeForClaim(input.job, { errorSummary: null });
     });
 
     if (!(await this.ownsProvisionJobClaim(input.job))) {
       return;
     }
+    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(input.instance, topologySnapshot);
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
       runtimeConfig: input.runtimeConfig,
-      runtimeCredentials: input.instance.runtimeCredentials ?? undefined,
+      runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? undefined,
       topologyGraph: topologySnapshot.topologyGraph,
       topologySpec: topologySnapshot.topologySpec as RangeTemplateTopologySpec,
       compiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
@@ -497,6 +543,8 @@ export class ProvisioningWorkerService {
         runtimeScenarioTemplateSpec: topologySnapshot.scenarioTemplateSpec,
         runtimeCompiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
         expectedDraftRevision: topologySnapshot.draftRevision,
+        provisionJobId: input.job.id, claimStartedAt: input.job.startedAt!,
+        runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? null,
         accessEntry: result.accessEntry,
         resourceSummary: result.resourceSummary,
         errorSummary: null,
@@ -568,6 +616,8 @@ export class ProvisioningWorkerService {
       compiledProvisionSpec,
       compiledSpec,
       templateModulePath,
+      ...(snapshot.runtimeCredentials ? { runtimeCredentials: snapshot.runtimeCredentials as ProvisionJobTopologySnapshot['runtimeCredentials'] } : {}),
+      ...(snapshot.operation === 'update' ? { operation: 'update' as const } : {}),
     };
   }
 
@@ -643,6 +693,7 @@ export class ProvisioningWorkerService {
 
     return {
       ...snapshot,
+      cloudAccountContextId: null,
       accountUid: null,
       accountUidResolved: false,
     };
@@ -734,14 +785,7 @@ export class ProvisioningWorkerService {
 
       const refreshedInstance = await this.adminRepository.getRangeInstanceById(item.instance.id);
 
-      if (needsSingleInstancePublicIpRefresh(refreshedInstance)) {
-        const refreshJob = await this.adminRepository.createProvisionJob({
-          rangeInstanceId: item.instance.id,
-          jobType: 'refresh_status',
-          triggeredBy: item.job.triggeredBy,
-        });
-        this.dispatch(refreshJob.id);
-      }
+      if (needsSingleInstancePublicIpRefresh(refreshedInstance)) await this.queueSingleInstanceRefresh(item);
 
       return;
     }
@@ -749,9 +793,7 @@ export class ProvisioningWorkerService {
     if (input.effectiveJobType === 'create') {
       await this.runWorkerStep(input.reportStep, 'prepare', async () => {
         for (const item of items) {
-          await this.adminRepository.updateRangeInstance(item.instance.id, {
-            status: 'creating',
-          });
+          await this.adminRepository.commitSingleInstanceClaim(item.job, {status:'creating',errorSummary:null});
         }
       });
 
@@ -764,12 +806,7 @@ export class ProvisioningWorkerService {
           continue;
         }
 
-        const refreshJob = await this.adminRepository.createProvisionJob({
-          rangeInstanceId: item.instance.id,
-          jobType: 'refresh_status',
-          triggeredBy: item.job.triggeredBy,
-        });
-        this.dispatch(refreshJob.id);
+        await this.queueSingleInstanceRefresh(item);
       }
 
       return;
@@ -777,13 +814,23 @@ export class ProvisioningWorkerService {
 
     await this.runWorkerStep(input.reportStep, 'prepare', async () => {
       for (const item of items) {
-        await this.adminRepository.updateRangeInstance(item.instance.id, {
-          status: 'destroying',
-        });
+        await this.adminRepository.commitSingleInstanceClaim(item.job, {status:'destroying',errorSummary:null});
       }
     });
 
     await this.singleInstanceBatchExecutionService.executeDestroyBatch(items);
+  }
+
+  private async queueSingleInstanceRefresh(item: SingleInstanceExecutionItem) {
+    await this.adminRepository.withSingleInstanceControlLock(async () => {
+      const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
+      if (!needsSingleInstancePublicIpRefresh(current) || current?.lastJobId !== item.job.id) return;
+      const previous = await this.adminRepository.getProvisionJobById(item.job.id);
+      if (!previous || !['succeeded','failed'].includes(previous.status)) return;
+      const job=await this.adminRepository.createProvisionJob({rangeInstanceId:item.instance.id,jobType:'refresh_status',triggeredBy:item.job.triggeredBy});
+      await this.adminRepository.updateRangeInstance(item.instance.id,{lastJobId:job.id});
+      this.dispatch(job.id);
+    });
   }
 
   private async collectSingleInstanceExecutionItems(input: {
@@ -814,7 +861,10 @@ export class ProvisioningWorkerService {
     }
 
     const targetStatus = input.effectiveJobType === 'create' ? 'pending_create' : 'pending_destroy';
-    const candidateInstances = group.instances.filter((instance) => instance.status === targetStatus);
+    const candidateInstances = group.instances.filter((instance) => instance.status === targetStatus
+      && instance.ownerUserId === input.instance.ownerUserId
+      && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId])
+        === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId]));
     const jobsById = new Map(
       (
         await Promise.all(
@@ -846,7 +896,7 @@ export class ProvisioningWorkerService {
     itemsByInstanceId.set(currentItem.instance.id, currentItem);
 
     for (const item of groupedItems) {
-      if (item.job.id === input.job.id) {
+      if (item.instance.id === input.instance.id || item.job.id === input.job.id) {
         continue;
       }
 
@@ -861,11 +911,12 @@ export class ProvisioningWorkerService {
 
   private resolveEffectiveJobType(job: ProvisionJobRecord, instance: RangeInstanceRecord) {
     if (job.jobType === 'retry') {
-      if (instance.status === 'pending_create' || instance.status === 'create_failed') {
+      if (job.topologySnapshot?.operation === 'create') return 'create' as const;
+      if (instance.status === 'pending_create' || instance.status === 'create_failed' || instance.status === 'creating') {
         return 'create' as const;
       }
 
-      if (instance.status === 'pending_destroy' || instance.status === 'destroy_failed') {
+      if (instance.status === 'pending_destroy' || instance.status === 'destroy_failed' || instance.status === 'destroying' || instance.status === 'destroyed') {
         return 'destroy' as const;
       }
 
@@ -1422,13 +1473,27 @@ export class ProvisioningWorkerService {
     message: string,
     failedInstanceStatus?: 'create_failed' | 'destroy_failed',
   ) {
+    if (instance.instanceMode === 'range') {
+      const current = await this.adminRepository.getRangeInstanceById(instance.id);
+      const status = current?.status === 'destroy_failed' ? 'destroy_failed'
+        : failedInstanceStatus ?? this.resolveFailedInstanceStatus(job, instance);
+      if (!(await this.adminRepository.updateRangeInstanceForProvisionJob(job.id, job.startedAt!, { status, errorSummary: message }))) return;
+      if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
+        status: 'failed', finishedAt: new Date(), errorSummary: message,
+      }))) return;
+      await this.finalizeDispatchedOperation(job, 'failed', 'PROVISIONING_FAILED');
+      return;
+    }
     await this.adminRepository.updateProvisionJob(job.id, {
       status: 'failed',
       finishedAt: new Date(),
       errorSummary: message,
     });
 
-    const resolvedFailedInstanceStatus = failedInstanceStatus ?? this.resolveFailedInstanceStatus(job, instance);
+    const currentInstance = await this.adminRepository.getRangeInstanceById(instance.id);
+    const resolvedFailedInstanceStatus = currentInstance?.status === 'destroy_failed'
+      ? 'destroy_failed'
+      : failedInstanceStatus ?? this.resolveFailedInstanceStatus(job, instance);
 
     await this.adminRepository.updateRangeInstance(instance.id, {
       status: resolvedFailedInstanceStatus,
@@ -1439,21 +1504,37 @@ export class ProvisioningWorkerService {
 
   private async cleanupFailedRangeCreate(input: {
     instance: RangeInstanceRecord;
+    job: ProvisionJobRecord;
+    cloudContext: { id: string; accountUid: string; regionId: string } | null;
     cleanupInput: RangeProvisionDestroyInput;
     reportStep: RangeProvisionStepReporter;
   }) {
     try {
       await this.runWorkerStep(input.reportStep, 'cleanup_failed_create_resources', async () => {
+        if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
         await this.rangeProvisioner.destroy({
           ...input.cleanupInput,
           reportStep: undefined,
         });
       });
-      await this.adminRepository.updateRangeInstance(input.instance.id, {
+      await this.updateRangeForClaim(input.job, {
         accessEntry: null,
         resourceSummary: null,
       });
       await releaseRangeInstanceBillingLedger(this.adminRepository, input.instance.id, new Date());
+      if (input.cloudContext && input.job.startedAt) {
+        const verifiedAt = new Date();
+        const proof: FailedCreateCleanupProof = {
+          version: 1, rangeInstanceId: input.instance.id, provisionJobId: input.job.id,
+          claimStartedAt: input.job.startedAt.toISOString(), cloudAccountContextId: input.cloudContext.id,
+          cloudAccountUid: input.cloudContext.accountUid, regionId: input.cloudContext.regionId,
+        };
+        await this.adminRepository.createProvisionJobStepLog({
+          jobId: input.job.id, stepName: FAILED_CREATE_CLEANUP_PROOF_STEP, status: 'succeeded',
+          message: JSON.stringify(proof), startedAt: verifiedAt, finishedAt: verifiedAt,
+          stdoutExcerpt: null, stderrExcerpt: null,
+        });
+      }
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';
@@ -1626,7 +1707,7 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
       (instance.status === 'creating' || instance.status === 'running') &&
       instance.resourceSummary?.mode === 'ecs-native' &&
       instance.resourceSummary?.hostIds &&
-      !instance.accessEntry?.publicIp,
+      (instance.status === 'creating' || !instance.accessEntry?.publicIp),
   );
 }
 

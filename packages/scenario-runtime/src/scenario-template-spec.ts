@@ -35,9 +35,11 @@ export type ScenarioTemplateNetworkZone = {
 };
 
 export type ScenarioTemplateHostNic = {
+  nicId?: string;
   deviceIndex: number;
   zoneKey: string;
   privateIp: string;
+  secondaryIps?: string[];
   description?: string;
 };
 
@@ -64,6 +66,7 @@ export type ScenarioTemplateAccountPreset = {
 export type ScenarioTemplateHost = {
   key: string;
   name: string;
+  hostName?: string;
   role: string;
   zoneKey: string;
   primaryPrivateIp: string;
@@ -116,6 +119,7 @@ export type ScenarioTemplatePortGroup = {
 export type ScenarioTemplateSecurityGroupRule = {
   key: string;
   targetHostKey: string;
+  targetDeviceIndex?: number;
   direction: 'ingress' | 'egress';
   protocol: string;
   portRange: string;

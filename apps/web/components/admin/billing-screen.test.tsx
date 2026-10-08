@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -24,7 +24,7 @@ const {
   fetchBillingUsersMock: vi.fn(),
   fetchPlatformBillingGroupsMock: vi.fn(),
   replaceMock: vi.fn(),
-  routerMock: {} as { replace: typeof replaceMock },
+  routerMock: {} as { replace: (...args: unknown[]) => void },
   triggerBillingSyncMock: vi.fn(),
 }));
 
@@ -62,6 +62,8 @@ import { BillingScreen } from './billing-screen';
 
 const adminSession = {
   token: 'dev-admin-token',
+  idToken: 'fixture-id-token',
+  refreshToken: 'fixture-refresh-token',
   profile: { id: 'admin', username: 'admin', role: 'admin' as const },
   isAdmin: true,
   isReady: true,
@@ -173,8 +175,8 @@ describe('BillingScreen', () => {
   });
 
   afterEach(() => {
-    delete (window.URL as typeof window.URL & { createObjectURL?: unknown }).createObjectURL;
-    delete (window.URL as typeof window.URL & { revokeObjectURL?: unknown }).revokeObjectURL;
+    Reflect.deleteProperty(window.URL, 'createObjectURL');
+    Reflect.deleteProperty(window.URL, 'revokeObjectURL');
     cleanup();
     vi.restoreAllMocks();
   });
@@ -234,7 +236,7 @@ describe('BillingScreen', () => {
     expect(screen.queryByText('已纳入平台账单范围')).toBeNull();
     expect(screen.queryByText('未分摊到具体用户')).toBeNull();
     expect(screen.queryByText('资源类型汇总')).toBeNull();
-    expect(screen.getByText(/1 次成功开通/)).toBeTruthy();
+    expect(screen.getByText(/1 个已出账开通任务/)).toBeTruthy();
     expect(fetchBillingUserGroupsMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
@@ -243,7 +245,7 @@ describe('BillingScreen', () => {
     expect(fetchBillingUsersMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
-      expect.objectContaining({ page: 1, pageSize: 100 }),
+      expect.objectContaining({ page: 1, pageSize: 20 }),
     );
 
     fireEvent.click(rangeGroupButtons[0]!);
@@ -329,6 +331,104 @@ describe('BillingScreen', () => {
 
     expect(detailWorkspace.getAttribute('aria-busy')).toBe('true');
     expect(screen.getByRole('status', { name: '正在加载费用明细' })).toBeTruthy();
+  });
+
+  it('paginates every user summary and displays the total user count', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 101, platformPretaxAmount: 0 });
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    fetchBillingUsersMock.mockImplementation(async (_api: string, _token: string, input: { page: number; pageSize: 20 | 50 | 100 }) => ({
+      page: input.page, pageSize: input.pageSize, total: 101,
+      items: Array.from({ length: Math.min(input.pageSize, 101 - (input.page - 1) * input.pageSize) }, (_, i) => ({ userId: `user-${(input.page - 1) * input.pageSize + i + 1}`, username: `billing-user-${(input.page - 1) * input.pageSize + i + 1}`, pretaxAmount: 1, itemCount: 1, launchCount: 1 })),
+    }));
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('101 位用户');
+    const aside = screen.getByRole('complementary', { name: '用户账单' });
+    const jumpInput = within(aside).getByLabelText('跳转到页码') as HTMLInputElement;
+    const visiblePageJumpValues: string[] = [];
+    // Enter the next destination at the first page commit, before a passive effect can reset it.
+    const observer = new MutationObserver(() => {
+      if (within(aside).queryByText('billing-user-21')) {
+        visiblePageJumpValues.push(jumpInput.value);
+        observer.disconnect();
+        fireEvent.change(jumpInput, { target: { value: '6' } });
+      }
+    });
+    observer.observe(aside, { childList: true, subtree: true });
+    expect(within(aside).queryByText('billing-user-21')).toBeNull();
+    fireEvent.click(within(aside).getByRole('button', { name: '下一页' }));
+    await within(aside).findByText('billing-user-21');
+    observer.disconnect();
+    expect(jumpInput.value).toBe('6');
+    expect(visiblePageJumpValues).toEqual(['2']);
+    fireEvent.click(within(aside).getByRole('button', { name: '跳转' }));
+    await within(aside).findByText('billing-user-101');
+    expect(fetchBillingUsersMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', expect.objectContaining({ page: 6, pageSize: 20 }));
+  });
+
+  it('keeps the latest user page and jump value when an older page request finishes later', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 101, platformPretaxAmount: 0 });
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    const pageResult = (page: number) => ({
+      page, pageSize: 20, total: 101,
+      items: Array.from({ length: Math.min(20, 101 - (page - 1) * 20) }, (_, index) => ({
+        userId: `user-${(page - 1) * 20 + index + 1}`, username: `billing-user-${(page - 1) * 20 + index + 1}`,
+        pretaxAmount: 1, itemCount: 1, launchCount: 1,
+      })),
+    });
+    let finishSecondPage!: (result: ReturnType<typeof pageResult>) => void;
+    const secondPage = new Promise<ReturnType<typeof pageResult>>((resolve) => { finishSecondPage = resolve; });
+    fetchBillingUsersMock.mockImplementation(async (_api: string, _token: string, input: { page: number }) =>
+      input.page === 2 ? secondPage : pageResult(input.page));
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('101 位用户');
+    const aside = screen.getByRole('complementary', { name: '用户账单' });
+    const jumpInput = within(aside).getByLabelText('跳转到页码') as HTMLInputElement;
+    fireEvent.click(within(aside).getByRole('button', { name: '下一页' }));
+    await waitFor(() => expect(fetchBillingUsersMock).toHaveBeenLastCalledWith(
+      'http://localhost:3001', 'dev-admin-token', expect.objectContaining({ page: 2 })));
+    fireEvent.change(jumpInput, { target: { value: '6' } });
+    fireEvent.click(within(aside).getByRole('button', { name: '跳转' }));
+    await within(aside).findByText('billing-user-101');
+    await act(async () => { finishSecondPage(pageResult(2)); });
+    expect(jumpInput.value).toBe('6');
+    expect(within(aside).queryByText('billing-user-21')).toBeNull();
+    expect(within(aside).getByRole('button', { name: '第 6 页' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('renders totals and user amounts by their currencies without a mixed total', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: null, platformPretaxAmount: null, currency: null, currencyTotals: [{ currency: 'CNY', totalPretaxAmount: 10, platformPretaxAmount: 0 }, { currency: 'USD', totalPretaxAmount: 20, platformPretaxAmount: 0 }] });
+    fetchBillingUsersMock.mockResolvedValue([{ userId: 'user-1', username: 'alice', pretaxAmount: null, currency: null, amounts: [{ currency: 'CNY', pretaxAmount: 10 }, { currency: 'USD', pretaxAmount: 20 }], itemCount: 2, launchCount: 1 }]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    const overview = await screen.findByLabelText('账单概览');
+    await waitFor(() => expect(overview.textContent).toContain('USD'));
+    expect(overview.textContent).toContain('¥ 10.00');
+    expect(overview.textContent).not.toContain('30.00');
+    const aside = screen.getByRole('complementary', { name: '用户账单' });
+    expect(aside.textContent).toContain('USD');
+    expect(aside.textContent).not.toContain('¥ 20.00');
+  });
+
+  it.each([503, 401])('handles CSV export failure %s with feedback or login redirect', async status => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    adminSession.logout.mockClear();
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 0, platformPretaxAmount: 0 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    exportPlatformBillingCsvMock.mockRejectedValue(new AdminApiError(status, 'fixture export error'));
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('当前账期没有费用明细');
+    fireEvent.keyDown(screen.getByRole('button', { name: '导出账单' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出平台账单' }));
+    if (status === 401) {
+      await waitFor(() => expect(adminSession.logout).toHaveBeenCalled());
+      expect(replaceMock).toHaveBeenCalledWith('/admin/login');
+    } else {
+      await screen.findByText('账单导出失败，请稍后重试。');
+    }
   });
 
   it('restores cached billing data without skeletons or duplicate requests after returning', async () => {

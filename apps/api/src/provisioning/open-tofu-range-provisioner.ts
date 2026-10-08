@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { copyProviderArchiveAtomically, writeProviderConfigAtomically } from './provider-mirror-publication';
 import { createHmac, randomUUID } from 'node:crypto';
 
 import {
@@ -178,6 +179,8 @@ type HostInstanceResolutionHint = {
 };
 
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
+const APPLY_STARTED_FILE = '.range-apply-started';
+const WORKSPACE_STATE_FILES = ['terraform.tfstate', 'terraform.tfstate.backup', 'errored.tfstate'];
 const DESTROY_PLACEHOLDER_PASSWORD = 'DestroyOnly123!';
 const PROVIDER_MIRROR_REGISTRY_PATH = path.join(
   'registry.opentofu.org',
@@ -354,6 +357,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       };
     });
     await runProvisionStep(input.reportStep, 'tofu_apply', async () => {
+      await fs.writeFile(path.join(workspace.workspaceDir, APPLY_STARTED_FILE), '', 'utf8');
       const command = await this.runner.apply({
         workspaceDir: workspace.workspaceDir,
         env: workspace.runnerEnv,
@@ -445,16 +449,19 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
   async destroy(input: RangeProvisionDestroyInput): Promise<void> {
     const workspace = await runProvisionStep(input.reportStep, 'render_template', async () => {
-      const preparedWorkspace = await this.prepareWorkspace(input, {
-        preserveWorkspaceState: true,
-        requireRuntimePasswords: false,
-      });
+      const preparedWorkspace = await this.prepareDestroyWorkspace(input);
 
       return {
         result: preparedWorkspace,
-        message: `Rendered destroy workspace at ${preparedWorkspace.workspaceDir}`,
+        message: preparedWorkspace
+          ? `Reusing persisted destroy workspace at ${preparedWorkspace.workspaceDir}`
+          : 'No local state or apply attempt exists; nothing to destroy.',
       };
     });
+
+    if (!workspace) {
+      return;
+    }
 
     await runProvisionStep(input.reportStep, 'tofu_init', async () => {
       const command = await this.runner.init({
@@ -499,6 +506,27 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
   }
 
+  private async prepareDestroyWorkspace(input: RangeProvisionDestroyInput): Promise<PreparedWorkspace | null> {
+    const workspaceDir = path.join(this.workspacesRootDir, input.rangeInstanceId);
+    if (!(await hasUsableWorkspaceState(workspaceDir))) {
+      return null;
+    }
+
+    const varsFileName = input.instanceMode === 'single' ? 'terraform.tfvars.json' : 'range.auto.tfvars.json';
+    const varsFilePath = path.join(workspaceDir, varsFileName);
+    for (const file of ['main.tf', 'variables.tf', 'outputs.tf', 'versions.tf', varsFileName]) {
+      await assertFileExists(path.join(workspaceDir, file), 'Persisted OpenTofu destroy configuration is missing');
+    }
+
+    return {
+      workspaceDir,
+      planFilePath: path.join(workspaceDir, 'range.tfplan'),
+      outputsFilePath: path.join(workspaceDir, 'outputs.json'),
+      varsFilePath,
+      runnerEnv: await this.buildRunnerEnv(input.runtimeConfig),
+    };
+  }
+
   private async prepareWorkspace(
     input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
     options: {
@@ -517,7 +545,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const varsFilePath = path.join(workspaceDir, 'range.auto.tfvars.json');
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
-    if (!options.preserveWorkspaceState) {
+    if (options.preserveWorkspaceState) {
+      await hasUsableWorkspaceState(workspaceDir);
+    } else {
+      await assertUnusedWorkspace(workspaceDir);
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }
     await fs.mkdir(workspaceDir, { recursive: true });
@@ -571,7 +602,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const varsFilePath = path.join(workspaceDir, 'terraform.tfvars.json');
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
-    if (!options.preserveWorkspaceState) {
+    if (options.preserveWorkspaceState) {
+      await hasUsableWorkspaceState(workspaceDir);
+    } else {
+      await assertUnusedWorkspace(workspaceDir);
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }
     await fs.mkdir(workspaceDir, { recursive: true });
@@ -992,8 +1026,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const cliConfigFilePath = path.join(providerMirrorRootDir, 'tofu.tfrc');
 
     await fs.mkdir(providerMirrorDir, { recursive: true });
-    await fs.copyFile(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
-    await fs.writeFile(
+    await copyProviderArchiveAtomically(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
+    await writeProviderConfigAtomically(
       cliConfigFilePath,
       [
         'provider_installation {',
@@ -1007,7 +1041,6 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         '}',
         '',
       ].join('\n'),
-      'utf8',
     );
 
     return {
@@ -1053,6 +1086,50 @@ async function assertFileExists(targetPath: string, message: string) {
 
   if (!stat?.isFile()) {
     throw new Error(`${message}: ${targetPath}`);
+  }
+}
+
+async function pathExists(targetPath: string) {
+  try {
+    await fs.stat(targetPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function hasUsableWorkspaceState(workspaceDir: string) {
+  const statePath = path.join(workspaceDir, 'terraform.tfstate');
+  const hasState = await pathExists(statePath);
+  const hasRecoveryState = await pathExists(path.join(workspaceDir, 'errored.tfstate'));
+  const hasBackupState = await pathExists(path.join(workspaceDir, 'terraform.tfstate.backup'));
+  const applyStarted = await pathExists(path.join(workspaceDir, APPLY_STARTED_FILE));
+  const recoveryMessage = 'OpenTofu state recovery is required before proceeding; persisted workspace was preserved';
+
+  if (hasRecoveryState || (!hasState && (hasBackupState || applyStarted))) {
+    throw new Error(recoveryMessage);
+  }
+  if (hasState) {
+    try {
+      const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+      if (state?.version !== 4 || !Array.isArray(state.resources)) {
+        throw new Error('Invalid local state');
+      }
+    } catch {
+      throw new Error(recoveryMessage);
+    }
+  }
+  return hasState;
+}
+
+async function assertUnusedWorkspace(workspaceDir: string) {
+  for (const file of [...WORKSPACE_STATE_FILES, APPLY_STARTED_FILE]) {
+    if (await pathExists(path.join(workspaceDir, file))) {
+      throw new Error('Cannot replace an OpenTofu workspace with persisted state or an apply attempt');
+    }
   }
 }
 

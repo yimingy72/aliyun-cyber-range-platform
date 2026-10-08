@@ -151,7 +151,7 @@ describe('Admin image catalog platform asset persistence baseline', () => {
     expect(assetsAfterDeletion).toHaveLength(0);
   });
 
-  it('nulls sourceSnapshotId when the source snapshot is reconciled away', async () => {
+  it('preserves and disables source-linked assets when a cloud image disappears', async () => {
     const repository = createMemoryAdminRepository();
     const accountUid = '1234567890';
 
@@ -199,7 +199,8 @@ describe('Admin image catalog platform asset persistence baseline', () => {
     expect(remainingAsset).toEqual(
       expect.objectContaining({
         id: asset.id,
-        sourceSnapshotId: null,
+        sourceSnapshotId: snapshot.id,
+        enabled: false,
       }),
     );
   });
@@ -225,7 +226,11 @@ describe('Admin image catalog APIs', () => {
   const originalFetch = global.fetch;
 
   beforeEach(() => {
-    global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'ok' }));
+    global.fetch = jest.fn().mockImplementation(async input => {
+      const params = new URL(String(input)).searchParams;
+      if (params.get('Action') === 'DescribeImages') return createJsonResponse({ TotalCount: 1, Images: { Image: [{ ImageId: params.get('ImageId'), Status: 'Available' }] } });
+      return createJsonResponse({ RequestId: 'ok' });
+    });
   });
 
   afterEach(async () => {
@@ -712,11 +717,8 @@ describe('Admin image catalog APIs', () => {
       .expect(200);
 
     expect(listResponse.body).toEqual({ items: [] });
-    expect(await repository.getImageSnapshotById(snapshot.id)).toBeNull();
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('Action=DeleteImage'),
-      expect.objectContaining({ method: 'GET' }),
-    );
+    expect((await repository.getImageSnapshotById(snapshot.id))?.id).toBe(snapshot.id);
+    expect((global.fetch as jest.Mock).mock.calls.map(([input]) => new URL(String(input)).searchParams.get('Action'))).not.toContain('DeleteImage');
   });
 
   it('requires admin privileges to publish a private image asset', async () => {
@@ -942,7 +944,7 @@ describe('Admin image catalog APIs', () => {
     );
   });
 
-  it('allows an owner to remove their own custom image and its platform asset', async () => {
+  it('allows an owner to remove their platform asset while keeping its cloud image', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
@@ -1007,12 +1009,9 @@ describe('Admin image catalog APIs', () => {
       ownerUserId: 'image-owner-delete-1',
     });
 
-    expect(remainingSnapshot).toBeUndefined();
+    expect(remainingSnapshot?.id).toBe(snapshot.id);
     expect(remainingAssets).toEqual([]);
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('Action=DeleteImage'),
-      expect.objectContaining({ method: 'GET' }),
-    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('prevents a non-owner user from deleting another user custom image asset', async () => {
@@ -1258,7 +1257,12 @@ describe('Admin image catalog APIs', () => {
 
   it('DELETE /admin/image-catalog/custom/:snapshotId removes linked platform assets after cloud delete succeeds', async () => {
     repository = createMemoryAdminRepository();
-    global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
+    let cloudPresent = true;
+    global.fetch = jest.fn().mockImplementation(async input => {
+      const action = new URL(String(input)).searchParams.get('Action');
+      if (action === 'DescribeImages') return createJsonResponse({ TotalCount: cloudPresent ? 1 : 0, Images: { Image: cloudPresent ? [{ ImageId: 'm-bp1deletecustom', Status: 'Available' }] : [] } });
+      cloudPresent = false; return createJsonResponse({ RequestId: 'delete-ok' });
+    });
 
     await repository.reconcileImageSnapshots({
       provider: 'alibaba_cloud',
@@ -1315,8 +1319,8 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .delete(`/admin/image-catalog/custom/${snapshot.id}`)
       .set('authorization', `Bearer ${adminToken}`)
-      .expect(204)
-      .expect('');
+      .expect(200)
+      .expect(response => expect(response.body.removed).toBe(true));
 
     const [remainingSnapshot] = await repository.listImageSnapshots({
       provider: 'alibaba_cloud',
@@ -1329,7 +1333,7 @@ describe('Admin image catalog APIs', () => {
       regionId: 'cn-hangzhou',
     });
 
-    expect(remainingSnapshot).toBeUndefined();
+    expect(remainingSnapshot?.status).toBe('Deleted');
     expect(remainingAssets).toEqual([]);
     const ledgerResources = await repository.listBillingLedgerResources();
     const imageLedger = ledgerResources.find((item) => item.cloudResourceType === 'image');
@@ -1341,15 +1345,14 @@ describe('Admin image catalog APIs', () => {
     expect(new Date(imageLedger!.releasedAt as Date).getTime()).toBeGreaterThan(0);
     expect(snapshotLedger?.cloudResourceId).toBe(snapshot.imageId);
     expect(snapshotLedger?.cloudResourceType).toBe('snapshot');
-    expect(snapshotLedger?.releasedAt).toBeTruthy();
-    expect(new Date(snapshotLedger!.releasedAt as Date).getTime()).toBeGreaterThan(0);
+    expect(snapshotLedger?.releasedAt).toBeNull();
     expect(global.fetch).toHaveBeenCalledWith(
       expect.stringContaining('Action=DeleteImage'),
       expect.objectContaining({ method: 'GET' }),
     );
   });
 
-  it('DELETE /admin/platform-images/:id removes a custom cloud image and its cached source snapshot', async () => {
+  it('DELETE /admin/platform-images/:id retains the cloud image and cached source', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
@@ -1398,15 +1401,12 @@ describe('Admin image catalog APIs', () => {
     });
     const remainingAsset = await repository.getPlatformImageAssetById(asset.id);
 
-    expect(remainingSnapshots).toEqual([]);
+    expect(remainingSnapshots).toEqual([snapshot]);
     expect(remainingAsset).toBeNull();
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('Action=DeleteImage'),
-      expect.objectContaining({ method: 'GET' }),
-    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it.each(['platform-images', 'image-catalog/custom'])('keeps assets, snapshots, and billing ledgers when %s cloud deletion fails', async (route) => {
+  it.each(['image-catalog/custom'])('keeps assets, snapshots, and billing ledgers when %s cloud deletion fails', async (route) => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ Code: 'InternalError' }, 503));
     await repository.reconcileImageSnapshots({
@@ -1437,7 +1437,7 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .delete(`/admin/${route}/${route === 'platform-images' ? asset.id : snapshot.id}`)
       .set('authorization', `Bearer ${adminToken}`)
-      .expect(500);
+      .expect(502);
 
     expect(await repository.getImageSnapshotById(snapshot.id)).toEqual(expect.objectContaining({ imageId: snapshot.imageId }));
     expect(await repository.getPlatformImageAssetById(asset.id)).toEqual(expect.objectContaining({ id: asset.id }));
@@ -1447,7 +1447,7 @@ describe('Admin image catalog APIs', () => {
     ]));
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(new URL(String(url)).searchParams.get('Action')).toBe('DeleteImage');
+    expect(new URL(String(url)).searchParams.get('Action')).toBe('DescribeImages');
     expect(new URL(String(url)).searchParams.get('ImageId')).toBe(snapshot.imageId);
   });
 

@@ -151,6 +151,7 @@ export type EnterpriseProvisionPlan = {
     key: string;
     name: string;
     targetHostKey: string;
+    targetDeviceIndex?: number;
     direction: string;
     policy: string;
     protocol: string;
@@ -189,9 +190,11 @@ export type EnterpriseProvisionPlan = {
   hostNetworkInterfaces: Array<{
     hostKey: string;
     interfaces: Array<{
+      nicId?: string;
       deviceIndex: number;
       zoneKey: string;
       privateIp: string;
+      secondaryIps?: string[];
       description?: string;
     }>;
   }>;
@@ -313,7 +316,7 @@ export function buildEnterpriseProvisionPlan(input: {
     natGateways,
     eipDefinitions,
     securityGroupRules,
-    aclDefinitions,
+    aclDefinitions: [...aclDefinitions].sort((left, right) => left.priority - right.priority),
     snatEntries,
     dnatEntries,
     hostNetworkInterfaces,
@@ -635,6 +638,7 @@ function buildSecurityGroupRulesFromCompiledProvisionSpec(
       key: record.key,
       name: typeof record.name === 'string' ? record.name : record.key,
       targetHostKey: record.targetHostKey,
+      ...(typeof record.targetDeviceIndex === 'number' ? { targetDeviceIndex: record.targetDeviceIndex } : {}),
       direction: typeof record.direction === 'string' ? record.direction : 'ingress',
       policy: typeof record.policy === 'string' ? record.policy : 'accept',
       protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
@@ -885,9 +889,11 @@ function buildHostNetworkInterfacesFromCompiledProvisionSpec(
       }
 
       return [{
+        ...(typeof nic.nicId === 'string' ? { nicId: nic.nicId } : {}),
         deviceIndex: typeof nic.deviceIndex === 'number' ? nic.deviceIndex : 0,
         zoneKey: nic.zoneKey,
         privateIp: nic.privateIp,
+        ...(Array.isArray(nic.secondaryIps) ? { secondaryIps: nic.secondaryIps.filter((ip): ip is string => typeof ip === 'string') } : {}),
         ...(typeof nic.description === 'string' ? { description: nic.description } : {}),
       }];
     });

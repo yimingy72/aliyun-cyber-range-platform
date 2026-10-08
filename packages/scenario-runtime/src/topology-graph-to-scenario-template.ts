@@ -251,8 +251,9 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
             : storedRules;
 
           return rules.map((rule, index) => ({
-            key: rule.key ?? `${host.id}-nic-sg-${index + 1}`,
+            key: `${host.id}-${nic.id ?? nicIndex}-${rule.key ?? index + 1}`,
             targetHostKey: host.id,
+            targetDeviceIndex: nicIndex,
             direction: readIngressDirection(rule.direction),
             protocol: typeof rule.protocol === 'string' ? rule.protocol : 'all',
             portRange: normalizeAlibabaCloudPortRange(
@@ -280,7 +281,9 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
             typeof rule.portRange === 'string' ? rule.portRange : '-1/-1',
             typeof rule.protocol === 'string' ? rule.protocol : 'all',
           ),
-          sourceCidr: typeof rule.sourceCidr === 'string' ? rule.sourceCidr : '0.0.0.0/0',
+          sourceCidr: rule.direction === 'outbound' && rule.destinationCidr
+            ? rule.destinationCidr
+            : typeof rule.sourceCidr === 'string' ? rule.sourceCidr : '0.0.0.0/0',
           policy: readAllowPolicy(rule.policy),
           priority: typeof rule.priority === 'number' ? rule.priority : 1,
         }));
@@ -372,9 +375,11 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
 
               return [
                 {
+                  nicId: nic.id,
                   deviceIndex: index,
                   zoneKey,
                   privateIp,
+                  secondaryIps: nic.secondaryIps ?? [],
                 },
               ];
             })
@@ -429,6 +434,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
       return {
         key: node.id,
         name: readProvisionHostName(node),
+        hostName: node.hostName?.trim() || undefined,
         role: node.role,
         zoneKey: primaryPlacement.zoneKey,
         primaryPrivateIp: primaryPlacement.privateIp,

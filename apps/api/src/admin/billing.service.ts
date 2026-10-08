@@ -1,3 +1,5 @@
+import { Prisma } from '@aliyun-cyber-range/database/generated/client';
+
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
@@ -9,6 +11,7 @@ import {
   type ProvisionJobRecord,
   type ProvisionJobStatus,
 } from './admin.repository';
+import { resolveBillingWindow } from './billing-window';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -24,8 +27,9 @@ type BillingGroupInput = BillingWindowInput & {
 type BillingLaunchGroup = {
   id: string;
   kind: 'range_launch' | 'single_launch' | 'unmatched';
-  title: '开启靶场实例' | '开启编排实例' | '未关联平台启动的费用';
+  title: '开启单实例' | '开启编排实例' | '未关联平台启动的费用';
   provisionJobStatus: ProvisionJobStatus | null;
+  sourceProvisionJobId: string | null;
   completedAt: string | null;
   billingPeriodStart: string;
   billingPeriodEnd: string;
@@ -53,37 +57,23 @@ function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10);
 }
 
-function parseDate(value: string | Date) {
-  return value instanceof Date ? new Date(value) : new Date(value);
-}
-
-function resolveBillingWindow(input: BillingWindowInput) {
-  if (input.startAt && input.endAt) {
-    const startAt = parseDate(input.startAt);
-    const endAt = parseDate(input.endAt);
-
-    return {
-      startAt,
-      endAt,
-      startAtText: toIsoDate(startAt),
-      endAtText: toIsoDate(endAt),
-    };
-  }
-
-  const endAt = new Date();
-  const startAt = new Date(endAt);
-  startAt.setDate(startAt.getDate() - 29);
-
-  return {
-    startAt,
-    endAt,
-    startAtText: toIsoDate(startAt),
-    endAtText: toIsoDate(endAt),
-  };
-}
-
 function sumPretax(items: Array<{ pretaxAmount: number }>) {
-  return items.reduce((total, item) => total + item.pretaxAmount, 0);
+  return items.reduce((total, item) => total.plus(item.pretaxAmount), new Prisma.Decimal(0)).toDecimalPlaces(9).toNumber();
+}
+
+function currencyAmounts(items: Array<{ currency: string; pretaxAmount: number }>) {
+  const grouped = new Map<string, Array<{ pretaxAmount: number }>>();
+  for (const item of items) {
+    const lines = grouped.get(item.currency) ?? [];
+    lines.push(item);
+    grouped.set(item.currency, lines);
+  }
+  return [...grouped].sort(([a], [b]) => a.localeCompare(b)).map(([currency, lines]) => ({ currency, pretaxAmount: sumPretax(lines) }));
+}
+
+function moneySummary(items: Array<{ currency: string; pretaxAmount: number }>) {
+  const amounts = currencyAmounts(items);
+  return { currency: amounts.length > 1 ? null : amounts[0]?.currency ?? 'CNY', pretaxAmount: amounts.length > 1 ? null : amounts[0]?.pretaxAmount ?? 0, amounts };
 }
 
 function isTrackedBillingLineItem(item: BillingLineItemRecord) {
@@ -139,12 +129,15 @@ export class BillingService {
     const trackedLineItems = lineItems.filter(isTrackedBillingLineItem);
     const resourceTypeTotals = this.groupByResourceType(trackedLineItems);
     const dailyTotals = this.groupByBillingDate(trackedLineItems);
+    const money = moneySummary(trackedLineItems);
 
     return {
       startAt: window.startAtText,
       endAt: window.endAtText,
-      totalPretaxAmount: sumPretax(trackedLineItems),
-      platformPretaxAmount: sumPretax(trackedLineItems.filter((item) => item.billingScope === 'platform')),
+      currency: money.currency,
+      totalPretaxAmount: money.pretaxAmount,
+      platformPretaxAmount: money.currency ? sumPretax(trackedLineItems.filter(item => item.billingScope === 'platform')) : null,
+      currencyTotals: money.amounts.map(amount => ({ currency: amount.currency, totalPretaxAmount: amount.pretaxAmount, platformPretaxAmount: sumPretax(trackedLineItems.filter(item => item.currency === amount.currency && item.billingScope === 'platform')) })),
       anomalyCount: anomalies.length,
       resourceTypeTotals,
       dailyTotals,
@@ -168,11 +161,13 @@ export class BillingService {
     const lineItems = fetchedLineItems.filter(isTrackedBillingLineItem);
 
     const groups = await this.groupBillingLineItems(lineItems);
-    const launchCountsByUserId = new Map<string, number>();
+    const launchJobsByUserId = new Map<string, Set<string>>();
 
     for (const group of groups) {
-      if (group.kind !== 'unmatched' && group.provisionJobStatus === 'succeeded' && group.ownerUserId) {
-        launchCountsByUserId.set(group.ownerUserId, (launchCountsByUserId.get(group.ownerUserId) ?? 0) + 1);
+      if (group.provisionJobStatus === 'succeeded' && group.ownerUserId && group.sourceProvisionJobId) {
+        const jobs = launchJobsByUserId.get(group.ownerUserId) ?? new Set<string>();
+        jobs.add(group.sourceProvisionJobId);
+        launchJobsByUserId.set(group.ownerUserId, jobs);
       }
     }
 
@@ -205,12 +200,12 @@ export class BillingService {
         };
       user.pretaxAmount += item.pretaxAmount;
       user.itemCount += 1;
-      user.launchCount = launchCountsByUserId.get(item.ownerUserId) ?? 0;
+      user.launchCount = launchJobsByUserId.get(item.ownerUserId)?.size ?? 0;
       usersById.set(item.ownerUserId, user);
     }
 
-    return [...usersById.values()]
-      .sort((left, right) => right.pretaxAmount - left.pretaxAmount || left.username.localeCompare(right.username));
+    return [...usersById.values()].map(user => ({ ...user, ...moneySummary(lineItems.filter(item => item.ownerUserId === user.userId)) }))
+      .sort((left, right) => (left.currency ?? '').localeCompare(right.currency ?? '') || (right.pretaxAmount ?? 0) - (left.pretaxAmount ?? 0) || left.username.localeCompare(right.username));
   }
 
   async getUserSummary(userId: string, input: BillingWindowInput) {
@@ -222,14 +217,12 @@ export class BillingService {
       billingScope: 'user',
     })).filter(isTrackedBillingLineItem);
     const user = await this.adminRepository.getPlatformUserById(userId);
-    const launchCount = (await this.groupBillingLineItems(items)).filter(
-      (group) => group.kind !== 'unmatched' && group.provisionJobStatus === 'succeeded',
-    ).length;
+    const launchCount = new Set((await this.groupBillingLineItems(items)).filter(group => group.kind !== 'unmatched' && group.provisionJobStatus === 'succeeded').map(group => group.sourceProvisionJobId)).size;
 
     return {
       userId,
       username: user?.username ?? userId,
-      pretaxAmount: sumPretax(items),
+      ...moneySummary(items),
       itemCount: items.length,
       launchCount,
     };
@@ -313,13 +306,17 @@ export class BillingService {
       ['endAt', summary.endAt],
       ['totalPretaxAmount', summary.totalPretaxAmount],
       ['platformPretaxAmount', summary.platformPretaxAmount],
+      ['currency', summary.currency ?? 'MULTIPLE'],
       ['anomalyCount', summary.anomalyCount],
       [],
-      ['resourceType', 'pretaxAmount'],
-      ...summary.resourceTypeTotals.map((item) => [item.resourceType, item.pretaxAmount]),
+      ['currency', 'totalPretaxAmount', 'platformPretaxAmount'],
+      ...summary.currencyTotals.map(item => [item.currency, item.totalPretaxAmount, item.platformPretaxAmount]),
       [],
-      ['billingDate', 'pretaxAmount'],
-      ...summary.dailyTotals.map((item) => [item.billingDate, item.pretaxAmount]),
+      ['resourceType', 'currency', 'pretaxAmount'],
+      ...summary.resourceTypeTotals.map((item) => [item.resourceType, item.currency, item.pretaxAmount]),
+      [],
+      ['billingDate', 'currency', 'pretaxAmount'],
+      ...summary.dailyTotals.map((item) => [item.billingDate, item.currency, item.pretaxAmount]),
     ]);
   }
 
@@ -327,8 +324,8 @@ export class BillingService {
     const users = await this.listUserSummaries(input);
 
     return toCsv([
-      ['userId', 'username', 'pretaxAmount', 'itemCount'],
-      ...users.map((user) => [user.userId, user.username, user.pretaxAmount, user.itemCount]),
+      ['userId', 'username', 'currency', 'pretaxAmount', 'itemCount'],
+      ...users.flatMap(user => (user.amounts.length ? user.amounts : [{ currency: user.currency ?? 'CNY', pretaxAmount: 0 }]).map(amount => [user.userId, user.username, amount.currency, amount.pretaxAmount, user.itemCount])),
     ]);
   }
 
@@ -351,34 +348,14 @@ export class BillingService {
   }
 
   private groupByResourceType(lineItems: BillingLineItemRecord[]) {
-    const totals = new Map<string, number>();
-
-    for (const item of lineItems) {
-      totals.set(item.cloudResourceType, (totals.get(item.cloudResourceType) ?? 0) + item.pretaxAmount);
-    }
-
-    return [...totals.entries()]
-      .map(([resourceType, pretaxAmount]) => ({
-        resourceType,
-        pretaxAmount,
-      }))
-      .sort((left, right) => right.pretaxAmount - left.pretaxAmount);
+    const types = [...new Set(lineItems.map(item => item.cloudResourceType))];
+    return types.flatMap(resourceType => currencyAmounts(lineItems.filter(item => item.cloudResourceType === resourceType)).map(amount => ({ resourceType, ...amount })))
+      .sort((a, b) => a.currency.localeCompare(b.currency) || b.pretaxAmount - a.pretaxAmount);
   }
 
   private groupByBillingDate(lineItems: BillingLineItemRecord[]) {
-    const totals = new Map<string, number>();
-
-    for (const item of lineItems) {
-      const billingDate = toIsoDate(item.billingDate);
-      totals.set(billingDate, (totals.get(billingDate) ?? 0) + item.pretaxAmount);
-    }
-
-    return [...totals.entries()]
-      .map(([billingDate, pretaxAmount]) => ({
-        billingDate,
-        pretaxAmount,
-      }))
-      .sort((left, right) => left.billingDate.localeCompare(right.billingDate));
+    const dates = [...new Set(lineItems.map(item => toIsoDate(item.billingDate)))].sort();
+    return dates.flatMap(billingDate => currencyAmounts(lineItems.filter(item => toIsoDate(item.billingDate) === billingDate)).map(amount => ({ billingDate, ...amount })));
   }
 
   private async attachOwnerUsernames(groups: BillingLaunchGroup[]) {
@@ -439,21 +416,23 @@ export class BillingService {
       const kind = instance.instanceMode === 'single' ? 'single_launch' : 'range_launch';
       const completedAt = job.finishedAt?.toISOString() ?? null;
       const billingDate = toIsoDate(item.billingDate);
-      const existing = groups.get(job.id);
+      const groupKey = `${job.id}:${item.currency}`;
+      const existing = groups.get(groupKey);
 
       if (existing) {
         existing.items.push(item);
-        existing.pretaxAmount += item.pretaxAmount;
+        existing.pretaxAmount = sumPretax(existing.items);
         existing.resourceKeys.add(`${item.cloudResourceType}:${item.cloudResourceId}`);
         existing.billingPeriodStart = existing.billingPeriodStart < billingDate ? existing.billingPeriodStart : billingDate;
         existing.billingPeriodEnd = existing.billingPeriodEnd > billingDate ? existing.billingPeriodEnd : billingDate;
         continue;
       }
 
-      groups.set(job.id, {
+      groups.set(groupKey, {
         id: job.id,
         kind,
-        title: kind === 'single_launch' ? '开启编排实例' : '开启靶场实例',
+        title: kind === 'single_launch' ? '开启单实例' : '开启编排实例',
+        sourceProvisionJobId: job.id,
         provisionJobStatus: job.status,
         completedAt,
         billingPeriodStart: billingDate,
@@ -472,29 +451,23 @@ export class BillingService {
       });
     }
 
-    if (unmatchedItems.length > 0) {
-      const billingDates = unmatchedItems.map((item) => toIsoDate(item.billingDate)).sort();
-      groups.set('unmatched', {
-        id: 'unmatched',
-        kind: 'unmatched',
-        title: '未关联平台启动的费用',
-        provisionJobStatus: null,
-        completedAt: null,
-        billingPeriodStart: billingDates[0]!,
-        billingPeriodEnd: billingDates[billingDates.length - 1]!,
-        ownerUserId: null,
-        ownerUsername: null,
-        instance: null,
-        resourceKeys: new Set(unmatchedItems.map((item) => `${item.cloudResourceType}:${item.cloudResourceId}`)),
-        pretaxAmount: sumPretax(unmatchedItems),
-        currency: unmatchedItems[0]!.currency,
-        items: unmatchedItems,
+    for (const amount of currencyAmounts(unmatchedItems)) {
+      const items = unmatchedItems.filter(item => item.currency === amount.currency);
+      const billingDates = items.map(item => toIsoDate(item.billingDate)).sort();
+      groups.set(`unmatched:${amount.currency}`, {
+        id: 'unmatched', kind: 'unmatched', title: '未关联平台启动的费用', sourceProvisionJobId: null,
+        provisionJobStatus: null, completedAt: null,
+        billingPeriodStart: billingDates[0]!, billingPeriodEnd: billingDates[billingDates.length - 1]!,
+        ownerUserId: null, ownerUsername: null, instance: null,
+        resourceKeys: new Set(items.map(item => `${item.cloudResourceType}:${item.cloudResourceId}`)),
+        pretaxAmount: amount.pretaxAmount, currency: amount.currency, items,
       });
     }
 
     return [...groups.values()]
       .map(({ resourceKeys, ...group }) => ({
         ...group,
+        id: [...groups.values()].filter(candidate => candidate.id === group.id).length > 1 ? `${group.id}:${group.currency}` : group.id,
         resourceCount: resourceKeys.size,
       }))
       .sort((left, right) => {

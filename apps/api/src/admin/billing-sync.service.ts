@@ -1,14 +1,19 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
   AdminRepository,
   type BillingLedgerResourceRecord,
+  type CreateBillingLineItemInput,
+  type CreateBillingAnomalyInput,
 } from './admin.repository';
 import { BillingBssClient } from './billing-bss-client';
 import { classifyBillLine } from './billing-classifier';
 import { buildBillingTags, parsePlatformBillingTags } from './billing-tagging';
 import { SystemConfigService } from './system-config.service';
+import { billingDayText, resolveBillingWindow } from './billing-window';
 
 type RawBillLine = Record<string, unknown>;
 
@@ -26,7 +31,7 @@ function enumerateDates(startAt: Date, endAt: Date) {
 
   while (cursor <= endAt) {
     dates.push(toIsoDate(cursor));
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
   return dates;
@@ -34,17 +39,17 @@ function enumerateDates(startAt: Date, endAt: Date) {
 
 const RELEASE_BILLING_GRACE_DAYS = 1;
 
-function isLedgerActiveForBillingDate(ledger: BillingLedgerResourceRecord, billingDate: string) {
+function isLedgerActiveForBillingDate(ledger: BillingLedgerResourceRecord, billingDate: string, correction = false) {
   const billingDateText = billingDate;
-  const startAtText = toIsoDate(ledger.billingStartAt);
+  const startAtText = billingDayText(ledger.billingStartAt);
 
   if (billingDateText < startAtText) {
     return false;
   }
 
-  if (ledger.releasedAt) {
-    const releaseDeadline = new Date(ledger.releasedAt);
-    releaseDeadline.setDate(releaseDeadline.getDate() + RELEASE_BILLING_GRACE_DAYS);
+  if (ledger.releasedAt && !correction) {
+    const releaseDeadline = new Date(`${billingDayText(ledger.releasedAt)}T00:00:00.000Z`);
+    releaseDeadline.setUTCDate(releaseDeadline.getUTCDate() + RELEASE_BILLING_GRACE_DAYS);
 
     // ponytail: keep a one-day grace window because Aliyun daily bills for short-lived resources can settle on the next calendar day.
     if (billingDateText > toIsoDate(releaseDeadline)) {
@@ -62,25 +67,33 @@ function readString(line: RawBillLine, key: string) {
 
 function readNumber(line: RawBillLine, key: string) {
   const value = line[key];
-  if (typeof value === 'number') {
-    return value;
+  if ((typeof value !== 'number' && typeof value !== 'string') || value === '' || !Number.isFinite(Number(value))) {
+    throw new Error(`BSS returned an invalid ${key}; previous bills were retained`);
   }
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return 0;
+  return Number(value);
+}
+
+function stableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
+  return value;
+}
+
+function explicitRegionId(line: RawBillLine, tags: Record<string, string> = {}) {
+  const values = [readString(line, 'RegionId'), readString(line, 'Region'), tags.PlatformRegionId ?? ''];
+  return values.map(value => value.trim()).find(value => /^(cn|ap|eu|us|me|af|sa)-[a-z0-9-]+$/.test(value)) ?? null;
 }
 
 @Injectable()
 export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(BillingSyncService.name);
   private timer: NodeJS.Timeout | null = null;
   private isRunning = false;
 
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly billingBssClient: BillingBssClient,
-    @Optional() private readonly systemConfigService?: SystemConfigService,
+    private readonly systemConfigService: SystemConfigService,
   ) {}
 
   onModuleInit() {
@@ -91,7 +104,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.timer = setInterval(() => {
-      void this.syncRecentDays(7);
+      void this.syncRecentDays(7).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
     }, intervalMs);
   }
 
@@ -103,58 +116,63 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   async syncRecentDays(days: number) {
-    const endAt = new Date();
-    const startAt = new Date(endAt);
-    startAt.setDate(startAt.getDate() - (days - 1));
-
-    return this.syncRange({
-      startAt: toIsoDate(startAt),
-      endAt: toIsoDate(endAt),
-    });
+    const today = resolveBillingWindow({}, days).endAt;
+    const endAt = new Date(today.getTime() - 86_400_000);
+    const startAt = new Date(endAt.getTime() - (days - 1) * 86_400_000);
+    return this.syncRange({ startAt, endAt }, true);
   }
 
-  async syncRange(input: { startAt: string | Date; endAt: string | Date }) {
+  async syncRange(input: { startAt: string | Date; endAt: string | Date }, incremental = false) {
     if (this.isRunning) {
       return {
         syncedDays: 0,
         importedLineItems: 0,
         anomalyCount: 0,
-        deferredCount: 0,
+        deferredCount: 1,
+        syncInProgress: true,
       };
     }
 
     this.isRunning = true;
 
     try {
-      const requestedStartAt = parseDate(input.startAt);
-      const endAt = parseDate(input.endAt);
-      const latestBillingDate = await this.adminRepository.getLatestBillingLineItemDate();
-      const startAt = latestBillingDate ?? requestedStartAt;
+      const window = resolveBillingWindow(input);
+      const requestedStartAt = window.startAt;
+      const lastCompleteDay = new Date(resolveBillingWindow({}, 1).endAt.getTime() - 86_400_000);
+      const endAt = window.endAt < lastCompleteDay ? window.endAt : lastCompleteDay;
+      const deferredDates = window.endAt > endAt ? enumerateDates(new Date(Math.max(window.startAt.getTime(), endAt.getTime() + 86_400_000)), window.endAt) : [];
+      const cloudConfig = await this.systemConfigService.getAccountContext();
+      const cloudAccountUid = cloudConfig.accountUid;
+      if (!cloudAccountUid || !cloudConfig.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
+      const latestBillingDate = incremental ? await this.adminRepository.getLatestBillingLineItemDate(cloudAccountUid) : null;
+      const startAt = latestBillingDate && latestBillingDate > requestedStartAt ? latestBillingDate : requestedStartAt;
 
       if (startAt > endAt) {
         return {
           syncedDays: 0,
           importedLineItems: 0,
           anomalyCount: 0,
-          deferredCount: 0,
+          deferredCount: deferredDates.length,
+          ...(deferredDates.length ? { deferredDates } : {}),
         };
       }
 
       const dates = enumerateDates(startAt, endAt);
       const ledgerResources = await this.adminRepository.listBillingLedgerResources();
-      const cloudConfig = this.systemConfigService
-        ? await this.systemConfigService.getSnapshot()
-        : { defaultRegion: '', imageImportBucket: '' };
-      await this.reconcilePlatformImageBillingLedgers(ledgerResources);
       let importedLineItems = 0;
       let anomalyCount = 0;
 
       for (const billingDate of dates) {
-        const syncBatchId = `billing-sync:${billingDate}`;
-        const items = await this.billingBssClient.listDailyBillingItems({ billingDate });
-
-        await this.adminRepository.deleteBillingLineItemsBySyncBatchId(syncBatchId);
-        await this.adminRepository.deleteBillingAnomaliesBySyncBatchId(syncBatchId);
+        const syncBatchId = `billing-sync:${cloudAccountUid}:${billingDate}`;
+        const items = await this.billingBssClient.listDailyBillingItems({ billingDate }, cloudConfig);
+        for (const line of items) {
+          readNumber(line, 'PretaxAmount');
+          if (!/^[A-Z]{3}$/.test(readString(line, 'Currency'))) throw new Error('BSS returned an invalid currency; previous bills were retained');
+          if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
+        }
+        await this.reconcilePlatformImageBillingLedgers(ledgerResources, cloudAccountUid);
+        const dayItems = new Map<string, CreateBillingLineItemInput>();
+        const dayAnomalies = new Map<string, CreateBillingAnomalyInput>();
 
         for (const line of items) {
           const classification = classifyBillLine(line);
@@ -166,17 +184,20 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
                 classification.cloudResourceId,
                 classification.cloudResourceType,
                 billingDate,
+                cloudAccountUid,
+                ['Refund', 'Adjustment'].includes(readString(line, 'Item')),
               ) ??
               (await this.findTaggedLedgerResource({
                 line,
                 classification,
                 billingDate,
-                defaultRegionId: cloudConfig.defaultRegion,
+                cloudAccountUid,
                 ledgerResources,
               }));
 
             if (matchedLedger) {
-              await this.upsertMatchedBillLine({
+              const matched = this.buildMatchedBillLine({
+                cloudAccountUid,
                 syncBatchId,
                 billingDate,
                 line,
@@ -184,7 +205,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
                 cloudResourceId: classification.cloudResourceId,
                 cloudResourceType: classification.cloudResourceType,
               });
-              importedLineItems += 1;
+              dayItems.set(matched.sourceFingerprint, matched);
               continue;
             }
           }
@@ -196,10 +217,12 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
               bucket: ossBucket,
               billingDate,
               regionId: cloudConfig.defaultRegion,
+              cloudAccountUid,
               ledgerResources,
             });
 
-            await this.upsertMatchedBillLine({
+            const matched = this.buildMatchedBillLine({
+              cloudAccountUid,
               syncBatchId,
               billingDate,
               line,
@@ -207,26 +230,21 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
               cloudResourceId: ossBucket,
               cloudResourceType: 'oss_bucket',
             });
-            importedLineItems += 1;
+            dayItems.set(matched.sourceFingerprint, matched);
             continue;
           }
 
           if (
             classification.kind !== 'aggregated' &&
-            !this.isPlatformScopedAnomaly(ledgerResources, classification, billingDate)
+            !parsePlatformBillingTags(line.Tag) && !this.isPlatformScopedAnomaly(ledgerResources.filter(item => item.cloudAccountUid === cloudAccountUid || item.cloudAccountUid === null), classification, billingDate)
           ) {
             continue;
           }
 
-          await this.adminRepository.createBillingAnomaly({
+          const anomaly: CreateBillingAnomalyInput = {
+            cloudAccountUid,
             syncBatchId,
-            sourceFingerprint: this.buildSourceFingerprint(
-              syncBatchId,
-              classification.cloudResourceType,
-              classification.cloudResourceId,
-              readString(line, 'BillingItem'),
-              readString(line, 'InstanceID'),
-            ),
+            sourceFingerprint: this.buildSourceFingerprint(syncBatchId, line),
             billCycle: billingDate.slice(0, 7),
             billingDate,
             cloudResourceId: classification.cloudResourceId,
@@ -235,23 +253,28 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             currency: readString(line, 'Currency') || 'CNY',
             reason: this.resolveAnomalyReason(classification, cloudConfig.imageImportBucket),
             rawPayload: line,
-          });
-          anomalyCount += 1;
+          };
+          dayAnomalies.set(anomaly.sourceFingerprint, anomaly);
         }
+        await this.adminRepository.replaceBillingDay({ cloudAccountUid, billingDate, lineItems: [...dayItems.values()], anomalies: [...dayAnomalies.values()] });
+        importedLineItems += dayItems.size;
+        anomalyCount += dayAnomalies.size;
       }
 
       return {
         syncedDays: dates.length,
         importedLineItems,
         anomalyCount,
-        deferredCount: 0,
+        deferredCount: deferredDates.length,
+        ...(deferredDates.length ? { deferredDates } : {}),
       };
     } finally {
       this.isRunning = false;
     }
   }
 
-  private async upsertMatchedBillLine(input: {
+  private buildMatchedBillLine(input: {
+    cloudAccountUid: string;
     syncBatchId: string;
     billingDate: string;
     line: RawBillLine;
@@ -259,38 +282,31 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     cloudResourceId: string;
     cloudResourceType: BillingLedgerResourceRecord['cloudResourceType'];
   }) {
-    await this.adminRepository.upsertBillingLineItems([
-      {
-        syncBatchId: input.syncBatchId,
-        sourceFingerprint: this.buildSourceFingerprint(
-          input.syncBatchId,
-          input.cloudResourceType,
-          input.cloudResourceId,
-          readString(input.line, 'BillingItem'),
-          readString(input.line, 'InstanceID'),
-        ),
-        billCycle: input.billingDate.slice(0, 7),
-        billingDate: input.billingDate,
-        productCode: readString(input.line, 'ProductCode'),
-        productDetail: readString(input.line, 'ProductDetail') || null,
-        billItem: readString(input.line, 'BillingItem'),
-        cloudResourceId: input.cloudResourceId,
-        cloudResourceType: input.cloudResourceType,
-        pretaxAmount: readNumber(input.line, 'PretaxAmount'),
-        currency: readString(input.line, 'Currency') || 'CNY',
-        billingScope: input.ledger.billingScope,
-        ownerUserId: input.ledger.ownerUserId,
-        matchedLedgerId: input.ledger.id,
-        rawPayload: input.line,
-      },
-    ]);
+    return {
+      cloudAccountUid: input.cloudAccountUid,
+      syncBatchId: input.syncBatchId,
+      sourceFingerprint: this.buildSourceFingerprint(input.syncBatchId, input.line),
+      billCycle: input.billingDate.slice(0, 7),
+      billingDate: input.billingDate,
+      productCode: readString(input.line, 'ProductCode'),
+      productDetail: readString(input.line, 'ProductDetail') || null,
+      billItem: readString(input.line, 'BillingItem'),
+      cloudResourceId: input.cloudResourceId,
+      cloudResourceType: input.cloudResourceType,
+      pretaxAmount: readNumber(input.line, 'PretaxAmount'),
+      currency: readString(input.line, 'Currency'),
+      billingScope: input.ledger.billingScope,
+      ownerUserId: input.ledger.ownerUserId,
+      matchedLedgerId: input.ledger.id,
+      rawPayload: input.line,
+    };
   }
 
   private async findTaggedLedgerResource(input: {
     line: RawBillLine;
     classification: ReturnType<typeof classifyBillLine>;
     billingDate: string;
-    defaultRegionId: string;
+    cloudAccountUid: string;
     ledgerResources: BillingLedgerResourceRecord[];
   }) {
     if (input.classification.kind !== 'direct') {
@@ -307,15 +323,27 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       input.ledgerResources,
       input.classification.cloudResourceId,
       input.classification.cloudResourceType,
+      input.cloudAccountUid,
     );
 
     if (existing) {
-      return isLedgerActiveForBillingDate(existing, input.billingDate) ? existing : null;
+      return isLedgerActiveForBillingDate(existing, input.billingDate, ['Refund', 'Adjustment'].includes(readString(input.line, 'Item'))) ? existing : null;
     }
 
-    const ledger = await this.adminRepository.createBillingLedgerResource({
+    const regionId = explicitRegionId(input.line, tagged.tags);
+    if (!regionId || (tagged.billingScope === 'user' && !tagged.ownerUserId)) return null;
+    if (tagged.billingScope === 'user') {
+      if (!(await this.adminRepository.getPlatformUserById(tagged.ownerUserId!))) return null;
+      if (tagged.rangeInstanceId) {
+        const instance = await this.adminRepository.getRangeInstanceById(tagged.rangeInstanceId);
+        if (!instance || instance.ownerUserId !== tagged.ownerUserId
+          || (tagged.singleInstanceBatchId && instance.singleInstanceBatchId !== tagged.singleInstanceBatchId)) return null;
+      }
+    }
+    const ledger = await this.createScopedLedger({
       cloudProvider: 'alibaba_cloud',
-      regionId: input.defaultRegionId,
+      cloudAccountUid: input.cloudAccountUid,
+      regionId,
       cloudResourceId: input.classification.cloudResourceId,
       cloudResourceType: input.classification.cloudResourceType,
       billingScope: tagged.billingScope,
@@ -331,8 +359,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     return ledger;
   }
 
-  private async reconcilePlatformImageBillingLedgers(ledgerResources: BillingLedgerResourceRecord[]) {
-    const assets = await this.adminRepository.listPlatformImageAssets();
+  private async reconcilePlatformImageBillingLedgers(ledgerResources: BillingLedgerResourceRecord[], cloudAccountUid: string) {
+    const assets = await this.adminRepository.listPlatformImageAssets({ accountUid: cloudAccountUid });
 
     for (const asset of assets) {
       if (asset.ownerUserId || !asset.imageId.trim()) {
@@ -345,9 +373,10 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         billingStartAt: asset.createdAt,
       });
 
-      for (const cloudResourceType of ['image', 'snapshot'] as const) {
+      for (const cloudResourceType of ['image'] as const) {
         const existing = ledgerResources.find(
           (item) =>
+            (item.cloudAccountUid === asset.accountUid || item.cloudAccountUid === null) &&
             item.regionId === asset.regionId &&
             item.cloudResourceId === asset.imageId &&
             item.cloudResourceType === cloudResourceType,
@@ -355,6 +384,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
         if (existing) {
           if (
+            existing.cloudAccountUid === cloudAccountUid &&
             existing.billingScope === 'platform' &&
             existing.ownerUserId === null &&
             existing.platformImageAssetId === asset.id &&
@@ -364,6 +394,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           }
 
           const updated = await this.adminRepository.updateBillingLedgerResource(existing.id, {
+            cloudAccountUid,
             billingScope: 'platform',
             ownerUserId: null,
             rangeInstanceId: null,
@@ -380,7 +411,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           continue;
         }
 
-        const created = await this.adminRepository.createBillingLedgerResource({
+        const created = await this.createScopedLedger({
           cloudProvider: asset.provider,
           cloudAccountUid: asset.accountUid,
           regionId: asset.regionId,
@@ -414,9 +445,10 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     bucket: string;
     billingDate: string;
     regionId: string;
+    cloudAccountUid: string;
     ledgerResources: BillingLedgerResourceRecord[];
   }) {
-    const existing = this.findLedgerResource(input.ledgerResources, input.bucket, 'oss_bucket');
+    const existing = this.findLedgerResource(input.ledgerResources, input.bucket, 'oss_bucket', input.cloudAccountUid);
     const tagsSnapshot = buildBillingTags({
       billingScope: 'platform',
       billingStartAt: input.billingDate,
@@ -438,8 +470,9 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       return ledger;
     }
 
-    const ledger = await this.adminRepository.createBillingLedgerResource({
+    const ledger = await this.createScopedLedger({
       cloudProvider: 'alibaba_cloud',
+      cloudAccountUid: input.cloudAccountUid,
       regionId: input.regionId,
       cloudResourceId: input.bucket,
       cloudResourceType: 'oss_bucket',
@@ -453,14 +486,20 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     return ledger;
   }
 
-  private buildSourceFingerprint(
-    syncBatchId: string,
-    resourceType: string,
-    resourceId: string,
-    billItem: string,
-    sourceInstanceId = '',
-  ) {
-    return `${syncBatchId}:${resourceType}:${resourceId}:${billItem}:${sourceInstanceId}`;
+  private buildSourceFingerprint(syncBatchId: string, line: RawBillLine) {
+    // BSS has no row ID; the complete row preserves charge/refund, commodity, pricing and currency dimensions.
+    return `${syncBatchId}:${createHash('sha256').update(JSON.stringify(stableJson(line))).digest('hex')}`;
+  }
+
+  private async createScopedLedger(input: Parameters<AdminRepository['createBillingLedgerResource']>[0]) {
+    try {
+      return await this.adminRepository.createBillingLedgerResource(input);
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'P2002')) throw error;
+      const existing = (await this.adminRepository.listBillingLedgerResources()).find(item => item.cloudAccountUid === input.cloudAccountUid && item.regionId === input.regionId && item.cloudResourceId === input.cloudResourceId && item.cloudResourceType === input.cloudResourceType);
+      if (!existing) throw error;
+      return existing;
+    }
   }
 
   private isPlatformScopedAnomaly(
@@ -474,8 +513,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
     return ledgerResources.some(
       (item) =>
-        item.cloudResourceId === classification.cloudResourceId &&
-        isLedgerActiveForBillingDate(item, billingDate),
+        item.cloudResourceId === classification.cloudResourceId && billingDate >= billingDayText(item.billingStartAt),
     );
   }
 
@@ -501,16 +539,17 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       return classification.reason;
     }
 
-    return `已识别到平台账单，但未匹配到本地台账：${classification.cloudResourceType}:${classification.cloudResourceId}`;
+    return `已识别到平台账单，但台账或可核实的地域/用户归属缺失：${classification.cloudResourceType}:${classification.cloudResourceId}`;
   }
 
   private findLedgerResource(
     ledgerResources: BillingLedgerResourceRecord[],
     cloudResourceId: string,
     cloudResourceType: BillingLedgerResourceRecord['cloudResourceType'],
+    cloudAccountUid: string,
   ) {
     return ledgerResources.find(
-      (item) => item.cloudResourceId === cloudResourceId && item.cloudResourceType === cloudResourceType,
+      (item) => item.cloudAccountUid === cloudAccountUid && item.cloudResourceId === cloudResourceId && item.cloudResourceType === cloudResourceType,
     );
   }
 
@@ -519,13 +558,15 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     cloudResourceId: string,
     cloudResourceType: BillingLedgerResourceRecord['cloudResourceType'],
     billingDate: string,
+    cloudAccountUid: string,
+    correction: boolean,
   ) {
-    const matchedLedger = this.findLedgerResource(ledgerResources, cloudResourceId, cloudResourceType);
+    const matchedLedger = this.findLedgerResource(ledgerResources, cloudResourceId, cloudResourceType, cloudAccountUid);
 
     if (!matchedLedger) {
       return null;
     }
 
-    return isLedgerActiveForBillingDate(matchedLedger, billingDate) ? matchedLedger : null;
+    return isLedgerActiveForBillingDate(matchedLedger, billingDate, correction) ? matchedLedger : null;
   }
 }

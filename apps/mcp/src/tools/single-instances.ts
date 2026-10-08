@@ -51,6 +51,7 @@ const singleInstanceCloudResourceStatusOutputSchema = resultOutputSchema(
     exists: z.boolean().describe('阿里云中是否仍存在带该 RangeInstanceId 标签的 ECS。'),
     instanceIds: z.array(z.string()).describe('当前匹配标签的 ECS 实例 ID 列表。'),
     checkedAt: z.string().describe('平台完成云端查询的 ISO-8601 时间。'),
+    matchedInstances:z.array(z.object({instanceId:z.string(),ownerUserId:z.string().nullable(),tags:z.record(z.string(),z.string())})).optional().describe('真实云标签白名单；ownerUserId来自PlatformUserId，供核对owner和batch。'),
   }),
 );
 
@@ -76,6 +77,11 @@ function readSingleInstanceCredential(instance: Record<string, unknown>) {
 }
 
 export const singleInstanceTools: ToolDefinition[] = [
+  { name:'single_instance_network_list',title:'查询独立实例共享网络',description:'仅管理员可查询账号绑定的共享网络 profile，供明确回收已空闲测试网络使用。',requiredScopes:['settings:read'],readOnlyHint:true,inputSchema:z.object({}),outputSchema:resultOutputSchema(z.array(resourceSchema)),
+    call(context) {if(!context.client.listSingleInstanceNetworks) throw new Error('Network lifecycle API unavailable');return context.client.listSingleInstanceNetworks();}},
+  {name:'single_instance_network_cleanup_register',title:'登记本轮新网络回收许可',description:'仅管理员登记本轮启动之后、由明确临时用户创建的新managed profile。登记后只有这些用户可继续使用，回收需同一runId和登记管理员。',requiredScopes:['settings:write'],inputSchema:z.object({networkProfileId:z.string().min(1),runId:z.string().min(1),createdAfter:z.string().datetime({offset:true}),ownerUserIds:z.array(z.string().min(1)).min(1).max(99)}),outputSchema:actionOutputSchema,call(context,args){const input=args as {networkProfileId:string;runId:string;createdAfter:string;ownerUserIds:string[]};if(!context.client.registerSingleInstanceNetworkCleanup)throw new Error('Network registration API unavailable');return context.client.registerSingleInstanceNetworkCleanup(input.networkProfileId,{runId:input.runId,createdAfter:input.createdAfter,ownerUserIds:input.ownerUserIds});}},
+  { name:'single_instance_network_destroy',title:'回收独立实例共享网络',description:'仅管理员明确指定 profileId 回收无实例引用、无作业、云端为空的网络。来源账号/地域固定，旧未绑定网络禁止操作。',requiredScopes:['settings:write','instances:destroy'],annotations:{destructiveHint:true,idempotentHint:false},inputSchema:singleInstanceDestroyInputSchema.omit({singleInstanceId:true}).extend({networkProfileId:z.string().min(1),cleanupRunId:z.string().min(1)}),outputSchema:actionOutputSchema,
+    call(context,args) {const input=args as {networkProfileId:string;cleanupRunId:string;idempotencyKey?:string;confirmationId?:string};if(!context.client.destroySingleInstanceNetwork) throw new Error('Network lifecycle API unavailable');return context.client.destroySingleInstanceNetwork(input.networkProfileId,input.cleanupRunId,operation(input));}},
   {
     name: 'single_instance_list',
     title: '查询独立实例',
@@ -85,7 +91,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     inputSchema: singleInstanceListInputSchema,
     outputSchema: singleInstanceListOutputSchema,
     call(context, args) {
-      return context.client.listSingleInstances((args as { view?: 'active' | 'history' }).view ?? 'active');
+      return context.client.listSingleInstances((args as { view?: 'active' | 'history' }).view ?? 'active').then(redactSingleInstanceCredentials);
     },
   },
   {
@@ -97,7 +103,7 @@ export const singleInstanceTools: ToolDefinition[] = [
     inputSchema: singleInstanceIdInputSchema,
     outputSchema: nullableResourceOutputSchema,
     call(context, args) {
-      return context.client.getSingleInstance((args as { singleInstanceId: string }).singleInstanceId);
+      return context.client.getSingleInstance((args as { singleInstanceId: string }).singleInstanceId).then(redactSingleInstanceCredentials);
     },
   },
   {
@@ -338,7 +344,8 @@ export const singleInstanceTools: ToolDefinition[] = [
         context.client.listSingleInstances('active'),
         context.client.listSingleInstances('history'),
       ]);
-      const group = lists.flatMap((list) => list.batches).find((entry) => entry.batch.id === input.batchId);
+      const matches=lists.flatMap(list=>list.batches).filter(entry=>entry.batch.id===input.batchId);
+      const group=matches[0]?{batch:matches[0].batch,instances:[...new Map(matches.flatMap(entry=>entry.instances).map(instance=>[instance.id,instance])).values()]}:null;
 
       if (!group) {
         throw new Error('Single instance batch not found');
@@ -365,3 +372,9 @@ export const singleInstanceTools: ToolDefinition[] = [
     },
   },
 ];
+
+function redactSingleInstanceCredentials<T>(value:T):T {
+  if(Array.isArray(value)) return value.map(redactSingleInstanceCredentials) as T;
+  if(!value || typeof value!=='object') return value;
+  return Object.fromEntries(Object.entries(value).filter(([key])=>key.toLowerCase()!=='runtimecredentials').map(([key,child])=>[key,redactSingleInstanceCredentials(child)])) as T;
+}

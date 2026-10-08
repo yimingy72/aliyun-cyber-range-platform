@@ -5,7 +5,9 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 
 import { ADMIN_REPOSITORY, AdminRepository, PlatformUserRecord, UserRole, UserStatus } from './admin.repository';
@@ -14,12 +16,12 @@ import { AdminUserDto, CreateAdminUserDto } from './dto/admin-user.dto';
 import { PrismaService } from '../database/prisma.service';
 import { KeycloakAdminService } from './keycloak-admin.service';
 
-const SERIALIZABLE_RETRY_LIMIT = 3;
-
 type AdminUserLike = Pick<PlatformUserRecord, 'id' | 'username' | 'role' | 'status' | 'createdAt' | 'updatedAt'>;
+type UserWriteRecovery = (tx: Prisma.TransactionClient) => Promise<AdminUserDto | void>;
 
 @Injectable()
 export class AdminUsersService {
+  private readonly logger = new Logger(AdminUsersService.name);
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository,
     private readonly prisma: PrismaService,
@@ -34,81 +36,95 @@ export class AdminUsersService {
 
   async createUser(input: CreateAdminUserDto): Promise<AdminUserDto> {
     const username = this.normalizeUsername(input.username);
+    const id = randomUUID();
+    const passwordHash = hashPassword(input.password);
 
-    try {
+    return this.runLockedUserMutation(async (tx, recover) => {
+      if (await tx.platformUser.findUnique({ where: { username } })) {
+        throw new ConflictException('Username already exists');
+      }
       const oidcSubject = await this.keycloakAdminService.createUser({
         username,
         password: input.password,
         role: input.role,
         status: 'active',
       });
-      const user = await this.repository.createPlatformUser({
-        id: randomUUID(),
+      recover(async (recoveryTx) => {
+        const persisted = await recoveryTx.platformUser.findUnique({ where: { id } });
+        if (persisted?.oidcSubject === oidcSubject) {
+          return this.toAdminUserDto(persisted);
+        }
+        await this.keycloakAdminService.deleteUser(oidcSubject);
+      });
+      const user = await tx.platformUser.create({ data: {
+        id,
         username,
-        passwordHash: hashPassword(input.password),
+        passwordHash,
         oidcIssuer: process.env.OIDC_ISSUER?.trim() || 'http://localhost:8080/realms/cyber-range',
         oidcSubject,
         role: input.role,
         status: 'active',
-      });
+      } });
 
       return this.toAdminUserDto(user);
-    } catch (error) {
-      this.rethrowKnownUserWriteError(error);
-    }
+    });
   }
 
   async updateUserRole(userId: string, role: UserRole): Promise<AdminUserDto> {
-    return this.runSerializableUserMutation(async (tx) => {
+    return this.runLockedUserMutation(async (tx, recover) => {
       const user = await this.getUserOrThrowFromTransaction(tx, userId);
-
-      if (user.role === role) {
-        return this.toAdminUserDto(user);
-      }
 
       if (user.role === 'admin' && user.status === 'active' && role !== 'admin') {
         await this.assertAnotherActiveAdminExists(tx, 'Cannot demote the last active admin');
       }
 
+      const updatedUser = user.role === role ? user : await tx.platformUser.update({
+        where: { id: userId },
+        data: { role },
+      });
       if (user.oidcSubject) {
+        recover(async (recoveryTx) => {
+          const current = await this.getUserOrThrowFromTransaction(recoveryTx, userId);
+          await this.keycloakAdminService.updateUserRole({ subject: user.oidcSubject!, role: current.role });
+          if (current.role === role) {
+            return this.toAdminUserDto(current);
+          }
+        });
         await this.keycloakAdminService.updateUserRole({
           subject: user.oidcSubject,
           role,
         });
       }
 
-      const updatedUser = await tx.platformUser.update({
-        where: { id: userId },
-        data: { role },
-      });
-
       return this.toAdminUserDto(updatedUser);
     });
   }
 
   async updateUserStatus(userId: string, status: UserStatus): Promise<AdminUserDto> {
-    return this.runSerializableUserMutation(async (tx) => {
+    return this.runLockedUserMutation(async (tx, recover) => {
       const user = await this.getUserOrThrowFromTransaction(tx, userId);
-
-      if (user.status === status) {
-        return this.toAdminUserDto(user);
-      }
 
       if (user.role === 'admin' && user.status === 'active' && status !== 'active') {
         await this.assertAnotherActiveAdminExists(tx, 'Cannot disable the last active admin');
       }
 
+      const updatedUser = user.status === status ? user : await tx.platformUser.update({
+        where: { id: userId },
+        data: { status },
+      });
       if (user.oidcSubject) {
+        recover(async (recoveryTx) => {
+          const current = await this.getUserOrThrowFromTransaction(recoveryTx, userId);
+          await this.keycloakAdminService.updateUserStatus({ subject: user.oidcSubject!, status: current.status });
+          if (current.status === status) {
+            return this.toAdminUserDto(current);
+          }
+        });
         await this.keycloakAdminService.updateUserStatus({
           subject: user.oidcSubject,
           status,
         });
       }
-
-      const updatedUser = await tx.platformUser.update({
-        where: { id: userId },
-        data: { status },
-      });
 
       return this.toAdminUserDto(updatedUser);
     });
@@ -116,6 +132,7 @@ export class AdminUsersService {
 
   async resetUserPassword(userId: string, password: string): Promise<AdminUserDto> {
     const user = await this.getUserOrThrow(userId);
+    const passwordHash = hashPassword(password);
 
     if (user.oidcSubject) {
       await this.keycloakAdminService.resetUserPassword({
@@ -124,11 +141,15 @@ export class AdminUsersService {
       });
     }
 
-    const updatedUser = await this.repository.updatePlatformUser(userId, {
-      passwordHash: hashPassword(password),
-    });
-
-    return this.toAdminUserDto(updatedUser);
+    try {
+      return this.toAdminUserDto(await this.repository.updatePlatformUser(userId, { passwordHash }));
+    } catch (error) {
+      if (!user.oidcSubject) {
+        throw error;
+      }
+      this.logger.warn('Identity password was reset, but updating the unused local password hash failed');
+      return this.toAdminUserDto(user);
+    }
   }
 
   private async getUserOrThrow(userId: string) {
@@ -205,27 +226,37 @@ export class AdminUsersService {
     }
   }
 
-  private async runSerializableUserMutation(
-    operation: (tx: Prisma.TransactionClient) => Promise<AdminUserDto>,
+  private async runLockedUserMutation(
+    operation: (tx: Prisma.TransactionClient, recover: (callback: UserWriteRecovery) => void) => Promise<AdminUserDto>,
   ): Promise<AdminUserDto> {
-    for (let attempt = 0; attempt < SERIALIZABLE_RETRY_LIMIT; attempt += 1) {
-      try {
-        return await this.prisma.$transaction((tx) => operation(tx), {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        });
-      } catch (error) {
-        if (this.isRetryableSerializationError(error) && attempt + 1 < SERIALIZABLE_RETRY_LIMIT) {
-          continue;
+    let recovery: UserWriteRecovery | undefined;
+    try {
+      return await this.withUserWriteLock((tx) => operation(tx, (callback) => { recovery = callback; }));
+    } catch (error) {
+      if (recovery) {
+        // Re-read under the lock so compensation cannot overwrite a newer successful change.
+        const callback = recovery;
+        let recovered: AdminUserDto | void;
+        try {
+          recovered = await this.withUserWriteLock(callback);
+        } catch {
+          this.logger.error('Failed to restore user identity after a platform user write failure');
+          throw new ServiceUnavailableException('User identity recovery failed; retry when the database and identity service are available');
         }
-
-        throw error;
+        if (recovered) {
+          return recovered;
+        }
       }
+      this.rethrowKnownUserWriteError(error);
     }
-
-    throw new Error('Unreachable');
   }
 
-  private isRetryableSerializationError(error: unknown) {
-    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+  private withUserWriteLock<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      // ReadCommitted observes the prior writer after waiting; external writes must never be retried.
+      await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+      await tx.$executeRaw`LOCK TABLE "PlatformUser" IN SHARE ROW EXCLUSIVE MODE`;
+      return operation(tx);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 5_000, timeout: 60_000 });
   }
 }

@@ -62,6 +62,7 @@ describe('ImageCatalogService import operation guard', () => {
       deletePlatformImageAsset: jest.fn(),
       getPlatformUserById: jest.fn().mockResolvedValue({ id: OWNER.id, username: OWNER.username }),
       listPlatformImageAssets: jest.fn().mockResolvedValue([]),
+      listPackedImageArtifacts: jest.fn().mockResolvedValue([]),
       listRangeInstances: jest.fn().mockResolvedValue([]),
       listRangeTemplates: jest.fn().mockResolvedValue([]),
       listBillingLedgerResources: jest.fn().mockResolvedValue([]),
@@ -86,7 +87,7 @@ describe('ImageCatalogService import operation guard', () => {
       systemConfigServiceMock as unknown as SystemConfigService,
     );
 
-    return { service, adminRepositoryMock, asset };
+    return { service, adminRepositoryMock, asset, snapshot };
   }
 
   afterEach(() => {
@@ -107,7 +108,9 @@ describe('ImageCatalogService import operation guard', () => {
   });
 
   it('tags collected platform images and creates platform billing ledgers', async () => {
-    const { service, adminRepositoryMock } = createService();
+    const { service, adminRepositoryMock, snapshot } = createService();
+    snapshot.status = 'Available'; snapshot.isAvailable = true;
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
     global.fetch = jest.fn().mockImplementation(async (input) => {
       const url = String(input);
 
@@ -115,9 +118,11 @@ describe('ImageCatalogService import operation guard', () => {
         return {
           ok: true,
           json: async () => ({
+            TotalCount: 1,
             Images: {
               Image: {
                 ImageId: 'm-importing-image',
+                Status: 'Available',
                 DiskDeviceMappings: {
                   DiskDeviceMapping: [{ SnapshotId: 's-importing-image-01' }],
                 },
@@ -209,7 +214,7 @@ describe('ImageCatalogService import operation guard', () => {
     expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
   });
 
-  it('deletes the custom cloud image and its snapshots when its owner removes the platform asset', async () => {
+  it('removes only the platform directory entry while preserving its cloud image and snapshots', async () => {
     const { service, adminRepositoryMock } = createService();
     adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
     global.fetch = jest.fn().mockResolvedValue({
@@ -219,11 +224,9 @@ describe('ImageCatalogService import operation guard', () => {
 
     await service.removePlatformAsset('asset-1', OWNER);
 
-    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=DeleteImage');
-    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Force=true');
-    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith('snapshot-1');
-    expect(adminRepositoryMock.reconcileImageSnapshots).toHaveBeenCalled();
-    expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
   });
 
   it('removes a custom asset whose re-synced snapshot is not linked back to that asset', async () => {
@@ -237,7 +240,7 @@ describe('ImageCatalogService import operation guard', () => {
 
     await service.removePlatformAsset('asset-1', OWNER);
 
-    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith('snapshot-1');
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
     expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
   });
 

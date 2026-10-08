@@ -316,6 +316,36 @@ model ImageImportJob {
   @@index([status, temporaryObjectDeletedAt, updatedAt])
 }
 
+model PackedImageArtifact {
+  id                       String   @id @default(cuid())
+  cloudAccountContextId    String
+  cloudAccountUid          String
+  regionId                 String
+  ownerUserId              String
+  sourceRangeInstanceId    String
+  sourceHostKey            String
+  sourceInstanceId         String
+  sourceDiskIds            Json
+  imageId                  String?  @unique
+  sourceSnapshotId         String?
+  platformImageAssetId     String?
+  status                   String   @default("pending")
+  backingSnapshotIds       Json     @default("[]")
+  deletedSnapshotIds       Json     @default("[]")
+  cloudImageDeletedAt      DateTime?
+  completedAt              DateTime?
+  lastPolledAt             DateTime?
+  errorMessage             String?  @db.Text
+  leaseToken               String?
+  leaseExpiresAt           DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([cloudAccountUid, regionId, status])
+  @@index([ownerUserId, createdAt])
+  @@index([sourceSnapshotId])
+}
+
 model ImageCatalogItem {
   id               String        @id @default(cuid())
   displayName      String
@@ -523,6 +553,15 @@ model RangeInstance {
 }
 
 model SingleInstanceNetworkProfile {
+  createdByUserId    String?
+  cleanupRunId       String?
+  cleanupRegisteredByUserId String?
+  cleanupOwnerUserIds Json?
+  status            String        @default("ready")
+  cloudAccountUid   String        @default("legacy-unbound")
+  cloudAccountContextId String?
+  workspaceKey      String?
+  managedByPlatform Boolean       @default(false)
   id                String        @id @default(cuid())
   provider          CloudProvider @default(alibaba_cloud)
   regionId          String
@@ -536,7 +575,7 @@ model SingleInstanceNetworkProfile {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  @@unique([provider, regionId, zoneId])
+  @@unique([provider, cloudAccountUid, regionId, zoneId])
 }
 
 model ProvisionJob {
@@ -627,6 +666,7 @@ model BillingLedgerResource {
 
 model BillingLineItem {
   id                String                    @id @default(cuid())
+  cloudAccountUid   String?
   syncBatchId       String
   sourceFingerprint String                    @unique
   billCycle         String
@@ -646,6 +686,7 @@ model BillingLineItem {
   updatedAt         DateTime                  @updatedAt
 
   @@index([billingDate, billingScope])
+  @@index([cloudAccountUid, billingDate])
   @@index([ownerUserId, billingDate])
   @@index([matchedLedgerId])
   @@index([cloudResourceId, cloudResourceType])
@@ -653,6 +694,7 @@ model BillingLineItem {
 
 model BillingAnomaly {
   id                String                    @id @default(cuid())
+  cloudAccountUid   String?
   syncBatchId       String
   sourceFingerprint String                    @unique
   billCycle         String
@@ -667,5 +709,6 @@ model BillingAnomaly {
   updatedAt         DateTime                  @updatedAt
 
   @@index([billingDate])
+  @@index([cloudAccountUid, billingDate])
   @@index([cloudResourceId, cloudResourceType])
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Check, ChevronDown, ChevronRight, Copy, MoreHorizontal, Plus } from 'lucide-react';
 
@@ -1320,7 +1320,7 @@ export function SingleInstancesScreen({
     }
   }, [activePagination.page, listMode, listPages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, listMode]);
 

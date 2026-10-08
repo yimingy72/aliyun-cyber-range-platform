@@ -15,6 +15,7 @@ export type OpenTofuExecutor = (
 export type OpenTofuRunnerOptions = {
   binaryPath?: string;
   executor?: OpenTofuExecutor;
+  commandTimeoutMs?: number;
 };
 
 export type OpenTofuWorkspaceCommandOptions = {
@@ -40,31 +41,54 @@ export type OpenTofuDestroyOptions = OpenTofuWorkspaceCommandOptions & {
 };
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1_000;
 
 async function defaultExecutor(
   command: string,
   args: string[],
   options: ExecFileOptions,
 ): Promise<OpenTofuCommandResult> {
-  const result = await execFileAsync(command, args, {
-    ...options,
+  const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, ...executionOptions } = options;
+  const execution = execFileAsync(command, args, {
+    ...executionOptions,
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
   });
+  let interrupted = false;
+  // execFile's built-in timeout closes stdio before killing, which can abort OpenTofu state persistence.
+  const timer = setTimeout(() => {
+    interrupted = execution.child.kill('SIGTERM');
+  }, timeout);
+  timer.unref();
 
-  return {
-    stdout: result.stdout,
-    stderr: result.stderr,
-  };
+  try {
+    const result = await execution;
+    if (interrupted) {
+      throw Object.assign(new Error(`OpenTofu command timed out after ${timeout} ms`), result);
+    }
+    return { stdout: result.stdout, stderr: result.stderr };
+  } catch (error) {
+    if (interrupted && error instanceof Error) {
+      error.message = `OpenTofu command timed out after ${timeout} ms`;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export class OpenTofuRunner {
   private readonly binaryPath: string;
   private readonly executor: OpenTofuExecutor;
+  private readonly commandTimeoutMs: number;
 
   constructor(options: OpenTofuRunnerOptions = {}) {
     this.binaryPath = options.binaryPath ?? 'tofu';
     this.executor = options.executor ?? defaultExecutor;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+    if (!Number.isFinite(this.commandTimeoutMs) || this.commandTimeoutMs <= 0 || this.commandTimeoutMs > 2_147_483_647) {
+      throw new Error('OpenTofu command timeout must be a positive number no greater than 2147483647 ms');
+    }
   }
 
   async init(options: OpenTofuWorkspaceCommandOptions): Promise<OpenTofuCommandResult> {
@@ -118,6 +142,7 @@ export class OpenTofuRunner {
     return this.executor(this.binaryPath, args, {
       cwd: options.workspaceDir,
       env: options.env,
+      timeout: this.commandTimeoutMs,
     });
   }
 }

@@ -1,5 +1,19 @@
 export const PHASE_ONE_NODE_KINDS = ['router', 'switch', 'ecs'] as const;
 
+export function nextAvailableGraphId(prefix: string, existingIds: string[]) {
+  let ordinal = existingIds.length + 1;
+  const ids = new Set(existingIds);
+  while (ids.has(`${prefix}-${ordinal}`)) ordinal += 1;
+  return `${prefix}-${ordinal}`;
+}
+
+export function defaultSwitchCidr(ordinal: number) {
+  const initial = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'];
+  const offset = Math.max(ordinal - 4, 0);
+  const prefix = ['10.0', '172.16', '192.168'][Math.floor(offset / 255) % 3];
+  return initial[ordinal - 1] ?? `${prefix}.${offset % 255 + 1}.0/24`;
+}
+
 export type TemplateNodeKind = (typeof PHASE_ONE_NODE_KINDS)[number];
 
 export function isPhaseOneNodeKind(kind: unknown): kind is TemplateNodeKind {

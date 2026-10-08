@@ -21,6 +21,8 @@ import {
   CreateOperationConfirmationInput,
   CreatePlatformUserInput,
   CreateProvisionJobInput,
+  QueueRangeInstanceJobInput,
+  ProvisionJobTopologySnapshot,
   CreateProvisionJobStepLogInput,
   CreateSingleInstanceBatchInput,
   CreateRangeInstanceInput,
@@ -38,6 +40,9 @@ import {
   OperationAuditEventRecord,
   OperationConfirmationRecord,
   PlatformUserRecord,
+  PackedImageArtifactRecord,
+  CreatePackedImageArtifactInput,
+  UpdatePackedImageArtifactInput,
   PlatformImageAssetRecord,
   PlatformImageTagRecord,
   ProvisionJobRecord,
@@ -76,6 +81,7 @@ function isSerializableTransactionConflict(error: unknown) {
 function toBillingLineItemRecord(
   record: {
     id: string;
+    cloudAccountUid: string | null;
     syncBatchId: string;
     sourceFingerprint: string;
     billCycle: string;
@@ -105,6 +111,7 @@ function toBillingLineItemRecord(
 function toBillingAnomalyRecord(
   record: {
     id: string;
+    cloudAccountUid: string | null;
     syncBatchId: string;
     sourceFingerprint: string;
     billCycle: string;
@@ -961,9 +968,8 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord> {
-    return this.prisma.rangeInstance.create({
-      data: {
+  async createRangeInstance(input: CreateRangeInstanceInput, initialJob?: { triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number }): Promise<RangeInstanceRecord> {
+    const data = {
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
         ownerUserId: input.ownerUserId ?? null,
@@ -1014,8 +1020,22 @@ export class PrismaAdminRepository implements AdminRepository {
         errorSummary: input.errorSummary ?? null,
         expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
         lastJobId: input.lastJobId ?? null,
-      },
-    }) as Promise<RangeInstanceRecord>;
+      };
+    if (!initialJob) {
+      return this.prisma.rangeInstance.create({ data }) as Promise<RangeInstanceRecord>;
+    }
+    return this.prisma.$transaction(async transaction => {
+      if (initialJob.expectedTemplateRevision !== undefined && input.templateId) {
+        const frozen = await transaction.rangeTemplate.updateMany({ where: { id: input.templateId, revision: initialJob.expectedTemplateRevision }, data: { revision: { increment: 0 } } });
+        if (frozen.count !== 1) throw new TemplateRevisionConflictError();
+      }
+      const instance = await transaction.rangeInstance.create({ data });
+      const job = await transaction.provisionJob.create({ data: {
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: initialJob.triggeredBy,
+        topologySnapshot: initialJob.topologySnapshot as Prisma.InputJsonValue,
+      } });
+      return transaction.rangeInstance.update({ where: { id: instance.id }, data: { lastJobId: job.id } }) as Promise<RangeInstanceRecord>;
+    });
   }
 
   async getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null> {
@@ -1027,11 +1047,11 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord> {
-    return this.prisma.rangeInstance.update({
-      where: {
-        id,
-      },
-      data: {
+    return this.prisma.rangeInstance.update({ where: { id }, data: this.rangeInstanceUpdateData(input) }) as Promise<RangeInstanceRecord>;
+  }
+
+  private rangeInstanceUpdateData(input: UpdateRangeInstanceInput) {
+    return {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
         ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
@@ -1125,8 +1145,7 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.errorSummary !== undefined ? { errorSummary: input.errorSummary } : {}),
         ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
         ...(input.lastJobId !== undefined ? { lastJobId: input.lastJobId } : {}),
-      },
-    }) as Promise<RangeInstanceRecord>;
+      };
   }
 
   async saveRangeInstanceDraft(
@@ -1190,6 +1209,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput): Promise<ProvisionJobRecord | null> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
+        await transaction.rangeInstance.updateMany({ where: { id: input.rangeInstanceId }, data: { draftRevision: { increment: 0 } } });
         const instance = await transaction.rangeInstance.findUnique({
           where: { id: input.rangeInstanceId },
         });
@@ -1224,7 +1244,6 @@ export class PrismaAdminRepository implements AdminRepository {
                 id: {
                   not: job.id,
                 },
-                jobType: 'update',
                 status: {
                   in: ['pending', 'running'],
                 },
@@ -1259,10 +1278,17 @@ export class PrismaAdminRepository implements AdminRepository {
     input: CompleteRangeInstanceDraftApplyInput,
   ): Promise<RangeInstanceRecord> {
     return this.prisma.$transaction(async (transaction) => {
+      if (input.provisionJobId && input.claimStartedAt) {
+        const owned = await this.lockRangeClaim(transaction, input.provisionJobId, input.claimStartedAt);
+        if (!owned || owned.rangeInstanceId !== id) {
+          throw new RangeInstanceDraftRevisionConflictError();
+        }
+      }
       const runtimeData = {
         runtimeTopologyGraph: input.runtimeTopologyGraph as Prisma.InputJsonValue,
         runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec as Prisma.InputJsonValue,
         runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec as Prisma.InputJsonValue,
+        ...(input.runtimeCredentials !== undefined ? { runtimeCredentials: input.runtimeCredentials as Prisma.InputJsonValue } : {}),
         accessEntry: (input.accessEntry ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
         resourceSummary: (input.resourceSummary ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
         errorSummary: input.errorSummary ?? null,
@@ -1305,6 +1331,104 @@ export class PrismaAdminRepository implements AdminRepository {
         createdAt: 'desc',
       },
     }) as Promise<ProvisionJobRecord[]>;
+  }
+
+  async queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null> {
+    return this.prisma.$transaction(async transaction => {
+      const locked = await transaction.rangeInstance.updateMany({
+        where: { id: input.rangeInstanceId, instanceMode: 'range', status: input.expectedStatus, ownerUserId: input.expectedOwnerUserId },
+        data: { draftRevision: { increment: 0 } },
+      });
+      if (locked.count !== 1 || await transaction.provisionJob.count({ where: {
+        rangeInstanceId: input.rangeInstanceId, status: { in: ['pending', 'running'] },
+      } }) > 0) {
+        return null;
+      }
+      const job = await transaction.provisionJob.create({ data: {
+        rangeInstanceId: input.rangeInstanceId, jobType: input.jobType, triggeredBy: input.triggeredBy,
+        retryCount: input.retryCount ?? 0,
+        topologySnapshot: (input.topologySnapshot ?? Prisma.DbNull) as Prisma.InputJsonValue,
+      } });
+      await transaction.rangeInstance.update({ where: { id: input.rangeInstanceId }, data: {
+        status: input.nextStatus, lastJobId: job.id, errorSummary: null,
+        ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
+      } });
+      return job as ProvisionJobRecord;
+    });
+  }
+
+  async claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null> {
+    return this.prisma.$transaction(async transaction => {
+      const candidate = await transaction.provisionJob.findUnique({ where: { id } });
+      if (!candidate || candidate.status !== 'pending') return null;
+      await transaction.rangeInstance.updateMany({ where: { id: candidate.rangeInstanceId, instanceMode: 'range' }, data: { draftRevision: { increment: 0 } } });
+      const instance = await transaction.rangeInstance.findUnique({ where: { id: candidate.rangeInstanceId } });
+      if (!instance || instance.instanceMode !== 'range') return null;
+      if (instance.lastJobId && instance.lastJobId !== id) {
+        await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
+          status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation',
+        } });
+        return null;
+      }
+      if (candidate.jobType === 'update' && instance.status !== 'running'
+        || (candidate.jobType === 'create' || candidate.topologySnapshot && (candidate.topologySnapshot as Record<string, unknown>).operation === 'create')
+          && ['pending_destroy', 'destroying', 'destroy_failed', 'destroyed'].includes(instance.status)) {
+        await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
+          status: 'cancelled', finishedAt: startedAt, errorSummary: 'Range operation is incompatible with the current instance state',
+        } });
+        return null;
+      }
+      if (instance.lastJobId === id) {
+        await transaction.provisionJob.updateMany({ where: {
+          rangeInstanceId: instance.id, id: { not: id }, status: 'pending',
+        }, data: { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' } });
+      }
+      const otherActive = await transaction.provisionJob.count({ where: {
+        rangeInstanceId: instance.id, id: { not: id }, status: { in: ['pending', 'running'] },
+      } });
+      if (otherActive > 0) return null;
+      const claimed = await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
+        status: 'running', startedAt, finishedAt: null, errorSummary: null,
+      } });
+      if (claimed.count !== 1) return null;
+      if (!instance.lastJobId) {
+        await transaction.rangeInstance.update({ where: { id: instance.id }, data: { lastJobId: id } });
+      }
+      return transaction.provisionJob.findUnique({ where: { id } }) as Promise<ProvisionJobRecord>;
+    });
+  }
+
+  async heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean> {
+    const changed = await this.prisma.provisionJob.updateMany({ where: {
+      id, status: 'running', startedAt, rangeInstance: { instanceMode: 'range', lastJobId: id },
+    }, data: { updatedAt: heartbeatAt } });
+    return changed.count === 1;
+  }
+
+  private async lockRangeClaim(transaction: Prisma.TransactionClient, id: string, startedAt: Date) {
+    const job = await transaction.provisionJob.findUnique({ where: { id } });
+    if (!job) return null;
+    const locked = await transaction.rangeInstance.updateMany({ where: {
+      id: job.rangeInstanceId, instanceMode: 'range', lastJobId: id,
+    }, data: { draftRevision: { increment: 0 } } });
+    if (locked.count !== 1) return null;
+    const owned = await transaction.provisionJob.updateMany({ where: { id, startedAt, status: 'running' }, data: { updatedAt: new Date() } });
+    return owned.count === 1 ? job : null;
+  }
+
+  async updateRangeInstanceForProvisionJob(id: string, startedAt: Date, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord | null> {
+    return this.prisma.$transaction(async transaction => {
+      const job = await this.lockRangeClaim(transaction, id, startedAt);
+      if (!job) return null;
+      return transaction.rangeInstance.update({ where: { id: job.rangeInstanceId }, data: this.rangeInstanceUpdateData(input) }) as Promise<RangeInstanceRecord>;
+    });
+  }
+
+  async updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput): Promise<boolean> {
+    const changed = await this.prisma.provisionJob.updateMany({ where: {
+      id, status: 'running', startedAt, rangeInstance: { instanceMode: 'range', lastJobId: id },
+    }, data: input });
+    return changed.count === 1;
   }
 
   async createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord> {
@@ -1519,7 +1643,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async upsertImageSnapshots(input: UpsertImageSnapshotsInput): Promise<void> {
     for (const snapshot of input.snapshots) {
-      await this.prisma.cloudImageSnapshot.upsert({
+      const source = await this.prisma.cloudImageSnapshot.upsert({
         where: {
           provider_accountScopeKey_regionId_scope_imageId: {
             provider: input.provider,
@@ -1529,16 +1653,7 @@ export class PrismaAdminRepository implements AdminRepository {
             imageId: snapshot.imageId,
           },
         },
-        update: {
-          accountUid: input.accountUid,
-          sourceImageName: snapshot.sourceImageName,
-          osType: snapshot.osType ?? null,
-          platform: snapshot.platform ?? null,
-          architecture: snapshot.architecture ?? null,
-          status: snapshot.status ?? null,
-          isAvailable: snapshot.isAvailable ?? true,
-          lastSyncedAt: snapshot.lastSyncedAt,
-        },
+        update: {},
         create: {
           provider: input.provider,
           accountUid: input.accountUid,
@@ -1555,6 +1670,11 @@ export class PrismaAdminRepository implements AdminRepository {
           lastSyncedAt: snapshot.lastSyncedAt,
         },
       });
+      await this.prisma.cloudImageSnapshot.updateMany({
+        where: { id: source.id, ...(['Deleting', 'Deleted'].includes(snapshot.status ?? '') ? {} : { OR: [{ status: null }, { status: { notIn: ['Deleting', 'Deleted'] } }] }) },
+        data: { accountUid: input.accountUid, sourceImageName: snapshot.sourceImageName, osType: snapshot.osType ?? null, platform: snapshot.platform ?? null, architecture: snapshot.architecture ?? null, status: snapshot.status ?? null, isAvailable: snapshot.isAvailable ?? true, lastSyncedAt: snapshot.lastSyncedAt },
+      });
+      await this.prisma.platformImageAsset.updateMany({ where: { provider: input.provider, accountScopeKey: toAccountScopeKey(input.accountUid), regionId: input.regionId, imageId: snapshot.imageId, sourceSnapshotId: null }, data: { sourceSnapshotId: source.id, sourceScope: input.scope } });
     }
   }
 
@@ -1563,14 +1683,13 @@ export class PrismaAdminRepository implements AdminRepository {
 
     const imageIds = input.snapshots.map((snapshot) => snapshot.imageId);
 
-    await this.prisma.cloudImageSnapshot.deleteMany({
-      where: {
-        provider: input.provider,
-        accountScopeKey: toAccountScopeKey(input.accountUid),
-        regionId: input.regionId,
-        scope: input.scope,
-        ...(imageIds.length > 0 ? { imageId: { notIn: imageIds } } : {}),
-      },
+    const where = { provider: input.provider, accountScopeKey: toAccountScopeKey(input.accountUid), regionId: input.regionId, scope: input.scope, ...(imageIds.length ? { imageId: { notIn: imageIds } } : {}) };
+    await this.prisma.$transaction(async tx => {
+      const missing = await tx.cloudImageSnapshot.findMany({ where, select: { id: true } });
+      await tx.cloudImageSnapshot.updateMany({ where: { ...where, OR: [{ status: null }, { status: { notIn: ['Deleting', 'Deleted'] } }] }, data: { status: 'Missing', isAvailable: false } });
+      if (missing.length) {
+        await tx.platformImageAsset.updateMany({ where: { sourceSnapshotId: { in: missing.map(item => item.id) } }, data: { enabled: false } });
+      }
     });
   }
 
@@ -1634,10 +1753,7 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(filter.visibility !== undefined ? { visibility: filter.visibility } : {}),
         ...(filter.onlyAvailableSourceSnapshots
           ? {
-              OR: [
-                { sourceSnapshotId: null },
-                { sourceSnapshot: { is: { isAvailable: true } } },
-              ],
+              sourceSnapshot: { is: { isAvailable: true } },
             }
           : {}),
       },
@@ -1677,7 +1793,7 @@ export class PrismaAdminRepository implements AdminRepository {
           imageId: snapshot.imageId,
         },
       },
-      update: {
+      update: input.preserveExisting ? { sourceSnapshotId: snapshot.id } : {
         displayName: input.displayName,
         defaultHostName: input.defaultHostName ?? null,
         defaultPassword: input.defaultPassword ?? null,
@@ -1834,14 +1950,96 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
+  async withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      // Serialize native job intake/network lifecycle across API processes, not cloud execution.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(714921, 1)`;
+      return work();
+    }, { timeout: 15 * 60_000, maxWait: 30_000 });
+  }
+
+  async commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT id FROM "ProvisionJob" WHERE id = ${job.id} FOR UPDATE`;
+      await tx.$executeRaw`SELECT id FROM "RangeInstance" WHERE id = ${job.rangeInstanceId} FOR UPDATE`;
+      const currentJob = await tx.provisionJob.findUnique({ where: { id: job.id } });
+      const instance = await tx.rangeInstance.findUnique({ where: { id: job.rangeInstanceId } });
+      if (!job.startedAt || currentJob?.status !== 'running'
+        || currentJob.startedAt?.getTime() !== job.startedAt.getTime()
+        || instance?.lastJobId !== job.id || instance.instanceMode !== 'single' || ['destroyed','create_failed'].includes(instance.status)) return false;
+      const jsonFields = new Set(['accessEntry', 'resourceSummary', 'singleInstanceConfig', 'runtimeTopologyGraph', 'runtimeScenarioTemplateSpec', 'runtimeCompiledProvisionSpec']);
+      const data = Object.fromEntries(Object.entries(instancePatch).map(([key, value]) => [key, jsonFields.has(key) && value === null ? Prisma.DbNull : value]));
+      await tx.rangeInstance.update({ where: { id: instance.id }, data: data as Prisma.RangeInstanceUncheckedUpdateInput });
+      if (jobPatch) await tx.provisionJob.update({ where: { id: job.id }, data: jobPatch });
+      return true;
+    });
+  }
+
+  async listSingleInstanceNetworkProfiles() {
+    return this.prisma.singleInstanceNetworkProfile.findMany() as unknown as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord[]>;
+  }
+  async getSingleInstanceNetworkProfileById(id: string) {
+    return this.prisma.singleInstanceNetworkProfile.findUnique({ where: { id } }) as unknown as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord | null>;
+  }
+  async registerSingleInstanceNetworkCleanup(id:string,runId:string,adminId:string,ownerIds:string[]) {
+    await this.prisma.singleInstanceNetworkProfile.update({where:{id},data:{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds}});
+  }
+  async markSingleInstanceNetworkDestroying(id: string) {
+    await this.prisma.singleInstanceNetworkProfile.update({where:{id},data:{status:'destroying'}});
+  }
+  async deleteSingleInstanceNetworkProfile(id: string) {
+    await this.prisma.singleInstanceNetworkProfile.delete({ where: { id } });
+  }
+
+  async createPackedImageArtifact(input: CreatePackedImageArtifactInput): Promise<PackedImageArtifactRecord> {
+    return this.prisma.packedImageArtifact.create({ data: input }) as unknown as Promise<PackedImageArtifactRecord>;
+  }
+
+  async getPackedImageArtifact(id: string): Promise<PackedImageArtifactRecord | null> {
+    return this.prisma.packedImageArtifact.findUnique({ where: { id } }) as unknown as Promise<PackedImageArtifactRecord | null>;
+  }
+
+  async listPackedImageArtifacts(filter: Partial<Pick<PackedImageArtifactRecord, 'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'cloudAccountUid' | 'regionId'>> = {}): Promise<PackedImageArtifactRecord[]> {
+    return this.prisma.packedImageArtifact.findMany({ where: filter, orderBy: { createdAt: 'desc' } }) as unknown as Promise<PackedImageArtifactRecord[]>;
+  }
+
+  async updatePackedImageArtifact(id: string, input: UpdatePackedImageArtifactInput): Promise<PackedImageArtifactRecord> {
+    return this.prisma.packedImageArtifact.update({ where: { id }, data: input }) as unknown as Promise<PackedImageArtifactRecord>;
+  }
+
+  async claimPackedImageArtifact(id: string, token: string, expiresAt: Date): Promise<boolean> {
+    const result = await this.prisma.packedImageArtifact.updateMany({ where: { id, OR: [{ leaseToken: null }, { leaseExpiresAt: { lte: new Date() } }] }, data: { leaseToken: token, leaseExpiresAt: expiresAt } });
+    return result.count === 1;
+  }
+  async renewPackedImageArtifactClaim(id: string, token: string, expiresAt: Date): Promise<boolean> {
+    const result = await this.prisma.packedImageArtifact.updateMany({ where: { id, leaseToken: token }, data: { leaseExpiresAt: expiresAt } });
+    return result.count === 1;
+  }
+  async releasePackedImageArtifactClaim(id: string, token: string): Promise<void> {
+    await this.prisma.packedImageArtifact.updateMany({ where: { id, leaseToken: token }, data: { leaseToken: null, leaseExpiresAt: null } });
+  }
+  // Keep only local DB work inside this transaction. The row lock fences stale API/worker leases.
+  async withPackedImageArtifactClaim<T>(id: string, token: string, work: (repository: AdminRepository) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async tx => {
+      await tx.packedImageArtifact.update({ where: { id, leaseToken: token, leaseExpiresAt: { gt: new Date() } }, data: { leaseExpiresAt: new Date(Date.now() + 300_000) } });
+      return work(new PrismaAdminRepository(tx as unknown as PrismaService));
+    });
+  }
+
   async getSingleInstanceNetworkProfile(input: {
+    cloudAccountUid?: string;
     provider: 'alibaba_cloud';
     regionId: string;
     zoneId: string;
   }) {
     return this.prisma.singleInstanceNetworkProfile.findUnique({
       where: {
-        provider_regionId_zoneId: input,
+        provider_cloudAccountUid_regionId_zoneId: {
+          provider: input.provider,
+          cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
+          regionId: input.regionId,
+          zoneId: input.zoneId,
+        },
       },
     }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord | null>;
   }
@@ -1849,13 +2047,18 @@ export class PrismaAdminRepository implements AdminRepository {
   async upsertSingleInstanceNetworkProfile(input: import('../admin/admin.repository').UpsertSingleInstanceNetworkProfileInput) {
     return this.prisma.singleInstanceNetworkProfile.upsert({
       where: {
-        provider_regionId_zoneId: {
+        provider_cloudAccountUid_regionId_zoneId: {
+          cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
           provider: input.provider,
           regionId: input.regionId,
           zoneId: input.zoneId,
         },
       },
       update: {
+        status:input.status,
+        cloudAccountContextId: input.cloudAccountContextId,
+        workspaceKey: input.workspaceKey,
+        managedByPlatform: input.managedByPlatform,
         vpcId: input.vpcId,
         vpcCidr: input.vpcCidr,
         vswitchIds: input.vswitchIds as Prisma.InputJsonValue,
@@ -1864,6 +2067,12 @@ export class PrismaAdminRepository implements AdminRepository {
         securityGroupName: input.securityGroupName,
       },
       create: {
+        createdByUserId:input.createdByUserId,
+        status:input.status??'ready',
+        cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
+        cloudAccountContextId: input.cloudAccountContextId ?? null,
+        workspaceKey: input.workspaceKey ?? null,
+        managedByPlatform: input.managedByPlatform ?? false,
         provider: input.provider,
         regionId: input.regionId,
         zoneId: input.zoneId,
@@ -1915,6 +2124,7 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.billingLedgerResource.update({
       where: { id },
       data: {
+        ...(input.cloudAccountUid !== undefined ? { cloudAccountUid: input.cloudAccountUid } : {}),
         ...(input.billingScope !== undefined ? { billingScope: input.billingScope } : {}),
         ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
         ...(input.rangeInstanceId !== undefined ? { rangeInstanceId: input.rangeInstanceId } : {}),
@@ -1936,14 +2146,39 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<BillingLedgerResourceRecord[]>;
   }
 
-  async getLatestBillingLineItemDate(): Promise<Date | null> {
+  async getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null> {
     const result = await this.prisma.billingLineItem.aggregate({
+      ...(cloudAccountUid !== undefined ? { where: { cloudAccountUid } } : {}),
       _max: {
         billingDate: true,
       },
     });
 
     return result._max.billingDate;
+  }
+
+  async replaceBillingDay(input: { cloudAccountUid: string; billingDate: string; lineItems: CreateBillingLineItemInput[]; anomalies: CreateBillingAnomalyInput[] }): Promise<void> {
+    const billingDate = new Date(`${input.billingDate}T00:00:00.000Z`);
+    const records = [...input.lineItems, ...input.anomalies];
+    if (!input.cloudAccountUid || records.some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== billingDate.getTime())) {
+      throw new Error('Billing replacement account or date mismatch');
+    }
+    await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing:${input.cloudAccountUid}:${input.billingDate}`}, 0))`;
+      await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
+        FROM "BillingLedgerResource" l WHERE b."cloudAccountUid" IS NULL
+        AND b."matchedLedgerId" = l."id" AND l."cloudAccountUid" = ${input.cloudAccountUid}
+        AND b."billingDate" = ${billingDate}`;
+      const where = { cloudAccountUid: input.cloudAccountUid, billingDate };
+      await tx.billingLineItem.deleteMany({ where });
+      await tx.billingAnomaly.deleteMany({ where });
+      if (input.lineItems.length) {
+        await tx.billingLineItem.createMany({ data: input.lineItems.map(item => ({ ...item, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
+      }
+      if (input.anomalies.length) {
+        await tx.billingAnomaly.createMany({ data: input.anomalies.map(item => ({ ...item, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
+      }
+    }, { timeout: 30_000 });
   }
 
   async deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void> {
@@ -1962,6 +2197,7 @@ export class PrismaAdminRepository implements AdminRepository {
             sourceFingerprint: item.sourceFingerprint,
           },
           update: {
+            cloudAccountUid: item.cloudAccountUid ?? null,
             syncBatchId: item.syncBatchId,
             billCycle: item.billCycle,
             billingDate: item.billingDate instanceof Date ? item.billingDate : new Date(item.billingDate),
@@ -1978,6 +2214,7 @@ export class PrismaAdminRepository implements AdminRepository {
             rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue,
           },
           create: {
+            cloudAccountUid: item.cloudAccountUid ?? null,
             syncBatchId: item.syncBatchId,
             sourceFingerprint: item.sourceFingerprint,
             billCycle: item.billCycle,
@@ -2009,6 +2246,7 @@ export class PrismaAdminRepository implements AdminRepository {
       : null;
     const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
     const where: Prisma.BillingLineItemWhereInput = {
+      ...(filter.cloudAccountUid !== undefined ? { cloudAccountUid: filter.cloudAccountUid } : {}),
       ...(startAt || endAt
         ? {
             billingDate: {
@@ -2016,7 +2254,7 @@ export class PrismaAdminRepository implements AdminRepository {
               ...(endAt
                 ? {
                     lt: new Date(
-                      new Date(endAt).setDate(new Date(endAt).getDate() + 1),
+                      new Date(endAt).setUTCDate(new Date(endAt).getUTCDate() + 1),
                     ),
                   }
                 : {}),
@@ -2044,6 +2282,7 @@ export class PrismaAdminRepository implements AdminRepository {
         sourceFingerprint: input.sourceFingerprint,
       },
       update: {
+        cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         billCycle: input.billCycle,
         billingDate: input.billingDate instanceof Date ? input.billingDate : new Date(input.billingDate),
@@ -2055,6 +2294,7 @@ export class PrismaAdminRepository implements AdminRepository {
         rawPayload: (input.rawPayload ?? {}) as Prisma.InputJsonValue,
       },
       create: {
+        cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
         billCycle: input.billCycle,
@@ -2087,21 +2327,23 @@ export class PrismaAdminRepository implements AdminRepository {
       : null;
     const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
     const records = await this.prisma.billingAnomaly.findMany({
-      where:
-        startAt || endAt
+      where: {
+        ...(filter.cloudAccountUid !== undefined ? { cloudAccountUid: filter.cloudAccountUid } : {}),
+        ...(startAt || endAt
           ? {
               billingDate: {
                 ...(startAt ? { gte: startAt } : {}),
                 ...(endAt
                   ? {
                       lt: new Date(
-                        new Date(endAt).setDate(new Date(endAt).getDate() + 1),
+                        new Date(endAt).setUTCDate(new Date(endAt).getUTCDate() + 1),
                       ),
                     }
                   : {}),
               },
             }
-          : undefined,
+          : {}),
+      },
       orderBy: {
         billingDate: 'desc',
       },

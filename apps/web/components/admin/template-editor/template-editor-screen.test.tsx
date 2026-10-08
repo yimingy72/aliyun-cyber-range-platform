@@ -4175,3 +4175,111 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByLabelText('交换机名称')).toBeTruthy();
   });
 });
+
+describe('template authoring regression recovery', () => {
+  const emptyTemplate = {id:'audit',name:'Audit',slug:'audit',revision:1,status:'private' as const,visibility:'private' as const,topologyGraph:{schemaVersion:'2.0.0',nodes:[],edges:[]}};
+  it('keeps node IDs unique after deleting an earlier ECS', () => {
+    render(<TemplateEditorScreen template={emptyTemplate} />);
+    fireEvent.click(screen.getByRole('button',{name:'路由器 router'}));
+    fireEvent.click(screen.getByRole('button',{name:'交换机 switch'}));
+    fireEvent.click(screen.getByRole('button',{name:'虚拟主机 virtual client'}));
+    fireEvent.click(screen.getByRole('button',{name:'虚拟主机 virtual client'}));
+    fireEvent.contextMenu(screen.getByRole('button',{name:/^ECS 1$/}));
+    fireEvent.click(screen.getByRole('button',{name:'删除选中'}));
+    fireEvent.click(screen.getByRole('button',{name:'虚拟主机 virtual client'}));
+    const graph=JSON.parse(window.localStorage.getItem('template-editor:topology-cache:audit:1')!).topologyGraph;
+    const ids=graph.nodes.map((node:any)=>node.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+  it('uses an available fixed-VPC CIDR for the fourth Switch', () => {
+    render(<TemplateEditorScreen template={emptyTemplate} />);
+    for(let i=0;i<4;i++)fireEvent.click(screen.getByRole('button',{name:'交换机 switch'}));
+    const graph=JSON.parse(window.localStorage.getItem('template-editor:topology-cache:audit:1')!).topologyGraph;
+    expect(graph.nodes[3].cidr).toBe('10.0.1.0/24');
+  });
+  it('shows template load errors and allows a retry',async()=>{
+    fetchRangeTemplateByIdMock.mockRejectedValueOnce(new Error('Audit fetch failure')).mockResolvedValueOnce(emptyTemplate);
+    render(<TemplateEditorScreen templateId="missing-audit" />);
+    await waitFor(()=>expect(screen.getByRole('alert').textContent).toContain('Audit fetch failure'));
+    fireEvent.click(screen.getByRole('button',{name:'重试加载'}));
+    await waitFor(()=>expect(screen.getByRole('heading',{name:'Audit'})).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('keeps NIC and ACL IDs unique after deletion and addition',async()=>{
+    render(<TemplateEditorScreen template={emptyTemplate} />);
+    fireEvent.click(screen.getByRole('button',{name:'虚拟主机 virtual client'}));
+    await waitFor(()=>expect(screen.getByRole('button',{name:'添加网卡'})).toBeTruthy());
+    fireEvent.click(screen.getByRole('button',{name:'添加网卡'}));
+    fireEvent.click(screen.getByRole('button',{name:'添加网卡'}));
+    fireEvent.click(screen.getByRole('button',{name:'删除网卡 2'}));
+    fireEvent.click(screen.getByRole('button',{name:'添加网卡'}));
+    let graph=JSON.parse(window.localStorage.getItem('template-editor:topology-cache:audit:1')!).topologyGraph;
+    expect(new Set(graph.nodes[0].nics.map((nic:any)=>nic.id)).size).toBe(3);
+    fireEvent.click(screen.getByRole('button',{name:'交换机 switch'}));
+    await waitFor(()=>expect(screen.getByRole('button',{name:'添加 ACL 规则'})).toBeTruthy());
+    fireEvent.click(screen.getByRole('button',{name:'添加 ACL 规则'}));
+    fireEvent.click(screen.getByRole('button',{name:'添加 ACL 规则'}));
+    fireEvent.click(screen.getByRole('button',{name:'删除 ACL 规则 1'}));
+    fireEvent.click(screen.getByRole('button',{name:'添加 ACL 规则'}));
+    graph=JSON.parse(window.localStorage.getItem('template-editor:topology-cache:audit:1')!).topologyGraph;
+    expect(new Set(graph.nodes[1].aclRules.map((rule:any)=>rule.key)).size).toBe(2);
+  });
+  it('removes the corresponding edge when deleting a bound secondary NIC',async()=>{
+    render(<TemplateEditorScreen template={{...emptyTemplate,topologyGraph:{schemaVersion:'2.0.0',nodes:[
+      {id:'s1',kind:'switch',label:'DMZ',zoneKey:'z1',cidr:'10.0.1.0/24'},
+      {id:'s2',kind:'switch',label:'Private',zoneKey:'z2',cidr:'10.0.2.0/24'},
+      {id:'h',kind:'ecs',label:'Host',zoneKey:'z1',privateIp:'10.0.1.10',nics:[{id:'n1',switchId:'s1',privateIp:'10.0.1.10',secondaryIps:[],securityGroupRules:[]},{id:'n2',switchId:'s2',privateIp:'10.0.2.10',secondaryIps:[],securityGroupRules:[]}]}],edges:[{id:'s1h',fromNodeId:'s1',toNodeId:'h',relationType:'manual'},{id:'s2h',fromNodeId:'s2',toNodeId:'h',relationType:'manual'}]}}} />);
+    fireEvent.contextMenu(screen.getByRole('button',{name:/^Host /}));
+    await waitFor(()=>expect(screen.getByRole('button',{name:'删除网卡 2'})).toBeTruthy());
+    fireEvent.click(screen.getByRole('button',{name:'删除网卡 2'}));
+    const graph=JSON.parse(window.localStorage.getItem('template-editor:topology-cache:audit:1')!).topologyGraph;
+    expect(graph.nodes.find((node:any)=>node.id==='h').nics).toHaveLength(1);
+    expect(graph.edges.map((edge:any)=>edge.id)).toEqual(['s1h']);
+    fireEvent.click(screen.getByRole('button',{name:/^Private /}));
+    fireEvent.click(screen.getByRole('button',{name:/^Host /}));
+    expect(screen.getByText(/已创建连线：Private -> Host/)).toBeTruthy();
+  });
+});
+
+describe('final authoring coverage: recreated nodes', () => {
+  const emptyTemplate = { id: 'recreated', name: 'Recreated', slug: 'recreated', revision: 1, status: 'private' as const, visibility: 'private' as const, topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] } };
+  const graphFromCache = () => JSON.parse(window.localStorage.getItem('template-editor:topology-cache:recreated:1')!).topologyGraph;
+
+  it('deletes and recreates a Router without colliding with remaining imported node IDs', () => {
+    render(<TemplateEditorScreen template={{ ...emptyTemplate, topologyGraph: { schemaVersion: '2.0.0', nodes: [
+      { id: 'router-1', kind: 'router', label: 'Router', routeRole: 'egress', egressType: 'internet', bindEip: false },
+      { id: 'router-3', kind: 'switch', label: 'Reserved router ID', zoneKey: 'one', cidr: '10.0.0.0/24' },
+      { id: 'switch-4', kind: 'switch', label: 'Remaining switch', zoneKey: 'two', cidr: '172.16.0.0/24' },
+    ], edges: [] } }} />);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Router VPC 根节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
+    expect(graphFromCache().nodes.some((node: { kind: string }) => node.kind === 'router')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+    const graph = graphFromCache();
+    const ids = graph.nodes.map((node: { id: string }) => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(graph.nodes.filter((node: { kind: string }) => node.kind === 'router')).toHaveLength(1);
+    expect(graph.nodes.find((node: { kind: string }) => node.kind === 'router').id).toBe('router-4');
+    expect(ids).toContain('router-3');
+    fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+    expect(screen.getByText('当前拓扑只允许一个 Router。')).toBeTruthy();
+    expect(graphFromCache().nodes).toHaveLength(3);
+  });
+
+  it('deletes an earlier Switch and recreates it with unique node and zone keys', () => {
+    render(<TemplateEditorScreen template={emptyTemplate} />);
+    fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+    for (let index = 0; index < 3; index += 1) fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.contextMenu(screen.getByRole('button', { name: '交换机 1 10.0.0.0/24' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
+    expect(graphFromCache().nodes.some((node: { id: string }) => node.id === 'switch-2')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    const graph = graphFromCache();
+    const ids = graph.nodes.map((node: { id: string }) => node.id);
+    const switches = graph.nodes.filter((node: { kind: string }) => node.kind === 'switch');
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(switches.map((node: { zoneKey: string }) => node.zoneKey)).size).toBe(3);
+    expect(ids).toEqual(['router-1', 'switch-3', 'switch-4', 'switch-5']);
+    expect(switches.find((node: { id: string }) => node.id === 'switch-5').cidr).toBe('10.0.0.0/24');
+  });
+});

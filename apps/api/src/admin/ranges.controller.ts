@@ -12,6 +12,7 @@ import {
 } from './dto/range-instance.dto';
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { RangeInstancesService } from './range-instances.service';
+import { RangeNetworkDiagnosticsQueryDto } from './dto/range-network-diagnostics-query.dto';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
@@ -31,8 +32,10 @@ export class RangesController {
   }
 
   @Get(':id')
-  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeInstancesService.getById(id, request.adminUser);
+  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Query() query: RangeNetworkDiagnosticsQueryDto = {}) {
+    return query.includeNetworkDiagnostics === true
+      ? this.rangeInstancesService.getById(id, request.adminUser, { includeNetworkDiagnostics: true })
+      : this.rangeInstancesService.getById(id, request.adminUser);
   }
 
   @Get(':id/access')

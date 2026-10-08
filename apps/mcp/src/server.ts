@@ -17,12 +17,12 @@ const genericOutputSchema = resultOutputSchema();
 
 export function createToolRegistry(client: PlatformApiClientLike) {
   return {
-    listTools(scopes: string[]) {
+    listTools(scopes: string[], role?: 'admin' | 'user') {
       const scopeSet = new Set(scopes);
 
-      return tools.filter((tool) => canAccess(tool, scopeSet)).map((tool) => describe(tool));
+      return tools.filter((tool) => canAccess(tool, scopeSet, role)).map((tool) => describe(tool));
     },
-    async callTool(name: string, scopes: string[], args: Record<string, unknown>) {
+    async callTool(name: string, scopes: string[], args: Record<string, unknown>, role?: 'admin' | 'user') {
       const tool = tools.find((item) => item.name === name);
 
       if (!tool) {
@@ -31,7 +31,7 @@ export function createToolRegistry(client: PlatformApiClientLike) {
 
       const scopeSet = new Set(scopes);
 
-      if (!canAccess(tool, scopeSet)) {
+      if (!canAccess(tool, scopeSet, role)) {
         throw new Error(`Forbidden tool: ${name}`);
       }
 
@@ -63,8 +63,8 @@ export function createToolRegistry(client: PlatformApiClientLike) {
   };
 }
 
-function canAccess(tool: ToolDefinition, scopes: Set<string>) {
-  return tool.requiredScopes.every((scope) => scopes.has(scope));
+function canAccess(tool: ToolDefinition, scopes: Set<string>, role?: 'admin' | 'user') {
+  return !(tool.adminOnly && role === 'user') && tool.requiredScopes.every((scope) => scopes.has(scope));
 }
 
 function describe(tool: ToolDefinition) {

@@ -165,7 +165,9 @@ function createPlatformImageAsset(
     accountScopeKey: 'aliyun:cn-hangzhou',
     regionId: 'cn-hangzhou',
     sourceScope: 'custom',
-    sourceSnapshotId: null,
+    sourceSnapshotId: 'source-available',
+    sourceSnapshotAvailable: true,
+    sourceSnapshotStatus: 'Available',
     enabled: true,
     tags: [],
     createdAt: '2026-07-03T00:00:00.000Z',
@@ -1764,6 +1766,8 @@ describe('ImageCenterScreen', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云公共镜像' }));
     expect(screen.queryByText('Alibaba Cloud Linux 3')).toBeNull();
+    expect(await screen.findByText('没有匹配的镜像')).toBeTruthy();
+    expect(screen.getByText('请调整名称或镜像 ID 筛选条件。')).toBeTruthy();
   });
 
   it('hides platform collection and platform management actions from ordinary users', async () => {

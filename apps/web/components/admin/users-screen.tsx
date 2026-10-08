@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
@@ -113,6 +113,7 @@ export function UsersScreen({
   const [isLoading, setIsLoading] = useState(() => !cachedUsers);
   const [hasLoadedUsers, setHasLoadedUsers] = useState(() => Boolean(cachedUsers));
   const [loadedUsersSource, setLoadedUsersSource] = useState<string | null>(() => (cachedUsers ? usersSource : null));
+  const usersMutationRevision = useRef(0);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -168,6 +169,7 @@ export function UsersScreen({
     setErrorMessage(null);
     setIsLoading(true);
 
+    const readRevision = usersMutationRevision.current;
     const request = screenCache
       ? screenCache.load(apiBaseUrl, token, usersResource, () => fetchAdminUsers(apiBaseUrl, token), {
           force: loadAttempt > 0,
@@ -176,7 +178,7 @@ export function UsersScreen({
 
     request
       .then((payload) => {
-        if (!isActive) {
+        if (!isActive || readRevision !== usersMutationRevision.current) {
           return;
         }
 
@@ -188,7 +190,7 @@ export function UsersScreen({
         }
       })
       .catch((error: unknown) => {
-        if (!isActive) {
+        if (!isActive || readRevision !== usersMutationRevision.current) {
           return;
         }
 
@@ -266,7 +268,7 @@ export function UsersScreen({
     }
   }, [page, pagination.page]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setJumpPageValue(String(pagination.page));
   }, [pagination.page]);
 
@@ -289,10 +291,12 @@ export function UsersScreen({
   const closeCreateDialog = () => {
     setIsCreateDialogOpen(false);
     setCreateDraft(EMPTY_CREATE_USER_DRAFT);
+    setActionErrorMessage(null);
   };
 
   const closeResetPasswordDialog = () => {
     setResetPasswordState(null);
+    setActionErrorMessage(null);
   };
 
   const retryUserLoad = () => {
@@ -330,6 +334,7 @@ export function UsersScreen({
 
     try {
       const createdUser = await createAdminUser(apiBaseUrl, session.token, payload);
+      usersMutationRevision.current += 1;
       screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => [createdUser, ...currentUsers]);
       setHasLoadedUsers(true);
@@ -361,6 +366,7 @@ export function UsersScreen({
 
     try {
       const updatedUser = await updateAdminUserRole(apiBaseUrl, session.token, user.id, { role });
+      usersMutationRevision.current += 1;
       screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
 
@@ -394,6 +400,7 @@ export function UsersScreen({
 
     try {
       const updatedUser = await updateAdminUserStatus(apiBaseUrl, session.token, user.id, { status });
+      usersMutationRevision.current += 1;
       screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
 
@@ -435,6 +442,7 @@ export function UsersScreen({
 
     try {
       const updatedUser = await resetAdminUserPassword(apiBaseUrl, session.token, resetPasswordState.userId, { password });
+      usersMutationRevision.current += 1;
       screenCache?.invalidate(apiBaseUrl, session.token, 'users:');
       setUsers((currentUsers) => replaceUser(currentUsers, updatedUser));
       closeResetPasswordDialog();
@@ -493,7 +501,7 @@ export function UsersScreen({
 
   return (
     <div className="admin-screen admin-pagination-screen">
-      {actionErrorMessage ? (
+      {actionErrorMessage && !isCreateDialogOpen && !resetPasswordState ? (
         <p className="mb-3 text-sm text-destructive" role="alert">
           {actionErrorMessage}
         </p>
@@ -516,7 +524,7 @@ export function UsersScreen({
                   <span>管理员 {counts.adminCount}</span>
                   <span>已禁用 {counts.disabledCount}</span>
                 </div>
-                <Button disabled={isSubmitting} onClick={() => setIsCreateDialogOpen(true)} type="button">
+                <Button disabled={isSubmitting} onClick={() => { setActionErrorMessage(null); setIsCreateDialogOpen(true); }} type="button">
                   <Plus aria-hidden="true" data-icon="inline-start" />
                   创建用户
                 </Button>
@@ -689,6 +697,7 @@ export function UsersScreen({
         pending={isSubmitting}
         title="创建用户"
       >
+          {actionErrorMessage ? <p className="text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
           <div className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="create-user-username">用户名</Label>
@@ -751,6 +760,7 @@ export function UsersScreen({
         pending={isSubmitting}
         title="重置密码"
       >
+          {actionErrorMessage ? <p className="text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
           <div className="grid gap-2">
             <Label htmlFor="reset-user-password">新密码</Label>
             <Input

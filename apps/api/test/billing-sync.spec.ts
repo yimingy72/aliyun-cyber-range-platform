@@ -1,12 +1,17 @@
 import { BillingBssClient } from '../src/admin/billing-bss-client';
+import { billingDayText } from '../src/admin/billing-window';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
+const billingConfigService = { getAccountContext: jest.fn(async () => ({ accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' })) } as unknown as SystemConfigService;
+
 describe('BillingSyncService', () => {
-  it('continues from the latest persisted billing date through the requested end date', async () => {
+  afterEach(() => jest.useRealTimers());
+  it('refreshes an exact historical range even when later bills already exist', async () => {
     const repository = createMemoryAdminRepository();
     const ledger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-incremental-sync-1',
       cloudResourceType: 'ecs',
@@ -16,6 +21,7 @@ describe('BillingSyncService', () => {
     });
     await repository.upsertBillingLineItems([
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'billing-sync:2026-07-01',
         sourceFingerprint: 'billing-sync:2026-07-01:ecs:i-incremental-sync-1:云服务器配置',
         billCycle: '2026-07',
@@ -36,21 +42,23 @@ describe('BillingSyncService', () => {
     const service = new BillingSyncService(
       repository,
       { listDailyBillingItems } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
       service.syncRange({
-        startAt: '2026-06-01',
+        startAt: '2026-06-30',
         endAt: '2026-07-07',
       }),
     ).resolves.toEqual({
-      syncedDays: 7,
+      syncedDays: 8,
       importedLineItems: 0,
       anomalyCount: 0,
       deferredCount: 0,
     });
 
-    expect(listDailyBillingItems.mock.calls).toEqual([
+    expect(listDailyBillingItems.mock.calls.map(call => call.slice(0, 1))).toEqual([
+      [{ billingDate: '2026-06-30' }],
       [{ billingDate: '2026-07-01' }],
       [{ billingDate: '2026-07-02' }],
       [{ billingDate: '2026-07-03' }],
@@ -67,6 +75,7 @@ describe('BillingSyncService', () => {
     const service = new BillingSyncService(
       repository,
       { listDailyBillingItems } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -81,16 +90,17 @@ describe('BillingSyncService', () => {
       deferredCount: 0,
     });
 
-    expect(listDailyBillingItems.mock.calls).toEqual([
+    expect(listDailyBillingItems.mock.calls.map(call => call.slice(0, 1))).toEqual([
       [{ billingDate: '2026-07-01' }],
       [{ billingDate: '2026-07-02' }],
       [{ billingDate: '2026-07-03' }],
     ]);
   });
 
-  it('does not query Aliyun when the stored billing date is later than the requested end date', async () => {
+  it('preserves a later billing date while refreshing the requested earlier range', async () => {
     const repository = createMemoryAdminRepository();
     const ledger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-later-billing-date-1',
       cloudResourceType: 'ecs',
@@ -100,6 +110,7 @@ describe('BillingSyncService', () => {
     });
     await repository.upsertBillingLineItems([
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'billing-sync:2026-07-07',
         sourceFingerprint: 'billing-sync:2026-07-07:ecs:i-later-billing-date-1:云服务器配置',
         billCycle: '2026-07',
@@ -120,6 +131,7 @@ describe('BillingSyncService', () => {
     const service = new BillingSyncService(
       repository,
       { listDailyBillingItems } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -128,19 +140,21 @@ describe('BillingSyncService', () => {
         endAt: '2026-07-06',
       }),
     ).resolves.toEqual({
-      syncedDays: 0,
+      syncedDays: 6,
       importedLineItems: 0,
       anomalyCount: 0,
       deferredCount: 0,
     });
 
-    expect(listDailyBillingItems).not.toHaveBeenCalled();
+    expect(listDailyBillingItems).toHaveBeenCalledTimes(6);
+    expect(await repository.listBillingLineItems()).toHaveLength(1);
   });
 
   it('keeps account-level OSS and snapshot aggregates out of platform costs', async () => {
     const repository = createMemoryAdminRepository();
 
     const ledger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
       cloudResourceType: 'ecs',
@@ -154,6 +168,7 @@ describe('BillingSyncService', () => {
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '云服务器配置',
@@ -162,6 +177,7 @@ describe('BillingSyncService', () => {
             Currency: 'CNY',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'snapshot',
             ProductDetail: '云服务器ECS-快照',
             BillingItem: '快照链容量',
@@ -170,6 +186,7 @@ describe('BillingSyncService', () => {
             Currency: 'CNY',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'oss',
             ProductDetail: '对象存储OSS',
             BillingItem: '外网流出流量',
@@ -179,6 +196,7 @@ describe('BillingSyncService', () => {
           },
         ]),
       } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -235,6 +253,7 @@ describe('BillingSyncService', () => {
     const repository = createMemoryAdminRepository();
 
     await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
       cloudResourceType: 'ecs',
@@ -249,6 +268,7 @@ describe('BillingSyncService', () => {
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '云服务器配置',
@@ -258,6 +278,7 @@ describe('BillingSyncService', () => {
           },
         ]),
       } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -288,6 +309,7 @@ describe('BillingSyncService', () => {
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '云服务器配置',
@@ -296,6 +318,7 @@ describe('BillingSyncService', () => {
             Currency: 'CNY',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '系统盘',
@@ -305,6 +328,7 @@ describe('BillingSyncService', () => {
           },
         ]),
       } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -338,6 +362,7 @@ describe('BillingSyncService', () => {
     const repository = createMemoryAdminRepository();
 
     await repository.createBillingAnomaly({
+      cloudAccountUid: '1234567890',
       syncBatchId: 'billing-sync:2026-07-16',
       sourceFingerprint: 'billing-sync:2026-07-16:ecs:i-shared-account-1:云服务器配置',
       billCycle: '2026-07',
@@ -355,6 +380,7 @@ describe('BillingSyncService', () => {
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '云服务器配置',
@@ -364,6 +390,7 @@ describe('BillingSyncService', () => {
           },
         ]),
       } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -390,6 +417,7 @@ describe('BillingSyncService', () => {
     const repository = createMemoryAdminRepository();
 
     const ecsLedger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-short-lived-1',
       cloudResourceType: 'ecs',
@@ -405,8 +433,9 @@ describe('BillingSyncService', () => {
       },
     });
     const diskLedger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
-      cloudResourceId: 'i-short-lived-1',
+      cloudResourceId: 'd-short-lived-1',
       cloudResourceType: 'disk',
       billingScope: 'user',
       ownerUserId: 'user-1',
@@ -425,6 +454,7 @@ describe('BillingSyncService', () => {
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '云服务器配置',
@@ -434,16 +464,18 @@ describe('BillingSyncService', () => {
             Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformUserId value:user-1; key:BillingStartAt value:2026-07-16',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'ecs',
             ProductDetail: '云服务器ECS-按量付费',
             BillingItem: '系统盘',
-            InstanceID: 'i-short-lived-1',
+            InstanceID: 'd-short-lived-1',
             PretaxAmount: 0.02,
             Currency: 'CNY',
             Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformUserId value:user-1; key:BillingStartAt value:2026-07-16',
           },
         ]),
       } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(
@@ -471,7 +503,7 @@ describe('BillingSyncService', () => {
           matchedLedgerId: ecsLedger.id,
         }),
         expect.objectContaining({
-          cloudResourceId: 'i-short-lived-1',
+          cloudResourceId: 'd-short-lived-1',
           cloudResourceType: 'disk',
           matchedLedgerId: diskLedger.id,
         }),
@@ -482,7 +514,7 @@ describe('BillingSyncService', () => {
   it('attributes explicitly tagged platform resources and only exact configured OSS bucket bills', async () => {
     const repository = createMemoryAdminRepository();
     const systemConfigService = {
-      getSnapshot: jest.fn().mockResolvedValue({
+      getAccountContext: jest.fn().mockResolvedValue({ accountUid: '1234567890', accountUidResolved: true,
         defaultRegion: 'cn-hangzhou',
         imageImportBucket: 'wzxy-shootingrange',
       }),
@@ -492,6 +524,7 @@ describe('BillingSyncService', () => {
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'eip',
             BillingItem: '公网IP保有费',
             InstanceID: 'eip-platform-1',
@@ -500,6 +533,7 @@ describe('BillingSyncService', () => {
             Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:BillingStartAt value:2026-07-16',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'snapshot',
             BillingItem: '快照链容量',
             InstanceID: 's-platform-1',
@@ -508,6 +542,7 @@ describe('BillingSyncService', () => {
             Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:BillingStartAt value:2026-07-16; key:PlatformImageAssetId value:asset-1',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'oss',
             BillingItem: '外网流出流量',
             InstanceID: 'wzxy-shootingrange;standard',
@@ -515,6 +550,7 @@ describe('BillingSyncService', () => {
             Currency: 'CNY',
           },
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'oss',
             BillingItem: '外网流出流量',
             InstanceID: 'cn-hangzhou;standard',
@@ -581,6 +617,7 @@ describe('BillingSyncService', () => {
   });
 
   it('backfills platform image ledgers before matching direct image bills', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-16T16:10:00.000Z'));
     const repository = createMemoryAdminRepository();
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
@@ -610,12 +647,15 @@ describe('BillingSyncService', () => {
       ownerUserId: null,
       visibility: 'platform',
     });
-    const billingDate = asset.createdAt.toISOString().slice(0, 10);
+    const billingDate = billingDayText(asset.createdAt);
+    expect(billingDate).toBe('2026-07-17');
+    jest.useFakeTimers().setSystemTime(new Date(asset.createdAt.getTime() + 86_400_000));
     const service = new BillingSyncService(
       repository,
       {
         listDailyBillingItems: jest.fn(async () => [
           {
+            Region: 'cn-hangzhou',
             ProductCode: 'image',
             BillingItem: '镜像存储',
             InstanceID: 'm-platform-image',
@@ -624,6 +664,7 @@ describe('BillingSyncService', () => {
           },
         ]),
       } as unknown as BillingBssClient,
+      billingConfigService,
     );
 
     await expect(

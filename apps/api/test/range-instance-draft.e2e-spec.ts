@@ -118,7 +118,7 @@ describe('Range instance draft API', () => {
       },
     ],
   };
-  const validDraftPayload = (() => {
+  let validDraftPayload = (() => {
     const compiled = compileTemplateTopology(validGraph, draftMetadata);
 
     return {
@@ -149,6 +149,21 @@ describe('Range instance draft API', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
+    await repository.upsertImageSnapshots({ provider: 'alibaba_cloud', accountUid: null, regionId: 'cn-hangzhou', scope: 'public',
+      snapshots: [{ imageId: 'img-entry', sourceImageName: 'Draft fixture image', status: 'Available', isAvailable: true, lastSyncedAt: new Date() }],
+    });
+    const [fixtureSnapshot] = await repository.listImageSnapshots({ imageId: 'img-entry' });
+    const fixtureAsset = await repository.collectPlatformImageAsset({ snapshotId: fixtureSnapshot!.id, displayName: 'Draft fixture image', ownerUserId: 'admin', visibility: 'platform' });
+    const fixtureHost: any = validGraph.nodes.find(node => node.kind === 'ecs');
+    fixtureHost.platformImageAssetId = fixtureAsset.id;
+    const compiledFixture = JSON.parse(JSON.stringify(compileTemplateTopology(validGraph, draftMetadata)));
+    validDraftPayload = {
+      draftTopologyGraph: { ...compiledFixture.topologyGraph, viewport: validGraph.viewport },
+      draftTopologySpec: compiledFixture.topologySpec, draftScenarioTemplateSpec: compiledFixture.scenarioTemplateSpec,
+      draftCompiledProvisionSpec: compiledFixture.compiledProvisionSpec,
+    };
+
+
     repositoryForLogin = repository;
 
     await repository.createPlatformUser({

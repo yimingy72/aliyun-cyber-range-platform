@@ -1,3 +1,4 @@
+import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 
 function createService() {
@@ -171,10 +172,19 @@ describe('SystemConfigService instance type availability', () => {
       accessKeySecret: 'updated-secret',
       imageImportBucket: 'training-image-imports',
     });
-    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'default' },
-      update: expect.objectContaining({ defaultRegion: 'cn-beijing', defaultZoneId: 'cn-beijing-k' }),
-    }));
+    expect(upsert).not.toHaveBeenCalled();
   });
 
+});
+
+
+describe('SystemConfigService partial region updates', () => {
+  it('rejects a region-only change that would carry forward an incompatible old zone', async () => {
+    const contextService = new CloudAccountContextsService({} as never);
+    const service = new SystemConfigService({} as never, contextService);
+    jest.spyOn(service, 'getSnapshot').mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-beijing', defaultZoneId: 'cn-beijing-h', accessKeyId: 'synthetic-key', accessKeySecret: 'synthetic-secret', imageImportBucket: '' });
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    try { await expect(service.updateSnapshot({ defaultRegion: 'cn-hangzhou' })).rejects.toThrow('修改地域时请同时指定匹配的可用区'); expect(fetchMock).not.toHaveBeenCalled(); }
+    finally { jest.restoreAllMocks(); }
+  });
 });

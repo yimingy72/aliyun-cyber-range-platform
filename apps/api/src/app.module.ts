@@ -11,6 +11,8 @@ import { CloudAccountContextsService } from './admin/cloud-account-contexts.serv
 import { ImageImportsController } from './admin/image-imports.controller';
 import { ImageImportsService } from './admin/image-imports.service';
 import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
+import { PackedImagesService } from './admin/packed-images.service';
+import { PackedImagesWorkerService } from './admin/packed-images-worker.service';
 import { BillingBssClient } from './admin/billing-bss-client';
 import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
@@ -23,6 +25,7 @@ import { KeycloakAdminService } from './admin/keycloak-admin.service';
 import { OidcJwtVerifier } from './admin/oidc-jwt-verifier';
 import { OidcPrincipalResolver } from './admin/oidc-principal-resolver';
 import { RangeInstancesService } from './admin/range-instances.service';
+import { RangeNetworkDiagnosticsService } from './admin/range-network-diagnostics.service';
 import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
 import { RangesController } from './admin/ranges.controller';
 import { RangeTemplatesService } from './admin/range-templates.service';
@@ -92,6 +95,8 @@ function resolveProjectRootDir() {
     CloudAccountContextsService,
     ImageImportsService,
     ImageImportsWorkerService,
+    PackedImagesService,
+    PackedImagesWorkerService,
     BillingService,
     BillingSyncService,
     AdminUsersService,
@@ -100,6 +105,7 @@ function resolveProjectRootDir() {
     OidcPrincipalResolver,
     RangeTemplatesService,
     RangeInstancesService,
+    RangeNetworkDiagnosticsService,
     RangeInstanceNodeActionsService,
     SingleInstanceBatchExecutionService,
     SingleInstancesService,

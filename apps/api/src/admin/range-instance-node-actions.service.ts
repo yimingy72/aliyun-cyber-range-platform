@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   BadGatewayException,
   ConflictException,
@@ -13,28 +11,22 @@ import { ADMIN_REPOSITORY, AdminRepository, RangeInstanceRecord } from './admin.
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
-import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import { PackedImagesService } from './packed-images.service';
+import { imageRpc } from './aliyun-image-rpc';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 
-const ALICLOUD_ECS_API_VERSION = '2014-05-26';
-const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
-const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
-type AliyunImage = {
-  DiskDeviceMappings?: {
-    DiskDeviceMapping?: Array<{ SnapshotId?: string }> | { SnapshotId?: string };
-  };
-};
 
 @Injectable()
 export class RangeInstanceNodeActionsService {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
+    private readonly packedImages: PackedImagesService,
   ) {}
 
   async run(
@@ -43,6 +35,7 @@ export class RangeInstanceNodeActionsService {
     action: string,
     payload: Record<string, string>,
     currentUser?: AuthenticatedUser,
+    boundAccountContext?: SystemCloudAccountContext,
   ) {
     const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
 
@@ -58,6 +51,13 @@ export class RangeInstanceNodeActionsService {
       throw new NotFoundException('Unsupported node action');
     }
 
+    if (instance.instanceMode === 'range') {
+      if (instance.status !== 'running') throw new ConflictException('Only running ranges can control nodes');
+      const activeOperation = (await this.adminRepository.listProvisionJobs()).some(job =>
+        job.rangeInstanceId === instance.id && ['pending', 'running'].includes(job.status));
+      if (activeOperation) throw new ConflictException('Range instance has an active operation');
+    }
+
     if (instance.resourceSummary?.mode === 'dry-run') {
       throw new ConflictException(
         '此实例以 dry-run 模式创建，未下发阿里云 ECS 或网络资源；请切换到 opentofu 后重新创建实例再执行节点操作。',
@@ -66,7 +66,7 @@ export class RangeInstanceNodeActionsService {
 
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);
     const hostNode = this.resolveHostTopologyNode(instance, nodeId);
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = boundAccountContext ?? await this.systemConfigService.getAccountContext();
 
     if (action === 'start') {
       const response = await this.performAliyunRpcRequest({
@@ -143,104 +143,108 @@ export class RangeInstanceNodeActionsService {
     const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
     const description = payload.description?.trim() || null;
     const ownerUserId = instance.ownerUserId ?? instance.createdBy;
-    const createImageResponse = await this.performAliyunRpcRequest<{
-      ImageId?: string;
-    }>({
-      accessKeyId: accountContext.accessKeyId,
-      accessKeySecret: accountContext.accessKeySecret,
-      regionId: accountContext.defaultRegion,
-        action: 'CreateImage',
-        parameters: {
-          InstanceId: hostInstanceId,
-          ImageName: displayName,
-          ...(description ? { Description: description } : {}),
-          ...buildAliyunTagParameters(
-            buildBillingTags({
-              billingScope: ownerUserId ? 'user' : 'platform',
-              ownerUserId,
-              rangeInstanceId,
-              platformResourceType: 'image',
-              platformHostKey: nodeId,
-              billingStartAt: new Date(),
-            }),
-          ),
-        },
+    if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('打包需要明确 owner 和已验证云账号。');
+    const artifact = await this.packedImages.begin({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
+      id: accountContext.cloudAccountContextId, provider: 'alibaba_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
+    });
+    try {
+      const createImageResponse = await this.performAliyunRpcRequest<{
+        ImageId?: string;
+      }>({
+        accessKeyId: accountContext.accessKeyId,
+        accessKeySecret: accountContext.accessKeySecret,
+        regionId: accountContext.defaultRegion,
+          action: 'CreateImage',
+          parameters: {
+            InstanceId: hostInstanceId,
+            ImageName: displayName,
+            ClientToken: artifact.id,
+            ...(description ? { Description: description } : {}),
+            ...buildAliyunTagParameters(
+              buildBillingTags({
+                billingScope: ownerUserId ? 'user' : 'platform',
+                ownerUserId,
+                rangeInstanceId,
+                singleInstanceBatchId: instance.singleInstanceBatchId,
+                platformResourceType: 'image',
+                platformPackedImageArtifactId: artifact.id,
+                platformHostKey: nodeId,
+                billingStartAt: new Date(),
+              }),
+            ),
+          },
+        });
+
+      const imageId = createImageResponse.ImageId?.trim();
+
+      if (!imageId) {
+        throw new Error('Aliyun CreateImage response is missing ImageId');
+      }
+
+      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { imageId, status: 'creating' });
+      const { platformImageAsset, snapshot } = await this.adminRepository.withPackedImageArtifactClaim(artifact.id, artifact.submissionToken, async claimed => {
+        const syncedAt = new Date();
+        await claimed.upsertImageSnapshots({
+          provider: 'alibaba_cloud',
+          accountUid: accountContext.accountUid,
+          regionId: accountContext.defaultRegion,
+          scope: 'custom',
+          snapshots: [
+            {
+              imageId,
+              sourceImageName: displayName,
+              status: 'Creating',
+              isAvailable: false,
+              lastSyncedAt: syncedAt,
+            },
+          ],
       });
 
-    const imageId = createImageResponse.ImageId?.trim();
+      const snapshot = (await claimed.listImageSnapshots({
+        provider: 'alibaba_cloud',
+        accountUid: accountContext.accountUid,
+        regionId: accountContext.defaultRegion,
+        scope: 'custom',
+        imageId,
+      }))[0];
 
-    if (!imageId) {
-      throw new Error('Aliyun CreateImage response is missing ImageId');
+      if (!snapshot) {
+        throw new Error('Image snapshot was not persisted after CreateImage');
+      }
+
+      const platformImageAsset = await claimed.collectPlatformImageAsset({
+        snapshotId: snapshot.id,
+        displayName,
+        defaultHostName,
+        defaultPassword: encryptPlatformImageDefaultPassword(defaultPassword),
+        description,
+        ownerUserId,
+        visibility: 'private',
+      });
+      const disabledAsset = await claimed.setPlatformImageAssetEnabled(platformImageAsset.id, false);
+      await claimed.updatePackedImageArtifact(artifact.id, { imageId, sourceSnapshotId: snapshot.id, platformImageAssetId: platformImageAsset.id, status: 'creating' });
+      await this.packedImages.upsertLedger((await claimed.getPackedImageArtifact(artifact.id))!, imageId, 'image', undefined, claimed);
+
+      return { platformImageAsset: disabledAsset, snapshot };
+      });
+
+      return {
+        status: 'accepted',
+        packedImageArtifactId: artifact.id,
+        action,
+        imageId,
+        defaultHostName,
+        defaultPassword,
+        description,
+        imageReady: snapshot.isAvailable,
+        platformImageAsset,
+      };
+    } catch {
+      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: '打包提交结果未完整确认，来源材料已保留，worker 会按唯一标签核验。' });
+      throw new BadGatewayException({ message: '打包结果未完整确认，请按来源记录核验；不要重复提交或删除恢复材料。', packedImageArtifactId: artifact.id });
+    } finally {
+      await this.packedImages.endSubmission(artifact.id, artifact.submissionToken);
     }
-
-    const syncedAt = new Date();
-    await this.adminRepository.upsertImageSnapshots({
-      provider: 'alibaba_cloud',
-      accountUid: accountContext.accountUid,
-      regionId: accountContext.defaultRegion,
-      scope: 'custom',
-      snapshots: [
-        {
-          imageId,
-          sourceImageName: displayName,
-          status: 'Creating',
-          isAvailable: false,
-          lastSyncedAt: syncedAt,
-        },
-      ],
-    });
-
-    const snapshot = (await this.adminRepository.listImageSnapshots({
-      provider: 'alibaba_cloud',
-      accountUid: accountContext.accountUid,
-      regionId: accountContext.defaultRegion,
-      scope: 'custom',
-      imageId,
-    }))[0];
-
-    if (!snapshot) {
-      throw new Error('Image snapshot was not persisted after CreateImage');
-    }
-
-    const platformImageAsset = await this.adminRepository.collectPlatformImageAsset({
-      snapshotId: snapshot.id,
-      displayName,
-      defaultHostName,
-      defaultPassword: encryptPlatformImageDefaultPassword(defaultPassword),
-      description,
-      ownerUserId,
-      visibility: 'private',
-    });
-    const snapshotIds = await this.tagPackedImageAndSnapshots({
-      accountContext,
-      imageId,
-      ownerUserId,
-      rangeInstanceId,
-      platformImageAssetId: platformImageAsset.id,
-      hostKey: nodeId,
-      billingStartAt: syncedAt,
-    });
-    await this.syncPackedImageBillingLedger({
-      imageId,
-      snapshotIds,
-      ownerUserId,
-      rangeInstanceId,
-      platformImageAssetId: platformImageAsset.id,
-      regionId: accountContext.defaultRegion,
-      accountUid: accountContext.accountUid,
-      billingStartAt: syncedAt,
-    });
-
-    return {
-      status: 'accepted',
-      action,
-      imageId,
-      defaultHostName,
-      defaultPassword,
-      description,
-      imageReady: snapshot.isAvailable,
-      platformImageAsset,
-    };
   }
 
   async runSingleInstanceAction(
@@ -267,7 +271,11 @@ export class RangeInstanceNodeActionsService {
       throw new NotFoundException('Range instance host node not found');
     }
 
-    return this.run(rangeInstanceId, hostKey, action, payload, currentUser);
+    if(instance.status !== 'running') throw new ConflictException('Single instance action requires running status');
+    const config=instance.singleInstanceConfig;
+    const account=config?.cloudAccountContextId?await this.systemConfigService.getAccountContextById(config.cloudAccountContextId):await this.systemConfigService.getAccountContext();
+    if((config?.cloudAccountUid && config.cloudAccountUid!==account.accountUid)||(config?.regionId && config.regionId!==account.defaultRegion)) throw new ConflictException('Instance cloud context does not match its launch identity');
+    return this.run(rangeInstanceId, hostKey, action, payload, currentUser, account);
   }
 
   private resolveHostInstanceId(instance: RangeInstanceRecord, nodeId: string) {
@@ -315,7 +323,10 @@ export class RangeInstanceNodeActionsService {
   }
 
   private async resolveInstanceWindowsFlag(instance: RangeInstanceRecord, nodeId: string) {
-    const platformImageAssetId = instance.singleInstanceConfig?.platformImageAssetId;
+    const nodes = Array.isArray(instance.runtimeTopologyGraph?.nodes) ? instance.runtimeTopologyGraph.nodes : [];
+    const runtimeNode = nodes.find(node => node && typeof node === 'object' && (node as { id?: string }).id === nodeId) as Record<string, unknown> | undefined;
+    const platformImageAssetId = instance.singleInstanceConfig?.platformImageAssetId
+      ?? (typeof runtimeNode?.platformImageAssetId === 'string' ? runtimeNode.platformImageAssetId : undefined);
 
     if (platformImageAssetId) {
       const asset = await this.adminRepository.getPlatformImageAssetById(platformImageAssetId);
@@ -345,216 +356,14 @@ export class RangeInstanceNodeActionsService {
     action: string;
     parameters?: Record<string, string>;
   }): Promise<ResponsePayload> {
-    const endpoint = `https://ecs.${input.regionId}.aliyuncs.com/`;
-    const query = signAliyunRpcQuery(
-      {
-        Action: input.action,
-        AccessKeyId: input.accessKeyId,
-        Format: 'JSON',
-        RegionId: input.regionId,
-        SignatureMethod: ALICLOUD_SIGNATURE_METHOD,
-        SignatureNonce: randomUUID(),
-        SignatureVersion: ALICLOUD_SIGNATURE_VERSION,
-        Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-        Version: ALICLOUD_ECS_API_VERSION,
-        ...(input.parameters ?? {}),
-      },
-      input.accessKeySecret,
-    );
-    const response = await fetch(`${endpoint}?${query}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      const bodyText = await response.text();
-      let details: Record<string, unknown> | null = null;
-
-      try {
-        details = JSON.parse(bodyText) as Record<string, unknown>;
-      } catch {
-        details = null;
-      }
-
-      const detailMessage =
-        typeof details?.Message === 'string'
-          ? details.Message
-          : typeof details?.message === 'string'
-            ? details.message
-            : bodyText.trim();
-      const code =
-        typeof details?.Code === 'string'
-          ? details.Code
-          : typeof details?.code === 'string'
-            ? details.code
-            : null;
-      const message = code
-        ? `Aliyun ${input.action} request failed: ${code}${detailMessage ? ` - ${detailMessage}` : ''}`
-        : `Aliyun ${input.action} request failed with status ${response.status}${detailMessage ? ` - ${detailMessage}` : ''}`;
-
-      throw new BadGatewayException(message);
-    }
-
-    return (await response.json()) as ResponsePayload;
+    return imageRpc<ResponsePayload>({ accessKeyId: input.accessKeyId, accessKeySecret: input.accessKeySecret, regionId: input.regionId }, input.action, input.parameters);
   }
 
-  private async tagPackedImageAndSnapshots(input: {
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
-    imageId: string;
-    ownerUserId: string | null;
-    rangeInstanceId: string;
-    platformImageAssetId: string;
-    hostKey: string;
-    billingStartAt: Date;
-  }) {
-    const imageTags = buildBillingTags({
-      billingScope: input.ownerUserId ? 'user' : 'platform',
-      ownerUserId: input.ownerUserId,
-      rangeInstanceId: input.rangeInstanceId,
-      platformImageAssetId: input.platformImageAssetId,
-      platformResourceType: 'image',
-      platformHostKey: input.hostKey,
-      billingStartAt: input.billingStartAt,
-    });
-    await this.tagEcsResources(input.accountContext, 'image', [input.imageId], imageTags);
-    const image = await this.describeImage(input.accountContext, input.imageId);
-    const snapshotIds = extractImageSnapshotIds(image);
 
-    if (snapshotIds.length > 0) {
-      await this.tagEcsResources(input.accountContext, 'snapshot', snapshotIds, {
-        ...imageTags,
-        PlatformResourceType: 'snapshot',
-      });
-    }
-
-    return snapshotIds;
-  }
-
-  private async describeImage(
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
-    imageId: string,
-  ) {
-    const response = await this.performAliyunRpcRequest<{
-      Images?: { Image?: AliyunImage | AliyunImage[] };
-    }>({
-      accessKeyId: accountContext.accessKeyId,
-      accessKeySecret: accountContext.accessKeySecret,
-      regionId: accountContext.defaultRegion,
-      action: 'DescribeImages',
-      parameters: {
-        ImageId: imageId,
-      },
-    });
-    const images = response.Images?.Image;
-    return Array.isArray(images) ? images[0] ?? null : images ?? null;
-  }
-
-  private async tagEcsResources(
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
-    resourceType: 'image' | 'snapshot',
-    resourceIds: string[],
-    tags: Record<string, string>,
-  ) {
-    await this.performAliyunRpcRequest({
-      accessKeyId: accountContext.accessKeyId,
-      accessKeySecret: accountContext.accessKeySecret,
-      regionId: accountContext.defaultRegion,
-      action: 'TagResources',
-      parameters: {
-        ResourceType: resourceType,
-        ...buildAliyunArrayParameters('ResourceId', resourceIds),
-        ...buildAliyunTagParameters(tags),
-      },
-    });
-  }
-
-  private async syncPackedImageBillingLedger(input: {
-    imageId: string;
-    snapshotIds: string[];
-    ownerUserId: string | null;
-    rangeInstanceId: string;
-    platformImageAssetId: string;
-    regionId: string;
-    accountUid: string | null;
-    billingStartAt: Date;
-  }) {
-    const billingScope = input.ownerUserId ? 'user' : 'platform';
-    const tagsSnapshot = buildBillingTags({
-      billingScope,
-      ownerUserId: input.ownerUserId,
-      rangeInstanceId: input.rangeInstanceId,
-      platformImageAssetId: input.platformImageAssetId,
-      billingStartAt: input.billingStartAt,
-    });
-    const legacySnapshotLedger = await this.adminRepository.findBillingLedgerResource({
-      cloudProvider: 'alibaba_cloud',
-      regionId: input.regionId,
-      cloudResourceId: input.imageId,
-      cloudResourceType: 'snapshot',
-    });
-
-    if (legacySnapshotLedger && !input.snapshotIds.includes(input.imageId)) {
-      await this.adminRepository.updateBillingLedgerResource(legacySnapshotLedger.id, {
-        releasedAt: input.billingStartAt,
-      });
-    }
-
-    const resources: Array<{ cloudResourceId: string; cloudResourceType: 'image' | 'snapshot' }> = [
-      { cloudResourceId: input.imageId, cloudResourceType: 'image' },
-      ...input.snapshotIds.map((cloudResourceId) => ({ cloudResourceId, cloudResourceType: 'snapshot' as const })),
-    ];
-
-    for (const resource of resources) {
-      const existing = await this.adminRepository.findBillingLedgerResource({
-        cloudProvider: 'alibaba_cloud',
-        regionId: input.regionId,
-        cloudResourceId: resource.cloudResourceId,
-        cloudResourceType: resource.cloudResourceType,
-      });
-
-      if (existing) {
-        await this.adminRepository.updateBillingLedgerResource(existing.id, {
-          billingScope,
-          ownerUserId: input.ownerUserId,
-          rangeInstanceId: input.rangeInstanceId,
-          platformImageAssetId: input.platformImageAssetId,
-          releasedAt: null,
-          tagsSnapshot,
-        });
-        continue;
-      }
-
-      await this.adminRepository.createBillingLedgerResource({
-        cloudProvider: 'alibaba_cloud',
-        cloudAccountUid: input.accountUid,
-        regionId: input.regionId,
-        cloudResourceId: resource.cloudResourceId,
-        cloudResourceType: resource.cloudResourceType,
-        billingScope,
-        ownerUserId: input.ownerUserId,
-        rangeInstanceId: input.rangeInstanceId,
-        platformImageAssetId: input.platformImageAssetId,
-        billingStartAt: input.billingStartAt,
-        tagsSnapshot,
-      });
-    }
-  }
 }
 
 function isNodeActionName(value: string): value is NodeActionName {
   return value === 'start' || value === 'stop' || value === 'reboot' || value === 'open-vnc' || value === 'pack-image';
-}
-
-function extractImageSnapshotIds(image: AliyunImage | null) {
-  const mappings = image?.DiskDeviceMappings?.DiskDeviceMapping;
-  const entries = Array.isArray(mappings) ? mappings : mappings ? [mappings] : [];
-  return [...new Set(entries.map((entry) => entry.SnapshotId?.trim() ?? '').filter(Boolean))];
-}
-
-function buildAliyunArrayParameters(prefix: string, values: string[]) {
-  return Object.fromEntries(values.map((value, index) => [`${prefix}.${index + 1}`, value]));
 }
 
 function buildAliyunWebTerminalUrl(input: {

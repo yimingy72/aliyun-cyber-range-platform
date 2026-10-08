@@ -18,6 +18,9 @@ import {
   ApplyRangeInstanceDraftInput,
   CompleteRangeInstanceDraftApplyInput,
   CreateProvisionJobInput,
+  QueueRangeInstanceJobInput,
+  ProvisionJobTopologySnapshot,
+  RangeInstanceDraftRevisionConflictError,
   CreateProvisionJobStepLogInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
@@ -30,6 +33,7 @@ import {
   OperationAuditEventRecord,
   OperationConfirmationRecord,
   PlatformUserRecord,
+  PackedImageArtifactRecord,
   PlatformImageAssetRecord,
   PlatformImageTagRecord,
   ProvisionJobRecord,
@@ -58,6 +62,8 @@ import {
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
 
 export function createMemoryAdminRepository(): AdminRepository {
+  const packedImageArtifacts: PackedImageArtifactRecord[] = [];
+  const packedImageClaims = new Map<string, { token: string; expiresAt: Date }>();
   const platformUsers: PlatformUserRecord[] = [];
   const rangeTemplates: RangeTemplateRecord[] = [];
   const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
@@ -79,12 +85,29 @@ export function createMemoryAdminRepository(): AdminRepository {
   const operationAuditEvents: OperationAuditEventRecord[] = [];
 
   let idCounter = 1;
+  let singleControlQueue: Promise<unknown> = Promise.resolve();
 
   const nextId = () => `memory-${idCounter++}`;
   const now = () => new Date();
   const clone = <T>(record: T): T => structuredClone(record);
   const cloneIfDefined = <T>(value: T): T => (value == null ? value : structuredClone(value));
   const cloneList = <T extends Record<string, unknown>>(records: T[]): T[] => records.map((record) => clone(record));
+  const createJobRecord = (input: CreateProvisionJobInput): ProvisionJobRecord => {
+    const record: ProvisionJobRecord = {
+      id: nextId(), rangeInstanceId: input.rangeInstanceId, jobType: input.jobType,
+      topologySnapshot: cloneIfDefined(input.topologySnapshot ?? null), status: input.status ?? 'pending',
+      triggeredBy: input.triggeredBy, startedAt: null, finishedAt: null, retryCount: input.retryCount ?? 0,
+      errorSummary: null, createdAt: now(), updatedAt: now(),
+    };
+    provisionJobs.unshift(record);
+    return record;
+  };
+  const ownsRangeClaim = (id: string, startedAt: Date) => {
+    const job = provisionJobs.find(record => record.id === id && record.status === 'running' && record.startedAt?.getTime() === startedAt.getTime());
+    const instance = job && rangeInstances.find(record => record.id === job.rangeInstanceId && record.instanceMode === 'range' && record.lastJobId === id);
+    return instance ? { job: job!, instance } : null;
+  };
+
   const assignIfDefined = <T extends Record<string, unknown>, K extends keyof T>(
     target: T,
     key: K,
@@ -114,7 +137,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
     if (end) {
       const exclusiveEnd = new Date(end);
-      exclusiveEnd.setDate(exclusiveEnd.getDate() + 1);
+      exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1);
 
       if (value >= exclusiveEnd) {
         return false;
@@ -158,7 +181,6 @@ export function createMemoryAdminRepository(): AdminRepository {
     (filter.ownerUserId === undefined || record.ownerUserId === filter.ownerUserId) &&
     (filter.visibility === undefined || record.visibility === filter.visibility) &&
     (!filter.onlyAvailableSourceSnapshots ||
-      record.sourceSnapshotId === null ||
       imageSnapshots.some((snapshot) => snapshot.id === record.sourceSnapshotId && snapshot.isAvailable));
 
   const findPlatformUserOrThrow = (id: string) => {
@@ -697,7 +719,11 @@ export function createMemoryAdminRepository(): AdminRepository {
         instance.updatedAt = now();
       }
     },
-    async createRangeInstance(input: CreateRangeInstanceInput) {
+    async createRangeInstance(input: CreateRangeInstanceInput, initialJob?: { triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number }) {
+      if (initialJob?.expectedTemplateRevision !== undefined && input.templateId
+        && rangeTemplates.find(template => template.id === input.templateId)?.revision !== initialJob.expectedTemplateRevision) {
+        throw new TemplateRevisionConflictError();
+      }
       const record: RangeInstanceRecord = {
         id: nextId(),
         name: input.name,
@@ -736,6 +762,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       };
 
       rangeInstances.unshift(record);
+      if (initialJob) {
+        const job = createJobRecord({ rangeInstanceId: record.id, jobType: 'create', ...initialJob });
+        record.lastJobId = job.id;
+      }
 
       return clone(record);
     },
@@ -866,7 +896,6 @@ export function createMemoryAdminRepository(): AdminRepository {
         provisionJobs.some(
           (job) =>
             job.rangeInstanceId === input.rangeInstanceId &&
-            job.jobType === 'update' &&
             (job.status === 'pending' || job.status === 'running'),
         )
       ) {
@@ -896,6 +925,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(job);
     },
     async completeRangeInstanceDraftApply(id: string, input: CompleteRangeInstanceDraftApplyInput) {
+      if (input.provisionJobId && input.claimStartedAt && !ownsRangeClaim(input.provisionJobId, input.claimStartedAt)) {
+        throw new RangeInstanceDraftRevisionConflictError();
+      }
       const instance = rangeInstances.find((record) => record.id === id)!;
       const shouldClearDraft = instance.draftRevision === input.expectedDraftRevision;
 
@@ -903,6 +935,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         runtimeTopologyGraph: clone(input.runtimeTopologyGraph),
         runtimeScenarioTemplateSpec: clone(input.runtimeScenarioTemplateSpec),
         runtimeCompiledProvisionSpec: clone(input.runtimeCompiledProvisionSpec),
+        ...(input.runtimeCredentials !== undefined ? { runtimeCredentials: clone(input.runtimeCredentials) } : {}),
         accessEntry: cloneIfDefined(input.accessEntry ?? null),
         resourceSummary: cloneIfDefined(input.resourceSummary ?? null),
         errorSummary: input.errorSummary ?? null,
@@ -926,24 +959,57 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(provisionJobs);
     },
     async createProvisionJob(input: CreateProvisionJobInput) {
-      const record: ProvisionJobRecord = {
-        id: nextId(),
-        rangeInstanceId: input.rangeInstanceId,
-        jobType: input.jobType,
-        topologySnapshot: cloneIfDefined(input.topologySnapshot ?? null),
-        status: input.status ?? 'pending',
-        triggeredBy: input.triggeredBy,
-        startedAt: null,
-        finishedAt: null,
-        retryCount: input.retryCount ?? 0,
-        errorSummary: null,
-        createdAt: now(),
-        updatedAt: now(),
-      };
-
-      provisionJobs.unshift(record);
-
-      return clone(record);
+      return clone(createJobRecord(input));
+    },
+    async queueRangeInstanceJob(input: QueueRangeInstanceJobInput) {
+      const instance = rangeInstances.find(record => record.id === input.rangeInstanceId && record.instanceMode === 'range'
+        && record.status === input.expectedStatus && record.ownerUserId === input.expectedOwnerUserId);
+      if (!instance || provisionJobs.some(job => job.rangeInstanceId === input.rangeInstanceId && ['pending', 'running'].includes(job.status))) return null;
+      const job = createJobRecord(input);
+      Object.assign(instance, { status: input.nextStatus, lastJobId: job.id, errorSummary: null, updatedAt: now(),
+        ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
+      });
+      return clone(job);
+    },
+    async claimRangeProvisionJob(id: string, startedAt: Date) {
+      const job = provisionJobs.find(record => record.id === id && record.status === 'pending');
+      const instance = job && rangeInstances.find(record => record.id === job.rangeInstanceId && record.instanceMode === 'range');
+      if (!job || !instance) return null;
+      if (instance.lastJobId && instance.lastJobId !== id) {
+        Object.assign(job, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' });
+        return null;
+      }
+      if (job.jobType === 'update' && instance.status !== 'running'
+        || (job.jobType === 'create' || job.topologySnapshot?.operation === 'create')
+          && ['pending_destroy', 'destroying', 'destroy_failed', 'destroyed'].includes(instance.status)) {
+        Object.assign(job, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Range operation is incompatible with the current instance state' });
+        return null;
+      }
+      if (instance.lastJobId === id) {
+        provisionJobs.filter(other => other.rangeInstanceId === instance.id && other.id !== id && other.status === 'pending')
+          .forEach(other => Object.assign(other, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' }));
+      }
+      if (provisionJobs.some(other => other.rangeInstanceId === instance.id && other.id !== id && ['pending', 'running'].includes(other.status))) return null;
+      Object.assign(job, { status: 'running', startedAt, finishedAt: null, errorSummary: null, updatedAt: now() });
+      instance.lastJobId = id;
+      return clone(job);
+    },
+    async heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date) {
+      const owned = ownsRangeClaim(id, startedAt);
+      if (!owned) return false;
+      owned.job.updatedAt = heartbeatAt;
+      return true;
+    },
+    async updateRangeInstanceForProvisionJob(id: string, startedAt: Date, input: UpdateRangeInstanceInput) {
+      const owned = ownsRangeClaim(id, startedAt);
+      if (!owned) return null;
+      return this.updateRangeInstance(owned.instance.id, input);
+    },
+    async updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput) {
+      const owned = ownsRangeClaim(id, startedAt);
+      if (!owned) return false;
+      Object.assign(owned.job, input, { updatedAt: now() });
+      return true;
     },
     async getProvisionJobById(id: string) {
       const record = provisionJobs.find((job) => job.id === id);
@@ -1130,6 +1196,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         );
 
         if (existing) {
+          if (['Deleting', 'Deleted'].includes(existing.status ?? '') && !['Deleting', 'Deleted'].includes(snapshot.status ?? '')) continue;
           Object.assign(existing, {
             sourceImageName: snapshot.sourceImageName,
             osType: snapshot.osType ?? null,
@@ -1161,6 +1228,10 @@ export function createMemoryAdminRepository(): AdminRepository {
           updatedAt: now(),
         });
       }
+      for (const asset of platformImageAssets.filter(item => !item.sourceSnapshotId && item.provider === input.provider && item.accountUid === input.accountUid && item.regionId === input.regionId)) {
+        const source = imageSnapshots.find(item => item.provider === input.provider && item.accountUid === input.accountUid && item.regionId === input.regionId && item.scope === input.scope && item.imageId === asset.imageId);
+        if (source) { asset.sourceSnapshotId = source.id; asset.sourceScope = source.scope; }
+      }
     },
     async reconcileImageSnapshots(input: ReconcileImageSnapshotsInput) {
       await this.upsertImageSnapshots(input);
@@ -1177,14 +1248,12 @@ export function createMemoryAdminRepository(): AdminRepository {
           record.scope === input.scope &&
           !imageIds.has(record.imageId)
         ) {
+          if (!['Deleting', 'Deleted'].includes(record.status ?? '')) record.status = 'Missing';
+          record.isAvailable = false;
+          record.updatedAt = now();
           for (const asset of platformImageAssets) {
-            if (asset.sourceSnapshotId === record.id) {
-              asset.sourceSnapshotId = null;
-              asset.updatedAt = now();
-            }
+            if (asset.sourceSnapshotId === record.id) { asset.enabled = false; asset.updatedAt = now(); }
           }
-
-          imageSnapshots.splice(index, 1);
         }
       }
     },
@@ -1288,6 +1357,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       );
 
       if (existing) {
+        if (input.preserveExisting) return clone(existing);
         Object.assign(existing, {
           displayName: input.displayName,
           defaultHostName: input.defaultHostName ?? null,
@@ -1379,10 +1449,55 @@ export function createMemoryAdminRepository(): AdminRepository {
         }
       }
     },
+    async withSingleInstanceControlLock(work) {
+      const run = singleControlQueue.then(work, work);
+      singleControlQueue = run.then(() => undefined, () => undefined);
+      return run;
+    },
+    async commitSingleInstanceClaim(job, instancePatch, jobPatch) {
+      const current = provisionJobs.find((value) => value.id === job.id);
+      const instance = rangeInstances.find((value) => value.id === job.rangeInstanceId);
+      if (!job.startedAt || current?.status !== 'running' || current.startedAt?.getTime() !== job.startedAt.getTime() || instance?.lastJobId !== job.id || instance.instanceMode !== 'single' || ['destroyed','create_failed'].includes(instance.status)) return false;
+      Object.assign(instance, clone(instancePatch), {updatedAt: now()});
+      if (jobPatch) Object.assign(current, clone(jobPatch), {updatedAt: now()});
+      return true;
+    },
+    async listSingleInstanceNetworkProfiles() { return clone(singleInstanceNetworkProfiles); },
+    async getSingleInstanceNetworkProfileById(id) { return clone(singleInstanceNetworkProfiles.find((value) => value.id === id) ?? null); },
+    async registerSingleInstanceNetworkCleanup(id,runId,adminId,ownerIds) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)Object.assign(profile,{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds});},
+    async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},
+    async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
+    async createPackedImageArtifact(input) {
+      const record: PackedImageArtifactRecord = { ...input, id: nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
+      packedImageArtifacts.push(record); return clone(record);
+    },
+    async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },
+    async claimPackedImageArtifact(id, token, expiresAt) {
+      const claim = packedImageClaims.get(id);
+      if (claim && claim.expiresAt > new Date()) return false;
+      packedImageClaims.set(id, { token, expiresAt }); return true;
+    },
+    async renewPackedImageArtifactClaim(id, token, expiresAt) {
+      if (packedImageClaims.get(id)?.token !== token) return false;
+      packedImageClaims.set(id, { token, expiresAt }); return true;
+    },
+    async releasePackedImageArtifactClaim(id, token) { if (packedImageClaims.get(id)?.token === token) packedImageClaims.delete(id); },
+    async withPackedImageArtifactClaim(id, token, work) {
+      const claim = packedImageClaims.get(id);
+      if (claim?.token !== token || claim.expiresAt <= new Date()) throw new Error('Packed image lease expired');
+      return work(this);
+    },
+    async listPackedImageArtifacts(filter = {}) { return cloneList(packedImageArtifacts.filter(item => Object.entries(filter).every(([key, value]) => item[key as keyof PackedImageArtifactRecord] === value))); },
+    async updatePackedImageArtifact(id, input) {
+      const record = packedImageArtifacts.find(item => item.id === id);
+      if (!record) throw new Error('Packed image artifact not found');
+      Object.assign(record, clone(input), { updatedAt: now() }); return clone(record);
+    },
     async getSingleInstanceNetworkProfile(input) {
       const record = singleInstanceNetworkProfiles.find(
         (profile) =>
           profile.provider === input.provider &&
+          (profile.cloudAccountUid ?? 'legacy-unbound') === (input.cloudAccountUid ?? 'legacy-unbound') &&
           profile.regionId === input.regionId &&
           profile.zoneId === input.zoneId,
       );
@@ -1393,12 +1508,17 @@ export function createMemoryAdminRepository(): AdminRepository {
       const existing = singleInstanceNetworkProfiles.find(
         (profile) =>
           profile.provider === input.provider &&
+          (profile.cloudAccountUid ?? 'legacy-unbound') === (input.cloudAccountUid ?? 'legacy-unbound') &&
           profile.regionId === input.regionId &&
           profile.zoneId === input.zoneId,
       );
 
       if (existing) {
         Object.assign(existing, {
+          status:input.status??existing.status,
+          cloudAccountContextId: input.cloudAccountContextId ?? existing.cloudAccountContextId,
+          workspaceKey: input.workspaceKey ?? existing.workspaceKey,
+          managedByPlatform: input.managedByPlatform ?? existing.managedByPlatform,
           vpcId: input.vpcId,
           vpcCidr: input.vpcCidr,
           vswitchIds: clone(input.vswitchIds),
@@ -1412,6 +1532,12 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
 
       const record: SingleInstanceNetworkProfileRecord = {
+        createdByUserId:input.createdByUserId??null,
+        status:input.status??'ready',
+        cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
+        cloudAccountContextId: input.cloudAccountContextId ?? null,
+        workspaceKey: input.workspaceKey ?? null,
+        managedByPlatform: input.managedByPlatform ?? false,
         id: nextId(),
         provider: input.provider,
         regionId: input.regionId,
@@ -1474,6 +1600,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         throw new Error(`Billing ledger resource not found: ${id}`);
       }
 
+      assignIfDefined(record, 'cloudAccountUid', input.cloudAccountUid);
       assignIfDefined(record, 'billingScope', input.billingScope);
       assignIfDefined(record, 'ownerUserId', input.ownerUserId);
       assignIfDefined(record, 'rangeInstanceId', input.rangeInstanceId);
@@ -1490,13 +1617,30 @@ export function createMemoryAdminRepository(): AdminRepository {
     async listBillingLedgerResources() {
       return cloneList(billingLedgerResources);
     },
-    async getLatestBillingLineItemDate() {
-      const latest = billingLineItems.reduce<Date | null>(
+    async getLatestBillingLineItemDate(cloudAccountUid?: string) {
+      const latest = billingLineItems.filter(item => cloudAccountUid === undefined || item.cloudAccountUid === cloudAccountUid).reduce<Date | null>(
         (current, item) => (!current || item.billingDate > current ? item.billingDate : current),
         null,
       );
 
       return latest ? new Date(latest) : null;
+    },
+    async replaceBillingDay(input) {
+      const date = new Date(input.billingDate).getTime();
+      if ([...input.lineItems, ...input.anomalies].some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
+      const oldLines = cloneList(billingLineItems);
+      const oldAnomalies = cloneList(billingAnomalies);
+      try {
+        for (const item of billingLineItems) if (item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
+        for (let i = billingLineItems.length - 1; i >= 0; i--) if (billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
+        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
+        await this.upsertBillingLineItems(input.lineItems);
+        for (const item of input.anomalies) await this.createBillingAnomaly(item);
+      } catch (error) {
+        billingLineItems.splice(0, billingLineItems.length, ...oldLines);
+        billingAnomalies.splice(0, billingAnomalies.length, ...oldAnomalies);
+        throw error;
+      }
     },
     async deleteBillingLineItemsBySyncBatchId(syncBatchId: string) {
       for (let index = billingLineItems.length - 1; index >= 0; index -= 1) {
@@ -1512,6 +1656,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint);
 
         if (existing) {
+          existing.cloudAccountUid = item.cloudAccountUid ?? null;
           existing.syncBatchId = item.syncBatchId;
           existing.billCycle = item.billCycle;
           existing.billingDate = parseDateValue(item.billingDate);
@@ -1533,6 +1678,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
         const created: BillingLineItemRecord = {
           id: nextId(),
+          cloudAccountUid: item.cloudAccountUid ?? null,
           syncBatchId: item.syncBatchId,
           sourceFingerprint: item.sourceFingerprint,
           billCycle: item.billCycle,
@@ -1561,6 +1707,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         billingLineItems.filter(
           (item) =>
             inDateRange(item.billingDate, filter.startAt, filter.endAt) &&
+            (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid) &&
             (filter.ownerUserId === undefined || item.ownerUserId === filter.ownerUserId) &&
             (filter.billingScope === undefined || item.billingScope === filter.billingScope) &&
             (filter.matchedLedgerId === undefined || item.matchedLedgerId === filter.matchedLedgerId),
@@ -1571,6 +1718,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint);
 
       if (existing) {
+        existing.cloudAccountUid = input.cloudAccountUid ?? null;
         existing.syncBatchId = input.syncBatchId;
         existing.billCycle = input.billCycle;
         existing.billingDate = parseDateValue(input.billingDate);
@@ -1588,6 +1736,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
       const record: BillingAnomalyRecord = {
         id: nextId(),
+        cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
         billCycle: input.billCycle,
@@ -1614,7 +1763,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
     },
     async listBillingAnomalies(filter: ListBillingAnomaliesFilter = {}) {
-      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt)));
+      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
 }

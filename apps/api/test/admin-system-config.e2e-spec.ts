@@ -112,7 +112,14 @@ async function createApp(
     moduleBuilder.overrideProvider(PrismaService).useValue(prismaOverride);
   }
 
-  moduleBuilder.overrideProvider(CloudAccountContextsService).useValue(cloudAccountContextsOverride);
+  moduleBuilder.overrideProvider(CloudAccountContextsService).useValue({
+    saveFromCloudConfig: async (snapshot: Record<string, string>) => {
+      const result = await cloudAccountContextsOverride.saveFromCloudConfig(snapshot as never);
+      const { imageImportBucket: _bucket, ...config } = snapshot;
+      await prismaOverride!.systemCloudConfig.upsert({ where: { id: SYSTEM_CONFIG_ROW_ID }, update: config, create: { id: SYSTEM_CONFIG_ROW_ID, ...config } } as never);
+      return result;
+    },
+  });
 
   moduleBuilder.overrideProvider(OidcPrincipalResolver).useValue({
     resolve: jest.fn().mockResolvedValue({ id: 'admin', username: 'admin', role: 'admin', status: 'active' }),

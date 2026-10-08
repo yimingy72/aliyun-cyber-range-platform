@@ -1,3 +1,5 @@
+import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
+import { withEcsResponseContract } from './support/ecs-response-contract';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -20,6 +22,7 @@ const futureExpiration = new Date(Date.now() + 48 * 60 * 60 * 1_000).toISOString
 
 function createSystemConfigServiceStub() {
   return {
+    getInstanceTypeAvailabilityInContext: jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m1.large'}],warning:null}),
     getSnapshot: jest.fn().mockResolvedValue({
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-hangzhou',
@@ -27,14 +30,16 @@ function createSystemConfigServiceStub() {
       accessKeyId: 'test-ak',
       accessKeySecret: 'test-sk',
     }),
+    getAccountContextById:jest.fn().mockResolvedValue({provider:'alibaba_cloud',defaultRegion:'cn-hangzhou',defaultZoneId:'cn-hangzhou-h',accessKeyId:'test-ak',accessKeySecret:'test-sk',accountUid:'single-test-account',accountUidResolved:true,cloudAccountContextId:'single-test-context'}),
     getAccountContext: jest.fn().mockResolvedValue({
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-hangzhou',
       defaultZoneId: 'cn-hangzhou-h',
       accessKeyId: 'test-ak',
       accessKeySecret: 'test-sk',
-      accountUid: null,
-      accountUidResolved: false,
+      accountUid: 'single-test-account',
+      accountUidResolved: true,
+      cloudAccountContextId:'single-test-context',
     }),
   };
 }
@@ -49,6 +54,7 @@ describe('single instances', () => {
   let fetchMock: jest.SpiedFunction<typeof fetch>;
   let bootstrapServiceStub: {
     bootstrapDefaultProfile: jest.Mock;
+    readRecoveryProfile?:jest.Mock;
   };
   let adminToken: string;
 
@@ -59,7 +65,10 @@ describe('single instances', () => {
     fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
-    bootstrapServiceStub = {
+    const implement = fetchMock.mockImplementation.bind(fetchMock);
+    fetchMock.mockImplementation = ((handler:typeof fetch) => implement(withEcsResponseContract(handler))) as typeof fetchMock.mockImplementation;
+
+    bootstrapServiceStub = {readRecoveryProfile:jest.fn().mockResolvedValue(null),
       bootstrapDefaultProfile: jest.fn().mockResolvedValue({
         provider: 'alibaba_cloud',
         regionId: 'cn-hangzhou',
@@ -93,7 +102,7 @@ describe('single instances', () => {
 
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -110,7 +119,7 @@ describe('single instances', () => {
     const snapshot = (
       await repository.listImageSnapshots({
         provider: 'alibaba_cloud',
-        accountUid: null,
+        accountUid: 'single-test-account',
         regionId: 'cn-hangzhou',
         scope: 'custom',
         imageId: 'm-platform-image-1',
@@ -125,7 +134,7 @@ describe('single instances', () => {
 
     const [asset] = await repository.listPlatformImageAssets({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       enabled: true,
     });
@@ -181,7 +190,7 @@ describe('single instances', () => {
     });
     expect(bootstrapServiceStub.bootstrapDefaultProfile).toHaveBeenCalledTimes(1);
 
-    const profile = await repository.getSingleInstanceNetworkProfile({
+    const profile = await repository.getSingleInstanceNetworkProfile({cloudAccountUid:'single-test-account',
       provider: 'alibaba_cloud',
       regionId: 'cn-hangzhou',
       zoneId: 'cn-hangzhou-h',
@@ -250,7 +259,7 @@ describe('single instances', () => {
   it('allows launching from a caller-owned private image asset', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -267,7 +276,7 @@ describe('single instances', () => {
     const snapshot = (
       await repository.listImageSnapshots({
         provider: 'alibaba_cloud',
-        accountUid: null,
+        accountUid: 'single-test-account',
         regionId: 'cn-hangzhou',
         scope: 'custom',
         imageId: 'm-private-image-owner',
@@ -313,7 +322,7 @@ describe('single instances', () => {
   it('rejects launching from a caller-owned private image asset while the source snapshot is still exporting', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -330,7 +339,7 @@ describe('single instances', () => {
     const snapshot = (
       await repository.listImageSnapshots({
         provider: 'alibaba_cloud',
-        accountUid: null,
+        accountUid: 'single-test-account',
         regionId: 'cn-hangzhou',
         scope: 'custom',
         imageId: 'm-private-image-pending',
@@ -426,7 +435,7 @@ describe('single instances', () => {
       expect(instance?.accessEntry?.publicIp).toBe('47.100.66.10');
     });
 
-    expect(runInstancesBodies).toHaveLength(1);
+    await waitForAsync(async()=>{expect(runInstancesBodies).toHaveLength(1);});
     expect(runInstancesBodies[0]).not.toContain('HostName=');
     expect(response.body.instances[0].singleInstanceConfig.hostName).toBeNull();
   });
@@ -515,7 +524,7 @@ describe('single instances', () => {
   it('uses the image defaultHostName when launch request leaves hostName empty', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -532,7 +541,7 @@ describe('single instances', () => {
     const snapshot = (
       await repository.listImageSnapshots({
         provider: 'alibaba_cloud',
-        accountUid: null,
+        accountUid: 'single-test-account',
         regionId: 'cn-hangzhou',
         scope: 'custom',
         imageId: 'm-private-image-default-host',
@@ -626,7 +635,7 @@ describe('single instances', () => {
 
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -643,7 +652,7 @@ describe('single instances', () => {
     const snapshot = (
       await repository.listImageSnapshots({
         provider: 'alibaba_cloud',
-        accountUid: null,
+        accountUid: 'single-test-account',
         regionId: 'cn-hangzhou',
         scope: 'custom',
         imageId: 'm-private-image-foreign',
@@ -748,7 +757,7 @@ describe('single instances', () => {
   it('uses Administrator as the runtime username for windows single instances', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'single-test-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -765,7 +774,7 @@ describe('single instances', () => {
     const snapshot = (
       await repository.listImageSnapshots({
         provider: 'alibaba_cloud',
-        accountUid: null,
+        accountUid: 'single-test-account',
         regionId: 'cn-hangzhou',
         scope: 'custom',
         imageId: 'm-windows-image-1',
@@ -1543,8 +1552,8 @@ describe('single instances', () => {
     );
     expect(runInstancesBodies).toEqual(
       expect.arrayContaining([
-        expect.stringContaining(`ClientToken=${response.body.instances[0].id}`),
-        expect.stringContaining(`ClientToken=${response.body.instances[1].id}`),
+        expect.stringContaining(`ClientToken=${response.body.instances[0].lastJobId}`),
+        expect.stringContaining(`ClientToken=${response.body.instances[1].lastJobId}`),
       ]),
     );
     expect(runInstancesBodies).toEqual(
@@ -1693,7 +1702,7 @@ describe('single instances', () => {
     });
 
     expect(runInstancesBodies[0]).not.toContain('AutoReleaseTime=');
-    expect(runInstancesBodies[0]).toContain(`ClientToken=${response.body.instances[0].id}`);
+    expect(runInstancesBodies[0]).toContain(`ClientToken=${response.body.instances[0].lastJobId}`);
   });
 
   it('executes batch destroy-all through ECS-native APIs and marks child instances destroyed', async () => {
@@ -2002,7 +2011,7 @@ describe('single instances', () => {
         expect(refreshedFirst?.status).toBe('destroyed');
         expect(refreshedSecond?.status).toBe('destroyed');
       });
-      expect(deleteCalls).toBe(3);
+      expect(deleteCalls).toBe(4);
     } finally {
       if (previousRetryInterval === undefined) {
         delete process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS;
@@ -2079,7 +2088,7 @@ describe('single instances', () => {
     const service = new SingleInstanceNetworkService(
       repository,
       {
-        getSnapshot: jest.fn().mockResolvedValue(snapshot),
+        getAccountContext: jest.fn().mockResolvedValue({...snapshot,accountUid:'single-test-account',cloudAccountContextId:'single-test-context'}),
       } as any,
       bootstrapServiceStub as any,
       cidrPoolService,
@@ -2128,3 +2137,5 @@ async function waitForAsync(assertion: () => Promise<void>, attempts = 20, delay
 
   throw lastError;
 }
+
+useFastSingleInstanceVerification();

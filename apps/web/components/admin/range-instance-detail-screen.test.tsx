@@ -1112,4 +1112,28 @@ describe('RangeInstanceDetailScreen', () => {
     expect((screen.getByLabelText('名称') as HTMLInputElement).matches(':disabled')).toBe(true);
     expect(screen.getByLabelText('CPU').matches(':disabled')).toBe(true);
   });
+  it('preserves description, placement and public-entry metadata when saving an instance draft', async () => {
+    const detail = {
+      id: 'range-1', name: 'Metadata fixture', status: 'running', draftRevision: 0,
+      templateModulePathSnapshot: 'infra/opentofu/modules/alicloud-enterprise-range',
+      runtimeTopologyGraph: createValidTopologyGraph(),
+      runtimeScenarioTemplateSpec: {
+        metadata: { name: 'Metadata fixture', slug: 'metadata', version: 'v1', cloudProvider: 'alibaba_cloud', iacType: 'opentofu', description: 'Keep this description' },
+        topology: { vpcCidr: '10.0.0.0/16', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h' },
+      },
+      runtimeTopologySpec: { publicEntry: { protocols: [{ protocol: 'http', port: 8080 }] } },
+    };
+    fetchRangeInstanceDetailMock.mockReset(); fetchRangeInstanceDetailMock.mockResolvedValue(detail);
+    saveRangeInstanceDraftMock.mockReset(); saveRangeInstanceDraftMock.mockResolvedValue({ ...detail, draftRevision: 1 });
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalledTimes(1));
+    const body = saveRangeInstanceDraftMock.mock.calls[0]![3];
+    expect(body.draftScenarioTemplateSpec.metadata.description).toBe('Keep this description');
+    expect(body.draftScenarioTemplateSpec.topology.defaultRegion).toBe('cn-hangzhou');
+    expect(body.draftScenarioTemplateSpec.topology.defaultZoneId).toBe('cn-hangzhou-h');
+    expect(body.draftTopologySpec.publicEntry.protocols).toEqual([{ protocol: 'http', port: 8080 }]);
+  });
+
 });

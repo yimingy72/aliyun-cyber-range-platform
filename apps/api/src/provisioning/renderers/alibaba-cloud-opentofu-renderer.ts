@@ -28,9 +28,11 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   host_network_interfaces: Array<{
     host_key: string;
     interfaces: Array<{
+      nic_id?: string;
       device_index: number;
       zone_key: string;
       private_ip: string;
+      secondary_private_ips?: string[];
       description?: string;
     }>;
   }>;
@@ -51,6 +53,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
     key: string;
     name: string;
     target_host_key: string;
+    target_device_index?: number;
     direction: string;
     policy: string;
     protocol: string;
@@ -180,9 +183,11 @@ export class AlibabaCloudOpenTofuRenderer {
       host_network_interfaces: plan.hostNetworkInterfaces.map((item) => ({
         host_key: item.hostKey,
         interfaces: item.interfaces.map((networkInterface) => ({
+          ...(networkInterface.nicId ? { nic_id: networkInterface.nicId } : {}),
           device_index: networkInterface.deviceIndex,
           zone_key: networkInterface.zoneKey,
           private_ip: networkInterface.privateIp,
+          ...(networkInterface.secondaryIps ? { secondary_private_ips: networkInterface.secondaryIps } : {}),
           ...(networkInterface.description ? { description: networkInterface.description } : {}),
         })),
       })),
@@ -203,6 +208,7 @@ export class AlibabaCloudOpenTofuRenderer {
         key: rule.key,
         name: rule.name,
         target_host_key: rule.targetHostKey,
+        ...(rule.targetDeviceIndex !== undefined ? { target_device_index: rule.targetDeviceIndex } : {}),
         direction: rule.direction,
         policy: rule.policy,
         protocol: rule.protocol,

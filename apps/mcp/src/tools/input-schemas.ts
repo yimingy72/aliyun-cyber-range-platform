@@ -22,6 +22,14 @@ const singleInstanceActionFields = {
 export const imageListInputSchema = z.object({
   view: z.enum(['platform', 'mine']).optional().describe('platform 查询平台可用镜像；mine 查询当前用户可管理的镜像。'),
 });
+export const imageTagListInputSchema = z.object({}).strict();
+export const imageTagCreateInputSchema = operationSchema.extend({
+  name: z.string().trim().min(1).max(32).describe('全局镜像标签名称，最多32字符；仅管理员可创建。'),
+}).strict();
+export const imageTagsSetInputSchema = operationSchema.extend({
+  platformImageAssetId: identifier.describe('当前调用者可管理的准确镜像资产ID。'),
+  tagIds: z.array(identifier).refine(ids => new Set(ids).size === ids.length, 'tagIds不得重复').describe('完整的目标标签ID集合；空数组清空该资产的全部关联。'),
+}).strict();
 export const imageCollectInputSchema = operationSchema.extend({
   snapshotId: identifier.describe('镜像目录返回的快照 ID。'),
   displayName: identifier.describe('收录后显示给平台用户的镜像名称。'),
@@ -39,8 +47,9 @@ export const imageCatalogListInputSchema = z.object({
 export const imageCatalogSyncInputSchema = z.object({
   scope: z.enum(['public', 'custom']).describe('要同步的镜像目录范围。'),
 });
-export const imageCatalogCustomDeleteInputSchema = z.object({
+export const imageCatalogCustomDeleteInputSchema = operationSchema.extend({
   snapshotId: identifier.describe('自定义镜像目录中要永久删除的快照 ID。'),
+  deleteOwnedSnapshots: z.boolean().optional().describe('仅对当前平台新打包且有完整owner/UID/地域证明的镜像，显式回收其确切backing snapshots；旧镜像或未知来源会拒绝。'),
 });
 export const imageImportJobListInputSchema = z.object({});
 export const imageImportJobRetryInputSchema = z.object({
@@ -87,6 +96,9 @@ export const billingExportUserCsvInputSchema = billingSummaryInputSchema.extend(
 
 export const rangeListInputSchema = z.object({ view: viewSchema });
 export const rangeInstanceIdInputSchema = z.object({ rangeInstanceId: identifier });
+export const rangeInstanceGetInputSchema = rangeInstanceIdInputSchema.extend({
+  includeNetworkDiagnostics: z.boolean().optional().describe('仅在需要核验网络时设为 true；只读查询该实例绑定账号和地域中的 ECS、网卡、安全组、ACL、NAT 与路由白名单事实，不接受云资源 ID。'),
+}).strict();
 export const rangeLaunchInputSchema = operationSchema.extend({
   templateId: identifier,
   name: identifier,
@@ -150,10 +162,10 @@ export const adminUserResetPasswordInputSchema = operationSchema.extend({
 
 export const cloudConfigGetInputSchema = z.object({});
 export const cloudConfigUpdateInputSchema = operationSchema.extend({
-  defaultRegion: identifier.optional(),
+  defaultRegion: identifier.optional().describe('默认地域；跨地域变更时必须同时指定该地域的 defaultZoneId。'),
   defaultZoneId: identifier.optional(),
-  accessKeyId: identifier.optional(),
-  accessKeySecret: z.string().min(1).optional().describe('Sensitive. Never echo it in a summary.'),
+  accessKeyId: identifier.refine((value) => value !== '********', 'Masked access keys cannot be reused').optional(),
+  accessKeySecret: z.string().min(1).refine((value) => value !== '********', 'Masked access keys cannot be reused').optional().describe('Sensitive. Never echo it in a summary.'),
 }).refine(
   (input) => input.defaultRegion !== undefined || input.defaultZoneId !== undefined || input.accessKeyId !== undefined || input.accessKeySecret !== undefined,
   'at least one cloud configuration field is required',

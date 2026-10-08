@@ -38,6 +38,14 @@ const authoringGraph: ScenarioGraphDraft = {
 };
 
 describe('resolveUniqueDnatEntryHost', () => {
+  it('forwards owned-image cleanup consent and confirmation while preserving the verified cloud result', async () => {
+    const client = createClientStub();
+    vi.mocked(client.removeCustomImageSnapshot).mockResolvedValue({ removed: true, status: 'deleted', snapshotId: 'source-new', snapshotIds: ['s-new'], deletedSnapshotIds: ['s-new'] });
+    const registry = createToolRegistry(client);
+    await expect(registry.callTool('image_catalog_custom_delete', ['images:write'], { snapshotId: 'source-new', deleteOwnedSnapshots: true, idempotencyKey: 'cleanup-new', confirmationId: 'confirmed-new' })).resolves.toMatchObject({ structuredContent: { result: { removed: true, status: 'deleted', snapshotIds: ['s-new'] } } });
+    expect(client.removeCustomImageSnapshot).toHaveBeenCalledWith('source-new', { deleteOwnedSnapshots: true }, { idempotencyKey: 'cleanup-new', confirmationId: 'confirmed-new' });
+  });
+
   it('ignores a DNAT mapping without a target ECS id', () => {
     const graph = structuredClone(authoringGraph);
     const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz');
@@ -140,6 +148,9 @@ function createClientStub(): ClientStub {
     returnRangeTemplateToPrivate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
+    listPlatformImageTags: vi.fn().mockResolvedValue([{ id: 'tag-1', name: 'Web' }]),
+    createPlatformImageTag: vi.fn().mockResolvedValue({ id: 'tag-2', name: 'Service' }),
+    setPlatformImageTags: vi.fn().mockResolvedValue({ id: 'img-1', tags: [] }),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),
     renamePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', displayName: 'renamed' }),
     publishPlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', visibility: 'platform' }),
@@ -218,6 +229,35 @@ function createClientStub(): ClientStub {
 }
 
 describe('tool registry', () => {
+  it('filters admin-only image tools using the authenticated role without granting new scopes', async () => {
+    const client = createClientStub(); const registry = createToolRegistry(client);
+    const names = registry.listTools(['images:read', 'images:write'], 'user').map(tool => tool.name);
+    for (const name of ['platform_image_collect', 'platform_image_publish', 'platform_image_unpublish', 'platform_image_tag_create']) expect(names).not.toContain(name);
+    expect(names).toContain('platform_image_tag_list'); expect(names).toContain('platform_image_tags_set');
+    await expect(registry.callTool('platform_image_tag_create', ['images:write'], { name: 'blocked' }, 'user')).rejects.toThrow('Forbidden tool');
+    expect(client.createPlatformImageTag).not.toHaveBeenCalled();
+    expect(registry.listTools(['images:write'], 'admin').map(tool => tool.name)).toContain('platform_image_tag_create');
+  });
+
+  it('exposes existing tag capabilities with strict schemas and forwards full replacements and confirmations', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    expect(registry.listTools(['images:read']).map(tool => tool.name)).toContain('platform_image_tag_list');
+    expect(registry.listTools(['images:read']).map(tool => tool.name)).not.toContain('platform_image_tag_create');
+    expect(registry.listTools(['images:write']).map(tool => tool.name)).toContain('platform_image_tags_set');
+    await expect(registry.callTool('platform_image_tag_list', ['images:read'], {})).resolves.toMatchObject({ structuredContent: { result: [{ id: 'tag-1', name: 'Web' }] } });
+    await registry.callTool('platform_image_tag_create', ['images:write'], { name: ' Service ', idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' });
+    expect(client.createPlatformImageTag).toHaveBeenCalledWith('Service', { idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' });
+    await registry.callTool('platform_image_tags_set', ['images:write'], { platformImageAssetId: 'img-1', tagIds: [], idempotencyKey: 'clear-tags', confirmationId: 'confirm-clear' });
+    expect(client.setPlatformImageTags).toHaveBeenCalledWith('img-1', [], { idempotencyKey: 'clear-tags', confirmationId: 'confirm-clear' });
+    const schema = registry.listTools(['images:write']).find(tool => tool.name === 'platform_image_tags_set')!.inputSchema!;
+    expect(schema.safeParse({ platformImageAssetId: 'img-1', tagIds: ['tag-1', 'tag-1'] }).success).toBe(false);
+    expect(schema.safeParse({ platformImageAssetId: 'img-1' }).success).toBe(false);
+    const names = registry.listTools(['images:read', 'images:write']).map(tool => tool.name);
+    expect(names).not.toContain('platform_image_tag_delete');
+    expect(names).not.toContain('platform_image_tag_rename');
+  });
+
   it('publishes every template orchestration tool with a complete MCP definition', () => {
     const registry = createToolRegistry(createClientStub());
     const tools = registry.listTools([
@@ -283,6 +323,50 @@ describe('tool registry', () => {
         'range_template_topology_detect_and_save',
       ]),
     );
+  });
+
+  it.each([undefined, false, true])('forwards the optional read-only range network diagnostic flag (%s)', async (includeNetworkDiagnostics) => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const networkDiagnostics = {
+      status: 'succeeded', checkedAt: '2026-10-09T00:00:00Z', regionId: 'cn-hangzhou',
+      cloudAccountUid: 'mock-account', vpcId: 'vpc-mock', instances: [{ nodeId: 'entry', privateIp: '10.0.40.10' }],
+      networkInterfaces: [], natGateways: [], forwardEntries: [], snatEntries: [], routeTables: [], networkAcls: [], securityGroups: [],
+    };
+    const snapshot = { id: 'range-1', status: 'running', networkDiagnostics, runtimeCredentials: { password: 'mock-hidden' } };
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot);
+
+    const result = await registry.callTool('range_instance_get', ['ranges:read'], {
+      rangeInstanceId: 'range-1', ...(includeNetworkDiagnostics === undefined ? {} : { includeNetworkDiagnostics }),
+    });
+
+    expect(client.getRangeInstance).toHaveBeenCalledWith('range-1', includeNetworkDiagnostics === undefined
+      ? undefined : { includeNetworkDiagnostics });
+    expect(result.structuredContent).toEqual({ result: { id: 'range-1', status: 'running', networkDiagnostics } });
+    expect(JSON.stringify(result)).not.toContain('mock-hidden');
+    expect(snapshot.runtimeCredentials.password).toBe('mock-hidden');
+    const tool = registry.listTools(['ranges:read']).find((entry) => entry.name === 'range_instance_get')!;
+    expect(tool.annotations.readOnlyHint).toBe(true);
+    expect(tool.requiredScopes).toEqual(['ranges:read']);
+    expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it('rejects untyped diagnostic flags and caller-supplied cloud targets before forwarding', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    for (const invalid of [
+      { includeNetworkDiagnostics: 'true' },
+      { includeNetworkDiagnostics: null },
+      { includeNetworkDiagnostics: true, vpcId: 'foreign-vpc' },
+      { includeNetworkDiagnostics: true, instanceId: 'foreign-ecs' },
+      { includeNetworkDiagnostics: true, regionId: 'foreign-region' },
+    ]) {
+      await expect(registry.callTool('range_instance_get', ['ranges:read'], { rangeInstanceId: 'range-1', ...invalid }))
+        .rejects.toThrow('Invalid input for range_instance_get');
+    }
+    await expect(registry.callTool('range_instance_get', [], { rangeInstanceId: 'range-1', includeNetworkDiagnostics: true }))
+      .rejects.toThrow('Forbidden tool: range_instance_get');
+    expect(client.getRangeInstance).not.toHaveBeenCalled();
   });
 
   it('publishes every front-end range-instance operation as a complete MCP tool', () => {
@@ -1189,7 +1273,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(69);
+    expect(tools).toHaveLength(75);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

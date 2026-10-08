@@ -609,6 +609,8 @@ export async function triggerBillingSync(
   });
 
   return readJson<{
+    syncInProgress?: boolean;
+    deferredDates?: string[];
     syncedDays: number;
     importedLineItems: number;
     anomalyCount: number;

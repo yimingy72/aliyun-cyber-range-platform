@@ -40,6 +40,8 @@ export class OidcJwtVerifier {
   private readonly issuer = this.requireEnv('OIDC_ISSUER');
   private readonly jwksUrl = this.requireEnv('OIDC_JWKS_URL');
   private cachedKeys: OidcJwk[] | null = null;
+  private jwksRequest: Promise<OidcJwk[]> | null = null;
+  private refreshAfter = 0;
 
   async verifyAccessToken(token: string): Promise<VerifiedOidcJwtClaims> {
     const [encodedHeader, encodedPayload, encodedSignature] = token.split('.');
@@ -109,7 +111,10 @@ export class OidcJwtVerifier {
 
   private async getSigningKey(kid: string) {
     const keys = await this.getJwks();
-    const key = keys.find((item) => item.kid === kid);
+    let key = keys.find((item) => item.kid === kid);
+    if (!key) {
+      key = (await this.getJwks(true)).find((item) => item.kid === kid);
+    }
 
     if (!key) {
       throw new UnauthorizedException('OIDC signing key was not found');
@@ -118,12 +123,31 @@ export class OidcJwtVerifier {
     return key;
   }
 
-  private async getJwks() {
-    if (this.cachedKeys) {
+  private async getJwks(refresh = false): Promise<OidcJwk[]> {
+    if (this.cachedKeys && !refresh) {
+      return this.cachedKeys;
+    }
+    if (this.jwksRequest) {
+      return this.jwksRequest;
+    }
+    if (this.cachedKeys && Date.now() < this.refreshAfter) {
       return this.cachedKeys;
     }
 
-    const response = await fetch(this.jwksUrl);
+    // Coalesce rotation checks and bound unknown-kid requests from unverified tokens.
+    if (refresh) {
+      this.refreshAfter = Date.now() + 1_000;
+    }
+    this.jwksRequest = this.fetchJwks();
+    try {
+      return await this.jwksRequest;
+    } finally {
+      this.jwksRequest = null;
+    }
+  }
+
+  private async fetchJwks(): Promise<OidcJwk[]> {
+    const response = await fetch(this.jwksUrl, { signal: AbortSignal.timeout(5_000) });
 
     if (response.status !== 200) {
       throw new UnauthorizedException('OIDC JWKS fetch failed');

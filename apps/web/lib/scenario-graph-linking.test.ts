@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ScenarioGraphEdge, TemplateNode } from './scenario-graph';
-import { normalizeManualEdgePair, validateManualEdge } from './scenario-graph-linking';
+import { nextAvailableSwitchCidr, normalizeManualEdgePair, reconcileHostNicConnections, validateManualEdge } from './scenario-graph-linking';
 
 const routerNode: TemplateNode = {
   id: 'router-1',
@@ -125,5 +125,37 @@ describe('validateManualEdge', () => {
       ok: false,
       reason: '不能将节点连接到自己',
     });
+  });
+});
+
+describe('NIC connection reconciliation', () => {
+  it('rebinds edges, primary placement and DNAT references together', () => {
+    const oldSwitch = {...switchNode,nat:{snatEnabled:true,dnatMappings:[{key:'http',targetHostId:ecsNode.id,externalPort:80,internalPort:80,protocol:'tcp' as const}]}};
+    const newSwitch = {...switchNode,id:'switch-2',zoneKey:'private',cidr:'192.168.0.0/24'};
+    const previous = [routerNode,oldSwitch,newSwitch,ecsNode];
+    const nextHost = {...ecsNode,nics:ecsNode.nics!.map(nic=>({...nic,switchId:newSwitch.id,privateIp:'192.168.0.10'}))};
+    const oldEdges = [{id:'router-edge',fromNodeId:routerNode.id,toNodeId:oldSwitch.id,relationType:'manual' as const},{id:'host-edge',fromNodeId:oldSwitch.id,toNodeId:ecsNode.id,relationType:'manual' as const}];
+    const result = reconcileHostNicConnections(previous,[routerNode,oldSwitch,newSwitch,nextHost],oldEdges,ecsNode.id);
+    expect(result.edges.some(edge=>edge.fromNodeId===oldSwitch.id&&edge.toNodeId===ecsNode.id)).toBe(false);
+    expect(result.edges.some(edge=>edge.fromNodeId===newSwitch.id&&edge.toNodeId===ecsNode.id)).toBe(true);
+    expect((result.nodes.find(node=>node.id===ecsNode.id) as typeof ecsNode).zoneKey).toBe('private');
+    expect((result.nodes.find(node=>node.id===oldSwitch.id) as typeof oldSwitch).nat.dnatMappings).toEqual([]);
+  });
+  it('does not infer edges during an unrelated property edit',()=>{
+    const nextHost = {...ecsNode,label:'Renamed'};
+    const result = reconcileHostNicConnections([switchNode,ecsNode],[switchNode,nextHost],[],ecsNode.id);
+    expect(result.edges).toEqual([]);
+  });
+});
+
+describe('available default subnet allocation',()=>{
+  it('uses fixed ranges and skips CIDR overlaps',()=>{
+    expect(nextAvailableSwitchCidr([{...switchNode,cidr:'10.0.0.0/16'}])).toBe('192.168.0.0/24');
+    const nodes=[{...switchNode,cidr:'10.0.0.0/24'},{...switchNode,cidr:'192.168.0.0/24'},{...switchNode,cidr:'172.16.0.0/24'}];
+    expect(nextAvailableSwitchCidr(nodes)).toBe('10.0.1.0/24');
+  });
+  it('reports when all fixed ranges are already occupied',()=>{
+    const nodes=[{...switchNode,cidr:'10.0.0.0/16'},{...switchNode,cidr:'192.168.0.0/16'},{...switchNode,cidr:'172.16.0.0/16'}];
+    expect(()=>nextAvailableSwitchCidr(nodes)).toThrow('没有可用');
   });
 });

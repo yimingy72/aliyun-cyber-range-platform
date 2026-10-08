@@ -169,7 +169,8 @@ export async function releaseRangeInstanceBillingLedger(
 
   await Promise.all(
     resources
-      .filter((item) => item.rangeInstanceId === rangeInstanceId && item.releasedAt === null)
+      .filter((item) => item.rangeInstanceId === rangeInstanceId && item.releasedAt === null
+        && item.cloudResourceType !== 'image' && item.cloudResourceType !== 'snapshot')
       .map((item) =>
         repository.updateBillingLedgerResource(item.id, {
           releasedAt,

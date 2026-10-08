@@ -1,6 +1,4 @@
-import { randomUUID } from 'node:crypto';
-
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -16,9 +14,11 @@ import {
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachOwnerUsernamesAsCreatedBy } from './creator-display';
 import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-image.dto';
+import type { DeleteCustomImageDto } from './dto/image-catalog.dto';
 import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/platform-image-tag.dto';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
-import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import { imageRpc, cloudItems, cloudPage } from './aliyun-image-rpc';
+import { PackedImagesService } from './packed-images.service';
 import { SystemConfigService } from './system-config.service';
 
 type ImageCatalogScopePayload = {
@@ -74,9 +74,6 @@ type AliyunImage = {
   };
 };
 
-const ALICLOUD_ECS_API_VERSION = '2014-05-26';
-const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
-const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_PAGE_SIZE = 100;
 
 function containsImageReference(
@@ -125,6 +122,7 @@ export class ImageCatalogService {
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
+    @Optional() private readonly packedImages?: PackedImagesService,
   ) {}
 
   listPublic() {
@@ -157,7 +155,7 @@ export class ImageCatalogService {
 
     const items = await this.adminRepository.listPlatformImageAssets({
       ...baseFilter,
-      ...(view === 'platform' ? { onlyAvailableSourceSnapshots: true } : {}),
+      ...(view === 'platform' && currentUser.role !== 'admin' ? { onlyAvailableSourceSnapshots: true } : {}),
     });
 
     const itemsWithCreatedBy = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, items);
@@ -193,7 +191,7 @@ export class ImageCatalogService {
     };
   }
 
-  async createPlatformImageTag(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
+  async preparePlatformImageTagCreation(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
     if (currentUser.role !== 'admin') {
       throw new ForbiddenException('Admin access required to create platform image tags');
     }
@@ -205,6 +203,11 @@ export class ImageCatalogService {
     if (existingTags.some((tag) => tag.normalizedName === normalizedName)) {
       throw new ConflictException('镜像标签已存在');
     }
+    return { name, normalizedName };
+  }
+
+  async createPlatformImageTag(input: CreatePlatformImageTagDto, currentUser: SessionUserProfile) {
+    const { name, normalizedName } = await this.preparePlatformImageTagCreation(input, currentUser);
 
     try {
       const tag = await this.adminRepository.createPlatformImageTag({
@@ -222,14 +225,24 @@ export class ImageCatalogService {
     }
   }
 
-  async setPlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
-    await this.getScopedPlatformAssetOrThrow(id, currentUser);
+  private async prepareTagAssociation(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
     const tagIds = [...new Set(input.tagIds)];
     const tags = await this.adminRepository.listPlatformImageTagsByIds(tagIds);
 
     if (tags.length !== tagIds.length) {
       throw new BadRequestException('镜像标签不存在');
     }
+    return { asset, tagIds };
+  }
+
+  async preparePlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    const { asset, tagIds } = await this.prepareTagAssociation(id, input, currentUser);
+    return { platformImageAssetId: asset.id, displayName: asset.displayName, ownerUserId: asset.ownerUserId, accountUid: asset.accountUid, regionId: asset.regionId, tagIds };
+  }
+
+  async setPlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
+    const { tagIds } = await this.prepareTagAssociation(id, input, currentUser);
 
     const updatedAsset = await this.adminRepository.replacePlatformImageAssetTags(id, tagIds);
     return this.withCreatorUsername(updatedAsset, currentUser);
@@ -248,8 +261,18 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
+    if (!snapshot.isAvailable || snapshot.status === 'Missing' || await this.adminRepository.hasActiveImageImportForArtifact({ sourceSnapshotId: snapshot.id, imageId: snapshot.imageId }) || await this.packedImages?.hasPending({ imageId: snapshot.imageId, sourceSnapshotId: snapshot.id })) throw new ConflictException('来源镜像尚不可用或正在处理，不能收录。');
+    const [existing] = await this.adminRepository.listPlatformImageAssets({ provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, imageId: snapshot.imageId });
+    if (existing) return this.withCreatorUsername(existing, currentUser);
+    const [packed] = await this.adminRepository.listPackedImageArtifacts({ imageId: snapshot.imageId, cloudAccountUid: snapshot.accountUid ?? undefined, regionId: snapshot.regionId });
+    if (packed && packed.status !== 'deleted') {
+      if (!this.packedImages) throw new ConflictException('打包来源恢复服务不可用，请稍后重试。');
+      const asset = await this.packedImages.restoreAsset(packed.id, snapshotId, displayName);
+      return this.withCreatorUsername(asset, currentUser);
+    }
     const billingStartAt = new Date();
     const asset = await this.adminRepository.collectPlatformImageAsset({
+      preserveExisting: true,
       snapshotId,
       displayName,
       ownerUserId: null,
@@ -316,6 +339,9 @@ export class ImageCatalogService {
 
     if (!enabled) {
       await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
+    } else {
+      const source = asset.sourceSnapshotId && await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId);
+      if (!source || !source.isAvailable) throw new ConflictException('来源镜像不可用，不能启用。');
     }
 
     const updatedAsset = await this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
@@ -326,21 +352,6 @@ export class ImageCatalogService {
     const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
     await this.assertPlatformAssetNotImporting(asset);
     await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
-
-    if (asset.sourceScope === 'custom') {
-      const snapshot = await this.resolvePlatformAssetSnapshot(asset);
-
-      if (!snapshot) {
-        await this.adminRepository.deletePlatformImageAsset(id);
-        return;
-      }
-
-      await this.deleteCustomSnapshot(snapshot.id);
-      if (asset.sourceSnapshotId !== snapshot.id) {
-        await this.adminRepository.deletePlatformImageAsset(id);
-      }
-      return;
-    }
 
     await this.adminRepository.deletePlatformImageAsset(id);
   }
@@ -364,7 +375,22 @@ export class ImageCatalogService {
     });
   }
 
-  async deleteCustomSnapshot(snapshotId: string): Promise<void> {
+  async prepareCustomDelete(snapshotId: string, currentUser: SessionUserProfile, deleteOwnedSnapshots: boolean) {
+    const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
+    if (!snapshot || snapshot.scope !== 'custom' || snapshot.provider !== 'alibaba_cloud') throw new NotFoundException('Image snapshot not found');
+    if (deleteOwnedSnapshots) {
+      const [artifact] = await this.adminRepository.listPackedImageArtifacts({ sourceSnapshotId: snapshotId });
+      if (!artifact || artifact.cloudAccountUid !== snapshot.accountUid || artifact.regionId !== snapshot.regionId || artifact.imageId !== snapshot.imageId
+        || (currentUser.role !== 'admin' && artifact.ownerUserId !== currentUser.id)) throw new ForbiddenException('仅 owner 或管理员可完整回收已验证的平台打包镜像。');
+    } else {
+      if (currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
+      const account = await this.systemConfigService.getAccountContext();
+      if (!this.isSnapshotInScope(snapshot, account)) throw new NotFoundException('Image snapshot not found');
+    }
+    return { imageId: snapshot.imageId, snapshotId, cloudAccountUid: snapshot.accountUid, regionId: snapshot.regionId };
+  }
+
+  async deleteCustomSnapshot(snapshotId: string, options: DeleteCustomImageDto = {}, currentUser?: SessionUserProfile) {
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
 
     if (!snapshot) {
@@ -374,6 +400,14 @@ export class ImageCatalogService {
     if (snapshot.scope !== 'custom') {
       throw new BadRequestException('Only custom image snapshots can be deleted');
     }
+
+    if (options.deleteOwnedSnapshots) {
+      if (!currentUser || !this.packedImages) throw new ForbiddenException('完整回收需要已认证 owner 和打包来源记录。');
+      await this.prepareCustomDelete(snapshotId, currentUser, true);
+      await this.assertCustomSnapshotNotInUse(snapshot);
+      return this.packedImages.cleanup(snapshotId, currentUser);
+    }
+    if (currentUser && currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
 
     const accountContext = await this.systemConfigService.getAccountContext();
 
@@ -385,19 +419,20 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
-    await this.assertImageSnapshotNotImporting(snapshot);
     await this.assertCustomSnapshotNotInUse(snapshot);
+    await this.assertImageSnapshotNotImporting(snapshot);
 
-    await this.performAliyunRpcRequest({
+    if (await this.describeImageById(snapshot.imageId, accountContext)) await this.performAliyunRpcRequest({
       accessKeyId: accountContext.accessKeyId,
       accessKeySecret: accountContext.accessKeySecret,
       regionId: accountContext.defaultRegion,
       action: 'DeleteImage',
       parameters: {
         ImageId: snapshot.imageId,
-        Force: 'true',
+        Force: 'false',
       },
     });
+    if (await this.describeImageById(snapshot.imageId, accountContext)) throw new ConflictException('云镜像删除尚未确认，请用相同目标重试。');
 
     // ponytail: O(n) ledger scan is fine for now; add a dedicated repository query once image billing volume grows.
     const ledgerResources = await this.adminRepository.listBillingLedgerResources();
@@ -406,7 +441,8 @@ export class ImageCatalogService {
         .filter(
           (item) =>
             item.cloudResourceId === snapshot.imageId &&
-            (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot') &&
+            item.cloudAccountUid === snapshot.accountUid && item.regionId === snapshot.regionId &&
+            item.cloudResourceType === 'image' &&
             item.releasedAt === null,
         )
         .map((item) =>
@@ -418,22 +454,14 @@ export class ImageCatalogService {
 
     await this.adminRepository.deletePlatformImageAssetsBySnapshotId(snapshot.id);
 
-    const remainingSnapshots = await this.adminRepository.listImageSnapshots({
+    await this.adminRepository.upsertImageSnapshots({
       provider: snapshot.provider,
       accountUid: snapshot.accountUid,
       regionId: snapshot.regionId,
       scope: 'custom',
+      snapshots: [{ imageId: snapshot.imageId, sourceImageName: snapshot.sourceImageName, status: 'Deleted', isAvailable: false, lastSyncedAt: new Date() }],
     });
-
-    await this.adminRepository.reconcileImageSnapshots({
-      provider: snapshot.provider,
-      accountUid: snapshot.accountUid,
-      regionId: snapshot.regionId,
-      scope: 'custom',
-      snapshots: remainingSnapshots
-        .filter((item) => item.id !== snapshot.id)
-        .map((item) => this.toUpsertSnapshotInput(item)),
-    });
+    return { removed: true, snapshotId };
   }
 
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {
@@ -455,7 +483,7 @@ export class ImageCatalogService {
     ]);
 
     return {
-      snapshots: snapshots.map((snapshot) => ({
+      snapshots: snapshots.filter(snapshot => snapshot.status !== 'Deleted').map((snapshot) => ({
         id: snapshot.id,
         provider: snapshot.provider,
         scope: snapshot.scope,
@@ -501,8 +529,8 @@ export class ImageCatalogService {
       imageId: asset.imageId,
     });
 
-    if (importing) {
-      throw new ConflictException('镜像正在导入，完成前不能修改启用状态或删除。');
+    if (importing || await this.packedImages?.hasPending({ platformImageAssetId: asset.id, sourceSnapshotId: asset.sourceSnapshotId, imageId: asset.imageId })) {
+      throw new ConflictException('镜像正在导入、打包或清理，完成前不能修改启用状态或删除。');
     }
   }
 
@@ -512,8 +540,8 @@ export class ImageCatalogService {
       imageId: snapshot.imageId,
     });
 
-    if (importing) {
-      throw new ConflictException('镜像正在导入，完成前不能删除。');
+    if (importing || await this.packedImages?.hasPending({ sourceSnapshotId: snapshot.id, imageId: snapshot.imageId })) {
+      throw new ConflictException('镜像正在导入、打包或清理，完成前不能删除。');
     }
   }
 
@@ -847,6 +875,7 @@ export class ImageCatalogService {
 
     let pageNumber = 1;
     let totalCount = 0;
+    let expectedTotal: number | undefined;
 
     do {
       const response = await this.describeImagesPage({
@@ -870,10 +899,14 @@ export class ImageCatalogService {
         })),
       );
 
-      totalCount = this.toNumber(response.TotalCount);
+      totalCount = cloudPage(response, pageNumber, ALICLOUD_PAGE_SIZE, this.normalizeImages(response).length);
+      if (expectedTotal !== undefined && expectedTotal !== totalCount) throw new Error('Cloud image list changed during pagination; cached sources were retained');
+      expectedTotal = totalCount;
+      if (!Number.isSafeInteger(totalCount) || totalCount < 0 || (!this.normalizeImages(response).length && snapshots.length < totalCount)) throw new Error('Invalid image catalog pagination; cached sources were retained');
       pageNumber += 1;
     } while ((pageNumber - 1) * ALICLOUD_PAGE_SIZE < totalCount);
 
+    if (snapshots.length !== totalCount || new Set(snapshots.map(item => item.imageId)).size !== snapshots.length || snapshots.some(item => !item.imageId || !item.status)) throw new Error('Incomplete image catalog result; cached sources were retained');
     await this.adminRepository.reconcileImageSnapshots({
       provider: accountContext.provider,
       accountUid: accountContext.accountUid,
@@ -901,6 +934,7 @@ export class ImageCatalogService {
         ImageOwnerAlias: input.imageOwnerAlias,
         PageNumber: String(input.pageNumber),
         PageSize: String(ALICLOUD_PAGE_SIZE),
+        Status: 'ALL',
       },
     });
   }
@@ -916,10 +950,15 @@ export class ImageCatalogService {
       action: 'DescribeImages',
       parameters: {
         ImageId: imageId,
+        Status: 'ALL',
+        PageNumber: '1',
+        PageSize: '100',
       },
     });
 
-    return this.normalizeImages(response)[0] ?? null;
+    const items = this.normalizeImages(response);
+    if (cloudPage(response, 1, 100, items.length) !== items.length || items.length > 1 || items.some(item => item.ImageId !== imageId || !item.Status)) throw new Error('Invalid exact image query');
+    return items[0] ?? null;
   }
 
   private async performAliyunRpcRequest<ResponsePayload>(input: {
@@ -929,58 +968,13 @@ export class ImageCatalogService {
     action: string;
     parameters?: Record<string, string>;
   }): Promise<ResponsePayload> {
-    const endpoint = `https://ecs.${input.regionId}.aliyuncs.com/`;
-    const query = signAliyunRpcQuery(
-      {
-        Action: input.action,
-        AccessKeyId: input.accessKeyId,
-        Format: 'JSON',
-        RegionId: input.regionId,
-        SignatureMethod: ALICLOUD_SIGNATURE_METHOD,
-        SignatureNonce: randomUUID(),
-        SignatureVersion: ALICLOUD_SIGNATURE_VERSION,
-        Timestamp: this.formatTimestamp(new Date()),
-        Version: ALICLOUD_ECS_API_VERSION,
-        ...(input.parameters ?? {}),
-      },
-      input.accessKeySecret,
-    );
-    const response = await fetch(`${endpoint}?${query}`, {
-      method: 'GET',
-    });
-
-    if (!response.ok) {
-      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}`);
-    }
-
-    return (await response.json()) as ResponsePayload;
-  }
-
-  private toUpsertSnapshotInput(snapshot: CloudImageSnapshotRecord): UpsertImageSnapshotInput {
-    return {
-      imageId: snapshot.imageId,
-      sourceImageName: snapshot.sourceImageName,
-      osType: snapshot.osType,
-      platform: snapshot.platform,
-      architecture: snapshot.architecture,
-      status: snapshot.status,
-      isAvailable: snapshot.isAvailable,
-      lastSyncedAt: snapshot.lastSyncedAt,
-    };
-  }
-
-  private formatTimestamp(value: Date) {
-    return value.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    return imageRpc<ResponsePayload>({ accessKeyId: input.accessKeyId, accessKeySecret: input.accessKeySecret, regionId: input.regionId }, input.action, input.parameters);
   }
 
   private normalizeImages(response: AliyunDescribeImagesResponse) {
-    const images = response.Images?.Image;
-
-    if (!images) {
-      return [];
-    }
-
-    return Array.isArray(images) ? images : [images];
+    const items = cloudItems<AliyunImage>(response, 'Images', 'Image');
+    if (items.some(item => typeof item.ImageId !== 'string' || !item.ImageId.trim() || typeof item.Status !== 'string' || !item.Status.trim())) throw new BadGatewayException('Invalid cloud image identity/status');
+    return items;
   }
 
   private buildSnapshotStatus(image: AliyunImage) {
@@ -998,16 +992,4 @@ export class ImageCatalogService {
     return status;
   }
 
-  private toNumber(value: number | string | undefined) {
-    if (typeof value === 'number') {
-      return value;
-    }
-
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }
-
-    return 0;
-  }
 }

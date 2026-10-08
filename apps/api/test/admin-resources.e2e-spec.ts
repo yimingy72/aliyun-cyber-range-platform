@@ -1,3 +1,4 @@
+import { completeTemplatePayload } from './support/complete-template-payload';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -28,140 +29,16 @@ function createTemplatePayload(input: {
   const vpcPrefix = vpcCidr.split('.').slice(0, 2).join('.');
   const zoneCidr = `${vpcPrefix}.10.0/24`;
   const privateIp = `${vpcPrefix}.10.10`;
-  const imageSelection = {
-    platformImageAssetId,
-    imageId: platformImageId,
-    imageStrategy: { mode: 'fixed', imageId: platformImageId },
-  };
-  const networkZone = {
-    key: 'dmz',
-    name: 'DMZ',
-    purpose: 'public-entry',
-    cidr: zoneCidr,
-    isPublicEntry: true,
-  };
-  const scenarioHost = {
-    key: 'entry',
-    name: hostName,
-    zoneKey: 'dmz',
-    role: 'entry',
-    primaryPrivateIp: privateIp,
-    exposePublic: true,
-    ...imageSelection,
-  };
-
+  const payload = completeTemplatePayload({
+    vpcCidr,
+    networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: zoneCidr, isPublicEntry: true }],
+    hosts: [{ key: 'entry', name: hostName, zoneKey: 'dmz', role: 'entry', privateIp, exposePublic: true }],
+    publicEntry: { hostKey: 'entry', protocols: [{ protocol: 'ssh', port: 22 }] },
+  }, { id: platformImageAssetId, imageId: platformImageId, displayName: 'Fixture image' });
   return {
     name: input.name,
-    description: input.description,
-    topologySpec: {
-      vpcCidr,
-      networkZones: [networkZone],
-      hosts: [
-        {
-          key: 'entry',
-          name: hostName,
-          zoneKey: 'dmz',
-          role: 'entry',
-          privateIp,
-          exposePublic: true,
-        },
-      ],
-      publicEntry: {
-        hostKey: 'entry',
-        protocols: [{ protocol: 'ssh', port: 22 }],
-      },
-    },
-    topologyGraph: {
-      schemaVersion: '2.0.0',
-      nodes: [
-        {
-          id: 'switch-dmz',
-          kind: 'switch',
-          label: 'DMZ',
-          zoneKey: 'dmz',
-          cidr: zoneCidr,
-        },
-        {
-          id: 'entry',
-          kind: 'ecs',
-          label: hostName,
-          ...imageSelection,
-        },
-      ],
-      edges: [{ id: 'edge-entry', fromNodeId: 'switch-dmz', toNodeId: 'entry' }],
-    },
-    scenarioTemplateSpec: {
-      schemaVersion: '1.0.0',
-      topology: {
-        vpcCidr,
-        entryHostKey: 'entry',
-      },
-      networkZones: [networkZone],
-      hosts: [scenarioHost],
-      nat: { natGateways: [], eips: [] },
-      access: { portGroups: [] },
-      bootstrap: { scripts: [] },
-      runtimePreferences: { imagePolicies: [], instanceTypePolicies: [] },
-    },
-    compiledProvisionSpec: {
-      schemaVersion: '1.0.0',
-      topology: {
-        vpcCidr,
-        entryHostKey: 'entry',
-      },
-      networkZones: [networkZone],
-      hosts: [
-        {
-          ...scenarioHost,
-          networkInterfaces: [{ deviceIndex: 0, zoneKey: 'dmz', privateIp }],
-        },
-      ],
-      natGateways: [],
-      eips: [],
-      snatEntries: [],
-      dnatEntries: [],
-      securityGroupRules: [],
-      aclRules: [],
-      bootstrapScripts: [],
-      runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
-    },
-    compiledSpec: {
-      schemaVersion: '1.0.0',
-      resources: [
-        {
-          id: 'switch-dmz',
-          type: 'switch',
-          provider: 'alibaba_cloud',
-          config: {
-            label: 'DMZ',
-            zoneKey: 'dmz',
-            cidr: zoneCidr,
-            purpose: 'public-entry',
-          },
-        },
-        {
-          id: 'entry',
-          type: 'host',
-          provider: 'alibaba_cloud',
-          config: {
-            label: hostName,
-            zoneKey: 'dmz',
-            role: 'entry',
-            privateIp,
-            exposePublic: true,
-            ...imageSelection,
-          },
-        },
-      ],
-      topology: {
-        vpcCidr,
-        publicEntryHostKey: 'entry',
-        networkZoneKeys: ['dmz'],
-        hostKeys: ['entry'],
-      },
-    },
-    variableSchema: {},
-    outputSchema: {},
+    description: input.description, variableSchema: {}, outputSchema: {},
+    ...payload,
   };
 }
 

@@ -184,6 +184,14 @@ export type RangeRuntimeCredential = {
 export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
 
 export type SingleInstanceConfig = {
+  cloudAccountContextId?: string | null;
+  cloudAccountUid?: string | null;
+  regionId?: string;
+  zoneId?: string;
+  networkProfileId?: string;
+  resolvedInstanceType?: string;
+  nativeCreateJobId?: string;
+  autoReleaseTime?: string | null;
   baseName: string;
   quantityIndex: number;
   hostKey: string;
@@ -297,6 +305,8 @@ export type ProvisionJobTopologySnapshot = {
   compiledProvisionSpec: Record<string, unknown>;
   compiledSpec: Record<string, unknown>;
   templateModulePath: string;
+  runtimeCredentials?: RangeRuntimeCredentials | null;
+  operation?: 'create' | 'update' | 'destroy';
 };
 
 export type ProvisionJobRecord = {
@@ -413,6 +423,34 @@ export type CloudImageSnapshotRecord = {
   updatedAt: Date;
 };
 
+export type PackedImageArtifactRecord = {
+  id: string;
+  cloudAccountContextId: string;
+  cloudAccountUid: string;
+  regionId: string;
+  ownerUserId: string;
+  sourceRangeInstanceId: string;
+  sourceHostKey: string;
+  sourceInstanceId: string;
+  sourceDiskIds: string[];
+  imageId: string | null;
+  sourceSnapshotId: string | null;
+  platformImageAssetId: string | null;
+  status: string;
+  backingSnapshotIds: string[];
+  deletedSnapshotIds: string[];
+  cloudImageDeletedAt: Date | null;
+  completedAt: Date | null;
+  lastPolledAt: Date | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+export type CreatePackedImageArtifactInput = Pick<PackedImageArtifactRecord,
+  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'>;
+export type UpdatePackedImageArtifactInput = Partial<Pick<PackedImageArtifactRecord,
+  'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'status' | 'backingSnapshotIds' | 'deletedSnapshotIds' | 'cloudImageDeletedAt' | 'completedAt' | 'lastPolledAt' | 'errorMessage'>>;
+
 export type ImageCatalogItemRecord = {
   id: string;
   displayName: string;
@@ -458,6 +496,15 @@ export type PlatformImageTagRecord = {
 };
 
 export type SingleInstanceNetworkProfileRecord = {
+  createdByUserId?:string|null;
+  cleanupRunId?:string|null;
+  cleanupRegisteredByUserId?:string|null;
+  cleanupOwnerUserIds?:string[]|null;
+  status?: string;
+  cloudAccountUid?: string;
+  cloudAccountContextId?: string | null;
+  workspaceKey?: string | null;
+  managedByPlatform?: boolean;
   id: string;
   provider: CloudProvider;
   regionId: string;
@@ -494,6 +541,7 @@ export type BillingLedgerResourceRecord = {
 
 export type BillingLineItemRecord = {
   id: string;
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -515,6 +563,7 @@ export type BillingLineItemRecord = {
 
 export type BillingAnomalyRecord = {
   id: string;
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -559,6 +608,12 @@ export type UpsertCloudResourceDriftInput = {
 };
 
 export type UpsertSingleInstanceNetworkProfileInput = {
+  createdByUserId?:string|null;
+  status?: string;
+  cloudAccountUid?: string;
+  cloudAccountContextId?: string | null;
+  workspaceKey?: string | null;
+  managedByPlatform?: boolean;
   provider: CloudProvider;
   regionId: string;
   zoneId: string;
@@ -595,6 +650,7 @@ export type FindBillingLedgerResourceInput = {
 };
 
 export type UpdateBillingLedgerResourceInput = Partial<{
+  cloudAccountUid: string | null;
   billingScope: BillingScope;
   ownerUserId: string | null;
   rangeInstanceId: string | null;
@@ -607,6 +663,7 @@ export type UpdateBillingLedgerResourceInput = Partial<{
 }>;
 
 export type CreateBillingLineItemInput = {
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -625,6 +682,7 @@ export type CreateBillingLineItemInput = {
 };
 
 export type ListBillingLineItemsFilter = Partial<{
+  cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
   ownerUserId: string | null;
@@ -633,6 +691,7 @@ export type ListBillingLineItemsFilter = Partial<{
 }>;
 
 export type CreateBillingAnomalyInput = {
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -646,6 +705,7 @@ export type CreateBillingAnomalyInput = {
 };
 
 export type ListBillingAnomaliesFilter = Partial<{
+  cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
 }>;
@@ -712,6 +772,7 @@ export type ListPlatformImageAssetsFilter = Partial<{
 }>;
 
 export type CollectPlatformImageAssetInput = {
+  preserveExisting?: boolean;
   snapshotId: string;
   displayName: string;
   defaultHostName?: string | null;
@@ -900,6 +961,13 @@ export type ApplyRangeInstanceDraftInput = {
   topologySnapshot: ProvisionJobTopologySnapshot;
 };
 
+export type QueueRangeInstanceJobInput = CreateProvisionJobInput & {
+  expectedStatus: RangeInstanceStatus;
+  expectedOwnerUserId: string | null;
+  nextStatus: 'pending_create' | 'pending_destroy';
+  allocatedCidr?: string | null;
+};
+
 export type SyncRangeInstanceDraftToTemplateInput = {
   rangeInstanceId: string;
   expectedDraftRevision: number;
@@ -915,11 +983,14 @@ export type CompleteRangeInstanceDraftApplyInput = Pick<
   | 'accessEntry'
   | 'resourceSummary'
   | 'errorSummary'
+  | 'runtimeCredentials'
 > & {
   runtimeTopologyGraph: Record<string, unknown>;
   runtimeScenarioTemplateSpec: Record<string, unknown>;
   runtimeCompiledProvisionSpec: Record<string, unknown>;
   expectedDraftRevision: number;
+  provisionJobId?: string;
+  claimStartedAt?: Date;
 };
 
 export class RangeInstanceDraftRevisionConflictError extends Error {
@@ -988,7 +1059,9 @@ export interface AdminRepository {
   listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
   archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void>;
-  createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord>;
+  createRangeInstance(input: CreateRangeInstanceInput, initialJob?: {
+    triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number;
+  }): Promise<RangeInstanceRecord>;
   getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null>;
   updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord>;
   saveRangeInstanceDraft(
@@ -1005,6 +1078,11 @@ export interface AdminRepository {
   ): Promise<RangeInstanceRecord>;
   listProvisionJobs(): Promise<ProvisionJobRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
+  queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null>;
+  claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
+  heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;
+  updateRangeInstanceForProvisionJob(id: string, startedAt: Date, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord | null>;
+  updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput): Promise<boolean>;
   getProvisionJobById(id: string): Promise<ProvisionJobRecord | null>;
   claimProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
   heartbeatProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;
@@ -1043,7 +1121,23 @@ export interface AdminRepository {
   }): Promise<boolean>;
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
+  withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T>;
+  commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput): Promise<boolean>;
+  listSingleInstanceNetworkProfiles(): Promise<SingleInstanceNetworkProfileRecord[]>;
+  getSingleInstanceNetworkProfileById(id: string): Promise<SingleInstanceNetworkProfileRecord | null>;
+  deleteSingleInstanceNetworkProfile(id: string): Promise<void>;
+  markSingleInstanceNetworkDestroying(id: string): Promise<void>;
+  registerSingleInstanceNetworkCleanup(id:string,runId:string,adminId:string,ownerIds:string[]):Promise<void>;
+  createPackedImageArtifact(input: CreatePackedImageArtifactInput): Promise<PackedImageArtifactRecord>;
+  getPackedImageArtifact(id: string): Promise<PackedImageArtifactRecord | null>;
+  listPackedImageArtifacts(filter?: Partial<Pick<PackedImageArtifactRecord, 'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'cloudAccountUid' | 'regionId'>>): Promise<PackedImageArtifactRecord[]>;
+  updatePackedImageArtifact(id: string, input: UpdatePackedImageArtifactInput): Promise<PackedImageArtifactRecord>;
+  claimPackedImageArtifact(id: string, token: string, expiresAt: Date): Promise<boolean>;
+  renewPackedImageArtifactClaim(id: string, token: string, expiresAt: Date): Promise<boolean>;
+  releasePackedImageArtifactClaim(id: string, token: string): Promise<void>;
+  withPackedImageArtifactClaim<T>(id: string, token: string, work: (repository: AdminRepository) => Promise<T>): Promise<T>;
   getSingleInstanceNetworkProfile(input: {
+    cloudAccountUid?: string;
     provider: CloudProvider;
     regionId: string;
     zoneId: string;
@@ -1055,7 +1149,13 @@ export interface AdminRepository {
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   listBillingLedgerResources(): Promise<BillingLedgerResourceRecord[]>;
-  getLatestBillingLineItemDate(): Promise<Date | null>;
+  getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;
+  replaceBillingDay(input: {
+    cloudAccountUid: string;
+    billingDate: string;
+    lineItems: CreateBillingLineItemInput[];
+    anomalies: CreateBillingAnomalyInput[];
+  }): Promise<void>;
   deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void>;
   upsertBillingLineItems(input: CreateBillingLineItemInput[]): Promise<BillingLineItemRecord[]>;
   listBillingLineItems(filter?: ListBillingLineItemsFilter): Promise<BillingLineItemRecord[]>;

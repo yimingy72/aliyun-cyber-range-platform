@@ -12,6 +12,7 @@ import type {
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
   CreateAdminUserInput,
+  GetRangeInstanceOptions,
   InstanceMode,
   InstanceTypeAvailabilitySnapshot,
   InstanceView,
@@ -26,6 +27,7 @@ import type {
   PlatformApiClientLike,
   PlatformApiClientOptions,
   PlatformImageAsset,
+  PlatformImageTag,
   PlatformImageView,
   ProvisionJob,
   RangeAccessPayload,
@@ -127,6 +129,19 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return result.items;
   }
 
+  async listPlatformImageTags() {
+    const result = await this.request<{ items: PlatformImageTag[] }>('/admin/platform-image-tags');
+    return result.items;
+  }
+
+  createPlatformImageTag(name: string, operation?: OperationRequest) {
+    return this.request<PlatformImageTag>('/admin/platform-image-tags', { method: 'POST', body: JSON.stringify({ name }), operation });
+  }
+
+  setPlatformImageTags(id: string, tagIds: string[], operation?: OperationRequest) {
+    return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/tags`, { method: 'PUT', body: JSON.stringify({ tagIds }), operation });
+  }
+
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest) {
     return this.request<PlatformImageAsset>('/admin/platform-images', {
       method: 'POST',
@@ -193,9 +208,10 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  async removeCustomImageSnapshot(snapshotId: string) {
-    await this.request<void>(`/admin/image-catalog/custom/${encodeURIComponent(snapshotId)}`, {
+  async removeCustomImageSnapshot(snapshotId: string, options?: { deleteOwnedSnapshots?: boolean }, operation?: OperationRequest) {
+    return this.request<Record<string, unknown>>(`/admin/image-catalog/custom/${encodeURIComponent(snapshotId)}${options?.deleteOwnedSnapshots ? '?deleteOwnedSnapshots=true' : ''}`, {
       method: 'DELETE',
+      operation,
     });
   }
 
@@ -214,8 +230,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<RangeInstance[]>(`/admin/ranges?view=${encodeURIComponent(view)}`);
   }
 
-  getRangeInstance(id: string) {
-    return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}`);
+  getRangeInstance(id: string, options?: GetRangeInstanceOptions) {
+    const query = options?.includeNetworkDiagnostics === true ? '?includeNetworkDiagnostics=true' : '';
+    return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}${query}`);
   }
 
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {
@@ -274,6 +291,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
         operation,
       },
     );
+  }
+
+  listSingleInstanceNetworks() {return this.request<Record<string,unknown>[]>('/admin/instances/networks');}
+  registerSingleInstanceNetworkCleanup(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}) {return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/register-cleanup`,{method:'POST',body:JSON.stringify(payload)});}
+  destroySingleInstanceNetwork(id:string,cleanupRunId:string,operation?:OperationRequest) {
+    return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/destroy`,{method:'POST',body:JSON.stringify({cleanupRunId}),operation});
   }
 
   listSingleInstances(view: InstanceView = 'active') {

@@ -1,0 +1,26 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { SingleInstanceNetworkBootstrapService, singleNetworkWorkspaceKey } from '../src/provisioning/single-instance-network-bootstrap';
+const account = { accessKeyId: 'synthetic', accessKeySecret: 'synthetic', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h' };
+const tags = { CloudAccountUid: 'test-account', PlatformManaged: 'true' };
+const profile: any = { id: 'test', provider: 'alibaba_cloud', cloudAccountUid: 'test-account', cloudAccountContextId: 'test-context', managedByPlatform: true, regionId: account.defaultRegion, zoneId: account.defaultZoneId, vpcId: 'vpc-test', vswitchIds: ['vsw-test'], securityGroupId: 'sg-test' };
+it('destroys only the requested bound network state, verifies it is empty, and preserves legacy/unrelated state', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'single-network-lifecycle-'));
+  const service: any = new SingleInstanceNetworkBootstrapService({} as any);
+  service.workspacesRootDir = root;
+  profile.workspaceKey = singleNetworkWorkspaceKey(profile.cloudAccountUid, profile.regionId, profile.zoneId);
+  const dir = path.join(root, profile.workspaceKey);
+  await fs.mkdir(dir);
+  await fs.writeFile(path.join(dir, 'terraform.tfvars.json'), '{}');
+  const state = { version: 4, lineage: 'synthetic-state', resources: [['alicloud_vpc', profile.vpcId], ['alicloud_vswitch', profile.vswitchIds[0]], ['alicloud_security_group', profile.securityGroupId]].map(([type, id]) => ({ module: 'module.network', mode: 'managed', type, instances: [{ attributes: { id, tags } }] })) };
+  await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify(state));
+  service.runner = { init: jest.fn(async () => ({})), destroy: jest.fn(async () => { await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'synthetic-state', outputs: {} })); }) };
+  await expect(service.destroyDefaultProfile({ ...profile, managedByPlatform: false }, account)).rejects.toThrow('bound');
+  await expect(service.destroyDefaultProfile({ ...profile, vpcId: 'vpc-other' }, account)).rejects.toThrow('does not match');
+  expect(service.runner.destroy).not.toHaveBeenCalled();
+  await service.destroyDefaultProfile(profile, account);
+  expect(service.runner.destroy).toHaveBeenCalledTimes(1);
+  await expect(fs.stat(dir)).rejects.toThrow();
+  await fs.rm(root, { recursive: true, force: true });
+});

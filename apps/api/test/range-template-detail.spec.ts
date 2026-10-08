@@ -1,3 +1,4 @@
+import { completeTemplatePayload } from './support/complete-template-payload';
 import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
@@ -63,90 +64,7 @@ function createCompleteTopology(imageAsset: { id: string; imageId: string; displ
       protocols: [{ protocol: 'ssh', port: 22 }],
     },
   };
-  const imageSelection = {
-    platformImageAssetId: imageAsset.id,
-    imageId: imageAsset.imageId,
-    imageStrategy: { mode: 'fixed', imageId: imageAsset.imageId },
-  };
-  const host = {
-    key: 'ecs-1',
-    name: 'ECS 1',
-    zoneKey: 'core',
-    role: 'entry',
-    primaryPrivateIp: '10.0.0.10',
-    ...imageSelection,
-  };
-  const networkZone = topologySpec.networkZones[0];
-
-  return {
-    topologySpec,
-    topologyGraph: {
-      schemaVersion: '2.0.0',
-      nodes: [
-        {
-          id: 'switch-1',
-          kind: 'switch',
-          label: 'Core',
-          zoneKey: 'core',
-          cidr: '10.0.0.0/24',
-        },
-        {
-          id: 'ecs-1',
-          kind: 'ecs',
-          label: 'ECS 1',
-          image: imageAsset.displayName,
-          imageName: imageAsset.displayName,
-          ...imageSelection,
-        },
-      ],
-      edges: [{ id: 'edge-1', fromNodeId: 'switch-1', toNodeId: 'ecs-1' }],
-    },
-    scenarioTemplateSpec: {
-      schemaVersion: '1.0.0',
-      topology: { vpcCidr: '10.0.0.0/16', entryHostKey: 'ecs-1' },
-      networkZones: [networkZone],
-      hosts: [host],
-    },
-    compiledProvisionSpec: {
-      schemaVersion: '1.0.0',
-      topology: { vpcCidr: '10.0.0.0/16', entryHostKey: 'ecs-1' },
-      networkZones: [networkZone],
-      hosts: [host],
-      natGateways: [],
-      eips: [],
-      snatEntries: [],
-      dnatEntries: [],
-    },
-    compiledSpec: {
-      schemaVersion: '1.0.0',
-      resources: [
-        {
-          id: 'switch-1',
-          type: 'switch',
-          provider: 'alibaba_cloud',
-          config: { zoneKey: 'core', cidr: '10.0.0.0/24' },
-        },
-        {
-          id: 'ecs-1',
-          type: 'host',
-          provider: 'alibaba_cloud',
-          config: {
-            zoneKey: 'core',
-            role: 'entry',
-            privateIp: '10.0.0.10',
-            exposePublic: true,
-            ...imageSelection,
-          },
-        },
-      ],
-      topology: {
-        vpcCidr: '10.0.0.0/16',
-        publicEntryHostKey: 'ecs-1',
-        networkZoneKeys: ['core'],
-        hostKeys: ['ecs-1'],
-      },
-    },
-  };
+  return completeTemplatePayload(topologySpec, imageAsset);
 }
 
 describe('RangeTemplatesService getById', () => {

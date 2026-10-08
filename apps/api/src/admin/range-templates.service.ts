@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { compileTemplateTopology, type ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 import {
   ADMIN_REPOSITORY,
@@ -116,7 +118,7 @@ export class RangeTemplatesService {
       name: input.name,
       slug,
       version: INTERNAL_TEMPLATE_VERSION,
-    });
+    }, currentUser);
 
     await this.validateTopologyPayload(topology, currentUser);
 
@@ -467,6 +469,7 @@ export class RangeTemplatesService {
   private async normalizeTopologyMetadata(
     input: TemplateTopologyPayload,
     identity: { name: string; slug: string; version: string },
+    currentUser?: AuthenticatedUser,
   ): Promise<TemplateTopologyPayload> {
     const systemDefaults = this.systemConfigService ? await this.getTemplatePlacementDefaults() : null;
     const scenarioMetadata =
@@ -500,7 +503,7 @@ export class RangeTemplatesService {
         }
       : {};
 
-    return {
+    const normalized: TemplateTopologyPayload = {
       topologySpec: input.topologySpec,
       topologyGraph: input.topologyGraph,
       scenarioTemplateSpec: {
@@ -534,6 +537,45 @@ export class RangeTemplatesService {
       },
       compiledSpec: input.compiledSpec,
     };
+
+    // Only the graph and display metadata are inputs; executable snapshots must match the server compiler.
+    this.validateTopologySpec(normalized.topologySpec);
+    await this.assertTemplateEcsImageSelections(normalized, currentUser);
+    let compiled: ReturnType<typeof compileTemplateTopology>;
+    try {
+      compiled = compileTemplateTopology(input.topologyGraph as ScenarioGraphDraft, {
+        name: identity.name,
+        slug: identity.slug,
+        version: identity.version,
+        cloudProvider: 'alibaba_cloud',
+        iacType: 'opentofu',
+        modulePathOrRef: INTERNAL_TEMPLATE_MODULE_PATH,
+        ...(typeof scenarioMetadata.description === 'string' ? { description: scenarioMetadata.description } : {}),
+        primaryVpcCidr: input.topologySpec.vpcCidr,
+        ...(Array.isArray(scenarioTopology.secondaryVpcCidrs) ? { secondaryVpcCidrs: scenarioTopology.secondaryVpcCidrs as string[] } : {}),
+        ...placementDefaults,
+        publicEntryProtocols: input.topologySpec.publicEntry.protocols,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid template topology graph');
+    }
+    const canonical = JSON.parse(JSON.stringify(compiled)) as TemplateTopologyPayload;
+    canonical.compiledProvisionSpec.topology = {
+      ...(canonical.compiledProvisionSpec.topology as Record<string, unknown>),
+      ...placementDefaults,
+    };
+    for (const key of ['topologySpec', 'scenarioTemplateSpec', 'compiledProvisionSpec', 'compiledSpec'] as const) {
+      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(normalized[key])), canonical[key])) {
+        throw new BadRequestException(`${key} does not match topologyGraph`);
+      }
+    }
+    return {
+      ...canonical,
+      topologyGraph: {
+        ...canonical.topologyGraph,
+        ...(input.topologyGraph.viewport ? { viewport: input.topologyGraph.viewport } : {}),
+      },
+    };
   }
 
   private async normalizeAndValidateTopology(
@@ -545,7 +587,7 @@ export class RangeTemplatesService {
       name: template.name,
       slug: template.slug,
       version: template.version,
-    });
+    }, currentUser);
 
     await this.validateTopologyPayload(topology, currentUser);
     return topology;
@@ -599,7 +641,6 @@ export class RangeTemplatesService {
     this.validateOptionalJsonObject(input.compiledProvisionSpec, 'compiledProvisionSpec');
     this.validateOptionalJsonObject(input.compiledSpec, 'compiledSpec');
 
-    await this.assertTemplateEcsImageSelections(input, currentUser);
     this.assertTemplateStateReadyForPublish({
       scenarioTemplateSpec: input.scenarioTemplateSpec,
       compiledProvisionSpec: input.compiledProvisionSpec,

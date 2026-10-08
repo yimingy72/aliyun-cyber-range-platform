@@ -47,7 +47,7 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
     return {
       kind: 'direct',
       cloudResourceId: instanceId,
-      cloudResourceType: billingItem === '系统盘' ? 'disk' : 'ecs',
+      cloudResourceType: /^d-/.test(instanceId) ? 'disk' : 'ecs',
     };
   }
 
@@ -75,7 +75,7 @@ export function classifyBillLine(line: RawBillLine): BillLineClassification {
     };
   }
 
-  if (productCode === 'snapshot' && billingItem === '快照链容量') {
+  if (productCode === 'snapshot') {
     if (isSnapshotResourceId(instanceId)) {
       return {
         kind: 'direct',

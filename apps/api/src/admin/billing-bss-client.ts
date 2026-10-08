@@ -2,14 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 
 type RawBssItem = Record<string, unknown>;
 
 type DescribeInstanceBillResponse = {
+  Success?: boolean;
+  Code?: string;
   Data?: {
     Items?: RawBssItem[];
     NextToken?: string;
+    TotalCount?: number;
   };
 };
 
@@ -19,21 +22,25 @@ function formatAliyunTimestamp(value: Date) {
 
 function normalizeItems(value: unknown) {
   if (!Array.isArray(value)) {
-    return [] as RawBssItem[];
+    throw new Error('DescribeInstanceBill returned an invalid item list');
   }
-
-  return value.filter((item): item is RawBssItem => typeof item === 'object' && item !== null);
+  if (value.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+    throw new Error('DescribeInstanceBill returned an invalid bill row');
+  }
+  return value as RawBssItem[];
 }
 
 @Injectable()
 export class BillingBssClient {
   constructor(private readonly systemConfigService: SystemConfigService) {}
 
-  async listDailyBillingItems(input: { billingDate: string }) {
-    const snapshot = await this.systemConfigService.getSnapshot();
+  async listDailyBillingItems(input: { billingDate: string }, capturedContext?: SystemCloudAccountContext) {
+    const snapshot = capturedContext ?? await this.systemConfigService.getAccountContext();
+    if (!snapshot.accountUid || !snapshot.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
     const billingCycle = input.billingDate.slice(0, 7);
     let nextToken: string | null = null;
     const items: RawBssItem[] = [];
+    const seenTokens = new Set<string>();
 
     do {
       const payload: DescribeInstanceBillResponse = await this.performRpcRequest<DescribeInstanceBillResponse>({
@@ -47,15 +54,24 @@ export class BillingBssClient {
           IsBillingItem: 'true',
           IsHideZeroCharge: 'true',
           MaxResults: '300',
+          BillOwnerId: snapshot.accountUid,
           ...(nextToken ? { NextToken: nextToken } : {}),
         },
       });
 
-      items.push(...normalizeItems(payload.Data?.Items));
+      if (!payload.Data) throw new Error('DescribeInstanceBill returned no billing data');
+      if (payload.Data.NextToken != null && typeof payload.Data.NextToken !== 'string') {
+        throw new Error('DescribeInstanceBill returned an invalid pagination token');
+      }
+      items.push(...normalizeItems(payload.Data.Items ?? (payload.Data.TotalCount === 0 ? [] : undefined)));
       nextToken =
         payload.Data?.NextToken && typeof payload.Data.NextToken === 'string'
           ? payload.Data.NextToken
           : null;
+      if (nextToken) {
+        if (seenTokens.has(nextToken)) throw new Error('DescribeInstanceBill repeated a pagination token');
+        seenTokens.add(nextToken);
+      }
     } while (nextToken);
 
     return items;
@@ -86,6 +102,7 @@ export class BillingBssClient {
 
     const response = await fetch(`${endpoint}?${query}`, {
       method: 'GET',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Accept: 'application/json',
       },
@@ -96,10 +113,12 @@ export class BillingBssClient {
     try {
       payload = await response.json();
     } catch {
-      payload = null;
+      throw new Error('DescribeInstanceBill returned invalid JSON; previous bills were retained');
     }
 
-    if (!response.ok) {
+    if (!response.ok || !payload || typeof payload !== 'object'
+      || (payload as DescribeInstanceBillResponse).Success !== true
+      || (payload as DescribeInstanceBillResponse).Code !== 'Success') {
       const errorCode =
         payload &&
         typeof payload === 'object' &&
@@ -107,15 +126,7 @@ export class BillingBssClient {
         typeof (payload as { Code?: unknown }).Code === 'string'
           ? (payload as { Code: string }).Code
           : `HTTP_${response.status}`;
-      const errorMessage =
-        payload &&
-        typeof payload === 'object' &&
-        'Message' in payload &&
-        typeof (payload as { Message?: unknown }).Message === 'string'
-          ? (payload as { Message: string }).Message
-          : `BSS RPC request failed with status ${response.status}`;
-
-      throw new Error(`${input.action} failed: ${errorCode} - ${errorMessage}`);
+      throw new Error(`${input.action} failed: ${errorCode}; previous bills were retained`);
     }
 
     return payload as ResponsePayload;

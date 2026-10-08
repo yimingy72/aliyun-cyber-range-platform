@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   resolveUniqueDnatEntryHost,
+  nextAvailableGraphId,
+  defaultSwitchCidr as readDefaultSwitchCidr,
   type TemplateAuthoringMetadata,
   validateAliyunEcsPassword,
 } from '@aliyun-cyber-range/scenario-runtime';
@@ -29,7 +31,7 @@ import {
   findDuplicateDnatExternalPorts,
   isPhaseOneNodeKind as isPhaseOneNodeKindTypeGuard,
 } from '../../../lib/scenario-graph';
-import { normalizeManualEdgePair, validateManualEdge } from '../../../lib/scenario-graph-linking';
+import { nextAvailableSwitchCidr, normalizeManualEdgePair, reconcileHostNicConnections, validateManualEdge } from '../../../lib/scenario-graph-linking';
 import type {
   EcsTemplateNode,
   ScenarioGraphDraft,
@@ -66,7 +68,6 @@ type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
 export type TemplateEdge = ScenarioGraphEdge;
 type TemplateEditorEcsNode = EcsTemplateNode & { platformImageAssetId?: string };
 const SCENARIO_GRAPH_SCHEMA_VERSION = '2.0.0';
-const DEFAULT_SWITCH_CIDRS = ['10.0.0.0/24', '192.168.0.0/24', '172.16.0.0/24'] as const;
 const TOPOLOGY_CACHE_PREFIX = 'template-editor:topology-cache';
 const NEW_TEMPLATE_SESSION_KEY = 'template-editor:new-template';
 const TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-enterprise-range';
@@ -377,10 +378,6 @@ function readStoredPosition(
   };
 }
 
-function readDefaultSwitchCidr(ordinal: number) {
-  return DEFAULT_SWITCH_CIDRS[ordinal - 1] ?? `10.${Math.max(ordinal - 3, 1)}.0.0/24`;
-}
-
 function readDefaultNodeLabel(kind: TemplateNode['kind'], ordinal: number) {
   if (kind === 'router') {
     return 'Router';
@@ -654,7 +651,7 @@ function syncHostNicsWithLinkedSwitch(
     nics: [
       ...existingNics,
       {
-        id: `${hostNode.id}-nic-${existingNics.length + 1}`,
+        id: nextAvailableGraphId(`${hostNode.id}-nic`, existingNics.map((nic) => nic.id)),
         switchId: switchNode.id,
         privateIp: '',
         secondaryIps: [],
@@ -1098,6 +1095,8 @@ export function TemplateEditorScreen({
   const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
   const [isPropertyPanelOpen, setIsPropertyPanelOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [platformImageAssets, setPlatformImageAssets] = useState<PlatformImageAsset[]>([]);
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(
@@ -1332,6 +1331,7 @@ export function TemplateEditorScreen({
     }
 
     let isActive = true;
+    setLoadError(null);
 
     fetchRangeTemplateById(apiBaseUrl, session.token, templateId)
       .then((nextTemplate) => {
@@ -1352,13 +1352,13 @@ export function TemplateEditorScreen({
         }
 
         applyTemplateState(null);
-        setStatusMessage(error instanceof Error ? error.message : '编排模板加载失败');
+        setLoadError(error instanceof Error ? error.message : '编排模板加载失败');
       });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, providedTemplate, session.isReady, session.token, templateId]);
+  }, [apiBaseUrl, providedTemplate, session.isReady, session.token, templateId, loadAttempt]);
 
   useEffect(() => {
     if (!session.isReady || !session.token) {
@@ -1562,8 +1562,19 @@ export function TemplateEditorScreen({
       return;
     }
 
-    const nextIndex = nodes.length + 1;
-    const kindCount = nodes.filter((node) => node.kind === kind).length + 1;
+    const nextNodeId = nextAvailableGraphId(kind, nodes.map((node) => node.id));
+    let kindCount = nodes.filter((node) => node.kind === kind).length + 1;
+    while (kind !== 'router' && nodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindCount))) kindCount += 1;
+    const switches = nodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
+    let switchCidr = '';
+    if (kind === 'switch') {
+      try {
+        switchCidr = nextAvailableSwitchCidr(nodes);
+      } catch (error) {
+        setStatusMessage(error instanceof Error ? error.message : '没有可用的交换机网段');
+        return;
+      }
+    }
 
     if (kind === 'router' && nodes.some((node) => node.kind === 'router')) {
       setStatusMessage('当前拓扑只允许一个 Router。');
@@ -1573,15 +1584,15 @@ export function TemplateEditorScreen({
     const nextNode: TemplateNode =
       kind === 'switch'
         ? createDefaultSwitchNode(
-            `${kind}-${nextIndex}`,
+            nextNodeId,
             readDefaultNodeLabel('switch', kindCount),
-            `zone-${kindCount}`,
-            readDefaultSwitchCidr(kindCount),
+            nextAvailableGraphId('zone', switches.map((node) => node.zoneKey)),
+            switchCidr,
             kindCount,
           )
         : kind === 'router'
           ? {
-              id: `${kind}-${nextIndex}`,
+              id: nextNodeId,
               kind: 'router',
               label: readDefaultNodeLabel('router', kindCount),
               position: createNodePosition('router', kindCount),
@@ -1591,7 +1602,7 @@ export function TemplateEditorScreen({
               bindEip: false,
             }
           : createDefaultEcsNode(
-              `ecs-${nextIndex}`,
+              nextNodeId,
               readDefaultNodeLabel('ecs', kindCount),
               'core',
               '',
@@ -1627,8 +1638,10 @@ export function TemplateEditorScreen({
       }
 
       const primaryPrivateIp = nextNode.nics?.[0]?.privateIp?.trim() || nextNode.privateIp.trim();
+      const primarySwitch = nodes.find((candidate) => candidate.id === nextNode.nics?.[0]?.switchId && candidate.kind === 'switch');
       return {
         ...nextNode,
+        zoneKey: primarySwitch?.kind === 'switch' ? primarySwitch.zoneKey : nextNode.zoneKey,
         privateIp: primaryPrivateIp,
         ...applyEconomyInstanceType(nextNode, {
           preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory,
@@ -1636,7 +1649,8 @@ export function TemplateEditorScreen({
       };
     });
 
-    commitSnapshot({ nodes: nextNodes, edges, viewport }, '已更新节点属性。');
+    const next = reconcileHostNicConnections(nodes, nextNodes, edges, nodeId);
+    commitSnapshot({ ...next, viewport }, '已更新节点属性。');
   }
 
   function handleFlowConnect(connection: { source: string; target: string }) {
@@ -1911,6 +1925,15 @@ export function TemplateEditorScreen({
   }
 
   if (!template) {
+    if (loadError) {
+      return (
+        <section className="admin-panel">
+          <p role="alert">编排模板加载失败：{loadError}</p>
+          <Button type="button" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>重试加载</Button>
+          <Link href="/admin/scenarios">返回靶场编排</Link>
+        </section>
+      );
+    }
     return null;
   }
 

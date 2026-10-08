@@ -23,6 +23,9 @@ function createClientStub(): ClientStub {
     returnRangeTemplateToPrivate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
+    listPlatformImageTags: vi.fn().mockResolvedValue([{ id: 'tag-1', name: 'Web' }]),
+    createPlatformImageTag: vi.fn().mockResolvedValue({ id: 'tag-2', name: 'Service' }),
+    setPlatformImageTags: vi.fn().mockResolvedValue({ id: 'img-1', tags: [] }),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),
     renamePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', displayName: 'renamed' }),
     publishPlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', visibility: 'platform' }),
@@ -114,6 +117,24 @@ describe('mcp http e2e', () => {
       });
     });
     server = null;
+  });
+
+  it('passes the authenticated user role into image tool discovery and rejects hidden admin tools', async () => {
+    const platformClient = createClientStub();
+    const auth: AuthInfo = { token: 'user-token', clientId: 'owner', scopes: ['images:read', 'images:write'], extra: { role: 'user' } };
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', platformApiToken: 'mock' }, { authenticateRequest: async () => auth, client: platformClient });
+    await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected server address');
+    const client = new Client({ name: 'role-test', version: '1.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer user-token' } } }));
+    try {
+      const names = (await client.listTools()).tools.map(tool => tool.name);
+      expect(names).toContain('platform_image_tag_list'); expect(names).toContain('platform_image_tags_set');
+      for (const name of ['platform_image_tag_create', 'platform_image_collect', 'platform_image_publish', 'platform_image_unpublish']) expect(names).not.toContain(name);
+      await expect(client.callTool({ name: 'platform_image_tag_create', arguments: { name: 'blocked' } })).resolves.toMatchObject({ isError: true });
+      expect(platformClient.createPlatformImageTag).not.toHaveBeenCalled();
+    } finally { await client.close(); }
   });
 
   it('lists scoped tools and calls one tool over streamable http', async () => {

@@ -28,11 +28,23 @@ import {
 import type { ToolDefinition } from './tool-context';
 
 function toCsvExport(fileName: string, csv: string) {
-  const lines = csv.split(/\r?\n/).filter((line) => line.length > 0);
+  let quoted = false;
+  let hasContent = false;
+  let rows = 0;
+  for (const char of csv) {
+    if (char === '"') quoted = !quoted;
+    if (char === '\n' && !quoted) {
+      if (hasContent) rows++;
+      hasContent = false;
+    } else if (char !== '\r') {
+      hasContent = true;
+    }
+  }
+  if (hasContent) rows++;
 
   return {
     fileName,
-    rowCount: Math.max(lines.length - 1, 0),
+    rowCount: Math.max(rows - 1, 0),
     csv,
   };
 }
@@ -41,7 +53,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_summary_get',
     title: '查询账单费用汇总',
-    description: '对应账单费用页的概览。返回统计窗口内的总费用、平台费用、异常数量、资源类型汇总和每日汇总。',
+    description: '对应账单费用页的概览。返回已出账并完成归属的费用，按币种分别汇总。多币种总金额为null并读取currencyTotals；新资源尚未出账时需等待账单更新。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingSummaryInputSchema,
@@ -53,7 +65,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_user_list',
     title: '查询用户费用汇总',
-    description: '对应账单费用页的用户费用列表。按费用从高到低返回指定页的用户、费用、账单条目数、启动次数和总数。',
+    description: '对应账单费用页的用户费用列表。先按币种、再按同币种费用降序返回指定页的用户、费用、账单条目数、启动次数和总数；多币种用户读取amounts。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingUsersInputSchema,
@@ -141,7 +153,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_sync',
     title: '同步账单数据',
-    description: '对应账单费用页的“同步账单”。从阿里云 BSS 拉取指定日期范围的账单并刷新平台归属结果；不创建或销毁云资源，调用前必须取得用户确认。',
+    description: '对应账单费用页的“同步账单”。按当前已验证云账号UID和完整账期原子刷新BSS账单；显式日期精确刷新，今天和未来日期延后并返回deferredDates。新资源即时无账单不能判定费用为零，调用前必须取得用户确认。',
     requiredScopes: ['billing:sync'],
     annotations: { idempotentHint: true },
     inputSchema: billingSyncInputSchema,

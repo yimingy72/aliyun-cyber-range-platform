@@ -1,4 +1,5 @@
 import type { BillingScope } from './admin.repository';
+import { billingDayText } from './billing-window';
 
 type BuildBillingTagsInput = {
   billingScope: BillingScope;
@@ -9,6 +10,7 @@ type BuildBillingTagsInput = {
   platformResourceType?: string | null;
   platformHostKey?: string | null;
   platformImageImportJobId?: string | null;
+  platformPackedImageArtifactId?: string | null;
   platformNetworkProfileKey?: string | null;
   billingStartAt: string | Date;
 };
@@ -25,7 +27,7 @@ function normalizeBillingStartAt(value: string | Date) {
     throw new Error('Invalid billingStartAt value');
   }
 
-  return date.toISOString().slice(0, 10);
+  return billingDayText(date);
 }
 
 export function buildBillingTags(input: BuildBillingTagsInput) {
@@ -44,6 +46,7 @@ export function buildBillingTags(input: BuildBillingTagsInput) {
   const platformResourceType = normalizeOptional(input.platformResourceType);
   const platformHostKey = normalizeOptional(input.platformHostKey);
   const platformImageImportJobId = normalizeOptional(input.platformImageImportJobId);
+  const platformPackedImageArtifactId = normalizeOptional(input.platformPackedImageArtifactId);
   const platformNetworkProfileKey = normalizeOptional(input.platformNetworkProfileKey);
 
   if (ownerUserId) {
@@ -72,6 +75,10 @@ export function buildBillingTags(input: BuildBillingTagsInput) {
 
   if (platformImageImportJobId) {
     tags.PlatformImageImportJobId = platformImageImportJobId;
+  }
+  if (platformPackedImageArtifactId) {
+    tags.PlatformPackedImageArtifactId = platformPackedImageArtifactId;
+    tags.PlatformImageOrigin = 'instance_pack';
   }
 
   if (platformNetworkProfileKey) {

@@ -58,6 +58,7 @@ export type SyncRangeInstanceTemplateInput = {
   expectedTemplateRevision: number;
 };
 export type PlatformImageAsset = Record<string, unknown> & { id: string };
+export type PlatformImageTag = { id: string; name: string };
 export type ImageCatalogScopePayload = {
   snapshots: Array<Record<string, unknown> & { id: string }>;
   catalogItems: Array<Record<string, unknown> & { id: string }>;
@@ -91,15 +92,19 @@ export type PaginatedResult<T> = {
 export type BillingSummary = Record<string, unknown> & {
   startAt: string;
   endAt: string;
-  totalPretaxAmount: number;
-  platformPretaxAmount: number;
+  currency?: string | null;
+  currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
+  totalPretaxAmount: number | null;
+  platformPretaxAmount: number | null;
   anomalyCount: number;
 };
 
 export type BillingUserSummary = Record<string, unknown> & {
+  currency?: string | null;
+  amounts?: Array<{ currency: string; pretaxAmount: number }>;
   userId: string;
   username: string;
-  pretaxAmount: number;
+  pretaxAmount: number | null;
   itemCount: number;
   launchCount: number;
 };
@@ -108,12 +113,39 @@ export type BillingLaunchGroup = Record<string, unknown> & { id: string };
 export type BillingLineItem = Record<string, unknown> & { id: string };
 export type BillingAnomaly = Record<string, unknown> & { id: string };
 export type BillingSyncResult = {
+  syncInProgress?: boolean;
+  deferredDates?: string[];
   syncedDays: number;
   importedLineItems: number;
   anomalyCount: number;
   deferredCount: number;
 };
-export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
+export type GetRangeInstanceOptions = {
+  /** Read only network facts for this instance's bound cloud context; no caller supplied cloud IDs. */
+  includeNetworkDiagnostics?: boolean;
+};
+type NetworkDiagnosticRows = ReadonlyArray<Readonly<Record<string, unknown>>>;
+/** Server allowlisted facts for this instance only; excludes credentials and raw provider responses. */
+export type RangeInstanceNetworkDiagnostics = Readonly<{
+  status: 'succeeded';
+  checkedAt: string;
+  regionId: string;
+  cloudAccountUid: string;
+  vpcId: string;
+  instances: NetworkDiagnosticRows;
+  networkInterfaces: NetworkDiagnosticRows;
+  natGateways: NetworkDiagnosticRows;
+  forwardEntries: NetworkDiagnosticRows;
+  snatEntries: NetworkDiagnosticRows;
+  routeTables: NetworkDiagnosticRows;
+  networkAcls: NetworkDiagnosticRows;
+  securityGroups: NetworkDiagnosticRows;
+}>;
+export type RangeInstance = Record<string, unknown> & {
+  id: string;
+  instanceMode?: 'range' | 'single';
+  networkDiagnostics?: RangeInstanceNetworkDiagnostics;
+};
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
 export type AdminUser = Record<string, unknown> & { id: string; username: string };
@@ -125,6 +157,7 @@ export type SingleInstanceListPayload = {
   standaloneInstances: RangeInstance[];
 };
 export type SingleInstanceCloudResourceStatus = {
+  matchedInstances?:Array<{instanceId:string;ownerUserId:string|null;tags:Record<string,string>}>;
   singleInstanceId: string;
   regionId: string;
   exists: boolean;
@@ -226,6 +259,9 @@ export type PlatformApiClientLike = {
   returnRangeTemplateToPrivate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
   removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
+  listPlatformImageTags(): Promise<PlatformImageTag[]>;
+  createPlatformImageTag(name: string, operation?: OperationRequest): Promise<PlatformImageTag>;
+  setPlatformImageTags(id: string, tagIds: string[], operation?: OperationRequest): Promise<PlatformImageAsset>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;
   renamePlatformImage(id: string, displayName: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
   publishPlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
@@ -235,11 +271,11 @@ export type PlatformApiClientLike = {
   removePlatformImage(id: string, operation?: OperationRequest): Promise<void>;
   listImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
   syncImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
-  removeCustomImageSnapshot(snapshotId: string): Promise<void>;
+  removeCustomImageSnapshot(snapshotId: string, options?: { deleteOwnedSnapshots?: boolean }, operation?: OperationRequest): Promise<Record<string, unknown> | void>;
   listImageImportJobs(): Promise<ImageImportJobListPayload>;
   retryImageImport(id: string): Promise<ImageImportJob>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
-  getRangeInstance(id: string): Promise<RangeInstance>;
+  getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
   applyRangeInstanceDraft(
@@ -261,6 +297,9 @@ export type PlatformApiClientLike = {
     payload?: RangeInstanceNodeActionPayload,
     operation?: OperationRequest,
   ): Promise<Record<string, unknown>>;
+  listSingleInstanceNetworks?():Promise<Record<string,unknown>[]>;
+  registerSingleInstanceNetworkCleanup?(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}):Promise<Record<string,unknown>>;
+  destroySingleInstanceNetwork?(id:string,cleanupRunId:string,operation?:OperationRequest):Promise<Record<string,unknown>>;
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
   getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus>;

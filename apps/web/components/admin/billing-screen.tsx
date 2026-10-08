@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
 
@@ -57,9 +57,9 @@ const preciseMoneyFormatter = new Intl.NumberFormat('zh-CN', {
 });
 
 function getDefaultRange(): BillingRange {
-  const endAt = new Date();
+  const endAt = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())}T00:00:00.000Z`);
   const startAt = new Date(endAt);
-  startAt.setDate(startAt.getDate() - 29);
+  startAt.setUTCDate(startAt.getUTCDate() - 29);
 
   return {
     startAt: startAt.toISOString().slice(0, 10),
@@ -67,8 +67,9 @@ function getDefaultRange(): BillingRange {
   };
 }
 
-function formatMoney(value: number, currency = 'CNY') {
-  const amount = Number.isFinite(value) ? value : 0;
+function formatMoney(value: number | null, currency = 'CNY') {
+  if (value === null) return '按币种查看';
+  const amount = value !== null && Number.isFinite(value) ? value : 0;
 
   if (currency === 'CNY') {
     return `¥ ${preciseMoneyFormatter.format(amount)}`;
@@ -147,8 +148,10 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const [selectedUserId, setSelectedUserId] = useState<string>('');
   const [detailView, setDetailView] = useState<DetailView>('users');
   const [groupsPage, setGroupsPage] = useState(1);
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersJumpPageValue, setUsersJumpPageValue] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
-  const overviewResource = `billing:overview:${range.startAt}:${range.endAt}`;
+  const overviewResource = `billing:overview:${range.startAt}:${range.endAt}:${usersPage}:${pageSize}`;
   const groupsResource =
     detailView === 'users'
       ? `billing:user-groups:${selectedUserId || 'all'}:${range.startAt}:${range.endAt}:${groupsPage}:${pageSize}`
@@ -161,7 +164,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
       cachedOverview?.data.users ?? {
         items: [],
         page: 1,
-        pageSize: 100,
+        pageSize,
         total: 0,
       },
   );
@@ -213,7 +216,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     if (!token) {
       setSummary(null);
-      setUsersResult({ items: [], page: 1, pageSize: 100, total: 0 });
+      setUsersResult({ items: [], page: 1, pageSize, total: 0 });
       setGroupsResult({ items: [], page: 1, pageSize, total: 0 });
       setFilterUsers([]);
       setLoadedOverviewResource(null);
@@ -241,6 +244,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     if (cachedSnapshot?.isFresh && overviewLoadAttempt === 0) {
       setSummary(cachedSnapshot.data.summary);
       setUsersResult(cachedSnapshot.data.users);
+      setUsersPage(cachedSnapshot.data.users.page);
       setFilterUsers(cachedSnapshot.data.filterUsers);
       setLoadedOverviewResource(overviewResource);
       setSelectedUserId((current) =>
@@ -276,7 +280,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     const loadOverview = async (): Promise<BillingOverviewSnapshot> => {
       const [summary, users, filterUsers] = await Promise.all([
         fetchBillingSummary(apiBaseUrl, token, range),
-        fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
+        fetchBillingUsers(apiBaseUrl, token, { ...range, page: usersPage, pageSize }),
         fetchAdminUsers(apiBaseUrl, token),
       ]);
 
@@ -294,6 +298,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
         setSummary(snapshot.summary);
         setUsersResult(snapshot.users);
+        setUsersPage(snapshot.users.page);
         setFilterUsers(snapshot.filterUsers);
         setLoadedOverviewResource(overviewResource);
         setSelectedUserId((current) =>
@@ -344,6 +349,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     logout,
     overviewLoadAttempt,
     overviewResource,
+    pageSize,
+    usersPage,
     range,
     router,
     screenCache,
@@ -446,10 +453,15 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     token,
   ]);
 
+  const usersPagination = getPagination(usersResult.total, usersResult.page, usersResult.pageSize);
+  const usersVisiblePages = buildVisiblePages(usersPagination.totalPages, usersPagination.page);
+
+  useLayoutEffect(() => setUsersJumpPageValue(String(usersPagination.page)), [usersPagination.page]);
+
   const groupsPagination = getPagination(groupsResult.total, groupsResult.page, groupsResult.pageSize);
   const groupsVisiblePages = buildVisiblePages(groupsPagination.totalPages, groupsPagination.page);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setGroupsJumpPageValue(String(groupsPagination.page));
   }, [groupsPagination.page]);
 
@@ -487,7 +499,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     const loadOverview = async (): Promise<BillingOverviewSnapshot> => {
       const [summary, users, filterUsers] = await Promise.all([
         fetchBillingSummary(apiBaseUrl, token, range),
-        fetchBillingUsers(apiBaseUrl, token, { ...range, page: 1, pageSize: 100 }),
+        fetchBillingUsers(apiBaseUrl, token, { ...range, page: usersPage, pageSize }),
         fetchAdminUsers(apiBaseUrl, token),
       ]);
 
@@ -499,6 +511,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
     setSummary(snapshot.summary);
     setUsersResult(snapshot.users);
+    setUsersPage(snapshot.users.page);
     setFilterUsers(snapshot.filterUsers);
     setLoadedOverviewResource(overviewResource);
     setSelectedUserId((current) =>
@@ -521,7 +534,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
       setGroupsPage(1);
       setGroupsLoadAttempt((current) => current + 1);
       await refreshOverview(true);
-      setSyncMessage(`已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。`);
+      setSyncMessage(result.syncInProgress ? '已有账单同步进行中，请稍后刷新。'
+        : `已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。${result.deferredDates?.length ? ' 未完成的账期已延后同步，不代表费用为零。' : ''}`);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         logout();
@@ -540,18 +554,22 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
       return;
     }
 
-    if (kind === 'platform') {
-      downloadCsv(await exportPlatformBillingCsv(apiBaseUrl, token, range), 'platform-billing.csv');
-      return;
-    }
-
-    if (kind === 'user' && selectedUserId) {
-      downloadCsv(await exportBillingUserItemsCsv(apiBaseUrl, token, selectedUserId, range), `billing-user-${selectedUserId}.csv`);
-      return;
-    }
-
-    if (kind === 'users') {
-      downloadCsv(await exportBillingUsersCsv(apiBaseUrl, token, range), 'billing-users.csv');
+    setErrorMessage(null);
+    try {
+      if (kind === 'platform') {
+        downloadCsv(await exportPlatformBillingCsv(apiBaseUrl, token, range), 'platform-billing.csv');
+      } else if (kind === 'user' && selectedUserId) {
+        downloadCsv(await exportBillingUserItemsCsv(apiBaseUrl, token, selectedUserId, range), `billing-user-${selectedUserId}.csv`);
+      } else if (kind === 'users') {
+        downloadCsv(await exportBillingUsersCsv(apiBaseUrl, token, range), 'billing-users.csv');
+      }
+    } catch (error) {
+      if (isUnauthorizedAdminError(error)) {
+        logout();
+        router.replace('/admin/login');
+        return;
+      }
+      setErrorMessage('账单导出失败，请稍后重试。');
     }
   };
 
@@ -579,12 +597,14 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const updateRange = (nextRange: BillingRange) => {
     setIsLoadingGroups(true);
     setGroupsPage(1);
+    setUsersPage(1);
     setRange(nextRange);
   };
 
   const handlePageSizeChange = (nextPageSize: 20 | 50 | 100) => {
     setPageSize(nextPageSize);
     setGroupsPage(1);
+    setUsersPage(1);
   };
 
   const handleGroupsJump = () => {
@@ -644,7 +664,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               </Button>
             </>
           }
-          description="查看平台开通与公共资源的费用明细。"
+          description="查看已出账并完成归属的费用。阿里云账单有延迟，新资源暂未出账不代表费用为零。"
           title="账单费用"
         />
 
@@ -654,18 +674,22 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           className="mt-4 flex flex-wrap items-stretch border-l border-border"
         >
           <div className="grid min-w-36 gap-1 border-r border-border px-4">
-            <dt className="text-xs font-medium text-muted-foreground">平台总应付</dt>
+            <dt className="text-xs font-medium text-muted-foreground">已归属费用合计</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary ? formatMoney(summary.totalPretaxAmount) : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
+              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.totalPretaxAmount, item.currency)}</span>) : formatMoney(summary.totalPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
             </dd>
           </div>
           <div className="grid min-w-36 gap-1 px-4">
             <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary ? formatMoney(summary.platformPretaxAmount) : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
+              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.platformPretaxAmount, item.currency)}</span>) : formatMoney(summary.platformPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
             </dd>
           </div>
         </dl>
+
+        {summary && summary.anomalyCount > 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">{summary.anomalyCount} 条账单暂未归属，汇总仅包含已归属费用。</p>
+        ) : null}
 
         {errorMessage ? (
           <p className="mt-4 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
@@ -898,7 +922,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         <div className="billing-users-panel-header flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-3">
           <div>
             <h2 className="font-heading text-base font-semibold text-foreground">用户账单</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">{users.length} 位用户</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{usersResult.total} 位用户</p>
           </div>
         </div>
 
@@ -932,14 +956,27 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               <span className="grid min-w-0 gap-1">
                 <strong className="truncate text-sm font-medium text-foreground">{user.username}</strong>
                 <span className="truncate text-xs text-muted-foreground">
-                  {user.launchCount} 次成功开通 · {user.itemCount} 项费用
+                  {user.launchCount} 个已出账开通任务 · {user.itemCount} 项费用
                 </span>
               </span>
-              <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{formatMoney(user.pretaxAmount)}</strong>
+              <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{user.amounts?.length ? user.amounts.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>) : formatMoney(user.pretaxAmount, user.currency ?? 'CNY')}</strong>
             </button>
           ))}
           {!users.length && !isLoading ? <p className="px-3 py-8 text-sm text-muted-foreground">当前账期内暂无用户账单。</p> : null}
         </div>
+        {usersResult.total > usersResult.pageSize ? (
+          <div className="shrink-0 border-t border-border px-2 py-2 [&_.admin-pagination-actions]:flex-wrap [&_.admin-pagination-navigation]:flex-wrap [&_.admin-pagination-pages]:flex-wrap">
+            <AdminPaginationControls
+              label="用户账单分页" pagination={usersPagination} visiblePages={usersVisiblePages}
+              pageSize={usersResult.pageSize} jumpPageValue={usersJumpPageValue}
+              onJumpPageValueChange={setUsersJumpPageValue}
+              onJumpPage={() => { const page = Number.parseInt(usersJumpPageValue, 10); setUsersPage(Number.isNaN(page) ? usersPagination.page : page); }}
+              onNextPage={() => setUsersPage(usersPagination.page + 1)}
+              onPreviousPage={() => setUsersPage(usersPagination.page - 1)}
+              onPageSelect={setUsersPage} onPageSizeChange={handlePageSizeChange}
+            />
+          </div>
+        ) : null}
       </aside>
       </div>
       </section>

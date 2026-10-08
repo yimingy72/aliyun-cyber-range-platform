@@ -385,7 +385,7 @@ export function TemplatesScreen({
     }
   }, [activePagination.page, activeView, viewPages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, activeView]);
 
