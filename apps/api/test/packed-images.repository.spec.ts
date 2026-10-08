@@ -5,10 +5,14 @@ if (url && (new URL(url).hostname !== 'packed-image-test-postgres' || new URL(ur
 const describeDb = url ? describe : describe.skip;
 
 describeDb('Packed-image repository in isolated PostgreSQL', () => {
-  const prisma = new PrismaService({ datasources: { db: { url } } });
-  const repository = new PrismaAdminRepository(prisma);
-  beforeAll(async () => { await prisma.$connect(); });
-  afterAll(async () => { await prisma.$disconnect(); });
+  let prisma: PrismaService;
+  let repository: PrismaAdminRepository;
+  beforeAll(async () => {
+    prisma = new PrismaService({ datasources: { db: { url } } });
+    repository = new PrismaAdminRepository(prisma);
+    await prisma.$connect();
+  });
+  afterAll(async () => { await prisma?.$disconnect(); });
   beforeEach(async () => {
     await prisma.platformImageAsset.deleteMany(); await prisma.cloudImageSnapshot.deleteMany(); await prisma.packedImageArtifact.deleteMany(); await prisma.platformUser.deleteMany();
   });
