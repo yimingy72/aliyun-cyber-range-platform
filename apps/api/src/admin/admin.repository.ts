@@ -494,6 +494,7 @@ export type BillingLedgerResourceRecord = {
 
 export type BillingLineItemRecord = {
   id: string;
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -515,6 +516,7 @@ export type BillingLineItemRecord = {
 
 export type BillingAnomalyRecord = {
   id: string;
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -595,6 +597,7 @@ export type FindBillingLedgerResourceInput = {
 };
 
 export type UpdateBillingLedgerResourceInput = Partial<{
+  cloudAccountUid: string | null;
   billingScope: BillingScope;
   ownerUserId: string | null;
   rangeInstanceId: string | null;
@@ -607,6 +610,7 @@ export type UpdateBillingLedgerResourceInput = Partial<{
 }>;
 
 export type CreateBillingLineItemInput = {
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -625,6 +629,7 @@ export type CreateBillingLineItemInput = {
 };
 
 export type ListBillingLineItemsFilter = Partial<{
+  cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
   ownerUserId: string | null;
@@ -633,6 +638,7 @@ export type ListBillingLineItemsFilter = Partial<{
 }>;
 
 export type CreateBillingAnomalyInput = {
+  cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
   billCycle: string;
@@ -646,6 +652,7 @@ export type CreateBillingAnomalyInput = {
 };
 
 export type ListBillingAnomaliesFilter = Partial<{
+  cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
 }>;
@@ -1055,7 +1062,13 @@ export interface AdminRepository {
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   listBillingLedgerResources(): Promise<BillingLedgerResourceRecord[]>;
-  getLatestBillingLineItemDate(): Promise<Date | null>;
+  getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;
+  replaceBillingDay(input: {
+    cloudAccountUid: string;
+    billingDate: string;
+    lineItems: CreateBillingLineItemInput[];
+    anomalies: CreateBillingAnomalyInput[];
+  }): Promise<void>;
   deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void>;
   upsertBillingLineItems(input: CreateBillingLineItemInput[]): Promise<BillingLineItemRecord[]>;
   listBillingLineItems(filter?: ListBillingLineItemsFilter): Promise<BillingLineItemRecord[]>;

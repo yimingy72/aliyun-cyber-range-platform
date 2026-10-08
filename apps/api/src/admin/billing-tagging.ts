@@ -1,4 +1,5 @@
 import type { BillingScope } from './admin.repository';
+import { billingDayText } from './billing-window';
 
 type BuildBillingTagsInput = {
   billingScope: BillingScope;
@@ -25,7 +26,7 @@ function normalizeBillingStartAt(value: string | Date) {
     throw new Error('Invalid billingStartAt value');
   }
 
-  return date.toISOString().slice(0, 10);
+  return billingDayText(date);
 }
 
 export function buildBillingTags(input: BuildBillingTagsInput) {

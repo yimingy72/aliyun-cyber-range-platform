@@ -627,6 +627,7 @@ model BillingLedgerResource {
 
 model BillingLineItem {
   id                String                    @id @default(cuid())
+  cloudAccountUid   String?
   syncBatchId       String
   sourceFingerprint String                    @unique
   billCycle         String
@@ -646,6 +647,7 @@ model BillingLineItem {
   updatedAt         DateTime                  @updatedAt
 
   @@index([billingDate, billingScope])
+  @@index([cloudAccountUid, billingDate])
   @@index([ownerUserId, billingDate])
   @@index([matchedLedgerId])
   @@index([cloudResourceId, cloudResourceType])
@@ -653,6 +655,7 @@ model BillingLineItem {
 
 model BillingAnomaly {
   id                String                    @id @default(cuid())
+  cloudAccountUid   String?
   syncBatchId       String
   sourceFingerprint String                    @unique
   billCycle         String
@@ -667,5 +670,6 @@ model BillingAnomaly {
   updatedAt         DateTime                  @updatedAt
 
   @@index([billingDate])
+  @@index([cloudAccountUid, billingDate])
   @@index([cloudResourceId, cloudResourceType])
 }

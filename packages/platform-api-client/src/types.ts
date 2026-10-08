@@ -91,15 +91,19 @@ export type PaginatedResult<T> = {
 export type BillingSummary = Record<string, unknown> & {
   startAt: string;
   endAt: string;
-  totalPretaxAmount: number;
-  platformPretaxAmount: number;
+  currency?: string | null;
+  currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
+  totalPretaxAmount: number | null;
+  platformPretaxAmount: number | null;
   anomalyCount: number;
 };
 
 export type BillingUserSummary = Record<string, unknown> & {
+  currency?: string | null;
+  amounts?: Array<{ currency: string; pretaxAmount: number }>;
   userId: string;
   username: string;
-  pretaxAmount: number;
+  pretaxAmount: number | null;
   itemCount: number;
   launchCount: number;
 };
@@ -108,6 +112,8 @@ export type BillingLaunchGroup = Record<string, unknown> & { id: string };
 export type BillingLineItem = Record<string, unknown> & { id: string };
 export type BillingAnomaly = Record<string, unknown> & { id: string };
 export type BillingSyncResult = {
+  syncInProgress?: boolean;
+  deferredDates?: string[];
   syncedDays: number;
   importedLineItems: number;
   anomalyCount: number;

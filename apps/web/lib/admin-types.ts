@@ -392,11 +392,13 @@ export type CloudConfigSnapshot = {
 };
 
 export type BillingResourceTypeTotal = {
+  currency?: string;
   resourceType: string;
   pretaxAmount: number;
 };
 
 export type BillingDailyTotal = {
+  currency?: string;
   billingDate: string;
   pretaxAmount: number;
 };
@@ -404,17 +406,21 @@ export type BillingDailyTotal = {
 export type BillingSummary = {
   startAt: string;
   endAt: string;
-  totalPretaxAmount: number;
-  platformPretaxAmount: number;
+  currency?: string | null;
+  currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
+  totalPretaxAmount: number | null;
+  platformPretaxAmount: number | null;
   anomalyCount: number;
   resourceTypeTotals: BillingResourceTypeTotal[];
   dailyTotals: BillingDailyTotal[];
 };
 
 export type BillingUserSummary = {
+  currency?: string | null;
+  amounts?: Array<{ currency: string; pretaxAmount: number }>;
   userId: string;
   username: string;
-  pretaxAmount: number;
+  pretaxAmount: number | null;
   itemCount: number;
   launchCount: number;
 };
@@ -447,7 +453,7 @@ export type BillingLineItem = {
 export type BillingLaunchGroup = {
   id: string;
   kind: 'range_launch' | 'single_launch' | 'unmatched';
-  title: '开启靶场实例' | '开启编排实例' | '未关联平台启动的费用';
+  title: '开启靶场实例' | '开启单实例' | '开启编排实例' | '未关联平台启动的费用';
   provisionJobStatus: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | null;
   completedAt: string | null;
   billingPeriodStart: string;

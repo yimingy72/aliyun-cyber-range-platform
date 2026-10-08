@@ -38,6 +38,7 @@ describe('Admin billing', () => {
     });
 
     const ledger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
       cloudResourceType: 'ecs',
@@ -48,6 +49,7 @@ describe('Admin billing', () => {
       tagsSnapshot: { CreatedBy: 'cyber-range-platform' },
     });
     const platformLedger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'eip-1',
       cloudResourceType: 'eip',
@@ -58,6 +60,7 @@ describe('Admin billing', () => {
 
     await repository.upsertBillingLineItems([
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'line-1',
         billCycle: '2026-07',
@@ -75,6 +78,7 @@ describe('Admin billing', () => {
         rawPayload: {},
       },
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'line-2',
         billCycle: '2026-07',
@@ -112,7 +116,7 @@ describe('Admin billing', () => {
       .useValue(repository)
       .overrideProvider(SystemConfigService)
       .useValue({
-        getSnapshot: jest.fn().mockResolvedValue({ defaultRegion: 'cn-hangzhou', imageImportBucket: '' }),
+        getAccountContext: jest.fn().mockResolvedValue({ accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }),
       })
       .overrideProvider(BillingBssClient)
       .useValue({
@@ -150,14 +154,16 @@ describe('Admin billing', () => {
       .expect({
         startAt: '2026-07-16',
         endAt: '2026-07-16',
+        currency: 'CNY',
+        currencyTotals: [{ currency: 'CNY', totalPretaxAmount: 1.75, platformPretaxAmount: 0.5 }],
         totalPretaxAmount: 1.75,
         platformPretaxAmount: 0.5,
         anomalyCount: 1,
         resourceTypeTotals: [
-          { resourceType: 'ecs', pretaxAmount: 1.25 },
-          { resourceType: 'eip', pretaxAmount: 0.5 },
+          { resourceType: 'ecs', currency: 'CNY', pretaxAmount: 1.25 },
+          { resourceType: 'eip', currency: 'CNY', pretaxAmount: 0.5 },
         ],
-        dailyTotals: [{ billingDate: '2026-07-16', pretaxAmount: 1.75 }],
+        dailyTotals: [{ billingDate: '2026-07-16', currency: 'CNY', pretaxAmount: 1.75 }],
       });
 
     await request(app.getHttpServer())
@@ -169,6 +175,7 @@ describe('Admin billing', () => {
           userId: 'user-1',
           username: 'alice',
           pretaxAmount: 1.25,
+          currency: 'CNY', amounts: [{ currency: 'CNY', pretaxAmount: 1.25 }],
           itemCount: 1,
           launchCount: 0,
         },
@@ -176,6 +183,7 @@ describe('Admin billing', () => {
           userId: 'admin',
           username: 'admin',
           pretaxAmount: 0,
+          currency: 'CNY', amounts: [],
           itemCount: 0,
           launchCount: 0,
         },
@@ -271,7 +279,7 @@ describe('Admin billing', () => {
       .set('authorization', `Bearer ${adminToken}`)
       .expect(200);
 
-    expect(exportResponse.text).toContain('userId,username,pretaxAmount,itemCount');
+    expect(exportResponse.text).toContain('userId,username,currency,pretaxAmount,itemCount');
     expect(exportResponse.text).toContain('user-1,alice');
   });
 

@@ -88,11 +88,13 @@ const billingWindowFields = {
 export const billingSummaryOutputSchema = resultOutputSchema(
   z.object({
     ...billingWindowFields,
-    totalPretaxAmount: z.number().describe('统计窗口内含税前总费用。'),
-    platformPretaxAmount: z.number().describe('平台自有资源税前费用。'),
+    currency: z.string().nullable().optional(),
+    currencyTotals: z.array(z.object({ currency: nonEmptyString, totalPretaxAmount: z.number(), platformPretaxAmount: z.number() })).optional(),
+    totalPretaxAmount: z.number().nullable().describe('统计窗口内含税前总费用。'),
+    platformPretaxAmount: z.number().nullable().describe('平台自有资源税前费用。'),
     anomalyCount: z.number().int().nonnegative().describe('未归属或异常账单条目数。'),
-    resourceTypeTotals: z.array(z.object({ resourceType: nonEmptyString, pretaxAmount: z.number() })),
-    dailyTotals: z.array(z.object({ billingDate: nonEmptyString, pretaxAmount: z.number() })),
+    resourceTypeTotals: z.array(z.object({ resourceType: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),
+    dailyTotals: z.array(z.object({ billingDate: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),
   }),
 );
 
@@ -100,7 +102,9 @@ export const billingUserSummarySchema = z
   .object({
     userId: nonEmptyString.describe('平台用户 ID。'),
     username: nonEmptyString.describe('平台用户名。'),
-    pretaxAmount: z.number().describe('用户税前费用。'),
+    currency: z.string().nullable().optional(),
+    amounts: z.array(z.object({ currency: nonEmptyString, pretaxAmount: z.number() })).optional(),
+    pretaxAmount: z.number().nullable().describe('用户税前费用，多币种时为null并按amounts读取。'),
     itemCount: z.number().int().nonnegative().describe('账单条目数量。'),
     launchCount: z.number().int().nonnegative().describe('归属启动批次数量。'),
   })
@@ -161,9 +165,11 @@ export const billingAnomalyListOutputSchema = resultOutputSchema(
 
 export const billingSyncOutputSchema = resultOutputSchema(
   z.object({
+    syncInProgress: z.boolean().optional(),
+    deferredDates: z.array(z.string()).optional(),
     syncedDays: z.number().int().nonnegative().describe('本次同步的账单天数。'),
     importedLineItems: z.number().int().nonnegative().describe('导入或更新的账单条目数。'),
     anomalyCount: z.number().int().nonnegative().describe('本次识别的异常条目数。'),
-    deferredCount: z.number().int().nonnegative().describe('暂缓处理的条目数。'),
+    deferredCount: z.number().int().nonnegative().describe('尚未完成的日期或正在同步的任务数量。'),
   }),
 );

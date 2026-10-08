@@ -76,6 +76,7 @@ function isSerializableTransactionConflict(error: unknown) {
 function toBillingLineItemRecord(
   record: {
     id: string;
+    cloudAccountUid: string | null;
     syncBatchId: string;
     sourceFingerprint: string;
     billCycle: string;
@@ -105,6 +106,7 @@ function toBillingLineItemRecord(
 function toBillingAnomalyRecord(
   record: {
     id: string;
+    cloudAccountUid: string | null;
     syncBatchId: string;
     sourceFingerprint: string;
     billCycle: string;
@@ -1915,6 +1917,7 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.billingLedgerResource.update({
       where: { id },
       data: {
+        ...(input.cloudAccountUid !== undefined ? { cloudAccountUid: input.cloudAccountUid } : {}),
         ...(input.billingScope !== undefined ? { billingScope: input.billingScope } : {}),
         ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
         ...(input.rangeInstanceId !== undefined ? { rangeInstanceId: input.rangeInstanceId } : {}),
@@ -1936,14 +1939,39 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<BillingLedgerResourceRecord[]>;
   }
 
-  async getLatestBillingLineItemDate(): Promise<Date | null> {
+  async getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null> {
     const result = await this.prisma.billingLineItem.aggregate({
+      ...(cloudAccountUid !== undefined ? { where: { cloudAccountUid } } : {}),
       _max: {
         billingDate: true,
       },
     });
 
     return result._max.billingDate;
+  }
+
+  async replaceBillingDay(input: { cloudAccountUid: string; billingDate: string; lineItems: CreateBillingLineItemInput[]; anomalies: CreateBillingAnomalyInput[] }): Promise<void> {
+    const billingDate = new Date(`${input.billingDate}T00:00:00.000Z`);
+    const records = [...input.lineItems, ...input.anomalies];
+    if (!input.cloudAccountUid || records.some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== billingDate.getTime())) {
+      throw new Error('Billing replacement account or date mismatch');
+    }
+    await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing:${input.cloudAccountUid}:${input.billingDate}`}, 0))`;
+      await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
+        FROM "BillingLedgerResource" l WHERE b."cloudAccountUid" IS NULL
+        AND b."matchedLedgerId" = l."id" AND l."cloudAccountUid" = ${input.cloudAccountUid}
+        AND b."billingDate" = ${billingDate}`;
+      const where = { cloudAccountUid: input.cloudAccountUid, billingDate };
+      await tx.billingLineItem.deleteMany({ where });
+      await tx.billingAnomaly.deleteMany({ where });
+      if (input.lineItems.length) {
+        await tx.billingLineItem.createMany({ data: input.lineItems.map(item => ({ ...item, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
+      }
+      if (input.anomalies.length) {
+        await tx.billingAnomaly.createMany({ data: input.anomalies.map(item => ({ ...item, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
+      }
+    }, { timeout: 30_000 });
   }
 
   async deleteBillingLineItemsBySyncBatchId(syncBatchId: string): Promise<void> {
@@ -1962,6 +1990,7 @@ export class PrismaAdminRepository implements AdminRepository {
             sourceFingerprint: item.sourceFingerprint,
           },
           update: {
+            cloudAccountUid: item.cloudAccountUid ?? null,
             syncBatchId: item.syncBatchId,
             billCycle: item.billCycle,
             billingDate: item.billingDate instanceof Date ? item.billingDate : new Date(item.billingDate),
@@ -1978,6 +2007,7 @@ export class PrismaAdminRepository implements AdminRepository {
             rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue,
           },
           create: {
+            cloudAccountUid: item.cloudAccountUid ?? null,
             syncBatchId: item.syncBatchId,
             sourceFingerprint: item.sourceFingerprint,
             billCycle: item.billCycle,
@@ -2009,6 +2039,7 @@ export class PrismaAdminRepository implements AdminRepository {
       : null;
     const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
     const where: Prisma.BillingLineItemWhereInput = {
+      ...(filter.cloudAccountUid !== undefined ? { cloudAccountUid: filter.cloudAccountUid } : {}),
       ...(startAt || endAt
         ? {
             billingDate: {
@@ -2016,7 +2047,7 @@ export class PrismaAdminRepository implements AdminRepository {
               ...(endAt
                 ? {
                     lt: new Date(
-                      new Date(endAt).setDate(new Date(endAt).getDate() + 1),
+                      new Date(endAt).setUTCDate(new Date(endAt).getUTCDate() + 1),
                     ),
                   }
                 : {}),
@@ -2044,6 +2075,7 @@ export class PrismaAdminRepository implements AdminRepository {
         sourceFingerprint: input.sourceFingerprint,
       },
       update: {
+        cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         billCycle: input.billCycle,
         billingDate: input.billingDate instanceof Date ? input.billingDate : new Date(input.billingDate),
@@ -2055,6 +2087,7 @@ export class PrismaAdminRepository implements AdminRepository {
         rawPayload: (input.rawPayload ?? {}) as Prisma.InputJsonValue,
       },
       create: {
+        cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
         billCycle: input.billCycle,
@@ -2087,21 +2120,23 @@ export class PrismaAdminRepository implements AdminRepository {
       : null;
     const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
     const records = await this.prisma.billingAnomaly.findMany({
-      where:
-        startAt || endAt
+      where: {
+        ...(filter.cloudAccountUid !== undefined ? { cloudAccountUid: filter.cloudAccountUid } : {}),
+        ...(startAt || endAt
           ? {
               billingDate: {
                 ...(startAt ? { gte: startAt } : {}),
                 ...(endAt
                   ? {
                       lt: new Date(
-                        new Date(endAt).setDate(new Date(endAt).getDate() + 1),
+                        new Date(endAt).setUTCDate(new Date(endAt).getUTCDate() + 1),
                       ),
                     }
                   : {}),
               },
             }
-          : undefined,
+          : {}),
+      },
       orderBy: {
         billingDate: 'desc',
       },

@@ -114,7 +114,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
     if (end) {
       const exclusiveEnd = new Date(end);
-      exclusiveEnd.setDate(exclusiveEnd.getDate() + 1);
+      exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1);
 
       if (value >= exclusiveEnd) {
         return false;
@@ -1474,6 +1474,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         throw new Error(`Billing ledger resource not found: ${id}`);
       }
 
+      assignIfDefined(record, 'cloudAccountUid', input.cloudAccountUid);
       assignIfDefined(record, 'billingScope', input.billingScope);
       assignIfDefined(record, 'ownerUserId', input.ownerUserId);
       assignIfDefined(record, 'rangeInstanceId', input.rangeInstanceId);
@@ -1490,13 +1491,30 @@ export function createMemoryAdminRepository(): AdminRepository {
     async listBillingLedgerResources() {
       return cloneList(billingLedgerResources);
     },
-    async getLatestBillingLineItemDate() {
-      const latest = billingLineItems.reduce<Date | null>(
+    async getLatestBillingLineItemDate(cloudAccountUid?: string) {
+      const latest = billingLineItems.filter(item => cloudAccountUid === undefined || item.cloudAccountUid === cloudAccountUid).reduce<Date | null>(
         (current, item) => (!current || item.billingDate > current ? item.billingDate : current),
         null,
       );
 
       return latest ? new Date(latest) : null;
+    },
+    async replaceBillingDay(input) {
+      const date = new Date(input.billingDate).getTime();
+      if ([...input.lineItems, ...input.anomalies].some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
+      const oldLines = cloneList(billingLineItems);
+      const oldAnomalies = cloneList(billingAnomalies);
+      try {
+        for (const item of billingLineItems) if (item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
+        for (let i = billingLineItems.length - 1; i >= 0; i--) if (billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
+        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
+        await this.upsertBillingLineItems(input.lineItems);
+        for (const item of input.anomalies) await this.createBillingAnomaly(item);
+      } catch (error) {
+        billingLineItems.splice(0, billingLineItems.length, ...oldLines);
+        billingAnomalies.splice(0, billingAnomalies.length, ...oldAnomalies);
+        throw error;
+      }
     },
     async deleteBillingLineItemsBySyncBatchId(syncBatchId: string) {
       for (let index = billingLineItems.length - 1; index >= 0; index -= 1) {
@@ -1512,6 +1530,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint);
 
         if (existing) {
+          existing.cloudAccountUid = item.cloudAccountUid ?? null;
           existing.syncBatchId = item.syncBatchId;
           existing.billCycle = item.billCycle;
           existing.billingDate = parseDateValue(item.billingDate);
@@ -1533,6 +1552,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
         const created: BillingLineItemRecord = {
           id: nextId(),
+          cloudAccountUid: item.cloudAccountUid ?? null,
           syncBatchId: item.syncBatchId,
           sourceFingerprint: item.sourceFingerprint,
           billCycle: item.billCycle,
@@ -1561,6 +1581,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         billingLineItems.filter(
           (item) =>
             inDateRange(item.billingDate, filter.startAt, filter.endAt) &&
+            (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid) &&
             (filter.ownerUserId === undefined || item.ownerUserId === filter.ownerUserId) &&
             (filter.billingScope === undefined || item.billingScope === filter.billingScope) &&
             (filter.matchedLedgerId === undefined || item.matchedLedgerId === filter.matchedLedgerId),
@@ -1571,6 +1592,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint);
 
       if (existing) {
+        existing.cloudAccountUid = input.cloudAccountUid ?? null;
         existing.syncBatchId = input.syncBatchId;
         existing.billCycle = input.billCycle;
         existing.billingDate = parseDateValue(input.billingDate);
@@ -1588,6 +1610,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
       const record: BillingAnomalyRecord = {
         id: nextId(),
+        cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
         billCycle: input.billCycle,
@@ -1614,7 +1637,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
     },
     async listBillingAnomalies(filter: ListBillingAnomaliesFilter = {}) {
-      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt)));
+      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
 }

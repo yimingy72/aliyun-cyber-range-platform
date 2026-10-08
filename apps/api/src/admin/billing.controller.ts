@@ -4,6 +4,7 @@ import type { Response } from 'express';
 import { AdminAuthGuard } from './admin-auth.guard';
 import { BillingService } from './billing.service';
 import { BillingSyncService } from './billing-sync.service';
+import { resolveBillingWindow } from './billing-window';
 import { BillingWindowDto } from './dto/billing.dto';
 
 @Controller('admin/billing')
@@ -56,14 +57,9 @@ export class BillingController {
 
   @Post('sync')
   sync(@Body() body: BillingWindowDto) {
-    if (body.startAt && body.endAt) {
-      return this.billingSyncService.syncRange({
-        startAt: body.startAt,
-        endAt: body.endAt,
-      });
-    }
-
-    return this.billingSyncService.syncRecentDays(7);
+    const window = resolveBillingWindow(body, 7);
+    if (!body.startAt && !body.endAt) return this.billingSyncService.syncRecentDays(7);
+    return this.billingSyncService.syncRange({ startAt: window.startAtText, endAt: window.endAtText });
   }
 
   @Get('export/platform.csv')
