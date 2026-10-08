@@ -236,7 +236,7 @@ describe('BillingScreen', () => {
     expect(screen.queryByText('已纳入平台账单范围')).toBeNull();
     expect(screen.queryByText('未分摊到具体用户')).toBeNull();
     expect(screen.queryByText('资源类型汇总')).toBeNull();
-    expect(screen.getByText(/1 次成功开通/)).toBeTruthy();
+    expect(screen.getByText(/1 个已出账开通任务/)).toBeTruthy();
     expect(fetchBillingUserGroupsMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',

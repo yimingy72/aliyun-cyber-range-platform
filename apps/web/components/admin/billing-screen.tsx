@@ -956,7 +956,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               <span className="grid min-w-0 gap-1">
                 <strong className="truncate text-sm font-medium text-foreground">{user.username}</strong>
                 <span className="truncate text-xs text-muted-foreground">
-                  {user.launchCount} 次成功开通 · {user.itemCount} 项费用
+                  {user.launchCount} 个已出账开通任务 · {user.itemCount} 项费用
                 </span>
               </span>
               <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{user.amounts?.length ? user.amounts.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>) : formatMoney(user.pretaxAmount, user.currency ?? 'CNY')}</strong>
