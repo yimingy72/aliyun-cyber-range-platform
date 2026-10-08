@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { copyProviderArchiveAtomically, writeProviderConfigAtomically } from './provider-mirror-publication';
 import { OpenTofuRunner, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
 import { buildBillingTags } from '../admin/billing-tagging';
@@ -238,8 +239,8 @@ export class SingleInstanceNetworkBootstrapService {
     const providerMirrorDir = path.join(providerMirrorRootDir, PROVIDER_MIRROR_REGISTRY_PATH);
     const cliConfigFilePath = path.join(providerMirrorRootDir, 'tofu.tfrc');
     await fs.mkdir(providerMirrorDir, { recursive: true });
-    await fs.copyFile(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
-    await fs.writeFile(cliConfigFilePath, [
+    await copyProviderArchiveAtomically(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
+    await writeProviderConfigAtomically(cliConfigFilePath, [
       'provider_installation {',
       '  filesystem_mirror {',
       `    path    = "${providerMirrorRootDir}"`,
@@ -250,7 +251,7 @@ export class SingleInstanceNetworkBootstrapService {
       '  }',
       '}',
       '',
-    ].join('\n'), 'utf8');
+    ].join('\n'));
     return {
       ...runnerEnv,
       TF_CLI_CONFIG_FILE: cliConfigFilePath,

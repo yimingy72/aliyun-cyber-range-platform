@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { copyProviderArchiveAtomically, writeProviderConfigAtomically } from './provider-mirror-publication';
 import { createHmac, randomUUID } from 'node:crypto';
 
 import {
@@ -1025,8 +1026,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const cliConfigFilePath = path.join(providerMirrorRootDir, 'tofu.tfrc');
 
     await fs.mkdir(providerMirrorDir, { recursive: true });
-    await fs.copyFile(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
-    await fs.writeFile(
+    await copyProviderArchiveAtomically(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
+    await writeProviderConfigAtomically(
       cliConfigFilePath,
       [
         'provider_installation {',
@@ -1040,7 +1041,6 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         '}',
         '',
       ].join('\n'),
-      'utf8',
     );
 
     return {
