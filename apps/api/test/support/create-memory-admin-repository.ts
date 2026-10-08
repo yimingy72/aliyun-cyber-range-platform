@@ -18,6 +18,9 @@ import {
   ApplyRangeInstanceDraftInput,
   CompleteRangeInstanceDraftApplyInput,
   CreateProvisionJobInput,
+  QueueRangeInstanceJobInput,
+  ProvisionJobTopologySnapshot,
+  RangeInstanceDraftRevisionConflictError,
   CreateProvisionJobStepLogInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
@@ -86,6 +89,22 @@ export function createMemoryAdminRepository(): AdminRepository {
   const clone = <T>(record: T): T => structuredClone(record);
   const cloneIfDefined = <T>(value: T): T => (value == null ? value : structuredClone(value));
   const cloneList = <T extends Record<string, unknown>>(records: T[]): T[] => records.map((record) => clone(record));
+  const createJobRecord = (input: CreateProvisionJobInput): ProvisionJobRecord => {
+    const record: ProvisionJobRecord = {
+      id: nextId(), rangeInstanceId: input.rangeInstanceId, jobType: input.jobType,
+      topologySnapshot: cloneIfDefined(input.topologySnapshot ?? null), status: input.status ?? 'pending',
+      triggeredBy: input.triggeredBy, startedAt: null, finishedAt: null, retryCount: input.retryCount ?? 0,
+      errorSummary: null, createdAt: now(), updatedAt: now(),
+    };
+    provisionJobs.unshift(record);
+    return record;
+  };
+  const ownsRangeClaim = (id: string, startedAt: Date) => {
+    const job = provisionJobs.find(record => record.id === id && record.status === 'running' && record.startedAt?.getTime() === startedAt.getTime());
+    const instance = job && rangeInstances.find(record => record.id === job.rangeInstanceId && record.instanceMode === 'range' && record.lastJobId === id);
+    return instance ? { job: job!, instance } : null;
+  };
+
   const assignIfDefined = <T extends Record<string, unknown>, K extends keyof T>(
     target: T,
     key: K,
@@ -698,7 +717,11 @@ export function createMemoryAdminRepository(): AdminRepository {
         instance.updatedAt = now();
       }
     },
-    async createRangeInstance(input: CreateRangeInstanceInput) {
+    async createRangeInstance(input: CreateRangeInstanceInput, initialJob?: { triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number }) {
+      if (initialJob?.expectedTemplateRevision !== undefined && input.templateId
+        && rangeTemplates.find(template => template.id === input.templateId)?.revision !== initialJob.expectedTemplateRevision) {
+        throw new TemplateRevisionConflictError();
+      }
       const record: RangeInstanceRecord = {
         id: nextId(),
         name: input.name,
@@ -737,6 +760,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       };
 
       rangeInstances.unshift(record);
+      if (initialJob) {
+        const job = createJobRecord({ rangeInstanceId: record.id, jobType: 'create', ...initialJob });
+        record.lastJobId = job.id;
+      }
 
       return clone(record);
     },
@@ -867,7 +894,6 @@ export function createMemoryAdminRepository(): AdminRepository {
         provisionJobs.some(
           (job) =>
             job.rangeInstanceId === input.rangeInstanceId &&
-            job.jobType === 'update' &&
             (job.status === 'pending' || job.status === 'running'),
         )
       ) {
@@ -897,6 +923,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(job);
     },
     async completeRangeInstanceDraftApply(id: string, input: CompleteRangeInstanceDraftApplyInput) {
+      if (input.provisionJobId && input.claimStartedAt && !ownsRangeClaim(input.provisionJobId, input.claimStartedAt)) {
+        throw new RangeInstanceDraftRevisionConflictError();
+      }
       const instance = rangeInstances.find((record) => record.id === id)!;
       const shouldClearDraft = instance.draftRevision === input.expectedDraftRevision;
 
@@ -904,6 +933,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         runtimeTopologyGraph: clone(input.runtimeTopologyGraph),
         runtimeScenarioTemplateSpec: clone(input.runtimeScenarioTemplateSpec),
         runtimeCompiledProvisionSpec: clone(input.runtimeCompiledProvisionSpec),
+        ...(input.runtimeCredentials !== undefined ? { runtimeCredentials: clone(input.runtimeCredentials) } : {}),
         accessEntry: cloneIfDefined(input.accessEntry ?? null),
         resourceSummary: cloneIfDefined(input.resourceSummary ?? null),
         errorSummary: input.errorSummary ?? null,
@@ -927,24 +957,57 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(provisionJobs);
     },
     async createProvisionJob(input: CreateProvisionJobInput) {
-      const record: ProvisionJobRecord = {
-        id: nextId(),
-        rangeInstanceId: input.rangeInstanceId,
-        jobType: input.jobType,
-        topologySnapshot: cloneIfDefined(input.topologySnapshot ?? null),
-        status: input.status ?? 'pending',
-        triggeredBy: input.triggeredBy,
-        startedAt: null,
-        finishedAt: null,
-        retryCount: input.retryCount ?? 0,
-        errorSummary: null,
-        createdAt: now(),
-        updatedAt: now(),
-      };
-
-      provisionJobs.unshift(record);
-
-      return clone(record);
+      return clone(createJobRecord(input));
+    },
+    async queueRangeInstanceJob(input: QueueRangeInstanceJobInput) {
+      const instance = rangeInstances.find(record => record.id === input.rangeInstanceId && record.instanceMode === 'range'
+        && record.status === input.expectedStatus && record.ownerUserId === input.expectedOwnerUserId);
+      if (!instance || provisionJobs.some(job => job.rangeInstanceId === input.rangeInstanceId && ['pending', 'running'].includes(job.status))) return null;
+      const job = createJobRecord(input);
+      Object.assign(instance, { status: input.nextStatus, lastJobId: job.id, errorSummary: null, updatedAt: now(),
+        ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
+      });
+      return clone(job);
+    },
+    async claimRangeProvisionJob(id: string, startedAt: Date) {
+      const job = provisionJobs.find(record => record.id === id && record.status === 'pending');
+      const instance = job && rangeInstances.find(record => record.id === job.rangeInstanceId && record.instanceMode === 'range');
+      if (!job || !instance) return null;
+      if (instance.lastJobId && instance.lastJobId !== id) {
+        Object.assign(job, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' });
+        return null;
+      }
+      if (job.jobType === 'update' && instance.status !== 'running'
+        || (job.jobType === 'create' || job.topologySnapshot?.operation === 'create')
+          && ['pending_destroy', 'destroying', 'destroy_failed', 'destroyed'].includes(instance.status)) {
+        Object.assign(job, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Range operation is incompatible with the current instance state' });
+        return null;
+      }
+      if (instance.lastJobId === id) {
+        provisionJobs.filter(other => other.rangeInstanceId === instance.id && other.id !== id && other.status === 'pending')
+          .forEach(other => Object.assign(other, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' }));
+      }
+      if (provisionJobs.some(other => other.rangeInstanceId === instance.id && other.id !== id && ['pending', 'running'].includes(other.status))) return null;
+      Object.assign(job, { status: 'running', startedAt, finishedAt: null, errorSummary: null, updatedAt: now() });
+      instance.lastJobId = id;
+      return clone(job);
+    },
+    async heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date) {
+      const owned = ownsRangeClaim(id, startedAt);
+      if (!owned) return false;
+      owned.job.updatedAt = heartbeatAt;
+      return true;
+    },
+    async updateRangeInstanceForProvisionJob(id: string, startedAt: Date, input: UpdateRangeInstanceInput) {
+      const owned = ownsRangeClaim(id, startedAt);
+      if (!owned) return null;
+      return this.updateRangeInstance(owned.instance.id, input);
+    },
+    async updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput) {
+      const owned = ownsRangeClaim(id, startedAt);
+      if (!owned) return false;
+      Object.assign(owned.job, input, { updatedAt: now() });
+      return true;
     },
     async getProvisionJobById(id: string) {
       const record = provisionJobs.find((job) => job.id === id);

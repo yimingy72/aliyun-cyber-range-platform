@@ -59,6 +59,13 @@ export class RangeInstanceNodeActionsService {
       throw new NotFoundException('Unsupported node action');
     }
 
+    if (instance.instanceMode === 'range') {
+      if (instance.status !== 'running') throw new ConflictException('Only running ranges can control nodes');
+      const activeOperation = (await this.adminRepository.listProvisionJobs()).some(job =>
+        job.rangeInstanceId === instance.id && ['pending', 'running'].includes(job.status));
+      if (activeOperation) throw new ConflictException('Range instance has an active operation');
+    }
+
     if (instance.resourceSummary?.mode === 'dry-run') {
       throw new ConflictException(
         '此实例以 dry-run 模式创建，未下发阿里云 ECS 或网络资源；请切换到 opentofu 后重新创建实例再执行节点操作。',
@@ -320,7 +327,10 @@ export class RangeInstanceNodeActionsService {
   }
 
   private async resolveInstanceWindowsFlag(instance: RangeInstanceRecord, nodeId: string) {
-    const platformImageAssetId = instance.singleInstanceConfig?.platformImageAssetId;
+    const nodes = Array.isArray(instance.runtimeTopologyGraph?.nodes) ? instance.runtimeTopologyGraph.nodes : [];
+    const runtimeNode = nodes.find(node => node && typeof node === 'object' && (node as { id?: string }).id === nodeId) as Record<string, unknown> | undefined;
+    const platformImageAssetId = instance.singleInstanceConfig?.platformImageAssetId
+      ?? (typeof runtimeNode?.platformImageAssetId === 'string' ? runtimeNode.platformImageAssetId : undefined);
 
     if (platformImageAssetId) {
       const asset = await this.adminRepository.getPlatformImageAssetById(platformImageAssetId);

@@ -318,6 +318,8 @@ describe('RangeInstancesService retry flow', () => {
       errorSummary: 'OpenTofu apply partially created cloud resources',
     });
 
+    await expect(service.triggerDestroy(instance.id, 'admin')).rejects.toThrow('active operation');
+    await repository.updateProvisionJob(retryJob.id, { status: 'failed', finishedAt: new Date() });
     const destroyJob = await service.triggerDestroy(instance.id, 'admin');
 
     expect(destroyJob).toEqual(

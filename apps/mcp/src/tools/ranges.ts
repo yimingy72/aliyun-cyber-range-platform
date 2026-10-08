@@ -318,6 +318,8 @@ function metadataFromRangeInstance(instance: Record<string, unknown>): TemplateA
     iacType: metadata.iacType === 'terraform' ? 'terraform' : 'opentofu',
     description: readString(metadata.description),
     modulePathOrRef: 'runtime/range-instance',
+    primaryVpcCidr: readString(topology.vpcCidr),
+    publicEntryProtocols: (asRecord(asRecord(instance.draftTopologySpec ?? instance.runtimeTopologySpec)?.publicEntry)?.protocols) as TemplateAuthoringMetadata['publicEntryProtocols'],
     defaultRegion: readString(topology.defaultRegion),
     defaultZoneId: readString(topology.defaultZoneId),
   };

@@ -12,6 +12,7 @@ import {
   ProvisionJobTopologySnapshot,
   RangeInstanceRecord,
   RangeInstanceDraftRevisionConflictError,
+  TemplateRevisionConflictError,
   CreateRangeInstanceInput,
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
@@ -93,13 +94,15 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    const nodeStatuses = await this.resolveNodeStatuses(hydrated);
+    const nodeFacts = await this.resolveNodeFacts(hydrated);
     const sourceTemplateRevision = await this.resolveSourceTemplateRevision(hydrated);
 
     return {
       ...hydrated,
-      nodeStatuses,
+      ...nodeFacts,
       sourceTemplateRevision,
+      runtimeTopologySpec: (await this.adminRepository.listProvisionJobs()).find(job => job.rangeInstanceId === id
+        && job.status === 'succeeded' && job.topologySnapshot && job.jobType !== 'destroy')?.topologySnapshot?.topologySpec ?? null,
     };
   }
 
@@ -137,7 +140,8 @@ export class RangeInstancesService {
     const templateName = template.name?.trim() || template.slug;
     return {
       targetId: template.id,
-      targetSnapshot: { templateId: template.id, templateName, rangeName: input.name, expiresAt: input.expiresAt },
+      targetSnapshot: { templateId: template.id, templateName, templateRevision: template.revision,
+        sourceTemplateVersionId: sourceTemplateVersion.id, rangeName: input.name, expiresAt: input.expiresAt },
       summary: { targetName: input.name, templateName, destructive: false },
     };
   }
@@ -245,7 +249,7 @@ export class RangeInstancesService {
       },
       currentUser,
     );
-    const runtimeCredentials = this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
+    const runtimeCredentials = await this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
     const actorId = currentUser?.id ?? 'admin';
 
     const instance = await this.adminRepository.createRangeInstance({
@@ -265,21 +269,21 @@ export class RangeInstancesService {
       runtimeCredentials,
       status: 'pending_create',
       expiresAt: input.expiresAt,
+    }, { triggeredBy: actorId, expectedTemplateRevision: template.revision, topologySnapshot: {
+      operation: 'create', draftRevision: 0, templateModulePath: sourceTemplateVersion.modulePathOrRef,
+      topologyGraph: this.normalizeJsonRecord(sourceTopologyGraph ?? {}),
+      topologySpec: this.normalizeJsonRecord(sourceTopologySpec ?? {}),
+      scenarioTemplateSpec: this.normalizeJsonRecord(runtimeScenarioTemplateSpec ?? {}),
+      compiledProvisionSpec: this.normalizeJsonRecord(runtimeCompiledProvisionSpec ?? {}),
+      compiledSpec: this.normalizeJsonRecord(sourceCompiledSpec ?? {}), runtimeCredentials,
+    } }).catch(error => {
+      if (error instanceof TemplateRevisionConflictError) throw new ConflictException('Range template changed before launch; refresh and confirm again');
+      throw error;
     });
 
-    const job = await this.adminRepository.createProvisionJob({
-      rangeInstanceId: instance.id,
-      jobType: 'create',
-      triggeredBy: actorId,
-    });
+    this.provisioningWorkerService.dispatch(instance.lastJobId!);
 
-    const updated = await this.adminRepository.updateRangeInstance(instance.id, {
-      lastJobId: job.id,
-    });
-
-    this.provisioningWorkerService.dispatch(job.id);
-
-    const hydrated = await this.attachRecoverySummary(updated);
+    const hydrated = await this.attachRecoverySummary(instance);
 
     if (!hydrated) {
       throw new NotFoundException('Range instance not found');
@@ -303,8 +307,9 @@ export class RangeInstancesService {
       throw new ConflictException('Only running instances can save draft changes');
     }
 
-    const metadata = await this.resolveDraftCompilationMetadata(instance);
+    const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(input.draftTopologySpec));
     const compiled = validateRangeInstanceDraftPayload(input, metadata);
+    await this.rangeTemplatesService.assertTemplateEcsImageSelections({ ...compiled, topologySpec: compiled.topologySpec as RangeTemplateTopologySpec }, currentUser);
     const viewport = this.readDraftViewport(input.draftTopologyGraph);
     const updated = await this.adminRepository.saveRangeInstanceDraft(id, input.expectedDraftRevision, {
       draftTopologyGraph: this.normalizeJsonRecord({
@@ -402,7 +407,7 @@ export class RangeInstancesService {
     const draftTopologySpec = this.normalizeJsonRecord(instance.draftTopologySpec);
     const draftScenarioTemplateSpec = this.normalizeJsonRecord(instance.draftScenarioTemplateSpec);
     const draftCompiledProvisionSpec = this.normalizeJsonRecord(instance.draftCompiledProvisionSpec);
-    const metadata = await this.resolveDraftCompilationMetadata(instance);
+    const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(draftTopologySpec));
     const compiled = validateRangeInstanceDraftPayload(
       {
         draftTopologyGraph,
@@ -412,9 +417,14 @@ export class RangeInstancesService {
       },
       metadata,
     );
+    const imageUser = typeof currentUserOrTriggeredBy === 'object' ? currentUserOrTriggeredBy
+      : instance.ownerUserId ? await this.adminRepository.getPlatformUserById(instance.ownerUserId) : undefined;
+    await this.rangeTemplatesService.assertTemplateEcsImageSelections({ ...compiled, topologySpec: compiled.topologySpec as RangeTemplateTopologySpec }, imageUser ?? undefined);
+    const runtimeCredentials = await this.resolveRuntimeCredentials(compiled.scenarioTemplateSpec, instance.runtimeCredentials);
     const viewport = this.readDraftViewport(draftTopologyGraph);
     const templateModulePath = await this.resolveApplyTemplateModulePath(instance);
     const topologySnapshot: ProvisionJobTopologySnapshot = {
+      operation: 'update', runtimeCredentials,
       draftRevision: input.expectedDraftRevision,
       topologyGraph: {
         ...compiled.topologyGraph,
@@ -505,7 +515,7 @@ export class RangeInstancesService {
         draftScenarioTemplateSpec: this.normalizeJsonRecord(instance.draftScenarioTemplateSpec),
         draftCompiledProvisionSpec: this.normalizeJsonRecord(instance.draftCompiledProvisionSpec),
       },
-      await this.resolveDraftCompilationMetadata(instance),
+      await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(instance.draftTopologySpec)),
     );
     const viewport = this.readDraftViewport(instance.draftTopologyGraph);
     const topology = await this.rangeTemplatesService.prepareTopologySave(
@@ -599,12 +609,8 @@ export class RangeInstancesService {
         .filter((value): value is string => Boolean(value));
 
       const cidrPool = this.cidrPoolService.getPool();
-      const effectiveTopologySpec = instance.sourceTemplateVersionId
-        ? this.resolveFrozenSourceTopologySpec(sourceTemplateVersion)
-        : sourceTemplateVersion?.topologySpec ??
-          template.currentDraftVersion?.topologySpec ??
-          template.currentPublishedVersion?.topologySpec ??
-          template.topologySpec;
+      const topologySnapshot = await this.resolveCreateSnapshot(instance, template, sourceTemplateVersion);
+      const effectiveTopologySpec = topologySnapshot.topologySpec as RangeTemplateTopologySpec;
       const imageValidationUser =
         typeof currentUserOrTriggeredBy === 'object' && currentUserOrTriggeredBy
           ? currentUserOrTriggeredBy
@@ -613,12 +619,8 @@ export class RangeInstancesService {
             : undefined;
       await this.rangeTemplatesService.assertTemplateEcsImageSelections(
         {
-          topologyGraph: sourceTemplateVersion?.topologyGraph ?? template.topologyGraph ?? undefined,
+          ...topologySnapshot,
           topologySpec: effectiveTopologySpec,
-          scenarioTemplateSpec: sourceTemplateVersion?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? undefined,
-          compiledProvisionSpec:
-            sourceTemplateVersion?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? undefined,
-          compiledSpec: sourceTemplateVersion?.compiledSpec ?? template.compiledSpec ?? undefined,
         },
         imageValidationUser ?? undefined,
       );
@@ -629,17 +631,13 @@ export class RangeInstancesService {
         fixedVpcCidr ??
         (cidrPool.length > 0 ? this.cidrPoolService.allocate(cidrPool, occupiedCidrs) : null);
 
-      const nextJob = await this.adminRepository.createProvisionJob({
-        rangeInstanceId: instance.id,
-        jobType: 'create',
-        triggeredBy: actorId,
+      const nextJob = await this.adminRepository.queueRangeInstanceJob({
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: actorId, topologySnapshot,
+        retryCount: instance.status === 'draft' ? 0 : 1,
+        expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId,
+        nextStatus: 'pending_create', allocatedCidr,
       });
-
-      await this.adminRepository.updateRangeInstance(instance.id, {
-        allocatedCidr,
-        status: 'pending_create',
-        lastJobId: nextJob.id,
-      });
+      if (!nextJob) throw new ConflictException('Range instance has an active operation or its state has changed');
 
       return nextJob;
     });
@@ -665,24 +663,15 @@ export class RangeInstancesService {
       this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
-    if (!instance.templateId) {
-      throw new ConflictException('Range instance no longer references an active template');
-    }
-
     if (!['running', 'create_failed', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Range instance cannot start a destroy job from the current status');
     }
 
-    const job = await this.adminRepository.createProvisionJob({
-      rangeInstanceId: instance.id,
-      jobType: 'destroy',
-      triggeredBy: actorId,
+    const job = await this.adminRepository.queueRangeInstanceJob({
+      rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: actorId,
+      expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
     });
-
-    await this.adminRepository.updateRangeInstance(instance.id, {
-      status: 'pending_destroy',
-      lastJobId: job.id,
-    });
+    if (!job) throw new ConflictException('Range instance has an active operation or its state has changed');
 
     this.provisioningWorkerService.dispatch(job.id);
 
@@ -721,6 +710,7 @@ export class RangeInstancesService {
       throw new ConflictException('Range instance cannot start a retry job from the current status');
     }
 
+    let topologySnapshot: ProvisionJobTopologySnapshot | undefined;
     if (instance.status === 'create_failed') {
       this.assertFutureInstanceExpiration(instance.expiresAt);
 
@@ -739,17 +729,10 @@ export class RangeInstancesService {
           : instance.ownerUserId
             ? await this.adminRepository.getPlatformUserById(instance.ownerUserId)
             : undefined;
-      await this.rangeTemplatesService.assertTemplateEcsImageSelections(
-        {
-          topologyGraph: sourceTemplateVersion?.topologyGraph ?? template.topologyGraph ?? undefined,
-          topologySpec: this.resolveFrozenSourceTopologySpec(sourceTemplateVersion) ?? template.topologySpec,
-          scenarioTemplateSpec: sourceTemplateVersion?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? undefined,
-          compiledProvisionSpec:
-            sourceTemplateVersion?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? undefined,
-          compiledSpec: sourceTemplateVersion?.compiledSpec ?? template.compiledSpec ?? undefined,
-        },
-        imageValidationUser ?? undefined,
-      );
+      topologySnapshot = await this.resolveCreateSnapshot(instance, template, sourceTemplateVersion);
+      await this.rangeTemplatesService.assertTemplateEcsImageSelections({
+        ...topologySnapshot, topologySpec: topologySnapshot.topologySpec as RangeTemplateTopologySpec,
+      }, imageValidationUser ?? undefined);
     }
 
     const previousJob = instance.lastJobId
@@ -759,22 +742,37 @@ export class RangeInstancesService {
     const retryCount = (previousJob?.retryCount ?? 0) + 1;
     const pendingStatus = instance.status === 'create_failed' ? 'pending_create' : 'pending_destroy';
 
-    const job = await this.adminRepository.createProvisionJob({
-      rangeInstanceId: instance.id,
-      jobType: 'retry',
-      triggeredBy: actorId,
-      retryCount,
+    const job = await this.adminRepository.queueRangeInstanceJob({
+      rangeInstanceId: instance.id, jobType: 'retry', triggeredBy: actorId, retryCount, topologySnapshot,
+      expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: pendingStatus,
     });
-
-    await this.adminRepository.updateRangeInstance(instance.id, {
-      status: pendingStatus,
-      errorSummary: null,
-      lastJobId: job.id,
-    });
+    if (!job) throw new ConflictException('Range instance has an active operation or its state has changed');
 
     this.provisioningWorkerService.dispatch(job.id);
 
     return job;
+  }
+
+  private async resolveCreateSnapshot(
+    instance: RangeInstanceRecord,
+    template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
+    version: Awaited<ReturnType<AdminRepository['getRangeTemplateVersionById']>> | undefined,
+  ): Promise<ProvisionJobTopologySnapshot> {
+    const previous = (await this.adminRepository.listProvisionJobs()).find(job => job.rangeInstanceId === instance.id
+      && job.topologySnapshot && (job.topologySnapshot.operation === 'create' || job.jobType === 'create'
+        || job.jobType === 'update' && job.status === 'succeeded'))?.topologySnapshot;
+    if (previous) return { ...previous, operation: 'create', draftRevision: 0 };
+    const scenarioTemplateSpec = version?.scenarioTemplateSpec ?? template.scenarioTemplateSpec ?? {};
+    return {
+      operation: 'create', draftRevision: 0,
+      templateModulePath: instance.templateModulePathSnapshot ?? version?.modulePathOrRef ?? template.modulePathOrRef,
+      topologyGraph: this.normalizeJsonRecord(instance.runtimeTopologyGraph ?? version?.topologyGraph ?? template.topologyGraph ?? {}),
+      topologySpec: this.normalizeJsonRecord(this.resolveFrozenSourceTopologySpec(version) ?? template.topologySpec ?? {}),
+      scenarioTemplateSpec: this.normalizeJsonRecord(scenarioTemplateSpec),
+      compiledProvisionSpec: this.normalizeJsonRecord(instance.runtimeCompiledProvisionSpec ?? version?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? {}),
+      compiledSpec: this.normalizeJsonRecord(version?.compiledSpec ?? template.compiledSpec ?? {}),
+      runtimeCredentials: await this.resolveRuntimeCredentials(scenarioTemplateSpec, instance.runtimeCredentials),
+    };
   }
 
   private assertInstanceOwnerOrAdmin(
@@ -841,11 +839,11 @@ export class RangeInstancesService {
     return (await this.adminRepository.getRangeTemplateById(instance.templateId))?.revision ?? null;
   }
 
-  private async resolveNodeStatuses(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
+  private async resolveNodeFacts(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {
     const hostIds = instance?.resourceSummary?.hostIds ?? null;
 
     if (!hostIds || Object.keys(hostIds).length === 0) {
-      return null;
+      return { nodeStatuses: null, nodeBillingTags: null };
     }
 
     try {
@@ -853,7 +851,7 @@ export class RangeInstancesService {
       const instanceIds = Object.values(hostIds).filter((value): value is string => Boolean(value));
 
       if (instanceIds.length === 0) {
-        return null;
+        return { nodeStatuses: null, nodeBillingTags: null };
       }
 
       const payload = await this.performAliyunRpcRequest<{
@@ -862,10 +860,12 @@ export class RangeInstancesService {
             | Array<{
                 InstanceId?: string;
                 Status?: string;
+                Tags?: { Tag?: Array<{ TagKey?: string; TagValue?: string }> | { TagKey?: string; TagValue?: string } };
               }>
             | {
                 InstanceId?: string;
                 Status?: string;
+                Tags?: { Tag?: Array<{ TagKey?: string; TagValue?: string }> | { TagKey?: string; TagValue?: string } };
               };
         };
       }>({
@@ -886,14 +886,26 @@ export class RangeInstancesService {
           .map((item) => [item.InstanceId as string, item.Status as string]),
       );
 
-      return Object.fromEntries(
-        Object.entries(hostIds).flatMap(([nodeId, cloudInstanceId]) => {
+      const billingTagsByInstanceId = new Map(normalized.filter(item => typeof item?.InstanceId === 'string').map(item => {
+        const entries = item.Tags?.Tag;
+        const tags = new Map((Array.isArray(entries) ? entries : entries ? [entries] : []).map(tag => [tag.TagKey, tag.TagValue]));
+        const allowed = ['PlatformUserId', 'RangeInstanceId', 'SingleInstanceBatchId', 'CreatedBy', 'PlatformScope'];
+        return [item.InstanceId!, Object.fromEntries(allowed.flatMap(key => {
+          const value = tags.get(key); return typeof value === 'string' ? [[key, value]] : [];
+        }))];
+      }));
+      return {
+        nodeStatuses: Object.fromEntries(Object.entries(hostIds).flatMap(([nodeId, cloudInstanceId]) => {
           const status = statusByInstanceId.get(cloudInstanceId);
           return status ? [[nodeId, status]] : [];
-        }),
-      );
+        })),
+        nodeBillingTags: Object.fromEntries(Object.entries(hostIds).flatMap(([nodeId, cloudInstanceId]) => {
+          const tags = billingTagsByInstanceId.get(cloudInstanceId);
+          return tags ? [[nodeId, tags]] : [];
+        })),
+      };
     } catch {
-      return null;
+      return { nodeStatuses: null, nodeBillingTags: null };
     }
   }
 
@@ -934,7 +946,7 @@ export class RangeInstancesService {
     return (await response.json()) as ResponsePayload;
   }
 
-  private resolveRuntimeCredentials(runtimeScenarioTemplateSpec: Record<string, unknown> | null) {
+  private async resolveRuntimeCredentials(runtimeScenarioTemplateSpec: Record<string, unknown> | null, previous?: RangeRuntimeCredentials | null) {
     const hosts = Array.isArray(runtimeScenarioTemplateSpec?.hosts) ? runtimeScenarioTemplateSpec.hosts : [];
 
     if (hosts.length === 0) {
@@ -948,11 +960,14 @@ export class RangeInstancesService {
         continue;
       }
 
-      const password = this.resolveHostPassword(host.accountPreset);
-      runtimeCredentials[host.key] = {
-        username: 'root',
-        password,
-      };
+      const record = host as Record<string, unknown>;
+      const asset = typeof record.platformImageAssetId === 'string'
+        ? await this.adminRepository.getPlatformImageAssetById(record.platformImageAssetId) : null;
+      const snapshot = asset?.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId) : null;
+      const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? ''} ${record.imageId ?? ''}`.toLowerCase().includes('windows');
+      const password = typeof host.accountPreset?.password === 'string' && host.accountPreset.password.trim()
+        ? host.accountPreset.password.trim() : previous?.[host.key]?.password ?? this.resolveHostPassword(undefined);
+      runtimeCredentials[host.key] = { username: windows ? 'Administrator' : 'root', password };
     }
 
     return Object.keys(runtimeCredentials).length > 0 ? runtimeCredentials : null;
@@ -991,7 +1006,7 @@ export class RangeInstancesService {
     return accountPreset === undefined || (accountPreset !== null && typeof accountPreset === 'object');
   }
 
-  private async resolveDraftCompilationMetadata(instance: RangeInstanceRecord): Promise<TemplateAuthoringMetadata> {
+  private async resolveDraftCompilationMetadata(instance: RangeInstanceRecord, publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols']): Promise<TemplateAuthoringMetadata> {
     const scenarioTemplateSpec = this.readRecord(instance.runtimeScenarioTemplateSpec);
     const metadata = this.readRecord(scenarioTemplateSpec?.metadata);
     const runtimeTopology = this.readRecord(scenarioTemplateSpec?.topology);
@@ -1046,10 +1061,16 @@ export class RangeInstancesService {
       iacType,
       modulePathOrRef,
       primaryVpcCidr,
+      ...(publicEntryProtocols ? { publicEntryProtocols } : {}),
       ...(description ? { description } : {}),
       ...(defaultRegion ? { defaultRegion } : {}),
       ...(defaultZoneId ? { defaultZoneId } : {}),
     };
+  }
+
+  private readPublicEntryProtocols(topologySpec: Record<string, unknown> | null | undefined) {
+    const protocols = this.readRecord(topologySpec?.publicEntry)?.protocols;
+    return Array.isArray(protocols) ? protocols as TemplateAuthoringMetadata['publicEntryProtocols'] : undefined;
   }
 
   private async resolveApplyTemplateModulePath(instance: RangeInstanceRecord) {

@@ -1175,8 +1175,13 @@ export function RangeInstanceDetailScreen({
               version?: string;
               cloudProvider?: 'alibaba_cloud';
               iacType?: 'opentofu' | 'terraform';
+              description?: string;
             })
           : {};
+      const currentTopology = currentSpec?.topology && typeof currentSpec.topology === 'object'
+        ? currentSpec.topology as Record<string, unknown> : {};
+      const savedTopology = (detail.draftTopologySpec ?? detail.runtimeTopologySpec) as Record<string, unknown> | null;
+      const publicEntry = savedTopology?.publicEntry as { protocols?: Array<{ protocol: string; port: number }> } | undefined;
       const primaryVpcCidr =
         currentSpec &&
         currentSpec.topology &&
@@ -1196,8 +1201,12 @@ export function RangeInstanceDetailScreen({
           version: metadata.version ?? 'v1',
           cloudProvider: metadata.cloudProvider ?? 'alibaba_cloud',
           iacType: metadata.iacType ?? 'opentofu',
+          ...(metadata.description ? { description: metadata.description } : {}),
+          ...(typeof currentTopology.defaultRegion === 'string' ? { defaultRegion: currentTopology.defaultRegion } : {}),
+          ...(typeof currentTopology.defaultZoneId === 'string' ? { defaultZoneId: currentTopology.defaultZoneId } : {}),
           modulePathOrRef: detail.templateModulePathSnapshot ?? 'runtime/range-instance',
           primaryVpcCidr,
+          ...(publicEntry?.protocols ? { publicEntryProtocols: publicEntry.protocols } : {}),
         },
         viewport: topologyViewport,
       });

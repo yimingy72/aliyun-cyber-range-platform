@@ -114,7 +114,7 @@ const applyDraftGraph: ScenarioGraphDraft = {
   ],
 };
 
-const compiledApplyDraft = JSON.parse(
+let compiledApplyDraft = JSON.parse(
   JSON.stringify(compileTemplateTopology(applyDraftGraph, applyDraftMetadata)),
 ) as ReturnType<typeof compileTemplateTopology>;
 
@@ -164,6 +164,15 @@ describe('Range instance apply API', () => {
     await app.init();
 
     repository = app.get(ADMIN_REPOSITORY);
+    await repository.upsertImageSnapshots({ provider: 'alibaba_cloud', accountUid: null, regionId: 'cn-hangzhou', scope: 'public',
+      snapshots: [{ imageId: 'img-entry', sourceImageName: 'Draft fixture image', status: 'Available', isAvailable: true, lastSyncedAt: new Date() }],
+    });
+    const [fixtureSnapshot] = await repository.listImageSnapshots({ imageId: 'img-entry' });
+    const fixtureAsset = await repository.collectPlatformImageAsset({ snapshotId: fixtureSnapshot!.id, displayName: 'Draft fixture image', ownerUserId: 'admin', visibility: 'platform' });
+    const fixtureHost: any = applyDraftGraph.nodes.find(node => node.kind === 'ecs');
+    fixtureHost.platformImageAssetId = fixtureAsset.id;
+    compiledApplyDraft = JSON.parse(JSON.stringify(compileTemplateTopology(applyDraftGraph, applyDraftMetadata)));
+
 
     const template = await repository.createRangeTemplate({
       name: 'Apply Template',
@@ -349,7 +358,8 @@ describe('Range instance apply API', () => {
     expect(response.body).toEqual(
       expect.objectContaining({
         jobType: 'update',
-        topologySnapshot: {
+        topologySnapshot: expect.objectContaining({
+          operation: 'update',
           draftRevision: 1,
           topologyGraph: compiledApplyDraft.topologyGraph,
           topologySpec: compiledApplyDraft.topologySpec,
@@ -357,7 +367,7 @@ describe('Range instance apply API', () => {
           compiledProvisionSpec: compiledApplyDraft.compiledProvisionSpec,
           compiledSpec: compiledApplyDraft.compiledSpec,
           templateModulePath: applyDraftMetadata.modulePathOrRef,
-        },
+        }),
       }),
     );
   });

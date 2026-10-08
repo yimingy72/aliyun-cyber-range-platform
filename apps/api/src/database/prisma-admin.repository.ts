@@ -21,6 +21,8 @@ import {
   CreateOperationConfirmationInput,
   CreatePlatformUserInput,
   CreateProvisionJobInput,
+  QueueRangeInstanceJobInput,
+  ProvisionJobTopologySnapshot,
   CreateProvisionJobStepLogInput,
   CreateSingleInstanceBatchInput,
   CreateRangeInstanceInput,
@@ -963,9 +965,8 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord> {
-    return this.prisma.rangeInstance.create({
-      data: {
+  async createRangeInstance(input: CreateRangeInstanceInput, initialJob?: { triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number }): Promise<RangeInstanceRecord> {
+    const data = {
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
         ownerUserId: input.ownerUserId ?? null,
@@ -1016,8 +1017,22 @@ export class PrismaAdminRepository implements AdminRepository {
         errorSummary: input.errorSummary ?? null,
         expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
         lastJobId: input.lastJobId ?? null,
-      },
-    }) as Promise<RangeInstanceRecord>;
+      };
+    if (!initialJob) {
+      return this.prisma.rangeInstance.create({ data }) as Promise<RangeInstanceRecord>;
+    }
+    return this.prisma.$transaction(async transaction => {
+      if (initialJob.expectedTemplateRevision !== undefined && input.templateId) {
+        const frozen = await transaction.rangeTemplate.updateMany({ where: { id: input.templateId, revision: initialJob.expectedTemplateRevision }, data: { revision: { increment: 0 } } });
+        if (frozen.count !== 1) throw new TemplateRevisionConflictError();
+      }
+      const instance = await transaction.rangeInstance.create({ data });
+      const job = await transaction.provisionJob.create({ data: {
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: initialJob.triggeredBy,
+        topologySnapshot: initialJob.topologySnapshot as Prisma.InputJsonValue,
+      } });
+      return transaction.rangeInstance.update({ where: { id: instance.id }, data: { lastJobId: job.id } }) as Promise<RangeInstanceRecord>;
+    });
   }
 
   async getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null> {
@@ -1029,11 +1044,11 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord> {
-    return this.prisma.rangeInstance.update({
-      where: {
-        id,
-      },
-      data: {
+    return this.prisma.rangeInstance.update({ where: { id }, data: this.rangeInstanceUpdateData(input) }) as Promise<RangeInstanceRecord>;
+  }
+
+  private rangeInstanceUpdateData(input: UpdateRangeInstanceInput) {
+    return {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
         ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
@@ -1127,8 +1142,7 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(input.errorSummary !== undefined ? { errorSummary: input.errorSummary } : {}),
         ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
         ...(input.lastJobId !== undefined ? { lastJobId: input.lastJobId } : {}),
-      },
-    }) as Promise<RangeInstanceRecord>;
+      };
   }
 
   async saveRangeInstanceDraft(
@@ -1192,6 +1206,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async applyRangeInstanceDraft(input: ApplyRangeInstanceDraftInput): Promise<ProvisionJobRecord | null> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
+        await transaction.rangeInstance.updateMany({ where: { id: input.rangeInstanceId }, data: { draftRevision: { increment: 0 } } });
         const instance = await transaction.rangeInstance.findUnique({
           where: { id: input.rangeInstanceId },
         });
@@ -1226,7 +1241,6 @@ export class PrismaAdminRepository implements AdminRepository {
                 id: {
                   not: job.id,
                 },
-                jobType: 'update',
                 status: {
                   in: ['pending', 'running'],
                 },
@@ -1261,10 +1275,17 @@ export class PrismaAdminRepository implements AdminRepository {
     input: CompleteRangeInstanceDraftApplyInput,
   ): Promise<RangeInstanceRecord> {
     return this.prisma.$transaction(async (transaction) => {
+      if (input.provisionJobId && input.claimStartedAt) {
+        const owned = await this.lockRangeClaim(transaction, input.provisionJobId, input.claimStartedAt);
+        if (!owned || owned.rangeInstanceId !== id) {
+          throw new RangeInstanceDraftRevisionConflictError();
+        }
+      }
       const runtimeData = {
         runtimeTopologyGraph: input.runtimeTopologyGraph as Prisma.InputJsonValue,
         runtimeScenarioTemplateSpec: input.runtimeScenarioTemplateSpec as Prisma.InputJsonValue,
         runtimeCompiledProvisionSpec: input.runtimeCompiledProvisionSpec as Prisma.InputJsonValue,
+        ...(input.runtimeCredentials !== undefined ? { runtimeCredentials: input.runtimeCredentials as Prisma.InputJsonValue } : {}),
         accessEntry: (input.accessEntry ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
         resourceSummary: (input.resourceSummary ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
         errorSummary: input.errorSummary ?? null,
@@ -1307,6 +1328,104 @@ export class PrismaAdminRepository implements AdminRepository {
         createdAt: 'desc',
       },
     }) as Promise<ProvisionJobRecord[]>;
+  }
+
+  async queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null> {
+    return this.prisma.$transaction(async transaction => {
+      const locked = await transaction.rangeInstance.updateMany({
+        where: { id: input.rangeInstanceId, instanceMode: 'range', status: input.expectedStatus, ownerUserId: input.expectedOwnerUserId },
+        data: { draftRevision: { increment: 0 } },
+      });
+      if (locked.count !== 1 || await transaction.provisionJob.count({ where: {
+        rangeInstanceId: input.rangeInstanceId, status: { in: ['pending', 'running'] },
+      } }) > 0) {
+        return null;
+      }
+      const job = await transaction.provisionJob.create({ data: {
+        rangeInstanceId: input.rangeInstanceId, jobType: input.jobType, triggeredBy: input.triggeredBy,
+        retryCount: input.retryCount ?? 0,
+        topologySnapshot: (input.topologySnapshot ?? Prisma.DbNull) as Prisma.InputJsonValue,
+      } });
+      await transaction.rangeInstance.update({ where: { id: input.rangeInstanceId }, data: {
+        status: input.nextStatus, lastJobId: job.id, errorSummary: null,
+        ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
+      } });
+      return job as ProvisionJobRecord;
+    });
+  }
+
+  async claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null> {
+    return this.prisma.$transaction(async transaction => {
+      const candidate = await transaction.provisionJob.findUnique({ where: { id } });
+      if (!candidate || candidate.status !== 'pending') return null;
+      await transaction.rangeInstance.updateMany({ where: { id: candidate.rangeInstanceId, instanceMode: 'range' }, data: { draftRevision: { increment: 0 } } });
+      const instance = await transaction.rangeInstance.findUnique({ where: { id: candidate.rangeInstanceId } });
+      if (!instance || instance.instanceMode !== 'range') return null;
+      if (instance.lastJobId && instance.lastJobId !== id) {
+        await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
+          status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation',
+        } });
+        return null;
+      }
+      if (candidate.jobType === 'update' && instance.status !== 'running'
+        || (candidate.jobType === 'create' || candidate.topologySnapshot && (candidate.topologySnapshot as Record<string, unknown>).operation === 'create')
+          && ['pending_destroy', 'destroying', 'destroy_failed', 'destroyed'].includes(instance.status)) {
+        await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
+          status: 'cancelled', finishedAt: startedAt, errorSummary: 'Range operation is incompatible with the current instance state',
+        } });
+        return null;
+      }
+      if (instance.lastJobId === id) {
+        await transaction.provisionJob.updateMany({ where: {
+          rangeInstanceId: instance.id, id: { not: id }, status: 'pending',
+        }, data: { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' } });
+      }
+      const otherActive = await transaction.provisionJob.count({ where: {
+        rangeInstanceId: instance.id, id: { not: id }, status: { in: ['pending', 'running'] },
+      } });
+      if (otherActive > 0) return null;
+      const claimed = await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
+        status: 'running', startedAt, finishedAt: null, errorSummary: null,
+      } });
+      if (claimed.count !== 1) return null;
+      if (!instance.lastJobId) {
+        await transaction.rangeInstance.update({ where: { id: instance.id }, data: { lastJobId: id } });
+      }
+      return transaction.provisionJob.findUnique({ where: { id } }) as Promise<ProvisionJobRecord>;
+    });
+  }
+
+  async heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean> {
+    const changed = await this.prisma.provisionJob.updateMany({ where: {
+      id, status: 'running', startedAt, rangeInstance: { instanceMode: 'range', lastJobId: id },
+    }, data: { updatedAt: heartbeatAt } });
+    return changed.count === 1;
+  }
+
+  private async lockRangeClaim(transaction: Prisma.TransactionClient, id: string, startedAt: Date) {
+    const job = await transaction.provisionJob.findUnique({ where: { id } });
+    if (!job) return null;
+    const locked = await transaction.rangeInstance.updateMany({ where: {
+      id: job.rangeInstanceId, instanceMode: 'range', lastJobId: id,
+    }, data: { draftRevision: { increment: 0 } } });
+    if (locked.count !== 1) return null;
+    const owned = await transaction.provisionJob.updateMany({ where: { id, startedAt, status: 'running' }, data: { updatedAt: new Date() } });
+    return owned.count === 1 ? job : null;
+  }
+
+  async updateRangeInstanceForProvisionJob(id: string, startedAt: Date, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord | null> {
+    return this.prisma.$transaction(async transaction => {
+      const job = await this.lockRangeClaim(transaction, id, startedAt);
+      if (!job) return null;
+      return transaction.rangeInstance.update({ where: { id: job.rangeInstanceId }, data: this.rangeInstanceUpdateData(input) }) as Promise<RangeInstanceRecord>;
+    });
+  }
+
+  async updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput): Promise<boolean> {
+    const changed = await this.prisma.provisionJob.updateMany({ where: {
+      id, status: 'running', startedAt, rangeInstance: { instanceMode: 'range', lastJobId: id },
+    }, data: input });
+    return changed.count === 1;
   }
 
   async createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord> {

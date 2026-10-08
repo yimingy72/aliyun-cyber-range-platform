@@ -305,6 +305,8 @@ export type ProvisionJobTopologySnapshot = {
   compiledProvisionSpec: Record<string, unknown>;
   compiledSpec: Record<string, unknown>;
   templateModulePath: string;
+  runtimeCredentials?: RangeRuntimeCredentials | null;
+  operation?: 'create' | 'update' | 'destroy';
 };
 
 export type ProvisionJobRecord = {
@@ -930,6 +932,13 @@ export type ApplyRangeInstanceDraftInput = {
   topologySnapshot: ProvisionJobTopologySnapshot;
 };
 
+export type QueueRangeInstanceJobInput = CreateProvisionJobInput & {
+  expectedStatus: RangeInstanceStatus;
+  expectedOwnerUserId: string | null;
+  nextStatus: 'pending_create' | 'pending_destroy';
+  allocatedCidr?: string | null;
+};
+
 export type SyncRangeInstanceDraftToTemplateInput = {
   rangeInstanceId: string;
   expectedDraftRevision: number;
@@ -945,11 +954,14 @@ export type CompleteRangeInstanceDraftApplyInput = Pick<
   | 'accessEntry'
   | 'resourceSummary'
   | 'errorSummary'
+  | 'runtimeCredentials'
 > & {
   runtimeTopologyGraph: Record<string, unknown>;
   runtimeScenarioTemplateSpec: Record<string, unknown>;
   runtimeCompiledProvisionSpec: Record<string, unknown>;
   expectedDraftRevision: number;
+  provisionJobId?: string;
+  claimStartedAt?: Date;
 };
 
 export class RangeInstanceDraftRevisionConflictError extends Error {
@@ -1018,7 +1030,9 @@ export interface AdminRepository {
   listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
   archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void>;
-  createRangeInstance(input: CreateRangeInstanceInput): Promise<RangeInstanceRecord>;
+  createRangeInstance(input: CreateRangeInstanceInput, initialJob?: {
+    triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number;
+  }): Promise<RangeInstanceRecord>;
   getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null>;
   updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord>;
   saveRangeInstanceDraft(
@@ -1035,6 +1049,11 @@ export interface AdminRepository {
   ): Promise<RangeInstanceRecord>;
   listProvisionJobs(): Promise<ProvisionJobRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
+  queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null>;
+  claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
+  heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;
+  updateRangeInstanceForProvisionJob(id: string, startedAt: Date, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord | null>;
+  updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput): Promise<boolean>;
   getProvisionJobById(id: string): Promise<ProvisionJobRecord | null>;
   claimProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
   heartbeatProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;

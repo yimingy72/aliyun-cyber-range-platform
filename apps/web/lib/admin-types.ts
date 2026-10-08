@@ -357,6 +357,7 @@ export type SingleInstanceAction =
 export type RangeInstanceDetail = RangeInstance & {
   templateId: string;
   recoverySummary?: RangeRecoverySummary | null;
+  runtimeTopologySpec?: Record<string, unknown> | null;
 };
 
 export type ProvisionJob = {

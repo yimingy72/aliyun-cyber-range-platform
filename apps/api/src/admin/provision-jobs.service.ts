@@ -12,7 +12,7 @@ export class ProvisionJobsService {
     const instanceIdsByMode = instanceMode ? await this.listInstanceIdsByMode(instanceMode) : null;
 
     if (currentUser.role === 'admin') {
-      return instanceIdsByMode ? jobs.filter((job) => instanceIdsByMode.has(job.rangeInstanceId)) : jobs;
+      return (instanceIdsByMode ? jobs.filter((job) => instanceIdsByMode.has(job.rangeInstanceId)) : jobs).map(redactJobSecrets);
     }
 
     const ownedInstanceIds = await this.listOwnedInstanceIds(currentUser.id);
@@ -21,7 +21,7 @@ export class ProvisionJobsService {
       (job) =>
         ownedInstanceIds.has(job.rangeInstanceId) &&
         (!instanceIdsByMode || instanceIdsByMode.has(job.rangeInstanceId)),
-    );
+    ).map(redactJobSecrets);
   }
 
   async getById(id: string, currentUser: SessionUserProfile) {
@@ -33,7 +33,7 @@ export class ProvisionJobsService {
 
     await this.assertJobAccess(job.rangeInstanceId, currentUser);
 
-    return job;
+    return redactJobSecrets(job);
   }
 
   async listSteps(id: string, currentUser: SessionUserProfile) {
@@ -83,4 +83,13 @@ export class ProvisionJobsService {
   private isOwnedBy(ownerUserId: string | null, createdBy: string | null, currentUserId: string) {
     return ownerUserId === currentUserId || createdBy === currentUserId;
   }
+}
+
+function redactJobSecrets<T>(value: T): T {
+  if (value instanceof Date) return value;
+  if (Array.isArray(value)) return value.map(redactJobSecrets) as T;
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !['runtimecredentials', 'password', 'custompassword', 'defaultpassword'].includes(key.toLowerCase()))
+    .map(([key, child]) => [key, redactJobSecrets(child)])) as T;
 }

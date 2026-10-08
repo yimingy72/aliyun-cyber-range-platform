@@ -191,7 +191,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       jest.spyOn(worker as any, 'processClaimedJob').mockImplementation(() => new Promise<void>((resolve) => {
         finish = resolve;
       }));
-      const heartbeat = jest.spyOn(repository, 'heartbeatProvisionJob');
+      const heartbeat = jest.spyOn(repository, 'heartbeatRangeProvisionJob');
       const execution = worker.process(job.id);
       await jest.advanceTimersByTimeAsync(6 * 60 * 1_000);
       expect(heartbeat).toHaveBeenCalled();
