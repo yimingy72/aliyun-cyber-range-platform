@@ -1343,11 +1343,20 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.getProvisionJobById(id);
   }
 
+  async heartbeatProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean> {
+    const result = await this.prisma.provisionJob.updateMany({
+      where: { id, status: 'running', startedAt },
+      data: { updatedAt: heartbeatAt },
+    });
+
+    return result.count === 1;
+  }
+
   async requeueInterruptedProvisionJobs(staleBefore: Date): Promise<number> {
     const result = await this.prisma.provisionJob.updateMany({
       where: {
         status: 'running',
-        startedAt: {
+        updatedAt: {
           lte: staleBefore,
         },
       },

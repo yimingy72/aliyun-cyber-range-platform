@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaAdminRepository } from '../src/database/prisma-admin.repository';
 import { PrismaService } from '../src/database/prisma.service';
 
-const DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
+const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
 
 describe('PrismaAdminRepository multi-user postgres integration', () => {
   let prisma: PrismaService;
@@ -56,6 +56,30 @@ describe('PrismaAdminRepository multi-user postgres integration', () => {
 
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it('recovers abandoned claims without stealing a live heartbeat or accepting an old owner', async () => {
+    const instance = await repository.createRangeInstance({ name: `heartbeat-${randomUUID()}`, status: 'creating' });
+    try {
+      const job = await repository.createProvisionJob({
+        rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin',
+      });
+      const claimedAt = new Date(Date.now() - 10 * 60_000);
+      await repository.claimProvisionJob(job.id, claimedAt);
+      const heartbeatAt = new Date();
+      await expect(repository.heartbeatProvisionJob(job.id, claimedAt, heartbeatAt)).resolves.toBe(true);
+      await repository.requeueInterruptedProvisionJobs(new Date(heartbeatAt.getTime() - 5 * 60_000));
+      await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({ status: 'running' }));
+
+      await repository.heartbeatProvisionJob(job.id, claimedAt, new Date(heartbeatAt.getTime() - 6 * 60_000));
+      await repository.requeueInterruptedProvisionJobs(new Date(heartbeatAt.getTime() - 5 * 60_000));
+      await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({ status: 'pending', retryCount: 1 }));
+      await repository.claimProvisionJob(job.id, heartbeatAt);
+      await expect(repository.heartbeatProvisionJob(job.id, claimedAt, new Date())).resolves.toBe(false);
+      await expect(repository.heartbeatProvisionJob(job.id, heartbeatAt, new Date())).resolves.toBe(true);
+    } finally {
+      await prisma.rangeInstance.delete({ where: { id: instance.id } });
+    }
   });
 
   it('persists users and image asset ownership/visibility through the real prisma repository', async () => {
