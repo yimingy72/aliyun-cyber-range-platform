@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
@@ -395,7 +395,7 @@ export function RangeInstancesScreen({
     }
   }, [activePagination.page, listMode, listPages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, listMode]);
 

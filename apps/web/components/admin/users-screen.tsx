@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
@@ -268,7 +268,7 @@ export function UsersScreen({
     }
   }, [page, pagination.page]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setJumpPageValue(String(pagination.page));
   }, [pagination.page]);
 

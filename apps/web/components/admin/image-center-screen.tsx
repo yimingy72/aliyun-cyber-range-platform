@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
 
@@ -1595,7 +1595,7 @@ export function ImageCenterScreen({
     }
   }, [activePagination.page, activeTab, tabPages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setJumpPageValue(String(activePagination.page));
   }, [activePagination.page, activeTab]);
 
