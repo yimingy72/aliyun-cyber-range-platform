@@ -9,6 +9,14 @@ const operation = (args: { idempotencyKey?: string; confirmationId?: string }) =
   confirmationId: args.confirmationId,
 });
 
+function maskCloudConfig(snapshot: Record<string, unknown>) {
+  return {
+    ...snapshot,
+    accessKeyId: snapshot.accessKeyId ? '********' : '',
+    accessKeySecret: snapshot.accessKeySecret ? '********' : '',
+  };
+}
+
 export const settingsTools: ToolDefinition[] = [
   {
     name: 'cloud_config_get',
@@ -24,8 +32,8 @@ export const settingsTools: ToolDefinition[] = [
         defaultZoneId: z.string().describe('默认可用区。'),
       }).passthrough(),
     ),
-    call(context) {
-      return context.client.fetchCloudConfig();
+    async call(context) {
+      return maskCloudConfig(await context.client.fetchCloudConfig());
     },
   },
   {
@@ -41,12 +49,12 @@ export const settingsTools: ToolDefinition[] = [
         defaultZoneId: z.string().describe('更新后的默认可用区。'),
       }).passthrough(),
     ),
-    call(context, args) {
+    async call(context, args) {
       const { idempotencyKey, confirmationId, ...payload } = args as Record<string, unknown> & {
         idempotencyKey?: string;
         confirmationId?: string;
       };
-      return context.client.saveCloudConfig(payload, operation({ idempotencyKey, confirmationId }));
+      return maskCloudConfig(await context.client.saveCloudConfig(payload, operation({ idempotencyKey, confirmationId })));
     },
   },
 ];

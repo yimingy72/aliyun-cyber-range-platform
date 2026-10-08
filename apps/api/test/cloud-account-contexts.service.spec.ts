@@ -35,7 +35,7 @@ describe('CloudAccountContextsService', () => {
     expect(rows[0]).not.toHaveProperty('accessKeyId');expect(rows[0]).not.toHaveProperty('accessKeySecret');
   });
   it('accepts a missing import-prefix object without requiring Bucket ownership', async () => {
-    const { db, service } = fixture();global.fetch = jest.fn().mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockResolvedValueOnce(response({}, 404));
+    const { db, service } = fixture();global.fetch = jest.fn().mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockResolvedValueOnce(new Response(null, { status: 404, headers: { 'x-oss-err': Buffer.from('<Error><Code>NoSuchKey</Code></Error>').toString('base64') } }));
     expect(await service.saveFromCloudConfig({ ...input, imageImportBucket: 'training-image-imports' })).toMatchObject({ isActive: true, bucketStatus: 'ready', imageImportBucket: 'training-image-imports' });
     expect(db.cloudAccountContext.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ isActive: false }) }));
     expect((global.fetch as jest.Mock).mock.calls[1][1]).toMatchObject({ method: 'HEAD' });
@@ -82,5 +82,39 @@ describe('CloudAccountContextsService', () => {
   it('reports an unavailable cloud account without blaming its import Bucket', async () => {
     const { service } = fixture({ ...context, isActive: false, status: 'degraded' as never });
     await expect(service.activate(context.id)).rejects.toThrow('当前阿里云账号不可用');
+  });
+});
+
+
+describe('Cloud configuration region and Bucket validation', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+  it.each([
+    ['cn-hangzhou', 'cn-beijing-h'], ['ap-southeast-1', 'ap-southeast-11a'], ['../invalid', '../invalid-a'],
+  ])('rejects mismatched region %s and zone %s before cloud requests or persistence', async (defaultRegion, defaultZoneId) => {
+    const { db, service } = fixture(); const fetchMock = jest.spyOn(globalThis, 'fetch');
+    await expect(service.saveFromCloudConfig({ ...input, defaultRegion, defaultZoneId })).rejects.toThrow('默认可用区必须属于默认地域');
+    expect(fetchMock).not.toHaveBeenCalled(); expect(db.cloudAccountContext.upsert).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['cn-hangzhou', 'cn-hangzhou-h'], ['ap-southeast-1', 'ap-southeast-1a'], ['cn-wuhan-lr', 'cn-wuhan-lr-a'],
+  ])('keeps valid domestic and overseas region/zone conventions: %s %s', async (defaultRegion, defaultZoneId) => {
+    const { service } = fixture(); jest.spyOn(globalThis, 'fetch').mockResolvedValue(response({ AccountId: 'test-account' }));
+    await expect(service.saveFromCloudConfig({ ...input, defaultRegion, defaultZoneId })).resolves.toMatchObject({ regionId: defaultRegion, zoneId: defaultZoneId });
+  });
+  it.each([
+    ['NoSuchBucket', '<Error><Code>NoSuchBucket</Code><Message>synthetic-private-message</Message></Error>'],
+    ['UnknownError', '<Error><Code>UnknownError</Code></Error>'],
+    ['DuplicateCode', '<Error><Code>NoSuchBucket</Code><Code>NoSuchKey</Code></Error>'],
+    ['NoErrorRoot', '<Message><Code>NoSuchKey</Code></Message>'],
+    ['MissingCode', '<Error><Message>NoSuchKey</Message></Error>'],
+  ])('closes image uploads on ambiguous or missing Bucket HEAD errors: %s', async (_name, xml) => {
+    const { service } = fixture(); const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockResolvedValueOnce(new Response(null, { status: 404, headers: { 'x-oss-err': Buffer.from(xml).toString('base64') } }));
+    const saved = await service.saveFromCloudConfig({ ...input, imageImportBucket: 'training-image-imports' });
+    expect(saved).toMatchObject({ bucketStatus: 'unavailable', lastVerifiedAt: null }); expect(saved.lastError).not.toContain('synthetic-private-message');
+    await expect(service.getCredentials(saved.id, { requireImageImportBucket: true })).rejects.toThrow('Bucket 不可用'); expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it.each([undefined, 'not!base64', Buffer.from('not XML').toString('base64')])('does not infer a valid Bucket from a plain or malformed 404 header', async (header) => {
+    const { service } = fixture(); jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockResolvedValueOnce(new Response(null, { status: 404, headers: header ? { 'x-oss-err': header } : {} }));
+    await expect(service.saveFromCloudConfig({ ...input, imageImportBucket: 'training-image-imports' })).resolves.toMatchObject({ bucketStatus: 'unavailable' });
   });
 });

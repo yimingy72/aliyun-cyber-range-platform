@@ -107,6 +107,11 @@ export class CloudAccountContextsService {
     if (!normalized.regionId || !normalized.zoneId || !normalized.accessKeyId || !normalized.accessKeySecret) {
       throw new BadRequestException('保存云配置前，请填写地域、可用区和阿里云访问凭据。');
     }
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(normalized.regionId)
+      || !normalized.zoneId.startsWith(normalized.regionId)
+      || !/^-?[a-z][a-z0-9]*$/.test(normalized.zoneId.slice(normalized.regionId.length))) {
+      throw new BadRequestException('默认可用区必须属于默认地域；修改地域时请同时指定匹配的可用区。');
+    }
 
     this.assertImageImportBucketName(requestedImageImportBucket ?? '');
 
@@ -436,7 +441,7 @@ export class CloudAccountContextsService {
       // A missing object proves that the configured credentials can read the
       // import prefix. Bucket-level HEAD requests require bucket ownership and
       // reject otherwise-authorized RAM users.
-      if (!response.ok && response.status !== 404) {
+      if (!response.ok && !(response.status === 404 && this.readOssHeadErrorCode(response) === 'NoSuchKey')) {
         return {
           bucketStatus: 'unavailable',
           lastError: `无法验证镜像导入 Bucket 的对象读取权限（HTTP ${response.status}）。`,
@@ -456,6 +461,19 @@ export class CloudAccountContextsService {
         lastVerifiedAt: null,
       };
     }
+  }
+
+  private readOssHeadErrorCode(response: Response): string | null {
+    const encoded = response.headers.get('x-oss-err');
+    if (!encoded || encoded.length > 16_384 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+      return null;
+    }
+    const xml = Buffer.from(encoded, 'base64').toString('utf8');
+    const codes = [...xml.matchAll(/<Code>\s*([A-Za-z][A-Za-z0-9]*)\s*<\/Code>/g)];
+    // HEAD has no error body; OSS supplies the base64 XML Error in this header.
+    return /^\s*(?:<\?xml[^>]*>\s*)?<Error(?:\s[^>]*)?>[\s\S]*<\/Error>\s*$/.test(xml) && codes.length === 1
+      ? codes[0][1]
+      : null;
   }
 
   private assertImageImportBucketName(bucket: string) {

@@ -13,9 +13,9 @@ const emptyEcs = { RequestId: 'test-ecs-request', PageNumber: 1, PageSize: 1, To
 const claimStartedAt = new Date('2026-10-08T00:00:00Z');
 
 describeDatabase('atomic cloud configuration switch safety (isolated PostgreSQL)', () => {
-  const prisma = new PrismaService({ datasources: { db: { url: process.env.SETTINGS_SWITCH_TEST_DATABASE_URL } } });
-  const cloud = new CloudAccountContextsService(prisma);
-  const system = new SystemConfigService(prisma, cloud);
+  let prisma: PrismaService;
+  let cloud: CloudAccountContextsService;
+  let system: SystemConfigService;
   async function seed() {
     await prisma.cloudAccountContext.create({ data: { id: 'context-old', ...base } });
     await prisma.systemCloudConfig.create({ data: { id: 'default', provider: 'alibaba_cloud', defaultRegion: base.regionId, defaultZoneId: base.zoneId, accessKeyId: base.accessKeyId, accessKeySecret: base.accessKeySecret } });
@@ -60,7 +60,12 @@ describeDatabase('atomic cloud configuration switch safety (isolated PostgreSQL)
     const proof = { version: 1, rangeInstanceId: entry.instance.id, provisionJobId: entry.job.id, claimStartedAt: claimStartedAt.toISOString(), cloudAccountContextId: 'context-old', cloudAccountUid: base.accountUid, regionId: base.regionId, ...override };
     await prisma.provisionJobStepLog.create({ data: { jobId: entry.job.id, stepName: FAILED_CREATE_CLEANUP_PROOF_STEP, status: 'succeeded', message: JSON.stringify(proof), startedAt: new Date(), finishedAt: new Date() } });
   }
-  beforeAll(async () => { await prisma.$connect(); });
+  beforeAll(async () => {
+    prisma = new PrismaService({ datasources: { db: { url: process.env.SETTINGS_SWITCH_TEST_DATABASE_URL! } } });
+    cloud = new CloudAccountContextsService(prisma);
+    system = new SystemConfigService(prisma, cloud);
+    await prisma.$connect();
+  });
   beforeEach(async () => {
     await prisma.$executeRawUnsafe('TRUNCATE TABLE "CloudAccountContext", "SystemCloudConfig", "RangeInstance", "BillingLedgerResource", "ImageImportJob" CASCADE');
     global.fetch = jest.fn().mockRejectedValue(new Error('Unplanned cloud call blocked'));

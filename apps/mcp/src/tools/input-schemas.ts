@@ -150,10 +150,10 @@ export const adminUserResetPasswordInputSchema = operationSchema.extend({
 
 export const cloudConfigGetInputSchema = z.object({});
 export const cloudConfigUpdateInputSchema = operationSchema.extend({
-  defaultRegion: identifier.optional(),
+  defaultRegion: identifier.optional().describe('默认地域；跨地域变更时必须同时指定该地域的 defaultZoneId。'),
   defaultZoneId: identifier.optional(),
-  accessKeyId: identifier.optional(),
-  accessKeySecret: z.string().min(1).optional().describe('Sensitive. Never echo it in a summary.'),
+  accessKeyId: identifier.refine((value) => value !== '********', 'Masked access keys cannot be reused').optional(),
+  accessKeySecret: z.string().min(1).refine((value) => value !== '********', 'Masked access keys cannot be reused').optional().describe('Sensitive. Never echo it in a summary.'),
 }).refine(
   (input) => input.defaultRegion !== undefined || input.defaultZoneId !== undefined || input.accessKeyId !== undefined || input.accessKeySecret !== undefined,
   'at least one cloud configuration field is required',

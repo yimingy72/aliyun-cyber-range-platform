@@ -5,8 +5,8 @@ import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context'
 import {
   maskSystemCloudConfig,
   SystemConfigService,
-  type SystemCloudConfig,
 } from './system-config.service';
+import { UpdateSystemCloudConfigDto } from './dto/system-cloud-config.dto';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 @Controller('admin/system-config')
@@ -38,7 +38,13 @@ export class SystemConfigController {
   }
 
   @Patch()
-  async updateSnapshot(@Req() request: AuthenticatedPlatformRequest, @Body() payload: Partial<SystemCloudConfig>) {
+  async updateSnapshot(@Req() request: AuthenticatedPlatformRequest, @Body() payload: UpdateSystemCloudConfigDto) {
+    if (!payload || Array.isArray(payload)
+      || (payload.defaultRegion === undefined && payload.defaultZoneId === undefined
+        && payload.accessKeyId === undefined && payload.accessKeySecret === undefined
+        && payload.imageImportBucket === undefined)) {
+      throw new BadRequestException('至少提供一个需要更新的云配置字段。');
+    }
     if (request.authContext.source !== 'mcp') {
       return maskSystemCloudConfig(await this.systemConfigService.updateSnapshot(payload));
     }
@@ -47,7 +53,7 @@ export class SystemConfigController {
       context: request.authContext,
       metadata,
       toolName: 'cloud_config_update',
-      arguments: payload as Record<string, unknown>,
+      arguments: { ...payload },
       targetType: 'system_cloud_config',
       targetId: 'default',
       resolveConfirmation: async () => ({
