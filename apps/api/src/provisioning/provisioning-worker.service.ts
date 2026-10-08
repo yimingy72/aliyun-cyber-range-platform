@@ -17,6 +17,7 @@ import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } fro
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
+import { FAILED_CREATE_CLEANUP_PROOF_STEP, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
   AliyunEcsResourceClient,
   PlatformResourceReconciliationService,
@@ -212,6 +213,7 @@ export class ProvisioningWorkerService {
     });
     const reportStep = this.createStepReporter(job.id);
     let failedCreateCleanupInput: RangeProvisionDestroyInput | null = null;
+    let failedCreateCleanupContext: { id: string; accountUid: string; regionId: string } | null = null;
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
@@ -324,6 +326,9 @@ export class ProvisioningWorkerService {
           platformResourceType: 'range',
           billingStartAt: new Date(),
         });
+        if (accountContext.cloudAccountContextId && accountContext.accountUid) {
+          failedCreateCleanupContext = { id: accountContext.cloudAccountContextId, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion };
+        }
         failedCreateCleanupInput = {
           rangeInstanceId: instance.id,
           templateModulePath,
@@ -435,6 +440,8 @@ export class ProvisioningWorkerService {
       const cleanupFailureMessage = failedCreateCleanupInput
         ? await this.cleanupFailedRangeCreate({
             instance,
+            job,
+            cloudContext: failedCreateCleanupContext,
             cleanupInput: failedCreateCleanupInput,
             reportStep,
           })
@@ -643,6 +650,7 @@ export class ProvisioningWorkerService {
 
     return {
       ...snapshot,
+      cloudAccountContextId: null,
       accountUid: null,
       accountUidResolved: false,
     };
@@ -1428,7 +1436,10 @@ export class ProvisioningWorkerService {
       errorSummary: message,
     });
 
-    const resolvedFailedInstanceStatus = failedInstanceStatus ?? this.resolveFailedInstanceStatus(job, instance);
+    const currentInstance = await this.adminRepository.getRangeInstanceById(instance.id);
+    const resolvedFailedInstanceStatus = currentInstance?.status === 'destroy_failed'
+      ? 'destroy_failed'
+      : failedInstanceStatus ?? this.resolveFailedInstanceStatus(job, instance);
 
     await this.adminRepository.updateRangeInstance(instance.id, {
       status: resolvedFailedInstanceStatus,
@@ -1439,6 +1450,8 @@ export class ProvisioningWorkerService {
 
   private async cleanupFailedRangeCreate(input: {
     instance: RangeInstanceRecord;
+    job: ProvisionJobRecord;
+    cloudContext: { id: string; accountUid: string; regionId: string } | null;
     cleanupInput: RangeProvisionDestroyInput;
     reportStep: RangeProvisionStepReporter;
   }) {
@@ -1454,6 +1467,19 @@ export class ProvisioningWorkerService {
         resourceSummary: null,
       });
       await releaseRangeInstanceBillingLedger(this.adminRepository, input.instance.id, new Date());
+      if (input.cloudContext && input.job.startedAt) {
+        const verifiedAt = new Date();
+        const proof: FailedCreateCleanupProof = {
+          version: 1, rangeInstanceId: input.instance.id, provisionJobId: input.job.id,
+          claimStartedAt: input.job.startedAt.toISOString(), cloudAccountContextId: input.cloudContext.id,
+          cloudAccountUid: input.cloudContext.accountUid, regionId: input.cloudContext.regionId,
+        };
+        await this.adminRepository.createProvisionJobStepLog({
+          jobId: input.job.id, stepName: FAILED_CREATE_CLEANUP_PROOF_STEP, status: 'succeeded',
+          message: JSON.stringify(proof), startedAt: verifiedAt, finishedAt: verifiedAt,
+          stdoutExcerpt: null, stderrExcerpt: null,
+        });
+      }
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';

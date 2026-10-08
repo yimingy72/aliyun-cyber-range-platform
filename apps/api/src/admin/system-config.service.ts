@@ -17,6 +17,7 @@ export type SystemCloudConfig = {
 };
 
 export type SystemCloudAccountContext = SystemCloudConfig & {
+  cloudAccountContextId?: string | null;
   accountUid: string | null;
   accountUidResolved: boolean;
 };
@@ -168,19 +169,8 @@ export class SystemConfigService {
         payload.imageImportBucket !== undefined ? normalizeValue(payload.imageImportBucket) : current.imageImportBucket,
     };
 
-    await this.cloudAccountContextsService.saveFromCloudConfig(snapshot);
-
-    const saved = await this.prisma.systemCloudConfig.upsert({
-      where: { id: SYSTEM_CLOUD_CONFIG_ROW_ID },
-      update: {
-        ...this.toPersistedSnapshot(snapshot),
-      },
-      create: {
-        id: SYSTEM_CLOUD_CONFIG_ROW_ID,
-        ...this.toPersistedSnapshot(snapshot),
-      },
-    });
-    const nextSnapshot = this.toSnapshot({ ...saved, imageImportBucket: snapshot.imageImportBucket });
+    const context = await this.cloudAccountContextsService.saveFromCloudConfig(snapshot);
+    const nextSnapshot = { ...snapshot, imageImportBucket: context.imageImportBucket ?? snapshot.imageImportBucket };
     this.syncProcessEnv(nextSnapshot);
 
     return nextSnapshot;
@@ -193,9 +183,17 @@ export class SystemConfigService {
     });
 
     if (activeContext) {
-      const snapshot = await this.getSnapshot();
+      const snapshot = this.toSnapshot({
+        provider: activeContext.provider,
+        defaultRegion: activeContext.regionId,
+        defaultZoneId: activeContext.zoneId,
+        accessKeyId: activeContext.accessKeyId,
+        accessKeySecret: activeContext.accessKeySecret,
+        imageImportBucket: activeContext.imageImportBucket,
+      });
       return {
         ...snapshot,
+        cloudAccountContextId: activeContext.id,
         accountUid: activeContext.accountUid,
         accountUidResolved: true,
       };
@@ -205,6 +203,7 @@ export class SystemConfigService {
 
     return {
       ...snapshot,
+      cloudAccountContextId: null,
       accountUid: null,
       accountUidResolved: false,
     };

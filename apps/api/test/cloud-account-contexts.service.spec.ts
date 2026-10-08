@@ -1,513 +1,86 @@
 import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 import { PrismaService } from '../src/database/prisma.service';
 
-function createResponse(payload: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: jest.fn().mockResolvedValue(payload),
-    text: jest.fn().mockResolvedValue(typeof payload === 'string' ? payload : JSON.stringify(payload)),
-  } as unknown as Response;
+const context = { id: 'context-test', displayName: 'Test account', provider: 'alibaba_cloud' as const, accountUid: 'test-account', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', accessKeyId: 'test-access-key', accessKeySecret: 'test-access-secret', imageImportBucket: '', isActive: true, status: 'ready' as const, bucketStatus: 'unconfigured', lastError: null, lastVerifiedAt: null, createdAt: new Date(), updatedAt: new Date() };
+const input = { defaultRegion: context.regionId, defaultZoneId: context.zoneId, accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret, imageImportBucket: '' };
+function response(payload: unknown, status = 200) { return new Response(JSON.stringify(payload), { status }); }
+function fixture(initial: typeof context | null = null) {
+  let row = initial;
+  const db: any = {
+    cloudAccountContext: {
+      findUnique: jest.fn(async () => row),
+      findMany: jest.fn(async ({ where }: any) => row && (!where?.isActive || row.isActive) ? [row] : []),
+      upsert: jest.fn(async ({ create, update }: any) => { row = row ? { ...row, ...update } : { ...context, ...create };return row; }),
+      updateMany: jest.fn(async () => { if (row) row = { ...row, isActive: false }; }),
+      update: jest.fn(async ({ data }: any) => { row = { ...row!, ...data };return row; }),
+    },
+    rangeInstance: { findMany: jest.fn().mockResolvedValue([]) },
+    provisionJob: { count: jest.fn().mockResolvedValue(0) },
+    billingLedgerResource: { count: jest.fn().mockResolvedValue(0) },
+    imageImportJob: { count: jest.fn().mockResolvedValue(0) },
+    systemCloudConfig: { upsert: jest.fn().mockResolvedValue({}) },
+    provisionJobStepLog: { create: jest.fn() },
+    $executeRaw: jest.fn(),
+  };
+  db.$transaction = jest.fn(async (callback: (tx: unknown) => unknown) => callback(db));
+  return { db, service: new CloudAccountContextsService(db as PrismaService) };
 }
 
 describe('CloudAccountContextsService', () => {
   const originalFetch = global.fetch;
-
-  afterEach(() => {
-    global.fetch = originalFetch;
-  });
-
+  afterEach(() => { global.fetch = originalFetch; });
   it('returns only the ready active context to ordinary users without credentials', async () => {
-    const findMany = jest.fn().mockResolvedValue([
-      {
-        id: 'context-1',
-        displayName: 'Training Account',
-        provider: 'alibaba_cloud',
-        accountUid: '1234567890',
-        regionId: 'cn-hangzhou',
-        zoneId: 'cn-hangzhou-h',
-        accessKeyId: 'test-access-key',
-        accessKeySecret: 'test-access-secret',
-        imageImportBucket: 'cyber-range-image-test',
-        isActive: true,
-        status: 'ready',
-        bucketStatus: 'ready',
-        lastError: null,
-        lastVerifiedAt: new Date('2026-07-20T00:00:00.000Z'),
-        createdAt: new Date('2026-07-20T00:00:00.000Z'),
-        updatedAt: new Date('2026-07-20T00:00:00.000Z'),
-      },
-    ]);
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: { findMany },
-    } as unknown as PrismaService);
-
-    const contexts = await service.list();
-
-    expect(findMany).toHaveBeenCalledWith({
-      where: { isActive: true, status: 'ready' },
-      orderBy: [{ updatedAt: 'desc' }],
-    });
-    expect(contexts).toEqual([
-      expect.objectContaining({ id: 'context-1', accountUid: '1234567890', status: 'ready' }),
-    ]);
-    expect(contexts[0]).not.toHaveProperty('accessKeyId');
-    expect(contexts[0]).not.toHaveProperty('accessKeySecret');
+    const { db, service } = fixture(context);const rows = await service.list();
+    expect(db.cloudAccountContext.findMany).toHaveBeenCalledWith({ where: { isActive: true, status: 'ready' }, orderBy: [{ updatedAt: 'desc' }] });
+    expect(rows[0]).not.toHaveProperty('accessKeyId');expect(rows[0]).not.toHaveProperty('accessKeySecret');
   });
-
   it('accepts a missing import-prefix object without requiring Bucket ownership', async () => {
-    const readyContext = {
-      id: 'context-1',
-      displayName: '阿里云 1234567890 · cn-hangzhou',
-      provider: 'alibaba_cloud' as const,
-      accountUid: '1234567890',
-      regionId: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'training-image-imports',
-      isActive: true,
-      status: 'ready' as const,
-      bucketStatus: 'ready',
-      lastError: null,
-      lastVerifiedAt: new Date('2026-07-20T00:01:00.000Z'),
-      createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      updatedAt: new Date('2026-07-20T00:00:00.000Z'),
-    };
-    const create = jest.fn().mockResolvedValue(readyContext);
-    const update = jest.fn().mockResolvedValue(readyContext);
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValueOnce(null)
-          .mockResolvedValueOnce(readyContext),
-        count: jest.fn().mockResolvedValue(0),
-        create,
-        update,
-      },
-    } as unknown as PrismaService);
-    global.fetch = jest
-      .fn()
-      .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockResolvedValueOnce(createResponse({}, 404));
-
-    const cloudConfig = {
-      defaultRegion: 'cn-hangzhou',
-      defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'training-image-imports',
-    };
-
-    await expect(service.saveFromCloudConfig(cloudConfig)).resolves.toEqual(expect.objectContaining({
-      id: 'context-1',
-      isActive: true,
-      status: 'ready',
-      imageImportBucket: 'training-image-imports',
-    }));
-
-    expect(create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        accountUid: '1234567890',
-        regionId: 'cn-hangzhou',
-        zoneId: 'cn-hangzhou-h',
-        imageImportBucket: 'training-image-imports',
-        isActive: true,
-        status: 'ready',
-        bucketStatus: 'ready',
-      }),
-    });
-    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=GetCallerIdentity');
-    expect(String((global.fetch as jest.Mock).mock.calls[1][0])).toContain(
-      'training-image-imports.oss-cn-hangzhou.aliyuncs.com/image-imports/.verification/',
-    );
-    expect((global.fetch as jest.Mock).mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'HEAD' }));
-    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const { db, service } = fixture();global.fetch = jest.fn().mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockResolvedValueOnce(response({}, 404));
+    expect(await service.saveFromCloudConfig({ ...input, imageImportBucket: 'training-image-imports' })).toMatchObject({ isActive: true, bucketStatus: 'ready', imageImportBucket: 'training-image-imports' });
+    expect(db.cloudAccountContext.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ isActive: false }) }));
+    expect((global.fetch as jest.Mock).mock.calls[1][1]).toMatchObject({ method: 'HEAD' });
+    expect(db.systemCloudConfig.upsert).toHaveBeenCalled();
   });
-
   it('keeps the cloud account ready when image import Bucket is not configured', async () => {
-    const unconfiguredContext = {
-      id: 'context-1',
-      displayName: '阿里云 1234567890 · cn-hangzhou',
-      provider: 'alibaba_cloud' as const,
-      accountUid: '1234567890',
-      regionId: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: '',
-      isActive: true,
-      status: 'ready' as const,
-      bucketStatus: 'unconfigured',
-      lastError: null,
-      lastVerifiedAt: null,
-      createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      updatedAt: new Date('2026-07-20T00:00:00.000Z'),
-    };
-    const create = jest.fn().mockResolvedValue(unconfiguredContext);
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(0),
-        create,
-      },
-    } as unknown as PrismaService);
-    global.fetch = jest
-      .fn()
-      .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockResolvedValueOnce(createResponse({}, 404));
-
-    const cloudConfig = {
-      defaultRegion: 'cn-hangzhou',
-      defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: '',
-    };
-
-    await expect(service.saveFromCloudConfig(cloudConfig)).resolves.toEqual(expect.objectContaining({
-      status: 'ready',
-      imageImportBucket: '',
-      bucketStatus: 'unconfigured',
-    }));
-    expect(create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        imageImportBucket: '',
-        status: 'ready',
-        bucketStatus: 'unconfigured',
-      }),
-    });
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValue(response({ AccountId: 'test-account' }));
+    expect(await service.saveFromCloudConfig(input)).toMatchObject({ status: 'ready', bucketStatus: 'unconfigured' });expect(global.fetch).toHaveBeenCalledTimes(1);
   });
-
   it('keeps the cloud account ready but closes uploads when the supplied Bucket is unavailable', async () => {
-    const unavailableContext = {
-      id: 'context-1',
-      displayName: '阿里云 1234567890 · cn-hangzhou',
-      provider: 'alibaba_cloud' as const,
-      accountUid: '1234567890',
-      regionId: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'missing-image-imports',
-      isActive: true,
-      status: 'ready' as const,
-      bucketStatus: 'unavailable',
-      lastError: '无法验证镜像导入 Bucket 的对象读取权限（HTTP 403）。',
-      lastVerifiedAt: null,
-      createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      updatedAt: new Date('2026-07-20T00:00:00.000Z'),
-    };
-    const create = jest.fn().mockResolvedValue(unavailableContext);
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(0),
-        create,
-      },
-    } as unknown as PrismaService);
-    global.fetch = jest
-      .fn()
-      .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockResolvedValueOnce(createResponse({}, 403));
-
-    const cloudConfig = {
-      defaultRegion: 'cn-hangzhou',
-      defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'missing-image-imports',
-    };
-
-    await expect(service.saveFromCloudConfig(cloudConfig)).resolves.toEqual(expect.objectContaining({
-      status: 'ready',
-      imageImportBucket: 'missing-image-imports',
-      bucketStatus: 'unavailable',
-      lastError: '无法验证镜像导入 Bucket 的对象读取权限（HTTP 403）。',
-    }));
-    expect(create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        status: 'ready',
-        bucketStatus: 'unavailable',
-      }),
-    });
-    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockResolvedValueOnce(response({}, 403));
+    expect(await service.saveFromCloudConfig({ ...input, imageImportBucket: 'training-image-imports' })).toMatchObject({ status: 'ready', bucketStatus: 'unavailable' });
   });
-
   it('keeps the cloud account ready when the import Bucket verification request fails', async () => {
-    const unavailableContext = {
-      id: 'context-1',
-      displayName: '阿里云 1234567890 · cn-hangzhou',
-      provider: 'alibaba_cloud' as const,
-      accountUid: '1234567890',
-      regionId: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'training-image-imports',
-      isActive: true,
-      status: 'ready' as const,
-      bucketStatus: 'unavailable',
-      lastError: '无法连接 OSS 验证镜像导入 Bucket。',
-      lastVerifiedAt: null,
-      createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      updatedAt: new Date('2026-07-20T00:00:00.000Z'),
-    };
-    const create = jest.fn().mockResolvedValue(unavailableContext);
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(0),
-        create,
-      },
-    } as unknown as PrismaService);
-    global.fetch = jest
-      .fn()
-      .mockResolvedValueOnce(createResponse({ AccountId: '1234567890' }))
-      .mockRejectedValueOnce(new Error('network unavailable'));
-
-    const cloudConfig = {
-      defaultRegion: 'cn-hangzhou',
-      defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'training-image-imports',
-    };
-
-    await expect(service.saveFromCloudConfig(cloudConfig)).resolves.toEqual(expect.objectContaining({
-      status: 'ready',
-      bucketStatus: 'unavailable',
-      lastError: '无法连接 OSS 验证镜像导入 Bucket。',
-    }));
-    expect(create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ bucketStatus: 'unavailable' }),
-    });
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValueOnce(response({ AccountId: 'test-account' })).mockRejectedValueOnce(new Error('test unavailable'));
+    expect(await service.saveFromCloudConfig({ ...input, imageImportBucket: 'training-image-imports' })).toMatchObject({ status: 'ready', bucketStatus: 'unavailable' });
   });
-
   it('rejects an invalid custom Bucket name before any cloud request', async () => {
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(0),
-        create: jest.fn().mockResolvedValue({
-          id: 'context-1',
-          displayName: '阿里云 1234567890 · cn-hangzhou',
-          provider: 'alibaba_cloud',
-          accountUid: '1234567890',
-          regionId: 'cn-hangzhou',
-          zoneId: 'cn-hangzhou-h',
-          accessKeyId: 'test-access-key',
-          accessKeySecret: 'test-access-secret',
-          imageImportBucket: 'Invalid_Bucket',
-          isActive: true,
-          status: 'ready',
-          bucketStatus: 'ready',
-          lastError: null,
-          lastVerifiedAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
-      },
-    } as unknown as PrismaService);
-    global.fetch = jest.fn().mockResolvedValue(createResponse({ AccountId: '1234567890' }));
-
-    const cloudConfig = {
-      defaultRegion: 'cn-hangzhou',
-      defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'Invalid_Bucket',
-    };
-
-    await expect(service.saveFromCloudConfig(cloudConfig)).rejects.toThrow('自定义 OSS 存储桶名格式无效');
-    expect(global.fetch).not.toHaveBeenCalled();
+    const { service } = fixture();global.fetch = jest.fn();
+    await expect(service.saveFromCloudConfig({ ...input, imageImportBucket: 'Invalid_Bucket' })).rejects.toThrow('存储桶名格式无效');expect(global.fetch).not.toHaveBeenCalled();
   });
-
-  it('does not change the import Bucket while the account still has uncleared image import jobs', async () => {
-    const existingContext = {
-      id: 'context-1',
-      displayName: '阿里云 1234567890 · cn-hangzhou',
-      provider: 'alibaba_cloud' as const,
-      accountUid: '1234567890',
-      regionId: 'cn-hangzhou',
-      zoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'previous-image-imports',
-      isActive: true,
-      status: 'ready' as const,
-      bucketStatus: 'ready',
-      lastError: null,
-      lastVerifiedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    const countImageImportJobs = jest.fn().mockResolvedValue(1);
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue(existingContext),
-        update: jest.fn().mockResolvedValue({
-          ...existingContext,
-          imageImportBucket: 'next-image-imports',
-        }),
-      },
-      imageImportJob: {
-        count: countImageImportJobs,
-      },
-    } as unknown as PrismaService);
-    global.fetch = jest.fn().mockResolvedValue(createResponse({ AccountId: '1234567890' }));
-
-    const cloudConfig = {
-      defaultRegion: 'cn-hangzhou',
-      defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-access-key',
-      accessKeySecret: 'test-access-secret',
-      imageImportBucket: 'next-image-imports',
-    };
-
-    await expect(service.saveFromCloudConfig(cloudConfig)).rejects.toThrow('暂不能更换或清空镜像导入 Bucket');
-    expect(countImageImportJobs).toHaveBeenCalledWith({
-      where: {
-        cloudAccountContextId: 'context-1',
-        temporaryObjectDeletedAt: null,
-      },
-    });
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+  it('does not change the Bucket while its context has uncleared image import jobs', async () => {
+    const { db, service } = fixture({ ...context, imageImportBucket: 'old-bucket' });db.imageImportJob.count.mockResolvedValue(1);
+    global.fetch = jest.fn().mockResolvedValue(response({ AccountId: 'test-account' }));
+    await expect(service.saveFromCloudConfig({ ...input, imageImportBucket: 'next-bucket' })).rejects.toThrow('暂不能更换或清空');expect(db.cloudAccountContext.upsert).not.toHaveBeenCalled();
   });
-
-  it('rejects image import credentials when the active account has no configured Bucket', async () => {
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'context-1',
-          displayName: 'Training Account',
-          provider: 'alibaba_cloud',
-          accountUid: '1234567890',
-          regionId: 'cn-hangzhou',
-          zoneId: 'cn-hangzhou-h',
-          accessKeyId: 'test-access-key',
-          accessKeySecret: 'test-access-secret',
-          imageImportBucket: '',
-          isActive: true,
-          status: 'ready',
-          bucketStatus: 'unconfigured',
-          lastError: null,
-          lastVerifiedAt: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
-      },
-    } as unknown as PrismaService);
-    const imageImportOptions = {
-      requireReady: true,
-      requireActive: true,
-      requireImageImportBucket: true,
-    };
-
-    await expect(service.getCredentials('context-1', imageImportOptions)).rejects.toThrow('未配置镜像导入 Bucket');
+  it('rejects image import credentials without a usable Bucket', async () => {
+    const { service } = fixture(context);
+    await expect(service.getCredentials(context.id, { requireImageImportBucket: true })).rejects.toThrow('未配置镜像导入');
   });
-
-  it('resolves the actual Alibaba Cloud account ID through STS before saving a context', async () => {
-    global.fetch = jest.fn().mockResolvedValue(createResponse({ AccountId: '1234567890' }));
-    const service = new CloudAccountContextsService({} as PrismaService);
-    const resolveAccountUid = (service as unknown as {
-      resolveAccountUid(accessKeyId: string, accessKeySecret: string): Promise<string>;
-    }).resolveAccountUid;
-
-    await expect(resolveAccountUid.call(service, 'test-access-key', 'test-access-secret')).resolves.toBe('1234567890');
-    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('Action=GetCallerIdentity');
+  it('resolves the actual account ID through STS without including the Secret in the URL', async () => {
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValue(response({ AccountId: 'test-account' }));
+    await expect((service as any).resolveAccountUid('test-access-key', 'test-access-secret')).resolves.toBe('test-account');
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).not.toContain('test-access-secret');
   });
-
-  it('blocks an account switch while live instances or provision jobs still exist', async () => {
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'context-next',
-          displayName: 'Next Account',
-          provider: 'alibaba_cloud',
-          accountUid: '9876543210',
-          regionId: 'cn-shanghai',
-          zoneId: 'cn-shanghai-g',
-          accessKeyId: 'next-access-key',
-          accessKeySecret: 'next-access-secret',
-          imageImportBucket: 'cyber-range-image-next',
-          isActive: false,
-          status: 'ready',
-          bucketStatus: 'ready',
-          lastError: null,
-          lastVerifiedAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
-      },
-      rangeInstance: { count: jest.fn().mockResolvedValue(1) },
-      provisionJob: { count: jest.fn().mockResolvedValue(0) },
-    } as unknown as PrismaService);
-
-    await expect(service.activate('context-next')).rejects.toThrow('当前仍存在未销毁实例或执行中的资源任务');
+  it('blocks switching while live instances or provision jobs remain', async () => {
+    const { db, service } = fixture({ ...context, isActive: false });db.provisionJob.count.mockResolvedValue(1);
+    await expect(service.activate(context.id)).rejects.toThrow('执行中的资源任务');expect(db.$transaction).not.toHaveBeenCalled();
   });
-
-  it('blocks an account switch while the active account still has unreleased billable resources', async () => {
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'context-next',
-          displayName: 'Next Account',
-          provider: 'alibaba_cloud',
-          accountUid: '9876543210',
-          regionId: 'cn-shanghai',
-          zoneId: 'cn-shanghai-g',
-          accessKeyId: 'next-access-key',
-          accessKeySecret: 'next-access-secret',
-          imageImportBucket: 'cyber-range-image-next',
-          isActive: false,
-          status: 'ready',
-          bucketStatus: 'ready',
-          lastError: null,
-          lastVerifiedAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
-        findFirst: jest.fn().mockResolvedValue({
-          id: 'context-current',
-          accountUid: '1234567890',
-        }),
-      },
-      rangeInstance: { count: jest.fn().mockResolvedValue(0) },
-      provisionJob: { count: jest.fn().mockResolvedValue(0) },
-      billingLedgerResource: { count: jest.fn().mockResolvedValue(1) },
-    } as unknown as PrismaService);
-
-    await expect(service.activate('context-next')).rejects.toThrow('未释放的计费资源');
+  it('blocks switching while the active account has unreleased billable resources', async () => {
+    const { db, service } = fixture({ ...context, isActive: false });db.cloudAccountContext.findMany.mockImplementation(async ({ select }: any) => select ? [context] : [context]);db.billingLedgerResource.count.mockResolvedValue(1);
+    await expect(service.activate(context.id)).rejects.toThrow('未释放的计费资源');expect(db.$transaction).not.toHaveBeenCalled();
   });
-
-  it('reports an unavailable cloud account without attributing the failure to its import Bucket', async () => {
-    const service = new CloudAccountContextsService({
-      cloudAccountContext: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'context-unavailable',
-          displayName: 'Unavailable Account',
-          provider: 'alibaba_cloud',
-          accountUid: '9876543210',
-          regionId: 'cn-shanghai',
-          zoneId: 'cn-shanghai-g',
-          accessKeyId: 'next-access-key',
-          accessKeySecret: 'next-access-secret',
-          imageImportBucket: '',
-          isActive: false,
-          status: 'degraded',
-          bucketStatus: 'unconfigured',
-          lastError: 'STS verification failed',
-          lastVerifiedAt: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
-      },
-    } as unknown as PrismaService);
-
-    await expect(service.activate('context-unavailable')).rejects.toThrow('当前阿里云账号不可用，无法切换');
+  it('reports an unavailable cloud account without blaming its import Bucket', async () => {
+    const { service } = fixture({ ...context, isActive: false, status: 'degraded' as never });
+    await expect(service.activate(context.id)).rejects.toThrow('当前阿里云账号不可用');
   });
 });

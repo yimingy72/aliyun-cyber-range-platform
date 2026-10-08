@@ -171,10 +171,7 @@ describe('SystemConfigService instance type availability', () => {
       accessKeySecret: 'updated-secret',
       imageImportBucket: 'training-image-imports',
     });
-    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'default' },
-      update: expect.objectContaining({ defaultRegion: 'cn-beijing', defaultZoneId: 'cn-beijing-k' }),
-    }));
+    expect(upsert).not.toHaveBeenCalled();
   });
 
 });

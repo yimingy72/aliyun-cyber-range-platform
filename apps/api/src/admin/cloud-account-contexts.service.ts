@@ -1,8 +1,10 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../database/prisma.service';
+import type { Prisma } from '@aliyun-cyber-range/database/generated/client';
+import { FAILED_CREATE_CLEANUP_PROOF_STEP, FAILED_CREATE_SWITCH_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from './failed-create-cleanup-evidence';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -129,97 +131,199 @@ export class CloudAccountContextsService {
       accessKeyId: normalized.accessKeyId,
       accessKeySecret: normalized.accessKeySecret,
     });
-    const context = existing
-      ? await this.prisma.cloudAccountContext.update({
-          where: { id: existing.id },
-          data: {
-            displayName,
-            zoneId: normalized.zoneId,
-            accessKeyId: normalized.accessKeyId,
-            accessKeySecret: normalized.accessKeySecret,
-            imageImportBucket,
-            status: 'ready',
-            ...bucketVerification,
-          },
-        })
-      : await this.prisma.cloudAccountContext.create({
-          data: {
-            displayName,
-            provider: 'alibaba_cloud',
-            accountUid,
-            regionId: normalized.regionId,
-            zoneId: normalized.zoneId,
-            accessKeyId: normalized.accessKeyId,
-            accessKeySecret: normalized.accessKeySecret,
-            imageImportBucket,
-            isActive: (await this.prisma.cloudAccountContext.count()) === 0,
-            status: 'ready',
-            ...bucketVerification,
-          },
-        });
-
-    return context.isActive ? this.toView(context) : this.activate(context.id);
+    return this.commitCloudConfig({
+      existing,
+      data: {
+        displayName,
+        provider: 'alibaba_cloud',
+        accountUid,
+        ...normalized,
+        imageImportBucket,
+        status: 'ready',
+        ...bucketVerification,
+      },
+    });
   }
 
   async activate(id: string): Promise<CloudAccountContextView> {
     const context = await this.prisma.cloudAccountContext.findUnique({ where: { id } });
-
     if (!context) {
       throw new NotFoundException('Cloud account context not found');
     }
-
     if (context.status !== 'ready') {
       throw new BadRequestException('当前阿里云账号不可用，无法切换。');
     }
+    return this.commitCloudConfig({ existing: context, data: context });
+  }
 
-    if (context.isActive) {
-      return this.toView(context);
-    }
-
-    const [liveInstanceCount, activeProvisionJobCount] = await Promise.all([
-      this.prisma.rangeInstance.count({
-        where: {
-          status: { not: 'destroyed' },
-        },
+  private async readSwitchState(db: Prisma.TransactionClient | PrismaService) {
+    const [activeContexts, instances, activeJobCount, knownContexts] = await Promise.all([
+      db.cloudAccountContext.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } }),
+      db.rangeInstance.findMany({
+        where: { status: { not: 'destroyed' } },
+        include: { lastJob: { include: { stepLogs: { orderBy: { id: 'asc' } } } }, jobs: { select: { id: true }, orderBy: { id: 'asc' } } },
+        orderBy: { id: 'asc' },
       }),
-      this.prisma.provisionJob.count({
-        where: {
-          status: { in: ['pending', 'running'] },
-        },
-      }),
+      db.provisionJob.count({ where: { status: { in: ['pending', 'running'] } } }),
+      db.cloudAccountContext.findMany({ select: { id: true, accountUid: true, regionId: true }, orderBy: { id: 'asc' } }),
     ]);
-
-    if (liveInstanceCount > 0 || activeProvisionJobCount > 0) {
-      throw new ConflictException(
-        '当前仍存在未销毁实例或执行中的资源任务。为避免跨阿里云账号误操作，请先完成销毁并等待任务结束后再切换账号。',
-      );
+    if (activeContexts.length > 1) {
+      throw new ConflictException('当前云配置存在多个启用账号，请先修复配置状态后再切换。');
     }
+    return { activeContexts, instances, activeJobCount, knownContexts };
+  }
 
-    const activeContext = await this.prisma.cloudAccountContext.findFirst({
-      where: { isActive: true },
-      select: { id: true, accountUid: true },
-    });
-
-    if (activeContext && activeContext.id !== context.id) {
-      const unreleasedBillableResourceCount = await this.prisma.billingLedgerResource.count({
-        where: {
-          cloudAccountUid: activeContext.accountUid,
-          releasedAt: null,
-        },
-      });
-
-      if (unreleasedBillableResourceCount > 0) {
-        throw new ConflictException(
-          '当前阿里云账号仍有未释放的计费资源。请先删除相关镜像、快照或实例并完成台账关闭后再切换账号。',
-        );
+  private async verifySwitch(
+    state: Awaited<ReturnType<CloudAccountContextsService['readSwitchState']>>,
+    target: { accountUid: string; regionId: string; accessKeyId: string; accessKeySecret: string },
+  ) {
+    if (state.activeJobCount > 0) {
+      this.throwActiveResourcesConflict();
+    }
+    const active = state.activeContexts[0];
+    const proofs: FailedCreateCleanupProof[] = [];
+    for (const instance of state.instances) {
+      if (instance.status === 'draft' && instance.jobs.length === 0
+        && instance.accessEntry === null && instance.resourceSummary === null) {
+        continue;
       }
+      const job = instance.lastJob;
+      if (instance.status !== 'create_failed' || instance.accessEntry !== null || instance.resourceSummary !== null
+        || !job || job.status !== 'failed' || !job.startedAt || job.rangeInstanceId !== instance.id
+        || !['create', 'retry'].includes(job.jobType)) {
+        this.throwActiveResourcesConflict();
+      }
+      const trustedProof = job.stepLogs.some((step) => {
+        if (step.status !== 'succeeded' || !step.finishedAt
+          || ![FAILED_CREATE_CLEANUP_PROOF_STEP, FAILED_CREATE_SWITCH_PROOF_STEP].includes(step.stepName)) {
+          return false;
+        }
+        const proof = readFailedCreateCleanupProof(step.message);
+        return proof?.rangeInstanceId === instance.id && proof.provisionJobId === job.id
+          && proof.claimStartedAt === job.startedAt!.toISOString()
+          && step.finishedAt >= job.startedAt!
+          && state.knownContexts.some((context) => context.id === proof.cloudAccountContextId
+            && context.accountUid === proof.cloudAccountUid && context.regionId === proof.regionId);
+      });
+      if (trustedProof) {
+        continue;
+      }
+      // ECS absence cannot prove that an unknown OpenTofu range has no VPC/NAT/EIP resources.
+      if (instance.instanceMode !== 'single' || !active) {
+        this.throwActiveResourcesConflict();
+      }
+      await this.assertNoTaggedInstances({
+        rangeInstanceId: instance.id,
+        regionId: active.regionId,
+        accessKeyId: active.accountUid === target.accountUid ? target.accessKeyId : active.accessKeyId,
+        accessKeySecret: active.accountUid === target.accountUid ? target.accessKeySecret : active.accessKeySecret,
+      });
+      proofs.push({
+        version: 1,
+        rangeInstanceId: instance.id,
+        provisionJobId: job.id,
+        claimStartedAt: job.startedAt.toISOString(),
+        cloudAccountContextId: active.id,
+        cloudAccountUid: active.accountUid,
+        regionId: active.regionId,
+      });
     }
+    if (active && await this.prisma.billingLedgerResource.count({
+      where: { cloudAccountUid: active.accountUid, releasedAt: null },
+    }) > 0) {
+      throw new ConflictException('当前阿里云账号仍有未释放的计费资源。请先删除相关镜像、快照或实例并完成台账关闭后再切换账号。');
+    }
+    return proofs;
+  }
 
-    await this.prisma.$transaction([
-      this.prisma.cloudAccountContext.updateMany({ data: { isActive: false } }),
-      this.prisma.cloudAccountContext.update({ where: { id }, data: { isActive: true } }),
-    ]);
-    return this.toView(await this.prisma.cloudAccountContext.findUniqueOrThrow({ where: { id } }));
+  private throwActiveResourcesConflict(): never {
+    throw new ConflictException('当前仍存在未销毁实例、未经确认清理的失败实例或执行中的资源任务。请先完成销毁并等待任务结束后再切换账号。');
+  }
+
+  private fingerprint(value: unknown) {
+    return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  }
+
+  private async commitCloudConfig(input: {
+    existing: Prisma.CloudAccountContextGetPayload<Record<string, never>> | null;
+    data: Omit<Prisma.CloudAccountContextCreateInput, 'isActive'> & { accountUid: string; regionId: string; zoneId: string; accessKeyId: string; accessKeySecret: string; imageImportBucket: string };
+  }) {
+    const state = await this.readSwitchState(this.prisma);
+    const switching = !input.existing?.isActive;
+    const proofs = switching ? await this.verifySwitch(state, input.data) : [];
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Cover existing launch/worker DML too; validation never holds these locks during a cloud request.
+        await tx.$executeRaw`LOCK TABLE "CloudAccountContext", "SystemCloudConfig", "RangeInstance", "ProvisionJob", "BillingLedgerResource", "ImageImportJob", "ProvisionJobStepLog" IN SHARE ROW EXCLUSIVE MODE NOWAIT`;
+        const current = await this.readSwitchState(tx);
+        const existing = await tx.cloudAccountContext.findUnique({
+          where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid: input.data.accountUid, regionId: input.data.regionId } },
+        });
+        if (this.fingerprint(current) !== this.fingerprint(state)
+          || this.fingerprint(existing) !== this.fingerprint(input.existing)) {
+          throw new ConflictException('云配置、实例或资源任务已变化，请刷新后重新校验并保存。');
+        }
+        if (switching && current.activeJobCount > 0) {
+          this.throwActiveResourcesConflict();
+        }
+        if (switching && current.activeContexts[0] && await tx.billingLedgerResource.count({
+          where: { cloudAccountUid: current.activeContexts[0].accountUid, releasedAt: null },
+        }) > 0) {
+          throw new ConflictException('当前阿里云账号仍有未释放的计费资源，暂不能切换账号。');
+        }
+        await this.assertImageImportBucketCanChange(existing, input.data.imageImportBucket, tx);
+        const { id: _id, isActive: _isActive, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = input.data as typeof input.data & { id?: string; isActive?: boolean; createdAt?: Date; updatedAt?: Date };
+        const context = await tx.cloudAccountContext.upsert({
+          where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid: data.accountUid, regionId: data.regionId } },
+          update: data,
+          create: { ...data, isActive: false },
+        });
+        await tx.cloudAccountContext.updateMany({ where: { isActive: true }, data: { isActive: false } });
+        const activeContext = await tx.cloudAccountContext.update({ where: { id: context.id }, data: { isActive: true } });
+        const config = { provider: 'alibaba_cloud', defaultRegion: data.regionId, defaultZoneId: data.zoneId, accessKeyId: data.accessKeyId, accessKeySecret: data.accessKeySecret };
+        await tx.systemCloudConfig.upsert({ where: { id: 'default' }, update: config, create: { id: 'default', ...config } });
+        for (const proof of proofs) {
+          const verifiedAt = new Date();
+          await tx.provisionJobStepLog.create({ data: { jobId: proof.provisionJobId, stepName: FAILED_CREATE_SWITCH_PROOF_STEP, status: 'succeeded', message: JSON.stringify(proof), startedAt: verifiedAt, finishedAt: verifiedAt } });
+        }
+        return this.toView(activeContext);
+      }, { timeout: 10_000 });
+    } catch (error) {
+      const databaseCode = (error as { meta?: { code?: string }; code?: string })?.meta?.code;
+      if (databaseCode === '55P03' || databaseCode === '40P01' || (error as { code?: string })?.code === 'P2034') {
+        throw new ConflictException('云配置或资源任务正在变化，请等待任务稳定后重新保存。');
+      }
+      throw error;
+    }
+  }
+
+  private async assertNoTaggedInstances(input: { rangeInstanceId: string; regionId: string; accessKeyId: string; accessKeySecret: string }) {
+    const query = signAliyunRpcQuery({
+      Action: 'DescribeInstances', AccessKeyId: input.accessKeyId, RegionId: input.regionId,
+      Format: 'JSON', SignatureMethod: ALICLOUD_SIGNATURE_METHOD, SignatureNonce: randomUUID(),
+      SignatureVersion: ALICLOUD_SIGNATURE_VERSION, Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      Version: '2014-05-26', PageNumber: '1', PageSize: '1',
+      'Tag.1.Key': 'RangeInstanceId', 'Tag.1.Value': input.rangeInstanceId,
+    }, input.accessKeySecret);
+    let payload: unknown;
+    try {
+      const response = await fetch(`https://ecs.${input.regionId}.aliyuncs.com/?${query}`, { signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) {
+        throw new Error('ECS verification request rejected');
+      }
+      payload = await response.json();
+    } catch {
+      throw new ConflictException('无法只读确认旧地域失败实例已清理，云配置未切换。请检查旧地域访问权限与网络后重试。');
+    }
+    const value = payload as { Code?: unknown; RequestId?: unknown; TotalCount?: unknown; PageNumber?: unknown; PageSize?: unknown; Instances?: { Instance?: unknown } } | null;
+    if (!value || typeof value !== 'object' || value.Code !== undefined || typeof value.RequestId !== 'string' || !value.RequestId.trim()
+      || !Number.isSafeInteger(value.TotalCount) || (value.TotalCount as number) < 0 || value.PageNumber !== 1 || value.PageSize !== 1
+      || !value.Instances || !Array.isArray(value.Instances.Instance)) {
+      throw new ConflictException('旧地域实例查询响应无法证明资源已清理，云配置未切换。');
+    }
+    if (value.TotalCount !== 0 || value.Instances.Instance.length !== 0) {
+      this.throwActiveResourcesConflict();
+    }
   }
 
   private async resolveAccountUid(accessKeyId: string, accessKeySecret: string) {
@@ -316,12 +420,13 @@ export class CloudAccountContextsService {
   private async assertImageImportBucketCanChange(
     existing: { id: string; imageImportBucket: string } | null,
     imageImportBucket: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
   ) {
     if (!existing || existing.imageImportBucket === imageImportBucket) {
       return;
     }
 
-    const pendingJobCount = await this.prisma.imageImportJob.count({
+    const pendingJobCount = await db.imageImportJob.count({
       where: {
         cloudAccountContextId: existing.id,
         temporaryObjectDeletedAt: null,
