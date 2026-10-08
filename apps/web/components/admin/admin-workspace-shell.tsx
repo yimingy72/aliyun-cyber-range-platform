@@ -159,6 +159,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const renewalTimeoutRef = useRef<number | null>(null);
   const renewingRef = useRef(false);
   const loggingOutRef = useRef(false);
+  const hasRenderedWorkspaceRef = useRef(false);
   const visibleNavigationItems = navigationItems.filter((item) => !item.requiresAdmin || session.isAdmin);
   const tokenExpiresAt = session.token ? readAdminOidcTokenExpiresAt(session.token) : null;
   const shouldRenewNow = Boolean(
@@ -323,13 +324,16 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
     return <AdminWorkspaceLoadingState label="正在恢复管理会话" />;
   }
 
-  if (isRenewingSession || shouldRenewNow) {
+  if ((isRenewingSession || shouldRenewNow) && !hasRenderedWorkspaceRef.current) {
     return <AdminWorkspaceLoadingState label="正在续期管理会话" />;
   }
 
   if (!session.token) {
+    hasRenderedWorkspaceRef.current = false;
     return null;
   }
+
+  hasRenderedWorkspaceRef.current = true;
 
   return (
     <div
@@ -378,6 +382,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
             </Sheet>
 
             <div className="admin-topbar-meta ml-auto">
+              {isRenewingSession ? <span role="status">正在续期管理会话</span> : null}
               {session.profile ? (
                 <div className="admin-topbar-badge-group" aria-label="当前登录用户">
                   <span className="admin-topbar-badge">
@@ -399,7 +404,7 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
 
         <div className="admin-main-content-shell">
           <section className="admin-main-content">
-            <AdminScreenCacheProvider>
+            <AdminScreenCacheProvider key={session.profile?.id}>
               <AdminPageCache pathname={pathname}>{children}</AdminPageCache>
             </AdminScreenCacheProvider>
           </section>

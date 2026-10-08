@@ -1205,6 +1205,10 @@ export function ImageCenterScreen({
       setImageImportErrorMessage('当前仅支持 .qcow2、.raw 和 .vhd 镜像文件。');
       return;
     }
+    if (imageImportDraft.imageFormat !== imageFormat) {
+      setImageImportErrorMessage(`所选镜像格式与文件扩展名不一致，请选择 ${imageFormat.toUpperCase()}。`);
+      return;
+    }
     if (!imageImportDraft.displayName.trim()) {
       setImageImportErrorMessage('请填写镜像名。');
       return;

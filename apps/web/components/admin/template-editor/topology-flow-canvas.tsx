@@ -525,7 +525,12 @@ function TopologyFlowCanvasInner({
         return;
       }
 
-      if (isEditableKeyboardTarget(event.target)) {
+      if (
+        event.defaultPrevented ||
+        workbenchRef.current?.closest('[hidden], [inert]') ||
+        isEditableKeyboardTarget(event.target) ||
+        (event.target instanceof Element && event.target.closest('[role="dialog"]'))
+      ) {
         return;
       }
 

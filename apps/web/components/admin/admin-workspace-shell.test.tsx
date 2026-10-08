@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminSessionPayload } from '../../lib/admin-types';
@@ -526,6 +526,33 @@ describe('AdminWorkspaceShell', () => {
     expect(screen.getByLabelText('正在续期管理会话')).toBeTruthy();
     expect(screen.queryByText('workspace content')).toBeNull();
     expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps unsaved workspace state mounted throughout a background token renewal', async () => {
+    let completeRenewal!: (response: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((resolve) => { completeRenewal = resolve; }));
+    writeAdminSession(createSession({ refreshToken: 'refresh-token-1' }));
+    const mount = vi.fn();
+    function DraftEditor() {
+      const [draft, setDraft] = React.useState('');
+      React.useEffect(() => { mount(); }, []);
+      return <input aria-label="未保存拓扑" value={draft} onChange={(event) => setDraft(event.target.value)} />;
+    }
+    render(<AdminWorkspaceShell><DraftEditor /></AdminWorkspaceShell>);
+    fireEvent.change(await screen.findByLabelText('未保存拓扑'), { target: { value: '尚未保存的修改' } });
+
+    act(() => {
+      writeAdminSession(createSession({ token: createJwt({ exp: Math.floor(Date.now() / 1000) + 30 }), refreshToken: 'refresh-token-1' }));
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect((screen.getByLabelText('未保存拓扑') as HTMLInputElement).value).toBe('尚未保存的修改');
+    expect(screen.getByRole('status').textContent).toBe('正在续期管理会话');
+    await act(async () => {
+      completeRenewal(new Response(JSON.stringify({ access_token: createJwt(), refresh_token: 'refresh-token-2' }), { status: 200 }));
+    });
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    expect((screen.getByLabelText('未保存拓扑') as HTMLInputElement).value).toBe('尚未保存的修改');
+    expect(mount).toHaveBeenCalledOnce();
   });
 
   it('does not redirect when another tab rewrites the stored session', async () => {
