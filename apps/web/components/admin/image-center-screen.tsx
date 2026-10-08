@@ -1835,7 +1835,14 @@ export function ImageCenterScreen({
   const isRefreshing = refreshingTabs[activeTab] || (isLoading && loadedTabs[activeTab]);
   const hasActiveFilters = !!searchName || (activeTab === 'platform' && (!!platformCreatedByFilter || !!platformTagFilter)) || (activeTab === 'mine' && !!myTagFilter);
   const emptyState = hasActiveFilters
-    ? { title: '没有匹配的镜像', description: '请调整名称、创建人或标签筛选条件。' }
+    ? {
+        title: '没有匹配的镜像',
+        description: activeMainView === 'cloud'
+          ? '请调整名称或镜像 ID 筛选条件。'
+          : activeMainView === 'mine'
+            ? '请调整名称或标签筛选条件。'
+            : '请调整名称、创建人或标签筛选条件。',
+      }
     : activeTab === 'platform'
       ? {
           title: '当前没有平台镜像',
