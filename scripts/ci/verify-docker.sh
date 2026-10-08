@@ -63,7 +63,13 @@ if [ "${#CI_PROVIDER_MIRROR_ARGS[@]}" = 0 ]; then
   # Fetch once before entering the isolated verification network; all checks then use a read-only mirror.
   mkdir -p "$CONTEXT_DIR/provider-mirror"
   docker run --rm -v "$CONTEXT_DIR/provider-mirror:/provider-mirror" \
-    -e OPENTOFU_PROVIDER_MIRROR_HOST_PATH=/provider-mirror "$CI_IMAGE" pnpm provider:download
+    -e OPENTOFU_PROVIDER_MIRROR_HOST_PATH=/provider-mirror \
+    -e CI_MIRROR_UID="$(id -u)" -e CI_MIRROR_GID="$(id -g)" \
+    "$CI_IMAGE" sh -ec '
+      cleanup_mirror_ownership() { chown -R "$CI_MIRROR_UID:$CI_MIRROR_GID" /provider-mirror; }
+      trap cleanup_mirror_ownership EXIT
+      pnpm provider:download
+    '
   CI_PROVIDER_MIRROR_ARGS=(-v "$CONTEXT_DIR/provider-mirror:/app/.local/provider-mirror:ro")
 fi
 
