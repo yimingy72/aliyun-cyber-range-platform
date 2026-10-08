@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 
 import type { UserRole, UserStatus } from './admin.repository';
 
@@ -40,22 +40,30 @@ type KeycloakRealmRole = {
 
 @Injectable()
 export class KeycloakAdminService {
+  private readonly logger = new Logger(KeycloakAdminService.name);
   async createUser(input: CreateKeycloakUserInput): Promise<string> {
     const accessToken = await this.getAccessToken();
-    const response = await fetch(`${this.realmAdminUrl()}/users`, {
-      method: 'POST',
-      headers: this.jsonHeaders(accessToken),
-      body: JSON.stringify({
-        username: input.username,
-        enabled: input.status === 'active',
-        emailVerified: true,
-        firstName: 'Platform',
-        lastName: 'User',
-        email: `${input.username}@example.local`,
-        credentials: [{ type: 'password', value: input.password, temporary: false }],
-        requiredActions: [],
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.realmAdminUrl()}/users`, {
+        signal: AbortSignal.timeout(5_000),
+        method: 'POST',
+        headers: this.jsonHeaders(accessToken),
+        body: JSON.stringify({
+          username: input.username,
+          enabled: input.status === 'active',
+          emailVerified: true,
+          firstName: 'Platform',
+          lastName: 'User',
+          email: `${input.username}@example.local`,
+          credentials: [{ type: 'password', value: input.password, temporary: false }],
+          requiredActions: [],
+        }),
+      });
+    } catch {
+      this.logger.error('Identity creation outcome is unknown after a transport failure');
+      throw new ServiceUnavailableException('Identity creation outcome is unknown; reconcile the identity before retrying creation');
+    }
 
     if (response.status === 409) {
       throw new KeycloakAdminError('Username already exists', 409);
@@ -66,15 +74,45 @@ export class KeycloakAdminService {
     }
 
     const location = response.headers.get('location');
-    const subject = location?.split('/').pop();
-
+    let subject = location?.split('/').pop();
     if (!subject) {
-      throw new KeycloakAdminError('Keycloak create user response missing subject');
+      try {
+        subject = await this.findUserSubjectByUsername(input.username) ?? undefined;
+      } catch {
+        this.logger.error('Created identity could not be identified for setup or cleanup');
+        throw new ServiceUnavailableException('Created identity could not be identified; reconcile the identity before retrying creation');
+      }
     }
 
-    await this.assignRealmRole(accessToken, subject, input.role);
+    if (!subject) {
+      throw new ServiceUnavailableException('Created identity could not be identified; reconcile the identity before retrying creation');
+    }
+
+    try {
+      await this.assignRealmRole(accessToken, subject, input.role);
+    } catch (error) {
+      try {
+        await this.deleteUser(subject);
+      } catch {
+        this.logger.error('Failed to remove a newly created identity after role setup failed');
+        throw new ServiceUnavailableException('Created identity cleanup failed; reconcile the identity before retrying creation');
+      }
+      throw error;
+    }
 
     return subject;
+  }
+
+  async deleteUser(subject: string): Promise<void> {
+    const accessToken = await this.getAccessToken();
+    const response = await fetch(`${this.realmAdminUrl()}/users/${subject}`, {
+      signal: AbortSignal.timeout(5_000),
+      method: 'DELETE',
+      headers: this.jsonHeaders(accessToken),
+    });
+    if (response.status !== 204 && response.status !== 404) {
+      throw new KeycloakAdminError('Failed to delete Keycloak user', response.status);
+    }
   }
 
   async updateUserRole(input: UpdateKeycloakRoleInput): Promise<void> {
@@ -85,6 +123,7 @@ export class KeycloakAdminService {
   async updateUserStatus(input: UpdateKeycloakStatusInput): Promise<void> {
     const accessToken = await this.getAccessToken();
     const response = await fetch(`${this.realmAdminUrl()}/users/${input.subject}`, {
+      signal: AbortSignal.timeout(5_000),
       method: 'PUT',
       headers: this.jsonHeaders(accessToken),
       body: JSON.stringify({ enabled: input.status === 'active' }),
@@ -98,6 +137,7 @@ export class KeycloakAdminService {
   async resetUserPassword(input: ResetKeycloakPasswordInput): Promise<void> {
     const accessToken = await this.getAccessToken();
     const response = await fetch(`${this.realmAdminUrl()}/users/${input.subject}/reset-password`, {
+      signal: AbortSignal.timeout(5_000),
       method: 'PUT',
       headers: this.jsonHeaders(accessToken),
       body: JSON.stringify({ type: 'password', value: input.password, temporary: false }),
@@ -107,14 +147,19 @@ export class KeycloakAdminService {
       throw new KeycloakAdminError('Failed to reset Keycloak user password', response.status);
     }
 
-    const requiredActionsResponse = await fetch(`${this.realmAdminUrl()}/users/${input.subject}`, {
-      method: 'PUT',
-      headers: this.jsonHeaders(accessToken),
-      body: JSON.stringify({ requiredActions: [] }),
-    });
-
-    if (requiredActionsResponse.status !== 204) {
-      throw new KeycloakAdminError('Failed to clear Keycloak required actions', requiredActionsResponse.status);
+    try {
+      const requiredActionsResponse = await fetch(`${this.realmAdminUrl()}/users/${input.subject}`, {
+        signal: AbortSignal.timeout(5_000),
+        method: 'PUT',
+        headers: this.jsonHeaders(accessToken),
+        body: JSON.stringify({ requiredActions: [] }),
+      });
+      if (requiredActionsResponse.status !== 204) {
+        throw new KeycloakAdminError('Failed to clear Keycloak required actions', requiredActionsResponse.status);
+      }
+    } catch {
+      // The credential change already succeeded; cleanup cannot truthfully turn it into a failed reset.
+      this.logger.warn('Password was reset, but clearing identity required actions failed');
     }
   }
 
@@ -122,6 +167,7 @@ export class KeycloakAdminService {
     const accessToken = await this.getAccessToken();
     const searchParams = new URLSearchParams({ username, exact: 'true' });
     const response = await fetch(`${this.realmAdminUrl()}/users?${searchParams.toString()}`, {
+      signal: AbortSignal.timeout(5_000),
       method: 'GET',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -139,38 +185,54 @@ export class KeycloakAdminService {
   }
 
   private async replaceRealmRoles(accessToken: string, subject: string, role: UserRole) {
-    const removableRoles = await Promise.all([
-      this.getRealmRole(accessToken, 'admin'),
-      this.getRealmRole(accessToken, 'user'),
-    ]);
-    const removeResponse = await fetch(`${this.realmAdminUrl()}/users/${subject}/role-mappings/realm`, {
-      method: 'DELETE',
+    const response = await fetch(`${this.realmAdminUrl()}/users/${subject}/role-mappings/realm`, {
+      signal: AbortSignal.timeout(5_000),
       headers: this.jsonHeaders(accessToken),
-      body: JSON.stringify(removableRoles),
     });
-
-    if (removeResponse.status !== 204) {
-      throw new KeycloakAdminError('Failed to clear Keycloak realm roles', removeResponse.status);
+    if (response.status !== 200) {
+      throw new KeycloakAdminError('Failed to query Keycloak realm roles', response.status);
     }
-
-    await this.assignRealmRole(accessToken, subject, role);
+    const previous = ((await response.json()) as KeycloakRealmRole[]).filter((entry) => entry.name === 'admin' || entry.name === 'user');
+    const target = await this.getRealmRole(accessToken, role);
+    const targetWasPresent = previous.some((entry) => entry.name === role);
+    try {
+      // Keep the existing role until its replacement has been accepted.
+      if (!targetWasPresent) {
+        await this.writeRealmRoles(accessToken, subject, [target], 'POST');
+      }
+      await this.writeRealmRoles(accessToken, subject, previous.filter((entry) => entry.name !== role), 'DELETE');
+    } catch (error) {
+      await this.writeRealmRoles(accessToken, subject, previous, 'POST');
+      if (!targetWasPresent) {
+        await this.writeRealmRoles(accessToken, subject, [target], 'DELETE');
+      }
+      throw error;
+    }
   }
 
   private async assignRealmRole(accessToken: string, subject: string, role: UserRole) {
     const realmRole = await this.getRealmRole(accessToken, role);
-    const addResponse = await fetch(`${this.realmAdminUrl()}/users/${subject}/role-mappings/realm`, {
-      method: 'POST',
-      headers: this.jsonHeaders(accessToken),
-      body: JSON.stringify([realmRole]),
-    });
+    await this.writeRealmRoles(accessToken, subject, [realmRole], 'POST');
+  }
 
-    if (addResponse.status !== 204) {
-      throw new KeycloakAdminError('Failed to assign Keycloak realm role', addResponse.status);
+  private async writeRealmRoles(accessToken: string, subject: string, roles: KeycloakRealmRole[], method: 'POST' | 'DELETE') {
+    if (roles.length === 0) {
+      return;
+    }
+    const response = await fetch(`${this.realmAdminUrl()}/users/${subject}/role-mappings/realm`, {
+      signal: AbortSignal.timeout(5_000),
+      method,
+      headers: this.jsonHeaders(accessToken),
+      body: JSON.stringify(roles),
+    });
+    if (response.status !== 204) {
+      throw new KeycloakAdminError(method === 'POST' ? 'Failed to assign Keycloak realm role' : 'Failed to clear Keycloak realm roles', response.status);
     }
   }
 
   private async getRealmRole(accessToken: string, role: UserRole): Promise<KeycloakRealmRole> {
     const response = await fetch(`${this.realmAdminUrl()}/roles/${role}`, {
+      signal: AbortSignal.timeout(5_000),
       method: 'GET',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -186,6 +248,7 @@ export class KeycloakAdminService {
 
   private async getAccessToken() {
     const response = await fetch(`${this.baseUrl()}/realms/${this.realm()}/protocol/openid-connect/token`, {
+      signal: AbortSignal.timeout(5_000),
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
