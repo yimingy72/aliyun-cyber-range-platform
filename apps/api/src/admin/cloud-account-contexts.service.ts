@@ -165,7 +165,7 @@ export class CloudAccountContextsService {
         orderBy: { id: 'asc' },
       }),
       db.provisionJob.count({ where: { status: { in: ['pending', 'running'] } } }),
-      db.cloudAccountContext.findMany({ select: { id: true, accountUid: true, regionId: true }, orderBy: { id: 'asc' } }),
+      db.cloudAccountContext.findMany({ orderBy: { id: 'asc' } }),
     ]);
     if (activeContexts.length > 1) {
       throw new ConflictException('当前云配置存在多个启用账号，请先修复配置状态后再切换。');
@@ -193,6 +193,12 @@ export class CloudAccountContextsService {
         || !['create', 'retry'].includes(job.jobType)) {
         this.throwActiveResourcesConflict();
       }
+      const sourceRegion = instance.instanceMode === 'single' ? this.readPersistedSourceRegion(instance) : null;
+      const singleConfig = instance.singleInstanceConfig;
+      if (instance.instanceMode === 'single' && (!singleConfig || typeof singleConfig !== 'object' || Array.isArray(singleConfig)
+        || typeof singleConfig.assignedVswitchId !== 'string' || !singleConfig.assignedVswitchId.trim())) {
+        throw new ConflictException('失败单实例缺少持久指定交换机，无法确认来源，云配置未切换。');
+      }
       const trustedProof = job.stepLogs.some((step) => {
         if (step.status !== 'succeeded' || !step.finishedAt
           || ![FAILED_CREATE_CLEANUP_PROOF_STEP, FAILED_CREATE_SWITCH_PROOF_STEP].includes(step.stepName)) {
@@ -202,30 +208,40 @@ export class CloudAccountContextsService {
         return proof?.rangeInstanceId === instance.id && proof.provisionJobId === job.id
           && proof.claimStartedAt === job.startedAt!.toISOString()
           && step.finishedAt >= job.startedAt!
+          && (sourceRegion === null || proof.regionId === sourceRegion)
           && state.knownContexts.some((context) => context.id === proof.cloudAccountContextId
-            && context.accountUid === proof.cloudAccountUid && context.regionId === proof.regionId);
+            && context.accountUid === proof.cloudAccountUid && context.regionId === proof.regionId
+            && context.createdAt <= job.startedAt!);
       });
       if (trustedProof) {
         continue;
       }
       // ECS absence cannot prove that an unknown OpenTofu range has no VPC/NAT/EIP resources.
-      if (instance.instanceMode !== 'single' || !active) {
+      if (instance.instanceMode !== 'single') {
         this.throwActiveResourcesConflict();
+      }
+      const sources = state.knownContexts.filter((context) => context.regionId === sourceRegion);
+      if (sources.length !== 1) {
+        throw new ConflictException('失败实例的来源账号缺失或存在歧义，云配置未切换。');
+      }
+      const source = sources[0];
+      if (source.createdAt > job.startedAt) {
+        throw new ConflictException('失败实例执行时的来源账号历史无法确认，云配置未切换。');
       }
       await this.assertNoTaggedInstances({
         rangeInstanceId: instance.id,
-        regionId: active.regionId,
-        accessKeyId: active.accountUid === target.accountUid ? target.accessKeyId : active.accessKeyId,
-        accessKeySecret: active.accountUid === target.accountUid ? target.accessKeySecret : active.accessKeySecret,
+        regionId: source.regionId,
+        accessKeyId: source.accountUid === target.accountUid ? target.accessKeyId : source.accessKeyId,
+        accessKeySecret: source.accountUid === target.accountUid ? target.accessKeySecret : source.accessKeySecret,
       });
       proofs.push({
         version: 1,
         rangeInstanceId: instance.id,
         provisionJobId: job.id,
         claimStartedAt: job.startedAt.toISOString(),
-        cloudAccountContextId: active.id,
-        cloudAccountUid: active.accountUid,
-        regionId: active.regionId,
+        cloudAccountContextId: source.id,
+        cloudAccountUid: source.accountUid,
+        regionId: source.regionId,
       });
     }
     if (active && await this.prisma.billingLedgerResource.count({
@@ -234,6 +250,37 @@ export class CloudAccountContextsService {
       throw new ConflictException('当前阿里云账号仍有未释放的计费资源。请先删除相关镜像、快照或实例并完成台账关闭后再切换账号。');
     }
     return proofs;
+  }
+
+  private readPersistedSourceRegion(instance: { runtimeScenarioTemplateSpec: Prisma.JsonValue; runtimeCompiledProvisionSpec: Prisma.JsonValue }) {
+    const readRegion = (snapshot: Prisma.JsonValue) => {
+      if (snapshot === null) {
+        return null;
+      }
+      if (typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+        throw new ConflictException('失败实例的持久来源快照无效，云配置未切换。');
+      }
+      const topology = snapshot.topology;
+      if (topology === undefined) {
+        return null;
+      }
+      if (!topology || typeof topology !== 'object' || Array.isArray(topology)) {
+        throw new ConflictException('失败实例的持久来源快照无效，云配置未切换。');
+      }
+      if (!Object.hasOwn(topology, 'defaultRegion')) {
+        return null;
+      }
+      const region = topology.defaultRegion;
+      if (typeof region !== 'string' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(region.trim())) {
+        throw new ConflictException('失败实例的持久来源地域无效，云配置未切换。');
+      }
+      return region.trim();
+    };
+    const regions = [readRegion(instance.runtimeScenarioTemplateSpec), readRegion(instance.runtimeCompiledProvisionSpec)].filter((region): region is string => region !== null);
+    if (regions.length === 0 || new Set(regions).size !== 1) {
+      throw new ConflictException('失败实例缺少一致的持久来源地域，云配置未切换。');
+    }
+    return regions[0];
   }
 
   private throwActiveResourcesConflict(): never {

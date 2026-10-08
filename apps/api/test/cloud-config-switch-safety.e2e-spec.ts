@@ -2,11 +2,12 @@ import { PrismaService } from '../src/database/prisma.service';
 import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { signAliyunRpcQuery } from '../src/admin/image-catalog-rpc-signer';
+import { buildSingleInstanceBlueprint } from '../src/admin/single-instance-blueprint';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, FAILED_CREATE_SWITCH_PROOF_STEP } from '../src/admin/failed-create-cleanup-evidence';
 
 const describeDatabase = process.env.SETTINGS_SWITCH_TEST_DATABASE_URL ? describe : describe.skip;
 const originalFetch = global.fetch;
-const base = { provider: 'alibaba_cloud' as const, displayName: 'Test account', accountUid: 'test-old-account', regionId: 'cn-beijing', zoneId: 'cn-beijing-h', accessKeyId: 'test-old-id', accessKeySecret: 'test-old-secret', imageImportBucket: '', status: 'ready' as const, bucketStatus: 'unconfigured', isActive: true };
+const base = { provider: 'alibaba_cloud' as const, displayName: 'Test account', accountUid: 'test-old-account', regionId: 'cn-beijing', zoneId: 'cn-beijing-h', accessKeyId: 'test-old-id', accessKeySecret: 'test-old-secret', imageImportBucket: '', status: 'ready' as const, bucketStatus: 'unconfigured', isActive: true, createdAt: new Date('2026-10-07T00:00:00Z') };
 const target = { defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'test-new-id', accessKeySecret: 'test-new-secret', imageImportBucket: '' };
 const emptyEcs = { RequestId: 'test-ecs-request', PageNumber: 1, PageSize: 1, TotalCount: 0, Instances: { Instance: [] } };
 const claimStartedAt = new Date('2026-10-08T00:00:00Z');
@@ -20,7 +21,21 @@ describeDatabase('atomic cloud configuration switch safety (isolated PostgreSQL)
     await prisma.systemCloudConfig.create({ data: { id: 'default', provider: 'alibaba_cloud', defaultRegion: base.regionId, defaultZoneId: base.zoneId, accessKeyId: base.accessKeyId, accessKeySecret: base.accessKeySecret } });
   }
   async function failed(mode: 'single' | 'range' = 'single') {
-    const instance = await prisma.rangeInstance.create({ data: { name: 'test failed', status: 'create_failed', instanceMode: mode } });
+    const blueprint = buildSingleInstanceBlueprint({
+      name: 'test-failed', hostKey: 'test-ecs', hostName: 'test-ecs', privateIp: '10.99.1.10',
+      password: 'Test-fixture-password-only!', cpu: 2, memory: 4, image: { imageId: 'test-image' } as never,
+      regionId: base.regionId, zoneId: base.zoneId, vpcCidr: '10.99.0.0/16', zoneKey: 'dmz', zoneCidr: '10.99.1.0/24',
+    });
+    const instance = await prisma.rangeInstance.create({ data: {
+      name: 'test failed', status: 'create_failed', instanceMode: mode,
+      runtimeScenarioTemplateSpec: blueprint.runtimeScenarioTemplateSpec as never,
+      runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as never,
+      singleInstanceConfig: mode === 'single' ? {
+        baseName: 'test-failed', quantityIndex: 1, hostKey: 'test-ecs', hostName: 'test-ecs',
+        platformImageAssetId: 'test-platform-image', imageId: 'test-image', imageDisplayName: 'Test image',
+        cpu: 2, memory: 4, systemDiskSize: 40, remark: null, assignedVswitchId: 'vsw-test-source',
+      } : undefined,
+    } });
     const job = await prisma.provisionJob.create({ data: { rangeInstanceId: instance.id, jobType: 'create', status: 'failed', triggeredBy: 'test', startedAt: claimStartedAt, finishedAt: new Date() } });
     await prisma.rangeInstance.update({ where: { id: instance.id }, data: { lastJobId: job.id } });
     return { instance, job };
@@ -80,6 +95,58 @@ describeDatabase('atomic cloud configuration switch safety (isolated PostgreSQL)
     expect(url.searchParams.get('AccessKeyId')).toBe('test-old-id');
     const parameters = Object.fromEntries(url.searchParams); delete parameters.Signature;
     expect(new URLSearchParams(signAliyunRpcQuery(parameters, 'test-old-secret')).get('Signature')).toBe(url.searchParams.get('Signature'));
+  });
+  it('queries the saved source region and inactive context rather than the current active region', async () => {
+    await seed(); const entry = await failed();
+    await prisma.cloudAccountContext.update({ where: { id: 'context-old' }, data: { isActive: false } });
+    await prisma.cloudAccountContext.create({ data: { id: 'context-current', ...base, regionId: 'cn-shanghai', zoneId: 'cn-shanghai-g', accountUid: 'test-current-account', accessKeyId: 'test-current-id', accessKeySecret: 'test-current-secret' } });
+    const mock = provider('test-current-account');
+    await system.updateSnapshot(target);
+    const url = new URL(mock.mock.calls[1][0]);
+    expect(url.searchParams.get('RegionId')).toBe('cn-beijing');
+    expect(url.searchParams.get('AccessKeyId')).toBe('test-old-id');
+    const parameters = Object.fromEntries(url.searchParams);delete parameters.Signature;
+    expect(new URLSearchParams(signAliyunRpcQuery(parameters, 'test-old-secret')).get('Signature')).toBe(url.searchParams.get('Signature'));
+    const proof = JSON.parse((await prisma.provisionJobStepLog.findFirstOrThrow({ where: { jobId: entry.job.id } })).message!);
+    expect(proof).toMatchObject({ cloudAccountContextId: 'context-old', cloudAccountUid: 'test-old-account', regionId: 'cn-beijing' });
+  });
+  it.each(['missing', 'conflicting', 'malformed compiled', 'no context', 'multiple accounts', 'missing assigned switch', 'late source context'])('rejects %s source data before an ECS call', async kind => {
+    await seed(); const entry = await failed();
+    if (kind === 'missing') await prisma.rangeInstance.update({ where: { id: entry.instance.id }, data: { runtimeScenarioTemplateSpec: { topology: {} } } });
+    if (kind === 'conflicting') await prisma.rangeInstance.update({ where: { id: entry.instance.id }, data: { runtimeCompiledProvisionSpec: { topology: { defaultRegion: 'cn-shanghai' } } } });
+    if (kind === 'malformed compiled') await prisma.rangeInstance.update({ where: { id: entry.instance.id }, data: { runtimeCompiledProvisionSpec: { topology: { defaultRegion: null } } } });
+    if (kind === 'no context') await prisma.rangeInstance.update({ where: { id: entry.instance.id }, data: { runtimeScenarioTemplateSpec: { topology: { defaultRegion: 'cn-shanghai' } } } });
+    if (kind === 'multiple accounts') await prisma.cloudAccountContext.create({ data: { id: 'context-ambiguous', ...base, accountUid: 'test-other-account', isActive: false } });
+    if (kind === 'missing assigned switch') await prisma.rangeInstance.update({ where: { id: entry.instance.id }, data: { singleInstanceConfig: { cpu: 2, memory: 4 } } });
+    if (kind === 'late source context') await prisma.cloudAccountContext.update({ where: { id: 'context-old' }, data: { createdAt: new Date(claimStartedAt.getTime() + 1) } });
+    const mock = provider();
+    await expect(system.updateSnapshot(target)).rejects.toMatchObject({ status: 409 });
+    expect(mock).toHaveBeenCalledTimes(1);expect(await prisma.provisionJobStepLog.count()).toBe(0);
+    expect(await prisma.cloudAccountContext.findUnique({ where: { id: 'context-old' } })).toMatchObject({ ...base, ...(kind === 'late source context' ? { createdAt: new Date(claimStartedAt.getTime() + 1) } : {}) });
+    expect(await prisma.cloudAccountContext.count()).toBe(kind === 'multiple accounts' ? 2 : 1);
+    expect(await prisma.systemCloudConfig.findUnique({ where: { id: 'default' } })).toMatchObject({ defaultRegion: 'cn-beijing' });
+  });
+  it('does not trust a single proof for another persisted source region', async () => {
+    await seed(); const entry = await failed();
+    await prisma.cloudAccountContext.create({ data: { id: 'context-shanghai', ...base, regionId: 'cn-shanghai', zoneId: 'cn-shanghai-g', isActive: false } });
+    await proofRecord(entry, { cloudAccountContextId: 'context-shanghai', regionId: 'cn-shanghai' });
+    const mock = provider(base.accountUid, { ...emptyEcs, TotalCount: 1, Instances: { Instance: [{ InstanceId: 'test-live-source' }] } });
+    await expect(system.updateSnapshot(target)).rejects.toMatchObject({ status: 409 });
+    expect(mock).toHaveBeenCalledTimes(2);expect(new URL(mock.mock.calls[1][0]).searchParams.get('RegionId')).toBe('cn-beijing');
+    expect(await prisma.cloudAccountContext.count()).toBe(2);
+  });
+  it('rejects inactive source credential changes while verification is in flight', async () => {
+    await seed(); await failed();
+    await prisma.cloudAccountContext.update({ where: { id: 'context-old' }, data: { isActive: false } });
+    await prisma.cloudAccountContext.create({ data: { id: 'context-current', ...base, regionId: 'cn-shanghai', zoneId: 'cn-shanghai-g', accountUid: 'test-current-account' } });
+    global.fetch = jest.fn().mockResolvedValueOnce(new Response(JSON.stringify({ AccountId: 'test-current-account' }), { status: 200 })).mockImplementationOnce(async () => {
+      await prisma.cloudAccountContext.update({ where: { id: 'context-old' }, data: { accessKeySecret: 'test-concurrent-change' } });
+      return new Response(JSON.stringify(emptyEcs), { status: 200 });
+    });
+    await expect(system.updateSnapshot(target)).rejects.toMatchObject({ status: 409 });
+    expect(await prisma.cloudAccountContext.count()).toBe(2);expect(await prisma.provisionJobStepLog.count()).toBe(0);
+    expect((await prisma.cloudAccountContext.findUniqueOrThrow({ where: { id: 'context-current' } })).isActive).toBe(true);
+    expect(await prisma.systemCloudConfig.findUnique({ where: { id: 'default' } })).toMatchObject({ defaultRegion: 'cn-beijing' });
   });
   it.each([
     ['missing total', { ...emptyEcs, TotalCount: undefined }],
