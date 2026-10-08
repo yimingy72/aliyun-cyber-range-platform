@@ -33,13 +33,16 @@ RUN test ! -e /context/.env && test ! -e /context/.env.local \
   && test -e /context/.env.example && test -e /context/deploy/current-system/.env.example \
   && test -e /context/deploy/current-system/.env.local.example
 DOCKERFILE
-docker build -f scripts/ci/Dockerfile -t "$CI_IMAGE" .
+docker build --build-arg "OPENTOFU_IMAGE=${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.12.3-minimal}" \
+  --build-arg "PNPM_REGISTRY=${PNPM_REGISTRY:-https://registry.npmjs.org}" \
+  -f scripts/ci/Dockerfile -t "$CI_IMAGE" .
 for compose_file in docker-compose.yml deploy/current-system/docker-compose.yml deploy/current-system/docker-compose.images.yml; do
   docker compose --env-file /dev/null -f "$compose_file" config --quiet
 done
 
 docker network create "$CI_NETWORK" >/dev/null
 docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
+  --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_DB=cyber_range -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   --health-cmd 'pg_isready -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
   postgres:16-alpine >/dev/null
