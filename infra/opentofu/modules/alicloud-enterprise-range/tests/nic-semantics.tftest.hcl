@@ -94,4 +94,8 @@ run "legacy_host_groups" {
     condition     = length(alicloud_security_group.network_interfaces) == 0 && alicloud_network_interface.secondary["entry-1"].security_group_ids == toset([alicloud_security_group.hosts["entry"].id])
     error_message = "Legacy NICs must retain the host security group."
   }
+  assert {
+    condition     = !contains(keys(local.primary_secondary_ips_by_host), "entry") && local.secondary_network_interface_map["entry-1"].nic_id == null
+    error_message = "Legacy snapshots must not clear unmanaged auxiliary IPs."
+  }
 }

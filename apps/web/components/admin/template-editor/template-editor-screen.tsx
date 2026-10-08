@@ -1564,7 +1564,7 @@ export function TemplateEditorScreen({
 
     const nextNodeId = nextAvailableGraphId(kind, nodes.map((node) => node.id));
     let kindCount = nodes.filter((node) => node.kind === kind).length + 1;
-    while (nodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindCount))) kindCount += 1;
+    while (kind !== 'router' && nodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindCount))) kindCount += 1;
     const switches = nodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch');
     let switchCidr = '';
     if (kind === 'switch') {

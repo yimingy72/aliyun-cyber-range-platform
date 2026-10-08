@@ -84,6 +84,7 @@ locals {
     for attachment in var.host_network_interfaces : attachment.host_key => flatten([
       for nic in attachment.interfaces : nic.secondary_private_ips if nic.device_index == 0
     ])
+    if anytrue([for nic in attachment.interfaces : nic.device_index == 0 && nic.nic_id != null])
   }
 
   secondary_network_interface_records = flatten([
@@ -503,7 +504,7 @@ resource "alicloud_instance" "hosts" {
   security_groups       = [alicloud_security_group.hosts[each.key].id]
   vswitch_id            = alicloud_vswitch.zones[each.value.zone_key].id
   private_ip            = each.value.private_ip
-  secondary_private_ips = lookup(local.primary_secondary_ips_by_host, each.key, [])
+  secondary_private_ips = lookup(local.primary_secondary_ips_by_host, each.key, null)
   user_data             = try(local.host_user_data_map[each.key], null)
   system_disk_category  = var.system_disk_category
   system_disk_size      = var.system_disk_size
@@ -540,7 +541,7 @@ resource "alicloud_network_interface" "secondary" {
   description          = each.value.description
   vswitch_id           = alicloud_vswitch.zones[each.value.zone_key].id
   primary_ip_address   = each.value.private_ip
-  private_ip_addresses = each.value.secondary_private_ips
+  private_ip_addresses = each.value.nic_id != null ? each.value.secondary_private_ips : null
   security_group_ids = [
     contains(keys(local.secondary_security_group_map), each.key)
     ? alicloud_security_group.network_interfaces[each.key].id
