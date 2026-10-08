@@ -423,6 +423,34 @@ export type CloudImageSnapshotRecord = {
   updatedAt: Date;
 };
 
+export type PackedImageArtifactRecord = {
+  id: string;
+  cloudAccountContextId: string;
+  cloudAccountUid: string;
+  regionId: string;
+  ownerUserId: string;
+  sourceRangeInstanceId: string;
+  sourceHostKey: string;
+  sourceInstanceId: string;
+  sourceDiskIds: string[];
+  imageId: string | null;
+  sourceSnapshotId: string | null;
+  platformImageAssetId: string | null;
+  status: string;
+  backingSnapshotIds: string[];
+  deletedSnapshotIds: string[];
+  cloudImageDeletedAt: Date | null;
+  completedAt: Date | null;
+  lastPolledAt: Date | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+export type CreatePackedImageArtifactInput = Pick<PackedImageArtifactRecord,
+  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'>;
+export type UpdatePackedImageArtifactInput = Partial<Pick<PackedImageArtifactRecord,
+  'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'status' | 'backingSnapshotIds' | 'deletedSnapshotIds' | 'cloudImageDeletedAt' | 'completedAt' | 'lastPolledAt' | 'errorMessage'>>;
+
 export type ImageCatalogItemRecord = {
   id: string;
   displayName: string;
@@ -744,6 +772,7 @@ export type ListPlatformImageAssetsFilter = Partial<{
 }>;
 
 export type CollectPlatformImageAssetInput = {
+  preserveExisting?: boolean;
   snapshotId: string;
   displayName: string;
   defaultHostName?: string | null;
@@ -1099,6 +1128,14 @@ export interface AdminRepository {
   deleteSingleInstanceNetworkProfile(id: string): Promise<void>;
   markSingleInstanceNetworkDestroying(id: string): Promise<void>;
   registerSingleInstanceNetworkCleanup(id:string,runId:string,adminId:string,ownerIds:string[]):Promise<void>;
+  createPackedImageArtifact(input: CreatePackedImageArtifactInput): Promise<PackedImageArtifactRecord>;
+  getPackedImageArtifact(id: string): Promise<PackedImageArtifactRecord | null>;
+  listPackedImageArtifacts(filter?: Partial<Pick<PackedImageArtifactRecord, 'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'cloudAccountUid' | 'regionId'>>): Promise<PackedImageArtifactRecord[]>;
+  updatePackedImageArtifact(id: string, input: UpdatePackedImageArtifactInput): Promise<PackedImageArtifactRecord>;
+  claimPackedImageArtifact(id: string, token: string, expiresAt: Date): Promise<boolean>;
+  renewPackedImageArtifactClaim(id: string, token: string, expiresAt: Date): Promise<boolean>;
+  releasePackedImageArtifactClaim(id: string, token: string): Promise<void>;
+  withPackedImageArtifactClaim<T>(id: string, token: string, work: (repository: AdminRepository) => Promise<T>): Promise<T>;
   getSingleInstanceNetworkProfile(input: {
     cloudAccountUid?: string;
     provider: CloudProvider;

@@ -77,3 +77,5 @@
 - 释放运行环境：使用 `range_instance_destroy`。它回收整套资源，不是节点关机的替代。
 
 重试、关机、重启、打包镜像和销毁均须确认。授权 smoke test 成功后应立即销毁对应编排实例并确认终态。
+
+打包操作只表示请求已接受：返回 `packedImageArtifactId` 后，按同一资产的 `sourceSnapshotAvailable` 跟踪可用状态。测试结束回收打包产物时，使用 `image_catalog_custom_delete({ snapshotId, deleteOwnedSnapshots: true })`，按镜像中心规则确认全部 backing snapshots 已消失；销毁源实例不会删除保留镜像和快照。

@@ -25,6 +25,15 @@ export const removedOutputSchema = (idField: string) =>
     }),
   );
 
+export const customImageCleanupOutputSchema = resultOutputSchema(z.object({
+  removed: z.boolean(),
+  snapshotId: nonEmptyString.nullable().optional(),
+  status: z.string().optional(),
+  packedImageArtifactId: nonEmptyString.optional(),
+  snapshotIds: z.array(nonEmptyString).optional(),
+  deletedSnapshotIds: z.array(nonEmptyString).optional(),
+}).passthrough());
+
 export const actionOutputSchema = resultOutputSchema(
   z
     .object({

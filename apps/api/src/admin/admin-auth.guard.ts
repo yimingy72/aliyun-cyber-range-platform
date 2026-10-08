@@ -104,6 +104,7 @@ export class AdminAuthGuard implements CanActivate {
     if (pathname.startsWith('/admin/image-imports')) {
       return true;
     }
+    if (/^\/admin\/image-catalog\/custom\/[^/]+$/.test(pathname) && method === 'DELETE') return true;
 
     if (/^\/admin\/platform-images\/[^/]+$/.test(pathname) && (method === 'PATCH' || method === 'DELETE')) {
       return true;

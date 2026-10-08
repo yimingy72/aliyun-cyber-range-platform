@@ -11,6 +11,8 @@ import { CloudAccountContextsService } from './admin/cloud-account-contexts.serv
 import { ImageImportsController } from './admin/image-imports.controller';
 import { ImageImportsService } from './admin/image-imports.service';
 import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
+import { PackedImagesService } from './admin/packed-images.service';
+import { PackedImagesWorkerService } from './admin/packed-images-worker.service';
 import { BillingBssClient } from './admin/billing-bss-client';
 import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
@@ -92,6 +94,8 @@ function resolveProjectRootDir() {
     CloudAccountContextsService,
     ImageImportsService,
     ImageImportsWorkerService,
+    PackedImagesService,
+    PackedImagesWorkerService,
     BillingService,
     BillingSyncService,
     AdminUsersService,

@@ -38,6 +38,14 @@ const authoringGraph: ScenarioGraphDraft = {
 };
 
 describe('resolveUniqueDnatEntryHost', () => {
+  it('forwards owned-image cleanup consent and confirmation while preserving the verified cloud result', async () => {
+    const client = createClientStub();
+    vi.mocked(client.removeCustomImageSnapshot).mockResolvedValue({ removed: true, status: 'deleted', snapshotId: 'source-new', snapshotIds: ['s-new'], deletedSnapshotIds: ['s-new'] });
+    const registry = createToolRegistry(client);
+    await expect(registry.callTool('image_catalog_custom_delete', ['images:write'], { snapshotId: 'source-new', deleteOwnedSnapshots: true, idempotencyKey: 'cleanup-new', confirmationId: 'confirmed-new' })).resolves.toMatchObject({ structuredContent: { result: { removed: true, status: 'deleted', snapshotIds: ['s-new'] } } });
+    expect(client.removeCustomImageSnapshot).toHaveBeenCalledWith('source-new', { deleteOwnedSnapshots: true }, { idempotencyKey: 'cleanup-new', confirmationId: 'confirmed-new' });
+  });
+
   it('ignores a DNAT mapping without a target ECS id', () => {
     const graph = structuredClone(authoringGraph);
     const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz');

@@ -42,3 +42,4 @@
 - 测试结束，先销毁全部成员并核验云端不存在，再由管理员 list 取得本次新建 profile 的准确 ID，确认后 network_destroy；旧未绑定网络、任何活动引用/作业或云端 ECS 均会阻止回收。
 
 - 仅本轮createdAfter之后由声明owner创建的managed新profile可登记回收。登记管理员须保存runId；network_destroy使用同一cleanupRunId。测试前存在的profile和legacy不得登记/销毁。
+打包操作只表示请求已接受：返回 `packedImageArtifactId` 后，按同一资产的 `sourceSnapshotAvailable` 跟踪可用状态。测试结束回收打包产物时，使用 `image_catalog_custom_delete({ snapshotId, deleteOwnedSnapshots: true })`，按镜像中心规则确认全部 backing snapshots 已消失；销毁源实例不会删除保留镜像和快照。

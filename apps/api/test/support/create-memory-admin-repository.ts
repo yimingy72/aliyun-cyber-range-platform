@@ -33,6 +33,7 @@ import {
   OperationAuditEventRecord,
   OperationConfirmationRecord,
   PlatformUserRecord,
+  PackedImageArtifactRecord,
   PlatformImageAssetRecord,
   PlatformImageTagRecord,
   ProvisionJobRecord,
@@ -61,6 +62,8 @@ import {
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
 
 export function createMemoryAdminRepository(): AdminRepository {
+  const packedImageArtifacts: PackedImageArtifactRecord[] = [];
+  const packedImageClaims = new Map<string, { token: string; expiresAt: Date }>();
   const platformUsers: PlatformUserRecord[] = [];
   const rangeTemplates: RangeTemplateRecord[] = [];
   const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
@@ -178,7 +181,6 @@ export function createMemoryAdminRepository(): AdminRepository {
     (filter.ownerUserId === undefined || record.ownerUserId === filter.ownerUserId) &&
     (filter.visibility === undefined || record.visibility === filter.visibility) &&
     (!filter.onlyAvailableSourceSnapshots ||
-      record.sourceSnapshotId === null ||
       imageSnapshots.some((snapshot) => snapshot.id === record.sourceSnapshotId && snapshot.isAvailable));
 
   const findPlatformUserOrThrow = (id: string) => {
@@ -1194,6 +1196,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         );
 
         if (existing) {
+          if (['Deleting', 'Deleted'].includes(existing.status ?? '') && !['Deleting', 'Deleted'].includes(snapshot.status ?? '')) continue;
           Object.assign(existing, {
             sourceImageName: snapshot.sourceImageName,
             osType: snapshot.osType ?? null,
@@ -1225,6 +1228,10 @@ export function createMemoryAdminRepository(): AdminRepository {
           updatedAt: now(),
         });
       }
+      for (const asset of platformImageAssets.filter(item => !item.sourceSnapshotId && item.provider === input.provider && item.accountUid === input.accountUid && item.regionId === input.regionId)) {
+        const source = imageSnapshots.find(item => item.provider === input.provider && item.accountUid === input.accountUid && item.regionId === input.regionId && item.scope === input.scope && item.imageId === asset.imageId);
+        if (source) { asset.sourceSnapshotId = source.id; asset.sourceScope = source.scope; }
+      }
     },
     async reconcileImageSnapshots(input: ReconcileImageSnapshotsInput) {
       await this.upsertImageSnapshots(input);
@@ -1241,14 +1248,12 @@ export function createMemoryAdminRepository(): AdminRepository {
           record.scope === input.scope &&
           !imageIds.has(record.imageId)
         ) {
+          if (!['Deleting', 'Deleted'].includes(record.status ?? '')) record.status = 'Missing';
+          record.isAvailable = false;
+          record.updatedAt = now();
           for (const asset of platformImageAssets) {
-            if (asset.sourceSnapshotId === record.id) {
-              asset.sourceSnapshotId = null;
-              asset.updatedAt = now();
-            }
+            if (asset.sourceSnapshotId === record.id) { asset.enabled = false; asset.updatedAt = now(); }
           }
-
-          imageSnapshots.splice(index, 1);
         }
       }
     },
@@ -1352,6 +1357,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       );
 
       if (existing) {
+        if (input.preserveExisting) return clone(existing);
         Object.assign(existing, {
           displayName: input.displayName,
           defaultHostName: input.defaultHostName ?? null,
@@ -1461,6 +1467,32 @@ export function createMemoryAdminRepository(): AdminRepository {
     async registerSingleInstanceNetworkCleanup(id,runId,adminId,ownerIds) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)Object.assign(profile,{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds});},
     async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},
     async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
+    async createPackedImageArtifact(input) {
+      const record: PackedImageArtifactRecord = { ...input, id: nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
+      packedImageArtifacts.push(record); return clone(record);
+    },
+    async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },
+    async claimPackedImageArtifact(id, token, expiresAt) {
+      const claim = packedImageClaims.get(id);
+      if (claim && claim.expiresAt > new Date()) return false;
+      packedImageClaims.set(id, { token, expiresAt }); return true;
+    },
+    async renewPackedImageArtifactClaim(id, token, expiresAt) {
+      if (packedImageClaims.get(id)?.token !== token) return false;
+      packedImageClaims.set(id, { token, expiresAt }); return true;
+    },
+    async releasePackedImageArtifactClaim(id, token) { if (packedImageClaims.get(id)?.token === token) packedImageClaims.delete(id); },
+    async withPackedImageArtifactClaim(id, token, work) {
+      const claim = packedImageClaims.get(id);
+      if (claim?.token !== token || claim.expiresAt <= new Date()) throw new Error('Packed image lease expired');
+      return work(this);
+    },
+    async listPackedImageArtifacts(filter = {}) { return cloneList(packedImageArtifacts.filter(item => Object.entries(filter).every(([key, value]) => item[key as keyof PackedImageArtifactRecord] === value))); },
+    async updatePackedImageArtifact(id, input) {
+      const record = packedImageArtifacts.find(item => item.id === id);
+      if (!record) throw new Error('Packed image artifact not found');
+      Object.assign(record, clone(input), { updatedAt: now() }); return clone(record);
+    },
     async getSingleInstanceNetworkProfile(input) {
       const record = singleInstanceNetworkProfiles.find(
         (profile) =>

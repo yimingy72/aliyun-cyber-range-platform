@@ -506,10 +506,11 @@ export class SingleInstancesService {
       throw new NotFoundException('Platform image asset not found');
     }
 
+    if (!image.sourceSnapshotId) throw new ConflictException('Platform image source is unavailable; sync the catalog before launching.');
     if (image.sourceSnapshotId) {
       const sourceSnapshot = await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId);
 
-      if (sourceSnapshot && !sourceSnapshot.isAvailable) {
+      if (!sourceSnapshot || !sourceSnapshot.isAvailable) {
         throw new ConflictException('Platform image asset source snapshot is still exporting');
       }
     }

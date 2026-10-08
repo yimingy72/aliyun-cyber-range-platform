@@ -195,6 +195,9 @@ function formatCloudImageStatusText(status?: string | null, isAvailable?: boolea
   if (normalizedStatus === 'Available') {
     return '可用';
   }
+  if (normalizedStatus === 'Missing') return '云端已不存在';
+  if (normalizedStatus === 'Deleting') return '清理中';
+  if (normalizedStatus === 'Deleted') return '已删除';
 
   const creatingMatch = normalizedStatus.match(/^Creating(?:\s+(\d+%))?$/i);
   if (creatingMatch) {
@@ -217,6 +220,7 @@ function formatImageStatus(snapshot: ImageSnapshot) {
 }
 
 function formatAssetStatus(asset: PlatformImageAsset) {
+  if (asset.sourceSnapshotAvailable == null) return '来源待确认';
   if (asset.sourceSnapshotAvailable === false) {
     return formatCloudImageStatusText(asset.sourceSnapshotStatus, asset.sourceSnapshotAvailable);
   }
@@ -225,7 +229,7 @@ function formatAssetStatus(asset: PlatformImageAsset) {
 }
 
 function canCreateInstanceFromAsset(asset: PlatformImageAsset) {
-  return asset.enabled && asset.sourceSnapshotAvailable !== false;
+  return asset.enabled && asset.sourceSnapshotAvailable === true;
 }
 
 function shouldShowImageImportJob(job: ImageImportJob, resolvedAssetIds: ReadonlySet<string>) {
@@ -279,7 +283,7 @@ function getPlatformAssetCreator(asset: PlatformImageAsset) {
 }
 
 function buildCollectedImageIdSet(items: PlatformImageAsset[]) {
-  return new Set(items.filter((item) => item.enabled).map((item) => item.imageId));
+  return new Set(items.map((item) => item.imageId));
 }
 
 function replacePlatformAsset(items: PlatformImageAsset[], nextAsset: PlatformImageAsset) {
@@ -1662,7 +1666,7 @@ export function ImageCenterScreen({
         importingAssetIds.has(asset.imageId) ||
         /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? '');
       const canCreate = canCreateInstanceFromAsset(asset);
-      const statusVariant = asset.sourceSnapshotAvailable === false || !asset.enabled ? 'secondary' : 'default';
+      const statusVariant = asset.sourceSnapshotAvailable !== true || !asset.enabled ? 'secondary' : 'default';
 
       return (
         <TableRow key={asset.id}>
@@ -1716,7 +1720,7 @@ export function ImageCenterScreen({
                       <DropdownMenuContent align="end">
                         {canToggleVisibility ? (
                           <DropdownMenuItem
-                            disabled={isPending || asset.sourceSnapshotAvailable === false}
+                            disabled={isPending || (!asset.enabled && asset.sourceSnapshotAvailable !== true)}
                             onSelect={() =>
                               void (asset.visibility === 'platform'
                                 ? handleUnpublishPlatformAsset(asset)
@@ -1780,7 +1784,7 @@ export function ImageCenterScreen({
             <div className="flex justify-start gap-1">
               {session.isAdmin ? (
                 <Button
-                  disabled={isCollected || isCollectPending}
+                  disabled={isCollected || isCollectPending || !snapshot.isAvailable || isImportingSnapshot}
                   aria-label={`${isCollected ? '已收录' : '收录到平台'} ${snapshot.sourceImageName}`}
                   onClick={() => void handleCollectSnapshot(snapshot)}
                   size="sm"
@@ -1829,8 +1833,10 @@ export function ImageCenterScreen({
   const activeRevalidationError = revalidationErrors[activeTab] ?? '';
   const isActiveTabLoading = !loadedTabs[activeTab] && !activeTabError;
   const isRefreshing = refreshingTabs[activeTab] || (isLoading && loadedTabs[activeTab]);
-  const emptyState =
-    activeTab === 'platform'
+  const hasActiveFilters = !!searchName || (activeTab === 'platform' && (!!platformCreatedByFilter || !!platformTagFilter)) || (activeTab === 'mine' && !!myTagFilter);
+  const emptyState = hasActiveFilters
+    ? { title: '没有匹配的镜像', description: '请调整名称、创建人或标签筛选条件。' }
+    : activeTab === 'platform'
       ? {
           title: '当前没有平台镜像',
           description: '当前没有平台镜像。',
@@ -2320,7 +2326,7 @@ export function ImageCenterScreen({
           {confirmState?.type === 'delete-custom' ? (
             <AdminConfirmationDialog
               confirmLabel="确认删除"
-              description={`即将删除阿里云上的自定义镜像“${confirmState.snapshot.sourceImageName}”，此操作会影响当前账号下该镜像的后续使用。`}
+              description={`即将删除阿里云上的自定义镜像“${confirmState.snapshot.sourceImageName}”。此操作会影响该镜像的后续使用，关联快照仍会保留并可能产生费用；完整回收新平台打包镜像请使用显式的镜像及快照回收操作。`}
               open
               pending={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
               title="确认删除阿里云自定义镜像"

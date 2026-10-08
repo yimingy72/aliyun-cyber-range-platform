@@ -26,8 +26,10 @@ function createSystemConfigServiceStub() {
       defaultZoneId: 'cn-hangzhou-h',
       accessKeyId: 'test-ak',
       accessKeySecret: 'test-sk',
-      accountUid: null,
-      accountUidResolved: false,
+      accountUid: '1234567890',
+      cloudAccountContextId: 'context-test',
+      imageImportBucket: '',
+      accountUidResolved: true,
     }),
   };
 }
@@ -53,6 +55,7 @@ describe('Range instance node actions API', () => {
 
     fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
+      if (url.includes('DescribeDisks')) return new Response(JSON.stringify({ TotalCount: 1, Disks: { Disk: [{ DiskId: 'd-instance-system' }] } }), { status: 200 });
 
       if (url.includes('DescribeInstanceVncUrl')) {
         return new Response(JSON.stringify({ VncUrl: 'wss://vnc.example.test' }), { status: 200 });
@@ -134,7 +137,7 @@ describe('Range instance node actions API', () => {
 
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: '1234567890',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -155,7 +158,7 @@ describe('Range instance node actions API', () => {
         (
           await repository.listImageSnapshots({
             provider: 'alibaba_cloud',
-            accountUid: null,
+            accountUid: '1234567890',
             regionId: 'cn-hangzhou',
             scope: 'custom',
             imageId: 'm-image-123',
@@ -274,12 +277,9 @@ describe('Range instance node actions API', () => {
         visibility: 'private',
       }),
     );
-    const snapshotTagRequest = fetchMock.mock.calls
-      .map(([input]) => String(input))
-      .find((url) => url.includes('Action=TagResources') && url.includes('ResourceType=snapshot'));
-    expect(snapshotTagRequest).toContain('ResourceId.1=s-image-123');
-    expect(snapshotTagRequest).toContain('PlatformManaged');
-    expect(snapshotTagRequest).toContain('PlatformResourceType');
+    expect(response.body.packedImageArtifactId).toBeTruthy();
+    expect(response.body.platformImageAsset.enabled).toBe(false);
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).some(url => url.includes('Action=CreateImage') && url.includes('PlatformPackedImageArtifactId'))).toBe(true);
   });
 
   it('opens a VNC URL for a single instance row action', async () => {
@@ -299,6 +299,7 @@ describe('Range instance node actions API', () => {
 
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
+      if (url.includes('DescribeDisks')) return new Response(JSON.stringify({ TotalCount: 1, Disks: { Disk: [{ DiskId: 'd-instance-system' }] } }), { status: 200 });
 
       if (url.includes('CreateImage')) {
         createImageRequests.push(url);
@@ -350,11 +351,6 @@ describe('Range instance node actions API', () => {
           cloudResourceType: 'image',
           platformImageAssetId: response.body.platformImageAsset.id,
         }),
-        expect.objectContaining({
-          cloudResourceId: 's-image-single-456',
-          cloudResourceType: 'snapshot',
-          platformImageAssetId: response.body.platformImageAsset.id,
-        }),
       ]),
     );
     expect(createImageRequests).toHaveLength(1);
@@ -399,6 +395,7 @@ describe('Range instance node actions API', () => {
 
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
+      if (url.includes('DescribeDisks')) return new Response(JSON.stringify({ TotalCount: 1, Disks: { Disk: [{ DiskId: 'd-instance-system' }] } }), { status: 200 });
 
       if (url.includes('CreateImage')) {
         return new Response(JSON.stringify({ ImageId: 'm-image-owner-789' }), { status: 200 });
@@ -440,14 +437,6 @@ describe('Range instance node actions API', () => {
           rangeInstanceId: ownerInstance.id,
           platformImageAssetId: response.body.platformImageAsset.id,
         }),
-        expect.objectContaining({
-          cloudResourceId: 's-image-owner-789',
-          cloudResourceType: 'snapshot',
-          ownerUserId: owner.id,
-          billingScope: 'user',
-          rangeInstanceId: ownerInstance.id,
-          platformImageAssetId: response.body.platformImageAsset.id,
-        }),
       ]),
     );
   });
@@ -474,6 +463,7 @@ describe('Range instance node actions API', () => {
 
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
+      if (url.includes('DescribeDisks')) return new Response(JSON.stringify({ TotalCount: 1, Disks: { Disk: [{ DiskId: 'd-instance-system' }] } }), { status: 200 });
 
       if (url.includes('CreateImage')) {
         return new Response(JSON.stringify({ ImageId: 'm-image-range-owner-790' }), { status: 200 });
@@ -510,14 +500,6 @@ describe('Range instance node actions API', () => {
         expect.objectContaining({
           cloudResourceId: 'm-image-range-owner-790',
           cloudResourceType: 'image',
-          ownerUserId: owner.id,
-          billingScope: 'user',
-          rangeInstanceId: ownerRange.id,
-          platformImageAssetId: response.body.platformImageAsset.id,
-        }),
-        expect.objectContaining({
-          cloudResourceId: 's-image-range-owner-790',
-          cloudResourceType: 'snapshot',
           ownerUserId: owner.id,
           billingScope: 'user',
           rangeInstanceId: ownerRange.id,

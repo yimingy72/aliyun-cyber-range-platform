@@ -1,4 +1,5 @@
 import { BillingBssClient } from '../src/admin/billing-bss-client';
+import { billingDayText } from '../src/admin/billing-window';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { billingDayText } from '../src/admin/billing-window';
 import { SystemConfigService } from '../src/admin/system-config.service';
@@ -7,6 +8,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 const billingConfigService = { getAccountContext: jest.fn(async () => ({ accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' })) } as unknown as SystemConfigService;
 
 describe('BillingSyncService', () => {
+  afterEach(() => jest.useRealTimers());
   it('refreshes an exact historical range even when later bills already exist', async () => {
     const repository = createMemoryAdminRepository();
     const ledger = await repository.createBillingLedgerResource({

@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('PlatformApiClient', () => {
+  it('passes an explicit owned-snapshot cleanup flag and confirmation metadata and returns verified progress', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/image-catalog/custom/source%2Fnew?deleteOwnedSnapshots=true');
+      expect(init?.method).toBe('DELETE');
+      expect(init?.headers).toMatchObject({ 'x-idempotency-key': 'cleanup-new', 'x-confirmation-id': 'confirmed-new' });
+      return new Response(JSON.stringify({ operationId: 'operation-1', result: { result: { removed: true, status: 'deleted', snapshotIds: ['s-new'] } } }), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'mock', fetch: fetchMock as typeof fetch });
+    await expect(client.removeCustomImageSnapshot('source/new', { deleteOwnedSnapshots: true }, { idempotencyKey: 'cleanup-new', confirmationId: 'confirmed-new' })).resolves.toMatchObject({ removed: true, status: 'deleted', snapshotIds: ['s-new'] });
+  });
+
   it('loads a range template from the detail endpoint', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/scenarios/tpl%2F1');

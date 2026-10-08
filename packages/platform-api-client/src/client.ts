@@ -193,9 +193,10 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  async removeCustomImageSnapshot(snapshotId: string) {
-    await this.request<void>(`/admin/image-catalog/custom/${encodeURIComponent(snapshotId)}`, {
+  async removeCustomImageSnapshot(snapshotId: string, options?: { deleteOwnedSnapshots?: boolean }, operation?: OperationRequest) {
+    return this.request<Record<string, unknown>>(`/admin/image-catalog/custom/${encodeURIComponent(snapshotId)}${options?.deleteOwnedSnapshots ? '?deleteOwnedSnapshots=true' : ''}`, {
       method: 'DELETE',
+      operation,
     });
   }
 

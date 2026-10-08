@@ -242,7 +242,7 @@ export type PlatformApiClientLike = {
   removePlatformImage(id: string, operation?: OperationRequest): Promise<void>;
   listImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
   syncImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
-  removeCustomImageSnapshot(snapshotId: string): Promise<void>;
+  removeCustomImageSnapshot(snapshotId: string, options?: { deleteOwnedSnapshots?: boolean }, operation?: OperationRequest): Promise<Record<string, unknown> | void>;
   listImageImportJobs(): Promise<ImageImportJobListPayload>;
   retryImageImport(id: string): Promise<ImageImportJob>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;

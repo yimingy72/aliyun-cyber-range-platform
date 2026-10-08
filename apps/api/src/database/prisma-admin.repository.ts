@@ -40,6 +40,9 @@ import {
   OperationAuditEventRecord,
   OperationConfirmationRecord,
   PlatformUserRecord,
+  PackedImageArtifactRecord,
+  CreatePackedImageArtifactInput,
+  UpdatePackedImageArtifactInput,
   PlatformImageAssetRecord,
   PlatformImageTagRecord,
   ProvisionJobRecord,
@@ -1640,7 +1643,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async upsertImageSnapshots(input: UpsertImageSnapshotsInput): Promise<void> {
     for (const snapshot of input.snapshots) {
-      await this.prisma.cloudImageSnapshot.upsert({
+      const source = await this.prisma.cloudImageSnapshot.upsert({
         where: {
           provider_accountScopeKey_regionId_scope_imageId: {
             provider: input.provider,
@@ -1650,16 +1653,7 @@ export class PrismaAdminRepository implements AdminRepository {
             imageId: snapshot.imageId,
           },
         },
-        update: {
-          accountUid: input.accountUid,
-          sourceImageName: snapshot.sourceImageName,
-          osType: snapshot.osType ?? null,
-          platform: snapshot.platform ?? null,
-          architecture: snapshot.architecture ?? null,
-          status: snapshot.status ?? null,
-          isAvailable: snapshot.isAvailable ?? true,
-          lastSyncedAt: snapshot.lastSyncedAt,
-        },
+        update: {},
         create: {
           provider: input.provider,
           accountUid: input.accountUid,
@@ -1676,6 +1670,11 @@ export class PrismaAdminRepository implements AdminRepository {
           lastSyncedAt: snapshot.lastSyncedAt,
         },
       });
+      await this.prisma.cloudImageSnapshot.updateMany({
+        where: { id: source.id, ...(['Deleting', 'Deleted'].includes(snapshot.status ?? '') ? {} : { OR: [{ status: null }, { status: { notIn: ['Deleting', 'Deleted'] } }] }) },
+        data: { accountUid: input.accountUid, sourceImageName: snapshot.sourceImageName, osType: snapshot.osType ?? null, platform: snapshot.platform ?? null, architecture: snapshot.architecture ?? null, status: snapshot.status ?? null, isAvailable: snapshot.isAvailable ?? true, lastSyncedAt: snapshot.lastSyncedAt },
+      });
+      await this.prisma.platformImageAsset.updateMany({ where: { provider: input.provider, accountScopeKey: toAccountScopeKey(input.accountUid), regionId: input.regionId, imageId: snapshot.imageId, sourceSnapshotId: null }, data: { sourceSnapshotId: source.id, sourceScope: input.scope } });
     }
   }
 
@@ -1684,14 +1683,13 @@ export class PrismaAdminRepository implements AdminRepository {
 
     const imageIds = input.snapshots.map((snapshot) => snapshot.imageId);
 
-    await this.prisma.cloudImageSnapshot.deleteMany({
-      where: {
-        provider: input.provider,
-        accountScopeKey: toAccountScopeKey(input.accountUid),
-        regionId: input.regionId,
-        scope: input.scope,
-        ...(imageIds.length > 0 ? { imageId: { notIn: imageIds } } : {}),
-      },
+    const where = { provider: input.provider, accountScopeKey: toAccountScopeKey(input.accountUid), regionId: input.regionId, scope: input.scope, ...(imageIds.length ? { imageId: { notIn: imageIds } } : {}) };
+    await this.prisma.$transaction(async tx => {
+      const missing = await tx.cloudImageSnapshot.findMany({ where, select: { id: true } });
+      await tx.cloudImageSnapshot.updateMany({ where: { ...where, OR: [{ status: null }, { status: { notIn: ['Deleting', 'Deleted'] } }] }, data: { status: 'Missing', isAvailable: false } });
+      if (missing.length) {
+        await tx.platformImageAsset.updateMany({ where: { sourceSnapshotId: { in: missing.map(item => item.id) } }, data: { enabled: false } });
+      }
     });
   }
 
@@ -1755,10 +1753,7 @@ export class PrismaAdminRepository implements AdminRepository {
         ...(filter.visibility !== undefined ? { visibility: filter.visibility } : {}),
         ...(filter.onlyAvailableSourceSnapshots
           ? {
-              OR: [
-                { sourceSnapshotId: null },
-                { sourceSnapshot: { is: { isAvailable: true } } },
-              ],
+              sourceSnapshot: { is: { isAvailable: true } },
             }
           : {}),
       },
@@ -1798,7 +1793,7 @@ export class PrismaAdminRepository implements AdminRepository {
           imageId: snapshot.imageId,
         },
       },
-      update: {
+      update: input.preserveExisting ? { sourceSnapshotId: snapshot.id } : {
         displayName: input.displayName,
         defaultHostName: input.defaultHostName ?? null,
         defaultPassword: input.defaultPassword ?? null,
@@ -1994,6 +1989,41 @@ export class PrismaAdminRepository implements AdminRepository {
   }
   async deleteSingleInstanceNetworkProfile(id: string) {
     await this.prisma.singleInstanceNetworkProfile.delete({ where: { id } });
+  }
+
+  async createPackedImageArtifact(input: CreatePackedImageArtifactInput): Promise<PackedImageArtifactRecord> {
+    return this.prisma.packedImageArtifact.create({ data: input }) as unknown as Promise<PackedImageArtifactRecord>;
+  }
+
+  async getPackedImageArtifact(id: string): Promise<PackedImageArtifactRecord | null> {
+    return this.prisma.packedImageArtifact.findUnique({ where: { id } }) as unknown as Promise<PackedImageArtifactRecord | null>;
+  }
+
+  async listPackedImageArtifacts(filter: Partial<Pick<PackedImageArtifactRecord, 'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'cloudAccountUid' | 'regionId'>> = {}): Promise<PackedImageArtifactRecord[]> {
+    return this.prisma.packedImageArtifact.findMany({ where: filter, orderBy: { createdAt: 'desc' } }) as unknown as Promise<PackedImageArtifactRecord[]>;
+  }
+
+  async updatePackedImageArtifact(id: string, input: UpdatePackedImageArtifactInput): Promise<PackedImageArtifactRecord> {
+    return this.prisma.packedImageArtifact.update({ where: { id }, data: input }) as unknown as Promise<PackedImageArtifactRecord>;
+  }
+
+  async claimPackedImageArtifact(id: string, token: string, expiresAt: Date): Promise<boolean> {
+    const result = await this.prisma.packedImageArtifact.updateMany({ where: { id, OR: [{ leaseToken: null }, { leaseExpiresAt: { lte: new Date() } }] }, data: { leaseToken: token, leaseExpiresAt: expiresAt } });
+    return result.count === 1;
+  }
+  async renewPackedImageArtifactClaim(id: string, token: string, expiresAt: Date): Promise<boolean> {
+    const result = await this.prisma.packedImageArtifact.updateMany({ where: { id, leaseToken: token }, data: { leaseExpiresAt: expiresAt } });
+    return result.count === 1;
+  }
+  async releasePackedImageArtifactClaim(id: string, token: string): Promise<void> {
+    await this.prisma.packedImageArtifact.updateMany({ where: { id, leaseToken: token }, data: { leaseToken: null, leaseExpiresAt: null } });
+  }
+  // Keep only local DB work inside this transaction. The row lock fences stale API/worker leases.
+  async withPackedImageArtifactClaim<T>(id: string, token: string, work: (repository: AdminRepository) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async tx => {
+      await tx.packedImageArtifact.update({ where: { id, leaseToken: token, leaseExpiresAt: { gt: new Date() } }, data: { leaseExpiresAt: new Date(Date.now() + 300_000) } });
+      return work(new PrismaAdminRepository(tx as unknown as PrismaService));
+    });
   }
 
   async getSingleInstanceNetworkProfile(input: {

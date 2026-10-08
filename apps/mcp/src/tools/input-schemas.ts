@@ -39,8 +39,9 @@ export const imageCatalogListInputSchema = z.object({
 export const imageCatalogSyncInputSchema = z.object({
   scope: z.enum(['public', 'custom']).describe('要同步的镜像目录范围。'),
 });
-export const imageCatalogCustomDeleteInputSchema = z.object({
+export const imageCatalogCustomDeleteInputSchema = operationSchema.extend({
   snapshotId: identifier.describe('自定义镜像目录中要永久删除的快照 ID。'),
+  deleteOwnedSnapshots: z.boolean().optional().describe('仅对当前平台新打包且有完整owner/UID/地域证明的镜像，显式回收其确切backing snapshots；旧镜像或未知来源会拒绝。'),
 });
 export const imageImportJobListInputSchema = z.object({});
 export const imageImportJobRetryInputSchema = z.object({

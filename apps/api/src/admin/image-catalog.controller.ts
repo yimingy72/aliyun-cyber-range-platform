@@ -1,13 +1,15 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
-import { CollectImageCatalogDto } from './dto/image-catalog.dto';
+import { CollectImageCatalogDto, DeleteCustomImageDto } from './dto/image-catalog.dto';
 import { ImageCatalogService } from './image-catalog.service';
+import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
+import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 @Controller('admin/image-catalog')
 @UseGuards(AdminAuthGuard)
 export class ImageCatalogController {
-  constructor(private readonly imageCatalogService: ImageCatalogService) {}
+  constructor(private readonly imageCatalogService: ImageCatalogService, private readonly operationControl: OperationControlService) {}
 
   @Get('public')
   listPublic() {
@@ -35,8 +37,19 @@ export class ImageCatalogController {
   }
 
   @Delete('custom/:snapshotId')
-  @HttpCode(204)
-  deleteCustomSnapshot(@Param('snapshotId') snapshotId: string) {
-    return this.imageCatalogService.deleteCustomSnapshot(snapshotId);
+  @HttpCode(200)
+  deleteCustomSnapshot(@Req() request: AuthenticatedPlatformRequest, @Param('snapshotId') snapshotId: string, @Query() query: DeleteCustomImageDto) {
+    const execute = () => this.imageCatalogService.deleteCustomSnapshot(snapshotId, query, request.adminUser);
+    if (request.authContext.source !== 'mcp') return execute();
+    return this.operationControl.executeConfirmed({
+      context: request.authContext, metadata: readOperationRequestMetadata(request),
+      toolName: 'image_catalog_custom_delete', arguments: { snapshotId, deleteOwnedSnapshots: query.deleteOwnedSnapshots ?? false },
+      targetType: 'custom_image', targetId: snapshotId,
+      resolveConfirmation: async () => {
+        const target = await this.imageCatalogService.prepareCustomDelete(snapshotId, request.adminUser, query.deleteOwnedSnapshots === true);
+        return { targetId: snapshotId, targetSnapshot: target, summary: { targetName: target.imageId, destructive: true, deleteOwnedSnapshots: query.deleteOwnedSnapshots === true } };
+      },
+      execute: async () => ({ result: await execute() }),
+    });
   }
 }

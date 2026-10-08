@@ -12,6 +12,7 @@ import {
 } from './input-schemas';
 import {
   imageCatalogOutputSchema,
+  customImageCleanupOutputSchema,
   imageImportJobListOutputSchema,
   imageImportJobSchema,
   removedOutputSchema,
@@ -152,15 +153,14 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'image_catalog_custom_delete',
     title: '删除自定义云镜像',
-    description: '对应镜像中心的“删除自定义镜像”。永久删除阿里云自定义镜像及其关联的平台资产；导入中或被已发布拓扑引用时会被拒绝，调用前必须取得用户确认。',
+    description: '永久删除指定云自定义镜像。显式deleteOwnedSnapshots=true时，仅对平台新打包且有完整来源证明的镜像回收确切快照，拒绝共享/外部快照，不强制删除。云终态确认后removed=true；失败保留材料用相同目标重试。调用前必须取得用户确认。',
     requiredScopes: ['images:write'],
     annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: imageCatalogCustomDeleteInputSchema,
-    outputSchema: removedOutputSchema('snapshotId'),
+    outputSchema: customImageCleanupOutputSchema,
     async call(context, args) {
-      const snapshotId = (args as { snapshotId: string }).snapshotId;
-      await context.client.removeCustomImageSnapshot(snapshotId);
-      return { removed: true, snapshotId };
+      const input = args as { snapshotId: string; deleteOwnedSnapshots?: boolean; idempotencyKey?: string; confirmationId?: string };
+      return context.client.removeCustomImageSnapshot(input.snapshotId, { deleteOwnedSnapshots: input.deleteOwnedSnapshots }, operation(input));
     },
   },
   {
