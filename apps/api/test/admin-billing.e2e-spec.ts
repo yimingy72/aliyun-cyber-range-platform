@@ -4,6 +4,7 @@ import request from 'supertest';
 
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { BillingBssClient } from '../src/admin/billing-bss-client';
+import { SystemConfigService } from '../src/admin/system-config.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
@@ -109,6 +110,10 @@ describe('Admin billing', () => {
     }))
       .overrideProvider(ADMIN_REPOSITORY)
       .useValue(repository)
+      .overrideProvider(SystemConfigService)
+      .useValue({
+        getSnapshot: jest.fn().mockResolvedValue({ defaultRegion: 'cn-hangzhou', imageImportBucket: '' }),
+      })
       .overrideProvider(BillingBssClient)
       .useValue({
         listDailyBillingItems: jest.fn(async () => [
@@ -159,7 +164,7 @@ describe('Admin billing', () => {
       .get('/admin/billing/users?startAt=2026-07-16&endAt=2026-07-16')
       .set('authorization', `Bearer ${adminToken}`)
       .expect(200)
-      .expect([
+      .expect({ page: 1, pageSize: 20, total: 2, items: [
         {
           userId: 'user-1',
           username: 'alice',
@@ -174,35 +179,35 @@ describe('Admin billing', () => {
           itemCount: 0,
           launchCount: 0,
         },
-      ]);
+      ] });
 
     const userGroupsResponse = await request(app.getHttpServer())
       .get('/admin/billing/user-groups?startAt=2026-07-16&endAt=2026-07-16')
       .set('authorization', `Bearer ${adminToken}`)
       .expect(200);
 
-    expect(userGroupsResponse.body).toEqual([
+    expect(userGroupsResponse.body).toEqual({ page: 1, pageSize: 20, total: 1, items: [
       expect.objectContaining({
         kind: 'unmatched',
         title: '未关联平台启动的费用',
         completedAt: null,
         pretaxAmount: 1.25,
       }),
-    ]);
+    ] });
 
     const platformGroupsResponse = await request(app.getHttpServer())
       .get('/admin/billing/platform/groups?startAt=2026-07-16&endAt=2026-07-16')
       .set('authorization', `Bearer ${adminToken}`)
       .expect(200);
 
-    expect(platformGroupsResponse.body).toEqual([
+    expect(platformGroupsResponse.body).toEqual({ page: 1, pageSize: 20, total: 1, items: [
       expect.objectContaining({
         kind: 'unmatched',
         title: '未关联平台启动的费用',
         completedAt: null,
         pretaxAmount: 0.5,
       }),
-    ]);
+    ] });
 
     const itemsResponse = await request(app.getHttpServer())
       .get('/admin/billing/users/user-1/items?startAt=2026-07-16&endAt=2026-07-16')
