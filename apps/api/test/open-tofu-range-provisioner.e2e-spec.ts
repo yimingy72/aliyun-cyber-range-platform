@@ -1015,6 +1015,7 @@ describe('OpenTofuRangeProvisioner', () => {
           'server-app': 'i-server',
         },
         mode: 'opentofu',
+        networkAclIds: null,
         natGatewayIds: {
           'nat-office': 'ngw-office',
         },
@@ -1030,6 +1031,7 @@ describe('OpenTofuRangeProvisioner', () => {
         selectedZoneId: null,
         attemptedZones: null,
         secondaryNetworkInterfaceIds: null,
+        securityGroupIds: null,
         snatEntryIds: {
           'snat-office': 'snat-001',
         },

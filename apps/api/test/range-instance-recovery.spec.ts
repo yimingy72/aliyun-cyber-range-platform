@@ -53,6 +53,7 @@ describe('buildRangeRecoverySummary', () => {
         id: 'job-1',
         rangeInstanceId: 'range-1',
         jobType: 'create',
+        topologySnapshot: null,
         status: 'failed',
         triggeredBy: 'admin',
         startedAt: null,
