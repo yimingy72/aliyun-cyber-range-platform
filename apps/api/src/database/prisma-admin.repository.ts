@@ -2004,7 +2004,12 @@ export class PrismaAdminRepository implements AdminRepository {
   }) {
     return this.prisma.singleInstanceNetworkProfile.findUnique({
       where: {
-        provider_cloudAccountUid_regionId_zoneId: { ...input, cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound' },
+        provider_cloudAccountUid_regionId_zoneId: {
+          provider: input.provider,
+          cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
+          regionId: input.regionId,
+          zoneId: input.zoneId,
+        },
       },
     }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord | null>;
   }
