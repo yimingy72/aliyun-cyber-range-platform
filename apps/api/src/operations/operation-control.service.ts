@@ -35,7 +35,7 @@ export class OperationControlService {
 
   async executeConfirmed<TResult extends Record<string, unknown>>(input: {
     context: RequestAuthContext;
-    metadata: OperationRequestMetadata & { idempotencyKey: string };
+    metadata: OperationRequestMetadata;
     toolName: string;
     arguments: Record<string, unknown>;
     targetType: string;
@@ -57,10 +57,26 @@ export class OperationControlService {
 
     await this.audit({ ...auditBase, operationId: `request:${input.metadata.requestId}`, phase: 'requested' });
 
+    const confirmation = input.metadata.confirmationId
+      ? await this.repository.getOperationConfirmationById(input.metadata.confirmationId)
+      : null;
+    const idempotencyKey = input.metadata.idempotencyKey ?? confirmation?.idempotencyKey ?? randomUUID();
+
+    if (input.metadata.confirmationId && (
+      !confirmation ||
+      confirmation.actorUserId !== input.context.user.id ||
+      confirmation.oauthClientId !== (input.context.oauthClientId ?? 'web') ||
+      confirmation.toolName !== input.toolName ||
+      confirmation.argumentsHash !== argumentsHash ||
+      confirmation.idempotencyKey !== idempotencyKey
+    )) {
+      throw new ConflictException('Operation confirmation does not match this request');
+    }
+
     const existing = await this.repository.getIdempotentOperation(
       input.context.user.id,
       input.toolName,
-      input.metadata.idempotencyKey,
+      idempotencyKey,
     );
     if (existing) {
       return this.existing(existing, argumentsHash);
@@ -74,7 +90,7 @@ export class OperationControlService {
         toolName: input.toolName,
         argumentsHash,
         targetSnapshot: sanitize(resolved.targetSnapshot),
-        idempotencyKey: input.metadata.idempotencyKey,
+        idempotencyKey,
         expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS),
       });
 
@@ -89,19 +105,13 @@ export class OperationControlService {
       throw new ConflictException({
         code: 'CONFIRMATION_REQUIRED',
         confirmationId: confirmation.id,
-        idempotencyKey: input.metadata.idempotencyKey,
+        idempotencyKey,
         summary: resolved.summary,
       });
     }
 
-    const confirmation = await this.repository.getOperationConfirmationById(input.metadata.confirmationId);
     if (
       !confirmation ||
-      confirmation.actorUserId !== input.context.user.id ||
-      confirmation.oauthClientId !== (input.context.oauthClientId ?? 'web') ||
-      confirmation.toolName !== input.toolName ||
-      confirmation.argumentsHash !== argumentsHash ||
-      confirmation.idempotencyKey !== input.metadata.idempotencyKey ||
       !(await this.repository.consumeOperationConfirmation(confirmation.id, new Date()))
     ) {
       throw new ConflictException('Operation confirmation does not match this request');
@@ -109,7 +119,7 @@ export class OperationControlService {
 
     await this.audit({ ...auditBase, operationId: confirmation.id, phase: 'confirmed' });
 
-    const operation = await this.begin(input.context.user.id, input.toolName, input.metadata.idempotencyKey, argumentsHash);
+    const operation = await this.begin(input.context.user.id, input.toolName, idempotencyKey, argumentsHash);
     if ('existing' in operation && operation.existing) {
       return this.existing(operation.existing, argumentsHash);
     }

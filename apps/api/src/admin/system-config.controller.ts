@@ -45,7 +45,7 @@ export class SystemConfigController {
     const metadata = readOperationRequestMetadata(request);
     return this.operationControlService.executeConfirmed({
       context: request.authContext,
-      metadata: { ...metadata, idempotencyKey: metadata.idempotencyKey ?? 'cloud-config-update' },
+      metadata,
       toolName: 'cloud_config_update',
       arguments: payload as Record<string, unknown>,
       targetType: 'system_cloud_config',
