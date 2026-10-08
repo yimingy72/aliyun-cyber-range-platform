@@ -18,6 +18,27 @@ describe('PlatformApiClient', () => {
     expect(calls[2]).toMatchObject({ input: 'https://platform.example/admin/platform-images/asset%2F1/tags', init: { method: 'PUT', body: JSON.stringify({ tagIds: [] }), headers: { 'x-idempotency-key': 'set-tags', 'x-confirmation-id': 'set-confirm' } } });
   });
 
+  it.each([undefined, false, true])('only requests range network diagnostics when explicitly true (%s)', async (includeNetworkDiagnostics) => {
+    const snapshot = { id: 'range/1', status: 'running', ...(includeNetworkDiagnostics === true ? {
+      networkDiagnostics: {
+        status: 'succeeded', checkedAt: '2026-10-09T00:00:00Z', regionId: 'cn-hangzhou',
+        cloudAccountUid: 'mock-account', vpcId: 'vpc-mock', instances: [], networkInterfaces: [],
+        natGateways: [], forwardEntries: [], snatEntries: [], routeTables: [], networkAcls: [], securityGroups: [],
+      },
+    } : {}) };
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe(`https://platform.example/admin/ranges/range%2F1${includeNetworkDiagnostics === true ? '?includeNetworkDiagnostics=true' : ''}`);
+      expect(init?.method).toBe('GET');
+      expect(init?.body).toBeUndefined();
+      return new Response(JSON.stringify(snapshot), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'mock', fetch: fetchMock as typeof fetch });
+
+    await expect(client.getRangeInstance('range/1', includeNetworkDiagnostics === undefined
+      ? undefined : { includeNetworkDiagnostics })).resolves.toEqual(snapshot);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('passes an explicit owned-snapshot cleanup flag and confirmation metadata and returns verified progress', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/image-catalog/custom/source%2Fnew?deleteOwnedSnapshots=true');

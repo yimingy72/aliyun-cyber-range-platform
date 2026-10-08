@@ -12,6 +12,7 @@ import type {
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
   CreateAdminUserInput,
+  GetRangeInstanceOptions,
   InstanceMode,
   InstanceTypeAvailabilitySnapshot,
   InstanceView,
@@ -229,8 +230,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<RangeInstance[]>(`/admin/ranges?view=${encodeURIComponent(view)}`);
   }
 
-  getRangeInstance(id: string) {
-    return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}`);
+  getRangeInstance(id: string, options?: GetRangeInstanceOptions) {
+    const query = options?.includeNetworkDiagnostics === true ? '?includeNetworkDiagnostics=true' : '';
+    return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}${query}`);
   }
 
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {

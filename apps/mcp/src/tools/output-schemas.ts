@@ -19,6 +19,15 @@ export const resourceListOutputSchema = resultOutputSchema(z.array(resourceSchem
 const imageTagSchema = z.object({ id: nonEmptyString, name: nonEmptyString });
 export const imageTagOutputSchema = resultOutputSchema(imageTagSchema);
 export const imageTagListOutputSchema = resultOutputSchema(z.array(imageTagSchema));
+export const rangeInstanceDetailOutputSchema = resultOutputSchema(resourceSchema.extend({
+  networkDiagnostics: z.object({
+    status: z.literal('succeeded').describe('本次网络诊断已完成；不代表网络连通性通过。'),
+    checkedAt: z.string().describe('诊断查询时间，ISO-8601。'),
+    regionId: z.string().describe('该实例启动时绑定的地域。'),
+    cloudAccountUid: z.string().describe('该实例绑定的云账号 UID。'),
+    vpcId: z.string().describe('该实例绑定的 VPC ID。'),
+  }).passthrough().optional().describe('仅显式请求时提供。服务端返回 ECS、网卡主辅 IP、安全组、ACL、NAT 与路由白名单事实，不含凭据或原始 provider 响应。'),
+}).passthrough());
 
 export const removedOutputSchema = (idField: string) =>
   resultOutputSchema(

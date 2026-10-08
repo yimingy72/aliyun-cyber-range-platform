@@ -325,6 +325,50 @@ describe('tool registry', () => {
     );
   });
 
+  it.each([undefined, false, true])('forwards the optional read-only range network diagnostic flag (%s)', async (includeNetworkDiagnostics) => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const networkDiagnostics = {
+      status: 'succeeded', checkedAt: '2026-10-09T00:00:00Z', regionId: 'cn-hangzhou',
+      cloudAccountUid: 'mock-account', vpcId: 'vpc-mock', instances: [{ nodeId: 'entry', privateIp: '10.0.40.10' }],
+      networkInterfaces: [], natGateways: [], forwardEntries: [], snatEntries: [], routeTables: [], networkAcls: [], securityGroups: [],
+    };
+    const snapshot = { id: 'range-1', status: 'running', networkDiagnostics, runtimeCredentials: { password: 'mock-hidden' } };
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot);
+
+    const result = await registry.callTool('range_instance_get', ['ranges:read'], {
+      rangeInstanceId: 'range-1', ...(includeNetworkDiagnostics === undefined ? {} : { includeNetworkDiagnostics }),
+    });
+
+    expect(client.getRangeInstance).toHaveBeenCalledWith('range-1', includeNetworkDiagnostics === undefined
+      ? undefined : { includeNetworkDiagnostics });
+    expect(result.structuredContent).toEqual({ result: { id: 'range-1', status: 'running', networkDiagnostics } });
+    expect(JSON.stringify(result)).not.toContain('mock-hidden');
+    expect(snapshot.runtimeCredentials.password).toBe('mock-hidden');
+    const tool = registry.listTools(['ranges:read']).find((entry) => entry.name === 'range_instance_get')!;
+    expect(tool.annotations.readOnlyHint).toBe(true);
+    expect(tool.requiredScopes).toEqual(['ranges:read']);
+    expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it('rejects untyped diagnostic flags and caller-supplied cloud targets before forwarding', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    for (const invalid of [
+      { includeNetworkDiagnostics: 'true' },
+      { includeNetworkDiagnostics: null },
+      { includeNetworkDiagnostics: true, vpcId: 'foreign-vpc' },
+      { includeNetworkDiagnostics: true, instanceId: 'foreign-ecs' },
+      { includeNetworkDiagnostics: true, regionId: 'foreign-region' },
+    ]) {
+      await expect(registry.callTool('range_instance_get', ['ranges:read'], { rangeInstanceId: 'range-1', ...invalid }))
+        .rejects.toThrow('Invalid input for range_instance_get');
+    }
+    await expect(registry.callTool('range_instance_get', [], { rangeInstanceId: 'range-1', includeNetworkDiagnostics: true }))
+      .rejects.toThrow('Forbidden tool: range_instance_get');
+    expect(client.getRangeInstance).not.toHaveBeenCalled();
+  });
+
   it('publishes every front-end range-instance operation as a complete MCP tool', () => {
     const registry = createToolRegistry(createClientStub());
     const tools = registry.listTools([

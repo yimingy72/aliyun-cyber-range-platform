@@ -10,6 +10,7 @@ import {
 import {
   rangeDestroyInputSchema,
   rangeInstanceIdInputSchema,
+  rangeInstanceGetInputSchema,
   rangeLaunchInputSchema,
   rangeListInputSchema,
   rangeNodeActionInputSchema,
@@ -19,6 +20,7 @@ import {
 } from './input-schemas';
 import {
   actionOutputSchema,
+  rangeInstanceDetailOutputSchema,
   resourceListOutputSchema,
   resourceOutputSchema,
   resultOutputSchema,
@@ -49,14 +51,17 @@ export const rangeTools: ToolDefinition[] = [
   {
     name: 'range_instance_get',
     title: '获取编排实例详情',
-    description: '对应编排实例页的“查看详情”。返回实例状态、已保存的运行拓扑和资源摘要；运行凭据与密码不会在此工具返回。',
+    description: '对应编排实例页的“查看详情”。返回实例状态、已保存的运行拓扑和资源摘要；includeNetworkDiagnostics=true 时附加该实例绑定账号/地域的只读网络诊断白名单，由服务端校验 owner/admin 权限，不接受任意云资源 ID。运行凭据与密码不会在此工具返回。',
     requiredScopes: ['ranges:read'],
     readOnlyHint: true,
-    inputSchema: rangeInstanceIdInputSchema,
-    outputSchema: resourceOutputSchema,
+    inputSchema: rangeInstanceGetInputSchema,
+    outputSchema: rangeInstanceDetailOutputSchema,
     async call(context, args) {
+      const input = args as { rangeInstanceId: string; includeNetworkDiagnostics?: boolean };
       return redactRangeInstanceSecrets(
-        await context.client.getRangeInstance((args as { rangeInstanceId: string }).rangeInstanceId),
+        await context.client.getRangeInstance(input.rangeInstanceId, input.includeNetworkDiagnostics === undefined
+          ? undefined
+          : { includeNetworkDiagnostics: input.includeNetworkDiagnostics }),
       );
     },
   },

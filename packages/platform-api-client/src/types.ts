@@ -120,7 +120,32 @@ export type BillingSyncResult = {
   anomalyCount: number;
   deferredCount: number;
 };
-export type RangeInstance = Record<string, unknown> & { id: string; instanceMode?: 'range' | 'single' };
+export type GetRangeInstanceOptions = {
+  /** Read only network facts for this instance's bound cloud context; no caller supplied cloud IDs. */
+  includeNetworkDiagnostics?: boolean;
+};
+type NetworkDiagnosticRows = ReadonlyArray<Readonly<Record<string, unknown>>>;
+/** Server allowlisted facts for this instance only; excludes credentials and raw provider responses. */
+export type RangeInstanceNetworkDiagnostics = Readonly<{
+  status: 'succeeded';
+  checkedAt: string;
+  regionId: string;
+  cloudAccountUid: string;
+  vpcId: string;
+  instances: NetworkDiagnosticRows;
+  networkInterfaces: NetworkDiagnosticRows;
+  natGateways: NetworkDiagnosticRows;
+  forwardEntries: NetworkDiagnosticRows;
+  snatEntries: NetworkDiagnosticRows;
+  routeTables: NetworkDiagnosticRows;
+  networkAcls: NetworkDiagnosticRows;
+  securityGroups: NetworkDiagnosticRows;
+}>;
+export type RangeInstance = Record<string, unknown> & {
+  id: string;
+  instanceMode?: 'range' | 'single';
+  networkDiagnostics?: RangeInstanceNetworkDiagnostics;
+};
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
 export type AdminUser = Record<string, unknown> & { id: string; username: string };
@@ -250,7 +275,7 @@ export type PlatformApiClientLike = {
   listImageImportJobs(): Promise<ImageImportJobListPayload>;
   retryImageImport(id: string): Promise<ImageImportJob>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
-  getRangeInstance(id: string): Promise<RangeInstance>;
+  getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
   applyRangeInstanceDraft(

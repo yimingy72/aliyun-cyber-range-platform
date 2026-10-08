@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
   type ScenarioGraphDraft,
   type TemplateAuthoringMetadata,
@@ -31,6 +31,7 @@ import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { SystemConfigService } from './system-config.service';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
+import { RangeNetworkDiagnosticsService } from './range-network-diagnostics.service';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -45,6 +46,7 @@ export class RangeInstancesService {
     private readonly systemConfigService: SystemConfigService,
     private readonly cidrPoolService: CidrPoolService,
     private readonly provisioningWorkerService: ProvisioningWorkerService,
+    @Optional() private readonly rangeNetworkDiagnosticsService?: RangeNetworkDiagnosticsService,
   ) {}
 
   async list(currentUser?: AuthenticatedUser, view: 'active' | 'history' = 'active') {
@@ -77,7 +79,7 @@ export class RangeInstancesService {
     );
   }
 
-  async getById(id: string, currentUser?: AuthenticatedUser) {
+  async getById(id: string, currentUser?: AuthenticatedUser, options?: { includeNetworkDiagnostics?: boolean }) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -94,13 +96,26 @@ export class RangeInstancesService {
       throw new NotFoundException('Range instance not found');
     }
 
-    const nodeFacts = await this.resolveNodeFacts(hydrated);
+    let networkDiagnostics: Awaited<ReturnType<RangeNetworkDiagnosticsService['get']>> | undefined;
+    if (options?.includeNetworkDiagnostics) {
+      if (!currentUser) {
+        throw new ForbiddenException('Authenticated range owner or administrator required');
+      }
+      if (!this.rangeNetworkDiagnosticsService) {
+        throw new ServiceUnavailableException('Network diagnostics are not configured');
+      }
+      networkDiagnostics = await this.rangeNetworkDiagnosticsService.get(hydrated, currentUser);
+    }
+    const nodeFacts = networkDiagnostics
+      ? { nodeStatuses: Object.fromEntries(networkDiagnostics.instances.map((host) => [host.nodeId, host.status])), nodeBillingTags: null }
+      : await this.resolveNodeFacts(hydrated);
     const sourceTemplateRevision = await this.resolveSourceTemplateRevision(hydrated);
 
     return {
       ...hydrated,
       ...nodeFacts,
       sourceTemplateRevision,
+      ...(networkDiagnostics ? { networkDiagnostics } : {}),
       runtimeTopologySpec: (await this.adminRepository.listProvisionJobs()).find(job => job.rangeInstanceId === id
         && job.status === 'succeeded' && job.topologySnapshot && job.jobType !== 'destroy')?.topologySnapshot?.topologySpec ?? null,
     };

@@ -96,6 +96,9 @@ export const billingExportUserCsvInputSchema = billingSummaryInputSchema.extend(
 
 export const rangeListInputSchema = z.object({ view: viewSchema });
 export const rangeInstanceIdInputSchema = z.object({ rangeInstanceId: identifier });
+export const rangeInstanceGetInputSchema = rangeInstanceIdInputSchema.extend({
+  includeNetworkDiagnostics: z.boolean().optional().describe('仅在需要核验网络时设为 true；只读查询该实例绑定账号和地域中的 ECS、网卡、安全组、ACL、NAT 与路由白名单事实，不接受云资源 ID。'),
+}).strict();
 export const rangeLaunchInputSchema = operationSchema.extend({
   templateId: identifier,
   name: identifier,

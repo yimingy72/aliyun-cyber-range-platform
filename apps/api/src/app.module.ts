@@ -25,6 +25,7 @@ import { KeycloakAdminService } from './admin/keycloak-admin.service';
 import { OidcJwtVerifier } from './admin/oidc-jwt-verifier';
 import { OidcPrincipalResolver } from './admin/oidc-principal-resolver';
 import { RangeInstancesService } from './admin/range-instances.service';
+import { RangeNetworkDiagnosticsService } from './admin/range-network-diagnostics.service';
 import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
 import { RangesController } from './admin/ranges.controller';
 import { RangeTemplatesService } from './admin/range-templates.service';
@@ -104,6 +105,7 @@ function resolveProjectRootDir() {
     OidcPrincipalResolver,
     RangeTemplatesService,
     RangeInstancesService,
+    RangeNetworkDiagnosticsService,
     RangeInstanceNodeActionsService,
     SingleInstanceBatchExecutionService,
     SingleInstancesService,
