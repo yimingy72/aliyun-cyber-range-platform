@@ -60,7 +60,7 @@ describe('Admin resource validation', () => {
     const payload = rangeTemplatePayload(image, 'Mismatched compilation');
     (payload.compiledSpec.topology as { publicEntryHostKey: string }).publicEntryHostKey = 'wrong-host';
     const response = await createTemplate(payload).expect(400);
-    expect(response.body.message).toContain('compiledSpec topology does not match topologySpec');
+    expect(response.body.message).toContain('compiledSpec does not match topologyGraph');
   });
 
   it('rejects templates when public entry host is missing from hosts', async () => {
