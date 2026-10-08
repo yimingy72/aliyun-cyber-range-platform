@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
 
@@ -456,12 +456,12 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const usersPagination = getPagination(usersResult.total, usersResult.page, usersResult.pageSize);
   const usersVisiblePages = buildVisiblePages(usersPagination.totalPages, usersPagination.page);
 
-  useEffect(() => setUsersJumpPageValue(String(usersPagination.page)), [usersPagination.page]);
+  useLayoutEffect(() => setUsersJumpPageValue(String(usersPagination.page)), [usersPagination.page]);
 
   const groupsPagination = getPagination(groupsResult.total, groupsResult.page, groupsResult.pageSize);
   const groupsVisiblePages = buildVisiblePages(groupsPagination.totalPages, groupsPagination.page);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setGroupsJumpPageValue(String(groupsPagination.page));
   }, [groupsPagination.page]);
 

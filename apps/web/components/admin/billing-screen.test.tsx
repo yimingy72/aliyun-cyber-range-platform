@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -344,13 +344,57 @@ describe('BillingScreen', () => {
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('101 位用户');
     const aside = screen.getByRole('complementary', { name: '用户账单' });
+    const jumpInput = within(aside).getByLabelText('跳转到页码') as HTMLInputElement;
+    const visiblePageJumpValues: string[] = [];
+    // Enter the next destination at the first page commit, before a passive effect can reset it.
+    const observer = new MutationObserver(() => {
+      if (within(aside).queryByText('billing-user-21')) {
+        visiblePageJumpValues.push(jumpInput.value);
+        observer.disconnect();
+        fireEvent.change(jumpInput, { target: { value: '6' } });
+      }
+    });
+    observer.observe(aside, { childList: true, subtree: true });
     expect(within(aside).queryByText('billing-user-21')).toBeNull();
     fireEvent.click(within(aside).getByRole('button', { name: '下一页' }));
     await within(aside).findByText('billing-user-21');
-    fireEvent.change(within(aside).getByLabelText('跳转到页码'), { target: { value: '6' } });
+    observer.disconnect();
+    expect(jumpInput.value).toBe('6');
+    expect(visiblePageJumpValues).toEqual(['2']);
     fireEvent.click(within(aside).getByRole('button', { name: '跳转' }));
     await within(aside).findByText('billing-user-101');
     expect(fetchBillingUsersMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', expect.objectContaining({ page: 6, pageSize: 20 }));
+  });
+
+  it('keeps the latest user page and jump value when an older page request finishes later', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 101, platformPretaxAmount: 0 });
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    const pageResult = (page: number) => ({
+      page, pageSize: 20, total: 101,
+      items: Array.from({ length: Math.min(20, 101 - (page - 1) * 20) }, (_, index) => ({
+        userId: `user-${(page - 1) * 20 + index + 1}`, username: `billing-user-${(page - 1) * 20 + index + 1}`,
+        pretaxAmount: 1, itemCount: 1, launchCount: 1,
+      })),
+    });
+    let finishSecondPage!: (result: ReturnType<typeof pageResult>) => void;
+    const secondPage = new Promise<ReturnType<typeof pageResult>>((resolve) => { finishSecondPage = resolve; });
+    fetchBillingUsersMock.mockImplementation(async (_api: string, _token: string, input: { page: number }) =>
+      input.page === 2 ? secondPage : pageResult(input.page));
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('101 位用户');
+    const aside = screen.getByRole('complementary', { name: '用户账单' });
+    const jumpInput = within(aside).getByLabelText('跳转到页码') as HTMLInputElement;
+    fireEvent.click(within(aside).getByRole('button', { name: '下一页' }));
+    await waitFor(() => expect(fetchBillingUsersMock).toHaveBeenLastCalledWith(
+      'http://localhost:3001', 'dev-admin-token', expect.objectContaining({ page: 2 })));
+    fireEvent.change(jumpInput, { target: { value: '6' } });
+    fireEvent.click(within(aside).getByRole('button', { name: '跳转' }));
+    await within(aside).findByText('billing-user-101');
+    await act(async () => { finishSecondPage(pageResult(2)); });
+    expect(jumpInput.value).toBe('6');
+    expect(within(aside).queryByText('billing-user-21')).toBeNull();
+    expect(within(aside).getByRole('button', { name: '第 6 页' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('renders totals and user amounts by their currencies without a mixed total', async () => {
