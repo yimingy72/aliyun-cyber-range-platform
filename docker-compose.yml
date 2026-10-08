@@ -104,9 +104,9 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
-      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
-      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/cyber-range/protocol/openid-connect/certs}
-      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/cyber-range/protocol/openid-connect/token}
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token}
       KEYCLOAK_ADMIN_BASE_URL: ${KEYCLOAK_ADMIN_BASE_URL:-http://keycloak:8080}
       KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
@@ -172,9 +172,9 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
-      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
-      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/cyber-range/protocol/openid-connect/certs}
-      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/cyber-range/protocol/openid-connect/token}
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token}
       KEYCLOAK_ADMIN_BASE_URL: ${KEYCLOAK_ADMIN_BASE_URL:-http://keycloak:8080}
       KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
@@ -210,7 +210,7 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
-        NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
+        NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
         NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-platform-web}
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
@@ -224,7 +224,7 @@ services:
       NODE_ENV: production
       WEB_PORT: 3000
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
-      NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
+      NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
       NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-platform-web}
     ports:
       - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
@@ -251,9 +251,9 @@ services:
       MCP_STATIC_BEARER_TOKEN: ${MCP_STATIC_BEARER_TOKEN:-}
       MCP_STATIC_SCOPES: ${MCP_STATIC_SCOPES:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
-      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/cyber-range}
-      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/cyber-range/protocol/openid-connect/certs}
-      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/cyber-range/protocol/openid-connect/token}
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM:-cyber-range}}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/certs}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-cyber-range}/protocol/openid-connect/token}
       MCP_OIDC_CLIENT_ID: ${MCP_OIDC_CLIENT_ID:-mcp-gateway}
       MCP_OIDC_CLIENT_SECRET: ${MCP_OIDC_CLIENT_SECRET:-mcp-gateway-dev-only}
       MCP_OIDC_AUDIENCE: ${MCP_OIDC_AUDIENCE:-mcp-gateway}

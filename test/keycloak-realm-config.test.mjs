@@ -54,6 +54,29 @@ test('image deployment passes the hosted web origin to Keycloak bootstrap', () =
   assert.match(keycloakBootstrapBlock, /WEB_PUBLIC_URL: \$\{WEB_PUBLIC_URL:-http:\/\/localhost:3000\}/);
 });
 
+test('all deployment modes pass the same administrator and OIDC client configuration to bootstrap', () => {
+  const composeSources = [
+    '../docker-compose.yml',
+    '../deploy/current-system/docker-compose.yml',
+    '../deploy/current-system/docker-compose.images.yml',
+  ].map((file) => fs.readFileSync(new URL(file, import.meta.url), 'utf8'));
+  const environments = composeSources.map((source) => {
+    const block = getKeycloakBootstrapBlock(source);
+    return block.slice(block.indexOf('    environment:'), block.indexOf('    volumes:'));
+  });
+  assert.equal(environments[1], environments[0]);
+  assert.equal(environments[2], environments[0]);
+  for (const name of [
+    'PLATFORM_ADMIN_USERNAME', 'PLATFORM_ADMIN_PASSWORD',
+    'KEYCLOAK_ADMIN_CLIENT_ID', 'KEYCLOAK_ADMIN_CLIENT_SECRET',
+    'MCP_OIDC_CLIENT_ID', 'MCP_OIDC_CLIENT_SECRET',
+    'MCP_SMOKE_CLIENT_ID', 'MCP_SMOKE_CLIENT_SECRET',
+    'MCP_SMOKE_OIDC_CLIENT_ID', 'MCP_SMOKE_OIDC_CLIENT_SECRET',
+  ]) {
+    assert.match(environments[0], new RegExp(`\\b${name}:`));
+  }
+});
+
 test('smoke-conf emits username and realm roles without relying on missing built-in client scopes', () => {
   const smokeClient = getClient('smoke-conf');
 
