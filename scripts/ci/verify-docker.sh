@@ -64,11 +64,10 @@ docker run --rm --network "$CI_NETWORK" \
   -e OIDC_JWKS_URL=https://test-issuer.example/realms/cyber-range/certs \
   -e OIDC_TOKEN_ENDPOINT=https://test-issuer.example/realms/cyber-range/token \
   -e RANGE_PROVISIONER_MODE=dry-run -e ALICLOUD_ACCESS_KEY= -e ALICLOUD_SECRET_KEY= \
-  -e ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip \
   "$CI_IMAGE" sh -ec '
     pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
     pnpm provider:download
-    pnpm iac:validate
+    ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip pnpm iac:validate
   '
