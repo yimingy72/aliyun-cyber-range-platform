@@ -57,8 +57,12 @@ for attempt in $(seq 1 40); do
   sleep 1
 done
 
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cyber_range_settings_test' >/dev/null
+
 docker run --rm --network "$CI_NETWORK" \
   -e DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range?schema=public' \
+  -e SETTINGS_SWITCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_settings_test?schema=public' \
   -e NODE_ENV=test -e ADMIN_USERNAME=admin -e ADMIN_TOKEN=dev-admin-token \
   -e OIDC_ISSUER=https://test-issuer.example/realms/cyber-range \
   -e OIDC_JWKS_URL=https://test-issuer.example/realms/cyber-range/certs \
@@ -66,6 +70,7 @@ docker run --rm --network "$CI_NETWORK" \
   -e RANGE_PROVISIONER_MODE=dry-run -e ALICLOUD_ACCESS_KEY= -e ALICLOUD_SECRET_KEY= \
   "$CI_IMAGE" sh -ec '
     pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$SETTINGS_SWITCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
     pnpm provider:download
