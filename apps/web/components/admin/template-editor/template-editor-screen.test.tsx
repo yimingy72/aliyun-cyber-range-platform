@@ -4240,3 +4240,46 @@ describe('template authoring regression recovery', () => {
     expect(screen.getByText(/已创建连线：Private -> Host/)).toBeTruthy();
   });
 });
+
+describe('final authoring coverage: recreated nodes', () => {
+  const emptyTemplate = { id: 'recreated', name: 'Recreated', slug: 'recreated', revision: 1, status: 'private' as const, visibility: 'private' as const, topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] } };
+  const graphFromCache = () => JSON.parse(window.localStorage.getItem('template-editor:topology-cache:recreated:1')!).topologyGraph;
+
+  it('deletes and recreates a Router without colliding with remaining imported node IDs', () => {
+    render(<TemplateEditorScreen template={{ ...emptyTemplate, topologyGraph: { schemaVersion: '2.0.0', nodes: [
+      { id: 'router-1', kind: 'router', label: 'Router', routeRole: 'egress', egressType: 'internet', bindEip: false },
+      { id: 'router-3', kind: 'switch', label: 'Reserved router ID', zoneKey: 'one', cidr: '10.0.0.0/24' },
+      { id: 'switch-4', kind: 'switch', label: 'Remaining switch', zoneKey: 'two', cidr: '172.16.0.0/24' },
+    ], edges: [] } }} />);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Router VPC 根节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
+    expect(graphFromCache().nodes.some((node: { kind: string }) => node.kind === 'router')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+    const graph = graphFromCache();
+    const ids = graph.nodes.map((node: { id: string }) => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(graph.nodes.filter((node: { kind: string }) => node.kind === 'router')).toHaveLength(1);
+    expect(graph.nodes.find((node: { kind: string }) => node.kind === 'router').id).toBe('router-4');
+    expect(ids).toContain('router-3');
+    fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+    expect(screen.getByText('当前拓扑只允许一个 Router。')).toBeTruthy();
+    expect(graphFromCache().nodes).toHaveLength(3);
+  });
+
+  it('deletes an earlier Switch and recreates it with unique node and zone keys', () => {
+    render(<TemplateEditorScreen template={emptyTemplate} />);
+    fireEvent.click(screen.getByRole('button', { name: '路由器 router' }));
+    for (let index = 0; index < 3; index += 1) fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    fireEvent.contextMenu(screen.getByRole('button', { name: '交换机 1 10.0.0.0/24' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除选中' }));
+    expect(graphFromCache().nodes.some((node: { id: string }) => node.id === 'switch-2')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '交换机 switch' }));
+    const graph = graphFromCache();
+    const ids = graph.nodes.map((node: { id: string }) => node.id);
+    const switches = graph.nodes.filter((node: { kind: string }) => node.kind === 'switch');
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(switches.map((node: { zoneKey: string }) => node.zoneKey)).size).toBe(3);
+    expect(ids).toEqual(['router-1', 'switch-3', 'switch-4', 'switch-5']);
+    expect(switches.find((node: { id: string }) => node.id === 'switch-5').cidr).toBe('10.0.0.0/24');
+  });
+});

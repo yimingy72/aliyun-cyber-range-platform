@@ -4,6 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminApiError } from '../../lib/admin-api';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import { AdminPageCache } from './admin-page-cache';
+import { ADMIN_PAGE_SIZE_STORAGE_KEY } from './admin-pagination';
+
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+  configurable: true,
+  value: () => undefined,
+});
 
 const {
   cloneRangeTemplateMock,
@@ -1195,5 +1201,76 @@ describe('TemplatesScreen', () => {
         { expectedRevision: 5 },
       );
     });
+  });
+});
+
+describe('final authoring coverage: integrated template pagination', () => {
+  beforeEach(() => window.localStorage.removeItem(ADMIN_PAGE_SIZE_STORAGE_KEY));
+  afterEach(() => window.localStorage.removeItem(ADMIN_PAGE_SIZE_STORAGE_KEY));
+
+  it('pages 125 rows, jumps to boundaries, resets search and page size, and handles empty results', async () => {
+    const templates = Array.from({ length: 125 }, (_, index) => ({
+      ...bootstrapPayload.rangeTemplates[0],
+      id: `paged-template-${index + 1}`,
+      slug: `paged-template-${index + 1}`,
+      name: `Audit ${index < 80 ? 'Alpha' : 'Beta'} ${String(index + 1).padStart(3, '0')}`,
+    }));
+    fetchRangeTemplatesMock.mockResolvedValue(templates);
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('Audit Alpha 001');
+    const table = screen.getByRole('table', { name: '靶场列表' });
+    const visibleRows = () => within(table).getAllByRole('row').slice(1);
+    const expectSummary = (text: string) => expect(screen.getByText(text)).toBeTruthy();
+
+    expect(visibleRows()).toHaveLength(20);
+    expectSummary('显示 1–20 条，共 125 条');
+    expect(screen.getByRole('button', { name: '上一页' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    expectSummary('显示 21–40 条，共 125 条');
+    expect(within(table).queryByText('Audit Alpha 001')).toBeNull();
+    expect(within(table).getByText('Audit Alpha 021')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: '跳转' }));
+    expectSummary('显示 41–60 条，共 125 条');
+    expect(screen.getByRole('button', { name: '第 3 页' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: 'Alpha' } });
+    await waitFor(() => expectSummary('显示 1–20 条，共 80 条'));
+    expect(screen.getByRole('button', { name: '第 1 页' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(table).getByText('Audit Alpha 001')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '第 7 页' }));
+    expectSummary('显示 121–125 条，共 125 条');
+    expect(visibleRows()).toHaveLength(5);
+    expect(screen.getByRole('button', { name: '下一页' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '50 条' }));
+    await waitFor(() => expectSummary('显示 1–50 条，共 125 条'));
+    expect(visibleRows()).toHaveLength(50);
+    expect(window.localStorage.getItem(ADMIN_PAGE_SIZE_STORAGE_KEY)).toBe('50');
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    expectSummary('显示 51–100 条，共 125 条');
+    expect(within(table).getByText('Audit Alpha 051')).toBeTruthy();
+    expect(within(table).getByText('Audit Beta 100')).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: '100 条' }));
+    await waitFor(() => expectSummary('显示 1–100 条，共 125 条'));
+    expect(visibleRows()).toHaveLength(100);
+    expect(screen.getByRole('button', { name: '第 1 页' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    expectSummary('显示 101–125 条，共 125 条');
+    expect(visibleRows()).toHaveLength(25);
+    fireEvent.click(screen.getByRole('button', { name: '上一页' }));
+    expectSummary('显示 1–100 条，共 125 条');
+
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: 'no matching template' } });
+    expect(screen.getByText('当前筛选条件下没有靶场')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '下一页' })).toBeNull();
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: '' } });
+    await waitFor(() => expectSummary('显示 1–100 条，共 125 条'));
+    expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
   });
 });
