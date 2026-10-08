@@ -57,10 +57,12 @@ variable "host_network_interfaces" {
   type = list(object({
     host_key = string
     interfaces = list(object({
-      device_index = number
-      zone_key     = string
-      private_ip   = string
-      description  = optional(string)
+      nic_id                = optional(string)
+      device_index          = number
+      zone_key              = string
+      private_ip            = string
+      secondary_private_ips = optional(list(string), [])
+      description           = optional(string)
     }))
   }))
   description = "Structured secondary host network interfaces compiled from the published template."
@@ -92,15 +94,16 @@ variable "eips" {
 
 variable "security_group_rules" {
   type = list(object({
-    key             = string
-    name            = string
-    target_host_key = string
-    direction       = string
-    policy          = string
-    protocol        = string
-    port_range      = string
-    source_cidr     = string
-    priority        = number
+    key                 = string
+    name                = string
+    target_host_key     = string
+    target_device_index = optional(number)
+    direction           = string
+    policy              = string
+    protocol            = string
+    port_range          = string
+    source_cidr         = string
+    priority            = number
   }))
   description = "Structured security group rules compiled from the published template."
   default     = []

@@ -136,8 +136,9 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
 
     expect(template.access.securityGroupRules).toEqual([
       expect.objectContaining({
-        key: 'ecs-default-nic-1-default-ssh',
+        key: 'ecs-default-ecs-default-nic-1-ecs-default-nic-1-default-ssh',
         targetHostKey: 'ecs-default',
+        targetDeviceIndex: 0,
         direction: 'ingress',
         protocol: 'tcp',
         portRange: '22/22',
@@ -146,8 +147,9 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
         priority: 1,
       }),
       expect.objectContaining({
-        key: 'ecs-default-nic-1-default-http',
+        key: 'ecs-default-ecs-default-nic-1-ecs-default-nic-1-default-http',
         targetHostKey: 'ecs-default',
+        targetDeviceIndex: 0,
         direction: 'ingress',
         protocol: 'tcp',
         portRange: '80/80',
@@ -415,8 +417,9 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
     ]);
     expect(template.access.securityGroupRules).toEqual([
       expect.objectContaining({
-        key: 'sg-web-ssh',
+        key: 'ecs-web-nic-web-dmz-sg-web-ssh',
         targetHostKey: 'ecs-web',
+        targetDeviceIndex: 0,
         direction: 'ingress',
         protocol: 'tcp',
         portRange: '22/22',

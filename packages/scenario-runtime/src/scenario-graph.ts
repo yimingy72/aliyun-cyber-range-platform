@@ -1,5 +1,12 @@
 export const PHASE_ONE_NODE_KINDS = ['router', 'switch', 'ecs'] as const;
 
+export function nextAvailableGraphId(prefix: string, existingIds: string[]) {
+  let ordinal = existingIds.length + 1;
+  const ids = new Set(existingIds);
+  while (ids.has(`${prefix}-${ordinal}`)) ordinal += 1;
+  return `${prefix}-${ordinal}`;
+}
+
 export type TemplateNodeKind = (typeof PHASE_ONE_NODE_KINDS)[number];
 
 export function isPhaseOneNodeKind(kind: unknown): kind is TemplateNodeKind {

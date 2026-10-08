@@ -40,6 +40,9 @@ output "resource_summary" {
     security_group_ids = {
       for host_key, security_group in alicloud_security_group.hosts : host_key => security_group.id
     }
+    secondary_security_group_ids = {
+      for key, security_group in alicloud_security_group.network_interfaces : key => security_group.id
+    }
     host_ids = {
       for host_key, host in alicloud_instance.hosts : host_key => host.id
     }

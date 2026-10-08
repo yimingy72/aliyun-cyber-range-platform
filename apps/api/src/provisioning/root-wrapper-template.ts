@@ -165,6 +165,7 @@ variable "hosts" {
   type = list(object({
     key           = string
     name          = string
+    host_name     = optional(string)
     zone_key      = string
     private_ip    = string
     role          = string
@@ -180,9 +181,11 @@ variable "host_network_interfaces" {
   type = list(object({
     host_key = string
     interfaces = list(object({
+      nic_id       = optional(string)
       device_index = number
       zone_key     = string
       private_ip   = string
+      secondary_private_ips = optional(list(string), [])
       description  = optional(string)
     }))
   }))
@@ -218,6 +221,7 @@ variable "security_group_rules" {
     key             = string
     name            = string
     target_host_key = string
+    target_device_index = optional(number)
     direction       = string
     policy          = string
     protocol        = string

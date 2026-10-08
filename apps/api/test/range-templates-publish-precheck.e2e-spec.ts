@@ -1,3 +1,4 @@
+import { completeTemplatePayload } from './support/complete-template-payload';
 import { BadRequestException } from '@nestjs/common';
 
 import type { AdminRepository, RangeTemplateRecord, RangeTemplateVersionRecord } from '../src/admin/admin.repository';
@@ -157,45 +158,7 @@ function createCompleteSavePayload(
   template: RangeTemplateRecord,
   topologyGraph: Record<string, unknown>,
 ) {
-  const topologySpec = template.currentDraftVersion!.topologySpec!;
-  const networkZones = topologySpec.networkZones;
-  const hosts = topologySpec.hosts.map((host) => ({
-    key: host.key,
-    name: host.name,
-    zoneKey: host.zoneKey,
-    role: host.role,
-    primaryPrivateIp: host.privateIp,
-    exposePublic: host.exposePublic ?? false,
-  }));
-
-  return {
-    topologySpec,
-    topologyGraph,
-    scenarioTemplateSpec: {
-      schemaVersion: '1.0.0',
-      topology: {
-        vpcCidr: topologySpec.vpcCidr,
-        entryHostKey: topologySpec.publicEntry.hostKey,
-      },
-      networkZones,
-      hosts,
-    },
-    compiledProvisionSpec: {
-      schemaVersion: '1.0.0',
-      topology: {
-        vpcCidr: topologySpec.vpcCidr,
-        entryHostKey: topologySpec.publicEntry.hostKey,
-      },
-      networkZones,
-      hosts,
-      natGateways: [],
-      eips: [],
-      snatEntries: [],
-      dnatEntries: [],
-    },
-    compiledSpec: template.currentDraftVersion!.compiledSpec!,
-    expectedRevision: template.revision,
-  };
+  return { ...completeTemplatePayload(template.currentDraftVersion!.topologySpec!), expectedRevision: template.revision };
 }
 
 describe('RangeTemplatesService publish precheck', () => {

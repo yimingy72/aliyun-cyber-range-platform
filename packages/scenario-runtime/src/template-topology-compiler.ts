@@ -110,6 +110,7 @@ export function compileTemplateTopology(
     hosts: scenarioTemplateSpec.hosts.map((host) => ({
       key: host.key,
       name: host.name,
+      ...(host.hostName ? { hostName: host.hostName } : {}),
       zoneKey: host.zoneKey,
       role: host.role,
       privateIp: host.primaryPrivateIp,
@@ -485,10 +486,12 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         throw new Error(`交换机 CIDR 不在主 VPC 或附加 VPC 网段内：${node.id}`);
       }
       for (const rule of node.aclRules ?? []) {
+        validateNetworkRule(rule, 'acl', `${node.id}/${rule.key}`);
         if (!isAlibabaCloudPortRange(rule.portRange, rule.protocol)) {
           throw new Error(`ACL 端口范围无效：${node.id}/${rule.key}`);
         }
       }
+      assertUniqueRuleKeys(node.aclRules ?? [], `ACL ${node.id}`);
     }
     if (node.kind === 'ecs') {
       if (!isIpv4(node.privateIp)) {
@@ -523,10 +526,12 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
           throw new Error(`NIC 私网 IP 无效：${nic.id}`);
         }
         for (const rule of nic.securityGroupRules ?? []) {
+          validateNetworkRule(rule, 'security-group', `${node.id}/${rule.key}`);
           if (!isAlibabaCloudPortRange(rule.portRange, rule.protocol)) {
             throw new Error(`安全组端口范围无效：${node.id}/${rule.key}`);
           }
         }
+        assertUniqueRuleKeys(nic.securityGroupRules ?? [], `安全组 ${node.id}/${nic.id}`);
         if (!isIpv4InCidr(nic.privateIp, linkedSwitch.cidr)) {
           throw new Error(`ECS ${node.id} 的 NIC 私网 IP 不在 ${linkedSwitch.cidr} 网段内`);
         }
@@ -548,6 +553,9 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         }
       }
       for (const portGroup of node.portGroups ?? []) {
+        if (!isCidr(portGroup.sourceCidr) || !['tcp', 'udp', 'icmp', 'gre', 'all'].includes(portGroup.protocol)) {
+          throw new Error(`端口组协议或来源 CIDR 无效：${node.id}/${portGroup.name}`);
+        }
         if (!isAlibabaCloudPortRange(portGroup.portRange, portGroup.protocol)) {
           throw new Error(`端口组端口范围无效：${node.id}/${portGroup.name}`);
         }
@@ -839,4 +847,35 @@ function registerIpUsage(ipUsage: Map<string, string>, switchId: string, ip: str
 
 function isPort(value: number) {
   return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+function validateNetworkRule(
+  rule: { key: string; direction: string; protocol: string; sourceCidr: string; policy: string; priority?: number; destinationCidr?: string },
+  type: 'acl' | 'security-group',
+  label: string,
+) {
+  if (!rule.key?.trim()) throw new Error(`规则缺少 key：${label}`);
+  if (!(type === 'acl' ? ['inbound', 'outbound'] : ['ingress', 'egress']).includes(rule.direction)) {
+    throw new Error(`规则方向无效：${label}`);
+  }
+  if (!['tcp', 'udp', 'icmp', 'gre', 'all'].includes(rule.protocol)) {
+    throw new Error(`规则协议无效：${label}`);
+  }
+  if (!(type === 'acl' ? ['allow', 'drop'] : ['accept', 'drop']).includes(rule.policy)) {
+    throw new Error(`规则策略无效：${label}`);
+  }
+  if (!isCidr(rule.sourceCidr) || (rule.destinationCidr !== undefined && !isCidr(rule.destinationCidr))) {
+    throw new Error(`规则 CIDR 无效：${label}`);
+  }
+  const priority = rule.priority ?? 1;
+  const maximum = type === 'acl' ? 1000 : 100;
+  if (!Number.isInteger(priority) || priority < 1 || priority > maximum) {
+    throw new Error(`规则优先级必须为 1–${maximum} 的整数：${label}`);
+  }
+}
+
+function assertUniqueRuleKeys(rules: Array<{ key: string }>, label: string) {
+  if (new Set(rules.map((rule) => rule.key)).size !== rules.length) {
+    throw new Error(`规则 key 重复：${label}`);
+  }
 }

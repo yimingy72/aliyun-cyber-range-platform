@@ -45,6 +45,7 @@ export type CompiledNetworkZone = {
 export type CompiledHost = {
   key: string;
   name: string;
+  hostName?: string;
   role: string;
   zoneKey: string;
   primaryPrivateIp: string;
@@ -56,9 +57,11 @@ export type CompiledHost = {
     password?: string;
   };
   networkInterfaces: Array<{
+    nicId?: string;
     deviceIndex: number;
     zoneKey: string;
     privateIp: string;
+    secondaryIps?: string[];
     description?: string;
   }>;
   bootstrapScriptKey?: string;
@@ -101,6 +104,7 @@ export type CompiledDnatEntry = {
 export type CompiledSecurityGroupRule = {
   key: string;
   targetHostKey: string;
+  targetDeviceIndex?: number;
   direction: 'ingress' | 'egress';
   protocol: string;
   portRange: string;

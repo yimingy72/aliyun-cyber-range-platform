@@ -80,15 +80,23 @@ locals {
     }
   ]
 
+  primary_secondary_ips_by_host = {
+    for attachment in var.host_network_interfaces : attachment.host_key => flatten([
+      for nic in attachment.interfaces : nic.secondary_private_ips if nic.device_index == 0
+    ])
+  }
+
   secondary_network_interface_records = flatten([
     for attachment in local.normalized_host_network_interfaces : [
       for network_interface in attachment.interfaces : {
-        key          = "${attachment.host_key}-${network_interface.device_index}"
-        host_key     = attachment.host_key
-        device_index = network_interface.device_index
-        zone_key     = network_interface.zone_key
-        private_ip   = network_interface.private_ip
-        description  = try(network_interface.description, null)
+        key                   = "${attachment.host_key}-${network_interface.device_index}"
+        host_key              = attachment.host_key
+        device_index          = network_interface.device_index
+        zone_key              = network_interface.zone_key
+        private_ip            = network_interface.private_ip
+        nic_id                = network_interface.nic_id
+        secondary_private_ips = network_interface.secondary_private_ips
+        description           = try(network_interface.description, null)
       }
     ]
   ])
@@ -119,6 +127,23 @@ locals {
 
   security_group_rule_map = {
     for rule in var.security_group_rules : rule.key => rule
+  }
+
+  # Legacy snapshots without NIC IDs retain their original host security group.
+  secondary_security_group_map = {
+    for key, nic in local.secondary_network_interface_map : key => nic if nic.nic_id != null
+  }
+
+  secondary_host_security_group_rules = {
+    for item in flatten([
+      for key, nic in local.secondary_security_group_map : [
+        for rule in var.security_group_rules : {
+          key     = "${key}-${rule.key}"
+          nic_key = key
+          rule    = rule
+        } if rule.target_host_key == nic.host_key && rule.target_device_index == null
+      ]
+    ]) : item.key => item
   }
 
   acl_rules_by_zone = {
@@ -283,9 +308,9 @@ check "dnat_entry_targets_exist" {
 check "dnat_external_ports_unique" {
   assert {
     condition = length(var.dnat_entries) == length(distinct([
-      for entry in var.dnat_entries : entry.external_port
+      for entry in var.dnat_entries : "${entry.protocol}:${entry.external_port}"
     ]))
-    error_message = "Each DNAT entry in a range must use a unique external port because all DNAT entries share one EIP."
+    error_message = "Each DNAT entry must use a unique protocol and external port pair."
   }
 }
 
@@ -427,30 +452,61 @@ resource "alicloud_security_group" "hosts" {
 resource "alicloud_security_group_rule" "compiled_rules" {
   for_each = local.security_group_rule_map
 
-  type              = each.value.direction
-  ip_protocol       = each.value.protocol
+  type        = each.value.direction
+  ip_protocol = each.value.protocol
+  nic_type    = "intranet"
+  policy      = each.value.policy
+  port_range  = each.value.port_range
+  priority    = each.value.priority
+  security_group_id = (
+    coalesce(each.value.target_device_index, 0) > 0
+    ? alicloud_security_group.network_interfaces["${each.value.target_host_key}-${each.value.target_device_index}"].id
+    : alicloud_security_group.hosts[each.value.target_host_key].id
+  )
+  cidr_ip = each.value.source_cidr
+}
+
+resource "alicloud_security_group" "network_interfaces" {
+  for_each = local.secondary_security_group_map
+
+  security_group_name = substr("${var.resource_name_prefix}-${each.key}-sg", 0, 128)
+  vpc_id              = alicloud_vpc.range.id
+  tags = merge(local.common_tags, {
+    host_key             = each.value.host_key
+    nic_id               = each.value.nic_id
+    PlatformResourceType = "security_group"
+    PlatformHostKey      = each.value.host_key
+  })
+}
+
+resource "alicloud_security_group_rule" "secondary_host_rules" {
+  for_each = local.secondary_host_security_group_rules
+
+  type              = each.value.rule.direction
+  ip_protocol       = each.value.rule.protocol
   nic_type          = "intranet"
-  policy            = each.value.policy
-  port_range        = each.value.port_range
-  priority          = each.value.priority
-  security_group_id = alicloud_security_group.hosts[each.value.target_host_key].id
-  cidr_ip           = each.value.source_cidr
+  policy            = each.value.rule.policy
+  port_range        = each.value.rule.port_range
+  priority          = each.value.rule.priority
+  security_group_id = alicloud_security_group.network_interfaces[each.value.nic_key].id
+  cidr_ip           = each.value.rule.source_cidr
 }
 
 resource "alicloud_instance" "hosts" {
   for_each = local.host_map
 
-  instance_name        = substr(replace(replace("${var.resource_name_prefix}-${each.key}", " ", "-"), "_", "-"), 0, 128)
-  host_name            = try(each.value.host_name, null)
-  instance_type        = try(each.value.instance_type, var.instance_type)
-  image_id             = coalesce(try(each.value.image_id, null), var.image_id)
-  password             = lookup(var.host_passwords, each.key, var.instance_password)
-  security_groups      = [alicloud_security_group.hosts[each.key].id]
-  vswitch_id           = alicloud_vswitch.zones[each.value.zone_key].id
-  private_ip           = each.value.private_ip
-  user_data            = try(local.host_user_data_map[each.key], null)
-  system_disk_category = var.system_disk_category
-  system_disk_size     = var.system_disk_size
+  instance_name         = substr(replace(replace("${var.resource_name_prefix}-${each.key}", " ", "-"), "_", "-"), 0, 128)
+  host_name             = try(each.value.host_name, null)
+  instance_type         = coalesce(try(each.value.instance_type, null), var.instance_type)
+  image_id              = coalesce(try(each.value.image_id, null), var.image_id)
+  password              = lookup(var.host_passwords, each.key, var.instance_password)
+  security_groups       = [alicloud_security_group.hosts[each.key].id]
+  vswitch_id            = alicloud_vswitch.zones[each.value.zone_key].id
+  private_ip            = each.value.private_ip
+  secondary_private_ips = lookup(local.primary_secondary_ips_by_host, each.key, [])
+  user_data             = try(local.host_user_data_map[each.key], null)
+  system_disk_category  = var.system_disk_category
+  system_disk_size      = var.system_disk_size
 
   dynamic "network_interfaces" {
     for_each = (
@@ -481,10 +537,15 @@ resource "alicloud_network_interface" "secondary" {
     0,
     128,
   )
-  description        = each.value.description
-  vswitch_id         = alicloud_vswitch.zones[each.value.zone_key].id
-  primary_ip_address = each.value.private_ip
-  security_group_ids = [alicloud_security_group.hosts[each.value.host_key].id]
+  description          = each.value.description
+  vswitch_id           = alicloud_vswitch.zones[each.value.zone_key].id
+  primary_ip_address   = each.value.private_ip
+  private_ip_addresses = each.value.secondary_private_ips
+  security_group_ids = [
+    contains(keys(local.secondary_security_group_map), each.key)
+    ? alicloud_security_group.network_interfaces[each.key].id
+    : alicloud_security_group.hosts[each.value.host_key].id
+  ]
   tags = merge(local.common_tags, {
     host_key             = each.value.host_key
     zone_key             = each.value.zone_key

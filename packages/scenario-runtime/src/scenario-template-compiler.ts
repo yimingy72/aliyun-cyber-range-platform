@@ -45,6 +45,7 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
     hosts: template.hosts.map((host) => ({
       key: host.key,
       name: host.name,
+      hostName: host.hostName,
       role: host.role,
       zoneKey: host.zoneKey,
       primaryPrivateIp: host.primaryPrivateIp,
@@ -59,9 +60,11 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
         : undefined,
       networkInterfaces:
         host.networkInterfaces?.map((networkInterface) => ({
+          nicId: networkInterface.nicId,
           deviceIndex: networkInterface.deviceIndex,
           zoneKey: networkInterface.zoneKey,
           privateIp: networkInterface.privateIp,
+          secondaryIps: networkInterface.secondaryIps,
           description: networkInterface.description,
         })) ?? [{ deviceIndex: 0, zoneKey: host.zoneKey, privateIp: host.primaryPrivateIp }],
       bootstrapScriptKey: host.bootstrapRef,
@@ -91,7 +94,7 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
       })),
     dnatEntries: template.hosts.flatMap((host) =>
       (host.dnat?.enabled ? host.dnat.mappings ?? [] : []).map((mapping) => ({
-        key: `dnat-${host.key}-${mapping.externalPort}`,
+        key: `dnat-${host.key}-${mapping.protocol}-${mapping.externalPort}`,
         hostKey: host.key,
         natGatewayKey: host.dnat?.natGatewayKey ?? '',
         eipKey: host.dnat?.eipKey ?? '',
@@ -105,6 +108,7 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
       ...(template.access.securityGroupRules ?? []).map((rule) => ({
         key: rule.key,
         targetHostKey: rule.targetHostKey,
+        targetDeviceIndex: rule.targetDeviceIndex,
         direction: rule.direction,
         protocol: rule.protocol,
         portRange: rule.portRange,
