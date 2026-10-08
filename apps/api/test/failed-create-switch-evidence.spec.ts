@@ -1,3 +1,4 @@
+import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
@@ -82,3 +83,5 @@ describe('range automatic cleanup proof', () => {
     expect((await repository.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
   });
 });
+
+useFastSingleInstanceVerification();

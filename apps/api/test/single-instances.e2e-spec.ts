@@ -1,3 +1,4 @@
+import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { withEcsResponseContract } from './support/ecs-response-contract';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -2136,3 +2137,5 @@ async function waitForAsync(assertion: () => Promise<void>, attempts = 20, delay
 
   throw lastError;
 }
+
+useFastSingleInstanceVerification();

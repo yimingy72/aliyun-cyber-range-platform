@@ -1,3 +1,4 @@
+import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { withEcsResponseContract } from './support/ecs-response-contract';
 import type { ProvisionJobRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
@@ -2474,3 +2475,5 @@ describe('ProvisioningWorkerService concurrency', () => {
     );
   });
 });
+
+useFastSingleInstanceVerification();

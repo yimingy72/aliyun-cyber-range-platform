@@ -1,3 +1,4 @@
+import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { SingleInstancesService } from '../src/admin/single-instances.service';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { CidrPoolService } from '../src/provisioning/cidr-pool.service';
@@ -207,3 +208,5 @@ describe('native batches: real ECS response contract, two platform users and com
     await expect(f.network.destroy(f.profile.id, admin,'synthetic-run')).rejects.toThrow('referenced');
   });
 });
+
+useFastSingleInstanceVerification();
