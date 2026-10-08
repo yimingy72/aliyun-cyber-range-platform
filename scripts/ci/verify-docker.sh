@@ -61,11 +61,14 @@ docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE cyber_range_settings_test' >/dev/null
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE billing_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE native_batch_test' >/dev/null
 
 docker run --rm --network "$CI_NETWORK" \
   -e DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range?schema=public' \
   -e SETTINGS_SWITCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_settings_test?schema=public' \
   -e BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/billing_test?schema=public' \
+  -e NATIVE_BATCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/native_batch_test?schema=public' \
   -e NODE_ENV=test -e ADMIN_USERNAME=admin -e ADMIN_TOKEN=dev-admin-token \
   -e OIDC_ISSUER=https://test-issuer.example/realms/cyber-range \
   -e OIDC_JWKS_URL=https://test-issuer.example/realms/cyber-range/certs \
@@ -75,6 +78,7 @@ docker run --rm --network "$CI_NETWORK" \
     pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$SETTINGS_SWITCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$BILLING_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$NATIVE_BATCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
     pnpm provider:download
