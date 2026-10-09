@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareOpenTofuProviderEnv } from './provider-mirror-publication';
+import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { createHmac, randomUUID } from 'node:crypto';
 
 import {
   OpenTofuRunner,
+  type OpenTofuInitOptions,
   type OpenTofuApplyOptions,
   type OpenTofuDestroyOptions,
   type OpenTofuCommandResult,
@@ -114,7 +115,7 @@ type OpenTofuOutputs = {
 };
 
 type OpenTofuRunnerLike = {
-  init(options: OpenTofuWorkspaceCommandOptions): Promise<OpenTofuCommandResult>;
+  init(options: OpenTofuInitOptions): Promise<OpenTofuCommandResult>;
   validate(options: OpenTofuValidateOptions): Promise<OpenTofuCommandResult>;
   plan(options: OpenTofuPlanOptions): Promise<OpenTofuCommandResult>;
   apply(options: OpenTofuApplyOptions): Promise<OpenTofuCommandResult>;
@@ -315,6 +316,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       const command = await this.runner.init({
         workspaceDir: workspace.workspaceDir,
         env: workspace.runnerEnv,
+        upgrade: true,
       });
 
       return {
@@ -450,6 +452,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       const command = await this.runner.init({
         workspaceDir: workspace.workspaceDir,
         env: workspace.runnerEnv,
+        upgrade: true,
       });
 
       return {
@@ -486,6 +489,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     for (const file of ['main.tf', 'variables.tf', 'outputs.tf', 'versions.tf', varsFileName]) {
       await assertFileExists(path.join(workspaceDir, file), 'Persisted OpenTofu destroy configuration is missing');
     }
+    await migrateAliCloudWorkspaceProvider(workspaceDir);
 
     return {
       workspaceDir,

@@ -1,6 +1,7 @@
 import type {
   AdminRepository,
   BillingLedgerResourceType,
+  BillingLedgerResourceRecord,
   BillingScope,
   ProvisionJobRecord,
   RangeInstanceRecord,
@@ -79,16 +80,29 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
   return specs;
 }
 
+function assertLedgerOwnership(ledger: BillingLedgerResourceRecord, input: SyncRangeInstanceBillingLedgerInput) {
+  // The legacy unique key excludes account UID; never transfer a colliding resource's billing history.
+  if ((ledger.cloudAccountUid && input.cloudAccountUid && ledger.cloudAccountUid !== input.cloudAccountUid)
+    || (ledger.ownerUserId && ledger.ownerUserId !== (input.instance.ownerUserId ?? null))
+    || (ledger.rangeInstanceId && ledger.rangeInstanceId !== input.instance.id)
+    || (ledger.singleInstanceBatchId && ledger.singleInstanceBatchId !== (input.instance.singleInstanceBatchId ?? null))) {
+    throw new Error('Billing ledger resource ownership conflicts with the provisioning instance');
+  }
+}
+
 export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBillingLedgerInput) {
   const billingScope = resolveBillingScope(input.instance);
   const ledgerSpecs = buildLedgerSpecs(input.resourceSummary);
   const hostIds = collectResourceIds(input.resourceSummary?.hostIds);
   const systemDiskIds = new Set(collectResourceIds(input.resourceSummary?.systemDiskIds));
-  const existingLedgers = await input.repository.listBillingLedgerResources();
+  const existingLedgers = await input.repository.listBillingLedgerResources({ rangeInstanceId: input.instance.id });
   const instanceSourceJobIds = [
     ...new Set(
       existingLedgers
-        .filter((ledger) => ledger.rangeInstanceId === input.instance.id)
+        .filter((ledger) => ledger.rangeInstanceId === input.instance.id
+          && ledger.cloudProvider === input.instance.cloudProvider && ledger.regionId === input.regionId
+          && (!input.cloudAccountUid || !ledger.cloudAccountUid || ledger.cloudAccountUid === input.cloudAccountUid)
+          && ledger.ownerUserId === (input.instance.ownerUserId ?? null))
         .flatMap((ledger) => (ledger.sourceProvisionJobId ? [ledger.sourceProvisionJobId] : [])),
     ),
   ];
@@ -111,6 +125,7 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
     });
 
     if (legacyDiskLedger && legacyDiskLedger.rangeInstanceId === input.instance.id && !legacyDiskLedger.releasedAt) {
+      assertLedgerOwnership(legacyDiskLedger, input);
       await input.repository.updateBillingLedgerResource(legacyDiskLedger.id, {
         releasedAt: input.billingStartAt,
       });
@@ -118,43 +133,56 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
   }
 
   for (const spec of ledgerSpecs) {
-    const existing = await input.repository.findBillingLedgerResource({
+    const key = {
       cloudProvider: input.instance.cloudProvider,
       regionId: input.regionId,
       cloudResourceId: spec.cloudResourceId,
       cloudResourceType: spec.cloudResourceType,
-    });
+    };
+    let existing = await input.repository.findBillingLedgerResource(key);
 
-    if (existing) {
-      const existingSourceJob = existing.sourceProvisionJobId
-        ? sourceJobs.find(([jobId]) => jobId === existing.sourceProvisionJobId)?.[1] ??
-          (await input.repository.getProvisionJobById(existing.sourceProvisionJobId))
-        : null;
-
-      await input.repository.updateBillingLedgerResource(existing.id, {
-        billingScope,
-        ownerUserId: input.instance.ownerUserId ?? null,
-        rangeInstanceId: input.instance.id,
-        singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-        sourceProvisionJobId: isSuccessfulLaunchJob(existingSourceJob) ? existingSourceJob.id : sourceProvisionJobId,
-        releasedAt: null,
-      });
-      continue;
+    if (!existing) {
+      try {
+        await input.repository.createBillingLedgerResource({
+          ...key,
+          cloudAccountUid: input.cloudAccountUid ?? null,
+          billingScope,
+          ownerUserId: input.instance.ownerUserId ?? null,
+          rangeInstanceId: input.instance.id,
+          singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
+          sourceProvisionJobId,
+          billingStartAt: input.billingStartAt,
+          tagsSnapshot: {},
+        });
+        continue;
+      } catch (error) {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'P2002')) throw error;
+        existing = await input.repository.findBillingLedgerResource(key);
+        if (!existing) throw error;
+      }
     }
 
-    await input.repository.createBillingLedgerResource({
-      cloudProvider: input.instance.cloudProvider,
-      cloudAccountUid: input.cloudAccountUid ?? null,
-      regionId: input.regionId,
-      cloudResourceId: spec.cloudResourceId,
-      cloudResourceType: spec.cloudResourceType,
+    assertLedgerOwnership(existing, input);
+    const backfillUid = !existing.cloudAccountUid && input.cloudAccountUid;
+    if (backfillUid && (existing.rangeInstanceId !== input.instance.id
+      || existing.ownerUserId !== (input.instance.ownerUserId ?? null)
+      || existing.singleInstanceBatchId !== (input.instance.singleInstanceBatchId ?? null)
+      || existing.billingScope !== billingScope)) {
+      throw new Error('Billing ledger account backfill requires the same proven instance ownership');
+    }
+    const existingSourceJob = existing.sourceProvisionJobId
+      ? sourceJobs.find(([jobId]) => jobId === existing.sourceProvisionJobId)?.[1] ??
+        (await input.repository.getProvisionJobById(existing.sourceProvisionJobId))
+      : null;
+
+    await input.repository.updateBillingLedgerResource(existing.id, {
+      ...(backfillUid ? { cloudAccountUid: backfillUid } : {}),
       billingScope,
       ownerUserId: input.instance.ownerUserId ?? null,
       rangeInstanceId: input.instance.id,
       singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-      sourceProvisionJobId,
-      billingStartAt: input.billingStartAt,
-      tagsSnapshot: {},
+      sourceProvisionJobId: isSuccessfulLaunchJob(existingSourceJob) ? existingSourceJob.id : sourceProvisionJobId,
+      releasedAt: null,
     });
   }
 }
@@ -164,8 +192,7 @@ export async function releaseRangeInstanceBillingLedger(
   rangeInstanceId: string,
   releasedAt: Date,
 ) {
-  // ponytail: O(n) scan over ledger rows; add a repository query by rangeInstanceId if billing volume makes this expensive.
-  const resources = await repository.listBillingLedgerResources();
+  const resources = await repository.listBillingLedgerResources({ rangeInstanceId });
 
   await Promise.all(
     resources

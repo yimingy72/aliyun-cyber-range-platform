@@ -10,12 +10,13 @@ import { syncRangeInstanceBillingLedger, releaseRangeInstanceBillingLedger } fro
 import * as mirrors from '../provisioning/provider-mirror-publication';
 
 export type SingleInstanceOpenTofuBatchLease = { batchId: string; assertCurrent(): Promise<void>; signal: AbortSignal };
-type CommandOptions = OpenTofuWorkspaceCommandOptions & { signal?: AbortSignal };
+type CommandOptions = OpenTofuWorkspaceCommandOptions & { signal?: AbortSignal; upgrade?: boolean };
+type ResourceAppliedEvent = { address: string; resourceType: string; action: 'create' | 'update' | 'delete'; resourceId: string };
 type PlanOptions = OpenTofuPlanOptions & { signal?: AbortSignal; targets?: string[]; destroy?: boolean };
 type BatchRunner = {
   init(options: CommandOptions): Promise<OpenTofuCommandResult>;
   plan(options: PlanOptions): Promise<OpenTofuCommandResult>;
-  apply(options: OpenTofuApplyOptions & { signal?: AbortSignal }): Promise<OpenTofuCommandResult>;
+  apply(options: OpenTofuApplyOptions & { signal?: AbortSignal; onResourceApplied?: (event: ResourceAppliedEvent) => void }): Promise<OpenTofuCommandResult>;
   showPlan?<T>(options: CommandOptions & { planFilePath: string }): Promise<T>;
   output<T>(options: CommandOptions): Promise<T>;
 };
@@ -48,7 +49,8 @@ export class SingleInstanceOpenTofuExecutionService {
     this.env = { ...process.env, ...options.env };
     this.projectRoot = options.projectRootDir ?? process.cwd();
     this.workspaceRoot = options.workspacesRootDir ?? path.resolve(this.projectRoot, this.env.OPENTOFU_WORKSPACES_ROOT ?? '.local/opentofu-workspaces');
-    this.runner = options.runner ?? new OpenTofuRunner({ binaryPath: this.env.OPENTOFU_BINARY ?? 'tofu' }) as BatchRunner;
+    this.runner = options.runner ?? new OpenTofuRunner({ binaryPath: this.env.OPENTOFU_BINARY ?? 'tofu',
+      parallelism: Number(this.env.OPENTOFU_SINGLE_INSTANCE_PARALLELISM?.trim() || 20) }) as BatchRunner;
   }
 
   async executeCreateBatch(items: SingleInstanceExecutionItem[], lease: SingleInstanceOpenTofuBatchLease) {
@@ -75,7 +77,7 @@ export class SingleInstanceOpenTofuExecutionService {
       }
       await this.writeInputs(context);
       const prepared = context;
-      await this.command(prepared, () => this.runner.init(this.commandOptions(prepared)));
+      await this.command(prepared, () => this.runner.init({ ...this.commandOptions(prepared), upgrade: true }));
       const ids = valid.map(item => item.instance.id);
       await this.applyPlan(context, ids, false);
       context.state = await this.readState(context);
@@ -109,7 +111,7 @@ export class SingleInstanceOpenTofuExecutionService {
       if (tracked.length) {
         await this.writeInputs(context);
         const prepared = context;
-        await this.command(prepared, () => this.runner.init(this.commandOptions(prepared)));
+        await this.command(prepared, () => this.runner.init({ ...this.commandOptions(prepared), upgrade: true }));
         await this.applyPlan(context, tracked.map(item => item.instance.id), true);
         context.state = await this.readState(context);
       }
@@ -245,7 +247,7 @@ export class SingleInstanceOpenTofuExecutionService {
     const variables = 'variable "region_id" { type = string }\nvariable "members" { type = any }\nvariable "security_group_id" { type = string }\nvariable "member_passwords" {\n  type = map(string)\n  sensitive = true\n}\n';
     await this.atomicText(context, 'main.tf', wrapper);
     await this.atomicText(context, 'variables.tf', variables);
-    await this.atomicText(context, 'versions.tf', 'terraform {\n  required_providers {\n    alicloud = { source = "aliyun/alicloud", version = "= 1.282.0" }\n  }\n}\n');
+    await this.atomicText(context, 'versions.tf', 'terraform {\n  required_providers {\n    alicloud = { source = "aliyun/alicloud", version = "= 1.282.0-range.1" }\n  }\n}\n');
     await this.atomicJson(context, 'terraform.tfvars.json', { region_id: context.manifest.identity.region, security_group_id: context.manifest.identity.securityGroupId,
       members: Object.fromEntries(Object.entries(members).map(([id, member]) => [id, member.definition])), member_passwords: Object.fromEntries(Object.entries(members).map(([id, member]) => [id, member.password])) });
   }
@@ -271,7 +273,84 @@ export class SingleInstanceOpenTofuExecutionService {
       recoveryIds: [...new Set([...(context.manifest.pending?.recoveryIds ?? []), ...(context.manifest.pending?.ids ?? []), ...ids])] };
     await this.atomicJson(context, MANIFEST_FILE, context.manifest);
     await this.atomicJson(context, APPLY_MARKER, context.manifest.pending);
-    await this.command(context, () => this.runner.apply({ ...this.commandOptions(context), planFilePath }));
+    const progress = destroy ? null : this.observeCreateProgress(context, ids);
+    try {
+      await this.command(context, () => this.runner.apply({ ...this.commandOptions(context), planFilePath,
+        ...(progress ? { onResourceApplied: progress.onResourceApplied } : {}) }));
+    } finally { await progress?.stop(); }
+  }
+
+  private observeCreateProgress(context: Context, ids: string[]) {
+    const items = new Map(context.items.filter(item => ids.includes(item.instance.id)
+      && (item.job.jobType !== 'retry' || item.job.topologySnapshot?.operation === 'create'))
+      .map(item => [`module.single_batch.alicloud_instance.members[${JSON.stringify(item.instance.id)}]`, item]));
+    const pending = new Map<string, { item: SingleInstanceExecutionItem; cloudId: string }>();
+    const seen = new Map<string, string>();
+    let stopped = false;
+    let flushing = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let active = Promise.resolve();
+    const stopObserving = () => { stopped = true; clearTimeout(timer); timer = undefined; pending.clear(); };
+    const schedule = (delay: number) => {
+      if (stopped || flushing || timer || !pending.size) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        flushing = true;
+        active = flush().catch(error => {
+          // Progress is optional; final durable-state verification remains authoritative.
+          if (context.lease.signal.aborted || error instanceof SingleInstanceOpenTofuLeaseLostError) stopObserving();
+        }).finally(() => { flushing = false; schedule(2000); });
+      }, delay);
+      timer.unref();
+    };
+    const flush = async () => {
+      if (stopped) return;
+      await this.assertLease(context.lease);
+      const batch = [...pending.values()];
+      const cloud = await this.native.readOpenTofuInstances(context.account, batch.map(entry => entry.cloudId));
+      if (stopped) return;
+      await this.assertLease(context.lease);
+      if (new Set(cloud.map(detail => detail.instanceId)).size !== cloud.length
+        || cloud.some(detail => !batch.some(entry => entry.cloudId === detail.instanceId))) return;
+      for (const { item, cloudId } of batch) {
+        if (stopped) return;
+        await this.assertLease(context.lease);
+        if (!await this.itemCurrent(item) || isExpired(item.instance)) { pending.delete(item.instance.id); continue; }
+        const detail = cloud.find(value => value.instanceId === cloudId);
+        if (!detail || detail.status !== 'Running' || !detail.publicIp || !matchesCloud(detail, item.instance)
+          || detail.tags.PlatformCreateJobId !== context.manifest.members[item.instance.id].sourceJobId) continue;
+        const hostKey = item.instance.singleInstanceConfig!.hostKey;
+        await this.assertLease(context.lease);
+        if (stopped || context.lease.signal.aborted || isExpired(item.instance)) return;
+        // Keep the verified physical ID for crash recovery; this is not a durable-state or billing commit.
+        const saved = await this.repository.commitSingleInstanceClaim(item.job, { status: 'running',
+          resourceSummary: { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace, hostIds: { [hostKey]: cloudId },
+            resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId },
+          runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
+          runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
+          runtimeCompiledProvisionSpec: patchRuntimeCompiledProvisionSpec(item.instance.runtimeCompiledProvisionSpec, hostKey, detail),
+          accessEntry: { hostRole: hostKey, publicIp: detail.publicIp, privateIp: detail.privateIp,
+            ssh: item.instance.runtimeCredentials?.[hostKey]?.username !== 'Administrator' ? `ssh ${item.instance.runtimeCredentials?.[hostKey]?.username ?? 'root'}@${detail.publicIp}` : null }, errorSummary: null });
+        if (saved) context.knownIds.set(item.instance.id, [...new Set([...(context.knownIds.get(item.instance.id) ?? []), cloudId])]);
+        pending.delete(item.instance.id);
+      }
+    };
+    context.lease.signal.addEventListener('abort', stopObserving, { once: true });
+    return {
+      onResourceApplied: (event: ResourceAppliedEvent) => {
+        const item = items.get(event.address);
+        if (stopped || context.lease.signal.aborted || !item || event.resourceType !== 'alicloud_instance'
+          || !['create', 'update'].includes(event.action) || !/^i-[A-Za-z0-9-]{1,125}$/.test(event.resourceId)) return;
+        if (seen.has(item.instance.id)) {
+          if (seen.get(item.instance.id) !== event.resourceId) stopObserving();
+          return;
+        }
+        seen.set(item.instance.id, event.resourceId);
+        pending.set(item.instance.id, { item, cloudId: event.resourceId });
+        schedule(250);
+      },
+      stop: async () => { stopObserving(); context.lease.signal.removeEventListener('abort', stopObserving); await active; },
+    };
   }
 
   private async completeCreated(context: Context, items: SingleInstanceExecutionItem[], partial: boolean): Promise<SingleInstanceExecutionItem[]> {
@@ -314,7 +393,7 @@ export class SingleInstanceOpenTofuExecutionService {
       const tracked = failed.filter(item => context.state.has(item.instance.id));
       if (tracked.length) {
         await this.writeInputs(context);
-        await this.command(context, () => this.runner.init(this.commandOptions(context)));
+        await this.command(context, () => this.runner.init({ ...this.commandOptions(context), upgrade: true }));
         await this.applyPlan(context, tracked.map(item => item.instance.id), true);
         context.state = await this.readState(context);
       }

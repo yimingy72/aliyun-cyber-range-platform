@@ -58,6 +58,13 @@ export class RangeInstanceNodeActionsService {
       if (activeOperation) throw new ConflictException('Range instance has an active operation');
     }
 
+    if (instance.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu' && action !== 'open-vnc') {
+      const job = instance.lastJobId ? await this.adminRepository.getProvisionJobById(instance.lastJobId) : null;
+      if (job && ['create', 'retry'].includes(job.jobType) && ['pending', 'running'].includes(job.status)) {
+        throw new ConflictException('实例仍在完成创建，请等待创建任务结束后操作。');
+      }
+    }
+
     if (instance.resourceSummary?.mode === 'dry-run') {
       throw new ConflictException(
         '此实例以 dry-run 模式创建，未下发阿里云 ECS 或网络资源；请切换到 opentofu 后重新创建实例再执行节点操作。',

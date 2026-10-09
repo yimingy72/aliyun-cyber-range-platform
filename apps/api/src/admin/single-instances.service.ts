@@ -369,6 +369,7 @@ export class SingleInstancesService {
 
     if(currentUser.role !== 'admin' && group.instances.some(instance=>!this.isOwnedBy(instance.ownerUserId,instance.createdBy,currentUser.id))) throw new ForbiddenException('Single instance batch member access denied');
     if (group.instances.some(instance => ['pending_create','creating'].includes(instance.status))) throw new ConflictException('批次仍在创建，请等待创建完成后销毁。');
+    await this.assertOpenTofuBatchCreationFinished(group.instances);
     const targetInstances = group.instances.filter((instance) => ['running','destroy_failed'].includes(instance.status));
 
     for (const instance of targetInstances) {
@@ -396,6 +397,11 @@ export class SingleInstancesService {
 
   private async destroyLocked(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
+    if (instance.singleInstanceConfig?.executionBackend === 'opentofu' && instance.singleInstanceBatchId) {
+      const group = await this.adminRepository.getSingleInstanceBatchWithInstancesById(instance.singleInstanceBatchId);
+      if (!group) throw new ConflictException('OpenTofu 批次记录缺失，暂不能销毁。');
+      await this.assertOpenTofuBatchCreationFinished(group.instances);
+    }
 
     if (!['running', 'destroy_failed'].includes(instance.status)) {
       throw new ConflictException('Single instance cannot start a destroy job from the current status');
@@ -437,6 +443,13 @@ export class SingleInstancesService {
       jobType: 'retry',
       triggeredBy: currentUser.id,
       retryCount: (previousJob?.retryCount ?? 0) + 1,
+      topologySnapshot: {
+        operation: instance.status === 'create_failed' ? 'create' : 'destroy', draftRevision: 0,
+        // Single-instance definitions stay on the instance; only retry intent belongs in this snapshot.
+        topologyGraph: {}, topologySpec: {}, scenarioTemplateSpec: {}, compiledProvisionSpec: {}, compiledSpec: {},
+        templateModulePath: instance.templateModulePathSnapshot ?? instance.resourceSummary?.modulePath
+          ?? (instance.singleInstanceConfig?.executionBackend === 'opentofu' ? 'infra/opentofu/modules/alicloud-single-instance-batch' : ''),
+      },
     });
 
     await this.adminRepository.updateRangeInstance(id, {
@@ -459,6 +472,16 @@ export class SingleInstancesService {
     }
 
     return this.rangeInstanceNodeActionsService.runSingleInstanceAction(id, action, payload, currentUser);
+  }
+
+  private async assertOpenTofuBatchCreationFinished(instances: RangeInstanceRecord[]) {
+    const members = instances.filter(instance => instance.singleInstanceConfig?.executionBackend === 'opentofu');
+    if (members.some(instance => ['pending_create', 'creating'].includes(instance.status))) throw new ConflictException('批次仍在创建，请等待创建完成后销毁。');
+    const jobs = await Promise.all(members.map(instance => instance.lastJobId
+      ? this.adminRepository.getProvisionJobById(instance.lastJobId) : Promise.resolve(null)));
+    if (jobs.some(job => job && ['create', 'retry'].includes(job.jobType) && ['pending', 'running'].includes(job.status))) {
+      throw new ConflictException('批次仍在创建，请等待创建完成后销毁。');
+    }
   }
 
   private assertFutureInstanceExpiration(expiresAt: string) {

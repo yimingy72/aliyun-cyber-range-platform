@@ -898,7 +898,7 @@ export class ProvisioningWorkerService {
 
     const targetStatus = input.effectiveJobType === 'create' ? 'pending_create' : 'pending_destroy';
     const candidateInstances = group.instances.filter((instance) => (instance.status === targetStatus
-      || input.instance.singleInstanceConfig?.executionBackend === 'opentofu' && input.effectiveJobType === 'create' && instance.status === 'creating')
+      || input.instance.singleInstanceConfig?.executionBackend === 'opentofu' && input.effectiveJobType === 'create' && ['creating', 'running'].includes(instance.status))
       && instance.ownerUserId === input.instance.ownerUserId
       && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId,instance.singleInstanceConfig?.executionBackend])
         === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId,input.instance.singleInstanceConfig?.executionBackend]));
@@ -917,7 +917,8 @@ export class ProvisioningWorkerService {
     const groupedItems = candidateInstances.flatMap((instance) => {
       const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
 
-      if (!job) {
+      if (!job || job.rangeInstanceId !== instance.id || job.status !== 'pending'
+        || this.resolveEffectiveJobType(job, instance) !== input.effectiveJobType) {
         return [];
       }
 
@@ -949,6 +950,7 @@ export class ProvisioningWorkerService {
   private resolveEffectiveJobType(job: ProvisionJobRecord, instance: RangeInstanceRecord) {
     if (job.jobType === 'retry') {
       if (job.topologySnapshot?.operation === 'create') return 'create' as const;
+      if (job.topologySnapshot?.operation === 'destroy') return 'destroy' as const;
       if (instance.status === 'pending_create' || instance.status === 'create_failed' || instance.status === 'creating') {
         return 'create' as const;
       }

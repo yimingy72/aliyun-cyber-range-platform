@@ -50,6 +50,92 @@ describe('createOpenTofuWorkspaceLayout', () => {
 });
 
 describe('OpenTofuRunner', () => {
+  it('opts into structured progress and explicit locked-provider upgrades', async () => {
+    const executor = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const runner = new OpenTofuRunner({ executor });
+    const onResourceApplied = vi.fn();
+    await runner.init({ workspaceDir: '/tmp/fixture', upgrade: true });
+    await runner.apply({ workspaceDir: '/tmp/fixture', planFilePath: 'saved.tfplan', onResourceApplied });
+    expect(executor.mock.calls[0][1]).toContain('-upgrade');
+    expect(executor.mock.calls[1][1]).toContain('-json');
+    expect(executor.mock.calls[1][2]).toHaveProperty('onResourceApplied', onResourceApplied);
+  });
+
+  it('streams fragmented completion identities without exposing diagnostics or sensitive outputs', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-progress-'));
+    const binaryPath = path.join(workspaceDir, 'events');
+    const completion = { type: 'apply_complete', hook: { resource: { addr: 'module.single_batch.alicloud_instance.members["member-1"]', resource_type: 'alicloud_instance' }, action: 'create', id_key: 'id', id_value: 'i-verified' }, '@message': 'secret-must-not-be-forwarded' };
+    const lines = [
+      completion,
+      { type: 'version', ui: '1.2' },
+      { type: 'outputs', outputs: { password: { sensitive: true, value: 'secret-must-not-be-forwarded' } } },
+      { type: 'diagnostic', diagnostic: { detail: 'secret-must-not-be-forwarded' } },
+      { ...completion, type: 'apply_start' },
+      { ...completion, hook: { ...completion.hook, id_key: 'password' } },
+      { ...completion, hook: { ...completion.hook, id_value: 'invalid\nidentity' } },
+      { type: 'log', '@message': 'x'.repeat(70 * 1024) },
+      completion,
+      { type: 'version', ui: '2.0' },
+      completion,
+      { type: 'version', ui: '1.2' },
+      { ...completion, hook: { ...completion.hook, id_value: 'i-last-no-newline' } },
+    ];
+    const body = lines.map(line => JSON.stringify(line)).join('\n');
+    await fs.writeFile(binaryPath, `#!/usr/bin/env node
+const body = ${JSON.stringify(body)};
+let offset = 0;
+function send() {
+  if (offset >= body.length) return;
+  process.stdout.write(body.slice(offset, offset + 317)); offset += 317;
+  setImmediate(send);
+}
+send();
+`, { mode: 0o755 });
+    const seen: unknown[] = [];
+    try {
+      const runner = new OpenTofuRunner({ binaryPath });
+      await runner.apply({ workspaceDir, planFilePath: 'fixture.tfplan', onResourceApplied: event => { seen.push(event); if (seen.length === 1) throw new Error('advisory observer failed'); } });
+      expect(seen).toEqual([
+        { address: completion.hook.resource.addr, resourceType: 'alicloud_instance', action: 'create', resourceId: 'i-verified' },
+        { address: completion.hook.resource.addr, resourceType: 'alicloud_instance', action: 'create', resourceId: 'i-last-no-newline' },
+      ]);
+      expect(JSON.stringify(seen)).not.toContain('secret');
+    } finally { await fs.rm(workspaceDir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(!existsSync('/usr/local/bin/tofu'))('reports 50 real CLI resource completions before the full apply returns', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-progress-tofu-'));
+    const runner = new OpenTofuRunner({ binaryPath: '/usr/local/bin/tofu', parallelism: 20 });
+    const planFilePath = path.join(workspaceDir, 'batch.tfplan');
+    await fs.writeFile(path.join(workspaceDir, 'main.tf'), `
+resource "terraform_data" "members" {
+  for_each = toset([for i in range(50) : tostring(i)])
+  input = each.key
+}
+resource "terraform_data" "finish" {
+  depends_on = [terraform_data.members]
+  provisioner "local-exec" { command = "sleep 0.3; touch finished" }
+}
+`);
+    const seen = new Set<string>(); let finished = false; let observedBeforeFinish = false;
+    try {
+      await runner.init({ workspaceDir });
+      await runner.plan({ workspaceDir, planFilePath });
+      await runner.apply({ workspaceDir, planFilePath, onResourceApplied: event => {
+        if (event.address.startsWith('terraform_data.members[') && event.action === 'create') {
+          expect(event.resourceType).toBe('terraform_data');
+          expect(event.resourceId).toBeTruthy();
+          seen.add(event.address); observedBeforeFinish ||= !finished && !existsSync(path.join(workspaceDir, 'finished'));
+        }
+      } });
+      finished = true;
+      expect(seen.size).toBe(50);
+      expect(observedBeforeFinish).toBe(true);
+      await runner.destroy({ workspaceDir });
+      expect(JSON.parse(await fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8')).resources).toEqual([]);
+    } finally { await fs.rm(workspaceDir, { recursive: true, force: true }); }
+  }, 20_000);
+
   it('runs init, validate, plan, apply, output, and destroy with stable CLI arguments', async () => {
     const executor = vi
       .fn()

@@ -54,10 +54,12 @@ RANGE_PROVISIONER_MODE=dry-run
 API 与 worker 会以只读方式挂载宿主机 provider mirror。启动前执行：
 
 ```bash
-pnpm provider:download
+pnpm provider:build
 ```
 
-缓存默认写入 `.local/provider-mirror/`。如缓存位于其他位置，可通过 `OPENTOFU_PROVIDER_MIRROR_HOST_PATH` 指定。
+当前运行版本使用定制 provider，先运行 `pnpm provider:build` 在 Docker 中构建并验证。镜像默认写入 `.local/provider-fast-wait/mirror/`，通过 `OPENTOFU_PROVIDER_MIRROR_HOST_PATH` 可指定其它位置。
+
+`provider:download` 仍下载官方 1.282.0，供旧版本回滚使用；新模块精确要求 1.282.0-range.1，不能将官方 ZIP 重命名作为定制版本。
 
 ### 3. 启动完整容器环境
 
@@ -69,7 +71,7 @@ pnpm compose:up
 
 ### OpenTofu 版本与任务并发
 
-容器默认固定为 OpenTofu **1.13.1**，阿里云 provider mirror 保持 **1.282.0**。升级二者分别验证，避免 provider 行为变化和 CLI 升级混在一次部署中。
+容器固定为 OpenTofu **1.13.1**，阿里云 provider 使用基于官方 1.282.0 的 **1.282.0-range.1**。定制补丁仅将 ECS 创建首次状态检查等待从 10 秒缩短至 2 秒，删除等待和原有状态判定、重试仍保留。固定源码、补丁、可复现 Docker 构建与摘要见 [provider 构建说明](scripts/provider/alicloud-fast-wait/README.md)。
 
 API 负责校验并入队，资源任务统一由 worker 执行。每个 worker 默认同时执行 **2 个编排任务**、**3 个单实例批次任务**。新单实例通过 OpenTofu 创建和销毁：同批冻结账号与网络、共享一个状态工作区，以平台实例 ID 管理独立 ECS。数据库批次租约和逐成员认领防止多个 worker 拆分或重复执行同一状态图。已有 API 实例保留兼容回收路径。状态刷新每次只读一次，未就绪时延迟入队并释放执行名额。
 
@@ -78,7 +80,9 @@ PROVISIONING_WORKER_RANGE_CONCURRENCY=2
 PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY=3
 ```
 
-这两个上限按 worker 生效。单次 OpenTofu 图执行默认并发 10（`OPENTOFU_PARALLELISM`，允许 1–32）；增加 worker 数量也会增加总体并发；调高前应检查容器内存、CPU 和阿里云账号限流。配置必须是正的安全整数，非法值会回退到默认值。变更配置后需在无在途资源任务时重建容器。
+这两个上限按 worker 生效。编排图并发默认 10（`OPENTOFU_PARALLELISM`），独立实例批次图并发默认 20（`OPENTOFU_SINGLE_INSTANCE_PARALLELISM`）；两种图并发均允许 1–32，非法值会拒绝启动对应执行器。3 个单实例批次可产生最多约 60 个 ECS 资源并发操作，同一云账号的限流额度仍共享。变更配置后需在无在途资源任务时重建容器。
+
+独立实例成员在 provider 发出完成事件、平台独立核验 Running、公网 IP 和完整归属后，即可提前显示可用；整批作业与账单仍等完整 apply 和状态核验完成。创建期间的销毁、重启和打包会被拦截。账单同步按实例索引查询历史，避免每台扫描全站台账。
 
 升级运行时前应等待资源任务结束，备份工作区状态卷，并保留旧镜像。不同版本的已保存 plan 不跨版本复用，新的任务会重新生成 plan。升级说明与验证记录见 [OpenTofu 升级与并发优化](docs/operations/2026-10-09-opentofu-performance.md)。
 

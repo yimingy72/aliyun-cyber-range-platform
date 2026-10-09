@@ -119,6 +119,9 @@ services:
       RANGE_CIDR_POOL: ${RANGE_CIDR_POOL:-10.80.0.0/16,10.81.0.0/16}
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_PARALLELISM: ${OPENTOFU_PARALLELISM:-10}
+      OPENTOFU_SINGLE_INSTANCE_PARALLELISM: ${OPENTOFU_SINGLE_INSTANCE_PARALLELISM:-20}
+      ALICLOUD_PROVIDER_VERSION: ${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}
+      ALICLOUD_PROVIDER_SHA256: ${ALICLOUD_PROVIDER_SHA256:-}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
       OPENTOFU_PROVIDER_MIRROR_ROOT: /var/lib/cyber-range/provider-mirror
       OPENTOFU_INSTANCE_TYPE: ${OPENTOFU_INSTANCE_TYPE:-auto}
@@ -144,12 +147,12 @@ services:
       ALICLOUD_RANGE_DMZ_PRIVATE_IP: ${ALICLOUD_RANGE_DMZ_PRIVATE_IP:-10.70.10.10}
       ALICLOUD_RANGE_OFFICE_PRIVATE_IP: ${ALICLOUD_RANGE_OFFICE_PRIVATE_IP:-10.70.20.10}
       ALICLOUD_RANGE_SERVER_PRIVATE_IP: ${ALICLOUD_RANGE_SERVER_PRIVATE_IP:-10.70.30.10}
-      ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip
+      ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}_linux_amd64.zip
     ports:
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
-      - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-mirror}:/var/lib/cyber-range/provider-mirror:ro
+      - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-fast-wait/mirror}:/var/lib/cyber-range/provider-mirror:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/health >/dev/null || exit 1"]
       interval: 10s
@@ -189,6 +192,9 @@ services:
       PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY: ${PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY:-3}
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_PARALLELISM: ${OPENTOFU_PARALLELISM:-10}
+      OPENTOFU_SINGLE_INSTANCE_PARALLELISM: ${OPENTOFU_SINGLE_INSTANCE_PARALLELISM:-20}
+      ALICLOUD_PROVIDER_VERSION: ${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}
+      ALICLOUD_PROVIDER_SHA256: ${ALICLOUD_PROVIDER_SHA256:-}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
       OPENTOFU_PROVIDER_MIRROR_ROOT: /var/lib/cyber-range/provider-mirror
       OPENTOFU_INSTANCE_TYPE: ${OPENTOFU_INSTANCE_TYPE:-auto}
@@ -207,10 +213,10 @@ services:
       ALICLOUD_IMAGE_ID: ${ALICLOUD_IMAGE_ID:-}
       ALICLOUD_INSTANCE_TYPE: ${ALICLOUD_INSTANCE_TYPE:-auto}
       ALICLOUD_INSTANCE_TYPE_PREFERENCES: ${ALICLOUD_INSTANCE_TYPE_PREFERENCES:-}
-      ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip
+      ALICLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}_linux_amd64.zip
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
-      - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-mirror}:/var/lib/cyber-range/provider-mirror:ro
+      - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-fast-wait/mirror}:/var/lib/cyber-range/provider-mirror:ro
 
   web:
     build:

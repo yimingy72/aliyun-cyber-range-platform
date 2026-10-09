@@ -33,6 +33,24 @@ async function fixture(quantity = 2) {
 }
 
 describe('OpenTofu single-instance worker integration', () => {
+  it('recovers all 50 members including early-running members without claiming other operations', async () => {
+    const f = await fixture(50);
+    for (const item of f.items.slice(0, 20)) await f.repository.updateRangeInstance(item.instance.id, { status: 'running' });
+    const finished = f.items[48], refresh = f.items[49];
+    await f.repository.updateProvisionJob(finished.job.id, { status: 'succeeded' });
+    await f.repository.updateRangeInstance(finished.instance.id, { status: 'running' });
+    await f.repository.updateProvisionJob(refresh.job.id, { status: 'succeeded' });
+    const refreshJob = await f.repository.createProvisionJob({ rangeInstanceId: refresh.instance.id, jobType: 'refresh_status', triggeredBy: 'owner-a' });
+    await f.repository.updateRangeInstance(refresh.instance.id, { status: 'running', lastJobId: refreshJob.id });
+    await f.worker.process(f.items[20].job.id);
+    expect(f.tofu.executeCreateBatch).toHaveBeenCalledTimes(1);
+    expect(f.tofu.executeCreateBatch.mock.calls[0][0]).toHaveLength(48);
+    expect(f.tofu.executeCreateBatch.mock.calls[0][0].map(item => item.instance.id).sort())
+      .toEqual(f.items.slice(0, 48).map(item => item.instance.id).sort());
+    expect((await f.repository.getProvisionJobById(refreshJob.id))?.status).toBe('pending');
+    expect(f.native.executeCreateBatch).not.toHaveBeenCalled();
+  });
+
   it('claims the complete batch behind its database lease and calls OpenTofu once without native create', async () => {
     const f = await fixture(3);
     await f.worker.process(f.items[0].job.id);

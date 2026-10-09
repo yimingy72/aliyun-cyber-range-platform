@@ -8,6 +8,7 @@
     "test": "pnpm --workspace-concurrency=1 -r test && node --test test/*.test.mjs",
     "verify:bootstrap": "pnpm test && pnpm build && pnpm iac:validate && docker compose config",
     "provider:download": "sh scripts/dev/download-alicloud-provider.sh",
+    "provider:build": "sh scripts/provider/alicloud-fast-wait/build.sh",
     "iac:validate": "bash scripts/dev/validate-opentofu-example.sh",
     "iac:smoke": "bash scripts/dev/smoke-opentofu-enterprise-range.sh",
     "iac:smoke:plan": "bash scripts/dev/smoke-opentofu-enterprise-range.sh --plan-only",

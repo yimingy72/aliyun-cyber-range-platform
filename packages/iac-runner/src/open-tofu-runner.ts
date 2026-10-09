@@ -6,10 +6,21 @@ export type OpenTofuCommandResult = {
   stderr: string;
 };
 
+export type OpenTofuResourceApplied = {
+  address: string;
+  resourceType: string;
+  action: 'create' | 'update' | 'delete';
+  resourceId: string;
+};
+
+type ExecutionOptions = ExecFileOptions & {
+  onResourceApplied?: (event: OpenTofuResourceApplied) => void;
+};
+
 export type OpenTofuExecutor = (
   command: string,
   args: string[],
-  options: ExecFileOptions,
+  options: ExecutionOptions,
 ) => Promise<OpenTofuCommandResult>;
 
 export type OpenTofuRunnerOptions = {
@@ -24,6 +35,8 @@ export type OpenTofuWorkspaceCommandOptions = {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 };
+
+export type OpenTofuInitOptions = OpenTofuWorkspaceCommandOptions & { upgrade?: boolean };
 
 export type OpenTofuValidateOptions = OpenTofuWorkspaceCommandOptions & {
   varsFilePath?: string;
@@ -45,6 +58,7 @@ export type OpenTofuImportOptions = OpenTofuWorkspaceCommandOptions & {
 
 export type OpenTofuApplyOptions = OpenTofuWorkspaceCommandOptions & {
   planFilePath: string;
+  onResourceApplied?: (event: OpenTofuResourceApplied) => void;
 };
 
 export type OpenTofuDestroyOptions = OpenTofuWorkspaceCommandOptions & {
@@ -63,9 +77,9 @@ function commandAborted() {
 async function defaultExecutor(
   command: string,
   args: string[],
-  options: ExecFileOptions,
+  options: ExecutionOptions,
 ): Promise<OpenTofuCommandResult> {
-  const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, signal, ...executionOptions } = options;
+  const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, signal, onResourceApplied, ...executionOptions } = options;
   if (signal?.aborted) throw commandAborted();
   const execution = execFileAsync(command, args, {
     ...executionOptions,
@@ -74,6 +88,10 @@ async function defaultExecutor(
   });
   let interrupted = false;
   let aborted = false;
+  const observer = onResourceApplied ? observeResourceCompletion(event => {
+    if (!aborted && !interrupted) onResourceApplied(event);
+  }) : null;
+  if (observer) execution.child.stdout?.on('data', observer.write);
   // execFile's built-in timeout closes stdio before killing, which can abort OpenTofu state persistence.
   const timer = setTimeout(() => {
     if (!aborted) interrupted = execution.child.kill('SIGTERM');
@@ -106,6 +124,10 @@ async function defaultExecutor(
     }
     throw error;
   } finally {
+    if (observer) {
+      execution.child.stdout?.off('data', observer.write);
+      observer.end();
+    }
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
   }
@@ -131,8 +153,8 @@ export class OpenTofuRunner {
     }
   }
 
-  async init(options: OpenTofuWorkspaceCommandOptions): Promise<OpenTofuCommandResult> {
-    return this.run(['init', '-input=false', '-no-color'], options);
+  async init(options: OpenTofuInitOptions): Promise<OpenTofuCommandResult> {
+    return this.run(['init', '-input=false', '-no-color', ...(options.upgrade ? ['-upgrade'] : [])], options);
   }
 
   async validate(options: OpenTofuValidateOptions): Promise<OpenTofuCommandResult> {
@@ -158,7 +180,8 @@ export class OpenTofuRunner {
   }
 
   async apply(options: OpenTofuApplyOptions): Promise<OpenTofuCommandResult> {
-    return this.run(['apply', '-input=false', '-no-color', '-auto-approve', `-parallelism=${this.parallelism}`, options.planFilePath], options);
+    return this.run(['apply', '-input=false', '-no-color', '-auto-approve', `-parallelism=${this.parallelism}`,
+      ...(options.onResourceApplied ? ['-json'] : []), options.planFilePath], options, options.onResourceApplied);
   }
 
   async output<T>(options: OpenTofuWorkspaceCommandOptions): Promise<T> {
@@ -200,6 +223,7 @@ export class OpenTofuRunner {
   private async run(
     args: string[],
     options: OpenTofuWorkspaceCommandOptions,
+    onResourceApplied?: (event: OpenTofuResourceApplied) => void,
   ): Promise<OpenTofuCommandResult> {
     if (options.signal?.aborted) throw commandAborted();
     return this.executor(this.binaryPath, args, {
@@ -207,8 +231,52 @@ export class OpenTofuRunner {
       env: options.env,
       timeout: this.commandTimeoutMs,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(onResourceApplied ? { onResourceApplied } : {}),
     });
   }
+}
+
+// Progress is advisory: only forward completed resource identities, never diagnostics or sensitive outputs.
+function observeResourceCompletion(notify: (event: OpenTofuResourceApplied) => void) {
+  let pending = '';
+  let discardLine = false;
+  let supportedVersion = false;
+  const maxLineLength = 64 * 1024;
+  const consume = (line: string) => {
+    let event: any;
+    try { event = JSON.parse(line); } catch { return; }
+    if (event?.type === 'version') {
+      supportedVersion = typeof event.ui === 'string' && /^1\.\d+(?:\.\d+)?$/.test(event.ui);
+      return;
+    }
+    const hook = event?.hook;
+    if (!supportedVersion || event?.type !== 'apply_complete' || hook?.id_key !== 'id'
+      || !['create', 'update', 'delete'].includes(hook.action)) return;
+    const address = hook.resource?.addr, resourceType = hook.resource?.resource_type, resourceId = hook.id_value;
+    if (typeof address !== 'string' || !address || address.length > 4096 || /[\x00-\x1f]/.test(address)
+      || typeof resourceType !== 'string' || !/^[A-Za-z0-9_]+$/.test(resourceType)
+      || typeof resourceId !== 'string' || !resourceId || resourceId.length > 2048 || /[\x00-\x1f]/.test(resourceId)) return;
+    try { notify({ address, resourceType, action: hook.action, resourceId }); } catch {
+      // An observer failure must not interrupt the provider or prevent OpenTofu from saving state.
+    }
+  };
+  return {
+    write(chunk: string | Buffer) {
+      const text = chunk.toString();
+      let start = 0;
+      for (let index = 0; index < text.length; index += 1) {
+        if (text[index] !== '\n') continue;
+        const piece = text.slice(start, index);
+        if (!discardLine && pending.length + piece.length <= maxLineLength) consume(pending + piece);
+        pending = ''; discardLine = false; start = index + 1;
+      }
+      if (!discardLine) {
+        pending += text.slice(start);
+        if (pending.length > maxLineLength) { pending = ''; discardLine = true; }
+      }
+    },
+    end() { if (!discardLine && pending) consume(pending); pending = ''; },
+  };
 }
 
 function targetArguments(targets: string[] = []) {

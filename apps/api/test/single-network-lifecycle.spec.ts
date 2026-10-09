@@ -13,9 +13,15 @@ it('destroys only the requested bound network state, verifies it is empty, and p
   const dir = path.join(root, profile.workspaceKey);
   await fs.mkdir(dir);
   await fs.writeFile(path.join(dir, 'terraform.tfvars.json'), '{}');
+  await fs.writeFile(path.join(dir, 'versions.tf'), 'terraform {\n required_providers {\n  alicloud = { source = "aliyun/alicloud"\n version = "~> 1.253"\n }\n }\n}\n');
   const state = { version: 4, lineage: 'synthetic-state', resources: [['alicloud_vpc', profile.vpcId], ['alicloud_vswitch', profile.vswitchIds[0]], ['alicloud_security_group', profile.securityGroupId]].map(([type, id]) => ({ module: 'module.network', mode: 'managed', type, instances: [{ attributes: { id, tags } }] })) };
   await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify(state));
-  service.runner = { init: jest.fn(async () => ({})), destroy: jest.fn(async () => { await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'synthetic-state', outputs: {} })); }) };
+  service.runner = { init: jest.fn(async (options) => {
+    expect(options.upgrade).toBe(true);
+    expect(await fs.readFile(path.join(dir, 'versions.tf'), 'utf8')).toContain('version = "= 1.282.0-range.1"');
+    expect(JSON.parse(await fs.readFile(path.join(dir, 'terraform.tfstate'), 'utf8'))).toEqual(state);
+    return {};
+  }), destroy: jest.fn(async () => { await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'synthetic-state', outputs: {} })); }) };
   await expect(service.destroyDefaultProfile({ ...profile, managedByPlatform: false }, account)).rejects.toThrow('bound');
   await expect(service.destroyDefaultProfile({ ...profile, vpcId: 'vpc-other' }, account)).rejects.toThrow('does not match');
   expect(service.runner.destroy).not.toHaveBeenCalled();

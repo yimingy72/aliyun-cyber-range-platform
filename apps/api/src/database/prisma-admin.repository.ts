@@ -2217,8 +2217,9 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<BillingLedgerResourceRecord>;
   }
 
-  async listBillingLedgerResources(): Promise<BillingLedgerResourceRecord[]> {
+  async listBillingLedgerResources(filter: { rangeInstanceId?: string } = {}): Promise<BillingLedgerResourceRecord[]> {
     return this.prisma.billingLedgerResource.findMany({
+      ...(filter.rangeInstanceId !== undefined ? { where: { rangeInstanceId: filter.rangeInstanceId } } : {}),
       orderBy: {
         createdAt: 'desc',
       },

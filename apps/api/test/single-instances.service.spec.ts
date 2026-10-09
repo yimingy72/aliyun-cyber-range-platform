@@ -153,10 +153,55 @@ describe('SingleInstancesService', () => {
     expect(await fixture.repository.listSingleInstanceBatchesWithInstances()).toEqual([]);
   });
 
-  it('only queues batch destruction and retries; neither endpoint invokes the API executor', async () => {
+  it.each(['single', 'batch'])('blocks %s destruction when all members look running but the OpenTofu create jobs are unfinished', async target => {
     const fixture = createLaunchFixture();
     const launched = await fixture.service.launch(fixture.input, fixture.actor.id);
     for (const member of launched.instances) await fixture.repository.updateRangeInstance(member.id, { status: 'running' });
+    const before = await fixture.repository.listProvisionJobs();
+    const destruction = target === 'single' ? fixture.service.destroy(launched.instances[0].id, fixture.actor as never)
+      : fixture.service.destroyBatch(launched.batch.id, fixture.actor as never);
+    await expect(destruction).rejects.toThrow('批次仍在创建');
+    expect(await fixture.repository.listProvisionJobs()).toHaveLength(before.length);
+  });
+
+  it('blocks an early-ready member destruction while a sibling is still creating', async () => {
+    const fixture = createLaunchFixture();
+    const launched = await fixture.service.launch(fixture.input, fixture.actor.id);
+    await fixture.repository.updateRangeInstance(launched.instances[0].id, { status: 'running' });
+    await fixture.repository.updateProvisionJob(launched.instances[0].lastJobId!, { status: 'succeeded' });
+    await expect(fixture.service.destroy(launched.instances[0].id, fixture.actor as never)).rejects.toThrow('批次仍在创建');
+  });
+
+  it('freezes create retry intent so a restarted worker recovers an early-ready member', async () => {
+    const fixture = createLaunchFixture();
+    const launched = await fixture.service.launch({ ...fixture.input, quantity: 1 }, fixture.actor.id);
+    const member = launched.instances[0];
+    await fixture.repository.updateProvisionJob(member.lastJobId!, { status: 'failed' });
+    await fixture.repository.updateRangeInstance(member.id, { status: 'create_failed' });
+    const retry = await fixture.service.retry(member.id, fixture.actor as never);
+    expect(retry.topologySnapshot?.operation).toBe('create');
+    expect(retry.topologySnapshot?.scenarioTemplateSpec).toEqual({});
+    expect(retry.topologySnapshot?.runtimeCredentials).toBeUndefined();
+    await fixture.repository.updateRangeInstance(member.id, { status: 'running',
+      accessEntry: { hostRole: 'host', publicIp: '203.0.113.1', privateIp: null, ssh: null } });
+    const tofu = { executeCreateBatch: jest.fn(async (items: any[]) => {
+      for (const item of items) await fixture.repository.commitSingleInstanceClaim(item.job, { status: 'running' }, { status: 'succeeded' });
+    }), executeDestroyBatch: jest.fn() };
+    const worker = new ProvisioningWorkerService(fixture.repository, {} as never,
+      { getSnapshot: async () => fixture.account } as never, {} as never, {} as never, tofu as never);
+    await worker.process(retry.id);
+    expect(tofu.executeCreateBatch).toHaveBeenCalledTimes(1);
+    expect(tofu.executeDestroyBatch).not.toHaveBeenCalled();
+    expect((await fixture.repository.getProvisionJobById(retry.id))?.status).toBe('succeeded');
+  });
+
+  it('only queues batch destruction and retries; neither endpoint invokes the API executor', async () => {
+    const fixture = createLaunchFixture();
+    const launched = await fixture.service.launch(fixture.input, fixture.actor.id);
+    for (const member of launched.instances) {
+      await fixture.repository.updateRangeInstance(member.id, { status: 'running' });
+      await fixture.repository.updateProvisionJob(member.lastJobId!, { status: 'succeeded', finishedAt: new Date() });
+    }
     await fixture.service.destroyBatch(launched.batch.id, fixture.actor as never);
     for (const member of launched.instances) {
       const instance = await fixture.repository.getRangeInstanceById(member.id);
@@ -166,6 +211,7 @@ describe('SingleInstancesService', () => {
     await fixture.repository.updateRangeInstance(launched.instances[0].id, { status: 'destroy_failed' });
     const retry = await fixture.service.retry(launched.instances[0].id, fixture.actor as never);
     expect(retry.status).toBe('pending');
+    expect(retry.topologySnapshot?.operation).toBe('destroy');
     expect(fixture.worker.dispatch).not.toHaveBeenCalled();
   });
 });

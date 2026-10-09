@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareOpenTofuProviderEnv } from './provider-mirror-publication';
-import { OpenTofuRunner, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, } from '@aliyun-cyber-range/iac-runner';
+import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
+import { OpenTofuRunner, type OpenTofuInitOptions, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
 import { buildBillingTags } from '../admin/billing-tagging';
 import type { SingleInstanceNetworkProfileRecord, UpsertSingleInstanceNetworkProfileInput } from '../admin/admin.repository';
@@ -10,7 +10,7 @@ import { CidrPoolService } from './cidr-pool.service';
 import type { ResolvedProvisioningRuntimeConfig } from './provisioning.types';
 type BootstrapEnv = Partial<Pick<NodeJS.ProcessEnv, 'ALICLOUD_PROVIDER_ZIP_PATH' | 'OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT' | 'OPENTOFU_BINARY' | 'OPENTOFU_WORKSPACES_ROOT' | 'PATH' | 'TF_CLI_CONFIG_FILE' | 'OPENTOFU_PASSTHROUGH_PROXY' | 'HTTPS_PROXY' | 'HTTP_PROXY' | 'ALL_PROXY' | 'https_proxy' | 'http_proxy' | 'all_proxy' | 'NO_PROXY' | 'no_proxy'>>;
 type BootstrapRunnerLike = {
-  init(options: OpenTofuWorkspaceCommandOptions): Promise<OpenTofuCommandResult>;
+  init(options: OpenTofuInitOptions): Promise<OpenTofuCommandResult>;
   validate(options: OpenTofuValidateOptions): Promise<OpenTofuCommandResult>;
   plan(options: OpenTofuPlanOptions): Promise<OpenTofuCommandResult>;
   apply(options: OpenTofuApplyOptions): Promise<OpenTofuCommandResult>;
@@ -83,7 +83,7 @@ export class SingleInstanceNetworkBootstrapService {
     }));
     const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
     try {
-      await this.runner.init({ workspaceDir, env: runnerEnv });
+      await this.runner.init({ workspaceDir, env: runnerEnv, upgrade: true });
       await this.runner.plan({
         workspaceDir,
         env: runnerEnv,
@@ -173,7 +173,8 @@ export class SingleInstanceNetworkBootstrapService {
     if (ids.some(id => !expected.includes(id)))
       throw new Error('Default network state does not match the requested profile');
     const env = await this.buildRunnerEnv(runtimeConfig);
-    await this.runner.init({ workspaceDir: dir, env });
+    await migrateAliCloudWorkspaceProvider(dir);
+    await this.runner.init({ workspaceDir: dir, env, upgrade: true });
     await this.runner.destroy({ workspaceDir: dir, env, varsFilePath: path.join(dir, 'terraform.tfvars.json') });
     const remaining = await this.assertOwnedState(dir, profile.cloudAccountUid);
     if (remaining.some(value => value.instances.length))
@@ -300,7 +301,7 @@ output "security_group_name" {
  required_providers {
   alicloud = {
    source  = "aliyun/alicloud"
-   version = "~> 1.253"
+   version = "= 1.282.0-range.1"
   }
  }
 }
