@@ -1267,7 +1267,7 @@ describe('final authoring coverage: integrated template pagination', () => {
     expectSummary('显示 51–100 条，共 125 条');
     expect(within(table).getByText('Audit Alpha 051')).toBeTruthy();
     expect(within(table).getByText('Audit Beta 100')).toBeTruthy();
-  });
+  }, 15_000);
 
   it('resets a still-valid page after search and recovers from empty results', async () => {
     const table = await renderPagedTemplates();

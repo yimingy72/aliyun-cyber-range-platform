@@ -549,6 +549,7 @@ model RangeInstance {
   @@index([sourceTemplateVersionId])
   @@index([status])
   @@index([instanceMode, status])
+  @@index([status, expiresAt])
   @@index([ownerUserId, createdAt])
 }
 
@@ -590,6 +591,7 @@ model ProvisionJob {
   retryCount      Int                  @default(0)
   errorSummary    String?              @db.Text
   createdAt       DateTime             @default(now())
+  availableAt     DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   rangeInstance   RangeInstance        @relation(fields: [rangeInstanceId], references: [id], onDelete: Cascade)
   stepLogs        ProvisionJobStepLog[]
@@ -597,6 +599,7 @@ model ProvisionJob {
 
   @@index([rangeInstanceId])
   @@index([status])
+  @@index([status, availableAt, createdAt, id])
 }
 
 model ProvisionJobStepLog {

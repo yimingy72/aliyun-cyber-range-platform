@@ -122,6 +122,7 @@ docker run --rm --network "$CI_NETWORK" \
   -e USER_AUTH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/user_auth_test?schema=public' \
   -e PACKED_IMAGE_TEST_DATABASE_URL='postgresql://postgres:postgres@packed-image-test-postgres:5432/packed_image_test?schema=public' \
   -e IMAGE_TAG_TEST_DATABASE_URL='postgresql://postgres:postgres@image-tags-test-postgres:5432/image_tags_test?schema=public' \
+  -e SINGLE_TOFU_OFFLINE_VALIDATION=1 -e SINGLE_TOFU_PROVIDER_MIRROR_PATH=/app/.local/provider-mirror \
   -e NODE_ENV=test -e ADMIN_USERNAME=admin -e ADMIN_TOKEN=dev-admin-token \
   -e OIDC_ISSUER=https://test-issuer.example/realms/cyber-range \
   -e OIDC_JWKS_URL=https://test-issuer.example/realms/cyber-range/certs \

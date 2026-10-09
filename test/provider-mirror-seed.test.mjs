@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,7 +88,7 @@ for (const scriptRelativePath of [
   test(`${scriptRelativePath} accepts a checksum-verified host provider cache`, () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-mirror-seed-'));
     const mirrorRoot = path.join(tempRoot, 'mirror');
-    const archive = Buffer.from('provider-archive-fixture');
+    const archive = providerArchiveFixture(tempRoot);
 
     try {
       const providerArchivePath = path.join(mirrorRoot, providerRelativePath);
@@ -106,6 +107,12 @@ for (const scriptRelativePath of [
       });
 
       assert.deepEqual(fs.readFileSync(providerArchivePath), archive);
+      const readyRoot = path.join(tempRoot, 'workspaces/provider-mirror-unpacked', sha256(archive));
+      const ready = JSON.parse(fs.readFileSync(path.join(readyRoot, '.provider-ready.json'), 'utf8'));
+      assert.equal(ready.sha256, sha256(archive));
+      const executable = path.join(readyRoot, 'registry.opentofu.org/aliyun/alicloud/1.282.0/linux_amd64', ready.executable);
+      assert.equal(fs.statSync(executable).mode & 0o222, 0);
+      assert.ok(fs.statSync(executable).mode & 0o111);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -128,4 +135,35 @@ test('container build and compose configuration use the host provider cache', ()
     assert.match(compose, new RegExp(`\\$\\{OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-${mirrorPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}:/var/lib/cyber-range/provider-mirror:ro`));
     assert.doesNotMatch(compose, /\n  provider-mirror:\n/);
   }
+});
+
+function providerArchiveFixture(tempRoot) {
+  const executable = path.join(tempRoot, 'terraform-provider-alicloud_v1.282.0');
+  const archive = path.join(tempRoot, 'fixture.zip');
+  fs.writeFileSync(executable, 'offline provider fixture', { mode: 0o755 });
+  execFileSync('zip', ['-q', '-j', archive, executable]);
+  return fs.readFileSync(archive);
+}
+
+test('concurrent Docker seeds reuse one immutable mirror and publish its path to the child process', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-unpacked-seed-'));
+  const archive = providerArchiveFixture(tempRoot);
+  const mirrorRoot = path.join(tempRoot, 'mirror');
+  const archivePath = path.join(mirrorRoot, providerRelativePath);
+  fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+  fs.writeFileSync(archivePath, archive);
+  const env = { ...process.env, OPENTOFU_PROVIDER_MIRROR_ROOT: mirrorRoot,
+    OPENTOFU_WORKSPACES_ROOT: path.join(tempRoot, 'workspaces'), ALICLOUD_PROVIDER_SHA256: sha256(archive) };
+  try {
+    const results = await Promise.all(Array.from({ length: 4 }, (_, index) => promisify(execFile)('/bin/sh', [
+      path.join(repoRoot, index % 2 ? 'scripts/docker/seed-provider-mirror.sh' : 'deploy/current-system/scripts/docker/seed-provider-mirror.sh'),
+      'node', '-e', 'process.stdout.write(process.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT)',
+    ], { env })));
+    const readyRoot = path.join(tempRoot, 'workspaces/provider-mirror-unpacked', sha256(archive));
+    assert.ok(results.every(result => result.stdout === readyRoot));
+    assert.deepEqual(fs.readdirSync(path.dirname(readyRoot)), [sha256(archive)]);
+    const marker = fs.statSync(path.join(readyRoot, '.provider-ready.json'));
+    await promisify(execFile)('/bin/sh', [path.join(repoRoot, 'scripts/docker/seed-provider-mirror.sh'), 'true'], { env });
+    assert.equal(fs.statSync(path.join(readyRoot, '.provider-ready.json')).ino, marker.ino);
+  } finally { fs.rmSync(tempRoot, { recursive: true, force: true }); }
 });

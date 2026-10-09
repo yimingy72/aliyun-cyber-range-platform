@@ -1,3 +1,4 @@
+import { markQueuedInstancesAsLegacyNative, pumpLegacySingleInstanceWorker } from './support/legacy-single-instance-worker';
 import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { SingleInstancesService } from '../src/admin/single-instances.service';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
@@ -72,16 +73,15 @@ async function fixture(failDiskForOwner?: string) {
   worker.dispatch = jest.fn();
   const service = new SingleInstancesService(repo, config, launchNetwork, native, worker, {} as any);
   await network.registerCleanup(profile.id,'synthetic-run','2020-01-01T00:00:00Z',[alice.id,bob.id],admin);
-  const launch = (actor: typeof alice) => service.launch({ name: actor.username, platformImageAssetId: asset.id, cpu: 2, memory: 2, quantity: 2, expiresAt: new Date(Date.now() + 60 * 60000).toISOString() }, actor.id);
-  const drain = async () => { for (let n = 0; n < 20; n++) {
-    const pending = (await repo.listProvisionJobs()).filter(job => job.status === 'pending');
-    if (!pending.length)
-      return;
-    await Promise.all(pending.map(job => worker.process(job.id)));
-  } throw new Error('Jobs did not settle'); };
+  const launch = async (actor: typeof alice) => {
+    const result = await service.launch({ name: actor.username, platformImageAssetId: asset.id, cpu: 2, memory: 2, quantity: 2, expiresAt: new Date(Date.now() + 60 * 60000).toISOString() }, actor.id);
+    await markQueuedInstancesAsLegacyNative(repo, result.instances.map(instance => instance.id));
+    return result;
+  };
+  const drain = () => pumpLegacySingleInstanceWorker(worker, repo);
   return { repo, config, native, cloud, calls, profile, network, service, worker, launch, drain };
 }
-describe('native batches: real ECS response contract, two platform users and complete cleanup', () => {
+describe('legacy native batches: real ECS response contract, two platform users and complete cleanup', () => {
   it('runs Alice/Bob simultaneously with distinct IPs, ownership, batch tags and credentials; fixed context survives default changes', async () => {
     const f = await fixture();
     const [a, b] = await Promise.all([f.launch(alice), f.launch(bob)]);

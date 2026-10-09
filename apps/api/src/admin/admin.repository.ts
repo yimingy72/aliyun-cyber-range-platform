@@ -184,6 +184,7 @@ export type RangeRuntimeCredential = {
 export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
 
 export type SingleInstanceConfig = {
+  executionBackend?: 'opentofu' | 'ecs-native';
   cloudAccountContextId?: string | null;
   cloudAccountUid?: string | null;
   regionId?: string;
@@ -321,6 +322,7 @@ export type ProvisionJobRecord = {
   retryCount: number;
   errorSummary: string | null;
   createdAt: Date;
+  availableAt?: Date;
   updatedAt: Date;
 };
 
@@ -952,6 +954,7 @@ export type CreateProvisionJobInput = {
   topologySnapshot?: ProvisionJobTopologySnapshot | null;
   status?: ProvisionJobStatus;
   retryCount?: number;
+  availableAt?: Date;
 };
 
 export type ApplyRangeInstanceDraftInput = {
@@ -1028,6 +1031,18 @@ export type UpdateProvisionJobStepLogInput = Partial<{
   finishedAt: Date | null;
 }>;
 
+export type ProvisionJobSchedulingRecord = Pick<ProvisionJobRecord, 'id' | 'rangeInstanceId' | 'jobType' | 'status' | 'createdAt'>;
+export type RangeInstanceSchedulingRecord = Pick<RangeInstanceRecord, 'id' | 'instanceMode' | 'singleInstanceBatchId' | 'status' | 'lastJobId' | 'ownerUserId' | 'expiresAt'>;
+export type ListPendingProvisionJobsInput = {
+  limit?: number;
+  now?: Date;
+  after?: { createdAt: Date; id: string };
+};
+export type SingleInstanceBatchProvisionLease = {
+  signal: AbortSignal;
+  assertHeld(): Promise<void>;
+};
+
 export interface AdminRepository {
   createPlatformUser(input: CreatePlatformUserInput): Promise<PlatformUserRecord>;
   listPlatformUsers(): Promise<PlatformUserRecord[]>;
@@ -1056,8 +1071,11 @@ export interface AdminRepository {
   deleteRangeTemplate(id: string): Promise<void>;
   createSingleInstanceBatch(input: CreateSingleInstanceBatchInput): Promise<SingleInstanceBatchRecord>;
   getSingleInstanceBatchById(id: string): Promise<SingleInstanceBatchRecord | null>;
+  getSingleInstanceBatchWithInstancesById(id: string): Promise<SingleInstanceBatchWithInstancesRecord | null>;
   listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
+  listProvisioningInstancesByIds(ids: string[]): Promise<RangeInstanceSchedulingRecord[]>;
+  listExpiredRangeInstances(now: Date): Promise<RangeInstanceSchedulingRecord[]>;
   archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void>;
   createRangeInstance(input: CreateRangeInstanceInput, initialJob?: {
     triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number;
@@ -1077,6 +1095,7 @@ export interface AdminRepository {
     input: CompleteRangeInstanceDraftApplyInput,
   ): Promise<RangeInstanceRecord>;
   listProvisionJobs(): Promise<ProvisionJobRecord[]>;
+  listPendingProvisionJobs(input?: ListPendingProvisionJobsInput): Promise<ProvisionJobSchedulingRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null>;
   claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
@@ -1122,6 +1141,7 @@ export interface AdminRepository {
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
   withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T>;
+  tryWithSingleInstanceBatchProvisionLock<T>(batchId: string, work: (lease: SingleInstanceBatchProvisionLease) => Promise<T>): Promise<{ acquired: boolean; result?: T }>;
   commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput): Promise<boolean>;
   listSingleInstanceNetworkProfiles(): Promise<SingleInstanceNetworkProfileRecord[]>;
   getSingleInstanceNetworkProfileById(id: string): Promise<SingleInstanceNetworkProfileRecord | null>;

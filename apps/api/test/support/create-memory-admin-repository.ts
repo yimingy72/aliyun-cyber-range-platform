@@ -37,6 +37,7 @@ import {
   PlatformImageAssetRecord,
   PlatformImageTagRecord,
   ProvisionJobRecord,
+  ListPendingProvisionJobsInput,
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
@@ -60,6 +61,10 @@ import {
   UpdateRangeInstanceInput,
 } from '../../src/admin/admin.repository';
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
+
+function schedulingInstance({ id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt }: RangeInstanceRecord) {
+  return { id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt };
+}
 
 export function createMemoryAdminRepository(): AdminRepository {
   const packedImageArtifacts: PackedImageArtifactRecord[] = [];
@@ -86,6 +91,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
   let idCounter = 1;
   let singleControlQueue: Promise<unknown> = Promise.resolve();
+  const singleBatchProvisionLocks = new Set<string>();
 
   const nextId = () => `memory-${idCounter++}`;
   const now = () => new Date();
@@ -98,6 +104,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       topologySnapshot: cloneIfDefined(input.topologySnapshot ?? null), status: input.status ?? 'pending',
       triggeredBy: input.triggeredBy, startedAt: null, finishedAt: null, retryCount: input.retryCount ?? 0,
       errorSummary: null, createdAt: now(), updatedAt: now(),
+      availableAt: clone(input.availableAt ?? now()),
     };
     provisionJobs.unshift(record);
     return record;
@@ -701,8 +708,23 @@ export function createMemoryAdminRepository(): AdminRepository {
         })),
       );
     },
+    async getSingleInstanceBatchWithInstancesById(id: string) {
+      const batch = singleInstanceBatches.find(value => value.id === id);
+      return batch ? clone({ batch, instances: rangeInstances.filter(value => value.singleInstanceBatchId === id)
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)) }) : null;
+    },
     async listRangeInstances() {
       return cloneList(rangeInstances);
+    },
+    async listProvisioningInstancesByIds(ids: string[]) {
+      const selected = new Set(ids);
+      return cloneList(rangeInstances.filter(value => selected.has(value.id)).map(schedulingInstance));
+    },
+    async listExpiredRangeInstances(timestamp: Date) {
+      return cloneList(rangeInstances.filter(value => value.expiresAt && value.expiresAt <= timestamp
+        && (value.instanceMode === 'single' && ['running', 'creating'].includes(value.status)
+          || value.instanceMode === 'range' && value.status === 'running'))
+        .sort((a, b) => a.expiresAt!.getTime() - b.expiresAt!.getTime() || a.id.localeCompare(b.id)).map(schedulingInstance));
     },
     async archiveDestroyedRangeInstancesForDeletedTemplate(template) {
       for (const instance of rangeInstances) {
@@ -957,6 +979,15 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async listProvisionJobs() {
       return cloneList(provisionJobs);
+    },
+    async listPendingProvisionJobs(input: ListPendingProvisionJobsInput = {}) {
+      const limit = input.limit ?? 100;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new RangeError('Pending job page size must be between 1 and 1000');
+      const timestamp = input.now ?? now();
+      return cloneList(provisionJobs.filter(value => value.status === 'pending' && (value.availableAt ?? value.createdAt) <= timestamp && (!input.after
+        || value.createdAt > input.after.createdAt || value.createdAt.getTime() === input.after.createdAt.getTime() && value.id > input.after.id))
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)).slice(0, limit)
+        .map(({ id, rangeInstanceId, jobType, status, createdAt }) => ({ id, rangeInstanceId, jobType, status, createdAt })));
     },
     async createProvisionJob(input: CreateProvisionJobInput) {
       return clone(createJobRecord(input));
@@ -1453,6 +1484,20 @@ export function createMemoryAdminRepository(): AdminRepository {
       const run = singleControlQueue.then(work, work);
       singleControlQueue = run.then(() => undefined, () => undefined);
       return run;
+    },
+    async tryWithSingleInstanceBatchProvisionLock(batchId, work) {
+      if (singleBatchProvisionLocks.has(batchId)) return { acquired: false };
+      singleBatchProvisionLocks.add(batchId);
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(new Error('Single-instance batch provision lease reached its execution deadline')), 14 * 60_000);
+      deadline.unref();
+      const assertHeld = async () => { if (controller.signal.aborted) throw controller.signal.reason; };
+      try {
+        const result = await work({ signal: controller.signal, assertHeld });
+        await assertHeld();
+        return { acquired: true, result };
+      }
+      finally { clearTimeout(deadline); controller.abort(new Error('Single-instance batch provision lease has ended')); singleBatchProvisionLocks.delete(batchId); }
     },
     async commitSingleInstanceClaim(job, instancePatch, jobPatch) {
       const current = provisionJobs.find((value) => value.id === job.id);

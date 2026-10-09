@@ -153,7 +153,7 @@ describe('Provisioning worker bounded scheduling', () => {
 
   it.each(['read', 'claim', 'persist'] as const)('releases a failed %s slot without rejecting the loop or interrupting another owner', async stage => {
     const fixture = await ranges(3), release = gate(), started = gate();
-    const failedId = fixture.jobs[2].id;
+    const failedId = (await fixture.repository.listPendingProvisionJobs({ limit: 1 }))[0].id;
     const fail = () => Promise.reject(new Error('fixture secret must not be logged'));
     if (stage === 'claim') {
       const original = fixture.repository.claimRangeProvisionJob.bind(fixture.repository);

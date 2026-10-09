@@ -35,6 +35,7 @@ import { SystemConfigService } from './admin/system-config.service';
 import { ProvisionJobsController } from './admin/provision-jobs.controller';
 import { ProvisionJobsService } from './admin/provision-jobs.service';
 import { SingleInstanceNetworkService } from './admin/single-instance-network.service';
+import { SingleInstanceOpenTofuExecutionService } from './admin/single-instance-opentofu-execution.service';
 import { SingleInstanceBatchExecutionService } from './admin/single-instance-batch-execution.service';
 import { SingleInstancesController } from './admin/single-instances.controller';
 import { SingleInstancesService } from './admin/single-instances.service';
@@ -108,6 +109,12 @@ function resolveProjectRootDir() {
     RangeNetworkDiagnosticsService,
     RangeInstanceNodeActionsService,
     SingleInstanceBatchExecutionService,
+    {
+      provide: SingleInstanceOpenTofuExecutionService,
+      useFactory: (repository: PrismaAdminRepository, config: SystemConfigService, native: SingleInstanceBatchExecutionService) =>
+        new SingleInstanceOpenTofuExecutionService(repository, config, native, { projectRootDir: resolveProjectRootDir() }),
+      inject: [ADMIN_REPOSITORY, SystemConfigService, SingleInstanceBatchExecutionService],
+    },
     SingleInstancesService,
     SingleInstanceNetworkService,
     ProvisionJobsService,

@@ -46,9 +46,13 @@ import {
   PlatformImageAssetRecord,
   PlatformImageTagRecord,
   ProvisionJobRecord,
+  ProvisionJobSchedulingRecord,
+  ListPendingProvisionJobsInput,
+  SingleInstanceBatchProvisionLease,
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
+  RangeInstanceSchedulingRecord,
   RangeInstanceDraftRevisionConflictError,
   SaveRangeInstanceDraftInput,
   SyncRangeInstanceDraftToTemplateInput,
@@ -69,6 +73,11 @@ import {
 } from '../admin/admin.repository';
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
+
+const schedulingInstanceSelect = {
+  id: true, instanceMode: true, singleInstanceBatchId: true, status: true,
+  lastJobId: true, ownerUserId: true, expiresAt: true,
+} as const;
 
 function isSerializableTransactionConflict(error: unknown) {
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
@@ -943,12 +952,32 @@ export class PrismaAdminRepository implements AdminRepository {
     }));
   }
 
+  async getSingleInstanceBatchWithInstancesById(id: string): Promise<SingleInstanceBatchWithInstancesRecord | null> {
+    const record = await this.prisma.singleInstanceBatch.findUnique({
+      where: { id }, include: { instances: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
+    });
+    return record ? { batch: record as unknown as SingleInstanceBatchRecord,
+      instances: record.instances as unknown as RangeInstanceRecord[] } : null;
+  }
+
   async listRangeInstances(): Promise<RangeInstanceRecord[]> {
     return this.prisma.rangeInstance.findMany({
       orderBy: {
         createdAt: 'desc',
       },
     }) as Promise<RangeInstanceRecord[]>;
+  }
+
+  async listProvisioningInstancesByIds(ids: string[]): Promise<RangeInstanceSchedulingRecord[]> {
+    if (!ids.length) return [];
+    return this.prisma.rangeInstance.findMany({ where: { id: { in: [...new Set(ids)] } }, select: schedulingInstanceSelect });
+  }
+
+  async listExpiredRangeInstances(now: Date): Promise<RangeInstanceSchedulingRecord[]> {
+    return this.prisma.rangeInstance.findMany({ where: {
+      expiresAt: { lte: now },
+      OR: [{ instanceMode: 'single', status: { in: ['running', 'creating'] } }, { instanceMode: 'range', status: 'running' }],
+    }, select: schedulingInstanceSelect, orderBy: [{ expiresAt: 'asc' }, { id: 'asc' }] });
   }
 
   async archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void> {
@@ -1333,6 +1362,16 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<ProvisionJobRecord[]>;
   }
 
+  async listPendingProvisionJobs(input: ListPendingProvisionJobsInput = {}): Promise<ProvisionJobSchedulingRecord[]> {
+    const limit = input.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new RangeError('Pending job page size must be between 1 and 1000');
+    return this.prisma.provisionJob.findMany({ where: { status: 'pending', availableAt: { lte: input.now ?? new Date() },
+      ...(input.after ? { OR: [{ createdAt: { gt: input.after.createdAt } },
+        { createdAt: input.after.createdAt, id: { gt: input.after.id } }] } : {}),
+    }, take: limit, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, rangeInstanceId: true, jobType: true, status: true, createdAt: true } });
+  }
+
   async queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null> {
     return this.prisma.$transaction(async transaction => {
       const locked = await transaction.rangeInstance.updateMany({
@@ -1442,6 +1481,7 @@ export class PrismaAdminRepository implements AdminRepository {
           | Prisma.NullableJsonNullValueInput,
         status: input.status ?? 'pending',
         retryCount: input.retryCount ?? 0,
+        availableAt: input.availableAt,
       },
     }) as Promise<ProvisionJobRecord>;
   }
@@ -1956,6 +1996,45 @@ export class PrismaAdminRepository implements AdminRepository {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(714921, 1)`;
       return work();
     }, { timeout: 15 * 60_000, maxWait: 30_000 });
+  }
+
+  async tryWithSingleInstanceBatchProvisionLock<T>(batchId: string, work: (lease: SingleInstanceBatchProvisionLease) => Promise<T>): Promise<{ acquired: boolean; result?: T }> {
+    const controller = new AbortController();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // This lock spans cloud execution; hash collisions only serialize unrelated batches.
+        const [lock] = await tx.$queryRaw<Array<{ acquired: boolean }>>`SELECT pg_try_advisory_xact_lock(714922, hashtext(${batchId})) AS acquired`;
+        if (!lock?.acquired) return { acquired: false };
+        let checking: Promise<void> | undefined;
+        const assertHeld = () => {
+          if (controller.signal.aborted) return Promise.reject(controller.signal.reason);
+          if (!checking) checking = tx.$queryRaw`SELECT 1`.then(() => {
+            if (controller.signal.aborted) throw controller.signal.reason;
+          }).catch(() => {
+            controller.abort(new Error('Single-instance batch provision lease is unavailable'));
+            throw controller.signal.reason;
+          }).finally(() => { checking = undefined; });
+          return checking;
+        };
+        const heartbeat = setInterval(() => { void assertHeld().catch(() => undefined); }, 30_000);
+        const deadline = setTimeout(() => controller.abort(new Error('Single-instance batch provision lease reached its execution deadline')), 14 * 60_000);
+        heartbeat.unref();
+        deadline.unref();
+        try {
+          const result = await work({ signal: controller.signal, assertHeld });
+          await assertHeld();
+          return { acquired: true, result };
+        }
+        finally {
+          clearInterval(heartbeat);
+          clearTimeout(deadline);
+          controller.abort(new Error('Single-instance batch provision lease has ended'));
+          await checking?.catch(() => undefined);
+        }
+      }, { timeout: 15 * 60_000, maxWait: 30_000 });
+    } finally {
+      controller.abort(new Error('Single-instance batch provision lease has ended'));
+    }
   }
 
   async commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput) {

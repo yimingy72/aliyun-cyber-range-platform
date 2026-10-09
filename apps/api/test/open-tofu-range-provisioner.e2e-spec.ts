@@ -953,12 +953,7 @@ describe('OpenTofuRangeProvisioner', () => {
         }),
       }),
     );
-    expect(runner.validate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceDir,
-        varsFilePath,
-      }),
-    );
+    expect(runner.validate).not.toHaveBeenCalled();
     expect(runner.plan).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceDir,
@@ -982,8 +977,6 @@ describe('OpenTofuRangeProvisioner', () => {
       expect.objectContaining({ stepName: 'render_template', status: 'succeeded' }),
       expect.objectContaining({ stepName: 'tofu_init', status: 'running' }),
       expect.objectContaining({ stepName: 'tofu_init', status: 'succeeded' }),
-      expect.objectContaining({ stepName: 'tofu_validate', status: 'running' }),
-      expect.objectContaining({ stepName: 'tofu_validate', status: 'succeeded' }),
       expect.objectContaining({ stepName: 'tofu_plan', status: 'running' }),
       expect.objectContaining({ stepName: 'tofu_plan', status: 'succeeded' }),
       expect.objectContaining({ stepName: 'tofu_apply', status: 'running' }),

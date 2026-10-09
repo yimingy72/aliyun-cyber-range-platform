@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -18,6 +18,7 @@ import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } fro
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
+import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatchLease } from '../admin/single-instance-opentofu-execution.service';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
   AliyunEcsResourceClient,
@@ -32,6 +33,7 @@ import {
 } from './provisioning.types';
 
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
+const SINGLE_INSTANCE_REFRESH_DELAY_MS = 2_000;
 const DEFAULT_INTERRUPTED_JOB_STALE_AFTER_MS = 5 * 60 * 1_000;
 const DEFAULT_PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS = 5 * 60 * 1_000;
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -48,6 +50,7 @@ type SingleInstanceJobInput = {
   effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
   runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
   reportStep: RangeProvisionStepReporter;
+  batchLease?: SingleInstanceOpenTofuBatchLease;
 };
 type SingleInstanceExecutionItem = { instance: RangeInstanceRecord; job: ProvisionJobRecord };
 
@@ -61,6 +64,7 @@ export class ProvisioningWorkerService {
   private readonly rangeConcurrency = readWorkerConcurrency('PROVISIONING_WORKER_RANGE_CONCURRENCY', 2);
   private readonly singleBatchConcurrency = readWorkerConcurrency('PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY', 3);
   private readonly singleInstanceBatchExecutionService: SingleInstanceBatchExecutionService;
+  private readonly singleInstanceOpenTofuExecutionService: SingleInstanceOpenTofuExecutionService;
   private readonly platformResourceReconciliationService: PlatformResourceReconciliationService;
   private nextResourceReconciliationAt = 0;
 
@@ -70,10 +74,13 @@ export class ProvisioningWorkerService {
     private readonly systemConfigService: SystemConfigService,
     singleInstanceBatchExecutionService?: SingleInstanceBatchExecutionService,
     platformResourceReconciliationService?: PlatformResourceReconciliationService,
+    @Optional() singleInstanceOpenTofuExecutionService?: SingleInstanceOpenTofuExecutionService,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
       new SingleInstanceBatchExecutionService(this.adminRepository, this.systemConfigService);
+    this.singleInstanceOpenTofuExecutionService = singleInstanceOpenTofuExecutionService
+      ?? new SingleInstanceOpenTofuExecutionService(this.adminRepository, this.systemConfigService, this.singleInstanceBatchExecutionService);
     this.platformResourceReconciliationService =
       platformResourceReconciliationService ??
       new PlatformResourceReconciliationService(
@@ -142,7 +149,7 @@ export class ProvisioningWorkerService {
   }
 
   async processExpiredInstances(now: Date) {
-    const instances = await this.adminRepository.listRangeInstances();
+    const instances = await this.adminRepository.listExpiredRangeInstances(now);
 
     for (const instance of instances) {
       if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
@@ -182,21 +189,31 @@ export class ProvisioningWorkerService {
   }
 
   async process(jobId: string) {
-    const claimedAt = new Date();
     const pendingJob = await this.adminRepository.getProvisionJobById(jobId);
-    const pendingInstance = pendingJob ? await this.adminRepository.getRangeInstanceById(pendingJob.rangeInstanceId) : null;
-    const job = pendingInstance?.instanceMode === 'range'
-      ? await this.adminRepository.claimRangeProvisionJob(jobId, claimedAt)
-      : await this.adminRepository.claimProvisionJob(jobId, claimedAt);
-
-    if (!job) {
+    const instance = pendingJob ? await this.adminRepository.getRangeInstanceById(pendingJob.rangeInstanceId) : null;
+    if (instance?.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu'
+      && pendingJob?.jobType !== 'refresh_status') {
+      const batchId = instance.singleInstanceBatchId;
+      if (!batchId) throw new Error('OpenTofu single-instance job has no batch identity');
+      const result = await this.adminRepository.tryWithSingleInstanceBatchProvisionLock(batchId, async lease => {
+        await this.processPendingJob(jobId, instance, { batchId, assertCurrent: () => lease.assertHeld(), signal: lease.signal });
+      });
+      if (!result.acquired) this.failedTaskRetryAfter.set(`single-batch:${batchId}`, Date.now() + readWorkerPollIntervalMs());
       return;
     }
+    await this.processPendingJob(jobId, instance);
+  }
 
+  private async processPendingJob(jobId: string, instance: RangeInstanceRecord | null, batchLease?: SingleInstanceOpenTofuBatchLease) {
+    await batchLease?.assertCurrent();
+    const claimedAt = new Date();
+    const job = instance?.instanceMode === 'range'
+      ? await this.adminRepository.claimRangeProvisionJob(jobId, claimedAt)
+      : await this.adminRepository.claimProvisionJob(jobId, claimedAt);
+    if (!job) return;
     const heartbeat = this.startProvisionJobHeartbeat([job]);
-
     try {
-      await this.processClaimedJob(job);
+      await this.processClaimedJob(job, batchLease);
     } finally {
       clearInterval(heartbeat);
     }
@@ -228,7 +245,7 @@ export class ProvisioningWorkerService {
     }
   }
 
-  private async processClaimedJob(job: ProvisionJobRecord) {
+  private async processClaimedJob(job: ProvisionJobRecord, batchLease?: SingleInstanceOpenTofuBatchLease) {
     const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
 
     if (!instance) {
@@ -272,6 +289,7 @@ export class ProvisioningWorkerService {
           effectiveJobType,
           runtimeConfig,
           reportStep,
+          batchLease,
         });
         this.nextResourceReconciliationAt = 0;
         return;
@@ -448,6 +466,12 @@ export class ProvisioningWorkerService {
       this.nextResourceReconciliationAt = 0;
     } catch (error) {
       if (!(await this.ownsProvisionJobClaim(job))) {
+        return;
+      }
+      if (instance.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu') {
+        await this.adminRepository.commitSingleInstanceClaim(job, {
+          status: 'destroy_failed', errorSummary: 'OpenTofu batch execution was interrupted; persisted state requires recovery before retry',
+        }, { status: 'failed', finishedAt: new Date(), errorSummary: 'OpenTofu batch execution requires state recovery' });
         return;
       }
       const createFailureMessage = error instanceof Error ? error.message : 'Unknown provisioning error';
@@ -628,42 +652,31 @@ export class ProvisioningWorkerService {
 
   private async startEligiblePendingJobs() {
     this.clearExpiredTaskFailures();
-    const pendingJobs = (await this.adminRepository.listProvisionJobs()).filter((job) => job.status === 'pending');
-
-    if (!pendingJobs.length) {
-      return 0;
-    }
-
-    const instances = await this.adminRepository.listRangeInstances();
-    const instancesById = new Map(instances.map((instance) => [instance.id, instance]));
     let started = 0;
-
-    for (const job of pendingJobs) {
-      if (this.failedTaskRetryAfter.has(job.id)) continue;
-      const instance = instancesById.get(job.rangeInstanceId);
-
-      if (!instance) {
-        continue;
+    let after: { createdAt: Date; id: string } | undefined;
+    const now = new Date();
+    while (this.activeRangeInstanceIds.size < this.rangeConcurrency || this.activeSingleBatchIds.size < this.singleBatchConcurrency) {
+      const pendingJobs = await this.adminRepository.listPendingProvisionJobs({ limit: 100, now, after });
+      if (!pendingJobs.length) break;
+      const instances = await this.adminRepository.listProvisioningInstancesByIds([...new Set(pendingJobs.map(job => job.rangeInstanceId))]);
+      const instancesById = new Map(instances.map(instance => [instance.id, instance]));
+      for (const job of pendingJobs) {
+        if (this.failedTaskRetryAfter.has(job.id)) continue;
+        const instance = instancesById.get(job.rangeInstanceId);
+        if (!instance) continue;
+        if (instance.instanceMode === 'single') {
+          if (this.startSingleInstanceJob(job, instance.singleInstanceBatchId ?? instance.id)) started += 1;
+          continue;
+        }
+        if (this.activeRangeInstanceIds.size >= this.rangeConcurrency || this.activeRangeInstanceIds.has(instance.id)) continue;
+        this.activeRangeInstanceIds.add(instance.id);
+        started += 1;
+        this.trackTask(this.process(job.id).finally(() => this.activeRangeInstanceIds.delete(instance.id)), job.id);
       }
-
-      if (instance.instanceMode === 'single') {
-        if (this.startSingleInstanceJob(job, instance.singleInstanceBatchId ?? instance.id)) started += 1;
-        continue;
-      }
-
-      if (this.activeRangeInstanceIds.size >= this.rangeConcurrency || this.activeRangeInstanceIds.has(instance.id)) {
-        continue;
-      }
-
-      this.activeRangeInstanceIds.add(instance.id);
-      started += 1;
-      this.trackTask(
-        this.process(job.id).finally(() => {
-          this.activeRangeInstanceIds.delete(instance.id);
-        }), job.id,
-      );
+      const last = pendingJobs[pendingJobs.length - 1];
+      after = { createdAt: last.createdAt, id: last.id };
+      if (pendingJobs.length < 100) break;
     }
-
     return started;
   }
 
@@ -751,9 +764,10 @@ export class ProvisioningWorkerService {
     this.startSingleInstanceJob(job, batchLockId);
   }
 
-  private startSingleInstanceJob(job: ProvisionJobRecord, batchLockId: string) {
+  private startSingleInstanceJob(job: Pick<ProvisionJobRecord, 'id'>, batchLockId: string) {
     this.clearExpiredTaskFailures();
-    if ((this.failedTaskRetryAfter.get(job.id) ?? 0) > Date.now()) return false;
+    if ((this.failedTaskRetryAfter.get(job.id) ?? 0) > Date.now()
+      || (this.failedTaskRetryAfter.get(`single-batch:${batchLockId}`) ?? 0) > Date.now()) return false;
     if (this.activeSingleBatchIds.size >= this.singleBatchConcurrency || this.activeSingleBatchIds.has(batchLockId)) {
       return false;
     }
@@ -810,7 +824,12 @@ export class ProvisioningWorkerService {
         }
       });
 
-      await this.singleInstanceBatchExecutionService.executeCreateBatch(items);
+      if (input.instance.singleInstanceConfig?.executionBackend === 'opentofu') {
+        if (!input.batchLease) throw new Error('OpenTofu single-instance execution requires its batch lease');
+        await this.singleInstanceOpenTofuExecutionService.executeCreateBatch(items, input.batchLease);
+      } else {
+        await this.singleInstanceBatchExecutionService.executeCreateBatch(items);
+      }
 
       for (const item of items) {
         const refreshedInstance = await this.adminRepository.getRangeInstanceById(item.instance.id);
@@ -831,18 +850,23 @@ export class ProvisioningWorkerService {
       }
     });
 
-    await this.singleInstanceBatchExecutionService.executeDestroyBatch(items);
+    if (input.instance.singleInstanceConfig?.executionBackend === 'opentofu') {
+      if (!input.batchLease) throw new Error('OpenTofu single-instance execution requires its batch lease');
+      await this.singleInstanceOpenTofuExecutionService.executeDestroyBatch(items, input.batchLease);
+    } else {
+      await this.singleInstanceBatchExecutionService.executeDestroyBatch(items);
+    }
   }
 
   private async queueSingleInstanceRefresh(item: SingleInstanceExecutionItem) {
     await this.adminRepository.withSingleInstanceControlLock(async () => {
       const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
-      if (!needsSingleInstancePublicIpRefresh(current) || current?.lastJobId !== item.job.id) return;
+      if (!needsSingleInstancePublicIpRefresh(current) || current?.lastJobId !== item.job.id
+        || current.expiresAt && current.expiresAt <= new Date()) return;
       const previous = await this.adminRepository.getProvisionJobById(item.job.id);
       if (!previous || !['succeeded','failed'].includes(previous.status)) return;
-      const job=await this.adminRepository.createProvisionJob({rangeInstanceId:item.instance.id,jobType:'refresh_status',triggeredBy:item.job.triggeredBy});
+      const job=await this.adminRepository.createProvisionJob({rangeInstanceId:item.instance.id,jobType:'refresh_status',triggeredBy:item.job.triggeredBy,availableAt:new Date(Date.now()+SINGLE_INSTANCE_REFRESH_DELAY_MS)});
       await this.adminRepository.updateRangeInstance(item.instance.id,{lastJobId:job.id});
-      this.dispatch(job.id);
     });
   }
 
@@ -866,18 +890,18 @@ export class ProvisioningWorkerService {
       return [currentItem];
     }
 
-    const groups = await this.adminRepository.listSingleInstanceBatchesWithInstances();
-    const group = groups.find((entry) => entry.batch.id === batchId);
+    const group = await this.adminRepository.getSingleInstanceBatchWithInstancesById(batchId);
 
     if (!group) {
       return [currentItem];
     }
 
     const targetStatus = input.effectiveJobType === 'create' ? 'pending_create' : 'pending_destroy';
-    const candidateInstances = group.instances.filter((instance) => instance.status === targetStatus
+    const candidateInstances = group.instances.filter((instance) => (instance.status === targetStatus
+      || input.instance.singleInstanceConfig?.executionBackend === 'opentofu' && input.effectiveJobType === 'create' && instance.status === 'creating')
       && instance.ownerUserId === input.instance.ownerUserId
-      && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId])
-        === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId]));
+      && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId,instance.singleInstanceConfig?.executionBackend])
+        === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId,input.instance.singleInstanceConfig?.executionBackend]));
     const jobsById = new Map(
       (
         await Promise.all(
@@ -1187,7 +1211,7 @@ export class ProvisioningWorkerService {
       defaultRegion: string;
     },
   ) {
-    if (!resourceSummary) {
+    if (!resourceSummary || resourceSummary.mode === 'dry-run') {
       return [];
     }
 
@@ -1203,51 +1227,35 @@ export class ProvisioningWorkerService {
       residualResources.push(`vpc:${vpcId}`);
     }
 
-    for (const subnetId of Object.values(resourceSummary.subnetIds ?? {})) {
-      if (subnetId && vpcExists && (await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, vpcId ?? undefined))) {
-        residualResources.push(`vswitch:${subnetId}`);
+    const checks: Array<() => Promise<string[]>> = [];
+    if (vpcExists) {
+      for (const subnetId of new Set(Object.values(resourceSummary.subnetIds ?? {}).filter(Boolean))) {
+        checks.push(async () => await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, vpcId ?? undefined) ? [`vswitch:${subnetId}`] : []);
       }
     }
-
-    const existingInstanceIds = await this.findExistingInstanceIds(
-      Object.values(resourceSummary.hostIds ?? {}).filter(Boolean),
-      runtimeConfig,
-      regionId,
-    );
-    residualResources.push(
-      ...existingInstanceIds.map((instanceId) => `instance:${instanceId}`),
-    );
-
-    for (const networkInterfaceId of Object.values(
-      resourceSummary.secondaryNetworkInterfaceIds ?? {},
-    )) {
-      if (
-        networkInterfaceId &&
-        (await this.checkNetworkInterfaceExists(
-          networkInterfaceId,
-          runtimeConfig,
-          regionId,
-        ))
-      ) {
-        residualResources.push(`eni:${networkInterfaceId}`);
-      }
+    checks.push(async () => (await this.findExistingInstanceIds(Object.values(resourceSummary.hostIds ?? {}).filter(Boolean), runtimeConfig, regionId))
+      .map(id => `instance:${id}`));
+    for (const id of new Set(Object.values(resourceSummary.secondaryNetworkInterfaceIds ?? {}).filter(Boolean))) {
+      checks.push(async () => await this.checkNetworkInterfaceExists(id, runtimeConfig, regionId) ? [`eni:${id}`] : []);
     }
-
-    for (const natGatewayId of Object.values(resourceSummary.natGatewayIds ?? {})) {
-      if (natGatewayId && (await this.checkNatGatewayExists(natGatewayId, runtimeConfig, regionId))) {
-        residualResources.push(`nat:${natGatewayId}`);
-      }
+    for (const id of new Set(Object.values(resourceSummary.natGatewayIds ?? {}).filter(Boolean))) {
+      checks.push(async () => await this.checkNatGatewayExists(id, runtimeConfig, regionId) ? [`nat:${id}`] : []);
     }
-
-    const eipIds = [
-      ...(resourceSummary.eipAllocationId ? [resourceSummary.eipAllocationId] : []),
-      ...Object.values(resourceSummary.eipAllocationIds ?? {}).filter(Boolean),
-    ];
-    for (const allocationId of eipIds) {
-      if (await this.checkEipExists(allocationId, runtimeConfig, regionId)) {
-        residualResources.push(`eip:${allocationId}`);
-      }
+    const eipIds = new Set([resourceSummary.eipAllocationId, ...Object.values(resourceSummary.eipAllocationIds ?? {})].filter((id): id is string => Boolean(id)));
+    for (const id of eipIds) {
+      checks.push(async () => await this.checkEipExists(id, runtimeConfig, regionId) ? [`eip:${id}`] : []);
     }
+    const results: string[][] = new Array(checks.length);
+    let index = 0;
+    const outcomes = await Promise.allSettled(Array.from({ length: Math.min(4, checks.length) }, async () => {
+      while (index < checks.length) {
+        const current = index++;
+        results[current] = await checks[current]();
+      }
+    }));
+    const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+    if (failed) throw failed.reason;
+    residualResources.push(...results.flat());
 
     return residualResources;
   }
@@ -1264,29 +1272,30 @@ export class ProvisioningWorkerService {
       return [];
     }
 
-    const payload = await this.performAliyunRpcRequest<{
-      Instances?: {
-        Instance?: Array<{ InstanceId?: string }> | { InstanceId?: string };
-      };
-    }>({
-      endpoint: `ecs.${regionId}.aliyuncs.com`,
-      version: ALICLOUD_ECS_API_VERSION,
-      action: 'DescribeInstances',
-      accessKeyId: runtimeConfig.accessKeyId,
-      accessKeySecret: runtimeConfig.accessKeySecret,
-      parameters: {
-        RegionId: regionId,
-        InstanceIds: JSON.stringify(instanceIds),
-      },
-    });
-
-    const items = payload.Instances?.Instance;
-    const normalized = Array.isArray(items) ? items : items ? [items] : [];
-
-    return normalized
-      .map((item) => item?.InstanceId)
-      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    const ids = [...new Set(instanceIds)];
+    const existing: string[] = [];
+    for (let offset = 0; offset < ids.length; offset += 100) {
+      const requested = ids.slice(offset, offset + 100);
+      const payload = await this.performAliyunRpcRequest<{
+        TotalCount?: number;
+        Instances?: { Instance?: Array<{ InstanceId?: string }> | { InstanceId?: string } };
+      }>({
+        endpoint: `ecs.${regionId}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action: 'DescribeInstances',
+        accessKeyId: runtimeConfig.accessKeyId, accessKeySecret: runtimeConfig.accessKeySecret,
+        parameters: { RegionId: regionId, InstanceIds: JSON.stringify(requested), PageSize: '100' },
+      });
+      const raw = payload.Instances?.Instance;
+      const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : null;
+      if (!rows || rows.some(row => !row || typeof row.InstanceId !== 'string' || !requested.includes(row.InstanceId))
+        || new Set(rows.map(row => row.InstanceId)).size !== rows.length
+        || payload.TotalCount !== undefined && payload.TotalCount !== rows.length) {
+        throw new Error('ECS destroy verification response is incomplete or contains unexpected resource identities');
+      }
+      existing.push(...rows.map(row => row.InstanceId!));
+    }
+    return existing;
   }
+
 
   private async checkVpcExists(
     vpcId: string,
@@ -1723,7 +1732,7 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
     instance &&
       instance.instanceMode === 'single' &&
       (instance.status === 'creating' || instance.status === 'running') &&
-      instance.resourceSummary?.mode === 'ecs-native' &&
+      ['ecs-native', 'opentofu'].includes(instance.resourceSummary?.mode ?? '') &&
       instance.resourceSummary?.hostIds &&
       (instance.status === 'creating' || !instance.accessEntry?.publicIp),
   );
