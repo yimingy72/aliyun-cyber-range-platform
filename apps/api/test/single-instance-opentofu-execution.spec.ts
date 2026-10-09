@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { AdminRepository, ProvisionJobRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { SingleInstanceOpenTofuExecutionService, SingleInstanceOpenTofuLeaseLostError } from '../src/admin/single-instance-opentofu-execution.service';
@@ -111,6 +113,13 @@ describe('single-instance OpenTofu batch execution', () => {
     expect((test.instances[0].runtimeTopologyGraph?.nodes as any[])[0].data.privateIp).toBe('172.16.1.20');
     expect(test.runner.init.mock.calls[0][0].env.ALICLOUD_SECRET_KEY).toBe('test-secret-key');
     await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+    // Parse the actual generated root wrapper, not just the static child module.
+    const execute = promisify(execFile);
+    await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['fmt', '-write=false', test.workspace]);
+    if (process.env.SINGLE_TOFU_OFFLINE_VALIDATION === '1') {
+      await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['init', '-backend=false', '-input=false', '-no-color'], { cwd: test.workspace });
+      await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['validate', '-no-color'], { cwd: test.workspace });
+    }
   });
 
   it('freezes unclaimed pending siblings without creating them', async () => {

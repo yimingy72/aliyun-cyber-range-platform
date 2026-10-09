@@ -242,7 +242,7 @@ export class SingleInstanceOpenTofuExecutionService {
     }
     const members = Object.fromEntries(Object.entries(context.manifest.members).filter(([id]) => ids.has(id)));
     const wrapper = `provider "alicloud" { region = var.region_id }\nmodule "single_batch" {\n  source = ${JSON.stringify(path.join(this.projectRoot, MODULE_PATH))}\n  members = var.members\n  member_passwords = var.member_passwords\n  security_group_id = var.security_group_id\n}\noutput "members" { value = module.single_batch.members }\n`;
-    const variables = 'variable "region_id" { type = string }\nvariable "members" { type = any }\nvariable "security_group_id" { type = string }\nvariable "member_passwords" { type = map(string)\n sensitive = true }\n';
+    const variables = 'variable "region_id" { type = string }\nvariable "members" { type = any }\nvariable "security_group_id" { type = string }\nvariable "member_passwords" {\n  type = map(string)\n  sensitive = true\n}\n';
     await this.atomicText(context, 'main.tf', wrapper);
     await this.atomicText(context, 'variables.tf', variables);
     await this.atomicText(context, 'versions.tf', 'terraform {\n  required_providers {\n    alicloud = { source = "aliyun/alicloud", version = "= 1.282.0" }\n  }\n}\n');
