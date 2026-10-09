@@ -7,7 +7,7 @@ import {
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 describe('PlatformResourceReconciliationService', () => {
-  it('restores a missing host summary from a tagged ECS and tags its system disk', async () => {
+  it('does not rewrite an active range or tag its disks from a background cloud observation', async () => {
     const repository = createMemoryAdminRepository();
     const instance = await repository.createRangeInstance({
       name: 'recoverable-range',
@@ -40,29 +40,26 @@ describe('PlatformResourceReconciliationService', () => {
     );
 
     await expect(service.reconcile(new Date('2026-07-28T00:00:00.000Z'))).resolves.toEqual({
-      recovered: 1,
+      recovered: 0,
       drifts: 0,
       skipped: false,
     });
-    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
-      expect.objectContaining({
-        resourceSummary: expect.objectContaining({
-          hostIds: { entry: 'i-recoverable-01' },
-          systemDiskIds: { entry: 'd-recoverable-01' },
-        }),
-      }),
-    );
-    expect(ecsClient.tagResources).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resourceType: 'disk',
-        resourceIds: ['d-recoverable-01'],
-        tags: expect.objectContaining({
-          PlatformManaged: 'true',
-          PlatformResourceType: 'disk',
-          PlatformHostKey: 'entry',
-        }),
-      }),
-    );
+    expect(await repository.getRangeInstanceById(instance.id)).toMatchObject({ status: 'creating', resourceSummary: null });
+    expect(ecsClient.tagResources).not.toHaveBeenCalled();
+
+  });
+
+  it('records terminal legacy resources without an account binding as drift without assigning user bills or changing state', async () => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({ name: 'legacy', instanceMode: 'range', status: 'destroy_failed', ownerUserId: 'alice', errorSummary: 'cleanup denied' });
+    const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'alice' });
+    await repository.updateProvisionJob(job.id, { status: 'failed' }); await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
+    const client = { getDefaultCredentials: jest.fn(async () => ({ accessKeyId: 'fixture', accessKeySecret: 'fixture', regionId: 'cn-hangzhou', accountUid: 'uid-other', cloudAccountContextId: 'context-other', accountUidResolved: true })),
+      listPlatformManagedInstances: jest.fn(async () => [{ instanceId: 'i-unknown', diskIds: ['d-unknown'], tags: { CreatedBy: 'cyber-range-platform', PlatformManaged: 'true', RangeInstanceId: instance.id, PlatformHostKey: 'entry', PlatformUserId: 'alice' } }]), tagResources: jest.fn() };
+    const service = new PlatformResourceReconciliationService(repository, client as any);
+    expect(await service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
+    expect(await repository.getRangeInstanceById(instance.id)).toMatchObject({ status: 'destroy_failed', resourceSummary: null, errorSummary: 'cleanup denied' });
+    expect(await repository.listBillingLedgerResources()).toEqual([]); expect(client.tagResources).not.toHaveBeenCalled();
   });
 
   it('persists critical drift instead of deleting a cloud ECS without a platform record', async () => {

@@ -405,6 +405,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const publicEntry = readOutputValue(outputs.public_entry);
     const resourceSummary = readOutputValue(outputs.resource_summary);
     const stateResources = await this.inspectResources(input);
+    const mergeIds = (outputs: Record<string, string> | null | undefined, state: Record<string, string> | null | undefined) => {
+      for (const [key, id] of Object.entries(state ?? {})) {
+        if (outputs?.[key] && outputs[key] !== id) throw new Error('OpenTofu outputs conflict with persisted resource identity');
+      }
+      return outputs || state ? { ...outputs, ...state } : null;
+    };
+    if (resourceSummary?.vpc_id && stateResources?.vpcId && resourceSummary.vpc_id !== stateResources.vpcId)
+      throw new Error('OpenTofu outputs conflict with persisted VPC identity');
 
     return {
       accessEntry: {
@@ -418,18 +426,18 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         mode: 'opentofu',
         workspaceDir: workspace.workspaceDir,
         outputFilePath: workspace.outputsFilePath,
-        vpcId: resourceSummary?.vpc_id ?? null,
-        subnetIds: resourceSummary?.subnet_ids ?? null,
-        networkAclIds: resourceSummary?.network_acl_ids ?? null,
-        securityGroupIds: stateResources?.securityGroupIds ? { ...resourceSummary?.security_group_ids, ...stateResources.securityGroupIds } : resourceSummary?.security_group_ids ?? null,
-        hostIds: resourceSummary?.host_ids ?? null,
+        vpcId: stateResources?.vpcId ?? resourceSummary?.vpc_id ?? null,
+        subnetIds: mergeIds(resourceSummary?.subnet_ids, stateResources?.subnetIds),
+        networkAclIds: mergeIds(resourceSummary?.network_acl_ids, stateResources?.networkAclIds),
+        securityGroupIds: mergeIds(resourceSummary?.security_group_ids, stateResources?.securityGroupIds),
+        hostIds: mergeIds(resourceSummary?.host_ids, stateResources?.hostIds),
         ...(stateResources?.systemDiskIds ? { systemDiskIds: stateResources.systemDiskIds } : {}),
-        secondaryNetworkInterfaceIds: resourceSummary?.secondary_network_interface_ids ?? null,
-        natGatewayIds: resourceSummary?.nat_gateway_ids ?? null,
-        snatEntryIds: resourceSummary?.snat_entry_ids ?? null,
-        dnatEntryIds: resourceSummary?.dnat_entry_ids ?? null,
+        secondaryNetworkInterfaceIds: mergeIds(resourceSummary?.secondary_network_interface_ids, stateResources?.secondaryNetworkInterfaceIds),
+        natGatewayIds: mergeIds(resourceSummary?.nat_gateway_ids, stateResources?.natGatewayIds),
+        snatEntryIds: mergeIds(resourceSummary?.snat_entry_ids, stateResources?.snatEntryIds),
+        dnatEntryIds: mergeIds(resourceSummary?.dnat_entry_ids, stateResources?.dnatEntryIds),
         eipAllocationId: resourceSummary?.eip_allocation_id ?? null,
-        eipAllocationIds: resourceSummary?.eip_allocation_ids ?? null,
+        eipAllocationIds: mergeIds(resourceSummary?.eip_allocation_ids, stateResources?.eipAllocationIds),
         bootstrapHostKeys: resourceSummary?.bootstrap_host_keys ?? null,
         runtimeSelections: resourceSummary?.runtime_selections ?? null,
         selectedZoneId: resourceSummary?.selected_zone_id ?? null,
@@ -518,6 +526,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         const tags = instance.attributes.tags as Record<string, unknown> | undefined;
         if (tagTypes.has(instance.type) && tags?.range_instance_id !== input.rangeInstanceId && tags?.RangeInstanceId !== input.rangeInstanceId)
           throw new Error('OpenTofu range resource ownership could not be verified');
+        if (tagTypes.has(instance.type) && ['CloudAccountContextId', 'CloudAccountUid'].some(key => input.billingTags?.[key] && tags?.[key] !== input.billingTags[key]))
+          throw new Error('OpenTofu range resource source account could not be verified');
       }
       if (instance.type === 'alicloud_vpc') {
         if (summary.vpcId && summary.vpcId !== instance.attributes.id) throw new Error('OpenTofu state contains multiple VPCs');

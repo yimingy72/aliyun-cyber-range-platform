@@ -263,6 +263,7 @@ export class ProvisioningWorkerService {
       await this.updateRangeForClaim(job, { errorSummary: null });
     }
     const reportStep = this.createStepReporter(job.id);
+    let rangeApplyStarted = false;
     let failedCreateCleanupInput: RangeProvisionDestroyInput | null = null;
     let failedCreateCleanupContext: { id: string; accountUid: string; regionId: string } | null = null;
 
@@ -303,6 +304,7 @@ export class ProvisioningWorkerService {
           instance,
           runtimeConfig,
           accountContext: rangeContext!,
+          onApplyStart: () => { rangeApplyStarted = true; },
           signal,
           reportStep,
         });
@@ -456,6 +458,7 @@ export class ProvisioningWorkerService {
             resourceSummary,
             errorSummary: null,
           });
+          await this.recordRangeResourceInventory(job, resourceSummary);
           await syncRangeInstanceBillingLedger({
             repository: this.adminRepository,
             instance,
@@ -489,7 +492,7 @@ export class ProvisioningWorkerService {
         }, { status: 'failed', finishedAt: new Date(), errorSummary: 'Instance execution requires state recovery' });
         return;
       }
-      if (instance.instanceMode === 'range' && job.jobType === 'update' && current?.resourceSummary?.executionContext) {
+      if (instance.instanceMode === 'range' && job.jobType === 'update' && rangeApplyStarted && current?.resourceSummary?.executionContext) {
         try {
           const context = await this.resolveRangeAccountContext(current, job);
           await this.captureRangeResources(job, current, { rangeInstanceId: current.id,
@@ -511,7 +514,9 @@ export class ProvisioningWorkerService {
         : null;
       const message = appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage);
 
-      await this.failJob(job, instance, message, cleanupFailureMessage || (!failedCreateCleanupInput && (current?.resourceSummary?.creationAttempted || current?.resourceSummary?.mode === 'opentofu')) ? 'destroy_failed' : undefined);
+      const needsRecovery = cleanupFailureMessage || (job.jobType === 'update' ? rangeApplyStarted
+        : !failedCreateCleanupInput && (current?.resourceSummary?.creationAttempted || current?.resourceSummary?.mode === 'opentofu'));
+      await this.failJob(job, instance, message, needsRecovery ? 'destroy_failed' : undefined);
     }
   }
 
@@ -536,6 +541,7 @@ export class ProvisioningWorkerService {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
       allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
       requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
+      billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid! } : undefined,
     };
     const evidence = await this.captureRangeResources(job, instance, cleanupInput, accountContext);
     await this.rangeProvisioner.destroy(cleanupInput);
@@ -556,6 +562,7 @@ export class ProvisioningWorkerService {
     runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
     reportStep: RangeProvisionStepReporter;
     accountContext: Awaited<ReturnType<ProvisioningWorkerService['resolveAccountContext']>>;
+    onApplyStart: () => void;
     signal?: AbortSignal;
   }) {
     const topologySnapshot = this.readUpdateTopologySnapshot(input.job.topologySnapshot);
@@ -579,7 +586,7 @@ export class ProvisioningWorkerService {
       preserveWorkspaceState: true,
       requirePersistedState: true,
       signal: input.signal,
-      onApplyStart: () => this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal),
+      onApplyStart: async () => { await this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal); input.onApplyStart(); },
       runtimeConfig: input.runtimeConfig,
       runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? undefined,
       topologyGraph: topologySnapshot.topologyGraph,
@@ -604,6 +611,7 @@ export class ProvisioningWorkerService {
       const current = await this.adminRepository.getRangeInstanceById(input.instance.id);
       const resourceSummary = { ...result.resourceSummary, creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext };
       await this.updateRangeForClaim(input.job, { resourceSummary });
+      await this.recordRangeResourceInventory(input.job, resourceSummary);
       await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: input.instance, regionId: input.accountContext.defaultRegion, cloudAccountUid: input.accountContext.accountUid, resourceSummary, sourceProvisionJobId: input.job.id, billingStartAt: input.instance.createdAt });
       await this.adminRepository.completeRangeInstanceDraftApply(input.instance.id, {
         runtimeTopologyGraph: topologySnapshot.topologyGraph,
@@ -770,6 +778,16 @@ export class ProvisioningWorkerService {
     signal?.throwIfAborted();
   }
 
+  private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
+    const inventory = Object.fromEntries(['vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds',
+      'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
+      .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
+    const now = new Date();
+    await this.adminRepository.createProvisionJobStepLog({ jobId: job.id, stepName: 'range_resource_inventory', status: 'succeeded',
+      message: JSON.stringify({ version: 1, rangeInstanceId: job.rangeInstanceId, executionContext: summary.executionContext, resources: inventory }),
+      startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+  }
+
   private async captureRangeResources(job: ProvisionJobRecord, instance: RangeInstanceRecord,
     input: RangeProvisionDestroyInput, context: { defaultRegion: string; accountUid: string | null }) {
     input.signal?.throwIfAborted();
@@ -777,7 +795,9 @@ export class ProvisioningWorkerService {
     const current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
     if (this.rangeProvisioner.mode === 'dry-run') return current;
     if (!this.rangeProvisioner.inspectResources) throw new Error('Range provider cannot inspect persisted resource identities before cleanup');
-    const observed = await this.rangeProvisioner.inspectResources(input);
+    const bound = current.resourceSummary?.executionContext;
+    const inspectedInput = { ...input, billingTags: { ...input.billingTags, ...(bound ? { CloudAccountContextId: bound.cloudAccountContextId, CloudAccountUid: bound.cloudAccountUid } : {}) } };
+    const observed = await this.rangeProvisioner.inspectResources(inspectedInput);
     if (!observed && input.requirePersistedState) throw new Error('Range persisted state is missing; cleanup cannot be proven');
     const summary: RangeResourceSummary = { ...current.resourceSummary, mode: 'opentofu' };
     if (observed) for (const [field, value] of Object.entries(observed)) {
@@ -791,6 +811,7 @@ export class ProvisioningWorkerService {
       }
     }
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
+    await this.recordRangeResourceInventory(job, summary);
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted,
       resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid,
       sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });

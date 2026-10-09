@@ -18,6 +18,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 
 function createSystemConfigServiceStub() {
   return {
+    getAccountContext: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'test-ak', accessKeySecret: 'test-sk', cloudAccountContextId: 'fixture-context', accountUid: 'fixture-uid', accountUidResolved: true }),
     getSnapshot: jest.fn().mockResolvedValue({
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-hangzhou',
@@ -1016,6 +1017,7 @@ describe('ProvisioningWorkerService update flow', () => {
 
     const instance = await repository.createRangeInstance({
       name: 'worker-update-range',
+      resourceSummary: { mode: 'opentofu', creationAttempted: true, executionContext: { cloudAccountContextId: 'fixture-context', cloudAccountUid: 'fixture-uid', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' } },
       createdBy: 'admin',
       templateId: template.id,
       sourceTemplateVersionId: template.currentDraftVersionId,

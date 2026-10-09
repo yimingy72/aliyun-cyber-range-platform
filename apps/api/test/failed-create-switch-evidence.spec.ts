@@ -60,7 +60,7 @@ describe('range automatic cleanup proof', () => {
     const instance = await repository.createRangeInstance({ name: 'Cleanup proof range', templateId: template.id, status: 'pending_create', allocatedCidr: '10.99.0.0/16' });
     const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin' });
     await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
-    const provisioner = { create: jest.fn().mockRejectedValue(new Error('Injected create failure')), destroy: jest.fn().mockResolvedValue(undefined) };
+    const provisioner = { inspectResources: jest.fn().mockResolvedValue(null), create: jest.fn().mockRejectedValue(new Error('Injected create failure')), destroy: jest.fn().mockResolvedValue(undefined) };
     const system = { getSnapshot: jest.fn().mockResolvedValue(snapshot), getAccountContext: jest.fn().mockResolvedValue({ ...snapshot, cloudAccountContextId: 'context-source' }) };
     const worker = new ProvisioningWorkerService(repository, provisioner as any, system as any);
     return { repository, instance, job, provisioner, worker };
