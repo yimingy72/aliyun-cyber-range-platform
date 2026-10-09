@@ -62,7 +62,7 @@ type ListMode = 'active' | 'history';
 const activeInstanceColumns = [
   { id: 'name', label: '实例 / 批次', priority: 'primary' },
   { id: 'image', label: '镜像', priority: 'secondary' },
-  { id: 'specification', label: '规格', priority: 'secondary' },
+  { id: 'specification', label: '数量 / 规格', priority: 'secondary' },
   { id: 'public-ip', label: '公网 IP', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'secondary' },
   { id: 'created-at', label: '创建时间', priority: 'detail' },
@@ -75,7 +75,7 @@ const activeInstanceColumns = [
 const historyInstanceColumns = [
   { id: 'name', label: '实例 / 批次', priority: 'primary' },
   { id: 'image', label: '镜像', priority: 'secondary' },
-  { id: 'summary', label: '规格 / 汇总', priority: 'secondary' },
+  { id: 'summary', label: '数量 / 规格', priority: 'secondary' },
   { id: 'public-ip', label: '公网 IP', priority: 'tertiary' },
   { id: 'status', label: '状态', priority: 'secondary' },
   { id: 'started-at', label: '开启时间', priority: 'detail' },
@@ -250,12 +250,17 @@ function getSpecLabel(instance: RangeInstance) {
   return `${cpu} 核 / ${memory} G`;
 }
 
-function getBatchSpecLabel(group: SingleInstanceBatchGroup) {
-  return `${group.batch.quantity} 台 · ${group.batch.cpu} 核 / ${group.batch.memory} G`;
+function getBatchQuantityLabel(group: SingleInstanceBatchGroup) {
+  return `${group.batch.quantity} 台`;
 }
 
 function getPublicIp(instance: RangeInstance) {
   return instance.accessEntry?.publicIp?.trim() || '暂无';
+}
+
+function getBatchPublicIp(group: SingleInstanceBatchGroup) {
+  const firstInstance = group.instances[0];
+  return firstInstance ? getPublicIp(firstInstance) : '暂无';
 }
 
 function escapeCsvCell(value: string) {
@@ -1669,9 +1674,9 @@ export function SingleInstancesScreen({
                                 </AdminDataTableCell>
                                 <AdminDataTableCell column={columns[1]}>{group.batch.imageDisplayName}</AdminDataTableCell>
                                 <AdminDataTableCell column={columns[2]}>
-                                  {isHistoryGroup ? `${getBatchSpecLabel(group)} · ${formatBatchSummary(group.instances)}` : getBatchSpecLabel(group)}
+                                  {getBatchQuantityLabel(group)}
                                 </AdminDataTableCell>
-                                <AdminDataTableCell column={columns[3]}>批次实例</AdminDataTableCell>
+                                <AdminDataTableCell column={columns[3]}>{getBatchPublicIp(group)}</AdminDataTableCell>
                                 {isHistoryGroup ? (
                                   <>
                                     <AdminDataTableCell column={columns[4]}>

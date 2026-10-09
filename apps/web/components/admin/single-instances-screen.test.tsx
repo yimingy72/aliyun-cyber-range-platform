@@ -370,6 +370,47 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '打包为镜像' })).toBeTruthy();
   });
 
+  it.each([
+    { quantity: 2, ips: [' 47.20.30.40 ', '47.20.30.41'], expectedIp: '47.20.30.40' },
+    { quantity: 1, ips: ['47.20.30.42'], expectedIp: '47.20.30.42' },
+    { quantity: 2, ips: ['', '47.20.30.43'], expectedIp: '暂无' },
+  ])('shows only quantity and the first member IP for a history batch ($quantity, $expectedIp)', async ({ quantity, ips, expectedIp }) => {
+    searchParamsState.value = 'view=history';
+    fetchSingleInstancesMock.mockResolvedValue({
+      batches: [{
+        batch: {
+          id: 'summary-batch', name: 'history-batch-summary', imageDisplayName: 'Ubuntu 24.04 LTS',
+          imageId: 'm-summary', platformImageAssetId: 'summary-asset', cpu: 2, memory: 4,
+          systemDiskSize: 40, quantity, createdBy: 'admin',
+          createdAt: '2026-07-08T09:00:00.000Z', expiresAt: '2026-07-10T12:00:00.000Z',
+        },
+        instances: ips.map((ip, index) => ({
+          id: `summary-member-${index + 1}`, name: `summary-member-${index + 1}`,
+          createdBy: 'admin', instanceMode: 'single', status: 'destroyed',
+          accessEntry: ip ? { publicIp: ip } : null,
+          singleInstanceConfig: { hostKey: 'summary-host', imageDisplayName: 'Ubuntu 24.04 LTS', cpu: 2, memory: 4 },
+        })),
+      }],
+      standaloneInstances: [],
+    });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [] });
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+
+    const batchRow = (await screen.findByText('history-batch-summary')).closest('tr')!;
+    const cells = within(batchRow).getAllByRole('cell');
+    expect(cells[2].textContent).toBe(`${quantity} 台`);
+    expect(cells[3].textContent).toBe(expectedIp);
+    expect(cells[4].textContent).toContain(`${quantity} 已关闭`);
+    expect(within(batchRow).queryByText('批次实例')).toBeNull();
+
+    fireEvent.click(within(batchRow).getByRole('button', { name: '展开批次 history-batch-summary' }));
+    const firstMemberRow = (await screen.findByText('summary-member-1')).closest('tr')!;
+    expect(within(firstMemberRow).getByText('2 核 / 4 G')).toBeTruthy();
+    expect(within(firstMemberRow).getAllByRole('cell')[3].textContent).toBe(expectedIp);
+    expect(cells[2].textContent).toBe(`${quantity} 台`);
+  });
+
   it('opens the action menu upward when the trigger is near the viewport bottom', async () => {
     fetchSingleInstancesMock.mockResolvedValue({
       batches: [
