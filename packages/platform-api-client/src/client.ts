@@ -72,10 +72,13 @@ export class PlatformApiClient implements PlatformApiClientLike {
   private readonly cloudWorkspaceId: string | undefined;
 
   constructor(options: PlatformApiClientOptions) {
+    if (options.cloudWorkspaceId !== undefined && (!options.cloudWorkspaceId.trim() || options.cloudWorkspaceId.length > 192)) {
+      throw new Error('Invalid cloud workspace selection');
+    }
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.token = options.token;
     this.fetchImpl = options.fetch ?? fetch;
-    this.cloudWorkspaceId = options.cloudWorkspaceId;
+    this.cloudWorkspaceId = options.cloudWorkspaceId?.trim();
   }
 
   listRangeTemplates(view: RangeTemplateView = 'platform') {
