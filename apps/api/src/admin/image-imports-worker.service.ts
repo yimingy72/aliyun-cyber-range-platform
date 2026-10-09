@@ -19,6 +19,12 @@ export class ImageImportsWorkerService {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.error(`镜像导入任务轮询失败：${message}`);
       }
+      try {
+        await runInSystemCloudWorkspaceScope(() => this.imageImportsService.refreshManagedBuckets());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`镜像导入存储桶状态核验失败：${message}`);
+      }
       await sleep(IMAGE_IMPORT_POLL_INTERVAL_MS);
     }
   }

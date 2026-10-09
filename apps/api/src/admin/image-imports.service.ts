@@ -21,7 +21,8 @@ type ManagedCosBuckets = { withImportBucket<T>(input: { cloudAccountContextId: s
   getOwnedBucket(input: { bucketId: string; cloudAccountContextId: string; cloudAccountUid: string; regionId: string }): Promise<ManagedCosBucket>;
   cleanupIfIdle(input: { bucketId: string; cloudAccountContextId: string; cloudAccountUid: string; regionId: string }): Promise<unknown>;
   presignObject(input: CosObjectInput): Promise<{ url: string; headers: Record<string,string> }>;
-  requestObject(input: CosObjectInput): Promise<Response> };
+  requestObject(input: CosObjectInput): Promise<Response>;
+  refreshPendingBuckets?(): Promise<unknown> };
 
 
 const IMAGE_IMPORT_UPLOAD_TTL_MS = 30 * 60 * 1000;
@@ -305,6 +306,10 @@ export class ImageImportsService {
       throw new Error('Image import polling failed for a source workspace; other pending jobs were still processed');
     }
     return jobs.length + expiredUploads.length + terminalJobs.length;
+  }
+
+  async refreshManagedBuckets() {
+    return this.cosBuckets?.refreshPendingBuckets?.();
   }
 
   private async listPendingImports(workspaceFilter: { cloudWorkspaceId?: { in: string[] } }) {
