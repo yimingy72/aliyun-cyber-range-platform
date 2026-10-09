@@ -16,7 +16,7 @@ SDK 不创建 CVM、CBS、网络或镜像。新实例及网络创建、正常销
 
 `resetTencentStoppedInstancePassword(account, instance, hostKey, password, userName?)` 同样要求持久节点 ID 和真实归属，只对已观测 STOPPED 实例调用 ResetInstancesPassword，ForceStop=false；没有新增公网接口或隐式关机。
 
-应急 TerminateInstances 需要原始 `opentofuCreateJobId`、该 member 的实际 create/retry 作业、冻结创建意图、账户与 owner、明确本次物理 ID及完整磁盘清单。调用方必须先证实本次 apply 已提交（manifest/pending marker/known ID）；云标签本身不证明提交。只允许 POSTPAID_BY_HOUR；已知所属 CBS 必须 DeleteWithInstance=true，外部附件必须明确 DeleteWithInstance=false，不释放 EIP 或包年包月盘。未知写结果不自动重发。两个完整空 CVM 查询轮次与空 CBS 核验后才允许上层完成回收；任何未知结果保留状态、恢复材料和费用账本。
+应急 TerminateInstances 需要原始 `opentofuCreateJobId`、该 member 的实际 create/retry 作业、冻结创建意图、账户与 owner、明确本次物理 ID及完整磁盘清单。调用方必须先证实本次 apply 已提交（manifest/pending marker/known ID）；云标签本身不证明提交。只允许 POSTPAID_BY_HOUR；已知所属 CBS 必须 DeleteWithInstance=true，外部附件必须明确 DeleteWithInstance=false，不释放 EIP 或包年包月盘。未知写结果不自动重发。两个完整空 CVM 查询轮次、空 CBS 和所有既有成员账本中 CVM/CBS/EIP/NAT 明确 ID 的消失核验后才允许上层完成回收；任何未知结果保留状态、恢复材料和费用账本。
 
 资源对账仅记录云端证据及漂移。未满足持久创建、冻结账号、资源 ID 和现有费用账本证明时，不接管资源、费用或重写实例状态。快照由已保存 provider/UID/region 账本的确切 ID核验，无法用 SDK 标签发现未知快照。
 

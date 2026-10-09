@@ -373,6 +373,17 @@ export class SingleInstanceBatchExecutionService {
         describeTencentResourceInventory(account, 'disk', { tags: { RangeInstanceId: instance.id } }),
       ]);
       if (byId.length || byTag.length) throw new Error('Tencent CBS disks remain after instance deletion; retain billing evidence');
+      const ledgers = (await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: instance.id }))
+        .filter(ledger => !ledger.releasedAt && !['image', 'snapshot'].includes(ledger.cloudResourceType));
+      if (ledgers.some(ledger => ledger.cloudProvider !== 'tencent_cloud' || ledger.cloudAccountUid !== account.accountUid || ledger.regionId !== account.defaultRegion || ledger.ownerUserId !== instance.ownerUserId || ledger.rangeInstanceId !== instance.id))
+        throw new Error('Tencent cleanup billing evidence conflicts with its frozen account; no ledger may be released');
+      for (const [ledgerKind, cloudKind] of [['ecs', 'ecs'], ['disk', 'disk'], ['eip', 'eip'], ['nat_gateway', 'nat']] as const) {
+        const ids = ledgers.filter(ledger => ledger.cloudResourceType === ledgerKind).map(ledger => ledger.cloudResourceId);
+        if ((await describeTencentResourceInventory(account, cloudKind, { ids })).length)
+          throw new Error('Tencent member billing resources remain; retain billing evidence');
+      }
+      if (ledgers.some(ledger => !['ecs', 'disk', 'eip', 'nat_gateway'].includes(ledger.cloudResourceType)))
+        throw new Error('Tencent member contains an unsupported billable resource; preserve recovery material');
       return;
     }
     const remaining = await findExistingInventoryDiskIds((action, parameters) => this.performAliyunRpcRequest({

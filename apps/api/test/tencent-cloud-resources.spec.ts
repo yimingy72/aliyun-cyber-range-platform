@@ -164,6 +164,23 @@ describe('Tencent strict fallback cleanup and retained billing evidence', () => 
     const f = await cleanupFixture(); request.mockImplementation(async input => input.action === 'DescribeDisks' ? body('DiskSet', [disk('disk-owned', { Tags: encodeTags({ RangeInstanceId: f.instance.id }) })]) : body('InstanceSet', []));
     await expect(f.service.assertInstanceDisksAbsent(f.instance, account)).rejects.toThrow('retain billing');
   });
+  it.each([['eip', 'eip-owned', 'AddressSet', 'AddressId'], ['nat_gateway', 'nat-owned', 'NatGatewaySet', 'NatGatewayId']])('does not close a member with a surviving %s ledger resource', async (type, id, set, key) => {
+    const f = await cleanupFixture();
+    const ledger = await f.repository.createBillingLedgerResource({ cloudProvider: 'tencent_cloud', cloudAccountUid: account.accountUid,
+      regionId: account.defaultRegion, cloudResourceId: id, cloudResourceType: type as never, billingScope: 'user', ownerUserId: 'alice',
+      rangeInstanceId: f.instance.id, billingStartAt: new Date() });
+    request.mockImplementation(async input => input.action === 'DescribeDisks' ? body('DiskSet', []) : body(set, [{ [key]: id }]));
+    await expect(f.service.assertInstanceDisksAbsent(f.instance, account)).rejects.toThrow('billing resources remain');
+    expect((await f.repository.listBillingLedgerResources()).find(row => row.id === ledger.id)?.releasedAt).toBeNull();
+  });
+  it('does not query or release a ledger bound to a different provider/account', async () => {
+    const f = await cleanupFixture();
+    await f.repository.createBillingLedgerResource({ cloudProvider: 'alibaba_cloud', cloudAccountUid: 'foreign-account', regionId: 'cn-hangzhou',
+      cloudResourceId: 'eip-foreign', cloudResourceType: 'eip', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: f.instance.id, billingStartAt: new Date() });
+    request.mockResolvedValue(body('DiskSet', []));
+    await expect(f.service.assertInstanceDisksAbsent(f.instance, account)).rejects.toThrow('conflicts');
+    expect(request.mock.calls.some(([input]) => input.action === 'DescribeAddresses')).toBe(false);
+  });
   it('accepts only deletion followed by two complete empty CVM rounds and empty CBS evidence', async () => {
     const f = await cleanupFixture(); let terminated = false;
     process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS = '0';
