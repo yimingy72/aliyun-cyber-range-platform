@@ -43,6 +43,7 @@ export type ProvisioningResourceSummary = RangeResourceSummary & {
 };
 
 export type RangeProvisionCreateInput = {
+  signal?: AbortSignal;
   rangeInstanceId: string;
   templateModulePath: string;
   allocatedCidr: string | null;
@@ -68,6 +69,7 @@ export type RangeProvisionCreateResult = {
 };
 
 export type RangeProvisionDestroyInput = {
+  signal?: AbortSignal;
   requirePersistedState?: boolean;
   rangeInstanceId: string;
   templateModulePath: string;
@@ -86,6 +88,7 @@ export type RangeProvisionDestroyInput = {
 };
 
 export interface RangeProvisioner {
+  readonly mode?: 'opentofu' | 'dry-run';
   create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult>;
   destroy(input: RangeProvisionDestroyInput): Promise<void>;
   inspectResources?(input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null>;

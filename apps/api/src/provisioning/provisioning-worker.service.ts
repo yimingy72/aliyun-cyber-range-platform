@@ -19,7 +19,7 @@ import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
 import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatchLease } from '../admin/single-instance-opentofu-execution.service';
-import { FAILED_CREATE_CLEANUP_PROOF_STEP, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
+import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
   AliyunEcsResourceClient,
   PlatformResourceReconciliationService,
@@ -211,18 +211,19 @@ export class ProvisioningWorkerService {
       ? await this.adminRepository.claimRangeProvisionJob(jobId, claimedAt)
       : await this.adminRepository.claimProvisionJob(jobId, claimedAt);
     if (!job) return;
-    const heartbeat = this.startProvisionJobHeartbeat([job]);
+    const controller = new AbortController();
+    const heartbeat = this.startProvisionJobHeartbeat([job], controller);
     try {
-      await this.processClaimedJob(job, batchLease);
+      await this.processClaimedJob(job, batchLease, controller.signal);
     } finally {
       clearInterval(heartbeat);
     }
   }
 
-  private startProvisionJobHeartbeat(jobs: ProvisionJobRecord[]) {
+  private startProvisionJobHeartbeat(jobs: ProvisionJobRecord[], controller?: AbortController) {
     const heartbeat = setInterval(() => {
       for (const job of jobs) {
-        void this.ownsProvisionJobClaim(job);
+        void this.ownsProvisionJobClaim(job).then(owned => { if (!owned) controller?.abort(new Error('Provision job claim was lost')); });
       }
     }, Math.max(1, Math.min(30_000, readInterruptedJobStaleAfterMs() / 3)));
     heartbeat.unref();
@@ -245,7 +246,7 @@ export class ProvisioningWorkerService {
     }
   }
 
-  private async processClaimedJob(job: ProvisionJobRecord, batchLease?: SingleInstanceOpenTofuBatchLease) {
+  private async processClaimedJob(job: ProvisionJobRecord, batchLease?: SingleInstanceOpenTofuBatchLease, signal?: AbortSignal) {
     const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
 
     if (!instance) {
@@ -267,7 +268,8 @@ export class ProvisioningWorkerService {
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
-      const runtimeConfig = await this.systemConfigService.getSnapshot();
+      const rangeContext = instance.instanceMode === 'range' ? await this.resolveRangeAccountContext(instance, job) : null;
+      const runtimeConfig = rangeContext ?? await this.systemConfigService.getSnapshot();
 
       if (instance.instanceMode === 'single') {
         const current = await this.adminRepository.withSingleInstanceControlLock(async () => {
@@ -300,6 +302,8 @@ export class ProvisioningWorkerService {
           job,
           instance,
           runtimeConfig,
+          accountContext: rangeContext!,
+          signal,
           reportStep,
         });
         if (!(await this.ownsProvisionJobClaim(job))) {
@@ -314,7 +318,7 @@ export class ProvisioningWorkerService {
       }
 
       if (effectiveJobType === 'destroy') {
-        await this.processRangeDestroyJob(job, instance, runtimeConfig, reportStep);
+        await this.processRangeDestroyJob(job, instance, rangeContext!, reportStep, signal);
         return;
       }
 
@@ -378,7 +382,7 @@ export class ProvisioningWorkerService {
       const compiledSpec = baseCompiledSpec;
       const topologySpec = baseTopologySpec;
       const topologyGraph = baseTopologyGraph;
-      const accountContext = await this.resolveAccountContext();
+      const accountContext = rangeContext!;
 
       if (effectiveJobType === 'create') {
         await this.runWorkerStep(reportStep, 'prepare', async () => {
@@ -406,7 +410,9 @@ export class ProvisioningWorkerService {
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
-          billingTags,
+          billingTags: { ...billingTags, ...(accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, ExecutionBackend: 'opentofu' } : {}) },
+          requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
+          signal,
         };
         if (!(await this.ownsProvisionJobClaim(job))) {
           return;
@@ -415,6 +421,10 @@ export class ProvisioningWorkerService {
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
+          onApplyStart: async () => {
+            await this.recordRangeApplyStart(instance, job, accountContext, signal);
+            failedCreateCleanupInput!.requirePersistedState = true;
+          },
           reportStep,
         });
 
@@ -423,8 +433,10 @@ export class ProvisioningWorkerService {
         }
 
         await this.runWorkerStep(reportStep, 'persist_access_entry', async () => {
+          const current = await this.adminRepository.getRangeInstanceById(instance.id);
+          const resourceSummary = { ...result.resourceSummary, creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext };
           await this.updateRangeForClaim(job, {
-            status: 'running',
+            status: 'creating',
             runtimeTopologyGraph:
               frozen?.topologyGraph ?? sourceVersion?.topologyGraph ??
               (allowTemplateFallback ? template?.topologyGraph : null) ??
@@ -441,7 +453,7 @@ export class ProvisioningWorkerService {
               null,
             runtimeCredentials: frozen?.runtimeCredentials ?? instance.runtimeCredentials ?? null,
             accessEntry: result.accessEntry,
-            resourceSummary: result.resourceSummary,
+            resourceSummary,
             errorSummary: null,
           });
           await syncRangeInstanceBillingLedger({
@@ -449,10 +461,11 @@ export class ProvisioningWorkerService {
             instance,
             regionId: accountContext.defaultRegion,
             cloudAccountUid: accountContext.accountUid,
-            resourceSummary: result.resourceSummary,
+            resourceSummary,
             sourceProvisionJobId: job.id,
-            billingStartAt: new Date(),
+            billingStartAt: instance.createdAt,
           });
+          await this.updateRangeForClaim(job, { status: 'running' });
         });
       }
 
@@ -468,11 +481,23 @@ export class ProvisioningWorkerService {
       if (!(await this.ownsProvisionJobClaim(job))) {
         return;
       }
-      if (instance.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu') {
+      const current = await this.adminRepository.getRangeInstanceById(instance.id);
+      if (instance.instanceMode === 'single' && (instance.singleInstanceConfig?.executionBackend === 'opentofu'
+        || current?.singleInstanceConfig?.nativeCreateJobId || current?.singleInstanceConfig?.opentofuCreateJobId)) {
         await this.adminRepository.commitSingleInstanceClaim(job, {
-          status: 'destroy_failed', errorSummary: 'OpenTofu batch execution was interrupted; persisted state requires recovery before retry',
-        }, { status: 'failed', finishedAt: new Date(), errorSummary: 'OpenTofu batch execution requires state recovery' });
+          status: 'destroy_failed', errorSummary: 'Instance execution was interrupted after cloud creation may have started; recovery is required before retry',
+        }, { status: 'failed', finishedAt: new Date(), errorSummary: 'Instance execution requires state recovery' });
         return;
+      }
+      if (instance.instanceMode === 'range' && job.jobType === 'update' && current?.resourceSummary?.executionContext) {
+        try {
+          const context = await this.resolveRangeAccountContext(current, job);
+          await this.captureRangeResources(job, current, { rangeInstanceId: current.id,
+            templateModulePath: current.templateModulePathSnapshot ?? '', allocatedCidr: current.allocatedCidr,
+            runtimeConfig: context, requirePersistedState: true, signal }, context);
+        } catch (captureError) {
+          this.logger.error(`Range update inventory needs recovery: ${captureError instanceof Error ? captureError.message : 'unknown error'}`);
+        }
       }
       const createFailureMessage = error instanceof Error ? error.message : 'Unknown provisioning error';
       const cleanupFailureMessage = failedCreateCleanupInput
@@ -486,7 +511,7 @@ export class ProvisioningWorkerService {
         : null;
       const message = appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage);
 
-      await this.failJob(job, instance, message, cleanupFailureMessage ? 'destroy_failed' : undefined);
+      await this.failJob(job, instance, message, cleanupFailureMessage || (!failedCreateCleanupInput && (current?.resourceSummary?.creationAttempted || current?.resourceSummary?.mode === 'opentofu')) ? 'destroy_failed' : undefined);
     }
   }
 
@@ -504,16 +529,20 @@ export class ProvisioningWorkerService {
   }
 
   private async processRangeDestroyJob(job: ProvisionJobRecord, instance: RangeInstanceRecord,
-    runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>, reportStep: RangeProvisionStepReporter) {
+    accountContext: Awaited<ReturnType<ProvisioningWorkerService['resolveAccountContext']>>, reportStep: RangeProvisionStepReporter, signal?: AbortSignal) {
     if (!(await this.ownsProvisionJobClaim(job))) return;
     await this.runWorkerStep(reportStep, 'prepare', async () => { await this.updateRangeForClaim(job, { status: 'destroying' }); });
-    await this.rangeProvisioner.destroy({
+    const cleanupInput: RangeProvisionDestroyInput = {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
-      allocatedCidr: instance.allocatedCidr, runtimeConfig, reportStep,
-    });
-    await this.runWorkerStep(reportStep, 'verify_destroy', async () => { await this.verifyDestroyCompletion(instance, runtimeConfig); });
-    await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null, resourceSummary: null, errorSummary: null });
+      allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
+      requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
+    };
+    const evidence = await this.captureRangeResources(job, instance, cleanupInput, accountContext);
+    await this.rangeProvisioner.destroy(cleanupInput);
+    await this.runWorkerStep(reportStep, 'verify_destroy', async () => { await this.verifyDestroyCompletion(evidence, accountContext); });
+    if (!(await this.ownsProvisionJobClaim(job))) return;
     await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
+    await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null, resourceSummary: null, errorSummary: null });
     if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
       status: 'succeeded', finishedAt: new Date(), errorSummary: null,
     }))) return;
@@ -526,6 +555,8 @@ export class ProvisioningWorkerService {
     instance: RangeInstanceRecord;
     runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
     reportStep: RangeProvisionStepReporter;
+    accountContext: Awaited<ReturnType<ProvisioningWorkerService['resolveAccountContext']>>;
+    signal?: AbortSignal;
   }) {
     const topologySnapshot = this.readUpdateTopologySnapshot(input.job.topologySnapshot);
 
@@ -546,20 +577,23 @@ export class ProvisioningWorkerService {
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
+      requirePersistedState: true,
+      signal: input.signal,
+      onApplyStart: () => this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal),
       runtimeConfig: input.runtimeConfig,
       runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? undefined,
       topologyGraph: topologySnapshot.topologyGraph,
       topologySpec: topologySnapshot.topologySpec as RangeTemplateTopologySpec,
       compiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
       compiledSpec: topologySnapshot.compiledSpec as RangeTemplateCompiledSpec,
-      billingTags: buildBillingTags({
+      billingTags: { CloudAccountContextId: input.accountContext.cloudAccountContextId!, CloudAccountUid: input.accountContext.accountUid!, ExecutionBackend: 'opentofu', ...buildBillingTags({
         billingScope: input.instance.ownerUserId ? 'user' : 'platform',
         ownerUserId: input.instance.ownerUserId,
         rangeInstanceId: input.instance.id,
         singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
         platformResourceType: 'range',
         billingStartAt: new Date(),
-      }),
+      }) },
       reportStep: input.reportStep,
     });
 
@@ -567,6 +601,10 @@ export class ProvisioningWorkerService {
       return;
     }
     await this.runWorkerStep(input.reportStep, 'persist_update_result', async () => {
+      const current = await this.adminRepository.getRangeInstanceById(input.instance.id);
+      const resourceSummary = { ...result.resourceSummary, creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext };
+      await this.updateRangeForClaim(input.job, { resourceSummary });
+      await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: input.instance, regionId: input.accountContext.defaultRegion, cloudAccountUid: input.accountContext.accountUid, resourceSummary, sourceProvisionJobId: input.job.id, billingStartAt: input.instance.createdAt });
       await this.adminRepository.completeRangeInstanceDraftApply(input.instance.id, {
         runtimeTopologyGraph: topologySnapshot.topologyGraph,
         runtimeScenarioTemplateSpec: topologySnapshot.scenarioTemplateSpec,
@@ -575,18 +613,8 @@ export class ProvisioningWorkerService {
         provisionJobId: input.job.id, claimStartedAt: input.job.startedAt!,
         runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? null,
         accessEntry: result.accessEntry,
-        resourceSummary: result.resourceSummary,
+        resourceSummary,
         errorSummary: null,
-      });
-      const accountContext = await this.resolveAccountContext();
-      await syncRangeInstanceBillingLedger({
-        repository: this.adminRepository,
-        instance: input.instance,
-        regionId: accountContext.defaultRegion,
-        cloudAccountUid: accountContext.accountUid,
-        resourceSummary: result.resourceSummary,
-        sourceProvisionJobId: input.job.id,
-        billingStartAt: new Date(),
       });
     });
   }
@@ -678,6 +706,95 @@ export class ProvisioningWorkerService {
       if (pendingJobs.length < 100) break;
     }
     return started;
+  }
+
+  private async rangeHasApplyEvidence(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
+    if (instance.resourceSummary?.mode === 'dry-run') return false;
+    if (instance.resourceSummary?.creationAttempted || this.rangeSummaryHasIds(instance.resourceSummary)) return true;
+    const jobs = (await this.adminRepository.listProvisionJobs()).filter(value => value.rangeInstanceId === instance.id);
+    for (const previous of jobs) {
+      const logs = await this.adminRepository.listProvisionJobStepLogs(previous.id);
+      const cleanup = logs.find(log => { const proof = readFailedCreateCleanupProof(log.message);
+        return log.stepName === FAILED_CREATE_CLEANUP_PROOF_STEP && log.status === 'succeeded'
+          && proof?.rangeInstanceId === instance.id && proof.provisionJobId === previous.id
+          && proof.claimStartedAt === previous.startedAt?.toISOString(); });
+      if (!cleanup && logs.some(log => log.stepName === 'tofu_apply' && !log.message?.startsWith('Dry-run'))) return true;
+    }
+    return false;
+  }
+
+  private rangeSummaryHasIds(summary: RangeResourceSummary | null) {
+    return Boolean(summary && (summary.vpcId || summary.eipAllocationId
+      || ['hostIds','systemDiskIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
+        .some(field => Object.values((summary as any)[field] ?? {}).some(Boolean))));
+  }
+
+  private async resolveRangeAccountContext(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
+    const bound = instance.resourceSummary?.executionContext;
+    if (this.rangeProvisioner.mode === 'dry-run') {
+      if (instance.resourceSummary?.creationAttempted || bound || (instance.resourceSummary?.mode !== 'dry-run' && this.rangeSummaryHasIds(instance.resourceSummary)))
+        throw new Error('Dry-run cannot operate on a range with real cloud creation evidence');
+      return this.resolveAccountContext();
+    }
+    if (bound) {
+      const service = this.systemConfigService;
+      const context = typeof service.getAccountContextById === 'function'
+        ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
+      if (!context.accountUidResolved || context.accountUid !== bound.cloudAccountUid || context.cloudAccountContextId !== bound.cloudAccountContextId
+        || context.defaultRegion !== bound.regionId || context.defaultZoneId !== bound.zoneId)
+        throw new Error('Range execution account no longer matches its frozen cloud identity');
+      return context;
+    }
+    if (await this.rangeHasApplyEvidence(instance, job) || ['destroy','update'].includes(this.resolveEffectiveJobType(job, instance)))
+      throw new Error('Range has no verified source account binding; manual resource recovery is required');
+    const context = await this.resolveAccountContext();
+    if (!context.accountUidResolved || !context.accountUid || !context.cloudAccountContextId
+      || !context.accessKeyId || !context.accessKeySecret || !context.defaultRegion || !context.defaultZoneId)
+      throw new Error('A verified cloud account context is required before range provisioning');
+    await this.updateRangeForClaim(job, { resourceSummary: { mode: 'opentofu', creationAttempted: false,
+      executionContext: { cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+        regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
+    return context;
+  }
+
+  private async recordRangeApplyStart(instance: RangeInstanceRecord, job: ProvisionJobRecord,
+    context: Awaited<ReturnType<ProvisioningWorkerService['resolveAccountContext']>>, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
+    const current = await this.adminRepository.getRangeInstanceById(instance.id);
+    if (!current || current.expiresAt && current.expiresAt <= new Date()) throw new Error('Range expired before cloud creation started');
+    if (!context.cloudAccountContextId || !context.accountUid) throw new Error('Range execution account is not verified');
+    await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', creationAttempted: true,
+      executionContext: { cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+        regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
+    signal?.throwIfAborted();
+  }
+
+  private async captureRangeResources(job: ProvisionJobRecord, instance: RangeInstanceRecord,
+    input: RangeProvisionDestroyInput, context: { defaultRegion: string; accountUid: string | null }) {
+    input.signal?.throwIfAborted();
+    if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
+    const current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
+    if (this.rangeProvisioner.mode === 'dry-run') return current;
+    if (!this.rangeProvisioner.inspectResources) throw new Error('Range provider cannot inspect persisted resource identities before cleanup');
+    const observed = await this.rangeProvisioner.inspectResources(input);
+    if (!observed && input.requirePersistedState) throw new Error('Range persisted state is missing; cleanup cannot be proven');
+    const summary: RangeResourceSummary = { ...current.resourceSummary, mode: 'opentofu' };
+    if (observed) for (const [field, value] of Object.entries(observed)) {
+      if (field.endsWith('Ids') && value && typeof value === 'object') {
+        const merged = { ...((summary as any)[field] ?? {}) };
+        for (const [key,id] of Object.entries(value)) merged[merged[key] && merged[key] !== id ? `observed:${key}` : key] = id;
+        (summary as any)[field] = merged;
+      } else if (field === 'vpcId' || field === 'eipAllocationId') {
+        if ((summary as any)[field] && (summary as any)[field] !== value) throw new Error('Range state resource identity conflicts with persisted inventory');
+        (summary as any)[field] = value;
+      }
+    }
+    const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
+    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted,
+      resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid,
+      sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });
+    return persisted;
   }
 
   private async resolveAccountContext() {
@@ -1230,13 +1347,14 @@ export class ProvisioningWorkerService {
     }
 
     const checks: Array<() => Promise<string[]>> = [];
-    if (vpcExists) {
+    {
       for (const subnetId of new Set(Object.values(resourceSummary.subnetIds ?? {}).filter(Boolean))) {
         checks.push(async () => await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, vpcId ?? undefined) ? [`vswitch:${subnetId}`] : []);
       }
     }
     checks.push(async () => (await this.findExistingInstanceIds(Object.values(resourceSummary.hostIds ?? {}).filter(Boolean), runtimeConfig, regionId))
       .map(id => `instance:${id}`));
+    checks.push(async () => (await this.findExistingDiskIds(Object.values(resourceSummary.systemDiskIds ?? {}).filter(Boolean), runtimeConfig, regionId)).map(id => `disk:${id}`));
     for (const id of new Set(Object.values(resourceSummary.secondaryNetworkInterfaceIds ?? {}).filter(Boolean))) {
       checks.push(async () => await this.checkNetworkInterfaceExists(id, runtimeConfig, regionId) ? [`eni:${id}`] : []);
     }
@@ -1284,15 +1402,9 @@ export class ProvisioningWorkerService {
       }>({
         endpoint: `ecs.${regionId}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action: 'DescribeInstances',
         accessKeyId: runtimeConfig.accessKeyId, accessKeySecret: runtimeConfig.accessKeySecret,
-        parameters: { RegionId: regionId, InstanceIds: JSON.stringify(requested), PageSize: '100' },
+        parameters: { RegionId: regionId, InstanceIds: JSON.stringify(requested), PageSize: '100', PageNumber: '1' },
       });
-      const raw = payload.Instances?.Instance;
-      const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : null;
-      if (!rows || rows.some(row => !row || typeof row.InstanceId !== 'string' || !requested.includes(row.InstanceId))
-        || new Set(rows.map(row => row.InstanceId)).size !== rows.length
-        || payload.TotalCount !== undefined && payload.TotalCount !== rows.length) {
-        throw new Error('ECS destroy verification response is incomplete or contains unexpected resource identities');
-      }
+      const rows = this.readVerificationPage(payload, payload.Instances?.Instance, 'InstanceId', requested);
       existing.push(...rows.map(row => row.InstanceId!));
     }
     return existing;
@@ -1319,14 +1431,11 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        VpcId: vpcId,
+        VpcId: vpcId, PageSize: '100', PageNumber: '1',
       },
     });
 
-    const items = payload.Vpcs?.Vpc;
-    const normalized = Array.isArray(items) ? items : items ? [items] : [];
-
-    return normalized.some((item) => item?.VpcId === vpcId);
+    return this.readVerificationPage(payload, payload.Vpcs?.Vpc, 'VpcId', [vpcId]).length > 0;
   }
 
   private async checkVSwitchExists(
@@ -1351,13 +1460,11 @@ export class ProvisioningWorkerService {
       parameters: {
         RegionId: regionId,
         ...(vpcId ? { VpcId: vpcId } : {}),
+        VSwitchId: vSwitchId, PageSize: '100', PageNumber: '1',
       },
     });
 
-    const items = payload.VSwitches?.VSwitch;
-    const normalized = Array.isArray(items) ? items : items ? [items] : [];
-
-    return normalized.some((item) => item?.VSwitchId === vSwitchId);
+    return this.readVerificationPage(payload, payload.VSwitches?.VSwitch, 'VSwitchId', [vSwitchId]).length > 0;
   }
 
   private async checkNetworkInterfaceExists(
@@ -1382,16 +1489,11 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        NetworkInterfaceId: networkInterfaceId,
+        'NetworkInterfaceId.1': networkInterfaceId, PageSize: '100', PageNumber: '1',
       },
     });
 
-    const items = payload.NetworkInterfaceSets?.NetworkInterfaceSet;
-    const normalized = Array.isArray(items) ? items : items ? [items] : [];
-
-    return normalized.some(
-      (item) => item?.NetworkInterfaceId === networkInterfaceId,
-    );
+    return this.readVerificationPage(payload, payload.NetworkInterfaceSets?.NetworkInterfaceSet, 'NetworkInterfaceId', [networkInterfaceId]).length > 0;
   }
 
   private async checkNatGatewayExists(
@@ -1414,14 +1516,11 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        NatGatewayId: natGatewayId,
+        NatGatewayId: natGatewayId, PageSize: '100', PageNumber: '1',
       },
     });
 
-    const items = payload.NatGateways?.NatGateway;
-    const normalized = Array.isArray(items) ? items : items ? [items] : [];
-
-    return normalized.some((item) => item?.NatGatewayId === natGatewayId);
+    return this.readVerificationPage(payload, payload.NatGateways?.NatGateway, 'NatGatewayId', [natGatewayId]).length > 0;
   }
 
   private async checkEipExists(
@@ -1444,14 +1543,38 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        AllocationId: allocationId,
+        AllocationId: allocationId, PageSize: '100', PageNumber: '1',
       },
     });
 
-    const items = payload.EipAddresses?.EipAddress;
-    const normalized = Array.isArray(items) ? items : items ? [items] : [];
+    return this.readVerificationPage(payload, payload.EipAddresses?.EipAddress, 'AllocationId', [allocationId]).length > 0;
+  }
 
-    return normalized.some((item) => item?.AllocationId === allocationId);
+  private readVerificationPage(payload: unknown, items: unknown, field: string, ids: string[]): Record<string, string>[] {
+    const page = this.readJsonObject(payload);
+    const rows = Array.isArray(items) ? items : items && typeof items === 'object' ? [items] : null;
+    if (!page || typeof page.RequestId !== 'string' || !page.RequestId.trim() || page.Code || !rows
+      || !Number.isInteger(page.TotalCount) || page.TotalCount !== rows.length || Number(page.PageNumber) !== 1
+      || !Number.isInteger(Number(page.PageSize)) || Number(page.PageSize) < rows.length || Number(page.PageSize) < 1
+      || (page.NextToken !== undefined && page.NextToken !== '')
+      || rows.some(row => !row || typeof row[field] !== 'string' || !ids.includes(row[field]))
+      || new Set(rows.map(row => row[field])).size !== rows.length) {
+      throw new Error('Cloud destroy verification response is incomplete or contains unexpected resource identities');
+    }
+    return rows;
+  }
+
+  private async findExistingDiskIds(ids: string[], runtimeConfig: { accessKeyId: string; accessKeySecret: string }, regionId: string) {
+    const unique = [...new Set(ids)], existing: string[] = [];
+    for (let offset = 0; offset < unique.length; offset += 100) {
+      const requested = unique.slice(offset, offset + 100);
+      const payload = await this.performAliyunRpcRequest<{ Disks?: { Disk?: unknown } }>({
+        endpoint: `ecs.${regionId}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action: 'DescribeDisks',
+        ...runtimeConfig, parameters: { RegionId: regionId, DiskIds: JSON.stringify(requested), PageSize: '100', PageNumber: '1' },
+      });
+      existing.push(...this.readVerificationPage(payload, payload.Disks?.Disk, 'DiskId', requested).map(row => row.DiskId));
+    }
+    return existing;
   }
 
   private async performAliyunRpcRequest<ResponsePayload>(input: {
@@ -1479,6 +1602,7 @@ export class ProvisioningWorkerService {
 
     const response = await fetch(`https://${input.endpoint}/?${query}`, {
       method: 'GET',
+      signal: AbortSignal.timeout(15_000),
       headers: {
         Accept: 'application/json',
       },
@@ -1534,17 +1658,16 @@ export class ProvisioningWorkerService {
     reportStep: RangeProvisionStepReporter;
   }) {
     try {
+      const current = await this.adminRepository.getRangeInstanceById(input.instance.id) ?? input.instance;
+      const evidence = await this.captureRangeResources(input.job, current, input.cleanupInput, {
+        ...input.cleanupInput.runtimeConfig!, accountUid: input.cloudContext?.accountUid ?? null,
+      });
       await this.runWorkerStep(input.reportStep, 'cleanup_failed_create_resources', async () => {
         if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
-        await this.rangeProvisioner.destroy({
-          ...input.cleanupInput,
-          reportStep: undefined,
-        });
+        await this.rangeProvisioner.destroy({ ...input.cleanupInput, reportStep: undefined });
+        await this.verifyDestroyCompletion(evidence, input.cleanupInput.runtimeConfig!);
       });
-      await this.updateRangeForClaim(input.job, {
-        accessEntry: null,
-        resourceSummary: null,
-      });
+      if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
       await releaseRangeInstanceBillingLedger(this.adminRepository, input.instance.id, new Date());
       if (input.cloudContext && input.job.startedAt) {
         const verifiedAt = new Date();
@@ -1559,6 +1682,7 @@ export class ProvisioningWorkerService {
           stdoutExcerpt: null, stderrExcerpt: null,
         });
       }
+      await this.updateRangeForClaim(input.job, { accessEntry: null, resourceSummary: null });
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';

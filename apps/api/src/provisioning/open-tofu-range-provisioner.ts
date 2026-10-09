@@ -243,6 +243,7 @@ export function createRangeProvisionerFromEnv(
 }
 
 export class OpenTofuRangeProvisioner implements RangeProvisioner {
+  readonly mode = 'opentofu' as const;
   private readonly runner: OpenTofuRunnerLike;
   private readonly projectRootDir: string;
   private readonly workspacesRootDir: string;
@@ -319,6 +320,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await runProvisionStep(input.reportStep, 'tofu_init', async () => {
       const command = await this.runner.init({
         workspaceDir: workspace.workspaceDir,
+        signal: input.signal,
         env: workspace.runnerEnv,
         upgrade: true,
       });
@@ -333,6 +335,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await runProvisionStep(input.reportStep, 'tofu_plan', async () => {
       const command = await this.runner.plan({
         workspaceDir: workspace.workspaceDir,
+        signal: input.signal,
         env: workspace.runnerEnv,
         planFilePath: workspace.planFilePath,
         varsFilePath: workspace.varsFilePath,
@@ -346,11 +349,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       };
     });
     await runProvisionStep(input.reportStep, 'tofu_apply', async () => {
-      const planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
+      const planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir,
+        signal: input.signal, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
       await recordApplyPlan(workspace.workspaceDir, planned);
       await input.onApplyStart?.();
       const command = await this.runner.apply({
         workspaceDir: workspace.workspaceDir,
+        signal: input.signal,
         env: workspace.runnerEnv,
         planFilePath: workspace.planFilePath,
       });
@@ -367,6 +372,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const outputs = await runProvisionStep(input.reportStep, 'collect_outputs', async () => {
       const collectedOutputs = await this.runner.output<OpenTofuOutputs>({
         workspaceDir: workspace.workspaceDir,
+        signal: input.signal,
         env: workspace.runnerEnv,
       });
 
@@ -460,6 +466,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await runProvisionStep(input.reportStep, 'tofu_init', async () => {
       const command = await this.runner.init({
         workspaceDir: workspace.workspaceDir,
+        signal: input.signal,
         env: workspace.runnerEnv,
         upgrade: true,
       });
@@ -476,6 +483,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await runProvisionStep(input.reportStep, 'destroy', async () => {
       const command = await this.runner.destroy({
         workspaceDir: workspace.workspaceDir,
+        signal: input.signal,
         env: workspace.runnerEnv,
         varsFilePath: workspace.varsFilePath,
       });

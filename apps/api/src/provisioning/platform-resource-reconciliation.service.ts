@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { ADMIN_REPOSITORY, type AdminRepository, type RangeInstanceRecord } from '../admin/admin.repository';
-import { buildAliyunTagParameters, buildBillingTags } from '../admin/billing-tagging';
+import { buildAliyunTagParameters } from '../admin/billing-tagging';
 import { syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SystemConfigService } from '../admin/system-config.service';
@@ -233,94 +233,36 @@ export class PlatformResourceReconciliationService {
         continue;
       }
 
-      if (platformInstance.status === 'destroyed') {
+      // Legacy/range observations never rewrite lifecycle state or cloud tags outside a fenced provisioning job.
+      const current = await this.adminRepository.getRangeInstanceById(platformInstance.id);
+      if (!current || current.updatedAt > cloudReadStartedAt || !current.lastJobId) continue;
+      const lastJob = await this.adminRepository.getProvisionJobById(current.lastJobId);
+      if (!lastJob || !['succeeded','failed'].includes(lastJob.status)) continue;
+      const source = current.instanceMode === 'range' ? current.resourceSummary?.executionContext : current.singleInstanceConfig;
+      const boundContext = source?.cloudAccountContextId;
+      const boundUid = source?.cloudAccountUid;
+      const tags = cloudInstance.tags;
+      const hostKey = readTag(tags, 'PlatformHostKey');
+      const owned = credentials.accountUidResolved && credentials.accountUid && credentials.cloudAccountContextId
+        && boundContext === credentials.cloudAccountContextId && boundUid === credentials.accountUid
+        && source?.regionId === credentials.regionId && tags.CloudAccountContextId === boundContext && tags.CloudAccountUid === boundUid
+        && tags.CreatedBy === 'cyber-range-platform' && tags.PlatformManaged === 'true'
+        && tags.RangeInstanceId === current.id && (tags.PlatformUserId ?? null) === current.ownerUserId
+        && tags.PlatformScope === (current.ownerUserId ? 'user' : 'platform') && tags.PlatformResourceType === 'ecs'
+        && (current.instanceMode !== 'single' || tags.SingleInstanceBatchId === current.singleInstanceBatchId);
+      const idsMatch = hostKey && current.resourceSummary?.hostIds?.[hostKey] === cloudInstance.instanceId
+        && cloudInstance.diskIds.every(id => Object.values(current.resourceSummary?.systemDiskIds ?? {}).includes(id));
+      const ledgers = owned && idsMatch ? await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: current.id }) : [];
+      const tracked = [cloudInstance.instanceId, ...cloudInstance.diskIds].every(id => ledgers.some(ledger =>
+        ledger.cloudResourceId === id && ledger.cloudAccountUid === boundUid && ledger.regionId === credentials.regionId
+        && ledger.ownerUserId === current.ownerUserId && !ledger.releasedAt));
+      if (!owned || !idsMatch || !tracked || current.status !== 'running' || lastJob.status !== 'succeeded') {
         drifts += 1;
-        await this.recordDrift({
-          cloudInstance,
-          rangeInstanceId,
-          reason: 'Platform database marks the range instance as destroyed, but the tagged ECS still exists in Alibaba Cloud.',
-          regionId: credentials.regionId,
-          observedAt: now,
-        });
-        continue;
+        await this.recordDrift({ cloudInstance, rangeInstanceId: current.id, regionId: credentials.regionId, observedAt: now,
+          reason: !owned ? 'Tagged ECS has no complete frozen account and owner proof; lifecycle and billing ownership were left unchanged.'
+            : 'Owned ECS still exists but lifecycle, resource inventory or billing ledger needs recovery; no automatic state rewrite was performed.' });
       }
 
-      const hostKey = readTag(cloudInstance.tags, 'PlatformHostKey');
-
-      if (!hostKey) {
-        drifts += 1;
-        await this.recordDrift({
-          cloudInstance,
-          rangeInstanceId,
-          reason: 'Platform-managed ECS has no PlatformHostKey tag, so its host mapping cannot be restored safely.',
-          regionId: credentials.regionId,
-          observedAt: now,
-        });
-        continue;
-      }
-
-      const existingHostId = platformInstance.resourceSummary?.hostIds?.[hostKey] ?? null;
-
-      if (existingHostId && existingHostId !== cloudInstance.instanceId) {
-        drifts += 1;
-        await this.recordDrift({
-          cloudInstance,
-          rangeInstanceId,
-          reason: `Platform host ${hostKey} is recorded as ${existingHostId}, but Alibaba Cloud reports ${cloudInstance.instanceId}.`,
-          regionId: credentials.regionId,
-          observedAt: now,
-        });
-        continue;
-      }
-
-      const existingSystemDiskId = platformInstance.resourceSummary?.systemDiskIds?.[hostKey] ?? null;
-      const needsSummaryRecovery = !existingHostId || (!existingSystemDiskId && cloudInstance.diskIds.length > 0);
-
-      if (needsSummaryRecovery) {
-        await this.restoreResourceSummary(platformInstance, hostKey, cloudInstance);
-        recovered += 1;
-      }
-
-      try {
-        await this.tagKnownInstanceDisks(credentials, platformInstance, hostKey, cloudInstance);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown disk tagging error';
-
-        for (const diskId of cloudInstance.diskIds) {
-          drifts += 1;
-          await this.adminRepository.upsertCloudResourceDrift({
-            regionId: credentials.regionId,
-            cloudResourceType: 'disk',
-            cloudResourceId: diskId,
-            rangeInstanceId,
-            severity: 'critical',
-            reason: `Platform-managed ECS disk could not be tagged during reconciliation: ${message}`,
-            tagsSnapshot: cloudInstance.tags,
-            observedAt: now,
-          });
-        }
-      }
-
-      const reconciledInstance = needsSummaryRecovery
-        ? await this.adminRepository.getRangeInstanceById(platformInstance.id)
-        : platformInstance;
-      if (reconciledInstance) {
-        await syncRangeInstanceBillingLedger({
-          repository: this.adminRepository,
-          instance: reconciledInstance,
-          regionId: credentials.regionId,
-          cloudAccountUid: credentials.accountUid,
-          resourceSummary: reconciledInstance.resourceSummary,
-          billingStartAt: reconciledInstance.createdAt,
-        });
-      }
-
-      await this.adminRepository.resolveCloudResourceDrift({
-        regionId: credentials.regionId,
-        cloudResourceType: 'ecs',
-        cloudResourceId: cloudInstance.instanceId,
-        resolvedAt: now,
-      });
     }
 
     return { recovered, drifts, skipped: false };
@@ -412,28 +354,6 @@ export class PlatformResourceReconciliationService {
           : {}),
       },
       errorSummary: null,
-    });
-  }
-
-  private async tagKnownInstanceDisks(
-    credentials: AliyunEcsCredentials,
-    instance: RangeInstanceRecord,
-    hostKey: string,
-    cloudInstance: AliyunEcsInstanceResource,
-  ) {
-    await this.aliyunEcsResourceClient.tagResources({
-      credentials,
-      resourceType: 'disk',
-      resourceIds: cloudInstance.diskIds,
-      tags: buildBillingTags({
-        billingScope: instance.ownerUserId ? 'user' : 'platform',
-        ownerUserId: instance.ownerUserId,
-        rangeInstanceId: instance.id,
-        singleInstanceBatchId: instance.singleInstanceBatchId ?? null,
-        platformResourceType: 'disk',
-        platformHostKey: hostKey,
-        billingStartAt: instance.createdAt,
-      }),
     });
   }
 
