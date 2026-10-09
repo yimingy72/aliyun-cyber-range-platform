@@ -51,7 +51,7 @@ export async function loginAsRepositoryUser(repository: AdminRepository, usernam
 
 export async function loginAsPrismaUser(app: INestApplication, username: string) {
   const prisma = app.get(PrismaService);
-  const user = await prisma.platformUser.findUnique({ where: { username } });
+  const user = await prisma.platformUser.findFirst({ where: { OR: [{ loginUsername: username }, { username }] } });
 
   if (!user) {
     throw new Error(`Platform user not found: ${username}`);

@@ -33,6 +33,8 @@ try {
     data: {
       id: smokeUserId,
       username: smokeUsername,
+      loginUsername: smokeUsername,
+      cloudWorkspaceId: 'legacy-unbound',
       passwordHash: `hash-${suffix}`,
       role: 'user',
       status: 'active',

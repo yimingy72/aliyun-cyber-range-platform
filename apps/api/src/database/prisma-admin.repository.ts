@@ -1,3 +1,4 @@
+import { getCurrentCloudWorkspaceId, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -264,6 +265,10 @@ export class PrismaAdminRepository implements AdminRepository {
       data: {
         id: input.id,
         username: input.username,
+        loginUsername: input.loginUsername ?? input.username,
+        cloudWorkspaceId: input.isPlatformManager ? null : input.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
+        isPlatformManager: input.isPlatformManager ?? false,
+        selectedCloudWorkspaceId: input.selectedCloudWorkspaceId ?? null,
         passwordHash: input.passwordHash,
         oidcIssuer: input.oidcIssuer ?? null,
         oidcSubject: input.oidcSubject ?? null,
@@ -275,6 +280,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async listPlatformUsers(): Promise<PlatformUserRecord[]> {
     return this.prisma.platformUser.findMany({
+      where: { isPlatformManager: false },
       orderBy: {
         createdAt: 'desc',
       },
@@ -282,13 +288,15 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async getPlatformUserById(id: string): Promise<PlatformUserRecord | null> {
-    return this.prisma.platformUser.findUnique({
-      where: { id },
-    }) as Promise<PlatformUserRecord | null>;
+    const cloudWorkspaceId = getCurrentCloudWorkspaceId();
+    if (!cloudWorkspaceId) return this.prisma.platformUser.findUnique({ where: { id } }) as Promise<PlatformUserRecord | null>;
+    return runInSystemCloudWorkspaceScope(() => this.prisma.platformUser.findFirst({
+      where: { id, OR: [{ cloudWorkspaceId }, { isPlatformManager: true, cloudWorkspaceId: null }] },
+    })) as Promise<PlatformUserRecord | null>;
   }
 
   async getPlatformUserByUsername(username: string): Promise<PlatformUserRecord | null> {
-    return this.prisma.platformUser.findUnique({
+    return this.prisma.platformUser.findFirst({
       where: { username },
     }) as Promise<PlatformUserRecord | null>;
   }
@@ -309,6 +317,8 @@ export class PrismaAdminRepository implements AdminRepository {
       where: { id },
       data: {
         ...(input.username !== undefined ? { username: input.username } : {}),
+        ...(input.loginUsername !== undefined ? { loginUsername: input.loginUsername } : {}),
+        ...(input.selectedCloudWorkspaceId !== undefined ? { selectedCloudWorkspaceId: input.selectedCloudWorkspaceId } : {}),
         ...(input.passwordHash !== undefined ? { passwordHash: input.passwordHash } : {}),
         ...(input.oidcIssuer !== undefined ? { oidcIssuer: input.oidcIssuer } : {}),
         ...(input.oidcSubject !== undefined ? { oidcSubject: input.oidcSubject } : {}),
@@ -362,7 +372,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async getIdempotentOperation(actorUserId: string, toolName: string, idempotencyKey: string): Promise<IdempotentOperationRecord | null> {
     const record = await this.prisma.idempotentOperation.findUnique({
-      where: { actorUserId_toolName_idempotencyKey: { actorUserId, toolName, idempotencyKey } },
+      where: { cloudWorkspaceId_actorUserId_toolName_idempotencyKey: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', actorUserId, toolName, idempotencyKey } },
     });
     return record ? toIdempotentOperationRecord(record) : null;
   }
@@ -1370,7 +1380,7 @@ export class PrismaAdminRepository implements AdminRepository {
       ...(input.after ? { OR: [{ createdAt: { gt: input.after.createdAt } },
         { createdAt: input.after.createdAt, id: { gt: input.after.id } }] } : {}),
     }, take: limit, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: { id: true, rangeInstanceId: true, jobType: true, status: true, createdAt: true } });
+      select: { cloudWorkspaceId: true, id: true, rangeInstanceId: true, jobType: true, status: true, createdAt: true } });
   }
 
   async queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null> {
@@ -1604,7 +1614,7 @@ export class PrismaAdminRepository implements AdminRepository {
     const tagsSnapshot = input.tagsSnapshot ?? {};
     const record = await this.prisma.cloudResourceDrift.upsert({
       where: {
-        cloudProvider_regionId_cloudResourceType_cloudResourceId: {
+        cloudWorkspaceId_cloudProvider_regionId_cloudResourceType_cloudResourceId: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
           cloudProvider,
           regionId: input.regionId,
           cloudResourceType: input.cloudResourceType,
@@ -1686,7 +1696,7 @@ export class PrismaAdminRepository implements AdminRepository {
     for (const snapshot of input.snapshots) {
       const source = await this.prisma.cloudImageSnapshot.upsert({
         where: {
-          provider_accountScopeKey_regionId_scope_imageId: {
+          cloudWorkspaceId_provider_accountScopeKey_regionId_scope_imageId: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
             provider: input.provider,
             accountScopeKey: toAccountScopeKey(input.accountUid),
             regionId: input.regionId,
@@ -1752,7 +1762,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async collectImageCatalogItem(input: CollectImageCatalogItemInput): Promise<ImageCatalogItemRecord> {
     return this.prisma.imageCatalogItem.upsert({
       where: {
-        provider_accountScopeKey_regionId_scope_imageId: {
+        cloudWorkspaceId_provider_accountScopeKey_regionId_scope_imageId: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
           provider: input.provider,
           accountScopeKey: toAccountScopeKey(input.accountUid),
           regionId: input.regionId,
@@ -1827,7 +1837,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
     const asset = await this.prisma.platformImageAsset.upsert({
       where: {
-        provider_accountScopeKey_regionId_imageId: {
+        cloudWorkspaceId_provider_accountScopeKey_regionId_imageId: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
           provider: snapshot.provider,
           accountScopeKey: snapshot.accountScopeKey,
           regionId: snapshot.regionId,
@@ -2040,8 +2050,8 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT id FROM "ProvisionJob" WHERE id = ${job.id} FOR UPDATE`;
-      await tx.$executeRaw`SELECT id FROM "RangeInstance" WHERE id = ${job.rangeInstanceId} FOR UPDATE`;
+      await tx.$executeRaw`SELECT id FROM "ProvisionJob" WHERE id = ${job.id} AND "cloudWorkspaceId" = ${getCurrentCloudWorkspaceId() ?? 'legacy-unbound'} FOR UPDATE`;
+      await tx.$executeRaw`SELECT id FROM "RangeInstance" WHERE id = ${job.rangeInstanceId} AND "cloudWorkspaceId" = ${getCurrentCloudWorkspaceId() ?? 'legacy-unbound'} FOR UPDATE`;
       const currentJob = await tx.provisionJob.findUnique({ where: { id: job.id } });
       const instance = await tx.rangeInstance.findUnique({ where: { id: job.rangeInstanceId } });
       if (!job.startedAt || currentJob?.status !== 'running'
@@ -2114,7 +2124,7 @@ export class PrismaAdminRepository implements AdminRepository {
   }) {
     return this.prisma.singleInstanceNetworkProfile.findUnique({
       where: {
-        provider_cloudAccountUid_regionId_zoneId: {
+        cloudWorkspaceId_provider_cloudAccountUid_regionId_zoneId: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
           provider: input.provider,
           cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
           regionId: input.regionId,
@@ -2127,7 +2137,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async upsertSingleInstanceNetworkProfile(input: import('../admin/admin.repository').UpsertSingleInstanceNetworkProfileInput) {
     return this.prisma.singleInstanceNetworkProfile.upsert({
       where: {
-        provider_cloudAccountUid_regionId_zoneId: {
+        cloudWorkspaceId_provider_cloudAccountUid_regionId_zoneId: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
           cloudAccountUid: input.cloudAccountUid ?? 'legacy-unbound',
           provider: input.provider,
           regionId: input.regionId,
@@ -2198,7 +2208,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null> {
     return this.prisma.billingLedgerResource.findUnique({
       where: {
-        cloudProvider_regionId_cloudResourceId_cloudResourceType: {
+        cloudWorkspaceId_cloudProvider_regionId_cloudResourceId_cloudResourceType: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
           cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
           regionId: input.regionId,
           cloudResourceId: input.cloudResourceId,
@@ -2257,7 +2267,9 @@ export class PrismaAdminRepository implements AdminRepository {
       await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
         FROM "BillingLedgerResource" l WHERE b."cloudAccountUid" IS NULL
         AND b."matchedLedgerId" = l."id" AND l."cloudAccountUid" = ${input.cloudAccountUid}
-        AND b."billingDate" = ${billingDate}`;
+        AND b."billingDate" = ${billingDate}
+        AND b."cloudWorkspaceId" = ${getCurrentCloudWorkspaceId() ?? 'legacy-unbound'}
+        AND l."cloudWorkspaceId" = b."cloudWorkspaceId"`;
       const where = { cloudAccountUid: input.cloudAccountUid, billingDate };
       await tx.billingLineItem.deleteMany({ where });
       await tx.billingAnomaly.deleteMany({ where });
@@ -2283,7 +2295,7 @@ export class PrismaAdminRepository implements AdminRepository {
       input.map((item) =>
         this.prisma.billingLineItem.upsert({
           where: {
-            sourceFingerprint: item.sourceFingerprint,
+            cloudWorkspaceId_sourceFingerprint: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceFingerprint: item.sourceFingerprint },
           },
           update: {
             cloudAccountUid: item.cloudAccountUid ?? null,
@@ -2368,7 +2380,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async createBillingAnomaly(input: CreateBillingAnomalyInput): Promise<BillingAnomalyRecord> {
     const record = await this.prisma.billingAnomaly.upsert({
       where: {
-        sourceFingerprint: input.sourceFingerprint,
+        cloudWorkspaceId_sourceFingerprint: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceFingerprint: input.sourceFingerprint },
       },
       update: {
         cloudAccountUid: input.cloudAccountUid ?? null,

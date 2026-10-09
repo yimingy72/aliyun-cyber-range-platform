@@ -72,7 +72,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
 
   it('keeps separate platform users, batch/range/source-job ownership and mixed currencies correct', async () => {
     for (const [id, username] of [['owner-a', 'alice'], ['owner-b', 'bob']] as const) {
-      await prisma.platformUser.create({ data: { id, username, passwordHash: 'fixture-not-a-credential', role: 'user' } });
+      await prisma.platformUser.create({ data: { id, username, loginUsername: username, cloudWorkspaceId: 'legacy-unbound', passwordHash: 'fixture-not-a-credential', role: 'user' } });
     }
     const batch = await prisma.singleInstanceBatch.create({ data: { name: 'fixture-batch', ownerUserId: 'owner-a', platformImageAssetId: 'fixture-image', imageId: 'fixture-cloud-image', imageDisplayName: 'fixture', cpu: 1, memory: 1, systemDiskSize: 40, quantity: 1 } });
     const single = await prisma.rangeInstance.create({ data: { name: 'alice-single', ownerUserId: 'owner-a', instanceMode: 'single', singleInstanceBatchId: batch.id, status: 'running' } });

@@ -61,33 +61,75 @@ import {
   UpdateRangeInstanceInput,
 } from '../../src/admin/admin.repository';
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
+import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../../src/auth/cloud-workspace-scope';
+
+function visibleInWorkspace(record: { cloudWorkspaceId?: string | null; isPlatformManager?: boolean }) {
+  const id = getCurrentCloudWorkspaceId();
+  return !id || record.cloudWorkspaceId === id || record.isPlatformManager === true;
+}
+
+function workspaceRecords<T extends { cloudWorkspaceId?: string | null }>() {
+  const records: T[] = [];
+  const visible = () => records.filter(visibleInWorkspace);
+  const stamp = (record: T) => {
+    const id = getCurrentCloudWorkspaceId();
+    if (id && record.cloudWorkspaceId !== undefined && record.cloudWorkspaceId !== null && record.cloudWorkspaceId !== id) {
+      throw new Error('Resources cannot move between cloud workspaces');
+    }
+    if (record.cloudWorkspaceId === undefined) record.cloudWorkspaceId = id ?? 'legacy-unbound';
+    return record;
+  };
+  return new Proxy(records, {
+    get(target, property) {
+      if (property === 'push' || property === 'unshift') return (...items: T[]) => target[property](...items.map(stamp));
+      if (property === 'find' || property === 'filter' || property === 'some' || property === 'every' || property === 'findIndex') {
+        return (predicate: (record: T, index: number) => boolean) => {
+          if (property === 'every') return target.every((record, index) => !visibleInWorkspace(record) || predicate(record, index));
+          return target[property]((record, index) => visibleInWorkspace(record) && predicate(record, index));
+        };
+      }
+      if (['map', 'slice', 'sort', 'reduce', 'forEach', 'values', 'entries', 'keys'].includes(String(property))) {
+        return (...args: any[]) => (visible() as any)[property](...args);
+      }
+      if (property === Symbol.iterator) return () => visible()[Symbol.iterator]();
+      if (property === 'splice') return (start: number, count: number, ...items: T[]) => {
+        if (getCurrentCloudWorkspaceId() && target.slice(start, start + count).some(record => !visibleInWorkspace(record))) {
+          throw new Error('Cannot remove data from another cloud workspace');
+        }
+        return target.splice(start, count, ...items.map(stamp));
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 function schedulingInstance({ id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt }: RangeInstanceRecord) {
   return { id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt };
 }
 
 export function createMemoryAdminRepository(): AdminRepository {
-  const packedImageArtifacts: PackedImageArtifactRecord[] = [];
+  const packedImageArtifacts = workspaceRecords<PackedImageArtifactRecord>();
   const packedImageClaims = new Map<string, { token: string; expiresAt: Date }>();
-  const platformUsers: PlatformUserRecord[] = [];
-  const rangeTemplates: RangeTemplateRecord[] = [];
-  const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
-  const singleInstanceBatches: SingleInstanceBatchRecord[] = [];
-  const rangeInstances: RangeInstanceRecord[] = [];
-  const provisionJobs: ProvisionJobRecord[] = [];
-  const provisionJobStepLogs: ProvisionJobStepLogRecord[] = [];
-  const imageSnapshots: CloudImageSnapshotRecord[] = [];
-  const imageCatalogItems: ImageCatalogItemRecord[] = [];
-  const platformImageAssets: PlatformImageAssetRecord[] = [];
-  const platformImageTags: PlatformImageTagRecord[] = [];
-  const singleInstanceNetworkProfiles: SingleInstanceNetworkProfileRecord[] = [];
-  const billingLedgerResources: BillingLedgerResourceRecord[] = [];
-  const billingLineItems: BillingLineItemRecord[] = [];
-  const billingAnomalies: BillingAnomalyRecord[] = [];
-  const cloudResourceDrifts: CloudResourceDriftRecord[] = [];
-  const operationConfirmations: OperationConfirmationRecord[] = [];
-  const idempotentOperations: IdempotentOperationRecord[] = [];
-  const operationAuditEvents: OperationAuditEventRecord[] = [];
+  const platformUsers = workspaceRecords<PlatformUserRecord>();
+  const rangeTemplates = workspaceRecords<RangeTemplateRecord>();
+  const rangeTemplateVersions = workspaceRecords<RangeTemplateVersionRecord>();
+  const singleInstanceBatches = workspaceRecords<SingleInstanceBatchRecord>();
+  const rangeInstances = workspaceRecords<RangeInstanceRecord>();
+  const provisionJobs = workspaceRecords<ProvisionJobRecord>();
+  const provisionJobStepLogs = workspaceRecords<ProvisionJobStepLogRecord>();
+  const imageSnapshots = workspaceRecords<CloudImageSnapshotRecord>();
+  const imageCatalogItems = workspaceRecords<ImageCatalogItemRecord>();
+  const platformImageAssets = workspaceRecords<PlatformImageAssetRecord>();
+  const platformImageTags = workspaceRecords<PlatformImageTagRecord>();
+  const singleInstanceNetworkProfiles = workspaceRecords<SingleInstanceNetworkProfileRecord>();
+  const billingLedgerResources = workspaceRecords<BillingLedgerResourceRecord>();
+  const billingLineItems = workspaceRecords<BillingLineItemRecord>();
+  const billingAnomalies = workspaceRecords<BillingAnomalyRecord>();
+  const cloudResourceDrifts = workspaceRecords<CloudResourceDriftRecord>();
+  const operationConfirmations = workspaceRecords<OperationConfirmationRecord>();
+  const idempotentOperations = workspaceRecords<IdempotentOperationRecord>();
+  const operationAuditEvents = workspaceRecords<OperationAuditEventRecord>();
 
   let idCounter = 1;
   let singleControlQueue: Promise<unknown> = Promise.resolve();
@@ -206,7 +248,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   ) => {
     if (
       input.id !== undefined &&
-      platformUsers.some((user) => user.id === input.id && user.id !== ignoreId)
+      runInSystemCloudWorkspaceScope(() => platformUsers.some((user) => user.id === input.id && user.id !== ignoreId))
     ) {
       throw new Error(`Platform user unique constraint failed: id (${input.id})`);
     }
@@ -221,12 +263,12 @@ export function createMemoryAdminRepository(): AdminRepository {
     if (
       input.oidcIssuer != null &&
       input.oidcSubject != null &&
-      platformUsers.some(
+      runInSystemCloudWorkspaceScope(() => platformUsers.some(
         (user) =>
           user.oidcIssuer === input.oidcIssuer &&
           user.oidcSubject === input.oidcSubject &&
           user.id !== ignoreId,
-      )
+      ))
     ) {
       throw new Error(`Platform user unique constraint failed: oidc identity (${input.oidcIssuer}, ${input.oidcSubject})`);
     }
@@ -242,7 +284,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     return record;
   };
 
-  return {
+  const repository: AdminRepository = {
     async createPlatformUser(input: CreatePlatformUserInput) {
       assertPlatformUserUnique({
         id: input.id,
@@ -252,6 +294,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       const record: PlatformUserRecord = {
         id: input.id,
         username: input.username,
+        loginUsername: input.loginUsername ?? input.username,
+        cloudWorkspaceId: input.isPlatformManager ? null : input.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
+        isPlatformManager: input.isPlatformManager ?? false,
+        selectedCloudWorkspaceId: input.selectedCloudWorkspaceId ?? null,
         passwordHash: input.passwordHash,
         oidcIssuer: input.oidcIssuer ?? null,
         oidcSubject: input.oidcSubject ?? null,
@@ -266,7 +312,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async listPlatformUsers() {
-      return cloneList(platformUsers);
+      return cloneList(platformUsers.filter(user => !user.isPlatformManager));
     },
     async getPlatformUserById(id: string) {
       const record = platformUsers.find((user) => user.id === id);
@@ -300,6 +346,8 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       Object.assign(record, {
         username: input.username ?? record.username,
+        loginUsername: input.loginUsername ?? record.loginUsername,
+        selectedCloudWorkspaceId: input.selectedCloudWorkspaceId !== undefined ? input.selectedCloudWorkspaceId : record.selectedCloudWorkspaceId,
         passwordHash: input.passwordHash ?? record.passwordHash,
         oidcIssuer,
         oidcSubject,
@@ -311,7 +359,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async countActiveAdmins() {
-      return platformUsers.filter((user) => user.role === 'admin' && user.status === 'active').length;
+      return platformUsers.filter((user) => !user.isPlatformManager && user.role === 'admin' && user.status === 'active').length;
     },
     async createOperationConfirmation(input: CreateOperationConfirmationInput) {
       const record: OperationConfirmationRecord = {
@@ -666,7 +714,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
 
       for (let i = rangeTemplateVersions.length - 1; i >= 0; i -= 1) {
-        if (rangeTemplateVersions[i].templateId === id) {
+        if (visibleInWorkspace(rangeTemplateVersions[i]) && rangeTemplateVersions[i].templateId === id) {
           rangeTemplateVersions.splice(i, 1);
         }
       }
@@ -1271,6 +1319,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       for (let index = imageSnapshots.length - 1; index >= 0; index -= 1) {
         const record = imageSnapshots[index];
+        if (!visibleInWorkspace(record)) continue;
 
         if (
           record.provider === input.provider &&
@@ -1475,7 +1524,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async deletePlatformImageAssetsBySnapshotId(snapshotId: string) {
       for (let index = platformImageAssets.length - 1; index >= 0; index -= 1) {
-        if (platformImageAssets[index].sourceSnapshotId === snapshotId) {
+        if (visibleInWorkspace(platformImageAssets[index]) && platformImageAssets[index].sourceSnapshotId === snapshotId) {
           platformImageAssets.splice(index, 1);
         }
       }
@@ -1678,8 +1727,8 @@ export function createMemoryAdminRepository(): AdminRepository {
       const oldAnomalies = cloneList(billingAnomalies);
       try {
         for (const item of billingLineItems) if (item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
-        for (let i = billingLineItems.length - 1; i >= 0; i--) if (billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
-        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
+        for (let i = billingLineItems.length - 1; i >= 0; i--) if (visibleInWorkspace(billingLineItems[i]) && billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
+        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (visibleInWorkspace(billingAnomalies[i]) && billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
         await this.upsertBillingLineItems(input.lineItems);
         for (const item of input.anomalies) await this.createBillingAnomaly(item);
       } catch (error) {
@@ -1690,7 +1739,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async deleteBillingLineItemsBySyncBatchId(syncBatchId: string) {
       for (let index = billingLineItems.length - 1; index >= 0; index -= 1) {
-        if (billingLineItems[index]?.syncBatchId === syncBatchId) {
+        if (visibleInWorkspace(billingLineItems[index]) && billingLineItems[index]?.syncBatchId === syncBatchId) {
           billingLineItems.splice(index, 1);
         }
       }
@@ -1803,7 +1852,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async deleteBillingAnomaliesBySyncBatchId(syncBatchId: string) {
       for (let index = billingAnomalies.length - 1; index >= 0; index -= 1) {
-        if (billingAnomalies[index]?.syncBatchId === syncBatchId) {
+        if (visibleInWorkspace(billingAnomalies[index]) && billingAnomalies[index]?.syncBatchId === syncBatchId) {
           billingAnomalies.splice(index, 1);
         }
       }
@@ -1812,4 +1861,18 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
+  return new Proxy(repository, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        const scope = getCurrentCloudWorkspaceScope();
+        const operation = String(property);
+        if (scope && !('system' in scope) && scope.isReadOnly
+          && /^(create|update|delete|set|collect|replace|reconcile|upsert|queue|claim|consume|apply|complete|save|sync|release|mark|register|renew)/.test(operation)
+          && !/(Operation|Confirmation|Audit)/.test(operation)) throw new Error('Historical cloud workspace is read-only');
+        return value.apply(target, args);
+      };
+    },
+  });
 }
