@@ -1569,7 +1569,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       if (jobPatch) Object.assign(current, clone(jobPatch), {updatedAt: now()});
       return true;
     },
-    async listSingleInstanceNetworkProfiles() { return clone(singleInstanceNetworkProfiles); },
+    async listSingleInstanceNetworkProfiles() { return cloneList(singleInstanceNetworkProfiles); },
     async getSingleInstanceNetworkProfileById(id) { return clone(singleInstanceNetworkProfiles.find((value) => value.id === id) ?? null); },
     async registerSingleInstanceNetworkCleanup(id,runId,adminId,ownerIds) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)Object.assign(profile,{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds});},
     async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},

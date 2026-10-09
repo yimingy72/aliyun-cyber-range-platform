@@ -49,6 +49,21 @@ describe('memory repository cloud workspaces', () => {
     expect((await runInCloudWorkspace(b, () => repo.listBillingLedgerResources())).map(row => row.id)).toEqual([second.id]);
   });
 
+  it('clones network profile lists without exposing or mutating another workspace', async () => {
+    const repo = createMemoryAdminRepository();
+    const input = { regionId: 'region', zoneId: 'region-1', vpcId: 'vpc-fixture', vpcCidr: '10.0.0.0/16',
+      vswitchIds: ['switch-fixture'], vswitchCidrs: ['10.0.1.0/24'], securityGroupId: 'sg-fixture', securityGroupName: 'fixture' };
+    const first = await runInCloudWorkspace(a, () => repo.upsertSingleInstanceNetworkProfile({ ...input, provider: a.provider, cloudAccountUid: a.accountUid }));
+    await runInCloudWorkspace(b, () => repo.upsertSingleInstanceNetworkProfile({ ...input, provider: b.provider, cloudAccountUid: b.accountUid }));
+    await runInCloudWorkspace(a, async () => {
+      const profiles = await repo.listSingleInstanceNetworkProfiles();
+      expect(profiles.map(profile => profile.id)).toEqual([first.id]);
+      expect(profiles[0].createdAt.getTime()).toBe(first.createdAt.getTime());
+      profiles[0].vswitchIds.push('mutated-fixture');
+      expect((await repo.listSingleInstanceNetworkProfiles())[0].vswitchIds).toEqual(['switch-fixture']);
+    });
+  });
+
   it('rejects historical business writes and records audit evidence', async () => {
     const repo = createMemoryAdminRepository();
     await runInCloudWorkspace({ ...a, isReadOnly: true }, async () => {
