@@ -44,8 +44,8 @@ describe('Unsupported cloud execution fences', () => {
 
   it('rejects unsupported node controls before resolving physical instance IDs', async () => {
     const getRangeInstanceById = jest.fn().mockResolvedValue({ id: 'tc-range', cloudProvider: 'tencent_cloud', ownerUserId: 'owner' });
-    const service = new RangeInstanceNodeActionsService({ getRangeInstanceById } as never, {} as never);
-    await expect(service.run('tc-range', 'host', 'reboot', {}, { id: 'owner', role: 'user', username: 'owner' })).rejects.toThrow('尚未开放');
+    const service = new RangeInstanceNodeActionsService({ getRangeInstanceById } as never, {} as never, {} as never);
+    await expect(service.run('tc-range', 'host', 'reboot', {}, { id: 'owner', role: 'user' })).rejects.toThrow('尚未开放');
     expect(fetch).not.toHaveBeenCalled();
   });
 
