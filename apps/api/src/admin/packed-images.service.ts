@@ -298,6 +298,7 @@ export class PackedImagesService {
   }
 
   private assertContext(artifact: { cloudAccountUid: string; regionId: string }, context: CloudAccountContextCredentials) {
+    if (context.provider !== 'alibaba_cloud') throw new ConflictException('该云厂商的镜像打包与快照回收尚未开放。');
     if (!artifact.cloudAccountUid || artifact.cloudAccountUid !== context.accountUid || artifact.regionId !== context.regionId) throw new ConflictException('打包云账号或地域上下文不匹配。');
   }
   private async boundContext(artifact: PackedImageArtifactRecord, token: string): Promise<LeasedContext> {

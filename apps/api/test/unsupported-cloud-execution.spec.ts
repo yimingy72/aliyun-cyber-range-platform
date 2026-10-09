@@ -2,6 +2,8 @@ import { imageRpc } from '../src/admin/aliyun-image-rpc';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
 import type { RangeInstanceRecord } from '../src/admin/admin.repository';
+import { RangeInstanceNodeActionsService } from '../src/admin/range-instance-node-actions.service';
+import { PackedImagesService } from '../src/admin/packed-images.service';
 
 describe('Unsupported cloud execution fences', () => {
   const account = { provider: 'tencent_cloud', accountUid: '100001', cloudAccountContextId: 'tc-context', defaultRegion: 'ap-nanjing', defaultZoneId: 'ap-nanjing-1', accessKeyId: 'synthetic-id', accessKeySecret: 'synthetic-secret', accountUidResolved: true, imageImportBucket: '' };
@@ -37,6 +39,21 @@ describe('Unsupported cloud execution fences', () => {
 
   it.each(['tencent_cloud', 'unknown_cloud'])('never sends %s image credentials to Alibaba', async (provider) => {
     await expect(imageRpc({ ...account, provider, regionId: account.defaultRegion }, 'CreateImage')).rejects.toThrow('尚未适配');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported node controls before resolving physical instance IDs', async () => {
+    const getRangeInstanceById = jest.fn().mockResolvedValue({ id: 'tc-range', cloudProvider: 'tencent_cloud', ownerUserId: 'owner' });
+    const service = new RangeInstanceNodeActionsService({ getRangeInstanceById } as never, {} as never);
+    await expect(service.run('tc-range', 'host', 'reboot', {}, { id: 'owner', role: 'user', username: 'owner' })).rejects.toThrow('尚未开放');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('never submits an Alibaba image pack using a verified Tencent account', async () => {
+    const createPackedImageArtifact = jest.fn();
+    const service = new PackedImagesService({ createPackedImageArtifact } as never, {} as never);
+    await expect(service.begin({ cloudAccountContextId: 'tc-context', cloudAccountUid: account.accountUid, regionId: account.defaultRegion, ownerUserId: 'owner', sourceRangeInstanceId: 'range', sourceHostKey: 'host', sourceInstanceId: 'ins-existing' }, { ...account, id: 'tc-context', regionId: account.defaultRegion, zoneId: account.defaultZoneId, status: 'ready' } as never)).rejects.toThrow('尚未开放');
+    expect(createPackedImageArtifact).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 });

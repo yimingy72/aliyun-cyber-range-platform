@@ -46,6 +46,7 @@ export class RangeInstanceNodeActionsService {
     if (currentUser && currentUser.role !== 'admin' && instance.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('Range instance access denied');
     }
+    if (instance.cloudProvider !== 'alibaba_cloud') throw new ConflictException('该云厂商的节点控制与镜像打包尚未开放。');
 
     if (!isNodeActionName(action)) {
       throw new NotFoundException('Unsupported node action');
@@ -74,6 +75,7 @@ export class RangeInstanceNodeActionsService {
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);
     const hostNode = this.resolveHostTopologyNode(instance, nodeId);
     const accountContext = boundAccountContext ?? await this.systemConfigService.getAccountContext();
+    if (accountContext.provider !== 'alibaba_cloud') throw new ConflictException('云账号厂商与当前节点执行器不符。');
 
     if (action === 'start') {
       const response = await this.performAliyunRpcRequest({
