@@ -74,18 +74,20 @@ async function defaultExecutor(
   });
   let interrupted = false;
   let aborted = false;
+  // execFile's built-in timeout closes stdio before killing, which can abort OpenTofu state persistence.
+  const timer = setTimeout(() => {
+    if (!aborted) interrupted = execution.child.kill('SIGTERM');
+  }, timeout);
+  timer.unref();
   const onAbort = () => {
+    if (aborted) return;
     aborted = true;
-    execution.child.kill('SIGTERM');
+    clearTimeout(timer);
+    if (!interrupted) execution.child.kill('SIGTERM');
   };
   // Node's execFile signal also closes stdio; terminate manually and await state persistence.
   signal?.addEventListener('abort', onAbort, { once: true });
   if (signal?.aborted) onAbort();
-  // execFile's built-in timeout closes stdio before killing, which can abort OpenTofu state persistence.
-  const timer = setTimeout(() => {
-    interrupted = execution.child.kill('SIGTERM');
-  }, timeout);
-  timer.unref();
 
   try {
     const result = await execution;

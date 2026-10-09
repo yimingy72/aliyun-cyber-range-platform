@@ -280,16 +280,18 @@ output "compatibility" { value = terraform_data.compatibility.output }
     const binaryPath = path.join(workspaceDir, 'graceful-runner');
     await fs.writeFile(binaryPath, `#!/usr/bin/env node
 const fs = require('node:fs');
+let interruptions = 0;
 process.on('SIGTERM', () => {
+  if (++interruptions > 1) process.exit(3);
   console.log('Graceful abort');
-  setTimeout(() => { fs.writeFileSync('persisted-state', 'complete'); process.exit(0); }, 100);
+  setTimeout(() => { fs.writeFileSync('persisted-state', 'complete'); process.exit(0); }, 250);
 });
 setInterval(() => {}, 1000);
 `, { mode: 0o755 });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 500);
     try {
-      const error = await new OpenTofuRunner({ binaryPath }).init({ workspaceDir, signal: controller.signal }).catch(error => error);
+      const error = await new OpenTofuRunner({ binaryPath, commandTimeoutMs: 600 }).init({ workspaceDir, signal: controller.signal }).catch(error => error);
       expect(error.name).toBe('AbortError');
       expect(error.stdout).toContain('Graceful abort');
       expect(await fs.readFile(path.join(workspaceDir, 'persisted-state'), 'utf8')).toBe('complete');
