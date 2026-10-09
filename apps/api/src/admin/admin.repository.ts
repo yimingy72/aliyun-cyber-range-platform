@@ -1,6 +1,6 @@
 export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 
-export type CloudProvider = 'alibaba_cloud';
+export type CloudProvider = 'alibaba_cloud' | 'tencent_cloud';
 export type IacType = 'opentofu' | 'terraform';
 export type UserRole = 'admin' | 'user';
 export type UserStatus = 'active' | 'disabled';
