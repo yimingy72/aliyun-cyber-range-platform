@@ -189,6 +189,7 @@ resource "tencentcloud_nat_gateway_snat" "zones" {
   subnet_cidr_block = local.zones[each.value.zone_key].cidr
   public_ip_addr    = [tencentcloud_eip.range[each.value.eip_key].public_ip]
   description       = each.key
+  depends_on        = [tencentcloud_route_table_entry.internet, tencentcloud_route_table_association.zones]
 }
 resource "tencentcloud_dnat" "entry" {
   for_each     = { for entry in var.dnat_entries : entry.key => entry }
@@ -200,4 +201,5 @@ resource "tencentcloud_dnat" "entry" {
   private_port = tostring(each.value.internal_port)
   protocol     = each.value.protocol
   description  = each.key
+  depends_on   = [tencentcloud_route_table_entry.internet, tencentcloud_route_table_association.zones]
 }
