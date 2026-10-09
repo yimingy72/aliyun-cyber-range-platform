@@ -12,6 +12,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
+import { billRegionId, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof } from './billing-platform-scope';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -76,8 +77,27 @@ function moneySummary(items: Array<{ currency: string; pretaxAmount: number }>) 
   return { currency: amounts.length > 1 ? null : amounts[0]?.currency ?? 'CNY', pretaxAmount: amounts.length > 1 ? null : amounts[0]?.pretaxAmount ?? 0, amounts };
 }
 
-function isTrackedBillingLineItem(item: BillingLineItemRecord) {
-  return Boolean(item.matchedLedgerId);
+function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBillingProof) {
+  const ledgers = new Map(proof.ledgers.map(ledger => [ledger.id, ledger]));
+  return items.flatMap(item => {
+    const ledger = item.matchedLedgerId ? ledgers.get(item.matchedLedgerId) : null;
+    if (!ledger || !isPlatformCreatedLedger(ledger, proof)
+      || item.cloudResourceId !== ledger.cloudResourceId || item.cloudResourceType !== ledger.cloudResourceType
+      || item.cloudAccountUid && item.cloudAccountUid !== ledger.cloudAccountUid
+      || item.rawPayload.OwnerID != null && String(item.rawPayload.OwnerID) !== ledger.cloudAccountUid
+      || billRegionId(item.rawPayload) && billRegionId(item.rawPayload) !== ledger.regionId) return [];
+    // Historical catalog collection could overwrite attribution; use the verified creation ledger.
+    return [{ ...item, cloudAccountUid: ledger.cloudAccountUid, billingScope: ledger.billingScope, ownerUserId: ledger.ownerUserId }];
+  });
+}
+
+function pendingEvidence(item: BillingAnomalyRecord | BillingLineItemRecord, proof: PlatformBillingProof) {
+  if (!item.cloudAccountUid) return null;
+  return pendingPlatformBillingEvidence({ cloudAccountUid: item.cloudAccountUid, billingDate: toIsoDate(item.billingDate), proof,
+    line: { ...item.rawPayload,
+      InstanceID: item.rawPayload.InstanceID ?? item.cloudResourceId,
+      ProductCode: item.rawPayload.ProductCode ?? (item.cloudResourceType === 'snapshot_region' ? 'snapshot' : item.cloudResourceType === 'oss_bucket' ? 'oss' : item.cloudResourceType),
+    } });
 }
 
 function isLaunchProvisionJob(job: ProvisionJobRecord | null | undefined): job is ProvisionJobRecord {
@@ -113,9 +133,18 @@ function toCsv(rows: Array<Array<string | number | null | undefined>>) {
 export class BillingService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
+  private async readPlatformItems(input: BillingWindowInput) {
+    const window = resolveBillingWindow(input);
+    const [items, proof] = await Promise.all([
+      this.adminRepository.listBillingLineItems({ startAt: window.startAt, endAt: window.endAt }),
+      loadPlatformBillingProof(this.adminRepository),
+    ]);
+    return platformBillingItems(items, proof);
+  }
+
   async getSummary(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const [lineItems, anomalies, ledgerResources] = await Promise.all([
+    const [lineItems, anomalies, proof] = await Promise.all([
       this.adminRepository.listBillingLineItems({
         startAt: window.startAt,
         endAt: window.endAt,
@@ -124,15 +153,37 @@ export class BillingService {
         startAt: window.startAt,
         endAt: window.endAt,
       }),
-      this.adminRepository.listBillingLedgerResources(),
+      loadPlatformBillingProof(this.adminRepository),
     ]);
 
-    const trackedLineItems = lineItems.filter(isTrackedBillingLineItem);
+    const trackedLineItems = platformBillingItems(lineItems, proof);
+    const ledgerResources = proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, proof));
     const resourceTypeTotals = this.groupByResourceType(trackedLineItems);
     const dailyTotals = this.groupByBillingDate(trackedLineItems);
     const money = moneySummary(trackedLineItems);
-    const unallocatedItems = new Map([...lineItems.filter(item => !isTrackedBillingLineItem(item)), ...anomalies]
-      .map(item => [item.sourceFingerprint, item]));
+    const trackedFingerprints = new Set(trackedLineItems.map(item => item.sourceFingerprint));
+    const pending = [...new Map([...lineItems, ...anomalies].filter(item => !trackedFingerprints.has(item.sourceFingerprint))
+      .map(item => [item.sourceFingerprint, item])).values()].map(item => ({ item, evidence: pendingEvidence(item, proof) }));
+    const unallocatedItems = pending.filter(row => row.evidence?.kind === 'resource_pending').map(row => row.item);
+    const pendingResources = new Map<'snapshot' | 'oss' | 'unknown', Set<string>>();
+    for (const { item, evidence } of pending) {
+      if (evidence?.kind !== 'aggregate_pending') continue;
+      const type = item.rawPayload.ProductCode === 'snapshot' || item.cloudResourceType === 'snapshot_region' ? 'snapshot' : 'oss';
+      const ids = pendingResources.get(type) ?? new Set<string>();
+      for (const id of evidence.ledgerIds) ids.add(`ledger:${id}`);
+      for (const id of evidence.imageImportJobIds) ids.add(`import:${id}`);
+      pendingResources.set(type, ids);
+    }
+    const unverified = proof.ledgers.filter(ledger => proof.unverifiedSourceLedgerIds.has(ledger.id)
+      && billingDayText(ledger.billingStartAt) <= window.endAtText
+      && (!ledger.releasedAt || billingDayText(ledger.releasedAt) >= window.startAtText));
+    if (unverified.length) pendingResources.set('unknown', new Set(unverified.map(ledger => ledger.id)));
+    const reasons = {
+      snapshot: '平台快照仍需资源级费用证明；源 ECS 汇总可能包含其它快照，未将整组金额计入平台。',
+      oss: '平台导入对象仍需可核验的费用明细；配置或使用 Bucket 不代表整桶由平台独占，未将整桶金额计入平台。',
+      unknown: '已找到平台创建记录，但历史云账号或归属证明尚未核实；记录继续保留，不按零费用处理。',
+    };
+    const reconciliationIssues = [...pendingResources].map(([resourceType, ids]) => ({ resourceType, resourceCount: ids.size, reason: reasons[resourceType] }));
     const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
     const resourcesWithoutBillCount = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
       && billingDayText(item.billingStartAt) <= window.endAtText
@@ -142,14 +193,16 @@ export class BillingService {
     return {
       startAt: window.startAtText,
       endAt: window.endAtText,
+      billingScope: 'platform_resources' as const,
       currency: money.currency,
       totalPretaxAmount: money.pretaxAmount,
       platformPretaxAmount: money.currency ? sumPretax(trackedLineItems.filter(item => item.billingScope === 'platform')) : null,
       currencyTotals: money.amounts.map(amount => ({ currency: amount.currency, totalPretaxAmount: amount.pretaxAmount, platformPretaxAmount: sumPretax(trackedLineItems.filter(item => item.currency === amount.currency && item.billingScope === 'platform')) })),
-      anomalyCount: anomalies.length,
+      anomalyCount: unallocatedItems.length,
       billingStatus: 'provisional' as const,
-      unallocatedCurrencyTotals: currencyAmounts([...unallocatedItems.values()]),
+      unallocatedCurrencyTotals: currencyAmounts(unallocatedItems),
       resourcesWithoutBillCount,
+      reconciliationIssues,
       resourceTypeTotals,
       dailyTotals,
     };
@@ -163,13 +216,9 @@ export class BillingService {
     const window = resolveBillingWindow(input);
     const [platformUsers, fetchedLineItems] = await Promise.all([
       this.adminRepository.listPlatformUsers(),
-      this.adminRepository.listBillingLineItems({
-        startAt: window.startAt,
-        endAt: window.endAt,
-        billingScope: 'user',
-      }),
+      this.readPlatformItems(input),
     ]);
-    const lineItems = fetchedLineItems.filter(isTrackedBillingLineItem);
+    const lineItems = fetchedLineItems.filter(item => item.billingScope === 'user');
 
     const groups = await this.groupBillingLineItems(lineItems);
     const launchJobsByUserId = new Map<string, Set<string>>();
@@ -221,12 +270,7 @@ export class BillingService {
 
   async getUserSummary(userId: string, input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const items = (await this.adminRepository.listBillingLineItems({
-      startAt: window.startAt,
-      endAt: window.endAt,
-      ownerUserId: userId,
-      billingScope: 'user',
-    })).filter(isTrackedBillingLineItem);
+    const items = (await this.readPlatformItems(input)).filter(item => item.billingScope === 'user' && item.ownerUserId === userId);
     const user = await this.adminRepository.getPlatformUserById(userId);
     const launchCount = new Set((await this.groupBillingLineItems(items)).filter(group => group.kind !== 'unmatched' && group.provisionJobStatus === 'succeeded').map(group => group.sourceProvisionJobId)).size;
 
@@ -241,12 +285,7 @@ export class BillingService {
 
   async listUserGroups(input: BillingGroupInput) {
     const window = resolveBillingWindow(input);
-    const items = (await this.adminRepository.listBillingLineItems({
-      startAt: window.startAt,
-      endAt: window.endAt,
-      billingScope: 'user',
-      ...(input.userId ? { ownerUserId: input.userId } : {}),
-    })).filter(isTrackedBillingLineItem);
+    const items = (await this.readPlatformItems(input)).filter(item => item.billingScope === 'user' && (!input.userId || item.ownerUserId === input.userId));
 
     const groups = await this.attachOwnerUsernames(await this.groupBillingLineItems(items));
     return paginate(groups, input);
@@ -254,11 +293,7 @@ export class BillingService {
 
   async listPlatformGroups(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const items = (await this.adminRepository.listBillingLineItems({
-      startAt: window.startAt,
-      endAt: window.endAt,
-      billingScope: 'platform',
-    })).filter(isTrackedBillingLineItem);
+    const items = (await this.readPlatformItems(input)).filter(item => item.billingScope === 'platform');
 
     const groups = await this.attachOwnerUsernames(await this.groupBillingLineItems(items));
     return paginate(groups, input);
@@ -267,12 +302,7 @@ export class BillingService {
   async listUserItems(userId: string, input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
 
-    const items = (await this.adminRepository.listBillingLineItems({
-      startAt: window.startAt,
-      endAt: window.endAt,
-      ownerUserId: userId,
-      billingScope: 'user',
-    })).filter(isTrackedBillingLineItem);
+    const items = (await this.readPlatformItems(input)).filter(item => item.billingScope === 'user' && item.ownerUserId === userId);
 
     return items
       .slice()
@@ -282,11 +312,7 @@ export class BillingService {
   async listPlatformItems(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
 
-    const items = (await this.adminRepository.listBillingLineItems({
-      startAt: window.startAt,
-      endAt: window.endAt,
-      billingScope: 'platform',
-    })).filter(isTrackedBillingLineItem);
+    const items = (await this.readPlatformItems(input)).filter(item => item.billingScope === 'platform');
 
     return items
       .slice()
@@ -299,12 +325,13 @@ export class BillingService {
   async listAnomalies(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
 
-    const anomalies = await this.adminRepository.listBillingAnomalies({
-      startAt: window.startAt,
-      endAt: window.endAt,
-    });
+    const [anomalies, proof] = await Promise.all([
+      this.adminRepository.listBillingAnomalies({ startAt: window.startAt, endAt: window.endAt }),
+      loadPlatformBillingProof(this.adminRepository),
+    ]);
 
     return anomalies
+      .filter(item => pendingEvidence(item, proof)?.kind === 'resource_pending')
       .slice()
       .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime());
   }
@@ -315,6 +342,7 @@ export class BillingService {
     return toCsv([
       ['startAt', summary.startAt],
       ['endAt', summary.endAt],
+      ['billingScope', summary.billingScope],
       ['totalPretaxAmount', summary.totalPretaxAmount],
       ['platformPretaxAmount', summary.platformPretaxAmount],
       ['currency', summary.currency ?? 'MULTIPLE'],
@@ -324,6 +352,9 @@ export class BillingService {
       [],
       ['unallocatedCurrency', 'unallocatedPretaxAmount'],
       ...summary.unallocatedCurrencyTotals.map(item => [item.currency, item.pretaxAmount]),
+      [],
+      ['reconciliationResourceType', 'resourceCount', 'reason'],
+      ...summary.reconciliationIssues.map(item => [item.resourceType, item.resourceCount, item.reason]),
       [],
       ['currency', 'totalPretaxAmount', 'platformPretaxAmount'],
       ...summary.currencyTotals.map(item => [item.currency, item.totalPretaxAmount, item.platformPretaxAmount]),
