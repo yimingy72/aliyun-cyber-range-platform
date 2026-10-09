@@ -1,9 +1,10 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
-import { ADMIN_REPOSITORY, type AdminRepository, type ProvisionJobRecord, type RangeInstanceRecord, } from './admin.repository';
+import { ADMIN_REPOSITORY, type AdminRepository, type ProvisionJobRecord, type RangeInstanceRecord, type RangeResourceSummary, } from './admin.repository';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from './billing-ledger-sync';
 import { SystemConfigService } from './system-config.service';
+import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, findExistingInventoryDiskIds, inventoryDiskIds } from './instance-disk-inventory';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
@@ -301,6 +302,42 @@ export class SingleInstanceBatchExecutionService {
       throw new Error('Single instance cloud context differs from its immutable launch identity');
     return { ...account, defaultZoneId: config?.zoneId ?? account.defaultZoneId };
   }
+  async captureInstanceDisks(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+    summary: RangeResourceSummary, destroying = false) {
+    await this.assertCurrent(item);
+    const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
+    summary = { ...current?.resourceSummary, ...summary,
+      dataDiskIds: { ...current?.resourceSummary?.dataDiskIds, ...summary.dataDiskIds } };
+    const expectedTags: Record<string, string> = { CreatedBy: 'cyber-range-platform', RangeInstanceId: item.instance.id,
+      PlatformScope: item.instance.ownerUserId ? 'user' : 'platform',
+      ...(item.instance.ownerUserId ? { PlatformUserId: item.instance.ownerUserId } : {}),
+      ...(item.instance.singleInstanceBatchId ? { SingleInstanceBatchId: item.instance.singleInstanceBatchId } : {}),
+      ...(item.instance.singleInstanceConfig?.executionBackend === 'opentofu'
+        ? { CloudAccountUid: account.accountUid!, CloudAccountContextId: account.cloudAccountContextId! } : {}) };
+    const inventories = [];
+    for (const [hostKey, instanceId] of Object.entries(summary.hostIds ?? {})) {
+      await this.assertCurrent(item);
+      const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
+        accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action, parameters }),
+        instanceId, knownSystemDiskIds: summary.systemDiskIds?.[hostKey] ? [summary.systemDiskIds[hostKey]] : [],
+        knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}), expectedTags });
+      summary = mergeDiskInventory(summary, hostKey, disks);
+      inventories.push(disks);
+    }
+    await this.assertCurrent(item);
+    if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
+    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
+      regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: item.job.id, billingStartAt: item.instance.createdAt });
+    for (const disks of inventories) assertDiskInventorySafe(disks, destroying);
+    return summary;
+  }
+  async assertInstanceDisksAbsent(instance: RangeInstanceRecord, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>) {
+    const current = await this.adminRepository.getRangeInstanceById(instance.id);
+    const remaining = await findExistingInventoryDiskIds((action, parameters) => this.performAliyunRpcRequest({
+      accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action, parameters }),
+      inventoryDiskIds(current?.resourceSummary ?? instance.resourceSummary));
+    if (remaining.length) throw new Error(`ECS disks remain after instance deletion: ${remaining.join(', ')}`);
+  }
   async readOpenTofuInstances(account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, instanceIds: string[]) {
     return this.runWithSlot(() => this.describeInstances({ accountContext: account, instanceIds }));
   }
@@ -388,6 +425,7 @@ export class SingleInstanceBatchExecutionService {
         if (consecutiveEmpty >= (knownIds.length ? 2 : DESTROY_RETRY_ATTEMPTS)) {
           const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
           if (!knownIds.length && current?.singleInstanceConfig?.nativeCreateJobId) throw new Error('ECS creation outcome is unknown; empty queries do not prove cleanup');
+          await this.assertInstanceDisksAbsent(item.instance, account);
           return;
         }
       } else {
@@ -561,7 +599,7 @@ export class SingleInstanceBatchExecutionService {
     accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
   }) {
     const hostKey = input.item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
-    const resourceSummary = {
+    let resourceSummary: RangeResourceSummary = {
       mode: 'ecs-native' as const,
       vpcId: input.profile?.vpcId ?? null,
       subnetIds: input.item.instance.singleInstanceConfig?.assignedVswitchId
@@ -574,6 +612,7 @@ export class SingleInstanceBatchExecutionService {
       resolvedInstanceType: input.resolvedInstanceType,
       resolvedImageId: input.item.instance.singleInstanceConfig?.imageId ?? null,
     };
+    resourceSummary = await this.captureInstanceDisks(input.item, input.accountContext, resourceSummary);
     if (!(await this.adminRepository.commitSingleInstanceClaim(input.item.job, {
       status: 'creating',
       accessEntry: {
@@ -647,10 +686,7 @@ export class SingleInstanceBatchExecutionService {
     const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
     const summary = { ...(current?.resourceSummary ?? item.instance.resourceSummary ?? {}), mode: 'ecs-native' as const,
       hostIds: Object.fromEntries(ids.map((id, index) => [index === 0 ? item.instance.singleInstanceConfig!.hostKey : `cleanup-${index}`, id])) };
-    if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
-    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
-      regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: current?.singleInstanceConfig?.nativeCreateJobId ?? item.job.id,
-      billingStartAt: item.instance.createdAt });
+    await this.captureInstanceDisks(item, account, summary, true);
   }
   private async findSingleInstanceDetailsByRangeInstanceTag(input: {
     accessKeyId: string;

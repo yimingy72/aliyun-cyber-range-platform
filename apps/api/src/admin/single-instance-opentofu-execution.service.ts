@@ -114,6 +114,7 @@ export class SingleInstanceOpenTofuExecutionService {
       if (!valid.length) return;
       const tracked = valid.filter(item => context!.state.has(item.instance.id));
       if (tracked.length) {
+        await this.rememberTrackedResources(context, tracked, true);
         await this.writeInputs(context);
         const prepared = context;
         await this.command(prepared, () => this.runner.init({ ...this.commandOptions(prepared), upgrade: true }));
@@ -397,9 +398,10 @@ export class SingleInstanceOpenTofuExecutionService {
       const detail = cloud.find(value => value.instanceId === state.id);
       if (!detail || !matchesCloud(detail, item.instance) || partial && detail.status !== 'Running') continue;
       const hostKey = item.instance.singleInstanceConfig!.hostKey;
-      const summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
+      let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
         hostIds: { [hostKey]: state.id }, systemDiskIds: { [hostKey]: state.diskId },
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
+      summary = await this.native.captureInstanceDisks(item, context.account, summary);
       if (!await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary, status: detail.status === 'Running' && detail.publicIp ? 'running' : 'creating',
         runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
         runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
@@ -425,6 +427,7 @@ export class SingleInstanceOpenTofuExecutionService {
       if (!failed.length) { await this.finishOperation(context); return; }
       const tracked = failed.filter(item => context.state.has(item.instance.id));
       if (tracked.length) {
+        await this.rememberTrackedResources(context, tracked, true);
         await this.writeInputs(context);
         await this.command(context, () => this.runner.init({ ...this.commandOptions(context), upgrade: true }));
         await this.applyPlan(context, tracked.map(item => item.instance.id), true);
@@ -443,15 +446,16 @@ export class SingleInstanceOpenTofuExecutionService {
       await this.markFailures(items, `${message}; ${sanitize(error, context.secrets)}`, true);
     }
   }
-  private async rememberTrackedResources(context: Context, items: SingleInstanceExecutionItem[]) {
+  private async rememberTrackedResources(context: Context, items: SingleInstanceExecutionItem[], destroying = false) {
     for (const item of items) {
       const state = context.state.get(item.instance.id);
       if (!state || !await this.itemCurrent(item)) continue;
       await this.assertLease(context.lease);
       const hostKey = item.instance.singleInstanceConfig!.hostKey;
-      const summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH,
+      let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH,
         workspaceDir: context.workspace, hostIds: { [hostKey]: state.id }, systemDiskIds: state.diskId ? { [hostKey]: state.diskId } : null,
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
+      summary = await this.native.captureInstanceDisks(item, context.account, summary, destroying);
       if (await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) await this.syncLedger(context, item, summary);
     }
   }
@@ -473,8 +477,9 @@ export class SingleInstanceOpenTofuExecutionService {
         }
         const hostKey = item.instance.singleInstanceConfig!.hostKey;
         await this.assertLease(context.lease);
-        const summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
+        let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
           hostIds: Object.fromEntries(details.map((detail, index) => [index ? `${hostKey}-recovery-${index}` : hostKey, detail.instanceId])) };
+        summary = await this.native.captureInstanceDisks(item, context.account, summary, true);
         if (await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) await this.syncLedger(context, item, summary);
         await this.native.deleteOwnedUntrackedOpenTofuInstances(item, details.map(detail => detail.instanceId), () => this.assertLease(context.lease));
         message = `${message}; emergency-api cleanup of exact bound, untracked member`;
@@ -494,6 +499,7 @@ export class SingleInstanceOpenTofuExecutionService {
       const [tagged, known] = await Promise.all([this.native.readOpenTofuInstancesByTag(item.instance),
         this.native.readOpenTofuInstances(context.account, context.knownIds.get(item.instance.id) ?? [])]);
       if (tagged.length || known.length) throw new Error('Cloud member deletion has not been confirmed');
+      await this.native.assertInstanceDisksAbsent(item.instance, context.account);
     }
   }
   private async syncLedger(context: Context, item: SingleInstanceExecutionItem, summary: RangeResourceSummary) {

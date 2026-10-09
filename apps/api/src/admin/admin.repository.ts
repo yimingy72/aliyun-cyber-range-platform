@@ -164,6 +164,9 @@ export type RangeResourceSummary = {
   securityGroupIds?: Record<string, string> | null;
   hostIds?: Record<string, string> | null;
   systemDiskIds?: Record<string, string> | null;
+  dataDiskIds?: Record<string, string> | null;
+  unverifiedDiskIds?: Record<string, string> | null;
+  diskOwnershipProofs?: Record<string, { instanceId: string; method: 'persisted' | 'tags' }> | null;
   secondaryNetworkInterfaceIds?: Record<string, string> | null;
   natGatewayIds?: Record<string, string> | null;
   snatEntryIds?: Record<string, string> | null;

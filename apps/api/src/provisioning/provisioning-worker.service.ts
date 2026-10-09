@@ -15,6 +15,7 @@ import {
 import { buildBillingTags } from '../admin/billing-tagging';
 import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
+import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService } from '../admin/system-config.service';
@@ -436,7 +437,8 @@ export class ProvisioningWorkerService {
 
         await this.runWorkerStep(reportStep, 'persist_access_entry', async () => {
           const current = await this.adminRepository.getRangeInstanceById(instance.id);
-          const resourceSummary = { ...result.resourceSummary, creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext };
+          const resourceSummary = await this.captureRangeDisks(job, instance, { ...result.resourceSummary,
+            creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext }, accountContext, false);
           await this.updateRangeForClaim(job, {
             status: 'creating',
             runtimeTopologyGraph:
@@ -609,7 +611,8 @@ export class ProvisioningWorkerService {
     }
     await this.runWorkerStep(input.reportStep, 'persist_update_result', async () => {
       const current = await this.adminRepository.getRangeInstanceById(input.instance.id);
-      const resourceSummary = { ...result.resourceSummary, creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext };
+      const resourceSummary = await this.captureRangeDisks(input.job, input.instance, { ...current?.resourceSummary, ...result.resourceSummary,
+        creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext }, input.accountContext, false);
       await this.updateRangeForClaim(input.job, { resourceSummary });
       await this.recordRangeResourceInventory(input.job, resourceSummary);
       await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: input.instance, regionId: input.accountContext.defaultRegion, cloudAccountUid: input.accountContext.accountUid, resourceSummary, sourceProvisionJobId: input.job.id, billingStartAt: input.instance.createdAt });
@@ -733,7 +736,7 @@ export class ProvisioningWorkerService {
 
   private rangeSummaryHasIds(summary: RangeResourceSummary | null) {
     return Boolean(summary && (summary.vpcId || summary.eipAllocationId
-      || ['hostIds','systemDiskIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
+      || ['hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
         .some(field => Object.values((summary as any)[field] ?? {}).some(Boolean))));
   }
 
@@ -779,7 +782,7 @@ export class ProvisioningWorkerService {
   }
 
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds',
+    const inventory = Object.fromEntries(['vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();
@@ -789,7 +792,7 @@ export class ProvisioningWorkerService {
   }
 
   private async captureRangeResources(job: ProvisionJobRecord, instance: RangeInstanceRecord,
-    input: RangeProvisionDestroyInput, context: { defaultRegion: string; accountUid: string | null }) {
+    input: RangeProvisionDestroyInput, context: { defaultRegion: string; accountUid: string | null; accessKeyId: string; accessKeySecret: string }) {
     input.signal?.throwIfAborted();
     if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
     const current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
@@ -799,7 +802,7 @@ export class ProvisioningWorkerService {
     const inspectedInput = { ...input, billingTags: { ...input.billingTags, ...(bound ? { CloudAccountContextId: bound.cloudAccountContextId, CloudAccountUid: bound.cloudAccountUid } : {}) } };
     const observed = await this.rangeProvisioner.inspectResources(inspectedInput);
     if (!observed && input.requirePersistedState) throw new Error('Range persisted state is missing; cleanup cannot be proven');
-    const summary: RangeResourceSummary = { ...current.resourceSummary, mode: 'opentofu' };
+    let summary: RangeResourceSummary = { ...current.resourceSummary, mode: 'opentofu' };
     if (observed) for (const [field, value] of Object.entries(observed)) {
       if (field.endsWith('Ids') && value && typeof value === 'object') {
         const merged = { ...((summary as any)[field] ?? {}) };
@@ -810,12 +813,42 @@ export class ProvisioningWorkerService {
         (summary as any)[field] = value;
       }
     }
+    summary = await this.captureRangeDisks(job, instance, summary, context, true);
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
     await this.recordRangeResourceInventory(job, summary);
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted,
       resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid,
       sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });
     return persisted;
+  }
+
+  private async captureRangeDisks(job: ProvisionJobRecord, instance: RangeInstanceRecord, summary: RangeResourceSummary,
+    context: { accessKeyId: string; accessKeySecret: string; defaultRegion: string; accountUid: string | null }, destroying: boolean) {
+    if (summary.mode === 'dry-run' || !Object.keys(summary.hostIds ?? {}).length) return summary;
+    const bound = summary.executionContext;
+    if (!bound || !context.accountUid || bound.cloudAccountUid !== context.accountUid || bound.regionId !== context.defaultRegion)
+      throw new Error('Disk inventory requires the range frozen account identity');
+    const expectedTags: Record<string, string> = { CreatedBy: 'cyber-range-platform', RangeInstanceId: instance.id,
+      PlatformScope: instance.ownerUserId ? 'user' : 'platform', CloudAccountUid: bound.cloudAccountUid,
+      CloudAccountContextId: bound.cloudAccountContextId,
+      ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}) };
+    const inventories = [];
+    for (const [hostKey, instanceId] of Object.entries(summary.hostIds ?? {})) {
+      if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
+      const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
+        endpoint: `ecs.${context.defaultRegion}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action,
+        accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret, parameters: { RegionId: context.defaultRegion, ...parameters } }),
+        instanceId, knownSystemDiskIds: summary.systemDiskIds?.[hostKey] ? [summary.systemDiskIds[hostKey]] : [],
+        knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}), expectedTags });
+      summary = mergeDiskInventory(summary, hostKey, disks);
+      inventories.push(disks);
+    }
+    const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
+    await this.recordRangeResourceInventory(job, summary);
+    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted, resourceSummary: summary,
+      regionId: context.defaultRegion, cloudAccountUid: context.accountUid, sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });
+    for (const disks of inventories) assertDiskInventorySafe(disks, destroying);
+    return summary;
   }
 
   private async resolveAccountContext() {
@@ -1375,7 +1408,7 @@ export class ProvisioningWorkerService {
     }
     checks.push(async () => (await this.findExistingInstanceIds(Object.values(resourceSummary.hostIds ?? {}).filter(Boolean), runtimeConfig, regionId))
       .map(id => `instance:${id}`));
-    checks.push(async () => (await this.findExistingDiskIds(Object.values(resourceSummary.systemDiskIds ?? {}).filter(Boolean), runtimeConfig, regionId)).map(id => `disk:${id}`));
+    checks.push(async () => (await this.findExistingDiskIds(inventoryDiskIds(resourceSummary), runtimeConfig, regionId)).map(id => `disk:${id}`));
     for (const id of new Set(Object.values(resourceSummary.secondaryNetworkInterfaceIds ?? {}).filter(Boolean))) {
       checks.push(async () => await this.checkNetworkInterfaceExists(id, runtimeConfig, regionId) ? [`eni:${id}`] : []);
     }
