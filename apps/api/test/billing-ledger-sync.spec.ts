@@ -385,3 +385,15 @@ describe('billing ledger ownership and scoped reads', () => {
     await expect(syncRangeInstanceBillingLedger(input)).rejects.toThrow('write unavailable');
   });
 });
+
+describe('verified billing account backfill', () => {
+  it.each([null, 'account-b'])('does not assign verified account-a to unproven or conflicting UID %s', async cloudAccountUid => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({ name: 'backfill', ownerUserId: 'alice', status: 'running' });
+    const original = await repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'i-history', cloudResourceType: 'ecs',
+      cloudAccountUid, billingScope: 'user', ownerUserId: cloudAccountUid ? 'alice' : null, rangeInstanceId: instance.id, billingStartAt: new Date('2026-10-01') });
+    await expect(syncRangeInstanceBillingLedger({ repository, instance, regionId: 'cn-hangzhou', cloudAccountUid: 'account-a',
+      resourceSummary: { mode: 'opentofu', hostIds: { ecs: 'i-history' } }, billingStartAt: new Date('2026-10-09') })).rejects.toThrow();
+    expect(await repository.listBillingLedgerResources()).toEqual([original]);
+  });
+});

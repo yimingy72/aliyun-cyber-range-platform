@@ -163,12 +163,20 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
     }
 
     assertLedgerOwnership(existing, input);
+    const backfillUid = !existing.cloudAccountUid && input.cloudAccountUid;
+    if (backfillUid && (existing.rangeInstanceId !== input.instance.id
+      || existing.ownerUserId !== (input.instance.ownerUserId ?? null)
+      || existing.singleInstanceBatchId !== (input.instance.singleInstanceBatchId ?? null)
+      || existing.billingScope !== billingScope)) {
+      throw new Error('Billing ledger account backfill requires the same proven instance ownership');
+    }
     const existingSourceJob = existing.sourceProvisionJobId
       ? sourceJobs.find(([jobId]) => jobId === existing.sourceProvisionJobId)?.[1] ??
         (await input.repository.getProvisionJobById(existing.sourceProvisionJobId))
       : null;
 
     await input.repository.updateBillingLedgerResource(existing.id, {
+      ...(backfillUid ? { cloudAccountUid: backfillUid } : {}),
       billingScope,
       ownerUserId: input.instance.ownerUserId ?? null,
       rangeInstanceId: input.instance.id,
