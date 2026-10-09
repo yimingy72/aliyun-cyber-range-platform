@@ -117,8 +117,15 @@ describe('single-instance OpenTofu batch execution', () => {
     const execute = promisify(execFile);
     await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['fmt', '-write=false', test.workspace]);
     if (process.env.SINGLE_TOFU_OFFLINE_VALIDATION === '1') {
-      await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['init', '-backend=false', '-input=false', '-no-color'], { cwd: test.workspace });
-      await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['validate', '-no-color'], { cwd: test.workspace });
+      const cliConfig = path.join(test.workspace, 'offline-validation.tfrc');
+      const mirrorRoot = process.env.SINGLE_TOFU_PROVIDER_MIRROR_PATH ?? '/app/.local/provider-mirror';
+      await fs.writeFile(cliConfig, `provider_installation {
+  filesystem_mirror { path = ${JSON.stringify(mirrorRoot)} }
+}
+`);
+      const env = { ...process.env, TF_CLI_CONFIG_FILE: cliConfig };
+      await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['init', '-backend=false', '-input=false', '-no-color'], { cwd: test.workspace, env });
+      await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['validate', '-no-color'], { cwd: test.workspace, env });
     }
   });
 
