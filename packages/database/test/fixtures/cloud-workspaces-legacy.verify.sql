@@ -23,3 +23,33 @@ DO $$ DECLARE ali text; tencent text; BEGIN
  ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "ProvisionJob" WHERE "id"='fixture-job-conflict');
  ASSERT (SELECT count(*) FROM "RangeInstance")=5, 'History must not be deleted';
 END $$;
+DO $$ DECLARE ali text; tencent text; BEGIN
+ SELECT "cloudWorkspaceId" INTO ali FROM "CloudAccountContext" WHERE "id"='fixture-ali-a';
+ SELECT "cloudWorkspaceId" INTO tencent FROM "CloudAccountContext" WHERE "id"='fixture-tencent';
+ BEGIN
+  INSERT INTO "CloudWorkspace" ("id","provider","accountUid","displayName","updatedAt") VALUES ('fixture-invalid-null','alibaba_cloud',NULL,'Invalid',CURRENT_TIMESTAMP);
+  RAISE EXCEPTION 'A configured cloud workspace cannot have an unknown account UID';
+ EXCEPTION WHEN check_violation THEN NULL; END;
+ BEGIN
+  UPDATE "CloudWorkspace" SET "isReadOnly"=false WHERE "id"='legacy-unbound';
+  RAISE EXCEPTION 'Unbound history cannot become writable';
+ EXCEPTION WHEN check_violation THEN NULL; END;
+ BEGIN
+  INSERT INTO "PlatformUser" ("id","username","loginUsername","passwordHash","updatedAt") VALUES ('fixture-invalid-user','invalid','invalid','synthetic-fixture',CURRENT_TIMESTAMP);
+  RAISE EXCEPTION 'A business user cannot become global through a null workspace';
+ EXCEPTION WHEN check_violation THEN NULL; END;
+ BEGIN
+  UPDATE "PlatformUser" SET "cloudWorkspaceId"=tencent WHERE "id"='fixture-alice';
+  RAISE EXCEPTION 'An existing user cannot move to another cloud account';
+ EXCEPTION WHEN check_violation THEN NULL; END;
+ BEGIN
+  UPDATE "CloudImageSnapshot" SET "cloudWorkspaceId"=tencent WHERE "id"='fixture-image-ali';
+  RAISE EXCEPTION 'A cloud resource cannot change its source workspace';
+ EXCEPTION WHEN check_violation THEN NULL; END;
+ BEGIN
+  INSERT INTO "RangeInstance" ("id","name","cloudWorkspaceId","ownerUserId","updatedAt") VALUES ('fixture-cross-owner','Invalid owner',ali,'fixture-bob',CURRENT_TIMESTAMP);
+  RAISE EXCEPTION 'New resources cannot use another account business user';
+ EXCEPTION WHEN check_violation THEN NULL; END;
+ ASSERT (SELECT "cloudWorkspaceId"=ali FROM "PlatformUser" WHERE "id"='fixture-alice');
+ ASSERT (SELECT "cloudWorkspaceId"=ali FROM "CloudImageSnapshot" WHERE "id"='fixture-image-ali');
+END $$;

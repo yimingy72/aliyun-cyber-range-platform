@@ -532,4 +532,16 @@ CREATE TRIGGER "BillingLineItem_workspace_links" BEFORE INSERT OR UPDATE ON "Bil
 CREATE TRIGGER "CloudResourceDrift_workspace_links" BEFORE INSERT OR UPDATE ON "CloudResourceDrift" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"('rangeInstanceId','RangeInstance');
 CREATE TRIGGER "SingleInstanceNetworkProfile_workspace_links" BEFORE INSERT OR UPDATE ON "SingleInstanceNetworkProfile" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"('cloudAccountContextId','CloudAccountContext','createdByUserId','PlatformUser');
 
+ALTER TABLE "CloudWorkspace" ADD CONSTRAINT "CloudWorkspace_legacy_identity_check"
+ CHECK (("accountUid" IS NULL) = ("id" = 'legacy-unbound') AND ("id" <> 'legacy-unbound' OR "isReadOnly"));
+ALTER TABLE "PlatformUser" ADD CONSTRAINT "PlatformUser_manager_workspace_check"
+ CHECK ("isPlatformManager" = ("cloudWorkspaceId" IS NULL));
+CREATE TRIGGER "CloudAccountContext_workspace_immutable" BEFORE UPDATE ON "CloudAccountContext" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+CREATE TRIGGER "PlatformUser_workspace_immutable" BEFORE UPDATE ON "PlatformUser" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+CREATE TRIGGER "OperationConfirmation_workspace_immutable" BEFORE UPDATE ON "OperationConfirmation" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+CREATE TRIGGER "IdempotentOperation_workspace_immutable" BEFORE UPDATE ON "IdempotentOperation" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+CREATE TRIGGER "OperationAuditEvent_workspace_immutable" BEFORE UPDATE ON "OperationAuditEvent" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+CREATE TRIGGER "CloudImageSnapshot_workspace_immutable" BEFORE UPDATE ON "CloudImageSnapshot" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+CREATE TRIGGER "BillingAnomaly_workspace_immutable" BEFORE UPDATE ON "BillingAnomaly" FOR EACH ROW EXECUTE FUNCTION "enforce_cloud_workspace_links"();
+
 COMMIT;

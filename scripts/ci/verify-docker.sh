@@ -129,6 +129,10 @@ docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE native_batch_test' >/dev/null
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE user_auth_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cyber_range_workspace_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cyber_range_workspace_migration_test' >/dev/null
 
 docker run --rm --network "$CI_NETWORK" \
   "${CI_PROVIDER_MIRROR_ARGS[@]}" \
@@ -137,6 +141,8 @@ docker run --rm --network "$CI_NETWORK" \
   -e BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/billing_test?schema=public' \
   -e NATIVE_BATCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/native_batch_test?schema=public' \
   -e USER_AUTH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/user_auth_test?schema=public' \
+  -e WORKSPACE_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public' \
+  -e CLOUD_WORKSPACE_MIGRATION_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_migration_test?schema=public' \
   -e PACKED_IMAGE_TEST_DATABASE_URL='postgresql://postgres:postgres@packed-image-test-postgres:5432/packed_image_test?schema=public' \
   -e IMAGE_TAG_TEST_DATABASE_URL='postgresql://postgres:postgres@image-tags-test-postgres:5432/image_tags_test?schema=public' \
   -e SINGLE_TOFU_OFFLINE_VALIDATION=1 -e SINGLE_TOFU_PROVIDER_MIRROR_PATH=/app/.local/provider-mirror \
@@ -151,9 +157,11 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$BILLING_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$NATIVE_BATCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$USER_AUTH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$PACKED_IMAGE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$IMAGE_TAG_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
     ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0-range.1_linux_amd64.zip pnpm iac:validate
+    pnpm --filter @aliyun-cyber-range/database smoke:workspace-migration
   '

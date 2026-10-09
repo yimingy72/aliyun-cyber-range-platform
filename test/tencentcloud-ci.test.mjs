@@ -63,6 +63,10 @@ test('default CI verifies Tencent in Docker with a frozen cache and an isolated 
   assert(validation.some(arg => arg.includes('for module in tencentcloud-single-instance-network tencentcloud-single-instance-batch')));
   const apiTests = calls.find(args => args.some(arg => arg.includes('pnpm test')));
   assert(calls.indexOf(validation) < calls.indexOf(apiTests));
+  assert(apiTests.includes('WORKSPACE_TEST_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public'));
+  assert(apiTests.includes('CLOUD_WORKSPACE_MIGRATION_TEST_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_migration_test?schema=public'));
+  assert(apiTests.some(arg => arg.includes('DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy')));
+  assert(apiTests.some(arg => arg.includes('pnpm --filter @aliyun-cyber-range/database smoke:workspace-migration')));
   const workflow = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8');
   assert.match(workflow, /path: \.local\/tencentcloud-provider\/mirror/);
   assert.match(workflow, /hashFiles\('scripts\/dev\/download-tencentcloud-provider\.sh'\)/);
