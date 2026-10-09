@@ -46,7 +46,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const source = session.profile?.id ?? '';
   const sourceRef = useRef(source);
   sourceRef.current = source;
-  const canBind = session.profile?.isPlatformManager === true;
+  const canBind = current?.isReady === true && current.profile?.isPlatformManager === true;
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {

@@ -3,11 +3,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CloudWorkspaceView } from '@/lib/admin-types';
 
-const { list, save, select, replace, logout, state } = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), select: vi.fn(), replace: vi.fn(), logout: vi.fn(), state: { manager: true } }));
+const { list, save, select, replace, logout, state } = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), select: vi.fn(), replace: vi.fn(), logout: vi.fn(), state: { manager: true, sessionManager: true } }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
 vi.mock('@/lib/admin-api', async () => ({ ...await vi.importActual<typeof import('@/lib/admin-api')>('@/lib/admin-api'), fetchCloudWorkspaces: list, saveCloudAccount: save }));
-vi.mock('../use-admin-session', () => ({ useAdminSession: () => ({ token: 'fixture-token', profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.manager }, isAdmin: true, isReady: true, logout }) }));
-vi.mock('../cloud-workspace-provider', () => ({ cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云', useCloudWorkspace: () => ({ workspace: ali, isReady: true, isSwitching: false, refreshCurrent: async () => undefined, switchTo: select }) }));
+vi.mock('../use-admin-session', () => ({ useAdminSession: () => ({ token: 'fixture-token', profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.sessionManager }, isAdmin: true, isReady: true, logout }) }));
+vi.mock('../cloud-workspace-provider', () => ({ cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云', useCloudWorkspace: () => ({ workspace: ali, profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.manager }, isReady: true, isSwitching: false, refreshCurrent: async () => undefined, switchTo: select }) }));
 import { SettingsScreen } from './settings-screen';
 import { AdminApiError } from '@/lib/admin-api';
 const ali: CloudWorkspaceView = { id: 'ali', provider: 'alibaba_cloud', accountUid: '111', displayName: '杭州训练账号', isReadOnly: false, activeCloudAccountContextId: 'ctx-ali', contexts: [{ id: 'ctx-ali', cloudWorkspaceId: 'ali', provider: 'alibaba_cloud', accountUid: '111', displayName: '杭州', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', isActive: true, status: 'ready', imageImportBucket: 'owned-bucket', bucketStatus: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } };
@@ -18,7 +18,7 @@ function fillTencent() {
   for (const [label, value] of [['默认地域', 'ap-nanjing'], ['默认可用区', 'ap-nanjing-1'], ['SecretId', 'fixture-secret-id'], ['SecretKey', 'fixture-secret-key']]) fireEvent.change(screen.getByLabelText(label!), { target: { value } });
 }
 describe('settings cloud workspaces', () => {
-  beforeEach(() => { vi.clearAllMocks(); state.manager = true; list.mockResolvedValue([ali, tencent]); save.mockResolvedValue(tencent.contexts[0]); select.mockResolvedValue(undefined); });
+  beforeEach(() => { vi.clearAllMocks(); state.manager = true; state.sessionManager = true; list.mockResolvedValue([ali, tencent]); save.mockResolvedValue(tencent.contexts[0]); select.mockResolvedValue(undefined); });
   afterEach(cleanup);
   it('filters providers without switching data and keeps image queries out of settings', async () => {
     render(<SettingsScreen apiBaseUrl="https://fixture.invalid" />);
@@ -64,6 +64,13 @@ describe('settings cloud workspaces', () => {
     state.manager = false; render(<SettingsScreen />); await screen.findByText('111');
     expect(screen.queryByRole('button', { name: '绑定阿里云账号' })).toBeNull();
     expect(screen.queryByRole('button', { name: '编辑配置' })).toBeNull();
+  });
+  it('keeps binding controls based on the verified profile when same-user stored metadata loses its manager flag', async () => {
+    const page = render(<SettingsScreen />); await screen.findByText('111');
+    expect(screen.getByRole('button', { name: '绑定阿里云账号' })).toBeTruthy();
+    state.sessionManager = false; page.rerender(<SettingsScreen />);
+    expect(screen.getByRole('button', { name: '绑定阿里云账号' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '编辑配置' })).toBeTruthy();
   });
   it('rejects mismatched saves and suppresses a late completion after leaving the page', async () => {
     save.mockResolvedValue(ali.contexts[0]); render(<SettingsScreen />); await screen.findByText('111'); openTencent(); fillTencent();

@@ -11,7 +11,7 @@ const ali: CloudWorkspaceView = { id: 'ali', provider: 'alibaba_cloud', accountU
 const tencent = { ...ali, id: 'tencent', provider: 'tencent_cloud' as const, displayName: '腾讯训练' };
 function TestPage() {
   const state = useCloudWorkspace()!;
-  return <><span>{state.isReady ? state.workspace?.displayName ?? '未绑定' : '未恢复'}</span>{state.error ? <p role="alert">{state.error}</p> : null}<button onClick={() => void state.switchTo('tencent').catch(() => undefined)}>切换腾讯</button><button onClick={() => void state.refreshCurrent()}>刷新配置</button><button onClick={state.resetSelection}>使用默认账号</button></>;
+  return <><span>{state.isReady ? state.workspace?.displayName ?? '未绑定' : '未恢复'}</span>{state.error ? <p role="alert">{state.error}</p> : null}<button onClick={() => void state.switchTo('tencent').catch(() => undefined)}>切换腾讯</button><button onClick={() => void state.refreshCurrent()}>刷新配置</button><button onClick={state.resetSelection}>使用默认账号</button>{state.isReady && state.profile?.isPlatformManager === true ? <button>绑定云账号</button> : null}</>;
 }
 describe('cloud workspace request selection', () => {
   beforeEach(() => {
@@ -81,5 +81,23 @@ describe('cloud workspace request selection', () => {
     await act(async () => { older({ ...ali, displayName: '旧阿里配置' }); });
     expect(screen.getByText('最新阿里配置')).toBeTruthy(); expect(screen.queryByText('旧阿里配置')).toBeNull();
     expect(readCloudWorkspaceSelection()).toBe('ali');
+  });
+  it('retains server-verified management permission when an older same-identity session writer drops extra fields', async () => {
+    render(<CloudWorkspaceProvider><TestPage /></CloudWorkspaceProvider>); await screen.findByText('阿里训练');
+    expect(screen.getByRole('button', { name: '绑定云账号' })).toBeTruthy();
+    await act(async () => { writeAdminSession({ token: 'fixture-token', profile: { id: 'root', username: 'admin', role: 'admin' } }); });
+    expect(screen.getByRole('button', { name: '绑定云账号' })).toBeTruthy();
+    expect(current).toHaveBeenCalledTimes(1);
+  });
+  it('invalidates verified management permission immediately when the identity changes and waits for new verification', async () => {
+    render(<CloudWorkspaceProvider><TestPage /></CloudWorkspaceProvider>); await screen.findByText('阿里训练');
+    let resolveProfile!: (value: Record<string, unknown>) => void;
+    profile.mockImplementationOnce(() => new Promise(done => { resolveProfile = done; }));
+    await act(async () => { writeAdminSession({ token: 'member-token', profile: { id: 'member', username: 'operator', role: 'admin', isPlatformManager: true } }); });
+    expect(screen.queryByRole('button', { name: '绑定云账号' })).toBeNull();
+    expect(screen.getByText('未恢复')).toBeTruthy();
+    await act(async () => { resolveProfile({ id: 'member', username: 'operator', role: 'admin', isPlatformManager: false }); });
+    await screen.findByText('阿里训练');
+    expect(screen.queryByRole('button', { name: '绑定云账号' })).toBeNull();
   });
 });

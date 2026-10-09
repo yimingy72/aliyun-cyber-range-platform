@@ -4,7 +4,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useR
 import { fetchAuthenticatedAdminProfile, fetchCurrentCloudWorkspace, switchCloudWorkspace } from '@/lib/admin-api';
 import { resolveAdminApiBaseUrl } from '@/lib/admin-api-base-url';
 import { readCloudWorkspaceSelection, readStoredCloudWorkspaceSelection, setCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
-import type { CloudWorkspaceView } from '@/lib/admin-types';
+import type { AdminProfile, CloudWorkspaceView } from '@/lib/admin-types';
 import { readAdminSession, writeAdminSession } from '@/lib/admin-auth-storage';
 import { isUnauthorizedAdminError } from '@/lib/admin-screen';
 import { readAdminOidcTokenExpiresAt } from '@/lib/admin-oidc';
@@ -12,6 +12,7 @@ import { useAdminSession } from './use-admin-session';
 
 type WorkspaceContext = {
   workspace: CloudWorkspaceView | null;
+  profile: AdminProfile | null;
   isReady: boolean;
   isSwitching: boolean;
   error: string | null;
@@ -29,6 +30,7 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
   const session = useAdminSession();
   const apiBaseUrl = resolveAdminApiBaseUrl();
   const [workspace, setWorkspace] = useState<CloudWorkspaceView | null>(null);
+  const [verifiedProfile, setVerifiedProfile] = useState<AdminProfile | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +54,7 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
     setIsReady(false);
     setError(null);
     setWorkspace(null);
+    setVerifiedProfile(null);
     const storedId = readStoredCloudWorkspaceSelection(identity);
     Promise.all([fetchAuthenticatedAdminProfile(apiBaseUrl, session.token), fetchCurrentCloudWorkspace(apiBaseUrl, session.token, storedId)]).then(([profile, result]) => {
       if (!current) return;
@@ -59,6 +62,7 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
       if (!profile.id || !profile.username || (profile.role !== 'admin' && profile.role !== 'user')) throw new Error('登录身份返回异常。');
       setCloudWorkspaceSelection(profile.id, result?.id ?? null);
       setWorkspace(result);
+      setVerifiedProfile(profile);
       loadedIdentity.current = profile.id;
       const storedSession = readAdminSession();
       if (storedSession?.token === session.token) writeAdminSession({ ...storedSession, profile });
@@ -103,5 +107,6 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
     setWorkspace(next);
   }, [apiBaseUrl, identity, session.token, source, workspace]);
 
-  return <CloudWorkspaceContext.Provider value={{ workspace, isReady: isReady && loadedIdentity.current === identity, isSwitching, error, retry: () => setAttempt(value => value + 1), resetSelection: () => { if (identity) setCloudWorkspaceSelection(identity, null); setAttempt(value => value + 1); }, refreshCurrent, switchTo }}>{children}</CloudWorkspaceContext.Provider>;
+  const ready = isReady && loadedIdentity.current === identity;
+  return <CloudWorkspaceContext.Provider value={{ workspace, profile: ready ? verifiedProfile : null, isReady: ready, isSwitching, error, retry: () => setAttempt(value => value + 1), resetSelection: () => { if (identity) setCloudWorkspaceSelection(identity, null); setAttempt(value => value + 1); }, refreshCurrent, switchTo }}>{children}</CloudWorkspaceContext.Provider>;
 }
