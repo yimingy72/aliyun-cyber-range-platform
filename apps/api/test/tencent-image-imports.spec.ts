@@ -15,7 +15,7 @@ function fixture() {
     update:jest.fn(async({where,data})=>{if(!matches(job,where))throw new Error('stale claim');Object.assign(job,data);return {...job};}) };
   const bucket={id:'bucket-owned',bucketName:'fixture-owned-1250000000',cloudWorkspaceId:'workspace-owned',cloudAccountContextId:context.id,cloudAccountUid:context.accountUid,regionId:context.regionId,appId:'1250000000',cloudProvider:'tencent_cloud' as const};
   const cos={ withImportBucket:jest.fn(async(_,run)=>run(bucket)), getOwnedBucket:jest.fn(async()=>bucket), cleanupIfIdle:jest.fn(async()=>undefined),
-    presignObject:jest.fn((params:any)=>({url:'https://synthetic-upload.invalid/object',headers:params.headers??{}})), requestObject:jest.fn(async(params:any)=>{
+    presignObject:jest.fn(async(params:any)=>({url:'https://synthetic-upload.invalid/object',headers:params.headers??{}})), requestObject:jest.fn(async(params:any)=>{
       if(params.method==='DELETE'){deleted=true;return new Response(null,{status:204});}
       if(deleted)return new Response(null,{status:404});
       return new Response(null,{status:200,headers:{'content-length':'4096',etag:'"synthetic-etag"','x-cos-meta-platform-image-job':job.id,'x-cos-meta-platform-image-owner':user.id,'x-cos-meta-platform-cloud-context':context.id}});

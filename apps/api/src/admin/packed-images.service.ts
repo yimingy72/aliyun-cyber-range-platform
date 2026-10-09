@@ -204,6 +204,7 @@ export class PackedImagesService {
       const [image] = await this.describeImages(context, { ImageId: artifact.imageId });
       if (image) {
         this.assertImage(artifact, image);
+        if (context.provider === 'tencent_cloud' && image.Status !== 'Available' && !/Failed|UnAvailable/i.test(image.Status)) throw new ConflictException('腾讯云镜像操作仍在进行，请查询终态后再清理。');
         if (this.snapshotIds(image).sort().join(',') !== [...artifact.backingSnapshotIds].sort().join(',')) throw new ConflictException('镜像快照绑定发生变化，拒绝清理。');
         for (const sid of artifact.backingSnapshotIds) await this.assertExclusiveSnapshot(artifact, context, sid);
         await this.rpc(context, 'DeleteImage', { ImageId: artifact.imageId, Force: 'false' });
@@ -256,8 +257,10 @@ export class PackedImagesService {
       await this.upsertLedger(artifact, sid, 'snapshot', context.artifactLease!.token);
     }
     for (const sid of ids) {
-      if (context.provider === 'tencent_cloud') await tagTencentImageResources(context, 'snapshot', [sid], { ...this.tags(artifact), PlatformResourceType: 'snapshot', CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId, CloudProvider: 'tencent_cloud' });
-      else await this.rpc(context, 'TagResources', { ResourceType: 'snapshot', 'ResourceId.1': sid, ...buildAliyunTagParameters({ ...this.tags(artifact), PlatformResourceType: 'snapshot' }) });
+      if (context.provider === 'tencent_cloud') {
+        await this.repository.withPackedImageArtifactClaim(artifact.id, context.artifactLease!.token, repo => repo.renewPackedImageArtifactClaim(artifact.id, context.artifactLease!.token, new Date(Date.now() + 300_000)));
+        await tagTencentImageResources(context, 'snapshot', [sid], { ...this.tags(artifact), PlatformResourceType: 'snapshot', CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId, CloudProvider: 'tencent_cloud' });
+      } else await this.rpc(context, 'TagResources', { ResourceType: 'snapshot', 'ResourceId.1': sid, ...buildAliyunTagParameters({ ...this.tags(artifact), PlatformResourceType: 'snapshot' }) });
     }
     await this.updateClaimed(artifact.id, context.artifactLease!.token, { backingSnapshotIds: ids });
   }
@@ -273,6 +276,7 @@ export class PackedImagesService {
 
   private async assertSnapshotProof(artifact: PackedImageArtifactRecord, snapshot: Snapshot) {
     const tags = cloudTags(snapshot.Tags);
+    if (artifact.cloudProvider === 'tencent_cloud' && (tags.CloudProvider !== 'tencent_cloud' || tags.CloudAccountUid !== artifact.cloudAccountUid || tags.CloudAccountContextId !== artifact.cloudAccountContextId)) throw new ConflictException('腾讯云快照账号与打包来源证明不一致。');
     if (!this.isFreshSourceSnapshot(artifact, snapshot) || tags.PlatformPackedImageArtifactId !== artifact.id || tags.PlatformUserId !== artifact.ownerUserId || tags.CreatedBy !== 'cyber-range-platform') throw new ConflictException('快照来源或 owner 证明不匹配。');
     const ledger = (await this.repository.listBillingLedgerResources()).find(item => item.cloudProvider === (artifact.cloudProvider ?? 'alibaba_cloud') && item.cloudAccountUid === artifact.cloudAccountUid && item.regionId === artifact.regionId && item.cloudResourceType === 'snapshot' && item.cloudResourceId === snapshot.SnapshotId && item.ownerUserId === artifact.ownerUserId && item.tagsSnapshot.PlatformPackedImageArtifactId === artifact.id);
     if (!ledger) throw new ConflictException('快照缺少匹配的打包台账证明。');

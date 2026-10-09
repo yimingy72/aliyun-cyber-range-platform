@@ -95,7 +95,7 @@ export class CloudAccountContextsService {
 
     if (options.requireImageImportBucket) {
       if (context.provider === 'tencent_cloud') {
-        throw new BadRequestException('当前版本暂未支持腾讯云镜像导入。');
+        throw new BadRequestException('腾讯云导入的专属 COS 来源由上传入口核验，请通过平台创建上传任务。');
       }
       if (!context.imageImportBucket.trim() || context.bucketStatus === 'unconfigured') {
         throw new BadRequestException('当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。');
@@ -122,7 +122,7 @@ export class CloudAccountContextsService {
   }
 
   async saveTencentCloudContext(input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
-    if (input?.imageImportBucket?.trim()) throw new BadRequestException('腾讯云镜像导入存储尚未开放，请勿填写阿里云 OSS Bucket。');
+    if (input?.imageImportBucket?.trim()) throw new BadRequestException('腾讯云导入使用平台自动创建的专属 COS Bucket，请勿填写已有桶。');
     if (!input || input.provider !== 'tencent_cloud') {
       throw new BadRequestException('新增云账号接口仅接受腾讯云账号；阿里云配置请使用现有云配置入口。');
     }

@@ -20,7 +20,7 @@ type CosObjectInput = { contextCredentials: CloudAccountContextCredentials; buck
 type ManagedCosBuckets = { withImportBucket<T>(input: { cloudAccountContextId: string; creatorUserId: string }, work: (bucket: ManagedCosBucket) => Promise<T>): Promise<T>;
   getOwnedBucket(input: { bucketId: string; cloudAccountContextId: string; cloudAccountUid: string; regionId: string }): Promise<ManagedCosBucket>;
   cleanupIfIdle(input: { bucketId: string; cloudAccountContextId: string; cloudAccountUid: string; regionId: string }): Promise<unknown>;
-  presignObject(input: CosObjectInput): { url: string; headers: Record<string,string> };
+  presignObject(input: CosObjectInput): Promise<{ url: string; headers: Record<string,string> }>;
   requestObject(input: CosObjectInput): Promise<Response> };
 
 
@@ -114,7 +114,7 @@ export class ImageImportsService {
         description: input.description?.trim() || null, osType: input.osType, platform: input.platform?.trim() || null,
         architecture: input.architecture, bootMode: input.bootMode, imageFormat: input.imageFormat, systemDiskSize: input.systemDiskSize,
         sourceFileName, sourceContentType: contentType, sourceSizeBytes: String(sourceSizeBytes), objectKey, uploadExpiresAt } });
-      const signed = bucket ? this.requireCos().presignObject({ contextCredentials: cloudContext, bucketName: bucket.bucketName, objectKey, method: 'PUT', expiresAt: uploadExpiresAt,
+      const signed = bucket ? await this.requireCos().presignObject({ contextCredentials: cloudContext, bucketName: bucket.bucketName, objectKey, method: 'PUT', expiresAt: uploadExpiresAt,
         headers: { 'content-type': contentType, 'content-length': String(sourceSizeBytes), 'x-cos-forbid-overwrite': 'true',
           'x-cos-meta-platform-image-job': job.id, 'x-cos-meta-platform-image-owner': job.ownerUserId, 'x-cos-meta-platform-cloud-context': job.cloudAccountContextId } })
         : { url: this.createPresignedPutUrl({ bucket: cloudContext.imageImportBucket, regionId: cloudContext.regionId, objectKey, contentType,
@@ -512,10 +512,11 @@ export class ImageImportsService {
     if (context.provider === 'tencent_cloud') {
       this.assertTencentObjectProof(job);
       if (!job.platform || !job.osVersion || !job.sourceObjectProof) throw new ConflictException('腾讯云导入缺少明确 OS 版本或已上传对象来源证明。');
-      const signed = this.requireCos().presignObject({ contextCredentials: context, bucketName: context.imageImportBucket, objectKey: job.objectKey, method: 'GET', expiresAt: new Date(Date.now() + this.readMaxImportDurationMs()) });
+      const signed = await this.requireCos().presignObject({ contextCredentials: context, bucketName: context.imageImportBucket, objectKey: job.objectKey, method: 'GET', expiresAt: new Date(Date.now() + this.readMaxImportDurationMs()) });
       const tags = { ...buildBillingTags({ billingScope: 'platform', platformResourceType: 'image', platformImageImportJobId: job.id, billingStartAt: job.uploadCompletedAt ?? job.createdAt }),
         CloudProvider: 'tencent_cloud', CloudAccountUid: context.accountUid, CloudAccountContextId: context.id,
         CyberRangeOwnerUserId: job.ownerUserId, CyberRangeCloudContextId: job.cloudAccountContextId };
+      await this.assertClaim(context);
       return tencentImageRequest<{ ImageId?: string; TaskId?: string }>(context, 'cvm', 'ImportImage', { ImageName: job.displayName,
         ...(job.description ? { ImageDescription: job.description } : {}), Architecture: job.architecture === 'arm64' ? 'arm_64' : job.architecture,
         OsType: job.platform, OsVersion: job.osVersion, ImageUrl: signed.url, BootMode: job.bootMode === 'BIOS' ? 'Legacy BIOS' : 'UEFI', Force: false,
@@ -813,6 +814,7 @@ export class ImageImportsService {
       const image = await this.describeImage(context, job.imageId);
       if (image) {
         this.assertImageOwnership(job, image);
+        if (context.provider === 'tencent_cloud' && image.Status !== 'Available' && !/Failed|UnAvailable/i.test(image.Status ?? '')) throw new ConflictException('腾讯云导入镜像操作尚未进入可清理终态。');
         const ids = extractImageSnapshotIds(image);
         if (!ids.length) throw new Error('导入镜像快照清单尚未完整，保留云镜像等待核验。');
         if (job.backingSnapshotIds.some(id => !ids.includes(id))) throw new Error('导入镜像快照绑定发生变化。');
@@ -831,6 +833,13 @@ export class ImageImportsService {
       if (!job.deletedSnapshotIds.includes(sid)) {
         const snapshot = await this.describeSnapshot(context, sid);
         if (snapshot) {
+          if (context.provider === 'tencent_cloud') {
+            this.assertTencentObjectProof(job);
+            const proof = snapshot as TencentSnapshot;
+            if (!Array.isArray(job.sourceDiskIds) || !job.sourceDiskIds.includes(proof.SourceDiskId) || proof.CopyFromRemote || proof.SnapshotType !== 'PRIVATE_SNAPSHOT' || proof.ShareReference !== 0
+              || !Number.isFinite(Date.parse(proof.CreationTime)) || Date.parse(proof.CreationTime) < (job.uploadCompletedAt ?? job.createdAt).getTime() - 30000)
+              throw new ConflictException('腾讯云导入快照来源不匹配，保留清理与费用材料。');
+          }
           const tags = cloudTags(snapshot.Tags);
           if (tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformImageImportJobId !== job.id
             || tags.CyberRangeOwnerUserId !== job.ownerUserId || tags.CyberRangeCloudContextId !== job.cloudAccountContextId) throw new Error('快照缺少匹配的导入来源证明。');
