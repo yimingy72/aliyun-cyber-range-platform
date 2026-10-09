@@ -12,22 +12,27 @@ import { loginAsPrismaUser, overrideTestOidc } from './support/test-oidc';
 import { runInSystemCloudWorkspaceScope } from '../src/auth/cloud-workspace-scope';
 const workspaceId = 'users-api-test-workspace';
 
-const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
+const databaseUrl = process.env.USER_AUTH_TEST_DATABASE_URL;
+const isolated = databaseUrl ? describe : describe.skip;
 
-describe('Admin users', () => {
+isolated('Admin users (isolated PostgreSQL with enforced workspace scope)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let keycloakSequence = 0;
+  const previousEnforce = process.env.CLOUD_WORKSPACE_ENFORCE_TEST_SCOPE;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = DATABASE_URL;
+    process.env.CLOUD_WORKSPACE_ENFORCE_TEST_SCOPE = '1';
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
 
+    prisma = new PrismaService({ datasources: { db: { url: databaseUrl! } } });
     const moduleRef = await overrideTestOidc(Test.createTestingModule({
       imports: [AppModule],
     }))
+      .overrideProvider(PrismaService)
+      .useValue(prisma)
       .overrideProvider(KeycloakAdminService)
       .useValue({
         createUser: jest.fn(async () => `kc-subject-${++keycloakSequence}`),
@@ -57,11 +62,12 @@ describe('Admin users', () => {
       },
     });
 
-    await prisma.platformUser.updateMany({
-      where: {
-        id: 'admin',
-      },
-      data: {
+    await prisma.platformUser.upsert({
+      where: { id: 'admin' },
+      create: { id: 'admin', username: 'admin', loginUsername: 'admin', passwordHash: 'synthetic-unused-hash',
+        cloudWorkspaceId: null, isPlatformManager: true, selectedCloudWorkspaceId: workspaceId,
+        role: 'admin', status: 'active' },
+      update: {
         username: 'admin',
         loginUsername: 'admin',
         cloudWorkspaceId: null,
@@ -99,6 +105,8 @@ describe('Admin users', () => {
     });
 
     await app.close();
+    if (previousEnforce === undefined) delete process.env.CLOUD_WORKSPACE_ENFORCE_TEST_SCOPE;
+    else process.env.CLOUD_WORKSPACE_ENFORCE_TEST_SCOPE = previousEnforce;
   }));
 
   it('lets an admin create and disable a regular user, and blocks that user from using the API afterward', async () => {
