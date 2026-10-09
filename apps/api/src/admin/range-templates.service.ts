@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { isDeepStrictEqual } from 'node:util';
 import { compileTemplateTopology, type ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
@@ -112,6 +113,10 @@ export class RangeTemplatesService {
   }
 
   async create(input: CreateRangeTemplateRequest, currentUser?: AuthenticatedUser) {
+    const workspaceScope = getCurrentCloudWorkspaceScope();
+    if (workspaceScope && !('system' in workspaceScope) && workspaceScope.provider !== 'alibaba_cloud') {
+      throw new ConflictException('当前云厂商的靶场编排尚未开放。');
+    }
     const actorId = currentUser?.id ?? 'admin';
     const slug = this.buildServerTemplateSlug(input.name);
     const topology = await this.normalizeTopologyMetadata(input, {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
@@ -222,6 +223,11 @@ export class RangeInstancesService {
 
   async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
     this.assertFutureInstanceExpiration(input.expiresAt);
+    const requestScope = getCurrentCloudWorkspaceScope();
+    const account = requestScope && !('system' in requestScope) ? await this.systemConfigService.getAccountContext() : null;
+    if (account && (!account.cloudAccountContextId || !account.accountUid || !account.accountUidResolved)) {
+      throw new ConflictException('创建编排实例前必须验证当前工作空间的云账号。');
+    }
 
     const template = await this.adminRepository.getRangeTemplateById(input.templateId);
 
@@ -282,6 +288,9 @@ export class RangeInstancesService {
       runtimeScenarioTemplateSpec,
       runtimeCompiledProvisionSpec,
       runtimeCredentials,
+      ...(account ? { resourceSummary: { mode: 'opentofu' as const, creationAttempted: false,
+        executionContext: { cloudAccountContextId: account.cloudAccountContextId!, cloudAccountUid: account.accountUid!,
+          regionId: account.defaultRegion, zoneId: account.defaultZoneId } } } : {}),
       status: 'pending_create',
       expiresAt: input.expiresAt,
     }, { triggeredBy: actorId, expectedTemplateRevision: template.revision, topologySnapshot: {

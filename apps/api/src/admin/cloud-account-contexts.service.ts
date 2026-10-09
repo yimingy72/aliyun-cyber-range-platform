@@ -118,6 +118,7 @@ export class CloudAccountContextsService {
   }
 
   async saveTencentCloudContext(input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
+    if (input?.imageImportBucket?.trim()) throw new BadRequestException('腾讯云镜像导入存储尚未开放，请勿填写阿里云 OSS Bucket。');
     if (!input || input.provider !== 'tencent_cloud') {
       throw new BadRequestException('新增云账号接口仅接受腾讯云账号；阿里云配置请使用现有云配置入口。');
     }

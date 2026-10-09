@@ -102,6 +102,7 @@ function normalizeValue(value: string | null | undefined) {
 export function maskSystemCloudConfig(snapshot: SystemCloudConfig): SystemCloudConfig {
   return {
     ...snapshot,
+    accessKeyId: snapshot.accessKeyId ? MASKED_SYSTEM_CLOUD_SECRET : '',
     accessKeySecret: snapshot.accessKeySecret ? MASKED_SYSTEM_CLOUD_SECRET : '',
   };
 }
