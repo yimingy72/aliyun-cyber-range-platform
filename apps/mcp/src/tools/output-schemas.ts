@@ -22,11 +22,15 @@ export const imageTagListOutputSchema = resultOutputSchema(z.array(imageTagSchem
 export const rangeInstanceDetailOutputSchema = resultOutputSchema(resourceSchema.extend({
   networkDiagnostics: z.object({
     status: z.literal('succeeded').describe('本次网络诊断已完成；不代表网络连通性通过。'),
+    provider: z.enum(['alibaba_cloud','tencent_cloud']).optional().describe('实例冻结的云服务商。'),
+    cloudAccountContextId: z.string().optional().describe('实例冻结的账户工作空间上下文 ID。'),
+    evidence: z.array(z.object({ action: z.string(), requestId: z.string() })).optional().describe('只读云 API 操作及脱敏请求 ID，可用于定位云端问题。'),
+    guestConfigurationVerified: z.boolean().optional().describe('是否已核验来宾系统网卡配置；云端只读诊断为 false。'),
     checkedAt: z.string().describe('诊断查询时间，ISO-8601。'),
     regionId: z.string().describe('该实例启动时绑定的地域。'),
     cloudAccountUid: z.string().describe('该实例绑定的云账号 UID。'),
     vpcId: z.string().describe('该实例绑定的 VPC ID。'),
-  }).passthrough().optional().describe('仅显式请求时提供。服务端返回 ECS、网卡主辅 IP、安全组、ACL、NAT 与路由白名单事实，不含凭据或原始 provider 响应。'),
+  }).passthrough().optional().describe('仅显式请求时提供。服务端按冻结云服务商返回 CVM/ECS、网卡主辅 IP、安全组、ACL、NAT 与路由白名单事实，不含凭据或原始 provider 响应。'),
 }).passthrough());
 
 export const removedOutputSchema = (idField: string) =>

@@ -134,6 +134,10 @@ type NetworkDiagnosticRows = ReadonlyArray<Readonly<Record<string, unknown>>>;
 /** Server allowlisted facts for this instance only; excludes credentials and raw provider responses. */
 export type RangeInstanceNetworkDiagnostics = Readonly<{
   status: 'succeeded';
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
+  cloudAccountContextId?: string;
+  evidence?: ReadonlyArray<Readonly<{ action: string; requestId: string }>>;
+  guestConfigurationVerified?: boolean;
   checkedAt: string;
   regionId: string;
   cloudAccountUid: string;
