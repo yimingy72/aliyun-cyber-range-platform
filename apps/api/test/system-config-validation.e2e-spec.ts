@@ -10,16 +10,22 @@ import { OperationControlService } from '../src/operations/operation-control.ser
 const snapshot = { provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'synthetic-access-key', accessKeySecret: 'synthetic-secret', imageImportBucket: '' };
 describe('System cloud config HTTP validation', () => {
   let app: INestApplication;
+  let isPlatformManager = true;
   const save = jest.fn(async () => snapshot);
   beforeAll(async () => {
     const module = await Test.createTestingModule({ controllers: [SystemConfigController], providers: [
       { provide: SystemConfigService, useValue: { updateSnapshot: save } },
       { provide: OperationControlService, useValue: {} },
-    ] }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) { context.switchToHttp().getRequest().authContext = { source: 'web' }; return true; } }).compile();
+    ] }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) { const req = context.switchToHttp().getRequest(); req.authContext = { source: 'web' }; req.adminUser = { id: 'fixture-user', role: 'admin', isPlatformManager }; return true; } }).compile();
     app = module.createNestApplication(); configureApp(app); await app.init();
   });
-  beforeEach(() => save.mockClear());
+  beforeEach(() => { save.mockClear(); isPlatformManager = true; });
   afterAll(async () => app.close());
+  it('rejects a workspace administrator attempting a credential update before the config service runs', async () => {
+    isPlatformManager = false;
+    await request(app.getHttpServer()).patch('/admin/system-config').send({ defaultRegion: 'cn-hangzhou' }).expect(403);
+    expect(save).not.toHaveBeenCalled();
+  });
   it.each(['defaultRegion', 'defaultZoneId', 'accessKeyId', 'accessKeySecret', 'imageImportBucket', 'provider'])('rejects numeric and null %s without passing a write downstream', async (field) => {
     for (const value of [123, null]) { await request(app.getHttpServer()).patch('/admin/system-config').send({ [field]: value }).expect(400); }
     expect(save).not.toHaveBeenCalled();
