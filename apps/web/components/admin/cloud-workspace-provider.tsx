@@ -3,7 +3,7 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { fetchAuthenticatedAdminProfile, fetchCurrentCloudWorkspace, switchCloudWorkspace } from '@/lib/admin-api';
 import { resolveAdminApiBaseUrl } from '@/lib/admin-api-base-url';
-import { readStoredCloudWorkspaceSelection, setCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
+import { readCloudWorkspaceSelection, readStoredCloudWorkspaceSelection, setCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 import type { CloudWorkspaceView } from '@/lib/admin-types';
 import { readAdminSession, writeAdminSession } from '@/lib/admin-auth-storage';
 import { isUnauthorizedAdminError } from '@/lib/admin-screen';
@@ -39,6 +39,7 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
   sourceRef.current = source;
   const switching = useRef(false);
   const loadedIdentity = useRef<string | null>(null);
+  const refreshRevision = useRef(0);
 
   useEffect(() => {
     if (!session.isReady || !session.token || !identity) return;
@@ -47,6 +48,7 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
     // Token renewal keeps the selected data space and mounted pages intact.
     if (loadedIdentity.current === identity && attempt === 0) return;
     let current = true;
+    ++refreshRevision.current;
     setIsReady(false);
     setError(null);
     setWorkspace(null);
@@ -74,6 +76,7 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
   const switchTo = useCallback(async (workspaceId: string) => {
     if (!session.token || !identity || switching.current || workspaceId === workspace?.id) return;
     switching.current = true;
+    ++refreshRevision.current;
     setIsSwitching(true);
     const requestSource = source;
     try {
@@ -92,11 +95,13 @@ export function CloudWorkspaceProvider({ children }: { children: ReactNode }) {
   const refreshCurrent = useCallback(async () => {
     if (!session.token || !workspace) return;
     const requestSource = source;
+    const revision = ++refreshRevision.current;
     const next = await fetchCurrentCloudWorkspace(apiBaseUrl, session.token, workspace.id);
-    if (sourceRef.current !== requestSource) return;
+    if (sourceRef.current !== requestSource || revision !== refreshRevision.current
+      || readCloudWorkspaceSelection(identity) !== workspace.id) return;
     if (!next || next.id !== workspace.id) throw new Error('云账号配置返回的工作空间不一致。');
     setWorkspace(next);
-  }, [apiBaseUrl, session.token, source, workspace]);
+  }, [apiBaseUrl, identity, session.token, source, workspace]);
 
   return <CloudWorkspaceContext.Provider value={{ workspace, isReady: isReady && loadedIdentity.current === identity, isSwitching, error, retry: () => setAttempt(value => value + 1), resetSelection: () => { if (identity) setCloudWorkspaceSelection(identity, null); setAttempt(value => value + 1); }, refreshCurrent, switchTo }}>{children}</CloudWorkspaceContext.Provider>;
 }

@@ -11,7 +11,7 @@ const ali: CloudWorkspaceView = { id: 'ali', provider: 'alibaba_cloud', accountU
 const tencent = { ...ali, id: 'tencent', provider: 'tencent_cloud' as const, displayName: '腾讯训练' };
 function TestPage() {
   const state = useCloudWorkspace()!;
-  return <><span>{state.isReady ? state.workspace?.displayName ?? '未绑定' : '未恢复'}</span>{state.error ? <p role="alert">{state.error}</p> : null}<button onClick={() => void state.switchTo('tencent').catch(() => undefined)}>切换腾讯</button><button onClick={state.resetSelection}>使用默认账号</button></>;
+  return <><span>{state.isReady ? state.workspace?.displayName ?? '未绑定' : '未恢复'}</span>{state.error ? <p role="alert">{state.error}</p> : null}<button onClick={() => void state.switchTo('tencent').catch(() => undefined)}>切换腾讯</button><button onClick={() => void state.refreshCurrent()}>刷新配置</button><button onClick={state.resetSelection}>使用默认账号</button></>;
 }
 describe('cloud workspace request selection', () => {
   beforeEach(() => {
@@ -59,5 +59,27 @@ describe('cloud workspace request selection', () => {
     expect(current).not.toHaveBeenCalled();
     await act(async () => writeAdminSession({ ...initial, token: token(Math.floor(Date.now() / 1000) + 3600) }));
     await screen.findByText('阿里训练'); expect(current).toHaveBeenCalledTimes(1);
+  });
+  it('does not let a delayed refresh from A replace B after a same-user account switch', async () => {
+    render(<CloudWorkspaceProvider><TestPage /></CloudWorkspaceProvider>); await screen.findByText('阿里训练');
+    let resolve!: (value: CloudWorkspaceView) => void;
+    current.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    fireEvent.click(screen.getByText('刷新配置'));
+    fireEvent.click(screen.getByText('切换腾讯'));
+    await screen.findByText('腾讯训练'); expect(readCloudWorkspaceSelection()).toBe('tencent');
+    await act(async () => { resolve({ ...ali, displayName: '旧阿里配置' }); });
+    expect(screen.getByText('腾讯训练')).toBeTruthy(); expect(screen.queryByText('旧阿里配置')).toBeNull();
+    expect(readCloudWorkspaceSelection()).toBe('tencent');
+  });
+  it('keeps the newer refresh when concurrent requests resolve in reverse order', async () => {
+    render(<CloudWorkspaceProvider><TestPage /></CloudWorkspaceProvider>); await screen.findByText('阿里训练');
+    let older!: (value: CloudWorkspaceView) => void; let newer!: (value: CloudWorkspaceView) => void;
+    current.mockImplementationOnce(() => new Promise(done => { older = done; })).mockImplementationOnce(() => new Promise(done => { newer = done; }));
+    fireEvent.click(screen.getByText('刷新配置')); fireEvent.click(screen.getByText('刷新配置'));
+    await act(async () => { newer({ ...ali, displayName: '最新阿里配置' }); });
+    expect(screen.getByText('最新阿里配置')).toBeTruthy();
+    await act(async () => { older({ ...ali, displayName: '旧阿里配置' }); });
+    expect(screen.getByText('最新阿里配置')).toBeTruthy(); expect(screen.queryByText('旧阿里配置')).toBeNull();
+    expect(readCloudWorkspaceSelection()).toBe('ali');
   });
 });
