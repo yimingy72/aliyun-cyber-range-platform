@@ -678,3 +678,4 @@ export type AdminBootstrapData = {
   rangeInstances: RangeInstance[];
   provisionJobs: ProvisionJob[];
 };
+export type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from '../../../packages/platform-api-client/src/types';

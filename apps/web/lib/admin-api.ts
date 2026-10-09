@@ -41,7 +41,7 @@ import type {
   UpdateAdminUserRoleInput,
   UpdateAdminUserStatusInput,
 } from './admin-types';
-import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from '@aliyun-cyber-range/platform-api-client';
+import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from './admin-types';
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
 

@@ -2,9 +2,8 @@
 
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 
-import type { TencentCloudImagesPayload } from '@aliyun-cyber-range/platform-api-client';
 import { fetchCloudAccountContexts, fetchTencentCloudImages, saveTencentCloudAccount } from '@/lib/admin-api';
-import type { CloudAccountContext } from '@/lib/admin-types';
+import type { CloudAccountContext, TencentCloudImagesPayload } from '@/lib/admin-types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -25,6 +24,10 @@ const emptyForm = { regionId: '', zoneId: '', accessKeyId: '', accessKeySecret: 
 type Props = { apiBaseUrl: string; token: string; onError: (error: unknown) => boolean };
 
 export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
+  return <TencentCloudPanelContent apiBaseUrl={apiBaseUrl} token={token} onError={onError} key={`${apiBaseUrl}\u0000${token}`} />;
+}
+
+function TencentCloudPanelContent({ apiBaseUrl, token, onError }: Props) {
   const [form, setForm] = useState(emptyForm);
   const [accounts, setAccounts] = useState<CloudAccountContext[]>([]);
   const [contextId, setContextId] = useState('');
@@ -43,11 +46,14 @@ export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
   const [refresh, setRefresh] = useState(0);
   const active = useRef(true);
   const saving = useRef(false);
+  const accountRevision = useRef(0);
   const errorHandler = useRef(onError);
   errorHandler.current = onError;
   const source = `${apiBaseUrl}\u0000${token}`;
   const currentSource = useRef(source);
   currentSource.current = source;
+  const selectedContext = useRef(contextId);
+  selectedContext.current = contextId;
   const pagination = getPagination(images?.totalCount ?? 0, page, pageSize);
 
   useEffect(() => {
@@ -66,16 +72,21 @@ export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
 
   useEffect(() => {
     let current = true;
+    const revision = ++accountRevision.current;
     setAccountError(null);
     setIsLoadingAccounts(true);
     fetchCloudAccountContexts(apiBaseUrl, token, true).then((items) => {
-      if (!current) return;
+      if (!current || revision !== accountRevision.current) return;
       const tencent = items.filter(item => item.provider === 'tencent_cloud');
       setAccounts(tencent);
-      setContextId(previous => tencent.some(item => item.id === previous) ? previous : tencent[0]?.id ?? '');
+      const previous = selectedContext.current;
+      const next = tencent.some(item => item.id === previous && item.status === 'ready')
+        ? previous : tencent.find(item => item.status === 'ready')?.id ?? '';
+      setContextId(next);
+      if (next !== previous) setPage(1);
     }).catch((error: unknown) => {
-      if (current && !errorHandler.current(error)) setAccountError('腾讯云账号加载失败，请重试。');
-    }).finally(() => { if (current) setIsLoadingAccounts(false); });
+      if (current && revision === accountRevision.current && !errorHandler.current(error)) setAccountError('腾讯云账号加载失败，请重试。');
+    }).finally(() => { if (current && revision === accountRevision.current) setIsLoadingAccounts(false); });
     return () => { current = false; };
   }, [apiBaseUrl, token, refresh]);
 
@@ -83,10 +94,18 @@ export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
     let current = true;
     setImages(null);
     setImageError(null);
-    if (!contextId) { setIsLoadingImages(false); return; }
+    const selectedAccount = accounts.find(item => item.id === contextId && item.status === 'ready');
+    if (!selectedAccount) { setIsLoadingImages(false); return; }
     setIsLoadingImages(true);
     fetchTencentCloudImages(apiBaseUrl, token, { cloudAccountContextId: contextId, scope, offset: (page - 1) * pageSize, limit: pageSize }).then((result) => {
       if (!current) return;
+      if (result.provider !== 'tencent_cloud' || result.cloudAccountContextId !== contextId
+        || result.accountUid !== selectedAccount.accountUid || result.regionId !== selectedAccount.regionId
+        || result.zoneId !== selectedAccount.zoneId || result.scope !== scope
+        || result.offset !== (page - 1) * pageSize || result.limit !== pageSize
+        || !Number.isSafeInteger(result.totalCount) || result.totalCount < 0) {
+        throw new Error('腾讯云镜像返回的账号或查询范围不一致，请刷新核对。');
+      }
       const lastPage = Math.max(1, Math.ceil(result.totalCount / pageSize));
       if (page > lastPage) { setPage(lastPage); return; }
       setImages(result);
@@ -94,7 +113,7 @@ export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
       if (current && !errorHandler.current(error)) setImageError(error instanceof Error ? error.message : '腾讯云镜像查询失败，请重试。');
     }).finally(() => { if (current) setIsLoadingImages(false); });
     return () => { current = false; };
-  }, [apiBaseUrl, token, contextId, scope, page, pageSize, refresh]);
+  }, [apiBaseUrl, token, accounts, contextId, scope, page, pageSize, refresh]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -107,6 +126,12 @@ export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
     try {
       const account = await saveTencentCloudAccount(apiBaseUrl, token, { provider: 'tencent_cloud', ...form });
       if (!active.current || currentSource.current !== saveSource) return;
+      if (account.provider !== 'tencent_cloud' || account.status !== 'ready' || account.isActive) {
+        throw new Error('腾讯云账号返回状态异常，请刷新核对。');
+      }
+      ++accountRevision.current;
+      setIsLoadingAccounts(false);
+      setAccountError(null);
       setForm(emptyForm);
       setAccounts(previous => [account, ...previous.filter(item => item.id !== account.id)]);
       setContextId(account.id);
@@ -144,18 +169,18 @@ export function TencentCloudPanel({ apiBaseUrl, token, onError }: Props) {
           <Button disabled={isSaving} type="submit">{isSaving ? '正在验证…' : '验证并保存腾讯云账号'}</Button>
           <span className="text-sm text-muted-foreground">凭据加密保存；账号尚未启用创建。</span>
         </div>
-        {saveError ? <p className="text-sm text-destructive" role="alert">{saveError}</p> : null}
-        {success ? <p className="text-sm text-emerald-700" role="status">{success}</p> : null}
+        {saveError ? <p className="break-words text-sm text-destructive" role="alert">{saveError}</p> : null}
+        {success ? <p className="break-words text-sm text-emerald-700" role="status">{success}</p> : null}
       </form>
       <div className="grid min-w-0 gap-4 border-t border-border pt-5">
         <div className="flex flex-wrap items-center gap-3">
           <h3 className="mr-auto text-base font-semibold">腾讯云镜像查询</h3>
-          <AdminSelectField ariaLabel="腾讯云镜像账号" className="w-full sm:w-64" value={contextId} options={accounts.map(item => ({ value: item.id, label: item.displayName, disabled: item.status !== 'ready' }))} emptyOptionLabel="请选择已验证账号" disabled={isLoadingAccounts} onValueChange={id => { setContextId(id); setPage(1); }} />
+          <AdminSelectField ariaLabel="腾讯云镜像账号" className="min-w-0 w-full sm:w-64" value={contextId} options={accounts.map(item => ({ value: item.id, label: item.displayName, disabled: item.status !== 'ready' }))} emptyOptionLabel="请选择已验证账号" disabled={isLoadingAccounts} onValueChange={id => { setContextId(accounts.some(item => item.id === id && item.status === 'ready') ? id : ''); setPage(1); }} />
           <AdminSelectField ariaLabel="腾讯云镜像类型" className="w-full sm:w-40" value={scope} options={[{ value: 'custom', label: '自定义镜像' }, { value: 'public', label: '公共镜像' }]} onValueChange={value => { setScope(value as 'public' | 'custom'); setPage(1); }} />
           <Button disabled={isLoadingAccounts || isLoadingImages} onClick={() => setRefresh(value => value + 1)} type="button" variant="outline">刷新</Button>
         </div>
-        {selected ? <p className="text-sm text-muted-foreground">账号 {selected.accountUid} · {selected.regionId} · {selected.zoneId}</p> : null}
-        {accountError ? <p className="text-sm text-destructive" role="alert">{accountError}</p> : null}
+        {selected ? <p className="break-all text-sm text-muted-foreground">账号 {selected.accountUid} · {selected.regionId} · {selected.zoneId}</p> : null}
+        {accountError ? <p className="break-words text-sm text-destructive" role="alert">{accountError}</p> : null}
         <AdminDataTable columns={columns} isRefreshing={isLoadingImages} label="腾讯云镜像目录">
           {visibleColumns => isLoadingImages || isLoadingAccounts ? <TableLoadingState columnCount={visibleColumns.length} rowCount={3} label="正在查询腾讯云镜像" />
             : imageError ? <AdminDataTableState columns={visibleColumns} title="镜像查询失败" description={imageError} variant="error" onRetry={() => setRefresh(value => value + 1)} />

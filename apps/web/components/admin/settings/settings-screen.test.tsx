@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   fetchCloudConfigMock,
   saveCloudConfigMock,
+  fetchContextsMock,
+  fetchTencentImagesMock,
+  saveTencentAccountMock,
   replaceMock,
   routerMock,
 } = vi.hoisted(() => {
@@ -13,6 +16,9 @@ const {
   return {
     fetchCloudConfigMock: vi.fn(),
     saveCloudConfigMock: vi.fn(),
+    fetchContextsMock: vi.fn(),
+    fetchTencentImagesMock: vi.fn(),
+    saveTencentAccountMock: vi.fn(),
     replaceMock,
     routerMock: {
       replace: replaceMock,
@@ -31,6 +37,9 @@ vi.mock('../../../lib/admin-api', async () => {
     ...actual,
     fetchCloudConfig: fetchCloudConfigMock,
     saveCloudConfig: saveCloudConfigMock,
+    fetchCloudAccountContexts: fetchContextsMock,
+    fetchTencentCloudImages: fetchTencentImagesMock,
+    saveTencentCloudAccount: saveTencentAccountMock,
   };
 });
 
@@ -50,6 +59,8 @@ const cloudConfigPayload = {
 
 function mockAdminSession() {
   vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+    idToken: null,
+    refreshToken: null,
     token: 'dev-admin-token',
     profile: { id: 'admin', username: 'admin', role: 'admin' },
     isAdmin: true,
@@ -64,6 +75,9 @@ describe('SettingsScreen', () => {
     replaceMock.mockReset();
     fetchCloudConfigMock.mockReset();
     saveCloudConfigMock.mockReset();
+    fetchContextsMock.mockReset().mockResolvedValue([]);
+    fetchTencentImagesMock.mockReset();
+    saveTencentAccountMock.mockReset();
   });
 
   afterEach(() => {
@@ -85,6 +99,23 @@ describe('SettingsScreen', () => {
     expect(screen.queryByRole('heading', { name: '阿里云账号与镜像存储' })).toBeNull();
     expect(screen.queryByLabelText('账号名称')).toBeNull();
     expect(screen.queryByLabelText('导入 Bucket')).toBeNull();
+  });
+
+  it('opens an independent Tencent form without copying cached Aliyun credentials or submitting the Aliyun save action', async () => {
+    mockAdminSession();
+    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
+    render(<AdminScreenCacheProvider><SettingsScreen apiBaseUrl="http://localhost:3001" /></AdminScreenCacheProvider>);
+    await screen.findByDisplayValue(cloudConfigPayload.accessKeyId);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '腾讯云接入' }), { button: 0, ctrlKey: false });
+    await screen.findByLabelText('SecretKey');
+    for (const label of ['SecretId', 'SecretKey', '腾讯云地域', '腾讯云可用区']) expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe('');
+    expect(screen.queryByRole('button', { name: '保存云配置' })).toBeNull();
+    expect(saveCloudConfigMock).not.toHaveBeenCalled();
+    expect(fetchContextsMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', true);
+    expect(fetchTencentImagesMock).not.toHaveBeenCalled();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云配置' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByDisplayValue(cloudConfigPayload.accessKeyId)).toBeTruthy();
+    expect(saveTencentAccountMock).not.toHaveBeenCalled();
   });
 
   it('saves cloud configuration without claiming that an optional Bucket is ready', async () => {
@@ -122,6 +153,8 @@ describe('SettingsScreen', () => {
 
   it('renders nothing before the admin session is ready', () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      idToken: null,
+      refreshToken: null,
       token: null,
       profile: null,
       isAdmin: false,
@@ -139,6 +172,8 @@ describe('SettingsScreen', () => {
   it('redirects to login when cloud configuration returns 401', async () => {
     const logoutMock = vi.fn();
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      idToken: null,
+      refreshToken: null,
       token: 'dev-admin-token',
       profile: { id: 'admin', username: 'admin', role: 'admin' },
       isAdmin: true,
@@ -158,10 +193,10 @@ describe('SettingsScreen', () => {
 
   it('keeps the page shell visible while cloud configuration is loading', async () => {
     mockAdminSession();
-    let resolveCloudConfig: ((value: typeof cloudConfigPayload) => void) | null = null;
+    const deferred = { resolve: null as ((value: typeof cloudConfigPayload) => void) | null };
     fetchCloudConfigMock.mockImplementation(
       () => new Promise<typeof cloudConfigPayload>((resolve) => {
-        resolveCloudConfig = resolve;
+        deferred.resolve = resolve;
       }),
     );
 
@@ -173,8 +208,8 @@ describe('SettingsScreen', () => {
     expect(screen.getByTestId('cloud-config-form-skeleton')).toBeTruthy();
     expect(screen.queryByLabelText('默认地域')).toBeNull();
 
-    await waitFor(() => expect(resolveCloudConfig).not.toBeNull());
-    resolveCloudConfig?.(cloudConfigPayload);
+    await waitFor(() => expect(deferred.resolve).not.toBeNull());
+    deferred.resolve?.(cloudConfigPayload);
     await screen.findByDisplayValue('cn-hangzhou');
   });
 
@@ -222,6 +257,8 @@ describe('SettingsScreen', () => {
 
   it('redirects regular users away from cloud settings without loading configuration', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
+      idToken: null,
+      refreshToken: null,
       token: 'user-token',
       profile: { id: 'user-1', username: 'alice', role: 'user' },
       isAdmin: false,

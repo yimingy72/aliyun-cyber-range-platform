@@ -23,6 +23,7 @@ const cloudContextSchema = z.object({
   regionId: z.string(), zoneId: z.string(), isActive: z.boolean(), status: z.enum(['provisioning', 'ready', 'degraded', 'disabled']),
   imageImportBucket: z.string(), bucketStatus: z.string(), lastVerifiedAt: z.string().nullable().optional(),
 });
+const tencentAccountSchema = cloudContextSchema.extend({ provider: z.literal('tencent_cloud'), isActive: z.literal(false) });
 const sensitiveKey = z.string().trim().min(1).refine(value => value !== '********', 'Masked access keys cannot be reused').describe('敏感凭据，仅用于明确授权的腾讯云账号操作；不得回显。');
 function safeCloudContext(value: CloudAccountContext) {
   return cloudContextSchema.parse(value);
@@ -42,10 +43,10 @@ export const settingsTools: ToolDefinition[] = [
     description: '按明确指定的地域、可用区和腾讯云凭据验证账号并加密保存。账号保持未激活，当前不开放腾讯云实例创建或费用同步；写入前需要平台确认。',
     requiredScopes: ['settings:write'], adminOnly: true,
     inputSchema: operationSchema.extend({ provider: z.literal('tencent_cloud'), regionId: z.string().trim().min(1), zoneId: z.string().trim().min(1), accessKeyId: sensitiveKey, accessKeySecret: sensitiveKey }).strict(),
-    outputSchema: resultOutputSchema(cloudContextSchema),
+    outputSchema: resultOutputSchema(tencentAccountSchema),
     async call(context, args) {
       const { idempotencyKey, confirmationId, ...payload } = args;
-      return safeCloudContext(await context.client.saveTencentCloudAccount(payload as SaveTencentCloudAccountInput, operation({ idempotencyKey: idempotencyKey as string | undefined, confirmationId: confirmationId as string | undefined })));
+      return tencentAccountSchema.parse(await context.client.saveTencentCloudAccount(payload as SaveTencentCloudAccountInput, operation({ idempotencyKey: idempotencyKey as string | undefined, confirmationId: confirmationId as string | undefined })));
     },
   },
   {
@@ -69,6 +70,12 @@ export const settingsTools: ToolDefinition[] = [
     description: '只读查询指定云账号已保存可用区中满足CPU、内存规格的按量付费机型；可售不代表已开放实例创建。',
     requiredScopes: ['settings:read'], adminOnly: true, readOnlyHint: true,
     inputSchema: z.object({ cloudAccountContextId: z.string().trim().min(1), cpu: z.number().int().min(1).max(1024), memory: z.number().int().min(1).max(4096) }).strict(),
+    outputSchema: resultOutputSchema(z.object({
+      cpu: z.number(), memory: z.number(), regionId: z.string(), zoneId: z.string(), exactAvailable: z.boolean(),
+      matches: z.array(z.object({ instanceTypeId: z.string(), cpu: z.number(), memoryGiB: z.number(),
+        family: z.string().nullable(), generation: z.string().nullable(), architecture: z.string().nullable() })),
+      warning: z.string().nullable(),
+    })),
     async call(context, args) { return context.client.getCloudAccountInstanceTypeAvailability(args.cloudAccountContextId as string, args.cpu as number, args.memory as number); },
   },
   {

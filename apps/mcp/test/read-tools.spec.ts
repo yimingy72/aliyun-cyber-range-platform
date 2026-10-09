@@ -185,6 +185,11 @@ function createClientStub(): ClientStub {
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),
     fetchCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud' }),
     saveCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou' }),
+    listCloudAccountContexts: vi.fn().mockResolvedValue([]),
+    saveTencentCloudAccount: vi.fn(),
+    discoverTencentCloudRegions: vi.fn(),
+    listTencentCloudImages: vi.fn(),
+    getCloudAccountInstanceTypeAvailability: vi.fn(),
     listAdminUsers: vi.fn().mockResolvedValue([{ id: 'user-1', username: 'alice' }]),
     createAdminUser: vi.fn().mockResolvedValue({ id: 'user-2', username: 'bob' }),
     updateAdminUserRole: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', role: 'admin' }),
@@ -1273,7 +1278,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(75);
+    expect(tools).toHaveLength(80);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(
