@@ -25,7 +25,7 @@
    跨地域变更时同时提供属于新地域的 `defaultZoneId`；不会沿用旧地域可用区或猜测新默认值。
 3. 更新后重新读取非敏感字段核对结果。不得在对话、日志或 Skill 文件中保存密钥。
 4. `cloud_account_bind` 支持阿里云与腾讯云，身份校验后加密保存凭据，保存不会切换当前数据空间。编辑必须传准确目标 `cloudWorkspaceId`，凭据的主账号 UID 和厂商必须匹配该空间。两个凭据字段必须重新显式填写；不传脱敏值。`displayName` 最多 80 字符，`imageImportBucket` 最多 63 字符。
-   腾讯云账号可用于当前空间镜像及机型只读查询，尚未开放实例创建、拓扑编排和账单同步。以工作空间 `capabilities` 为准，不能按账号全局 `isActive` 或查询成功判断资源创建能力。只读历史空间不可写业务资源。
+   腾讯云已接入镜像目录、OpenTofu 单实例批次、模板编排、镜像生命周期与官方账单同步。真实编排开通另受 `capabilities.rangeProvisioning` 控制：默认关闭，需完成受控创建/回收验证后再启用。以当前工作空间 `capabilities` 为准，不能按账号全局 `isActive` 或查询成功判断资源创建能力。只读历史空间不可写业务资源。
 5. 腾讯云账号查询使用 `cloud_account_context_list({ includeInactive: true })`；核对 `provider=tencent_cloud`、账号 UID、工作空间与地域后使用准确 ID。镜像查询属于镜像中心，配置页面只处理账号与默认地域。`cloud_config_get` 可显示当前厂商；兼容的 `cloud_config_update` 仅维护阿里云当前空间，腾讯云凭据必须使用 `cloud_account_bind` 或兼容的 `tencent_cloud_account_save`。
 6. 地域查询只接受明确指定的 1 至 3 个不同 `regionIds`；不会保存凭据或默认选择地域。镜像查询 `scope` 为 `public/custom`，`offset` 为 0 至 100000、`limit` 为 1 至 100；机型查询使用已保存账号可用区，`cpu` 为 1 至 1024、`memory` 为 1 至 4096。
 7. 腾讯云账号保存具有操作确认与幂等参数，首次受理可能返回 `CONFIRMATION_REQUIRED`。保留原业务参数，用户确认后传服务端实际 `confirmationId` 与相同 `idempotencyKey`；脱敏密钥不能回写或复用。账号列表及保存结果只返回非敏感状态，禁止回显 SecretId/SecretKey。

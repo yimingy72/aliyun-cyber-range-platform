@@ -49,7 +49,7 @@ describe('Tencent cloud account persistence and isolation', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     await expect(service.getCredentials(saved.id, { requireReady: true })).resolves.toMatchObject({ provider: 'tencent_cloud', accountUid: '100001', accessKeySecret: input.accessKeySecret });
     await expect(service.getCredentials(saved.id, { requireActive: true })).rejects.toThrow('已启用');
-    await expect(service.getCredentials(saved.id, { requireImageImportBucket: true })).rejects.toThrow('暂未支持腾讯云镜像导入');
+    await expect(service.getCredentials(saved.id, { requireImageImportBucket: true })).rejects.toThrow('专属 COS 来源由上传入口核验');
     await expect(service.activate(saved.id)).rejects.toThrow('仅支持将阿里云'); expect(db.$transaction).not.toHaveBeenCalled();
   });
   it('upserts a verified identity rather than a subaccount identity while retaining inactive status', async () => {
