@@ -17,8 +17,8 @@ const compoundKeys: Record<string, string[]> = {
   SingleInstanceNetworkProfile: ['provider_cloudAccountUid_regionId_zoneId'],
   CloudResourceDrift: ['cloudProvider_regionId_cloudResourceType_cloudResourceId'],
   BillingLedgerResource: ['cloudProvider_regionId_cloudResourceId_cloudResourceType'],
-  BillingLineItem: ['sourceFingerprint'],
-  BillingAnomaly: ['sourceFingerprint'],
+  BillingLineItem: ['cloudProvider_sourceFingerprint'],
+  BillingAnomaly: ['cloudProvider_sourceFingerprint'],
 };
 
 const relationModels: Record<string, Record<string, string>> = {

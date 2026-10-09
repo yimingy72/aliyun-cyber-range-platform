@@ -2,7 +2,7 @@ import type { AdminRepository, BillingImageImportResourceRecord, BillingLedgerRe
 import { classifyBillLine } from './billing-classifier';
 import { billingDayText } from './billing-window';
 
-const REGION_ID = /^(cn|ap|eu|us|me|af|sa)-[a-z0-9-]+$/;
+const REGION_ID = /^(cn|ap|eu|us|na|me|af|sa)-[a-z0-9-]+$/;
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 
 export type PlatformBillingProof = {
@@ -59,6 +59,12 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
     const instance = instancesById.get(ledger.rangeInstanceId ?? '');
     const job = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
     const context = instance?.singleInstanceConfig ?? instance?.resourceSummary?.executionContext;
+    // Tencent evidence has no legacy fallback: the frozen account and exact creation inventory are required.
+    if (ledger.cloudProvider === 'tencent_cloud' && (!context || !('provider' in context) || context.provider !== 'tencent_cloud'
+      || context.cloudAccountUid !== ledger.cloudAccountUid || context.regionId !== ledger.regionId
+      || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== (instance?.cloudWorkspaceId ?? 'legacy-unbound')
+      || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== (job?.cloudWorkspaceId ?? 'legacy-unbound')
+      || !inventoryIncludes(instance?.resourceSummary, ledger))) continue;
     if (instance && job?.rangeInstanceId === instance.id && (['create', 'retry', 'update'].includes(job.jobType) || job.jobType === 'destroy' && inventoryIncludes(instance.resourceSummary, ledger))
       && instance.cloudProvider === ledger.cloudProvider
       && (!context || !('provider' in context) || context.provider === ledger.cloudProvider)
@@ -168,4 +174,52 @@ export function readPlatformBillingEvidence(rawPayload: Record<string, unknown>)
     || !Array.isArray(value.ledgerIds) || !value.ledgerIds.every(id => typeof id === 'string')
     || !Array.isArray(value.imageImportJobIds) || !value.imageImportJobIds.every(id => typeof id === 'string')) return null;
   return value as PlatformBillingEvidence;
+}
+
+// Numeric billing region IDs are documented in Tencent's TopicIdAndRegion schema; unknown IDs remain unverified.
+// https://cloud.tencent.com/document/api/614/56471
+const TENCENT_BILLING_REGIONS: Record<string, string> = {
+  '1': 'ap-guangzhou', '4': 'ap-shanghai', '5': 'ap-hongkong', '7': 'ap-shanghai-fsi',
+  '8': 'ap-beijing', '9': 'ap-singapore', '11': 'ap-shenzhen-fsi', '15': 'na-siliconvalley',
+  '16': 'ap-chengdu', '17': 'eu-frankfurt', '18': 'ap-seoul', '19': 'ap-chongqing',
+  '22': 'na-ashburn', '23': 'ap-bangkok', '25': 'ap-tokyo', '33': 'ap-nanjing',
+  '46': 'ap-beijing-fsi', '72': 'ap-jakarta', '74': 'sa-saopaulo',
+};
+
+export function isTencentBillingPayload(line: Record<string, unknown>) {
+  return line.__platformCloudProvider === 'tencent_cloud' && line.__platformBillingSource === 'DescribeBillDetail';
+}
+
+export function tencentBillRegionId(line: Record<string, unknown>) {
+  return TENCENT_BILLING_REGIONS[text(line.RegionId)] ?? null;
+}
+
+export function classifyTencentBillLine(line: Record<string, unknown>): ReturnType<typeof classifyBillLine> {
+  const id = text(line.ResourceId);
+  const business = text(line.BusinessCode);
+  // https://cloud.tencent.com/document/product/555/93162 documents p_cvm/p_cbs/p_eip/p_nat.
+  // Product codes and resource shape must both agree; a matching ID or tag alone cannot establish a bill's source.
+  const type = business === 'p_cvm' && /^ins-[a-z0-9-]+$/i.test(id) ? 'ecs'
+    : business === 'p_cbs' && /^disk-[a-z0-9-]+$/i.test(id) ? 'disk'
+    : business === 'p_eip' && /^eip-[a-z0-9-]+$/i.test(id) ? 'eip'
+    : business === 'p_nat' && /^nat-[a-z0-9-]+$/i.test(id) ? 'nat_gateway'
+    : business === 'p_cbs' && /^snap-[a-z0-9-]+$/i.test(id) ? 'snapshot' : null;
+  return type && isTencentBillingPayload(line) ? { kind: 'direct', cloudResourceId: id, cloudResourceType: type }
+    : { kind: 'unknown', cloudResourceId: id, cloudResourceType: 'unknown', reason: '腾讯云账单资源类型尚未核实。' };
+}
+
+export function pendingTencentBillingEvidence(input: {
+  line: Record<string, unknown>; cloudAccountUid: string; billingDate: string; proof: PlatformBillingProof;
+}): PlatformBillingEvidence | null {
+  if (!isTencentBillingPayload(input.line) || input.line.OwnerUin !== input.cloudAccountUid || input.line.PayerUin !== input.cloudAccountUid) return null;
+  const id = text(input.line.ResourceId);
+  const owned = input.proof.ledgers.filter(ledger => ledger.cloudProvider === 'tencent_cloud'
+    && ledger.cloudAccountUid === input.cloudAccountUid && ledger.cloudResourceId === id
+    && isPlatformCreatedLedger(ledger, input.proof) && input.billingDate >= billingDayText(ledger.billingStartAt));
+  if (!owned.length) return null;
+  const region = tencentBillRegionId(input.line);
+  const classification = classifyTencentBillLine(input.line);
+  const exact = owned.filter(ledger => ledger.regionId === region && ledger.cloudResourceType === classification.cloudResourceType);
+  return { kind: classification.kind === 'direct' && exact.length === 1 ? 'resource_pending' : 'source_pending',
+    ledgerIds: owned.map(ledger => ledger.id), imageImportJobIds: [] };
 }

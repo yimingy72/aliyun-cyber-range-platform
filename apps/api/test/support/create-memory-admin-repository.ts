@@ -1738,7 +1738,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const scope = getCurrentCloudWorkspaceScope();
       if (scope && !('system' in scope) && (scope.provider !== cloudProvider || scope.accountUid !== input.cloudAccountUid)) throw new Error('Billing replacement workspace, provider, account or date mismatch');
       const date = new Date(input.billingDate).getTime();
-      if (!input.cloudAccountUid || !Number.isFinite(date) || [...input.lineItems, ...input.anomalies].some(item => (item.cloudProvider ?? 'alibaba_cloud') !== cloudProvider || item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
+      if (!input.cloudAccountUid || !Number.isFinite(date) || [...input.lineItems, ...input.anomalies].some(item => (item.cloudProvider ?? 'alibaba_cloud') !== cloudProvider || item.cloudWorkspaceId !== undefined && item.cloudWorkspaceId !== (getCurrentCloudWorkspaceId() ?? 'legacy-unbound') || item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
       const oldLines = cloneList(billingLineItems);
       const oldAnomalies = cloneList(billingAnomalies);
       try {

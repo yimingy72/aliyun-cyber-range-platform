@@ -32,6 +32,11 @@ describe('cloud workspace query boundary', () => {
       .toEqual({ cloudWorkspaceId: scope.cloudWorkspaceId, cloudWorkspaceId_normalizedName: { cloudWorkspaceId: scope.cloudWorkspaceId, normalizedName: 'linux' } });
   });
 
+  it.each(['BillingLineItem', 'BillingAnomaly'])('scopes provider-specific billing fingerprints for %s', model => {
+    expect(scopePrismaQuery(model, 'findUnique', { where: { cloudProvider_sourceFingerprint: { cloudProvider: 'alibaba_cloud', sourceFingerprint: 'same-source' } } }, scope).where)
+      .toEqual({ cloudWorkspaceId: scope.cloudWorkspaceId, cloudWorkspaceId_cloudProvider_sourceFingerprint: { cloudWorkspaceId: scope.cloudWorkspaceId, cloudProvider: 'alibaba_cloud', sourceFingerprint: 'same-source' } });
+  });
+
   it('stamps every createMany row and rejects writes that move resources', () => {
     expect(scopePrismaQuery('RangeInstance', 'createMany', { data: [{ name: 'one' }, { name: 'two' }] }, scope).data)
       .toEqual([{ name: 'one', cloudWorkspaceId: scope.cloudWorkspaceId }, { name: 'two', cloudWorkspaceId: scope.cloudWorkspaceId }]);

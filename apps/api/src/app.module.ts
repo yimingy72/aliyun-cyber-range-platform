@@ -22,6 +22,7 @@ import { PackedImagesWorkerService } from './admin/packed-images-worker.service'
 import { BillingBssClient } from './admin/billing-bss-client';
 import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
+import { TencentBillingClient } from './admin/tencent-billing-client';
 import { BillingSyncService } from './admin/billing-sync.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { PlatformImageTagsController } from './admin/platform-image-tags.controller';
@@ -112,6 +113,7 @@ function resolveProjectRootDir() {
     PackedImagesWorkerService,
     BillingService,
     BillingSyncService,
+    TencentBillingClient,
     AdminUsersService,
     KeycloakAdminService,
     OidcJwtVerifier,

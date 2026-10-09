@@ -1,7 +1,7 @@
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import { createHash } from 'node:crypto';
 
-import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -13,6 +13,8 @@ import {
 } from './admin.repository';
 import { assertAlibabaBillingContext, BillingBssClient } from './billing-bss-client';
 import { billRegionId, billRegionConflict, classifyPlatformBillLine, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
+import { TencentBillingClient, type TencentBillingContext } from './tencent-billing-client';
+import { classifyTencentBillLine, isTencentBillingPayload, pendingTencentBillingEvidence, tencentBillRegionId } from './billing-platform-scope';
 import { SystemConfigService } from './system-config.service';
 import { billingDayText, resolveBillingWindow } from './billing-window';
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
@@ -66,6 +68,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly billingBssClient: BillingBssClient,
     private readonly systemConfigService: SystemConfigService,
+    @Optional() private readonly tencentBillingClient?: TencentBillingClient,
   ) {}
 
   onModuleInit() {
@@ -138,10 +141,13 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const lastCompleteDay = new Date(resolveBillingWindow({}, 1).endAt.getTime() - 86_400_000);
       const endAt = window.endAt < lastCompleteDay ? window.endAt : lastCompleteDay;
       const deferredDates = window.endAt > endAt ? enumerateDates(new Date(Math.max(window.startAt.getTime(), endAt.getTime() + 86_400_000)), window.endAt) : [];
-      const cloudConfig = { ...await this.systemConfigService.getAccountContext() };
-      assertAlibabaBillingContext(cloudConfig);
+      const cloudConfig = { ...await (typeof this.systemConfigService.getExecutionAccountContext === 'function'
+        ? this.systemConfigService.getExecutionAccountContext() : this.systemConfigService.getAccountContext()) };
+      if (!['alibaba_cloud', 'tencent_cloud'].includes(cloudConfig.provider)) throw new Error('当前云厂商尚未接入平台账单同步；原有账单已保留。');
+      if (cloudConfig.provider === 'alibaba_cloud') assertAlibabaBillingContext(cloudConfig);
+      if (cloudConfig.provider === 'tencent_cloud' && !this.tencentBillingClient) throw new Error('腾讯云尚未接入账单客户端；原有账单已保留。');
       const scope = getCurrentCloudWorkspaceScope();
-      if (scope && !('system' in scope) && (scope.provider !== 'alibaba_cloud' || scope.accountUid !== cloudConfig.accountUid)) {
+      if (scope && !('system' in scope) && (scope.provider !== cloudConfig.provider || scope.accountUid !== cloudConfig.accountUid)) {
         throw new Error('Billing synchronization account does not match its cloud workspace');
       }
       const cloudAccountUid = cloudConfig.accountUid;
@@ -160,6 +166,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
       const dates = enumerateDates(startAt, endAt);
       let proof = await loadPlatformBillingProof(this.adminRepository);
+      if (cloudConfig.provider === 'tencent_cloud') return await this.syncTencentDates({ dates, deferredDates, cloudConfig, proof });
       if (await this.repairImageLedgerOrigins(proof, cloudAccountUid)) proof = await loadPlatformBillingProof(this.adminRepository);
       let importedLineItems = 0;
       let anomalyCount = 0;
@@ -174,7 +181,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
           if (line.BillingDate !== undefined && readString(line, 'BillingDate') !== billingDate) throw new Error('BSS returned a bill for a different billing date; previous bills were retained');
         }
-        const previous: BillingLineItemRecord[] = (await this.adminRepository.listBillingLineItems({ cloudAccountUid, startAt: billingDate, endAt: billingDate }))
+        const previous: BillingLineItemRecord[] = (await this.adminRepository.listBillingLineItems({ cloudProvider: 'alibaba_cloud', cloudAccountUid, startAt: billingDate, endAt: billingDate }))
           .filter(line => proof.ledgers.some(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, proof)
             && ledger.cloudProvider === 'alibaba_cloud' && isAlibabaBillingPayload(line.rawPayload)
             && ledger.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType));
@@ -244,7 +251,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             }
           }
         }
-        await this.adminRepository.replaceBillingDay({ cloudAccountUid, billingDate, lineItems: [...dayItems.values()], anomalies: [...dayAnomalies.values()] });
+        await this.adminRepository.replaceBillingDay({ cloudProvider: 'alibaba_cloud', cloudAccountUid, billingDate, lineItems: [...dayItems.values()], anomalies: [...dayAnomalies.values()] });
         importedLineItems += dayItems.size;
         anomalyCount += dayAnomalies.size;
       }
@@ -259,6 +266,68 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     } finally {
       this.runningWorkspaces.delete(cloudWorkspaceId);
     }
+  }
+
+  private async syncTencentDates(input: { dates: string[]; deferredDates: string[]; cloudConfig: TencentBillingContext; proof: PlatformBillingProof }) {
+    if (!this.tencentBillingClient) throw new Error('Tencent billing client is unavailable');
+    const context = Object.freeze({ ...input.cloudConfig });
+    const accountUid = context.accountUid;
+    if (!accountUid || !context.accountUidResolved) throw new Error('Tencent billing requires a verified account UIN');
+    let importedLineItems = 0;
+    let anomalyCount = 0;
+    for (const month of [...new Set(input.dates.map(day => day.slice(0, 7)))]) {
+      // Read the complete monthly revision once; no day is replaced if a later page is incomplete or invalid.
+      const items = await this.tencentBillingClient.listMonthlyBillingItems({ month }, context);
+      for (const item of items) {
+        if (item.cloudProvider !== 'tencent_cloud' || item.cloudAccountUid !== accountUid || item.billingMonth !== month
+          || !isTencentBillingPayload(item.rawPayload) || item.rawPayload.OwnerUin !== accountUid || item.rawPayload.PayerUin !== accountUid
+          || item.rawPayload.BillDay !== `${item.billingDate} 00:00:00` || item.rawPayload.BillMonth !== `${month}-01 00:00:00`
+          || item.rawPayload.ResourceId !== item.cloudResourceId || item.rawPayload.Id !== item.sourceId
+          || !Array.isArray(item.rawPayload.ComponentSet) || !item.rawPayload.ComponentSet.length) throw new Error('Tencent billing source does not match its verified account, date or resource');
+      }
+      for (const day of input.dates.filter(date => date.slice(0, 7) === month)) {
+        const syncBatchId = `billing-sync:tencent_cloud:${getCurrentCloudWorkspaceId() ?? 'legacy-unbound'}:${accountUid}:${day}`;
+        const lineItems: CreateBillingLineItemInput[] = [];
+        const anomalies: CreateBillingAnomalyInput[] = [];
+        for (const item of items.filter(row => row.billingDate === day)) {
+          const classification = classifyTencentBillLine(item.rawPayload);
+          const region = tencentBillRegionId(item.rawPayload);
+          const candidates = input.proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, input.proof)
+            && ledger.cloudProvider === 'tencent_cloud' && ledger.cloudAccountUid === accountUid
+            && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === classification.cloudResourceType
+            && ledger.regionId === region && day >= billingDayText(ledger.billingStartAt));
+          const ledger = classification.kind === 'direct' && candidates.length === 1 ? candidates[0] : null;
+          const evidence = ledger ? null : pendingTencentBillingEvidence({ line: item.rawPayload, cloudAccountUid: accountUid, billingDate: day, proof: input.proof });
+          // External resources and account/region aggregate rows have no exact platform creation proof.
+          if (!ledger && !evidence) continue;
+          const components = item.rawPayload.ComponentSet as Record<string, unknown>[];
+          for (const [index, component] of components.entries()) {
+            const cost = component?.RealCost;
+            if (typeof cost !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(cost)) throw new Error('Tencent billing returned an invalid component amount; prior bills were retained');
+            const amount = new Prisma.Decimal(cost);
+            if (!amount.isFinite() || amount.decimalPlaces() > 9 || amount.abs().gte('100000000000') || !new Prisma.Decimal(amount.toNumber()).equals(amount)) throw new Error('Tencent billing amount exceeds ledger precision; prior bills were retained');
+            const rawPayload = { ...item.rawPayload, __platformBillingComponentIndex: index,
+              __platformBillingAmountBasis: 'ComponentSet.RealCost:CNY:yuan',
+              ...(ledger?.releasedAt && day > billingDayText(ledger.releasedAt) ? { __platformPostReleaseCharge: true } : {}),
+              ...(evidence ? { __platformBillingScope: evidence } : {}) };
+            const base = { cloudProvider: 'tencent_cloud' as const, cloudAccountUid: accountUid, syncBatchId,
+              sourceFingerprint: createHash('sha256').update(`${syncBatchId}:${item.sourceId}:${index}`).digest('hex'),
+              billCycle: month, billingDate: day, cloudResourceId: item.cloudResourceId,
+              cloudResourceType: classification.cloudResourceType, pretaxAmount: amount.toNumber(), currency: item.currency, rawPayload };
+            if (ledger) lineItems.push({ ...base, productCode: String(item.rawPayload.BusinessCode),
+              productDetail: readString(item.rawPayload, 'ProductCode') || null,
+              billItem: [readString(item.rawPayload, 'ActionType'), String(component.ComponentCode ?? component.ItemCode ?? index)].filter(Boolean).join(' / '),
+              billingScope: ledger.billingScope, ownerUserId: ledger.ownerUserId, matchedLedgerId: ledger.id });
+            else anomalies.push({ ...base, reason: '已知平台创建资源的腾讯云账单产品、地域或来源尚待核实；未将该金额计入平台费用。' });
+          }
+        }
+        await this.adminRepository.replaceBillingDay({ cloudProvider: 'tencent_cloud', cloudAccountUid: accountUid, billingDate: day, lineItems, anomalies });
+        importedLineItems += lineItems.length;
+        anomalyCount += anomalies.filter(item => (item.rawPayload?.__platformBillingScope as { kind?: string })?.kind === 'resource_pending').length;
+      }
+    }
+    return { syncedDays: input.dates.length, importedLineItems, anomalyCount, deferredCount: input.deferredDates.length,
+      ...(input.deferredDates.length ? { deferredDates: input.deferredDates } : {}) };
   }
 
   private buildMatchedBillLine(input: {
@@ -292,7 +361,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveSplitItems(items: RawBillLine[], billingDate: string, cloudAccountUid: string,
-    context: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, proof: PlatformBillingProof, previous: BillingLineItemRecord[]) {
+    context: Awaited<ReturnType<SystemConfigService['getExecutionAccountContext']>>, proof: PlatformBillingProof, previous: BillingLineItemRecord[]) {
     let resolved = items;
     const retainedProducts = new Set<string>();
     for (const productCode of ['snapshot', 'oss'] as const) {

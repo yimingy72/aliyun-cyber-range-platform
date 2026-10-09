@@ -12,7 +12,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
-import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof } from './billing-platform-scope';
+import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence } from './billing-platform-scope';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -82,19 +82,35 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
   return items.flatMap(item => {
     const ledger = item.matchedLedgerId ? ledgers.get(item.matchedLedgerId) : null;
     if (!ledger || !isPlatformCreatedLedger(ledger, proof)
-      || ledger.cloudProvider !== 'alibaba_cloud' || !isAlibabaBillingPayload(item.rawPayload)
+      || (item.cloudWorkspaceId ?? 'legacy-unbound') !== (ledger.cloudWorkspaceId ?? 'legacy-unbound')
+      || (item.cloudProvider ?? 'alibaba_cloud') !== ledger.cloudProvider
+      || (ledger.cloudProvider === 'alibaba_cloud' ? !isAlibabaBillingPayload(item.rawPayload) : !verifiedTencentItem(item, ledger))
       || item.cloudResourceId !== ledger.cloudResourceId || item.cloudResourceType !== ledger.cloudResourceType
       || item.cloudAccountUid && item.cloudAccountUid !== ledger.cloudAccountUid
       || item.rawPayload.OwnerID != null && String(item.rawPayload.OwnerID) !== ledger.cloudAccountUid
-      || billRegionConflict(item.rawPayload) || billRegionId(item.rawPayload) && billRegionId(item.rawPayload) !== ledger.regionId
+      || ledger.cloudProvider === 'alibaba_cloud' && (billRegionConflict(item.rawPayload) || billRegionId(item.rawPayload) && billRegionId(item.rawPayload) !== ledger.regionId)
       || toIsoDate(item.billingDate) < billingDayText(ledger.billingStartAt)) return [];
     // Historical catalog collection could overwrite attribution; use the verified creation ledger.
     return [{ ...item, cloudAccountUid: ledger.cloudAccountUid, billingScope: ledger.billingScope, ownerUserId: ledger.ownerUserId }];
   });
 }
 
+function verifiedTencentItem(item: BillingLineItemRecord, ledger: BillingLedgerResourceRecord) {
+  const raw = item.rawPayload;
+  const index = raw.__platformBillingComponentIndex;
+  const component = Array.isArray(raw.ComponentSet) && Number.isSafeInteger(index) ? raw.ComponentSet[index as number] as Record<string, unknown> | undefined : null;
+  const classification = classifyTencentBillLine(raw);
+  return isTencentBillingPayload(raw) && raw.OwnerUin === ledger.cloudAccountUid && raw.PayerUin === ledger.cloudAccountUid
+    && raw.ResourceId === ledger.cloudResourceId && tencentBillRegionId(raw) === ledger.regionId
+    && raw.BillDay === `${toIsoDate(item.billingDate)} 00:00:00` && raw.BillMonth === `${item.billCycle}-01 00:00:00`
+    && classification.kind === 'direct' && classification.cloudResourceType === ledger.cloudResourceType
+    && typeof component?.RealCost === 'string' && /^-?\d+(?:\.\d+)?$/.test(component.RealCost)
+    && new Prisma.Decimal(component.RealCost).equals(item.pretaxAmount) && item.currency === 'CNY';
+}
+
 function pendingEvidence(item: BillingAnomalyRecord | BillingLineItemRecord, proof: PlatformBillingProof) {
   if (!item.cloudAccountUid) return null;
+  if (item.cloudProvider === 'tencent_cloud') return pendingTencentBillingEvidence({ cloudAccountUid: item.cloudAccountUid, billingDate: toIsoDate(item.billingDate), proof, line: item.rawPayload });
   return pendingPlatformBillingEvidence({ cloudAccountUid: item.cloudAccountUid, billingDate: toIsoDate(item.billingDate), proof,
     line: { ...item.rawPayload,
       InstanceID: item.rawPayload.InstanceID ?? item.cloudResourceId,

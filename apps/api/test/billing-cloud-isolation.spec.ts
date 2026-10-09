@@ -22,7 +22,7 @@ afterEach(() => { global.fetch = originalFetch; jest.restoreAllMocks(); });
 async function tencentLedger(repository: ReturnType<typeof createMemoryAdminRepository>) {
   const provider = 'tencent_cloud' as CloudProvider;
   const instance = await repository.createRangeInstance({ name: 'Tencent source',
-    resourceSummary: { mode: 'opentofu', executionContext: { cloudAccountUid: UID, cloudAccountContextId: 'Tencent account', regionId: base.regionId, zoneId: 'ap-shanghai-1' } } });
+    resourceSummary: { mode: 'opentofu', executionContext: { provider, cloudAccountUid: UID, cloudAccountContextId: 'Tencent account', regionId: base.regionId, zoneId: 'ap-shanghai-1' }, hostIds: { host: base.cloudResourceId } } } as Parameters<typeof repository.createRangeInstance>[0]);
   const list = repository.listRangeInstances.bind(repository);
   jest.spyOn(repository, 'listRangeInstances').mockImplementation(async () => (await list())
     .map(value => value.id === instance.id ? { ...value, cloudProvider: provider } : value));

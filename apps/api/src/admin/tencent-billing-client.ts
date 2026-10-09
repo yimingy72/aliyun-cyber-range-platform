@@ -62,6 +62,7 @@ function normalizeItem(value: unknown, month: string, accountUid: string): Tence
   for (const value of row.ComponentSet) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('DescribeBillDetail returned an invalid bill component');
     const component = value as Record<string, unknown>;
+    if ('Currency' in component && component.Currency !== 'CNY') throw new Error('DescribeBillDetail returned an unsupported component currency');
     const cost = requiredText(component, 'RealCost');
     if (!/^-?\d+(?:\.\d+)?$/.test(cost) || cost.replace(/[.-]/g, '').length > 40) throw new Error('DescribeBillDetail returned an invalid component RealCost');
     amount = amount.plus(cost);
@@ -77,7 +78,8 @@ function normalizeItem(value: unknown, month: string, accountUid: string): Tence
 
 @Injectable()
 export class TencentBillingClient {
-  // Read-only source client: Tencent bill dates/region IDs need a separate verified attribution pipeline before persistence.
+  // Domestic official expense bills use RealCost in yuan, including signed refunds; payment fields are not added.
+  // https://cloud.tencent.com/document/product/555/44144
   async listMonthlyBillingItems(input: { month: string }, context: TencentBillingContext): Promise<TencentBillingItem[]> {
     context = { ...context };
     if (context.provider !== 'tencent_cloud') throw new Error('Tencent billing requires a Tencent cloud account');
