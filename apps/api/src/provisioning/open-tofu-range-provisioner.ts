@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { createHmac, randomUUID } from 'node:crypto';
 
@@ -11,11 +12,13 @@ import {
   type OpenTofuCommandResult,
   type OpenTofuPlanOptions,
   type OpenTofuValidateOptions,
+  type OpenTofuShowPlanOptions,
   type OpenTofuWorkspaceCommandOptions,
 } from '@aliyun-cyber-range/iac-runner';
 
 import type {
   RangeRuntimeCredentials,
+  RangeResourceSummary,
   RangeTemplateCompiledSpec,
   SingleInstanceConfig,
   SingleInstanceNetworkProfileRecord,
@@ -121,6 +124,7 @@ type OpenTofuRunnerLike = {
   apply(options: OpenTofuApplyOptions): Promise<OpenTofuCommandResult>;
   output<T>(options: OpenTofuWorkspaceCommandOptions): Promise<T>;
   destroy(options: OpenTofuDestroyOptions): Promise<OpenTofuCommandResult>;
+  showPlan<T>(options: OpenTofuShowPlanOptions): Promise<T>;
 };
 
 type OpenTofuRangeProvisionerOptions = {
@@ -181,7 +185,7 @@ type HostInstanceResolutionHint = {
 };
 
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
-const APPLY_STARTED_FILE = '.range-apply-started';
+const APPLY_STARTED_FILE = APPLY_PENDING_FILE;
 const WORKSPACE_STATE_FILES = ['terraform.tfstate', 'terraform.tfstate.backup', 'errored.tfstate'];
 const DESTROY_PLACEHOLDER_PASSWORD = 'DestroyOnly123!';
 
@@ -342,13 +346,16 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       };
     });
     await runProvisionStep(input.reportStep, 'tofu_apply', async () => {
-      await fs.writeFile(path.join(workspace.workspaceDir, APPLY_STARTED_FILE), '', 'utf8');
+      const planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
+      await recordApplyPlan(workspace.workspaceDir, planned);
+      await input.onApplyStart?.();
       const command = await this.runner.apply({
         workspaceDir: workspace.workspaceDir,
         env: workspace.runnerEnv,
         planFilePath: workspace.planFilePath,
       });
 
+      await completeApply(workspace.workspaceDir);
       return {
         result: command,
         message: 'OpenTofu apply completed.',
@@ -391,6 +398,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
     const publicEntry = readOutputValue(outputs.public_entry);
     const resourceSummary = readOutputValue(outputs.resource_summary);
+    const stateResources = await this.inspectResources(input);
 
     return {
       accessEntry: {
@@ -407,8 +415,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         vpcId: resourceSummary?.vpc_id ?? null,
         subnetIds: resourceSummary?.subnet_ids ?? null,
         networkAclIds: resourceSummary?.network_acl_ids ?? null,
-        securityGroupIds: resourceSummary?.security_group_ids ?? null,
+        securityGroupIds: stateResources?.securityGroupIds ? { ...resourceSummary?.security_group_ids, ...stateResources.securityGroupIds } : resourceSummary?.security_group_ids ?? null,
         hostIds: resourceSummary?.host_ids ?? null,
+        ...(stateResources?.systemDiskIds ? { systemDiskIds: stateResources.systemDiskIds } : {}),
         secondaryNetworkInterfaceIds: resourceSummary?.secondary_network_interface_ids ?? null,
         natGatewayIds: resourceSummary?.nat_gateway_ids ?? null,
         snatEntryIds: resourceSummary?.snat_entry_ids ?? null,
@@ -462,6 +471,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         stderrExcerpt: command.stderr,
       };
     });
+    const priorState = (await readWorkspaceState(workspace.workspaceDir, true))!;
+    const unresolvedApply = await hasUnresolvedApply(workspace.workspaceDir, priorState);
     await runProvisionStep(input.reportStep, 'destroy', async () => {
       const command = await this.runner.destroy({
         workspaceDir: workspace.workspaceDir,
@@ -469,6 +480,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         varsFilePath: workspace.varsFilePath,
       });
 
+      await assertDestroyComplete(workspace.workspaceDir, priorState, unresolvedApply);
       return {
         result: command,
         message: 'OpenTofu destroy completed.',
@@ -478,12 +490,50 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
   }
 
+  async inspectResources(input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null> {
+    const dir = path.join(this.workspacesRootDir, input.rangeInstanceId);
+    const state = await readWorkspaceState(dir, input.requirePersistedState === true);
+    if (!state) return null;
+    const summary: RangeResourceSummary = { mode: 'opentofu', workspaceDir: dir };
+    const fields: Record<string, keyof RangeResourceSummary> = {
+      alicloud_vswitch: 'subnetIds', alicloud_network_acl: 'networkAclIds', alicloud_security_group: 'securityGroupIds',
+      alicloud_instance: 'hostIds', alicloud_network_interface: 'secondaryNetworkInterfaceIds',
+      alicloud_nat_gateway: 'natGatewayIds', alicloud_snat_entry: 'snatEntryIds', alicloud_forward_entry: 'dnatEntryIds',
+      alicloud_eip_address: 'eipAllocationIds',
+    };
+    for (const instance of state.instances) {
+      if (instance.type.startsWith('alicloud_')) {
+        const tagTypes = new Set(['alicloud_vpc', 'alicloud_vswitch', 'alicloud_network_acl', 'alicloud_security_group', 'alicloud_instance', 'alicloud_network_interface', 'alicloud_nat_gateway', 'alicloud_eip_address']);
+        const relationTypes = new Set(['alicloud_vpc_ipv4_cidr_block', 'alicloud_security_group_rule', 'alicloud_network_interface_attachment', 'alicloud_eip_association', 'alicloud_snat_entry', 'alicloud_forward_entry']);
+        if (instance.module !== 'module.range' || (!tagTypes.has(instance.type) && !relationTypes.has(instance.type)))
+          throw new Error('OpenTofu state contains resources outside this range');
+        const tags = instance.attributes.tags as Record<string, unknown> | undefined;
+        if (tagTypes.has(instance.type) && tags?.range_instance_id !== input.rangeInstanceId && tags?.RangeInstanceId !== input.rangeInstanceId)
+          throw new Error('OpenTofu range resource ownership could not be verified');
+      }
+      if (instance.type === 'alicloud_vpc') {
+        if (summary.vpcId && summary.vpcId !== instance.attributes.id) throw new Error('OpenTofu state contains multiple VPCs');
+        summary.vpcId = instance.attributes.id as string;
+      }
+      const field = fields[instance.type];
+      if (field) {
+        const values = (summary[field] ?? Object.create(null)) as Record<string, string>;
+        addResourceId(values, instance.address, instance.attributes.id as string);
+        (summary as Record<string, unknown>)[field] = values;
+      }
+      if (instance.type === 'alicloud_instance' && typeof instance.attributes.system_disk_id === 'string' && instance.attributes.system_disk_id)
+        addResourceId(summary.systemDiskIds ??= Object.create(null), instance.address, instance.attributes.system_disk_id);
+    }
+    return summary;
+  }
+
   private async prepareDestroyWorkspace(input: RangeProvisionDestroyInput): Promise<PreparedWorkspace | null> {
     const workspaceDir = path.join(this.workspacesRootDir, input.rangeInstanceId);
-    if (!(await hasUsableWorkspaceState(workspaceDir))) {
+    if (!(await readWorkspaceState(workspaceDir, input.requirePersistedState === true))) {
       return null;
     }
 
+    await this.inspectResources(input);
     const varsFileName = input.instanceMode === 'single' ? 'terraform.tfvars.json' : 'range.auto.tfvars.json';
     const varsFilePath = path.join(workspaceDir, varsFileName);
     for (const file of ['main.tf', 'variables.tf', 'outputs.tf', 'versions.tf', varsFileName]) {
@@ -519,8 +569,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
     if (options.preserveWorkspaceState) {
-      await hasUsableWorkspaceState(workspaceDir);
+      await assertWorkspaceCanApply(workspaceDir, input.requirePersistedState === true);
     } else {
+      if (input.requirePersistedState) throw new Error('OpenTofu state recovery is required before proceeding; persisted workspace was preserved');
       await assertUnusedWorkspace(workspaceDir);
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }
@@ -576,8 +627,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
     if (options.preserveWorkspaceState) {
-      await hasUsableWorkspaceState(workspaceDir);
+      await assertWorkspaceCanApply(workspaceDir, input.requirePersistedState === true);
     } else {
+      if (input.requirePersistedState) throw new Error('OpenTofu state recovery is required before proceeding; persisted workspace was preserved');
       await assertUnusedWorkspace(workspaceDir);
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }
@@ -1050,32 +1102,8 @@ async function pathExists(targetPath: string) {
   }
 }
 
-async function hasUsableWorkspaceState(workspaceDir: string) {
-  const statePath = path.join(workspaceDir, 'terraform.tfstate');
-  const hasState = await pathExists(statePath);
-  const hasRecoveryState = await pathExists(path.join(workspaceDir, 'errored.tfstate'));
-  const hasBackupState = await pathExists(path.join(workspaceDir, 'terraform.tfstate.backup'));
-  const applyStarted = await pathExists(path.join(workspaceDir, APPLY_STARTED_FILE));
-  const recoveryMessage = 'OpenTofu state recovery is required before proceeding; persisted workspace was preserved';
-
-  if (hasRecoveryState || (!hasState && (hasBackupState || applyStarted))) {
-    throw new Error(recoveryMessage);
-  }
-  if (hasState) {
-    try {
-      const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
-      if (state?.version !== 4 || !Array.isArray(state.resources)) {
-        throw new Error('Invalid local state');
-      }
-    } catch {
-      throw new Error(recoveryMessage);
-    }
-  }
-  return hasState;
-}
-
 async function assertUnusedWorkspace(workspaceDir: string) {
-  for (const file of [...WORKSPACE_STATE_FILES, APPLY_STARTED_FILE]) {
+  for (const file of [...WORKSPACE_STATE_FILES, APPLY_STARTED_FILE, '.range-apply-complete.json']) {
     if (await pathExists(path.join(workspaceDir, file))) {
       throw new Error('Cannot replace an OpenTofu workspace with persisted state or an apply attempt');
     }
@@ -1783,4 +1811,16 @@ function trimExcerpt(value: string | null | undefined, limit = 4000) {
   }
 
   return trimmed.length <= limit ? trimmed : trimmed.slice(trimmed.length - limit);
+}
+
+function resourceInstanceKey(address: string) {
+  const indexed = address.match(/\[("(?:[^"\\]|\\.)*"|\d+)\]$/);
+  return indexed ? String(JSON.parse(indexed[1])) : address;
+}
+
+function addResourceId(values: Record<string, string>, address: string, id: string) {
+  let key = resourceInstanceKey(address);
+  let suffix = 1;
+  while (values[key] && values[key] !== id) key = `${address}#${suffix++}`;
+  values[key] = id;
 }

@@ -71,13 +71,14 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     });
     apply = jest.fn(async (options: { workspaceDir: string }) => {
       const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));
-      await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, resources: [
-        { name: 'range-owner', type: 'terraform_data', mode: 'managed', instances: [{ attributes: { rangeInstanceId: path.basename(options.workspaceDir), ownerUserId: vars.tags.PlatformUserId } }] },
+      await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [
+        { name: 'range-owner', type: 'terraform_data', mode: 'managed', instances: [{ attributes: { id: 'owner-id', rangeInstanceId: path.basename(options.workspaceDir), ownerUserId: vars.tags.PlatformUserId } }] },
       ] }));
       return { stdout: 'apply complete', stderr: '' };
     });
     const runner: any = {
       init: jest.fn().mockResolvedValue({ stdout: 'init', stderr: '' }), validate: jest.fn().mockResolvedValue({ stdout: 'validate', stderr: '' }),
+      showPlan: jest.fn().mockResolvedValue({ planned_values: { root_module: { resources: [{ mode: 'managed', address: 'terraform_data.range-owner' }] } } }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan', stderr: '' }), apply,
       output: jest.fn(async (options: { workspaceDir: string }) => {
         const id = path.basename(options.workspaceDir);
@@ -97,7 +98,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
       destroy: jest.fn(async (options: { workspaceDir: string }) => {
         const id = path.basename(options.workspaceDir);
         for (const key of cloudTags.keys()) if (key.startsWith(`i-${id}-`)) cloudTags.delete(key);
-        await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, resources: [] }));
+        await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [] }));
         return { stdout: 'destroy complete', stderr: '' };
       }),
     };
@@ -244,7 +245,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
 
   it('atomically arbitrates create/retry and destroy/retry requests against the same state', async () => {
     const { a } = await launchBoth();
-    await fs.writeFile(path.join(root, a.id, 'terraform.tfstate'), JSON.stringify({ version: 4, resources: [] }));
+    await fs.writeFile(path.join(root, a.id, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [] }));
     await repository.updateRangeInstance(a.id, { status: 'create_failed', resourceSummary: null, accessEntry: null });
     const creates = await Promise.allSettled([service.triggerCreate(a.id, alice), service.triggerRetry(a.id, alice)]);
     expect(creates.filter(result => result.status === 'fulfilled')).toHaveLength(1);
