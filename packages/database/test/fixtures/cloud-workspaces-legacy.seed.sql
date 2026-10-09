@@ -21,6 +21,15 @@ INSERT INTO "CloudImageSnapshot" ("id","provider","accountUid","accountScopeKey"
 INSERT INTO "PlatformImageAsset" ("id","provider","accountUid","accountScopeKey","regionId","sourceScope","sourceSnapshotId","imageId","displayName","ownerUserId","updatedAt") VALUES
  ('fixture-asset-ali','alibaba_cloud','100001','100001','cn-hangzhou','custom','fixture-image-ali','fixture-cloud-image-a','Fixture Alibaba','fixture-alice',CURRENT_TIMESTAMP),
  ('fixture-asset-tencent','tencent_cloud','200001','200001','ap-nanjing','custom','fixture-image-tencent','fixture-cloud-image-t','Fixture Tencent','fixture-bob',CURRENT_TIMESTAMP);
+INSERT INTO "CloudImageSnapshot" ("id","provider","accountUid","accountScopeKey","regionId","scope","imageId","sourceImageName","lastSyncedAt","updatedAt") VALUES
+ ('fixture-import-source','alibaba_cloud',NULL,'__unscoped__','cn-hangzhou','custom','fixture-cloud-import-image','Imported source',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+INSERT INTO "PlatformImageAsset" ("id","provider","accountUid","accountScopeKey","regionId","sourceScope","sourceSnapshotId","imageId","displayName","ownerUserId","updatedAt") VALUES
+ ('fixture-import-asset','alibaba_cloud',NULL,'__unscoped__','cn-hangzhou','custom','fixture-import-source','fixture-cloud-import-image','Imported source','fixture-alice',CURRENT_TIMESTAMP),
+ ('fixture-conflicting-asset','alibaba_cloud','100001','100001','cn-hangzhou','custom','fixture-image-tencent','fixture-conflicting-image','Conflicting catalog source','fixture-alice',CURRENT_TIMESTAMP);
+INSERT INTO "ImageCatalogItem" ("id","displayName","imageId","provider","scope","accountUid","accountScopeKey","regionId","sourceSnapshotId","updatedAt") VALUES
+ ('fixture-import-catalog','Imported catalog','fixture-cloud-import-image','alibaba_cloud','custom',NULL,'__unscoped__','cn-hangzhou','fixture-import-source',CURRENT_TIMESTAMP);
+INSERT INTO "ImageImportJob" ("id","cloudAccountContextId","cloudAccountUid","regionId","ownerUserId","displayName","osType","architecture","bootMode","imageFormat","systemDiskSize","sourceFileName","sourceContentType","sourceSizeBytes","objectKey","uploadExpiresAt","status","imageId","sourceSnapshotId","platformImageAssetId","updatedAt") VALUES
+ ('fixture-import','fixture-ali-a','100001','cn-hangzhou','fixture-alice','Imported fixture','linux','x86_64','BIOS','RAW',40,'fixture.raw','application/octet-stream','1','synthetic-object','2030-01-01','available','fixture-cloud-import-image','fixture-import-source','fixture-import-asset',CURRENT_TIMESTAMP);
 INSERT INTO "RangeTemplate" ("id","name","slug","version","modulePathOrRef","variableSchema","outputSchema","ownerUserId","updatedAt") VALUES
  ('fixture-template','Fixture template','fixture-template','1','fixture','{}','{}','fixture-alice',CURRENT_TIMESTAMP);
 INSERT INTO "RangeInstance" ("id","name","ownerUserId","templateId","status","instanceMode","cloudProvider","singleInstanceConfig","updatedAt") VALUES

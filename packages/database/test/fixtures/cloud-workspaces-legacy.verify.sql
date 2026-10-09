@@ -16,6 +16,12 @@ DO $$ DECLARE ali text; tencent text; BEGIN
  ASSERT (SELECT "cloudWorkspaceId"=ali FROM "CloudImageSnapshot" WHERE "id"='fixture-public-image');
  ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "CloudImageSnapshot" WHERE "id"='fixture-image-unknown');
  ASSERT (SELECT "cloudWorkspaceId"=tencent FROM "PlatformImageAsset" WHERE "id"='fixture-asset-tencent');
+ ASSERT (SELECT "cloudWorkspaceId"=ali AND "accountUid" IS NULL FROM "CloudImageSnapshot" WHERE "id"='fixture-import-source');
+ ASSERT (SELECT "cloudWorkspaceId"=ali AND "accountUid" IS NULL FROM "PlatformImageAsset" WHERE "id"='fixture-import-asset');
+ ASSERT (SELECT "cloudWorkspaceId"=ali AND "accountUid" IS NULL FROM "ImageCatalogItem" WHERE "id"='fixture-import-catalog');
+ ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "PlatformImageAsset" WHERE "id"='fixture-conflicting-asset');
+ ASSERT (SELECT "ownerUserId"='fixture-alice' AND "sourceSnapshotId"='fixture-import-source' AND "platformImageAssetId"='fixture-import-asset' FROM "ImageImportJob" WHERE "id"='fixture-import');
+
  ASSERT (SELECT "cloudWorkspaceId"=ali AND "loginUsername"='alice' AND NOT "isPlatformManager" FROM "PlatformUser" WHERE "id"='fixture-alice');
  ASSERT (SELECT "cloudWorkspaceId"=tencent AND "loginUsername"='bob' FROM "PlatformUser" WHERE "id"='fixture-bob');
  ASSERT (SELECT "cloudWorkspaceId" IS NULL AND "selectedCloudWorkspaceId"=ali AND "loginUsername"='fixture-admin' AND "isPlatformManager" FROM "PlatformUser" WHERE "id"='admin');

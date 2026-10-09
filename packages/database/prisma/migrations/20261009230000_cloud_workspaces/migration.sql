@@ -202,6 +202,19 @@ UPDATE "PackedImageArtifact" r SET "cloudWorkspaceId"=CASE
  WHEN a."count"=1 THEN a."workspaceId" WHEN a."count">1 THEN 'legacy-unbound' ELSE 'legacy-unbound' END
  FROM (SELECT r."id",count(DISTINCT a."workspaceId") AS "count",min(a."workspaceId") AS "workspaceId"
  FROM "PackedImageArtifact" r LEFT JOIN "_workspace_assignments" a ON a."entity"='PackedImageArtifact' AND a."id"=r."id" GROUP BY r."id") a WHERE a."id"=r."id";
+-- Exact import/pack references preserve assets whose original catalog account field was absent.
+INSERT INTO "_workspace_assignments" SELECT 'CloudImageSnapshot',r."id",j."cloudWorkspaceId" FROM "CloudImageSnapshot" r JOIN "ImageImportJob" j ON j."sourceSnapshotId"=r."id" WHERE j."cloudWorkspaceId"<>'legacy-unbound';
+INSERT INTO "_workspace_assignments" SELECT 'CloudImageSnapshot',r."id",j."cloudWorkspaceId" FROM "CloudImageSnapshot" r JOIN "PackedImageArtifact" j ON j."sourceSnapshotId"=r."id" WHERE j."cloudWorkspaceId"<>'legacy-unbound';
+UPDATE "CloudImageSnapshot" r SET "cloudWorkspaceId"=CASE WHEN a."count"=1 THEN a."workspaceId" ELSE 'legacy-unbound' END
+ FROM (SELECT "id",count(DISTINCT "workspaceId") AS "count",min("workspaceId") AS "workspaceId" FROM "_workspace_assignments" WHERE "entity"='CloudImageSnapshot' GROUP BY "id") a WHERE a."id"=r."id";
+INSERT INTO "_workspace_assignments" SELECT 'PlatformImageAsset',r."id",s."cloudWorkspaceId" FROM "PlatformImageAsset" r JOIN "CloudImageSnapshot" s ON s."id"=r."sourceSnapshotId" WHERE s."cloudWorkspaceId"<>'legacy-unbound';
+INSERT INTO "_workspace_assignments" SELECT 'PlatformImageAsset',r."id",j."cloudWorkspaceId" FROM "PlatformImageAsset" r JOIN "ImageImportJob" j ON j."platformImageAssetId"=r."id" WHERE j."cloudWorkspaceId"<>'legacy-unbound';
+INSERT INTO "_workspace_assignments" SELECT 'PlatformImageAsset',r."id",j."cloudWorkspaceId" FROM "PlatformImageAsset" r JOIN "PackedImageArtifact" j ON j."platformImageAssetId"=r."id" WHERE j."cloudWorkspaceId"<>'legacy-unbound';
+UPDATE "PlatformImageAsset" r SET "cloudWorkspaceId"=CASE WHEN a."count"=1 THEN a."workspaceId" ELSE 'legacy-unbound' END
+ FROM (SELECT "id",count(DISTINCT "workspaceId") AS "count",min("workspaceId") AS "workspaceId" FROM "_workspace_assignments" WHERE "entity"='PlatformImageAsset' GROUP BY "id") a WHERE a."id"=r."id";
+INSERT INTO "_workspace_assignments" SELECT 'ImageCatalogItem',r."id",s."cloudWorkspaceId" FROM "ImageCatalogItem" r JOIN "CloudImageSnapshot" s ON s."id"=r."sourceSnapshotId" WHERE s."cloudWorkspaceId"<>'legacy-unbound';
+UPDATE "ImageCatalogItem" r SET "cloudWorkspaceId"=CASE WHEN a."count"=1 THEN a."workspaceId" ELSE 'legacy-unbound' END
+ FROM (SELECT "id",count(DISTINCT "workspaceId") AS "count",min("workspaceId") AS "workspaceId" FROM "_workspace_assignments" WHERE "entity"='ImageCatalogItem' GROUP BY "id") a WHERE a."id"=r."id";
 INSERT INTO "_workspace_assignments" SELECT 'SingleInstanceNetworkProfile',r."id",w."id" FROM "SingleInstanceNetworkProfile" r JOIN "CloudWorkspace" w ON w."provider"=r."provider" AND w."accountUid"=r."cloudAccountUid" AND w."accountUid" IS NOT NULL;
 INSERT INTO "_workspace_assignments" SELECT 'SingleInstanceNetworkProfile',r."id",p."cloudWorkspaceId" FROM "SingleInstanceNetworkProfile" r JOIN "CloudAccountContext" p ON r."cloudAccountContextId"=p."id";
 UPDATE "SingleInstanceNetworkProfile" r SET "cloudWorkspaceId"=CASE
