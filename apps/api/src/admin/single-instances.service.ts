@@ -19,6 +19,7 @@ import {
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 import { SingleInstanceNetworkService } from './single-instance-network.service';
+import { assertTencentImagesAvailable } from '../provisioning/tencent-cloud-zone-instance-scheduler';
 import { SystemConfigService, type InstanceTypeAvailabilitySnapshot, type SystemCloudAccountContext } from './system-config.service';
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
@@ -139,7 +140,7 @@ export class SingleInstancesService {
 
   async prepareLaunchConfirmation(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
-    const systemDiskSize = input.systemDiskSize ?? 40;
+    const systemDiskSize = input.systemDiskSize ?? (image.provider === 'tencent_cloud' ? 50 : 40);
     const ingress = 'TCP 1-65535 from 0.0.0.0/0';
     return {
       targetId: image.id,
@@ -214,10 +215,13 @@ export class SingleInstancesService {
 
   async launch(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     this.assertFutureInstanceExpiration(input.expiresAt);
-    const accountContext = { ...await this.systemConfigService.getAccountContext() };
+    const accountContext = { ...await this.systemConfigService.getExecutionAccountContext() };
     if (!accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('创建实例前必须配置并验证云账号。');
+    if (accountContext.provider === 'tencent_cloud' && new Date(input.expiresAt).getTime() - Date.now() <= 10 * 60_000) throw new ConflictException('腾讯云定时销毁需至少预留十分钟，请延长实例到期时间。');
     await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
-    const availability = await this.systemConfigService.getInstanceTypeAvailabilityInContext({ cpu: input.cpu, memory: input.memory }, accountContext);
+    const offered = await this.systemConfigService.getInstanceTypeAvailabilityInContext({ cpu: input.cpu, memory: input.memory }, accountContext);
+    const matches = accountContext.provider === 'tencent_cloud' ? offered.matches.filter(match => match.architecture === 'X86_64') : offered.matches;
+    const availability = { ...offered, matches, exactAvailable: offered.exactAvailable && matches.length > 0 };
     if (!availability.exactAvailable || !availability.matches.length) throw new ConflictException(availability.warning ?? '规格不可售');
     return this.adminRepository.withSingleInstanceControlLock(() => this.launchLocked(input, currentUserId, accountContext, availability));
   }
@@ -225,13 +229,24 @@ export class SingleInstancesService {
   private async launchLocked(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string,
     accountContext: SystemCloudAccountContext, availability: InstanceTypeAvailabilitySnapshot) {
     this.assertFutureInstanceExpiration(input.expiresAt);
+    const systemDiskSize = input.systemDiskSize ?? (accountContext.provider === 'tencent_cloud' ? 50 : 40);
+    if (accountContext.provider === 'tencent_cloud' && availability.matches[0]?.architecture !== 'X86_64') throw new ConflictException('腾讯云实例需要已核验的 x86_64 可售机型。');
 
-    if (accountContextFingerprint(accountContext) !== accountContextFingerprint(await this.systemConfigService.getAccountContext()))
+    if (accountContextFingerprint(accountContext) !== accountContextFingerprint(await this.systemConfigService.getExecutionAccountContext()))
       throw new ConflictException('云账号配置在规格检查期间发生变化，请重新提交。');
     await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    if (accountContext.provider === 'tencent_cloud') {
+      const selectedImage = await this.requireEnabledPlatformImage(input.platformImageAssetId,currentUserId,accountContext);
+      const metadata = await assertTencentImagesAvailable(accountContext,[selectedImage.imageId]);
+      if (systemDiskSize < metadata[selectedImage.imageId].minimumSystemDiskSize) throw new ConflictException(`腾讯云镜像至少需要 ${metadata[selectedImage.imageId].minimumSystemDiskSize} GiB 系统盘。`);
+    }
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile(accountContext,currentUserId);
     this.assertFutureInstanceExpiration(input.expiresAt);
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    if (accountContext.provider === 'tencent_cloud') {
+      const metadata = await assertTencentImagesAvailable(accountContext,[image.imageId]);
+      if (systemDiskSize < metadata[image.imageId].minimumSystemDiskSize) throw new ConflictException('腾讯云镜像系统盘要求已变化，请重新提交。');
+    }
     const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
     const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
@@ -248,7 +263,7 @@ export class SingleInstancesService {
       imageDisplayName: image.displayName,
       cpu: input.cpu,
       memory: input.memory,
-      systemDiskSize: input.systemDiskSize ?? 40,
+      systemDiskSize,
       quantity,
       remark: input.remark?.trim() || null,
       createdBy: currentUserId,
@@ -269,6 +284,7 @@ export class SingleInstancesService {
           : null;
         const hostKey = `single-ecs-${quantityIndex}`;
         const blueprint = buildSingleInstanceBlueprint({
+          resolvedInstanceType: availability.matches[0].instanceTypeId,
           name,
           hostKey,
           hostName: hostName ?? name,
@@ -288,6 +304,7 @@ export class SingleInstancesService {
           name,
           createdBy: currentUserId,
           ownerUserId: currentUserId,
+          cloudProvider: accountContext.provider,
           instanceMode: 'single',
           singleInstanceBatchId: batch.id,
           status: 'pending_create',
@@ -306,7 +323,7 @@ export class SingleInstancesService {
             cloudAccountContextId: accountContext.cloudAccountContextId,
             cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
             networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
-            autoReleaseTime: new Date(input.expiresAt).getTime()-Date.now()>=30*60_000 ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+            autoReleaseTime: accountContext.provider === 'tencent_cloud' ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : new Date(input.expiresAt).getTime()-Date.now()>=30*60_000 ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
             baseName: input.name,
             quantityIndex,
             hostKey,
@@ -316,7 +333,7 @@ export class SingleInstancesService {
             imageDisplayName: image.displayName,
             cpu: input.cpu,
             memory: input.memory,
-            systemDiskSize: input.systemDiskSize ?? 40,
+            systemDiskSize,
             remark: input.remark?.trim() || null,
             assignedVswitchId: network.vswitchId,
           },
@@ -512,7 +529,7 @@ export class SingleInstancesService {
 
   private async requireEnabledPlatformImage(id: string, currentUserId: string, preparedContext?: SystemCloudAccountContext): Promise<PlatformImageAssetRecord> {
     const image = await this.adminRepository.getPlatformImageAssetById(id);
-    const accountContext = preparedContext ?? await this.systemConfigService.getAccountContext();
+    const accountContext = preparedContext ?? await this.systemConfigService.getExecutionAccountContext();
 
     if (
       !image ||

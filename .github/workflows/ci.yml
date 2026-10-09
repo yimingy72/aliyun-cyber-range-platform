@@ -27,7 +27,8 @@ jobs:
       - name: Cache pinned Tencent Cloud provider archive
         uses: actions/cache@v4
         with:
-          path: .local/tencentcloud-provider/mirror
-          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/dev/download-tencentcloud-provider.sh') }}
+          path: .local/tencentcloud-idempotency
+          # Includes the source archive and Go cache; provider verification still runs in Docker.
+          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/provider/tencentcloud-idempotency/*') }}
       - name: Test, build and validate in Docker
         run: bash scripts/ci/verify-docker.sh

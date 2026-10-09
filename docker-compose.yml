@@ -121,6 +121,9 @@ services:
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_PARALLELISM: ${OPENTOFU_PARALLELISM:-10}
       OPENTOFU_SINGLE_INSTANCE_PARALLELISM: ${OPENTOFU_SINGLE_INSTANCE_PARALLELISM:-20}
+      TENCENTCLOUD_PROVIDER_VERSION: ${TENCENTCLOUD_PROVIDER_VERSION:-1.83.34-range.1}
+      TENCENTCLOUD_PROVIDER_SHA256: ${TENCENTCLOUD_PROVIDER_SHA256:-d6537266986c80b5c936cf84be3d8bbca31b1e1249277ced332399a3c65f4535}
+      TENCENTCLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/tencentcloud-provider-mirror/registry.opentofu.org/tencentcloudstack/tencentcloud/terraform-provider-tencentcloud_1.83.34-range.1_linux_amd64.zip
       ALICLOUD_PROVIDER_VERSION: ${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}
       ALICLOUD_PROVIDER_SHA256: ${ALICLOUD_PROVIDER_SHA256:-}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
@@ -155,6 +158,7 @@ services:
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
       - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-fast-wait/mirror}:/var/lib/cyber-range/provider-mirror:ro
+      - ${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-./.local/tencentcloud-idempotency/mirror}:/var/lib/cyber-range/tencentcloud-provider-mirror:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/health >/dev/null || exit 1"]
       interval: 10s
@@ -196,6 +200,9 @@ services:
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_PARALLELISM: ${OPENTOFU_PARALLELISM:-10}
       OPENTOFU_SINGLE_INSTANCE_PARALLELISM: ${OPENTOFU_SINGLE_INSTANCE_PARALLELISM:-20}
+      TENCENTCLOUD_PROVIDER_VERSION: ${TENCENTCLOUD_PROVIDER_VERSION:-1.83.34-range.1}
+      TENCENTCLOUD_PROVIDER_SHA256: ${TENCENTCLOUD_PROVIDER_SHA256:-d6537266986c80b5c936cf84be3d8bbca31b1e1249277ced332399a3c65f4535}
+      TENCENTCLOUD_PROVIDER_ZIP_PATH: /var/lib/cyber-range/tencentcloud-provider-mirror/registry.opentofu.org/tencentcloudstack/tencentcloud/terraform-provider-tencentcloud_1.83.34-range.1_linux_amd64.zip
       ALICLOUD_PROVIDER_VERSION: ${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}
       ALICLOUD_PROVIDER_SHA256: ${ALICLOUD_PROVIDER_SHA256:-}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
@@ -221,6 +228,7 @@ services:
     volumes:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
       - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-./.local/provider-fast-wait/mirror}:/var/lib/cyber-range/provider-mirror:ro
+      - ${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-./.local/tencentcloud-idempotency/mirror}:/var/lib/cyber-range/tencentcloud-provider-mirror:ro
 
   web:
     build:

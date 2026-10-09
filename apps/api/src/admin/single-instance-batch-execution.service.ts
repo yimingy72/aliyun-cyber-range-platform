@@ -943,6 +943,7 @@ function compareAliyunRpcKeys(leftKey: string, rightKey: string) {
   return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 export type NormalizedInstanceDetail = {
+  systemDiskId?: string;
   instanceId: string;
   instanceName: string;
   hostName: string;

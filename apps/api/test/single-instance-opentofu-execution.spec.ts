@@ -6,14 +6,15 @@ import { promisify } from 'node:util';
 import type { AdminRepository, ProvisionJobRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { SingleInstanceOpenTofuExecutionService, SingleInstanceOpenTofuLeaseLostError } from '../src/admin/single-instance-opentofu-execution.service';
+import * as tencentRpc from '../src/admin/tencent-cloud-client';
 import { SystemConfigService } from '../src/admin/system-config.service';
 
 describe('single-instance OpenTofu batch execution', () => {
   let root: string;
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'single-tofu-test-')); });
-  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+  afterEach(async () => { jest.restoreAllMocks(); await fs.rm(root, { recursive: true, force: true }); });
 
-  function fixture(count = 2) {
+  function fixture(count = 2, tencent = false) {
     const instances: RangeInstanceRecord[] = [];
     const jobs = new Map<string, ProvisionJobRecord>();
     const ledger: any[] = [];
@@ -32,7 +33,7 @@ describe('single-instance OpenTofu batch execution', () => {
     }
     const repository = {
       getSingleInstanceBatchWithInstancesById: jest.fn(async () => ({ batch: { id: 'batch-a', ownerUserId: 'alice' }, instances })),
-      getSingleInstanceNetworkProfileById: jest.fn(async () => ({ id: 'profile-a', status: 'ready', cloudAccountUid: 'uid-a', cloudAccountContextId: 'ctx-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', securityGroupId: 'sg-a', vswitchIds: ['vsw-a'] })),
+      getSingleInstanceNetworkProfileById: jest.fn(async () => ({ id: 'profile-a', provider: 'alibaba_cloud', status: 'ready', cloudAccountUid: 'uid-a', cloudAccountContextId: 'ctx-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', securityGroupId: 'sg-a', vswitchIds: ['vsw-a'] })),
       getRangeInstanceById: jest.fn(async (id: string) => instances.find(instance => instance.id === id) ?? null),
       getProvisionJobById: jest.fn(async (id: string) => jobs.get(id) ?? null),
       heartbeatProvisionJob: jest.fn(async (id: string) => jobs.get(id)?.status === 'running'),
@@ -46,6 +47,15 @@ describe('single-instance OpenTofu batch execution', () => {
       createBillingLedgerResource: jest.fn(async (input: any) => { const row = { id: `ledger-${ledger.length}`, releasedAt: null, ...input }; ledger.push(row); return row; }),
       updateBillingLedgerResource: jest.fn(async (id: string, patch: object) => { const row = ledger.find(value => value.id === id); Object.assign(row, patch); return row; }),
     };
+    if (tencent) {
+      jest.spyOn(tencentRpc,'requestTencentCloud').mockResolvedValue({ RequestId: 'fixture-image-request', TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PRIVATE_IMAGE', Architecture: 'x86_64', ImageSize: 20, SnapshotSet: [] }] } as any);
+      Object.assign(account, { provider: 'tencent_cloud', accountUid: '100000000001', defaultRegion: 'ap-shanghai', defaultZoneId: 'ap-shanghai-2' });
+      repository.getSingleInstanceNetworkProfileById.mockImplementation(async () => ({ id: 'profile-a', provider: 'tencent_cloud', status: 'ready', cloudAccountUid: account.accountUid, cloudAccountContextId: account.cloudAccountContextId, regionId: account.defaultRegion, zoneId: account.defaultZoneId, securityGroupId: 'sg-fixture', vswitchIds: ['subnet-fixture'], vpcId: 'vpc-fixture' }) as any);
+      for (const instance of instances) {
+        instance.cloudProvider = 'tencent_cloud'; instance.expiresAt = new Date(Date.now()+3600_000);
+        Object.assign(instance.singleInstanceConfig!, { cloudAccountUid: account.accountUid, regionId: account.defaultRegion, zoneId: account.defaultZoneId, resolvedInstanceType: 'S5.MEDIUM4', imageId: 'img-fixture', assignedVswitchId: 'subnet-fixture', autoReleaseTime: instance.expiresAt.toISOString().replace(/\.\d{3}Z$/, 'Z') });
+      }
+    }
     const cloud = new Map<string, any>();
     const native = {
       resolveInstanceAccount: jest.fn(async () => account),
@@ -67,13 +77,13 @@ describe('single-instance OpenTofu batch execution', () => {
     const stateMembers = new Map<string, any>();
     async function saveState() {
       await fs.writeFile(path.join(workspace, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: applyCalls,
-        resources: stateMembers.size ? [{ module: 'module.single_batch', mode: 'managed', type: 'alicloud_instance', name: 'members', instances: [...stateMembers].map(([index_key, value]) => ({ index_key, ...value })) }] : [] }));
+        resources: stateMembers.size ? [{ module: 'module.single_batch', mode: 'managed', type: tencent ? 'tencentcloud_instance' : 'alicloud_instance', name: 'members', instances: [...stateMembers].map(([index_key, value]) => ({ index_key, ...value })) }] : [] }));
     }
     async function createMember(id: string, options: { tainted?: boolean; status?: string; disk?: boolean } = {}) {
       const input = JSON.parse(await fs.readFile(path.join(workspace, 'terraform.tfvars.json'), 'utf8'));
       const definition = input.members[id];
-      const cloudId = `i-${id}`;
-      stateMembers.set(id, { ...(options.tainted ? { status: 'tainted' } : {}), attributes: { id: cloudId, system_disk_id: options.disk === false ? '' : `d-${id}`, tags: definition.tags,
+      const cloudId = tencent ? `ins-${id.replace(/-/g,'')}` : `i-${id}`;
+      stateMembers.set(id, { ...(options.tainted ? { status: 'tainted' } : {}), attributes: { id: cloudId, ...(tencent ? { client_token: definition.client_token, action_timer_terminate_at: definition.action_timer_terminate_at } : {}), system_disk_id: options.disk === false ? '' : `d-${id}`, tags: definition.tags,
         private_ip: '172.16.1.20', public_ip: '203.0.113.1', status: options.status ?? 'Running' } });
       cloud.set(cloudId, { instanceId: cloudId, privateIp: '172.16.1.20', publicIp: '203.0.113.1', status: options.status ?? 'Running', tags: definition.tags });
       await saveState();
@@ -81,7 +91,7 @@ describe('single-instance OpenTofu batch execution', () => {
     const runner = {
       init: jest.fn(async (options: any) => { workspace = options.workspaceDir; return result(); }),
       plan: jest.fn(async (options: any) => { lastPlan = options; return result(); }),
-      showPlan: jest.fn(async () => customPlan ? customPlan() : { format_version: '1.2', resource_changes: lastPlan.targets.map((address: string) => ({ address, type: 'alicloud_instance', change: { actions: [lastPlan.destroy ? 'delete' : 'create'] } })) }),
+      showPlan: jest.fn(async () => customPlan ? customPlan() : { format_version: '1.2', resource_changes: lastPlan.targets.map((address: string) => ({ address, type: tencent ? 'tencentcloud_instance' : 'alicloud_instance', change: { actions: [lastPlan.destroy ? 'delete' : 'create'] } })) }),
       apply: jest.fn(async (options: any) => {
         applyCalls++;
         if (onApply) await onApply(options);
@@ -95,7 +105,7 @@ describe('single-instance OpenTofu batch execution', () => {
       output: jest.fn(),
     };
     const service = new SingleInstanceOpenTofuExecutionService(repository as unknown as AdminRepository, {} as SystemConfigService, native as unknown as SingleInstanceBatchExecutionService,
-      { projectRootDir: '/app', workspacesRootDir: root, env: { RANGE_PROVISIONER_MODE: 'opentofu', ALICLOUD_PROVIDER_ZIP_PATH: '', OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT: '' }, runner });
+      { projectRootDir: '/app', workspacesRootDir: root, env: { TENCENTCLOUD_PROVIDER_ZIP_PATH: '', TENCENTCLOUD_PROVIDER_UNPACKED_MIRROR_ROOT: '', RANGE_PROVISIONER_MODE: 'opentofu', ALICLOUD_PROVIDER_ZIP_PATH: '', OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT: '' }, runner });
     const items = instances.map(instance => ({ instance, job: jobs.get(instance.lastJobId!)! }));
     function queueDestroy(index: number) {
       const instance = instances[index];
@@ -113,6 +123,75 @@ describe('single-instance OpenTofu batch execution', () => {
     for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
     throw new Error('progress did not become observable');
   }
+
+  it('creates and destroys a Tencent member with persistent token, atomic cloud termination and frozen provider workspace', async () => {
+    const test = fixture(1,true);
+    await test.service.executeCreateBatch(test.items,test.lease);
+    expect(test.jobs.get('job-1')?.status).toBe('succeeded');
+    const vars = JSON.parse(await fs.readFile(path.join(test.workspace,'terraform.tfvars.json'),'utf8'));
+    expect(vars).toMatchObject({ region: 'ap-shanghai', zone_id: 'ap-shanghai-2', vpc_id: 'vpc-fixture' });
+    expect(vars.members['member-1'].client_token).toMatch(/^[0-9a-f]{32}$/);
+    expect(vars.members['member-1'].tags).toMatchObject({ PlatformCreateJobId: 'job-1', CreationIntentId: vars.members['member-1'].client_token, PlatformScope: 'user', CloudProvider: 'tencent_cloud' });
+    expect(vars.members['member-1'].action_timer_terminate_at).toBe(test.instances[0].singleInstanceConfig!.autoReleaseTime);
+    expect(test.instances[0].resourceSummary).toMatchObject({ modulePath: 'infra/opentofu/modules/tencentcloud-single-instance-batch', executionContext: { provider: 'tencent_cloud', cloudAccountUid: '100000000001', regionId: 'ap-shanghai', zoneId: 'ap-shanghai-2' } });
+    expect(test.runner.init.mock.calls[0][0].env).toMatchObject({ TENCENTCLOUD_SECRET_ID: 'test-access-key', TENCENTCLOUD_REGION: 'ap-shanghai' });
+    expect(test.runner.init.mock.calls[0][0].env).not.toHaveProperty('ALICLOUD_ACCESS_KEY');
+    await test.service.executeDestroyBatch([test.queueDestroy(0)],test.lease);
+    expect(test.instances[0].status).toBe('destroyed');
+    expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
+  });
+
+  it('never repeats a Tencent apply when its accepted creation outcome is unknown', async () => {
+    const test = fixture(1,true);
+    test.onApply = async () => { throw new Error('response lost'); };
+    await test.service.executeCreateBatch(test.items,test.lease);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    const first = await fs.readFile(path.join(test.workspace,'.single-batch-apply-started'),'utf8');
+    test.instances[0].status = 'creating'; test.jobs.get('job-1')!.status = 'running';
+    await test.service.executeCreateBatch(test.items,test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    expect(await fs.readFile(path.join(test.workspace,'.single-batch-apply-started'),'utf8')).toBe(first);
+    expect(test.ledger).toHaveLength(0);
+  });
+
+  it.each([true,false])('recovers an untracked Tencent system disk only with CBS attachment and creation-window proof (%s)', async diskOwned => {
+    const test = fixture(1,true);
+    jest.spyOn(tencentRpc,'requestTencentCloud').mockImplementation(async input => input.action === 'DescribeImages' ? { RequestId: 'fixture-image-request', TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PRIVATE_IMAGE', Architecture: 'x86_64', ImageSize: 20, SnapshotSet: [] }] } as any : { RequestId: 'fixture-disk-request', TotalCount: 1, DiskSet: [{ DiskId: 'disk-fixture', InstanceId: diskOwned ? 'ins-member1' : 'ins-foreign', DiskUsage: 'SYSTEM_DISK', Shareable: false, DiskChargeType: 'POSTPAID_BY_HOUR', DeleteWithInstance: true, CreateTime: new Date().toISOString() }] } as any);
+    test.onApply = async () => {
+      await test.createMember('member-1');
+      test.cloud.get('ins-member1').systemDiskId = 'disk-fixture';
+      await fs.rm(path.join(test.workspace,'terraform.tfstate'));
+      throw new Error('response accepted but state lost');
+    };
+    await test.service.executeCreateBatch(test.items,test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    if (diskOwned) {
+      expect(test.native.deleteOwnedUntrackedOpenTofuInstances).toHaveBeenCalledTimes(1);
+      expect(test.instances[0].status).toBe('create_failed');
+      expect(test.ledger.some(row => row.cloudResourceId === 'disk-fixture' && row.releasedAt)).toBe(true);
+    } else {
+      expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+      expect(test.instances[0].status).toBe('destroy_failed');
+      await expect(fs.stat(path.join(test.workspace,'.single-batch-apply-started'))).resolves.toBeDefined();
+    }
+  });
+
+  it('rejects a frozen Tencent disk smaller than fresh official image size before applying', async () => {
+    const test = fixture(1,true);
+    jest.spyOn(tencentRpc,'requestTencentCloud').mockResolvedValue({ RequestId: 'fixture-image-size', TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PUBLIC_IMAGE', Architecture: 'x86_64', ImageSize: 50, SnapshotSet: [] }] } as any);
+    await test.service.executeCreateBatch(test.items,test.lease);
+    expect(test.runner.apply).not.toHaveBeenCalled();
+    expect(test.instances[0].status).toBe('create_failed');
+    expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects expired Tencent cloud termination and foreign provider state before applying', async () => {
+    const test = fixture(1,true);
+    test.instances[0].singleInstanceConfig!.autoReleaseTime = new Date(Date.now()+60_000).toISOString();
+    await test.service.executeCreateBatch(test.items,test.lease);
+    expect(test.runner.apply).not.toHaveBeenCalled();
+    expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
+  });
 
   it('keeps data-disk billing active when ECS deletion succeeds but a disk remains', async () => {
     const test = fixture(1);

@@ -20,7 +20,7 @@ function runCi(failStage = '') {
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-if (args.includes('scripts/dev/download-tencentcloud-provider.sh') && process.env.TEST_FAIL_STAGE === 'download') process.exit(1);
+if (args.includes('range-tencentcloud-idempotency-builder:1') && process.env.TEST_FAIL_STAGE === 'build') process.exit(1);
 if (args[0] === 'inspect') console.log('healthy');
 const validation = args.find(arg => typeof arg === 'string' && arg.includes('node /source/check-tencentcloud-provider-schema.cjs'));
 if (validation) {
@@ -51,16 +51,14 @@ if (validation) {
 test('default CI verifies Tencent in Docker with a frozen cache and an isolated run image', () => {
   const { result, calls, tencentMirror } = runCi();
   assert.equal(result.status, 0, result.stderr);
-  const download = calls.find(args => args.includes('scripts/dev/download-tencentcloud-provider.sh'));
-  assert(download);
-  assert(download.includes('cyber-range-ci:fixture'));
-  assert(download.includes('--user'));
-  assert(download.includes(`${tencentMirror}:/app/.local/tencentcloud-provider/mirror:ro`));
-  assert(!download.some(arg => /TENCENTCLOUD_SECRET_ID|TENCENTCLOUD_SECRET_KEY/.test(arg)));
+  const build = calls.find(args => args[0] === 'run' && args.includes('range-tencentcloud-idempotency-builder:1'));
+  assert(build);
+  assert(build.some(arg => arg.endsWith(':/recipe:ro')));
+  assert(!build.some(arg => /TENCENTCLOUD_SECRET_ID|TENCENTCLOUD_SECRET_KEY/.test(arg)));
   const validation = calls.find(args => args.some(arg => arg.includes('node /source/check-tencentcloud-provider-schema.cjs')));
   assert(validation.includes('none'));
   assert(validation.includes('cyber-range-tencentcloud-iac:ci-fixture-2'));
-  assert(validation.some(arg => arg.includes('for module in tencentcloud-single-instance-network tencentcloud-single-instance-batch')));
+  assert(validation.some(arg => arg.includes('for module in tencentcloud-single-instance-network tencentcloud-single-instance-batch tencentcloud-enterprise-range')));
   const apiTests = calls.find(args => args.some(arg => arg.includes('pnpm test')));
   assert(calls.indexOf(validation) < calls.indexOf(apiTests));
   assert(apiTests.includes('WORKSPACE_TEST_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public'));
@@ -68,11 +66,11 @@ test('default CI verifies Tencent in Docker with a frozen cache and an isolated 
   assert(apiTests.some(arg => arg.includes('DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy')));
   assert(apiTests.some(arg => arg.includes('pnpm --filter @aliyun-cyber-range/database smoke:workspace-migration')));
   const workflow = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8');
-  assert.match(workflow, /path: \.local\/tencentcloud-provider\/mirror/);
-  assert.match(workflow, /hashFiles\('scripts\/dev\/download-tencentcloud-provider\.sh'\)/);
+  assert.match(workflow, /path: \.local\/tencentcloud-idempotency/);
+  assert.match(workflow, /hashFiles\('scripts\/provider\/tencentcloud-idempotency\/\*'\)/);
 });
 
-for (const stage of ['download', 'validate']) {
+for (const stage of ['build', 'validate']) {
   test(`a Tencent ${stage} failure stops CI before database startup and application tests`, () => {
     const { result, calls } = runCi(stage);
     assert.notEqual(result.status, 0);

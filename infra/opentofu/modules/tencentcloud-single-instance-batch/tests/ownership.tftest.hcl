@@ -20,14 +20,16 @@ variables {
   member_passwords  = { first = "FixturePassword123!", second = "OtherFixturePassword123!" }
   members = {
     first = {
+      client_token     = "intent-first"
       instance_name    = "first-host", host_name = "first-host", instance_type = "S5.MEDIUM4", image_id = "img-fixture", subnet_id = "subnet-first"
       system_disk_type = "CLOUD_PREMIUM", system_disk_size = 50, internet_max_bandwidth_out = 0
-      tags             = { OwnerUserId = "owner-first", PlatformUserId = "owner-first", RangeInstanceId = "first", CloudAccountUid = "100000000001", SingleInstanceBatchId = "batch-fixture", CreationIntentId = "intent-first", CreatedBy = "cyber-range-platform", PlatformScope = "single-instance", PlatformResourceType = "cvm" }
+      tags             = { OwnerUserId = "owner-first", PlatformUserId = "owner-first", RangeInstanceId = "first", CloudAccountUid = "100000000001", SingleInstanceBatchId = "batch-fixture", CreationIntentId = "intent-first", CreatedBy = "cyber-range-platform", PlatformScope = "user", PlatformResourceType = "ecs" }
     }
     second = {
+      client_token     = "intent-second"
       instance_name    = "second-host", host_name = "", instance_type = "S5.MEDIUM4", image_id = "img-fixture", subnet_id = "subnet-second"
       system_disk_type = "CLOUD_SSD", system_disk_size = 50, internet_max_bandwidth_out = 5
-      tags             = { OwnerUserId = "owner-second", PlatformUserId = "owner-second", RangeInstanceId = "second", CloudAccountUid = "100000000001", SingleInstanceBatchId = "batch-fixture", CreationIntentId = "intent-second", CreatedBy = "cyber-range-platform", PlatformScope = "single-instance", PlatformResourceType = "cvm" }
+      tags             = { OwnerUserId = "owner-second", PlatformUserId = "owner-second", RangeInstanceId = "second", CloudAccountUid = "100000000001", SingleInstanceBatchId = "batch-fixture", CreationIntentId = "intent-second", CreatedBy = "cyber-range-platform", PlatformScope = "user", PlatformResourceType = "ecs" }
     }
   }
 }
@@ -86,9 +88,10 @@ run "keeps_fifty_members_and_intents_distinct" {
     member_passwords = { for index in range(50) : "member-${index}" => "FixturePassword123!" }
     members = {
       for index in range(50) : "member-${index}" => {
+        client_token     = "intent-${index}"
         instance_name    = "host-${index}", host_name = "", instance_type = "S5.MEDIUM4", image_id = "img-fixture", subnet_id = "subnet-fixture"
         system_disk_type = "CLOUD_PREMIUM", system_disk_size = 50, internet_max_bandwidth_out = 0
-        tags             = { OwnerUserId = "owner-${index % 2}", PlatformUserId = "owner-${index % 2}", RangeInstanceId = "member-${index}", CloudAccountUid = "100000000001", SingleInstanceBatchId = "batch-fixture", CreationIntentId = "intent-${index}", CreatedBy = "cyber-range-platform", PlatformScope = "single-instance", PlatformResourceType = "cvm" }
+        tags             = { OwnerUserId = "owner-${index % 2}", PlatformUserId = "owner-${index % 2}", RangeInstanceId = "member-${index}", CloudAccountUid = "100000000001", SingleInstanceBatchId = "batch-fixture", CreationIntentId = "intent-${index}", CreatedBy = "cyber-range-platform", PlatformScope = "user", PlatformResourceType = "ecs" }
       }
     }
   }

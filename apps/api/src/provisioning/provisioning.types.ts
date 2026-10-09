@@ -24,6 +24,9 @@ export type RangeProvisionStepReporter = (
 ) => Promise<void> | void;
 
 export type ResolvedProvisioningRuntimeConfig = {
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
+  accountUid?: string | null;
+  cloudAccountContextId?: string | null;
   accessKeyId: string;
   accessKeySecret: string;
   defaultRegion: string;
@@ -45,6 +48,7 @@ export type ProvisioningResourceSummary = RangeResourceSummary & {
 export type RangeProvisionCreateInput = {
   signal?: AbortSignal;
   rangeInstanceId: string;
+  expiresAt?: string;
   templateModulePath: string;
   allocatedCidr: string | null;
   preserveWorkspaceState?: boolean;
@@ -72,6 +76,7 @@ export type RangeProvisionDestroyInput = {
   signal?: AbortSignal;
   requirePersistedState?: boolean;
   rangeInstanceId: string;
+  expiresAt?: string;
   templateModulePath: string;
   allocatedCidr: string | null;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;

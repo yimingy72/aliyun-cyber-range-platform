@@ -10,9 +10,9 @@ export type TencentResourceEvidence = { provider: 'tencent_cloud'; accountUid: s
   regionId: string; action: string; requestIds: string[]; observedAt: string };
 export type TencentResource = { id: string; kind: TencentResourceKind; tags: Record<string, string>; evidence: TencentResourceEvidence;
   instanceId: string | null; vpcId: string | null; diskUsage: string | null; deleteWithInstance: boolean | null;
-  shared: boolean; chargeType: string | null; detail?: NormalizedInstanceDetail };
+  shared: boolean; chargeType: string | null; createdAt?: string; detail?: NormalizedInstanceDetail };
 type Query = { ids?: string[]; tags?: Record<string, string>; vpcId?: string; instanceId?: string; diskIds?: string[] };
-const TAG_KEYS = new Set(['PlatformManaged', 'CreatedBy', 'PlatformScope', 'PlatformUserId', 'RangeInstanceId',
+const TAG_KEYS = new Set(['CloudProvider', 'PlatformManaged', 'CreatedBy', 'PlatformScope', 'PlatformUserId', 'RangeInstanceId',
   'SingleInstanceBatchId', 'PlatformResourceType', 'PlatformHostKey', 'CloudAccountUid', 'CloudAccountContextId',
   'ExecutionBackend', 'PlatformCreateJobId', 'CreationIntentId', 'PlatformPackedImageArtifactId', 'PlatformImageImportJobId']);
 const RESOURCES = {
@@ -118,10 +118,13 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
         instanceId: string(row.InstanceId ?? attachment.InstanceId), vpcId, diskUsage: string(row.DiskUsage),
         deleteWithInstance: typeof row.DeleteWithInstance === 'boolean' ? row.DeleteWithInstance : null,
         shared: row.Shareable === true || Array.isArray(row.InstanceIdList) && row.InstanceIdList.length > 1,
-        chargeType: string(row.InstanceChargeType ?? row.DiskChargeType) };
+        chargeType: string(row.InstanceChargeType ?? row.DiskChargeType),
+        ...(typeof row.CreateTime === 'string' ? { createdAt: row.CreateTime } : {}) };
       if (kind === 'ecs') {
         if (typeof row.InstanceState !== 'string' || !/^[A-Z_]+$/.test(row.InstanceState)) throw new Error('Tencent instance state is malformed');
-        resource.detail = { instanceId: id, instanceName: string(row.InstanceName) ?? '', hostName: string(row.HostName) ?? '',
+        const systemDiskId = row.SystemDisk ? string(object(row.SystemDisk).DiskId) : null;
+        if (systemDiskId && !/^disk-[A-Za-z0-9]+$/.test(systemDiskId)) throw new Error('Tencent system disk identity is malformed');
+        resource.detail = { ...(systemDiskId ? { systemDiskId } : {}), instanceId: id, instanceName: string(row.InstanceName) ?? '', hostName: string(row.HostName) ?? '',
           privateIp: ip(row.PrivateIpAddresses), publicIp: ip(row.PublicIpAddresses), tags: resourceTags,
           status: ({ RUNNING: 'Running', STOPPED: 'Stopped', PENDING: 'Pending', STARTING: 'Starting', STOPPING: 'Stopping', REBOOTING: 'Rebooting', TERMINATING: 'Terminating', TERMINATED: 'Terminated' } as Record<string, string>)[row.InstanceState] ?? row.InstanceState };
       }

@@ -16,11 +16,11 @@ if [ -n "${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
 fi
 if [ -n "${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
   CI_TENCENT_MIRROR_HOST="$(cd "${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH}" && pwd)"
-  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-provider/mirror:ro")
+  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-idempotency/mirror:ro")
 else
-  CI_TENCENT_MIRROR_HOST="$REPO_ROOT/.local/tencentcloud-provider/mirror"
+  CI_TENCENT_MIRROR_HOST="$REPO_ROOT/.local/tencentcloud-idempotency/mirror"
   mkdir -p "$CI_TENCENT_MIRROR_HOST"
-  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-provider/mirror")
+  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-idempotency/mirror")
 fi
 CONTEXT_DIR="$(mktemp -d)"
 CONTEXT_IMAGE="cyber-range-ci-context:$RUN_ID"
@@ -71,11 +71,11 @@ for compose_file in docker-compose.yml deploy/current-system/docker-compose.yml 
   docker compose --env-file /dev/null -f "$compose_file" config --quiet
 done
 
-# Download/verify the pinned public archive in Docker, then test Tencent IaC without cloud network access.
-docker run --rm --user "$(id -u):$(id -g)" "${CI_TENCENT_MIRROR_ARGS[@]}" \
-  -e TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH=/app/.local/tencentcloud-provider/mirror \
-  -e TENCENTCLOUD_PROVIDER_VERSION -e TENCENTCLOUD_PROVIDER_SHA256 -e TENCENTCLOUD_PROVIDER_DOWNLOAD_URL \
-  "$CI_IMAGE" sh scripts/dev/download-tencentcloud-provider.sh
+# Build/verify the pinned source patch in Docker; offline IaC must expose durable CVM intent and atomic expiry.
+TENCENTCLOUD_PROVIDER_BUILD_OUTPUT="$REPO_ROOT/.local/tencentcloud-idempotency" sh scripts/provider/tencentcloud-idempotency/build.sh
+if [ "$CI_TENCENT_MIRROR_HOST" != "$REPO_ROOT/.local/tencentcloud-idempotency/mirror" ]; then
+  echo "A custom Tencent mirror must contain the audited patched provider and checksum." >&2
+fi
 TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH="$CI_TENCENT_MIRROR_HOST" \
   TENCENTCLOUD_IAC_IMAGE="$CI_TENCENT_IMAGE" TENCENTCLOUD_RUN_ID="$RUN_ID" \
   sh scripts/dev/validate-tencentcloud-opentofu.sh

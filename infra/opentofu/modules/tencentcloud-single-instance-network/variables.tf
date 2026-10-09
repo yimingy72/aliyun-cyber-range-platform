@@ -78,3 +78,8 @@ variable "ingress_rules" {
     error_message = "Ingress must use explicit IPv4 CIDRs, valid protocols and ports."
   }
 }
+
+variable "cloud_account_context_id" {
+  type    = string
+  default = ""
+}

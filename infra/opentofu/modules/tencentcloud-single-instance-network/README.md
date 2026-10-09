@@ -1,21 +1,9 @@
-# Tencent Cloud shared single-instance network (preparatory)
+# Tencent shared single-instance network
 
-This standalone workspace creates one tagged VPC, one subnet and one security
-group using provider **1.83.34**. It owns the complete
-`tencentcloud_security_group_rule_set`; other workspaces must not add independent
-rules to the same group. Ingress is closed by default. Explicit ingress rules are
-followed by a default DROP; egress is allowed. No NAT, EIP, peering or paid network
-service is created. Multicast is disabled.
+The provider-aware network bootstrap creates one tagged VPC, one subnet and one security group in a separate context/provider/UID/region/zone-bound workspace. No NAT, EIP, peering or paid networking is created. The bootstrap owns the complete security-group rule set; member workspaces only reference its IDs.
 
-The caller freezes the verified account UIN, region, matching zone, network
-profile and persisted creation intent. The subnet must be entirely inside the
-VPC. `network_profile` is available only after its security-group rules are
-applied. `resource_inventory` reports every created VPC/subnet/security-group ID
-plus the VPC's automatic route-table ID for cleanup evidence.
+The reusable module defaults to closed ingress. Platform instance intake explicitly requests its existing open training-host policy. Tags retain the provider, context, account, profile key and creation intent. Unknown create results preserve the pending profile and apply marker and block any second apply.
 
-The batch module receives these IDs as shared references. Before deleting this
-network, the platform must verify in the original account that it has no active
-instance/ENI/job references and that every owned ID belongs to this persisted
-creation. No automatic cleanup, adoption of existing networks or retry after an
-unknown create result is implemented here. See the batch README for provider
-ClientToken and cleanup limits. Production workers do not use this module yet.
+Deletion requires the registered validation run, exact account identity, no active platform instances/jobs, a cloud check for attached instances/ENIs, exact persisted module ownership, empty post-destroy state and independent cloud absence of all retained VPC/subnet/security-group IDs. Legacy networks cannot be adopted or deleted.
+
+Validate with `sh scripts/provider/tencentcloud-idempotency/build.sh` followed by `sh scripts/dev/validate-tencentcloud-opentofu.sh`. The isolated mock validation does not contact Tencent or prove live cloud cleanup.

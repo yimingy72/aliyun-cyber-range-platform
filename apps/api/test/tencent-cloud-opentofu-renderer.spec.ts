@@ -24,7 +24,7 @@ describe('TencentCloudOpenTofuRenderer', () => {
     expect(rendered.members['member-2']).toMatchObject({ internet_max_bandwidth_out: 5, subnet_id: 'subnet-second', tags: { RangeInstanceId: 'member-2', OwnerUserId: 'owner-2' } });
     expect(JSON.stringify(rendered.members)).not.toContain('Fixture123!');
     expect(rendered.member_passwords).toEqual({ 'member-1': 'FirstFixture123!', 'member-2': 'SecondFixture123!' });
-    expect(rendered.members['member-1']).not.toHaveProperty('client_token');
+    expect(rendered.members['member-1'].client_token).toBe('intent-1');
   });
 
   it('preserves stable identifiers for a fifty-member plan', () => {
@@ -45,6 +45,8 @@ describe('TencentCloudOpenTofuRenderer', () => {
     ['invalid image', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members[0].imageId = 'aliyun-image'; }],
     ['invalid disk size', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members[0].systemDiskSize = 19; }],
     ['fractional disk size', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members[0].systemDiskSize = 50.5; }],
+    ['weak password', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members[0].password = 'abcdefghijk'; }],
+    ['Windows hostname', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members[0].windows = true; request.members[0].hostName = 'long-windows-hostname'; }],
     ['invalid bandwidth', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members[0].internetMaxBandwidthOut = -1; }],
     ['too many members', (request: TencentCloudSingleInstanceBatchRendererInput) => { request.members = Array.from({ length: 100 }, (_, index) => ({ ...request.members[0], rangeInstanceId: `member-${index}`, creationIntentId: `intent-${index}` })); }],
   ])('rejects %s before writing a workspace', (_, mutate) => {

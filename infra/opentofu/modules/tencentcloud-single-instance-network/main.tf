@@ -1,10 +1,13 @@
 locals {
   tags = {
+    PlatformManaged                = "true"
+    CloudProvider                  = "tencent_cloud"
+    CloudAccountContextId          = var.cloud_account_context_id
     CloudAccountUid                = var.cloud_account_uid
     SingleInstanceNetworkProfileId = var.network_profile_id
     CreationIntentId               = var.creation_intent_id
     CreatedBy                      = "cyber-range-platform"
-    PlatformScope                  = "single-instance-network"
+    PlatformScope                  = "platform"
     OwnerUserId                    = "platform"
   }
 }

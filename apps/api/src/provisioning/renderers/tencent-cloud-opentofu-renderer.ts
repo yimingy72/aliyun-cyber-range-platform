@@ -1,11 +1,12 @@
-export const TENCENTCLOUD_PROVIDER_VERSION = '1.83.34';
+export const TENCENTCLOUD_PROVIDER_VERSION = '1.83.34-range.1';
 export const TENCENTCLOUD_PROVIDER_LINUX_AMD64_SHA256 =
-  'c94c2074fef39d38b351c4e24190ec0bed6f7e1bc6b014f98a8672921eaf2c8b';
+  'd6537266986c80b5c936cf84be3d8bbca31b1e1249277ced332399a3c65f4535';
 
 export type TencentCloudSingleInstanceMemberInput = {
   rangeInstanceId: string;
   ownerUserId: string;
   creationIntentId: string;
+  terminateAt?: string;
   instanceName: string;
   hostName?: string;
   instanceType: string;
@@ -15,11 +16,14 @@ export type TencentCloudSingleInstanceMemberInput = {
   systemDiskSize?: number;
   internetMaxBandwidthOut?: number;
   password: string;
+  tags?: Record<string, string>;
+  windows?: boolean;
 };
 
 export type TencentCloudSingleInstanceBatchRendererInput = {
   batchId: string;
   cloudAccountUid: string;
+  cloudAccountContextId?: string;
   region: string;
   zoneId: string;
   vpcId: string;
@@ -35,6 +39,8 @@ export type TencentCloudOpenTofuRenderedVariables = {
   vpc_id: string;
   security_group_id: string;
   members: Record<string, {
+    client_token: string;
+    action_timer_terminate_at?: string;
     instance_name: string;
     host_name: string;
     instance_type: string;
@@ -60,7 +66,14 @@ function requireCloudId(value: string, prefix: string, field: string): void {
   }
 }
 
-/** Preparatory contract only: the official provider cannot accept a durable ClientToken. */
+export function assertTencentInstanceLogin(password: string, hostName: string, windows = false) {
+  const groups = [/[a-z]/,/[A-Z]/,/[0-9]/,/[^A-Za-z0-9]/].filter(pattern => pattern.test(password)).length;
+  if (password.length < (windows ? 12 : 8) || password.length > 30 || password.startsWith('/') || /[^A-Za-z0-9()\x60~!@#$%^&*\-_+=|{}\[\]:;',.<>?\/]/.test(password) || groups < (windows ? 3 : 2)) throw new Error('Tencent instance password does not meet operating-system constraints');
+  const maxName = windows ? 15 : 30;
+  if (hostName && (windows && hostName.includes('.') || hostName.length < 2 || hostName.length > maxName || !/^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$/.test(hostName) || /[.-]{2}/.test(hostName) || windows && /^\d+$/.test(hostName))) throw new Error('Tencent host name does not meet operating-system constraints');
+}
+
+/** Requires the pinned provider patch that accepts a persisted RunInstances ClientToken. */
 export class TencentCloudOpenTofuRenderer {
   render(input: TencentCloudSingleInstanceBatchRendererInput): TencentCloudOpenTofuRenderedVariables {
     requireIdentity(input.batchId, 'batch ID');
@@ -81,6 +94,7 @@ export class TencentCloudOpenTofuRenderer {
       requireIdentity(member.rangeInstanceId, 'member ID');
       requireIdentity(member.ownerUserId, 'owner ID');
       requireIdentity(member.creationIntentId, 'creation intent ID');
+      if (member.creationIntentId.length > 64) throw new Error('Tencent creation intent exceeds ClientToken capacity');
       if (Object.hasOwn(members, member.rangeInstanceId) || creationIntents.has(member.creationIntentId)) {
         throw new Error('Tencent Cloud member IDs and creation intent IDs must be unique');
       }
@@ -95,8 +109,7 @@ export class TencentCloudOpenTofuRenderer {
         throw new Error('Invalid Tencent Cloud instance name');
       }
       const hostName = member.hostName?.trim() ?? '';
-      if (hostName && (!/^[a-zA-Z0-9][a-zA-Z0-9.-]{0,58}[a-zA-Z0-9]$/.test(hostName)
-        || hostName.includes('..'))) throw new Error('Invalid Tencent Cloud host name');
+      assertTencentInstanceLogin(member.password,hostName,member.windows);
       const diskType = member.systemDiskType ?? 'CLOUD_PREMIUM';
       if (!['CLOUD_PREMIUM', 'CLOUD_SSD', 'CLOUD_BSSD', 'CLOUD_HSSD', 'CLOUD_TSSD'].includes(diskType)) {
         throw new Error('Tencent Cloud single instances require a managed cloud system disk');
@@ -113,6 +126,8 @@ export class TencentCloudOpenTofuRenderer {
         throw new Error('Invalid Tencent Cloud instance password length');
       }
       members[member.rangeInstanceId] = {
+        client_token: member.creationIntentId,
+        ...(member.terminateAt ? { action_timer_terminate_at: member.terminateAt } : {}),
         instance_name: instanceName,
         host_name: hostName,
         instance_type: member.instanceType,
@@ -122,15 +137,17 @@ export class TencentCloudOpenTofuRenderer {
         system_disk_size: diskSize,
         internet_max_bandwidth_out: bandwidth,
         tags: {
+          ...member.tags,
           RangeInstanceId: member.rangeInstanceId,
           OwnerUserId: member.ownerUserId,
-          PlatformUserId: member.ownerUserId,
+          ...(member.ownerUserId === 'platform' ? {} : { PlatformUserId: member.ownerUserId }),
           CloudAccountUid: input.cloudAccountUid,
           SingleInstanceBatchId: input.batchId,
           CreationIntentId: member.creationIntentId,
           CreatedBy: 'cyber-range-platform',
-          PlatformScope: 'single-instance',
-          PlatformResourceType: 'cvm',
+          PlatformScope: member.ownerUserId === 'platform' ? 'platform' : 'user',
+          ...(input.cloudAccountContextId ? { CloudAccountContextId: input.cloudAccountContextId } : {}),
+          PlatformResourceType: 'ecs',
         },
       };
       passwords[member.rangeInstanceId] = member.password;

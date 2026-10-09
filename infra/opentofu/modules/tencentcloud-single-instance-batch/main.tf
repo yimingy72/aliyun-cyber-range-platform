@@ -1,6 +1,8 @@
 resource "tencentcloud_instance" "members" {
   for_each = var.members
 
+  client_token               = each.value.client_token
+  action_timer_terminate_at  = each.value.action_timer_terminate_at
   instance_name              = each.value.instance_name
   hostname                   = each.value.host_name == "" ? null : each.value.host_name
   availability_zone          = var.zone_id

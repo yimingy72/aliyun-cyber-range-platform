@@ -44,6 +44,8 @@ variable "security_group_id" {
 variable "members" {
   description = "Frozen CVM definitions keyed by stable platform range-instance ID; no network resources are created by this module."
   type = map(object({
+    client_token               = string
+    action_timer_terminate_at  = optional(string)
     instance_name              = string
     host_name                  = string
     instance_type              = string
@@ -60,13 +62,13 @@ variable "members" {
       for key, member in var.members :
       can(regex("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,126}$", key)) && lookup(member.tags, "RangeInstanceId", "") == key &&
       lookup(member.tags, "OwnerUserId", "") != "" &&
-      lookup(member.tags, "PlatformUserId", "") == lookup(member.tags, "OwnerUserId", "") &&
+      (lookup(member.tags, "OwnerUserId", "") == "platform" ? lookup(member.tags, "PlatformUserId", "") == "" : lookup(member.tags, "PlatformUserId", "") == lookup(member.tags, "OwnerUserId", "")) &&
       lookup(member.tags, "CloudAccountUid", "") == var.cloud_account_uid &&
       lookup(member.tags, "SingleInstanceBatchId", "") == var.batch_id &&
-      lookup(member.tags, "CreationIntentId", "") != "" &&
+      lookup(member.tags, "CreationIntentId", "") == member.client_token && length(member.client_token) > 0 && length(member.client_token) <= 64 &&
       lookup(member.tags, "CreatedBy", "") == "cyber-range-platform" &&
-      lookup(member.tags, "PlatformScope", "") == "single-instance" &&
-      lookup(member.tags, "PlatformResourceType", "") == "cvm"
+      contains(["user", "platform"], lookup(member.tags, "PlatformScope", "")) &&
+      lookup(member.tags, "PlatformResourceType", "") == "ecs"
     ])
     error_message = "Every CVM must retain its exact owner, account, batch, creation intent and platform identity."
   }

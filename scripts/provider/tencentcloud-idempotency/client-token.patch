@@ -1,0 +1,91 @@
+--- a/tencentcloud/services/cvm/resource_tc_instance.go
++++ b/tencentcloud/services/cvm/resource_tc_instance.go
+@@ -42,6 +42,25 @@
+ 			Create: schema.DefaultTimeout(15 * time.Minute),
+ 		},
+ 		Schema: map[string]*schema.Schema{
++			"client_token": {
++				Type: schema.TypeString, Optional: true, ForceNew: true,
++				Description: "Persisted creation intent used for RunInstances idempotency. Never change or reuse for a different request.",
++				ValidateFunc: func(v interface{}, _ string) ([]string, []error) {
++					value := v.(string)
++					if len(value) < 1 || len(value) > 64 { return nil, []error{fmt.Errorf("client_token must contain 1 to 64 bytes")} }
++					return nil, nil
++				},
++			},
++			"action_timer_terminate_at": {
++				Type: schema.TypeString, Optional: true, ForceNew: true,
++				Description: "UTC scheduled termination sent atomically with RunInstances; must be more than 5 minutes in the future.",
++				ValidateFunc: func(v interface{}, _ string) ([]string, []error) {
++					value := v.(string)
++					parsed, err := time.Parse("2006-01-02T15:04:05Z", value)
++					if err != nil || parsed.Format("2006-01-02T15:04:05Z") != value { return nil, []error{fmt.Errorf("action_timer_terminate_at requires UTC ISO8601 seconds")} }
++					return nil, nil
++				},
++			},
+ 			"image_id": {
+ 				Type:         schema.TypeString,
+ 				Optional:     true,
+@@ -1097,8 +1116,13 @@
+ 		request.TagSpecification = append(request.TagSpecification, &tagSpecification)
+ 	}
+ 
+-	clientToken := helper.BuildToken()
++	clientToken := rangeInstanceClientToken(d)
+ 	request.ClientToken = &clientToken
++	if value, ok := d.GetOk("action_timer_terminate_at"); ok {
++		terminateAt, err := time.Parse("2006-01-02T15:04:05Z", value.(string))
++		if err != nil || !terminateAt.After(time.Now().UTC().Add(5 * time.Minute)) { return fmt.Errorf("scheduled termination must be more than 5 minutes in the future") }
++		request.ActionTimer = &cvm.ActionTimer{TimerAction: helper.String("TerminateInstances"), ActionTime: helper.String(value.(string))}
++	}
+ 
+ 	instanceId := ""
+ 	err := resource.Retry(tccommon.WriteRetryTimeout, func() *resource.RetryError {
+@@ -3274,3 +3298,9 @@
+ 		return 0, fmt.Errorf("Unrecognized numerical type: %T.", value)
+ 	}
+ }
++
++// A caller-supplied intent survives process restarts; old configurations retain upstream behavior.
++func rangeInstanceClientToken(d *schema.ResourceData) string {
++	if value, ok := d.GetOk("client_token"); ok { return value.(string) }
++	return helper.BuildToken()
++}
+--- a/tencentcloud/services/cvm/resource_tc_eip.go
++++ b/tencentcloud/services/cvm/resource_tc_eip.go
+@@ -30,6 +30,15 @@
+ 		},
+ 
+ 		Schema: map[string]*schema.Schema{
++			"client_token": {
++				Type: schema.TypeString, Optional: true, ForceNew: true,
++				Description: "Persisted allocation intent used for AllocateAddresses idempotency.",
++				ValidateFunc: func(v interface{}, _ string) ([]string, []error) {
++					value := v.(string)
++					if len(value) < 1 || len(value) > 64 { return nil, []error{fmt.Errorf("client_token must contain 1 to 64 bytes")} }
++					return nil, nil
++				},
++			},
+ 			"name": {
+ 				Type:        schema.TypeString,
+ 				Optional:    true,
+@@ -143,6 +152,8 @@
+ 	var internetChargeType string
+ 
+ 	request := vpc.NewAllocateAddressesRequest()
++	clientToken := rangeInstanceClientToken(d)
++	request.ClientToken = &clientToken
+ 	if v, ok := d.GetOk("type"); ok {
+ 		request.AddressType = helper.String(v.(string))
+ 	}
+--- a/tencentcloud/services/vpc/resource_tc_nat_gateway.go
++++ b/tencentcloud/services/vpc/resource_tc_nat_gateway.go
+@@ -191,6 +191,8 @@
+ 		if e != nil {
+ 			log.Printf("[CRITAL]%s api[%s] fail, request body [%s], reason[%s]\n",
+ 				logId, request.GetAction(), request.ToJsonString(), e.Error())
++			// CreateNatGateway has no idempotency token: an unknown platform creation is never replayed.
++			if tags := helper.GetTags(d, "tags"); tags["PlatformManaged"] == "true" && tags["CloudProvider"] == "tencent_cloud" { return resource.NonRetryableError(e) }
+ 			return tccommon.RetryError(e)
+ 		}
+ 

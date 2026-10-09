@@ -19,9 +19,10 @@ import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { retiredResourceInventory, retiredBillableIds } from './retired-resource-inventory';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
+import { describeTencentResourceInventory, readTencentAttachedDiskInventory } from '../admin/tencent-cloud-resources';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
-import { SystemConfigService } from '../admin/system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from '../admin/system-config.service';
 import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatchLease } from '../admin/single-instance-opentofu-execution.service';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
@@ -33,6 +34,7 @@ import {
   type RangeProvisionDestroyInput,
   type RangeProvisionStepEvent,
   type RangeProvisionStepReporter,
+  type ResolvedProvisioningRuntimeConfig,
   RangeProvisioner,
 } from './provisioning.types';
 
@@ -52,7 +54,6 @@ type SingleInstanceJobInput = {
   job: ProvisionJobRecord;
   instance: RangeInstanceRecord;
   effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
-  runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
   reportStep: RangeProvisionStepReporter;
   batchLease?: SingleInstanceOpenTofuBatchLease;
 };
@@ -333,7 +334,7 @@ export class ProvisioningWorkerService {
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
       const rangeContext = instance.instanceMode === 'range' ? await this.resolveRangeAccountContext(instance, job) : null;
-      const runtimeConfig = rangeContext ?? await this.systemConfigService.getSnapshot();
+      const runtimeConfig = rangeContext!;
 
       if (instance.instanceMode === 'single') {
         const current = await this.adminRepository.withSingleInstanceControlLock(async () => {
@@ -353,7 +354,6 @@ export class ProvisioningWorkerService {
           job,
           instance: current,
           effectiveJobType,
-          runtimeConfig,
           reportStep,
           batchLease,
         });
@@ -467,6 +467,7 @@ export class ProvisioningWorkerService {
         }
         failedCreateCleanupInput = {
           rangeInstanceId: instance.id,
+          expiresAt: instance.expiresAt?.toISOString(),
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
@@ -475,7 +476,7 @@ export class ProvisioningWorkerService {
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
-          billingTags: { ...billingTags, ...(accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, ExecutionBackend: 'opentofu' } : {}) },
+          billingTags: { ...billingTags, PlatformCreateJobId: job.id, CloudProvider: accountContext.provider, ...(accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, ExecutionBackend: 'opentofu' } : {}) },
           requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
           signal,
         };
@@ -605,7 +606,7 @@ export class ProvisioningWorkerService {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
       allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
       requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
-      billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid! } : undefined,
+      billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, PlatformScope: instance.ownerUserId ? 'user' : 'platform', ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}) } : undefined,
     };
     const evidence = await this.captureRangeResources(job, instance, cleanupInput, accountContext);
     await this.rangeProvisioner.destroy(cleanupInput);
@@ -623,7 +624,7 @@ export class ProvisioningWorkerService {
   private async processRangeInstanceUpdateJob(input: {
     job: ProvisionJobRecord;
     instance: RangeInstanceRecord;
-    runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
+    runtimeConfig: SystemCloudAccountContext;
     reportStep: RangeProvisionStepReporter;
     accountContext: Awaited<ReturnType<ProvisioningWorkerService['resolveAccountContext']>>;
     onApplyStart: () => void;
@@ -648,6 +649,7 @@ export class ProvisioningWorkerService {
       ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
+      expiresAt: input.instance.expiresAt?.toISOString(),
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
@@ -660,7 +662,7 @@ export class ProvisioningWorkerService {
       topologySpec: topologySnapshot.topologySpec as RangeTemplateTopologySpec,
       compiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
       compiledSpec: topologySnapshot.compiledSpec as RangeTemplateCompiledSpec,
-      billingTags: { CloudAccountContextId: input.accountContext.cloudAccountContextId!, CloudAccountUid: input.accountContext.accountUid!, ExecutionBackend: 'opentofu', ...buildBillingTags({
+      billingTags: { PlatformCreateJobId: input.job.id, CloudProvider: input.accountContext.provider, CloudAccountContextId: input.accountContext.cloudAccountContextId!, CloudAccountUid: input.accountContext.accountUid!, ExecutionBackend: 'opentofu', ...buildBillingTags({
         billingScope: input.instance.ownerUserId ? 'user' : 'platform',
         ownerUserId: input.instance.ownerUserId,
         rangeInstanceId: input.instance.id,
@@ -829,7 +831,7 @@ export class ProvisioningWorkerService {
   }
 
   private async resolveRangeAccountContext(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
-    if (instance.cloudProvider !== 'alibaba_cloud') throw new Error('This cloud provider is not enabled for range provisioning or recovery');
+    if (!['alibaba_cloud','tencent_cloud'].includes(instance.cloudProvider)) throw new Error('This cloud provider is not enabled for range provisioning or recovery');
     const bound = instance.resourceSummary?.executionContext;
     if (this.rangeProvisioner.mode === 'dry-run') {
       if (instance.resourceSummary?.creationAttempted || bound || (instance.resourceSummary?.mode !== 'dry-run' && this.rangeSummaryHasIds(instance.resourceSummary)))
@@ -838,22 +840,22 @@ export class ProvisioningWorkerService {
     }
     if (bound) {
       const service = this.systemConfigService;
-      const context = typeof service.getAccountContextById === 'function'
-        ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
-      if (context.provider !== 'alibaba_cloud') throw new Error('Range source cloud provider does not match the provisioner');
+      const context = typeof service.getExecutionAccountContext === 'function'
+        ? await service.getExecutionAccountContext({ cloudAccountContextId: bound.cloudAccountContextId }) : process.env.NODE_ENV === 'test' && typeof service.getAccountContextById === 'function' ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
+      if (context.provider !== instance.cloudProvider || bound.provider && bound.provider !== context.provider) throw new Error('Range source cloud provider does not match the provisioner');
       if (!context.accountUidResolved || context.accountUid !== bound.cloudAccountUid || context.cloudAccountContextId !== bound.cloudAccountContextId
         || context.defaultRegion !== bound.regionId || !bound.zoneId)
         throw new Error('Range execution account no longer matches its frozen cloud identity');
-      return { ...context, provider: 'alibaba_cloud' as const, defaultZoneId: bound.zoneId };
+      return { ...context, defaultZoneId: bound.zoneId };
     }
     if (await this.rangeHasApplyEvidence(instance, job) || ['destroy','update'].includes(this.resolveEffectiveJobType(job, instance)))
       throw new Error('Range has no verified source account binding; manual resource recovery is required');
     const context = await this.resolveAccountContext();
-    if (!context.accountUidResolved || !context.accountUid || !context.cloudAccountContextId
+    if (context.provider !== instance.cloudProvider || !context.accountUidResolved || !context.accountUid || !context.cloudAccountContextId
       || !context.accessKeyId || !context.accessKeySecret || !context.defaultRegion || !context.defaultZoneId)
       throw new Error('A verified cloud account context is required before range provisioning');
     await this.updateRangeForClaim(job, { resourceSummary: { mode: 'opentofu', creationAttempted: false,
-      executionContext: { cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     return context;
   }
@@ -866,7 +868,7 @@ export class ProvisioningWorkerService {
     if (!current || current.expiresAt && current.expiresAt <= new Date()) throw new Error('Range expired before cloud creation started');
     if (!context.cloudAccountContextId || !context.accountUid) throw new Error('Range execution account is not verified');
     await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', creationAttempted: true,
-      executionContext: { cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     signal?.throwIfAborted();
   }
@@ -882,7 +884,7 @@ export class ProvisioningWorkerService {
   }
 
   private async captureRangeResources(job: ProvisionJobRecord, instance: RangeInstanceRecord,
-    input: RangeProvisionDestroyInput, context: { defaultRegion: string; accountUid: string | null; accessKeyId: string; accessKeySecret: string }) {
+    input: RangeProvisionDestroyInput, context: ResolvedProvisioningRuntimeConfig & { accountUid: string | null }) {
     input.signal?.throwIfAborted();
     if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
     const current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
@@ -913,7 +915,7 @@ export class ProvisioningWorkerService {
   }
 
   private async captureRangeDisks(job: ProvisionJobRecord, instance: RangeInstanceRecord, summary: RangeResourceSummary,
-    context: { accessKeyId: string; accessKeySecret: string; defaultRegion: string; accountUid: string | null }, destroying: boolean) {
+    context: ResolvedProvisioningRuntimeConfig & { accountUid: string | null }, destroying: boolean) {
     if (summary.mode === 'dry-run' || !Object.keys(summary.hostIds ?? {}).length) return summary;
     const bound = summary.executionContext;
     if (!bound || !context.accountUid || bound.cloudAccountUid !== context.accountUid || bound.regionId !== context.defaultRegion)
@@ -928,7 +930,10 @@ export class ProvisioningWorkerService {
     const inventories = [];
     for (const [hostKey, instanceId] of Object.entries(summary.hostIds ?? {})) {
       if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
-      const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
+      const disks = context.provider === 'tencent_cloud' ? await readTencentAttachedDiskInventory(context as SystemCloudAccountContext, instanceId, {
+        systemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        dataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId) }, expectedTags) : await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
         endpoint: `ecs.${context.defaultRegion}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action,
         accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret, parameters: { RegionId: context.defaultRegion, ...parameters } }),
         instanceId, knownSystemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
@@ -945,31 +950,11 @@ export class ProvisioningWorkerService {
     return summary;
   }
 
-  private async resolveAccountContext() {
-    const service = this.systemConfigService as SystemConfigService & {
-      getAccountContext?: () => Promise<{
-        provider: 'alibaba_cloud';
-        defaultRegion: string;
-        defaultZoneId: string;
-        accessKeyId: string;
-        accessKeySecret: string;
-        accountUid: string | null;
-        accountUidResolved: boolean;
-      }>;
-    };
-
-    if (typeof service.getAccountContext === 'function') {
-      return service.getAccountContext();
-    }
-
-    const snapshot = await this.systemConfigService.getSnapshot();
-
-    return {
-      ...snapshot,
-      cloudAccountContextId: null,
-      accountUid: null,
-      accountUidResolved: false,
-    };
+  private async resolveAccountContext(): Promise<SystemCloudAccountContext> {
+    if (typeof this.systemConfigService.getExecutionAccountContext === 'function') return this.systemConfigService.getExecutionAccountContext();
+    if (process.env.NODE_ENV !== 'test') throw new Error('Provider-aware execution account resolution is required');
+    if (typeof this.systemConfigService.getAccountContext === 'function') return this.systemConfigService.getAccountContext();
+    return { ...await this.systemConfigService.getSnapshot(), cloudAccountContextId: null, accountUid: null, accountUidResolved: false };
   }
 
   private async shouldAllowTemplateFallback(
@@ -1459,6 +1444,9 @@ export class ProvisioningWorkerService {
       accessKeyId: string;
       accessKeySecret: string;
       defaultRegion: string;
+      provider?: 'alibaba_cloud' | 'tencent_cloud';
+      accountUid?: string | null;
+      cloudAccountContextId?: string | null;
     },
   ) {
     for (let attempt = 0; attempt < DESTROY_VERIFICATION_ATTEMPTS; attempt += 1) {
@@ -1482,18 +1470,39 @@ export class ProvisioningWorkerService {
     }
   }
 
+  private async findTencentResidualResources(summary: RangeResourceSummary, account: SystemCloudAccountContext): Promise<string[]> {
+    const bound = summary.executionContext;
+    if (!bound || bound.provider && bound.provider !== 'tencent_cloud' || account.provider !== 'tencent_cloud' || !account.accountUidResolved || bound.cloudAccountUid !== account.accountUid || bound.cloudAccountContextId !== account.cloudAccountContextId || bound.regionId !== account.defaultRegion) throw new Error('Tencent cleanup requires the exact frozen execution identity');
+    const ids: Array<['ecs'|'disk'|'vpc'|'vswitch'|'security_group'|'network_acl'|'eni'|'nat'|'eip',string[]]> = [
+      ['ecs',Object.values(summary.hostIds ?? {})], ['disk',inventoryDiskIds(summary)], ['vpc',summary.vpcId ? [summary.vpcId] : []],
+      ['vswitch',Object.values(summary.subnetIds ?? {})], ['security_group',Object.values(summary.securityGroupIds ?? {})], ['network_acl',Object.values(summary.networkAclIds ?? {})],
+      ['eni',Object.values(summary.secondaryNetworkInterfaceIds ?? {})], ['nat',Object.values(summary.natGatewayIds ?? {})],
+      ['eip',[summary.eipAllocationId,...Object.values(summary.eipAllocationIds ?? {})].filter((id): id is string => Boolean(id))],
+    ];
+    const results = await Promise.allSettled(ids.filter(([,values]) => values.length).map(async ([kind,values]) => (await describeTencentResourceInventory(account,kind,{ ids: [...new Set(values)] })).map(resource => `${kind}:${resource.id}`)));
+    const failed = results.find((value): value is PromiseRejectedResult => value.status === 'rejected');
+    if (failed) throw failed.reason;
+    const residual = results.flatMap(value => value.status === 'fulfilled' ? value.value : []);
+    if (summary.retiredResources) residual.push(...await this.findTencentResidualResources({ ...summary.retiredResources, executionContext: summary.retiredResources.executionContext ?? bound, retiredResources: null },account));
+    return residual;
+  }
+
   private async findResidualCloudResources(
     resourceSummary: RangeResourceSummary | null,
     runtimeConfig: {
       accessKeyId: string;
       accessKeySecret: string;
       defaultRegion: string;
+      provider?: 'alibaba_cloud' | 'tencent_cloud';
+      accountUid?: string | null;
+      cloudAccountContextId?: string | null;
     },
   ) {
     if (!resourceSummary || resourceSummary.mode === 'dry-run') {
       return [];
     }
 
+    if ('provider' in runtimeConfig && runtimeConfig.provider === 'tencent_cloud') return this.findTencentResidualResources(resourceSummary, runtimeConfig as SystemCloudAccountContext);
     const regionId = runtimeConfig.defaultRegion;
     const residualResources: string[] = [];
 
