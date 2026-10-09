@@ -161,6 +161,7 @@ export type RangeResourceSummary = {
   workspaceDir?: string;
   outputFilePath?: string;
   vpcId?: string | null;
+  routeTableIds?: Record<string, string> | null;
   subnetIds?: Record<string, string> | null;
   networkAclIds?: Record<string, string> | null;
   securityGroupIds?: Record<string, string> | null;

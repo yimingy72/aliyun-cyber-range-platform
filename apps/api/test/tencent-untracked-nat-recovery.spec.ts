@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { OpenTofuRangeProvisioner } from '../src/provisioning/open-tofu-range-provisioner';
 import * as cloud from '../src/admin/tencent-cloud-resources';
+import { retiredResourceInventory } from '../src/provisioning/retired-resource-inventory';
 
 const account = { provider: 'tencent_cloud' as const, accountUid: '100000000001', accountUidResolved: true, cloudAccountContextId: 'context-a', defaultRegion: 'ap-shanghai', defaultZoneId: 'ap-shanghai-2', accessKeyId: 'fake', accessKeySecret: 'fake', imageImportBucket: '' };
 const tags = { CloudProvider: 'tencent_cloud', PlatformManaged: 'true', CreatedBy: 'cyber-range-platform', PlatformScope: 'user', PlatformUserId: 'owner-a', CloudAccountUid: account.accountUid, CloudAccountContextId: account.cloudAccountContextId, RangeInstanceId: 'range-a', PlatformCreateJobId: 'source-job' };
@@ -43,6 +44,18 @@ it('discovers the exact atomically tagged submitted NAT and persists fee evidenc
   expect(test.runner.importResource).toHaveBeenCalledWith(expect.objectContaining({ address:'module.range.tencentcloud_nat_gateway.shared["shared"]',resourceId:'nat-fixture' }));
   expect(test.runner.apply).not.toHaveBeenCalled();
   expect(await fs.stat(path.join(test.dir,'.range-apply-started'))).toBeDefined();
+});
+it('persists owned route identities from partial state and retains replacements for later diagnostics', async () => {
+  const test = await fixture();
+  const state = JSON.parse(await fs.readFile(path.join(test.dir, 'terraform.tfstate'), 'utf8'));
+  state.resources.push({ mode: 'managed', module: 'module.range', type: 'tencentcloud_route_table', name: 'zones', instances: [{ index_key: 'dmz', attributes: { id: 'rtb-fixture', tags } }] });
+  await fs.writeFile(path.join(test.dir, 'terraform.tfstate'), JSON.stringify(state));
+  const summary = await test.provisioner.inspectResources(test.input);
+  expect(summary?.routeTableIds).toEqual({ dmz: 'rtb-fixture' });
+  expect(retiredResourceInventory(summary, { mode: 'opentofu', routeTableIds: { dmz: 'rtb-new' } })?.routeTableIds).toEqual({ 'rtb-fixture': 'rtb-fixture' });
+  state.resources[state.resources.length - 1].instances[0].attributes.tags = { ...tags, CloudAccountUid: 'different-owner' };
+  await fs.writeFile(path.join(test.dir, 'terraform.tfstate'), JSON.stringify(state));
+  await expect(test.provisioner.inspectResources(test.input)).rejects.toThrow('ownership');
 });
 it.each(['owner','intent','name','vpc','spec','duplicate','none'])('rejects unproven %s candidates without importing or creating', async mismatch => {
   const test = await fixture();

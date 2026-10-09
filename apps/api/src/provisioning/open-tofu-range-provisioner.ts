@@ -101,6 +101,7 @@ type OpenTofuOutputs = {
   }>;
   resource_summary?: OpenTofuOutputValue<{
     vpc_id?: string;
+    route_table_ids?: Record<string, string>;
     subnet_ids?: Record<string, string>;
     network_acl_ids?: Record<string, string>;
     security_group_ids?: Record<string, string>;
@@ -424,6 +425,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     };
     if (resourceSummary?.vpc_id && stateResources?.vpcId && resourceSummary.vpc_id !== stateResources.vpcId)
       throw new Error('OpenTofu outputs conflict with persisted VPC identity');
+    const routeTableIds = mergeIds(resourceSummary?.route_table_ids, stateResources?.routeTableIds);
 
     return {
       accessEntry: {
@@ -438,6 +440,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         workspaceDir: workspace.workspaceDir,
         outputFilePath: workspace.outputsFilePath,
         vpcId: stateResources?.vpcId ?? resourceSummary?.vpc_id ?? null,
+        ...(routeTableIds ? { routeTableIds } : {}),
         subnetIds: mergeIds(resourceSummary?.subnet_ids, stateResources?.subnetIds),
         networkAclIds: mergeIds(resourceSummary?.network_acl_ids, stateResources?.networkAclIds),
         securityGroupIds: mergeIds(resourceSummary?.security_group_ids, stateResources?.securityGroupIds),
@@ -588,6 +591,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const tencent = input.runtimeConfig?.provider === 'tencent_cloud';
     if (tencent) await this.assertTencentWorkspaceIdentity(dir, input);
     const fields: Record<string, keyof RangeResourceSummary> = {
+      tencentcloud_route_table: 'routeTableIds',
       tencentcloud_subnet: 'subnetIds', tencentcloud_vpc_acl: 'networkAclIds', tencentcloud_security_group: 'securityGroupIds',
       tencentcloud_instance: 'hostIds', tencentcloud_eni: 'secondaryNetworkInterfaceIds',
       tencentcloud_nat_gateway: 'natGatewayIds', tencentcloud_nat_gateway_snat: 'snatEntryIds', tencentcloud_dnat: 'dnatEntryIds', tencentcloud_eip: 'eipAllocationIds',

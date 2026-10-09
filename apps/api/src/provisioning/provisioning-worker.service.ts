@@ -826,7 +826,7 @@ export class ProvisioningWorkerService {
 
   private rangeSummaryHasIds(summary: RangeResourceSummary | null): boolean {
     return Boolean(summary && (this.rangeSummaryHasIds(summary.retiredResources ?? null) || summary.vpcId || summary.eipAllocationId
-      || ['hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
+      || ['hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','routeTableIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
         .some(field => Object.values((summary as any)[field] ?? {}).some(Boolean))));
   }
 
@@ -874,7 +874,7 @@ export class ProvisioningWorkerService {
   }
 
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['retiredResources','vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
+    const inventory = Object.fromEntries(['retiredResources','vpcId','routeTableIds','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();

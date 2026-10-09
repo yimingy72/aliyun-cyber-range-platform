@@ -1,6 +1,6 @@
 import type { RangeResourceSummary } from '../admin/admin.repository';
 
-const maps = ['hostIds', 'systemDiskIds', 'dataDiskIds', 'subnetIds', 'networkAclIds', 'securityGroupIds',
+const maps = ['hostIds', 'systemDiskIds', 'dataDiskIds', 'routeTableIds', 'subnetIds', 'networkAclIds', 'securityGroupIds',
   'secondaryNetworkInterfaceIds', 'natGatewayIds', 'snatEntryIds', 'dnatEntryIds', 'eipAllocationIds'] as const;
 
 // Keep replaced IDs apart from the current host map used by the detail page and node actions.
