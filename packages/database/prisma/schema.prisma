@@ -156,6 +156,7 @@ model CloudWorkspace {
   operationAuditEventRows OperationAuditEvent[]
   cloudImageSnapshotRows CloudImageSnapshot[]
   imageImportJobRows ImageImportJob[]
+  cloudImageImportBucketRows CloudImageImportBucket[]
   packedImageArtifactRows PackedImageArtifact[]
   imageCatalogItemRows ImageCatalogItem[]
   platformImageAssetRows PlatformImageAsset[]
@@ -314,6 +315,7 @@ model OperationAuditEvent {
 }
 
 model CloudImageSnapshot {
+  minimumSystemDiskSize Int?
   cloudWorkspaceId String @default("legacy-unbound")
   id              String        @id @default(cuid())
   provider        CloudProvider @default(alibaba_cloud)
@@ -343,6 +345,11 @@ model CloudImageSnapshot {
 }
 
 model ImageImportJob {
+  cloudProvider CloudProvider @default(alibaba_cloud)
+  managedBucketId String?
+  sourceObjectProof Json?
+  sourceDiskIds Json @default("[]")
+  osVersion String?
   cloudWorkspaceId String @default("legacy-unbound")
   id                    String               @id @default(cuid())
   cloudAccountContextId String
@@ -398,6 +405,7 @@ model ImageImportJob {
 }
 
 model PackedImageArtifact {
+  cloudProvider CloudProvider @default(alibaba_cloud)
   cloudWorkspaceId String @default("legacy-unbound")
   id                       String   @id @default(cuid())
   cloudAccountContextId    String
@@ -865,4 +873,33 @@ model BillingAnomaly {
   @@unique([cloudWorkspaceId, cloudProvider, sourceFingerprint], map: "BillingAnomaly_workspace_provider_fingerprint_key")
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
 
+}
+
+model CloudImageImportBucket {
+  id String @id @default(cuid())
+  cloudWorkspaceId String
+  cloudProvider CloudProvider @default(tencent_cloud)
+  cloudAccountContextId String
+  cloudAccountUid String
+  appId String
+  regionId String
+  bucketName String @unique
+  creationNonce String @unique
+  activeSlot String? @unique
+  creatorUserId String
+  status String @default("pending")
+  preflightAbsentAt DateTime?
+  creationStartedAt DateTime?
+  creationRequestId String?
+  ownershipMarkerKey String
+  ownershipProof Json?
+  leaseToken String?
+  leaseExpiresAt DateTime?
+  deletedAt DateTime?
+  errorMessage String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+  @@index([cloudWorkspaceId, cloudProvider, cloudAccountUid, regionId], map: "CloudImageImportBucket_workspace_identity_idx")
+  @@index([status, leaseExpiresAt])
 }

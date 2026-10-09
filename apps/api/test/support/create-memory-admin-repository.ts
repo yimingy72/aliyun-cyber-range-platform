@@ -1290,6 +1290,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         if (existing) {
           if (['Deleting', 'Deleted'].includes(existing.status ?? '') && !['Deleting', 'Deleted'].includes(snapshot.status ?? '')) continue;
           Object.assign(existing, {
+            ...(snapshot.minimumSystemDiskSize !== undefined ? { minimumSystemDiskSize: snapshot.minimumSystemDiskSize } : {}),
             sourceImageName: snapshot.sourceImageName,
             osType: snapshot.osType ?? null,
             platform: snapshot.platform ?? null,
@@ -1303,6 +1304,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         }
 
         imageSnapshots.unshift({
+          minimumSystemDiskSize: snapshot.minimumSystemDiskSize ?? null,
           id: nextId(),
           provider: input.provider,
           accountUid: input.accountUid,
@@ -1575,7 +1577,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},
     async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
     async createPackedImageArtifact(input) {
-      const record: PackedImageArtifactRecord = { ...input, id: nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
+      const record: PackedImageArtifactRecord = { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', ...input, id: nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
       packedImageArtifacts.push(record); return clone(record);
     },
     async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },

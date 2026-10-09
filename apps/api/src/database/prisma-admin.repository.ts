@@ -1722,6 +1722,7 @@ export class PrismaAdminRepository implements AdminRepository {
           scope: input.scope,
           imageId: snapshot.imageId,
           sourceImageName: snapshot.sourceImageName,
+          minimumSystemDiskSize: snapshot.minimumSystemDiskSize ?? null,
           osType: snapshot.osType ?? null,
           platform: snapshot.platform ?? null,
           architecture: snapshot.architecture ?? null,
@@ -1732,7 +1733,7 @@ export class PrismaAdminRepository implements AdminRepository {
       });
       await this.prisma.cloudImageSnapshot.updateMany({
         where: { id: source.id, ...(['Deleting', 'Deleted'].includes(snapshot.status ?? '') ? {} : { OR: [{ status: null }, { status: { notIn: ['Deleting', 'Deleted'] } }] }) },
-        data: { accountUid: input.accountUid, sourceImageName: snapshot.sourceImageName, osType: snapshot.osType ?? null, platform: snapshot.platform ?? null, architecture: snapshot.architecture ?? null, status: snapshot.status ?? null, isAvailable: snapshot.isAvailable ?? true, lastSyncedAt: snapshot.lastSyncedAt },
+        data: { ...(snapshot.minimumSystemDiskSize !== undefined ? { minimumSystemDiskSize: snapshot.minimumSystemDiskSize } : {}), accountUid: input.accountUid, sourceImageName: snapshot.sourceImageName, osType: snapshot.osType ?? null, platform: snapshot.platform ?? null, architecture: snapshot.architecture ?? null, status: snapshot.status ?? null, isAvailable: snapshot.isAvailable ?? true, lastSyncedAt: snapshot.lastSyncedAt },
       });
       await this.prisma.platformImageAsset.updateMany({ where: { provider: input.provider, accountScopeKey: toAccountScopeKey(input.accountUid), regionId: input.regionId, imageId: snapshot.imageId, sourceSnapshotId: null }, data: { sourceSnapshotId: source.id, sourceScope: input.scope } });
     }

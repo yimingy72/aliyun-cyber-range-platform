@@ -431,6 +431,7 @@ export type OperationAuditEventRecord = Required<Pick<OperationAuditEventInput, 
 };
 
 export type CloudImageSnapshotRecord = {
+  minimumSystemDiskSize?: number | null;
   cloudWorkspaceId?: string;
   id: string;
   provider: CloudProvider;
@@ -450,6 +451,7 @@ export type CloudImageSnapshotRecord = {
 };
 
 export type PackedImageArtifactRecord = {
+  cloudProvider?: CloudProvider;
   cloudWorkspaceId?: string;
   id: string;
   cloudAccountContextId: string;
@@ -474,7 +476,7 @@ export type PackedImageArtifactRecord = {
   updatedAt: Date;
 };
 export type CreatePackedImageArtifactInput = Pick<PackedImageArtifactRecord,
-  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'>;
+  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'> & { cloudProvider?: CloudProvider };
 export type UpdatePackedImageArtifactInput = Partial<Pick<PackedImageArtifactRecord,
   'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'status' | 'backingSnapshotIds' | 'deletedSnapshotIds' | 'cloudImageDeletedAt' | 'completedAt' | 'lastPolledAt' | 'errorMessage'>>;
 
@@ -783,6 +785,7 @@ export type ListImageSnapshotsFilter = Partial<{
 }>;
 
 export type UpsertImageSnapshotInput = {
+  minimumSystemDiskSize?: number | null;
   cloudWorkspaceId?: string;
   imageId: string;
   sourceImageName: string;
