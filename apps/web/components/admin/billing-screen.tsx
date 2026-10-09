@@ -638,8 +638,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   };
 
   return (
-    <div className="admin-screen admin-workbench-screen admin-pagination-screen gap-3">
-      <section className="admin-workbench-surface admin-pagination-surface">
+    <div className="admin-screen admin-workbench-screen admin-pagination-screen gap-3 max-lg:h-auto! max-lg:min-h-full!">
+      <section className="admin-workbench-surface admin-pagination-surface max-lg:flex-none! max-lg:overflow-visible!">
         <AdminPageHeader
           action={
             <>
@@ -739,8 +739,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         </p>
       ) : null}
 
-      <div className="mt-4 grid min-h-0 min-w-0 flex-1 items-stretch gap-5 lg:grid-cols-[minmax(0,1fr)_17rem]">
-        <section aria-busy={isLoadingGroups || undefined} aria-label="费用明细" className="flex min-w-0 min-h-0 flex-col">
+      <div className="mt-4 flex min-h-0 min-w-0 flex-1 flex-col items-stretch gap-5 max-lg:flex-none lg:grid lg:grid-cols-[minmax(0,1fr)_17rem]">
+        <section aria-busy={isLoadingGroups || undefined} aria-label="费用明细" className="flex min-w-0 min-h-0 flex-col max-lg:shrink-0">
           <div className="billing-detail-panel-header flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="font-heading text-base font-semibold text-foreground">费用明细</h2>
@@ -821,7 +821,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           <p className="mt-2 text-xs leading-5 text-muted-foreground">整月对账可选择月初至月末后同步；上月账单建议在次月 3 日 12 点后核对。</p>
 
           <AdminPaginatedList
-            className="mt-3"
+            className="mt-3 max-lg:flex-none! max-lg:grid-rows-[auto_auto]! max-lg:[&>.admin-paginated-list-body]:overflow-visible!"
             footer={
               groupsResult.total > 0 && !groupsErrorMessage ? (
                 <AdminPaginationControls
@@ -944,7 +944,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           </AdminPaginatedList>
         </section>
 
-      <aside aria-label="用户账单" className="billing-users-panel flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+      <aside aria-label="用户账单" className="billing-users-panel flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card max-lg:shrink-0">
         <div className="billing-users-panel-header flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-3">
           <div>
             <h2 className="font-heading text-base font-semibold text-foreground">用户账单</h2>
@@ -952,7 +952,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+        <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto max-lg:flex-none">
           {isLoading && !hasOverviewSnapshot ? (
             <div className="space-y-3 px-3 py-4" role="status" aria-label="正在加载用户账单">
               <Skeleton className="h-9 w-full" />
