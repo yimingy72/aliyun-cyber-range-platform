@@ -144,7 +144,8 @@ export class ImageCatalogService {
     const workspace = getCurrentCloudWorkspaceScope();
     const historical = workspace && !('system' in workspace) && workspace.isReadOnly;
     const baseFilter = {
-      ...(historical ? {} : { provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion }),
+      ...(historical ? {} : { provider: accountContext.provider,
+        ...(workspace && !('system' in workspace) ? {} : { accountUid: accountContext.accountUid }), regionId: accountContext.defaultRegion }),
       ...(view === 'platform' ? { visibility: 'platform' as const } : { ownerUserId: currentUser.id }),
     };
 
@@ -458,7 +459,7 @@ export class ImageCatalogService {
     const accountContext = await this.selectedContext();
     const workspace = getCurrentCloudWorkspaceScope();
     const placement = workspace && !('system' in workspace) && workspace.isReadOnly ? {}
-      : { provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion };
+      : { provider: accountContext.provider, ...(workspace && !('system' in workspace) ? {} : { accountUid: accountContext.accountUid }), regionId: accountContext.defaultRegion };
 
     const [snapshots, catalogItems, packedArtifacts] = await Promise.all([
       this.adminRepository.listImageSnapshots({

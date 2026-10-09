@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { getCurrentCloudWorkspaceScope, runInCloudWorkspace, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 import { CloudAccountContextsService } from './cloud-account-contexts.service';
@@ -171,6 +171,7 @@ export class SystemConfigService {
     }
     const scope = getCurrentCloudWorkspaceScope();
     if (scope && !('system' in scope)) {
+      if (!scope.isPlatformManager) throw new ForbiddenException('仅平台超管可更新云账号配置。');
       const current = await this.getAccountContext();
       const next = { provider: 'alibaba_cloud' as const,
         regionId: payload.defaultRegion !== undefined ? normalizeValue(payload.defaultRegion) : current.defaultRegion,

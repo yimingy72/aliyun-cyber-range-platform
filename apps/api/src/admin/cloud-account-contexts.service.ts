@@ -225,11 +225,18 @@ export class CloudAccountContextsService {
         throw new ConflictException('输入的云凭据不属于正在编辑的账号，原工作空间和配置未更改。');
       }
     }
-    return this.prisma.cloudWorkspace.upsert({
-      where: { provider_accountUid: { provider, accountUid } },
-      create: { provider, accountUid, displayName: input.displayName?.trim() || `${provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'} ${accountUid}` },
-      update: input.displayName ? { displayName: input.displayName.trim() } : {},
-    });
+    try {
+      return await this.prisma.cloudWorkspace.upsert({
+        where: { provider_accountUid: { provider, accountUid } },
+        create: { provider, accountUid, displayName: input.displayName?.trim() || `${provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'} ${accountUid}` },
+        update: input.displayName ? { displayName: input.displayName.trim() } : {},
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+      const existing = await this.prisma.cloudWorkspace.findUnique({ where: { provider_accountUid: { provider, accountUid } } });
+      if (!existing || existing.isReadOnly || input.cloudWorkspaceId && input.cloudWorkspaceId !== existing.id) throw error;
+      return input.displayName ? this.prisma.cloudWorkspace.update({ where: { id: existing.id }, data: { displayName: input.displayName.trim() } }) : existing;
+    }
   }
 
   private async setWorkspaceDefaultContext(cloudWorkspaceId: string, contextId: string, editing: boolean) {
