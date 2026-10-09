@@ -319,7 +319,7 @@ function metadataFromRangeInstance(instance: Record<string, unknown>): TemplateA
     name: readString(metadata.name) ?? readString(instance.name) ?? 'range-instance',
     slug: readString(metadata.slug) ?? readString(instance.id) ?? 'range-instance',
     version: readString(metadata.version) ?? 'v1',
-    cloudProvider: metadata.cloudProvider === 'alibaba_cloud' ? 'alibaba_cloud' : 'alibaba_cloud',
+    cloudProvider: metadata.cloudProvider === 'tencent_cloud' || instance.cloudProvider === 'tencent_cloud' ? 'tencent_cloud' : 'alibaba_cloud',
     iacType: metadata.iacType === 'terraform' ? 'terraform' : 'opentofu',
     description: readString(metadata.description),
     modulePathOrRef: 'runtime/range-instance',

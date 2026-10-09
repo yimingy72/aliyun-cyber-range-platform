@@ -187,7 +187,7 @@ function createClientStub(): ClientStub {
     saveCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou' }),
     listCloudAccountContexts: vi.fn().mockResolvedValue([]),
     listCloudWorkspaces: vi.fn().mockResolvedValue([]),
-    getCurrentCloudWorkspace: vi.fn().mockResolvedValue(null),
+    getCurrentCloudWorkspace: vi.fn().mockResolvedValue({ id: 'fixture-ali-workspace', provider: 'alibaba_cloud', accountUid: '100001', isReadOnly: false, activeCloudAccountContextId: 'fixture-context', contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: '100001', status: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } }),
     switchCloudWorkspace: vi.fn(),
     saveCloudAccountBinding: vi.fn(),
     saveTencentCloudAccount: vi.fn(),
@@ -549,6 +549,50 @@ describe('tool registry', () => {
     })).rejects.toThrow('确认请求的拓扑与已保存草稿不一致');
     expect(client.saveRangeInstanceDraft).toHaveBeenCalledTimes(1);
     expect(client[method]).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives Tencent creation metadata from the verified fixed workspace for an ordinary template author', async () => {
+    const client = createClientStub();
+    (client.getCurrentCloudWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
+      activeCloudAccountContextId: 'tencent-context', contexts: [{ id: 'tencent-context', provider: 'tencent_cloud', accountUid: '100001', status: 'ready' }], capabilities: { provisioning: true } });
+    const registry = createToolRegistry(client);
+    const graph = structuredClone(authoringGraph);
+    const host = graph.nodes.find(node => node.kind === 'ecs')!;
+    if (host.kind === 'ecs') { host.cpu = 2; host.memory = 2; }
+    await registry.callTool('range_template_create', ['templates:write'], { name: '腾讯靶场', topologyGraph: graph }, 'user');
+    const payload = (client.createRangeTemplate as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(JSON.stringify(payload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies)).not.toContain('ecs.');
+    expect(client.getCurrentCloudWorkspace).toHaveBeenCalledOnce();
+    expect(client.fetchCloudConfig).not.toHaveBeenCalled();
+    expect(client.createRangeTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      scenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+      compiledProvisionSpec: expect.objectContaining({ identity: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+      compiledSpec: expect.objectContaining({ resources: expect.arrayContaining([expect.objectContaining({ provider: 'tencent_cloud' })]) }),
+    }), expect.anything());
+  });
+
+  it('preserves Tencent metadata when compiling an existing instance draft', async () => {
+    const client = createClientStub();
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'tencent-range', name: 'Tencent range', cloudProvider: 'tencent_cloud', draftRevision: 1,
+      draftScenarioTemplateSpec: { metadata: { cloudProvider: 'tencent_cloud' } } });
+    await createToolRegistry(client).callTool('range_instance_topology_save', ['ranges:write'], { rangeInstanceId: 'tencent-range', topologyGraph: authoringGraph });
+    expect(client.saveRangeInstanceDraft).toHaveBeenCalledWith('tencent-range', expect.objectContaining({
+      draftScenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+      draftCompiledProvisionSpec: expect.objectContaining({ identity: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+    }), expect.anything());
+  });
+
+  it.each([null, { isReadOnly: true }, { accountUid: null }, { activeCloudAccountContextId: null }, { contexts: [] },
+    { contexts: [{ id: 'fixture-context', provider: 'tencent_cloud', accountUid: '100001', status: 'ready' }] },
+    { contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: 'different', status: 'ready' }] },
+    { contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: '100001', status: 'ready', cloudWorkspaceId: 'foreign-workspace' }] },
+    { capabilities: { provisioning: false } }])('refuses unverified creation workspace %j before a template write', async overrides => {
+    const client = createClientStub();
+    const current = await client.getCurrentCloudWorkspace();
+    (client.getCurrentCloudWorkspace as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(overrides === null ? null : { ...current, ...overrides });
+    await expect(createToolRegistry(client).callTool('range_template_create', ['templates:write'], { name: 'blocked', topologyGraph: authoringGraph })).rejects.toThrow('已验证');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    expect(client.fetchCloudConfig).not.toHaveBeenCalled();
   });
 
   it('compiles a new topology graph before forwarding template creation', async () => {

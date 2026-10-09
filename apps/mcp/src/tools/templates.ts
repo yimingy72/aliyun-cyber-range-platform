@@ -47,9 +47,7 @@ const operation = (input: TemplateOperation): OperationRequest => ({
 const internalCreateMetadata = {
   slug: 'mcp-template',
   version: 'v1',
-  cloudProvider: 'alibaba_cloud' as const,
   iacType: 'opentofu' as const,
-  modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range',
 };
 
 export const templateTools: ToolDefinition[] = [
@@ -82,13 +80,21 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_create',
     title: '创建靶场模板',
-    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填阿里云镜像 ID。ECS 顶层 privateIp 必须与第一张 NIC 一致；端口全开统一填写 1/65535，平台会转换为阿里云所需的 -1/-1。请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，且所有 DNAT 必须指向同一台 ECS；该 ECS 会自动成为公网入口，无需设置 exposePublic。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、云厂商、IaC、模块路径及其他派生元数据由平台管理。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
+    description: '根据设计转换 Skill 产出的完整 topologyGraph 创建并保存靶场模板。平台固定创建 10.0.0.0/16 主 VPC，并附加 172.16.0.0/16、192.168.0.0/16；交换机必须落在这三段内。转换必须将镜像显示名解析为 platformImageAssetId 与 imageId；image 填显示名，imageId 与 imageStrategy.imageId 填当前云厂商的准确镜像 ID。ECS 顶层 privateIp 必须与第一张 NIC 一致；端口全开统一填写 1/65535，平台会按当前云厂商转换端口范围。请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，且所有 DNAT 必须指向同一台 ECS；该 ECS 会自动成为公网入口，无需设置 exposePublic。默认地域和可用区由后端基础配置注入，调用方不得查询或传入。仅传名称、描述和拓扑；slug、云厂商、IaC、模块路径及其他派生元数据由平台管理。MCP 会重新编译拓扑，调用方不得传 topologySpec、scenarioTemplateSpec、compiledProvisionSpec 或 compiledSpec。',
     requiredScopes: ['templates:write'],
     inputSchema: templateCreateInputSchema,
     outputSchema: resourceOutputSchema,
     async call(context, args) {
       const input = args as CreateInput;
-      const compiled = compileTemplateTopology(input.topologyGraph, metadataForTemplateCreation(input));
+      const workspace = await context.client.getCurrentCloudWorkspace();
+      const active = Array.isArray(workspace?.contexts) ? workspace.contexts.find(account => account.id === workspace.activeCloudAccountContextId) : null;
+      if (!workspace || workspace.isReadOnly || !workspace.accountUid || !workspace.activeCloudAccountContextId
+        || !['alibaba_cloud', 'tencent_cloud'].includes(workspace.provider) || !workspace.capabilities?.provisioning
+        || !active || active.status !== 'ready' || active.provider !== workspace.provider || active.accountUid !== workspace.accountUid
+        || active.cloudWorkspaceId != null && active.cloudWorkspaceId !== workspace.id) {
+        throw new Error('模板创建需要当前已验证且可执行的云账号工作空间。');
+      }
+      const compiled = compileTemplateTopology(input.topologyGraph, metadataForTemplateCreation(input, workspace.provider));
       const payload: CreateRangeTemplateInput = {
         name: input.name,
         ...(input.description !== undefined ? { description: input.description } : {}),
@@ -210,13 +216,19 @@ export const templateTools: ToolDefinition[] = [
   },
 ];
 
-function metadataForTemplateCreation(input: CreateInput): TemplateAuthoringMetadata {
+function metadataForTemplateCreation(input: CreateInput, provider: 'alibaba_cloud' | 'tencent_cloud'): TemplateAuthoringMetadata {
   return {
     ...internalCreateMetadata,
+    cloudProvider: provider,
+    modulePathOrRef: templateModulePath(provider),
     name: input.name,
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...pickTopologyMetadata(input),
   };
+}
+
+function templateModulePath(provider: 'alibaba_cloud' | 'tencent_cloud') {
+  return provider === 'tencent_cloud' ? 'infra/opentofu/modules/tencentcloud-enterprise-range' : 'infra/opentofu/modules/alicloud-enterprise-range';
 }
 
 function withServerOwnedMetadata(template: Record<string, unknown>) {
@@ -226,7 +238,7 @@ function withServerOwnedMetadata(template: Record<string, unknown>) {
   return {
     ...template,
     version: readNonEmptyString(template.version) ?? readNonEmptyString(scenarioMetadata?.version) ?? internalCreateMetadata.version,
-    modulePathOrRef: readNonEmptyString(template.modulePathOrRef) ?? internalCreateMetadata.modulePathOrRef,
+    modulePathOrRef: readNonEmptyString(template.modulePathOrRef) ?? templateModulePath(template.cloudProvider === 'tencent_cloud' ? 'tencent_cloud' : 'alibaba_cloud'),
   };
 }
 
