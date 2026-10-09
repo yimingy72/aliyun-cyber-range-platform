@@ -239,6 +239,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
+    this.assertRangeProvisioningEnabled(template.cloudProvider);
     if (account && template.cloudProvider !== account.provider) {
       throw new ConflictException('模板云厂商与当前已验证账号不一致。');
     }
@@ -419,6 +420,7 @@ export class RangeInstancesService {
       this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
     }
 
+    this.assertRangeProvisioningEnabled(instance.cloudProvider);
     if (instance.status !== 'running') {
       throw new ConflictException('Only running instances can apply draft changes');
     }
@@ -611,6 +613,7 @@ export class RangeInstancesService {
         this.assertInstanceOwnerOrAdmin(instance, currentUserOrTriggeredBy);
       }
 
+      this.assertRangeProvisioningEnabled(instance.cloudProvider);
       this.assertFutureInstanceExpiration(instance.expiresAt);
 
       if (!instance.templateId) {
@@ -711,6 +714,12 @@ export class RangeInstancesService {
     return job;
   }
 
+  private assertRangeProvisioningEnabled(provider: RangeInstanceRecord['cloudProvider']) {
+    if (provider === 'tencent_cloud' && process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED !== '1') {
+      throw new ConflictException('腾讯云编排开通与应用变更尚未启用：NAT 回收需先完成受控验证。现有环境仍可销毁或恢复回收。');
+    }
+  }
+
   private assertFutureInstanceExpiration(expiresAt: string | Date | null | undefined) {
     const expiration = expiresAt instanceof Date ? expiresAt : expiresAt ? new Date(expiresAt) : null;
 
@@ -745,6 +754,7 @@ export class RangeInstancesService {
 
     let topologySnapshot: ProvisionJobTopologySnapshot | undefined;
     if (instance.status === 'create_failed') {
+      this.assertRangeProvisioningEnabled(instance.cloudProvider);
       this.assertFutureInstanceExpiration(instance.expiresAt);
 
       const template = await this.adminRepository.getRangeTemplateById(instance.templateId);
