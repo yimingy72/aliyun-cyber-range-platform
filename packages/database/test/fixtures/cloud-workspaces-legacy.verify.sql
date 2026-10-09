@@ -1,0 +1,25 @@
+DO $$ DECLARE ali text; tencent text; BEGIN
+ SELECT "cloudWorkspaceId" INTO ali FROM "CloudAccountContext" WHERE "id"='fixture-ali-a';
+ SELECT "cloudWorkspaceId" INTO tencent FROM "CloudAccountContext" WHERE "id"='fixture-tencent';
+ ASSERT ali<>tencent;
+ ASSERT (SELECT "accountUid"='100001' AND "provider"='alibaba_cloud' AND NOT "isReadOnly" FROM "CloudWorkspace" WHERE "id"=ali);
+ ASSERT (SELECT "accountUid"='200001' AND "provider"='tencent_cloud' AND NOT "isReadOnly" FROM "CloudWorkspace" WHERE "id"=tencent);
+ ASSERT (SELECT "accountUid" IS NULL AND "isReadOnly" FROM "CloudWorkspace" WHERE "id"='legacy-unbound');
+ ASSERT (SELECT "cloudWorkspaceId"=ali FROM "RangeInstance" WHERE "id"='fixture-single-a');
+ ASSERT (SELECT "cloudWorkspaceId"=tencent FROM "RangeInstance" WHERE "id"='fixture-single-t');
+ ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "RangeInstance" WHERE "id"='fixture-single-unbound');
+ ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "RangeInstance" WHERE "id"='fixture-single-conflict');
+ ASSERT (SELECT "singleInstanceConfig"->>'cloudAccountContextId'='fixture-ali-b' FROM "RangeInstance" WHERE "id"='fixture-single-conflict'), 'Do not rewrite cloud source evidence';
+ ASSERT (SELECT "cloudWorkspaceId"=ali FROM "RangeInstance" WHERE "id"='fixture-destroyed');
+ ASSERT (SELECT "cloudWorkspaceId"=ali AND "ownerUserId"='fixture-alice' AND "sourceProvisionJobId"='fixture-job-a' FROM "BillingLedgerResource" WHERE "id"='fixture-ledger-a');
+ ASSERT (SELECT "cloudWorkspaceId"=ali FROM "RangeTemplate" WHERE "id"='fixture-template');
+ ASSERT (SELECT "cloudWorkspaceId"=ali FROM "CloudImageSnapshot" WHERE "id"='fixture-public-image');
+ ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "CloudImageSnapshot" WHERE "id"='fixture-image-unknown');
+ ASSERT (SELECT "cloudWorkspaceId"=tencent FROM "PlatformImageAsset" WHERE "id"='fixture-asset-tencent');
+ ASSERT (SELECT "cloudWorkspaceId"=ali AND "loginUsername"='alice' AND NOT "isPlatformManager" FROM "PlatformUser" WHERE "id"='fixture-alice');
+ ASSERT (SELECT "cloudWorkspaceId"=tencent AND "loginUsername"='bob' FROM "PlatformUser" WHERE "id"='fixture-bob');
+ ASSERT (SELECT "cloudWorkspaceId" IS NULL AND "selectedCloudWorkspaceId"=ali AND "loginUsername"='fixture-admin' AND "isPlatformManager" FROM "PlatformUser" WHERE "id"='admin');
+ ASSERT (SELECT "cloudWorkspaceId"=ali AND "actorUserId"='admin' AND "jobId"='fixture-job-a' FROM "OperationAuditEvent" WHERE "id"='fixture-audit');
+ ASSERT (SELECT "cloudWorkspaceId"='legacy-unbound' FROM "ProvisionJob" WHERE "id"='fixture-job-conflict');
+ ASSERT (SELECT count(*) FROM "RangeInstance")=5, 'History must not be deleted';
+END $$;

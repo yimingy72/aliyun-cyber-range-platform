@@ -248,9 +248,11 @@ export function createMemoryAdminRepository(): AdminRepository {
   };
 
   const assertPlatformUserUnique = (
-    input: { id?: string; username?: string; oidcIssuer?: string | null; oidcSubject?: string | null },
+    input: { id?: string; username?: string; loginUsername?: string; cloudWorkspaceId?: string | null; isPlatformManager?: boolean; oidcIssuer?: string | null; oidcSubject?: string | null },
     ignoreId?: string,
   ) => {
+    const cloudWorkspaceId = input.isPlatformManager ? null : input.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
+    if (input.loginUsername && runInSystemCloudWorkspaceScope(() => platformUsers.some(user => user.loginUsername === input.loginUsername && user.id !== ignoreId))) throw new Error('Platform user unique constraint failed: loginUsername');
     if (
       input.id !== undefined &&
       runInSystemCloudWorkspaceScope(() => platformUsers.some((user) => user.id === input.id && user.id !== ignoreId))
@@ -260,7 +262,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
     if (
       input.username !== undefined &&
-      platformUsers.some((user) => user.username === input.username && user.id !== ignoreId)
+      runInSystemCloudWorkspaceScope(() => platformUsers.some((user) => user.username === input.username && user.cloudWorkspaceId === cloudWorkspaceId && user.id !== ignoreId))
     ) {
       throw new Error(`Platform user unique constraint failed: username (${input.username})`);
     }
@@ -294,6 +296,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       assertPlatformUserUnique({
         id: input.id,
         username: input.username,
+        loginUsername: input.loginUsername ?? input.username,
+        cloudWorkspaceId: input.cloudWorkspaceId,
+        isPlatformManager: input.isPlatformManager,
       });
 
       const record: PlatformUserRecord = {
@@ -325,7 +330,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return record ? clone(record) : null;
     },
     async getPlatformUserByUsername(username: string) {
-      const record = platformUsers.find((user) => user.username === username);
+      const record = platformUsers.find((user) => user.username === username && (!getCurrentCloudWorkspaceId() || !user.isPlatformManager));
 
       return record ? clone(record) : null;
     },
@@ -343,6 +348,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       assertPlatformUserUnique(
         {
           username: input.username,
+          loginUsername: input.loginUsername,
+          cloudWorkspaceId: record.cloudWorkspaceId,
+          isPlatformManager: record.isPlatformManager,
           oidcIssuer,
           oidcSubject,
         },
@@ -1737,8 +1745,10 @@ export function createMemoryAdminRepository(): AdminRepository {
         await this.upsertBillingLineItems(input.lineItems);
         for (const item of input.anomalies) await this.createBillingAnomaly(item);
       } catch (error) {
-        billingLineItems.splice(0, billingLineItems.length, ...oldLines);
-        billingAnomalies.splice(0, billingAnomalies.length, ...oldAnomalies);
+        for (let index = billingLineItems.length - 1; index >= 0; index--) if (visibleInWorkspace(billingLineItems[index])) billingLineItems.splice(index, 1);
+        for (let index = billingAnomalies.length - 1; index >= 0; index--) if (visibleInWorkspace(billingAnomalies[index])) billingAnomalies.splice(index, 1);
+        billingLineItems.push(...oldLines);
+        billingAnomalies.push(...oldAnomalies);
         throw error;
       }
     },

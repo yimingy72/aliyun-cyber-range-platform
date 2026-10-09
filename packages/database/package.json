@@ -12,7 +12,8 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "smoke:local": "node scripts/real-db-smoke.mjs",
-    "test": "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public prisma generate && DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public prisma validate && node --test test/schema-config.test.mjs"
+    "test": "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public prisma generate && DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public prisma validate && node --test test/schema-config.test.mjs",
+    "smoke:workspace-migration": "node scripts/cloud-workspace-migration-smoke.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.15.0"
