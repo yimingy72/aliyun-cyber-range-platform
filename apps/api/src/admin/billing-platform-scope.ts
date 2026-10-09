@@ -1,4 +1,4 @@
-import type { AdminRepository, BillingImageImportResourceRecord, BillingManagedCosBucketRecord, BillingLedgerResourceRecord, PackedImageArtifactRecord, RangeResourceSummary } from './admin.repository';
+import type { AdminRepository, BillingImageImportResourceRecord, BillingManagedCosBucketRecord, BillingLedgerResourceRecord, PackedImageArtifactRecord, RangeResourceSummary, RangeInstanceRecord, ProvisionJobStepLogRecord } from './admin.repository';
 import { classifyBillLine } from './billing-classifier';
 import { ownedCosBucketProof } from './tencent-cos-proof';
 import { billingDayText } from './billing-window';
@@ -26,6 +26,32 @@ function inventoryIncludes(summary: RangeResourceSummary | null | undefined, led
   return ids.includes(ledger.cloudResourceId) || inventoryIncludes(summary.retiredResources, ledger);
 }
 
+function tencentContextMatches(value: unknown, ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord, contextId?: string) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const context = value as Record<string, unknown>, config = instance.singleInstanceConfig;
+  return context.provider === 'tencent_cloud' && typeof context.cloudAccountContextId === 'string' && Boolean(context.cloudAccountContextId)
+    && (!contextId || context.cloudAccountContextId === contextId)
+    && context.cloudAccountUid === ledger.cloudAccountUid && context.regionId === ledger.regionId && typeof context.zoneId === 'string' && Boolean(context.zoneId)
+    && (!config || config.cloudAccountContextId === context.cloudAccountContextId && config.cloudAccountUid === context.cloudAccountUid
+      && config.regionId === context.regionId && config.zoneId === context.zoneId);
+}
+
+function tencentInventoryMatches(ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord, logs: ProvisionJobStepLogRecord[], contextId?: string) {
+  if (tencentContextMatches(instance.resourceSummary?.executionContext, ledger, instance, contextId) && inventoryIncludes(instance.resourceSummary, ledger)) return true;
+  return logs.some(log => {
+    if (log.jobId !== ledger.sourceProvisionJobId || log.status !== 'succeeded' || log.stepName !== 'platform_billing_creation_inventory' || !log.message
+      || (log.cloudWorkspaceId ?? 'legacy-unbound') !== (ledger.cloudWorkspaceId ?? 'legacy-unbound')) return false;
+    let value: unknown; try { value = JSON.parse(log.message); } catch { return false; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const inventory = value as Record<string, unknown>;
+    return inventory.version === 1 && inventory.cloudProvider === 'tencent_cloud' && inventory.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound')
+      && inventory.rangeInstanceId === instance.id && inventory.sourceJobId === ledger.sourceProvisionJobId && inventory.ownerUserId === (instance.ownerUserId ?? null)
+      && tencentContextMatches(inventory.executionContext, ledger, instance, contextId) && Array.isArray(inventory.resources)
+      && inventory.resources.some(resource => resource && typeof resource === 'object' && !Array.isArray(resource)
+        && resource.cloudResourceId === ledger.cloudResourceId && resource.cloudResourceType === ledger.cloudResourceType);
+  });
+}
+
 export async function loadPlatformBillingProof(repository: AdminRepository, options: { ledgers?: BillingLedgerResourceRecord[] } = {}): Promise<PlatformBillingProof> {
   const [ledgers, imageImports, packedImages, instances, sourceJobs, cosBuckets] = await Promise.all([
     options.ledgers ?? repository.listBillingLedgerResources(), repository.listBillingImageImportResources(),
@@ -34,6 +60,8 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
   ]);
   const jobs = new Map(sourceJobs.map(job => [job.id, job]));
   const instancesById = new Map(instances.map(instance => [instance.id, instance]));
+  const inventoryLogs = new Map(await Promise.all([...new Set(ledgers.filter(ledger => ledger.cloudProvider === 'tencent_cloud' && ledger.sourceProvisionJobId)
+    .map(ledger => ledger.sourceProvisionJobId!))].map(async id => [id, await repository.listProvisionJobStepLogs(id)] as const)));
   const launchInstanceIds = new Set(sourceJobs.filter(job => ['create', 'retry', 'update'].includes(job.jobType)).map(job => job.rangeInstanceId));
   const createdLedgerIds = new Set<string>();
   const unverifiedSourceLedgerIds = new Set<string>();
@@ -59,16 +87,20 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       if (ledger.cloudProvider === 'tencent_cloud') {
         const packed = packedImages.some(artifact => {
           const source = instancesById.get(artifact.sourceRangeInstanceId);
-          const context = source?.singleInstanceConfig ?? source?.resourceSummary?.executionContext;
+          const sourceLedger = ledgers.find(parent => parent.cloudProvider === 'tencent_cloud' && parent.cloudWorkspaceId === artifact.cloudWorkspaceId
+            && parent.cloudAccountUid === artifact.cloudAccountUid && parent.regionId === artifact.regionId && parent.rangeInstanceId === artifact.sourceRangeInstanceId
+            && parent.cloudResourceType === 'ecs' && parent.cloudResourceId === artifact.sourceInstanceId && parent.ownerUserId === artifact.ownerUserId);
+          const sourceJob = sourceLedger?.sourceProvisionJobId ? jobs.get(sourceLedger.sourceProvisionJobId) : null;
+          const hasResource = (id: string, type: BillingLedgerResourceRecord['cloudResourceType']) => Boolean(source && sourceLedger
+            && tencentInventoryMatches({ ...sourceLedger, cloudResourceId: id, cloudResourceType: type }, source,
+              inventoryLogs.get(sourceLedger.sourceProvisionJobId ?? '') ?? [], artifact.cloudAccountContextId));
           return artifact.cloudProvider === 'tencent_cloud' && artifact.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound')
             && artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId && ledger.billingScope === 'user'
             && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
             && ledger.tagsSnapshot.PlatformPackedImageArtifactId === artifact.id && source?.cloudProvider === 'tencent_cloud'
             && source.ownerUserId === artifact.ownerUserId && source.cloudWorkspaceId === artifact.cloudWorkspaceId
-            && context?.cloudAccountContextId === artifact.cloudAccountContextId && context.cloudAccountUid === artifact.cloudAccountUid && context.regionId === artifact.regionId
-            && inventoryIncludes(source.resourceSummary, { ...ledger, cloudResourceId: artifact.sourceInstanceId, cloudResourceType: 'ecs' })
-            && artifact.sourceDiskIds.length > 0 && artifact.sourceDiskIds.every(id => inventoryIncludes(source.resourceSummary, { ...ledger, cloudResourceId: id, cloudResourceType: 'disk' }))
-            && sourceJobs.some(job => job.rangeInstanceId === source.id && job.cloudWorkspaceId === artifact.cloudWorkspaceId && ['create', 'retry', 'update'].includes(job.jobType))
+            && hasResource(artifact.sourceInstanceId, 'ecs') && artifact.sourceDiskIds.length > 0 && artifact.sourceDiskIds.every(id => hasResource(id, 'disk'))
+            && sourceJob?.rangeInstanceId === source.id && sourceJob.cloudWorkspaceId === artifact.cloudWorkspaceId && ['create', 'retry', 'update'].includes(sourceJob.jobType)
             && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId));
         });
         const imported = imageImports.some(job => {
@@ -98,13 +130,12 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
     }
     const instance = instancesById.get(ledger.rangeInstanceId ?? '');
     const job = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
-    const context = instance?.singleInstanceConfig ?? instance?.resourceSummary?.executionContext;
+    const context = ledger.cloudProvider === 'tencent_cloud' ? instance?.resourceSummary?.executionContext : instance?.singleInstanceConfig ?? instance?.resourceSummary?.executionContext;
     // Tencent evidence has no legacy fallback: the frozen account and exact creation inventory are required.
-    if (ledger.cloudProvider === 'tencent_cloud' && (!context || !('provider' in context) || context.provider !== 'tencent_cloud'
-      || context.cloudAccountUid !== ledger.cloudAccountUid || context.regionId !== ledger.regionId
+    if (ledger.cloudProvider === 'tencent_cloud' && (!instance
       || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== (instance?.cloudWorkspaceId ?? 'legacy-unbound')
       || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== (job?.cloudWorkspaceId ?? 'legacy-unbound')
-      || !inventoryIncludes(instance?.resourceSummary, ledger))) continue;
+      || !tencentInventoryMatches(ledger, instance, inventoryLogs.get(ledger.sourceProvisionJobId ?? '') ?? []))) continue;
     if (instance && job?.rangeInstanceId === instance.id && (['create', 'retry', 'update'].includes(job.jobType) || job.jobType === 'destroy' && inventoryIncludes(instance.resourceSummary, ledger))
       && instance.cloudProvider === ledger.cloudProvider
       && (!context || !('provider' in context) || context.provider === ledger.cloudProvider)

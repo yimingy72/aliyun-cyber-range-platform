@@ -1,5 +1,6 @@
 import type { CreateBillingLineItemInput } from '../src/admin/admin.repository';
 import { BillingService } from '../src/admin/billing.service';
+import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../src/admin/billing-ledger-sync';
 import { PrismaService } from '../src/database/prisma.service';
 import { PrismaAdminRepository } from '../src/database/prisma-admin.repository';
 import { runInCloudWorkspace, runInSystemCloudWorkspaceScope } from '../src/auth/cloud-workspace-scope';
@@ -40,6 +41,22 @@ describeDb('Tencent billing atomic persistence in isolated PostgreSQL', () => {
   });
   afterEach(async () => { fetchMock.mockRestore(); await cleanup(); });
   afterAll(async () => { await prisma.$disconnect(); });
+
+  it('persists same-job exact creation inventory and aligns a late official bill after confirmed cleanup', async () => {
+    await runInCloudWorkspace(b, async () => {
+      const source = await createTencentBillingProof(repository);
+      await syncRangeInstanceBillingLedger({ repository, instance: source.instance, regionId: 'ap-shanghai', cloudAccountUid: '100001',
+        resourceSummary: source.instance.resourceSummary, sourceProvisionJobId: source.job.id, billingStartAt: source.instance.createdAt });
+      expect(await repository.listProvisionJobStepLogs(source.job.id)).toEqual([expect.objectContaining({ cloudWorkspaceId: b.cloudWorkspaceId,
+        stepName: 'platform_billing_creation_inventory', status: 'succeeded' })]);
+      await releaseRangeInstanceBillingLedger(repository, source.instance.id, new Date('2026-09-10'));
+      await repository.updateRangeInstance(source.instance.id, { resourceSummary: null, status: 'destroyed' });
+      fetchMock.mockImplementation(async () => signedTencentBillingResponse([tencentBill()]));
+      await tencentBillingSync(repository).syncRange(WINDOW);
+      expect(await repository.listBillingLineItems()).toHaveLength(2);
+      expect((await new BillingService(repository).getSummary(WINDOW)).totalPretaxAmount).toBe(0.300000003);
+    });
+  });
 
   it('matches official components and signed refunds to the source instance/user without payment double counting', async () => {
     await runInCloudWorkspace(b, async () => {

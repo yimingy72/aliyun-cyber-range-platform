@@ -112,6 +112,28 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
   );
   const sourceProvisionJobId =
     sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? input.sourceProvisionJobId ?? null;
+  if (input.instance.cloudProvider === 'tencent_cloud' && input.sourceProvisionJobId && ledgerSpecs.length) {
+    const context = input.resourceSummary?.executionContext;
+    const job = await input.repository.getProvisionJobById(input.sourceProvisionJobId);
+    if (!context || context.provider !== 'tencent_cloud' || !context.cloudAccountContextId || context.cloudAccountUid !== input.cloudAccountUid
+      || context.regionId !== input.regionId || !job || job.rangeInstanceId !== input.instance.id
+      || (job.cloudWorkspaceId ?? 'legacy-unbound') !== (input.instance.cloudWorkspaceId ?? 'legacy-unbound')) throw new Error('Tencent billing inventory requires its frozen source job identity');
+    if (['create', 'retry', 'update'].includes(job.jobType)) {
+      const diskIds = new Set(ledgerSpecs.filter(resource => resource.cloudResourceType === 'disk').map(resource => resource.cloudResourceId));
+      const diskAttachments = Object.fromEntries(Object.entries(input.resourceSummary?.diskOwnershipProofs ?? {}).filter(([id, proof]) => diskIds.has(id)
+        && ['persisted', 'tags'].includes(proof.method) && (proof.instanceId === null || typeof proof.instanceId === 'string'))
+        .map(([id, proof]) => [id, { instanceId: proof.instanceId, method: proof.method }]));
+      const message = JSON.stringify({ version: 1, cloudProvider: 'tencent_cloud', cloudWorkspaceId: input.instance.cloudWorkspaceId ?? 'legacy-unbound',
+        rangeInstanceId: input.instance.id, sourceJobId: job.id, ownerUserId: input.instance.ownerUserId ?? null,
+        executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.cloudAccountUid, regionId: context.regionId, zoneId: context.zoneId },
+        resources: ledgerSpecs, diskAttachments });
+      if (!(await input.repository.listProvisionJobStepLogs(job.id)).some(log => log.stepName === 'platform_billing_creation_inventory' && log.status === 'succeeded' && log.message === message)) {
+        const now = new Date();
+        await input.repository.createProvisionJobStepLog({ jobId: job.id, stepName: 'platform_billing_creation_inventory', status: 'succeeded', message,
+          startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+      }
+    }
+  }
 
   for (const hostId of hostIds) {
     if (systemDiskIds.has(hostId)) {
@@ -151,7 +173,7 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
           ownerUserId: input.instance.ownerUserId ?? null,
           rangeInstanceId: input.instance.id,
           singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-          sourceProvisionJobId,
+          sourceProvisionJobId: input.instance.cloudProvider === 'tencent_cloud' ? input.sourceProvisionJobId ?? sourceProvisionJobId : sourceProvisionJobId,
           billingStartAt: input.billingStartAt,
           tagsSnapshot: {},
         });
