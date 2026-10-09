@@ -57,6 +57,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
       getExecutionAccountContext: async () => ({ provider: 'alibaba_cloud', accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accountUid: 'test-account', accountUidResolved: true, cloudAccountContextId: 'fixture-context' }),
     };
     config.getAccountContext = config.getExecutionAccountContext;
+    config.getAccountContextById = config.getExecutionAccountContext;
     cloudCalls = [];
     const cloudTags = new Map<string, Record<string, string>>();
     jest.spyOn(globalThis, 'fetch').mockImplementation(async url => {

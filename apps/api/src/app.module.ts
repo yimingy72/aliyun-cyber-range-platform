@@ -16,6 +16,7 @@ import { CloudWorkspacesController, PlatformSessionController } from './admin/cl
 import { CloudWorkspaceInterceptor } from './auth/cloud-workspace.interceptor';
 import { ImageImportsController } from './admin/image-imports.controller';
 import { ImageImportsService } from './admin/image-imports.service';
+import { TencentCosManagedBucketService, TENCENT_COS_BUCKETS } from './admin/tencent-cos-managed-bucket.service';
 import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
 import { PackedImagesService } from './admin/packed-images.service';
 import { PackedImagesWorkerService } from './admin/packed-images-worker.service';
@@ -108,6 +109,8 @@ function resolveProjectRootDir() {
     CloudWorkspacesService,
     { provide: APP_INTERCEPTOR, useClass: CloudWorkspaceInterceptor },
     ImageImportsService,
+    TencentCosManagedBucketService,
+    { provide: TENCENT_COS_BUCKETS, useExisting: TencentCosManagedBucketService },
     ImageImportsWorkerService,
     PackedImagesService,
     PackedImagesWorkerService,
