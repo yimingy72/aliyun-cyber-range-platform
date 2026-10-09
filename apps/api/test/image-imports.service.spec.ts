@@ -270,6 +270,6 @@ describe('Image import resource ownership and recovery', () => {
     await service.list({ id: 'admin', username: 'admin', role: 'admin' });
     expect(imageImportJob.findMany).toHaveBeenCalledWith({ where: { ownerUserId: 'admin' }, orderBy: { createdAt: 'desc' } });
     await service.refreshPendingImports();
-    expect(imageImportJob.findMany).toHaveBeenCalledWith(expect.objectContaining({ select: { id: true, cloudWorkspaceId: true, cloudAccountUid: true }, take: 20, orderBy: [{ lastPolledAt: { sort: 'asc', nulls: 'first' } }, { createdAt: 'asc' }] }));
+    expect(imageImportJob.findMany).toHaveBeenCalledWith(expect.objectContaining({ select: { id: true, cloudWorkspaceId: true, cloudAccountUid: true, cloudProvider: true }, take: 20, orderBy: [{ lastPolledAt: { sort: 'asc', nulls: 'first' } }, { createdAt: 'asc' }] }));
   });
 });

@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 const IMAGE_FORMATS = ['qcow2', 'raw', 'vhd'] as const;
 const OS_TYPES = ['linux', 'windows'] as const;
@@ -56,6 +56,12 @@ export class CreateImageImportDto {
   @Transform(({ value }) => trimString(value))
   @IsIn(ARCHITECTURES)
   architecture!: (typeof ARCHITECTURES)[number];
+
+  @IsOptional()
+  @Transform(({ value }) => trimString(value))
+  @IsString()
+  @MaxLength(128)
+  osVersion?: string;
 
   @Transform(({ value }) => upperCaseString(value))
   @IsIn(BOOT_MODES)
