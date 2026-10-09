@@ -30,6 +30,14 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
   afterEach(async () => { cloud.restore(); await cleanup(); });
   afterAll(async () => { await prisma.$disconnect(); });
 
+  it.each([{ Uin: 100009 }, { Uin: ['100009'] }])('rejects a non-string CAM Uin $Uin before persisting any bucket intent', async ({ Uin }) => {
+    cloud.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ Response: { OwnerUin: '100001', Uin, AppId: 1250000000, RequestId: 'fixture-iam' } }), { status: 200 }));
+    await runInCloudWorkspace(scope, async () => {
+      await expect(service.ensureImportBucket(input)).rejects.toThrow('官方 APPID 身份未核验');
+      expect(await prisma.cloudImageImportBucket.count()).toBe(0); expect(cloud.creates).toBe(0);
+    });
+  });
+
   it('creates one private atomically tagged bucket, proves its creator, and persists the exact platform ledger', async () => {
     await runInCloudWorkspace(scope, async () => {
       const bucket = await service.ensureImportBucket(input);

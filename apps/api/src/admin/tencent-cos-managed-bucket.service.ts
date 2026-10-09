@@ -38,7 +38,7 @@ export class TencentCosManagedBucketService {
     assertCosContext(credentials);
     const iam = await requestTencentCloud<{ OwnerUin?: string; Uin?: string; AppId?: number; RequestId?: string }>({ service: 'cam', version: '2019-01-16', action: 'GetUserAppId',
       accessKeyId: credentials.accessKeyId, accessKeySecret: credentials.accessKeySecret, parameters: {} });
-    if (iam.OwnerUin !== credentials.accountUid || !iam.Uin || !/^\d+$/.test(iam.Uin) || !Number.isSafeInteger(iam.AppId) || !iam.AppId || iam.AppId <= 0 || !iam.RequestId) conflict('COS UID 与官方 APPID 身份未核验。');
+    if (iam.OwnerUin !== credentials.accountUid || typeof iam.Uin !== 'string' || !/^\d+$/.test(iam.Uin) || !Number.isSafeInteger(iam.AppId) || !iam.AppId || iam.AppId <= 0 || !iam.RequestId) conflict('COS UID 与官方 APPID 身份未核验。');
     return { credentials: Object.freeze({ ...credentials, appId: String(iam.AppId) }), iamRequestId: iam.RequestId };
   }
   private assertIdentity(bucket: CloudImageImportBucket, credentials: CosContextCredentials) {
