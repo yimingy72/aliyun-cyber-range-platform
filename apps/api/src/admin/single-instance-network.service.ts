@@ -18,9 +18,10 @@ export class SingleInstanceNetworkService {
   async ensureDefaultProfile(account?: SystemCloudAccountContext,creatorUserId?:string) {
     return this.cidrPoolService.serialize(async () => {
       const snapshot = account ?? await this.systemConfigService.getAccountContext();
+      if (snapshot.provider !== 'alibaba_cloud') throw new ConflictException('该云厂商的实例创建与网络回收尚未开放。');
       if (!snapshot.accountUid || !snapshot.cloudAccountContextId)
         throw new ConflictException('Default network requires a verified cloud account');
-      const identity = { createdByUserId:creatorUserId,provider: snapshot.provider, cloudAccountUid: snapshot.accountUid, cloudAccountContextId: snapshot.cloudAccountContextId, regionId: snapshot.defaultRegion, zoneId: snapshot.defaultZoneId };
+      const identity = { createdByUserId:creatorUserId,provider: 'alibaba_cloud' as const, cloudAccountUid: snapshot.accountUid, cloudAccountContextId: snapshot.cloudAccountContextId, regionId: snapshot.defaultRegion, zoneId: snapshot.defaultZoneId };
       const existing = await this.adminRepository.getSingleInstanceNetworkProfile(identity);
       if (existing) {
         if(existing.cleanupRunId && !existing.cleanupOwnerUserIds?.includes(creatorUserId??'')) throw new ConflictException('Default network is reserved for an explicitly registered validation run');
@@ -38,7 +39,7 @@ export class SingleInstanceNetworkService {
       };
       try {
         const profile = await this.bootstrap.bootstrapDefaultProfile({
-          ...identity, occupiedCidrs: occupied, runtimeConfig: snapshot,
+          ...identity, occupiedCidrs: occupied, runtimeConfig: { ...snapshot, provider: 'alibaba_cloud' },
           onApplyStart: async () => {
             const recovery = await this.bootstrap.readRecoveryProfile(identity);
             if (!recovery) throw new ConflictException('Default network apply intent could not be persisted');

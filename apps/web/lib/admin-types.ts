@@ -584,7 +584,7 @@ export type PlatformImageTagListPayload = {
 export type CloudAccountContext = {
   id: string;
   displayName: string;
-  provider: 'alibaba_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   accountUid: string;
   regionId: string;
   zoneId: string;

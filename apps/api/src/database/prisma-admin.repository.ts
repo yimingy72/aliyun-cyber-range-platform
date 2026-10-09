@@ -2108,7 +2108,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async getSingleInstanceNetworkProfile(input: {
     cloudAccountUid?: string;
-    provider: 'alibaba_cloud';
+    provider: 'alibaba_cloud' | 'tencent_cloud';
     regionId: string;
     zoneId: string;
   }) {

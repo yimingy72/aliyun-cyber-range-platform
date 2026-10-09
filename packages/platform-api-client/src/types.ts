@@ -153,6 +153,53 @@ export type RangeInstance = Record<string, unknown> & {
 };
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
+export type CloudAccountContext = {
+  id: string;
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  displayName: string;
+  accountUid: string;
+  regionId: string;
+  zoneId: string;
+  isActive: boolean;
+  status: 'provisioning' | 'ready' | 'degraded' | 'disabled';
+  imageImportBucket: string;
+  bucketStatus: string;
+  lastVerifiedAt?: string | null;
+};
+export type SaveTencentCloudAccountInput = {
+  provider: 'tencent_cloud';
+  regionId: string;
+  zoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+};
+export type TencentCloudRegionsInput = {
+  regionIds: string[];
+  accessKeyId: string;
+  accessKeySecret: string;
+};
+export type TencentCloudRegionsPayload = {
+  provider: 'tencent_cloud';
+  regions: Array<{ regionId: string; displayName: string; zones: Array<{ zoneId: string; displayName: string }> }>;
+};
+export type TencentCloudImagesInput = {
+  cloudAccountContextId: string;
+  scope: 'public' | 'custom';
+  offset?: number;
+  limit?: number;
+};
+export type TencentCloudImagesPayload = {
+  provider: 'tencent_cloud';
+  cloudAccountContextId: string;
+  accountUid: string;
+  regionId: string;
+  zoneId: string;
+  scope: 'public' | 'custom';
+  offset: number;
+  limit: number;
+  totalCount: number;
+  items: Array<{ imageId: string; displayName: string; status: string; platform: string | null; architecture: string | null; isAvailable: boolean }>;
+};
 export type AdminUser = Record<string, unknown> & { id: string; username: string };
 export type SingleInstanceListPayload = {
   batches: Array<{
@@ -314,6 +361,11 @@ export type PlatformApiClientLike = {
   getProvisionJob(id: string): Promise<ProvisionJob>;
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
+  listCloudAccountContexts(includeInactive?: boolean): Promise<CloudAccountContext[]>;
+  saveTencentCloudAccount(payload: SaveTencentCloudAccountInput, operation?: OperationRequest): Promise<CloudAccountContext>;
+  discoverTencentCloudRegions(payload: TencentCloudRegionsInput): Promise<TencentCloudRegionsPayload>;
+  listTencentCloudImages(input: TencentCloudImagesInput): Promise<TencentCloudImagesPayload>;
+  getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   getBillingSummary(input?: BillingWindowInput): Promise<BillingSummary>;
   listBillingUsers(input?: BillingWindowInput): Promise<PaginatedResult<BillingUserSummary>>;
   getBillingUserSummary(userId: string, input?: BillingWindowInput): Promise<BillingUserSummary>;

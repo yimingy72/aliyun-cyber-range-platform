@@ -12,6 +12,8 @@ import { useAdminRouteIsActive } from '../admin-page-cache';
 import { useAdminSession } from '../use-admin-session';
 import { AdminPageHeader } from '../shared/admin-page-header';
 import { CloudConfigPanel } from './cloud-config-panel';
+import { TencentCloudPanel } from './tencent-cloud-panel';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../ui/tabs';
 
 type SettingsScreenProps = {
   apiBaseUrl?: string;
@@ -29,6 +31,7 @@ export function SettingsScreen({
   const cloudConfigSource = `${apiBaseUrl}\u0000${token ?? ''}`;
   const cachedCloudConfig = screenCache?.read<CloudConfigSnapshot>(apiBaseUrl, token, cloudConfigResource);
   const [cloudConfig, setCloudConfig] = useState<CloudConfigSnapshot | null>(() => cachedCloudConfig?.data ?? null);
+  const [cloudTab, setCloudTab] = useState('alibaba_cloud');
   const [cloudConfigErrorMessage, setCloudConfigErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveErrorMessage, setCloudConfigSaveErrorMessage] = useState<string | null>(null);
   const [cloudConfigSaveSuccessMessage, setCloudConfigSaveSuccessMessage] = useState<string | null>(null);
@@ -232,7 +235,7 @@ export function SettingsScreen({
     <div className="admin-screen">
       <section className="admin-workbench-surface">
         <AdminPageHeader
-          action={(
+          action={cloudTab === 'alibaba_cloud' ? (
             <Button
               disabled={isInitialCloudConfigLoad || cloudConfig === null || isSavingCloudConfig}
               form="cloud-config-form"
@@ -240,12 +243,18 @@ export function SettingsScreen({
             >
               {isSavingCloudConfig ? '正在保存...' : '保存云配置'}
             </Button>
-          )}
-          description="管理阿里云默认地域、访问凭据和镜像导入存储。"
+          ) : undefined}
+          description="管理云账号、默认地域与镜像存储。"
           title="云配置"
         />
 
-        <CloudConfigPanel
+        <Tabs className="pt-4" value={cloudTab} onValueChange={setCloudTab}>
+          <TabsList aria-label="云账号配置" variant="line">
+            <TabsTrigger value="alibaba_cloud">阿里云配置</TabsTrigger>
+            <TabsTrigger value="tencent_cloud">腾讯云接入</TabsTrigger>
+          </TabsList>
+          <TabsContent value="alibaba_cloud">
+          <CloudConfigPanel
           loadErrorMessage={cloudConfigErrorMessage}
           isLoading={isInitialCloudConfigLoad || (isLoadingCloudConfig && cloudConfig === null)}
           isSaving={isSavingCloudConfig}
@@ -256,6 +265,16 @@ export function SettingsScreen({
           onRetry={retryCloudConfigLoad}
           onSubmit={handleSaveCloudConfig}
         />
+          </TabsContent>
+          <TabsContent value="tencent_cloud">
+            <TencentCloudPanel apiBaseUrl={apiBaseUrl} token={token} onError={error => {
+              if (!isUnauthorizedAdminError(error)) return false;
+              logout();
+              router.replace('/admin/login');
+              return true;
+            }} />
+          </TabsContent>
+        </Tabs>
       </section>
     </div>
   );

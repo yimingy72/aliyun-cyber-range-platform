@@ -761,6 +761,7 @@ export class ProvisioningWorkerService {
   }
 
   private async resolveRangeAccountContext(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
+    if (instance.cloudProvider !== 'alibaba_cloud') throw new Error('This cloud provider is not enabled for range provisioning or recovery');
     const bound = instance.resourceSummary?.executionContext;
     if (this.rangeProvisioner.mode === 'dry-run') {
       if (instance.resourceSummary?.creationAttempted || bound || (instance.resourceSummary?.mode !== 'dry-run' && this.rangeSummaryHasIds(instance.resourceSummary)))
@@ -771,10 +772,11 @@ export class ProvisioningWorkerService {
       const service = this.systemConfigService;
       const context = typeof service.getAccountContextById === 'function'
         ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
+      if (context.provider !== 'alibaba_cloud') throw new Error('Range source cloud provider does not match the provisioner');
       if (!context.accountUidResolved || context.accountUid !== bound.cloudAccountUid || context.cloudAccountContextId !== bound.cloudAccountContextId
         || context.defaultRegion !== bound.regionId || context.defaultZoneId !== bound.zoneId)
         throw new Error('Range execution account no longer matches its frozen cloud identity');
-      return context;
+      return { ...context, provider: 'alibaba_cloud' as const };
     }
     if (await this.rangeHasApplyEvidence(instance, job) || ['destroy','update'].includes(this.resolveEffectiveJobType(job, instance)))
       throw new Error('Range has no verified source account binding; manual resource recovery is required');

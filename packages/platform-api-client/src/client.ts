@@ -9,6 +9,12 @@ import type {
   BillingUserSummary,
   BillingWindowInput,
   CloudConfigSnapshot,
+  CloudAccountContext,
+  SaveTencentCloudAccountInput,
+  TencentCloudRegionsInput,
+  TencentCloudRegionsPayload,
+  TencentCloudImagesInput,
+  TencentCloudImagesPayload,
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
   CreateAdminUserInput,
@@ -343,6 +349,29 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   fetchCloudConfig() {
     return this.request<CloudConfigSnapshot>('/admin/system-config');
+  }
+
+  listCloudAccountContexts(includeInactive = false) {
+    return this.request<CloudAccountContext[]>(`/admin/cloud-contexts${includeInactive ? '?includeInactive=true' : ''}`);
+  }
+
+  saveTencentCloudAccount(payload: SaveTencentCloudAccountInput, operation?: OperationRequest) {
+    return this.request<CloudAccountContext>('/admin/cloud-contexts', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  discoverTencentCloudRegions(payload: TencentCloudRegionsInput) {
+    return this.request<TencentCloudRegionsPayload>('/admin/tencent-cloud/regions/query', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  listTencentCloudImages(input: TencentCloudImagesInput) {
+    const params = new URLSearchParams({ scope: input.scope });
+    if (input.offset !== undefined) params.set('offset', String(input.offset));
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    return this.request<TencentCloudImagesPayload>(`/admin/tencent-cloud/contexts/${encodeURIComponent(input.cloudAccountContextId)}/images?${params}`);
+  }
+
+  getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number) {
+    return this.request<InstanceTypeAvailabilitySnapshot>(`/admin/cloud-contexts/${encodeURIComponent(id)}/instance-type-availability?${new URLSearchParams({ cpu: String(cpu), memory: String(memory) })}`);
   }
 
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest) {

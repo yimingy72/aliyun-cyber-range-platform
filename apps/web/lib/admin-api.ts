@@ -41,6 +41,7 @@ import type {
   UpdateAdminUserRoleInput,
   UpdateAdminUserStatusInput,
 } from './admin-types';
+import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from '@aliyun-cyber-range/platform-api-client';
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
 
@@ -976,12 +977,31 @@ export async function setPlatformImageTags(apiBaseUrl: string, token: string, id
   return readJson<PlatformImageAsset>(response);
 }
 
-export async function fetchCloudAccountContexts(apiBaseUrl: string, token: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts`, {
+export async function fetchCloudAccountContexts(apiBaseUrl: string, token: string, includeInactive = false) {
+  const response = await fetch(`${apiBaseUrl}/admin/cloud-contexts${includeInactive ? '?includeInactive=true' : ''}`, {
     headers: createAdminHeaders(token),
   });
 
   return readJson<CloudAccountContext[]>(response);
+}
+
+export async function saveTencentCloudAccount(apiBaseUrl: string, token: string, input: SaveTencentCloudAccountInput) {
+  return readJson<CloudAccountContext>(await fetch(`${apiBaseUrl}/admin/cloud-contexts`, {
+    method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify(input),
+  }));
+}
+
+export async function discoverTencentCloudRegions(apiBaseUrl: string, token: string, input: TencentCloudRegionsInput) {
+  return readJson<TencentCloudRegionsPayload>(await fetch(`${apiBaseUrl}/admin/tencent-cloud/regions/query`, {
+    method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify(input),
+  }));
+}
+
+export async function fetchTencentCloudImages(apiBaseUrl: string, token: string, input: TencentCloudImagesInput) {
+  const params = new URLSearchParams({ scope: input.scope });
+  if (input.offset !== undefined) params.set('offset', String(input.offset));
+  if (input.limit !== undefined) params.set('limit', String(input.limit));
+  return readJson<TencentCloudImagesPayload>(await fetch(`${apiBaseUrl}/admin/tencent-cloud/contexts/${encodeURIComponent(input.cloudAccountContextId)}/images?${params}`, { headers: createAdminHeaders(token) }));
 }
 
 export async function fetchImageImportJobs(apiBaseUrl: string, token: string) {

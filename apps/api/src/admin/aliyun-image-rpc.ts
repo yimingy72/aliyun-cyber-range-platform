@@ -2,13 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { BadGatewayException } from '@nestjs/common';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 
-export type ImageCredentials = { accessKeyId: string; accessKeySecret: string; regionId: string };
+export type ImageCredentials = { provider?: string; accessKeyId: string; accessKeySecret: string; regionId: string };
 export class AliyunImageRpcError extends BadGatewayException {
   constructor(action: string, readonly cloudCode: string | null, status: number) {
     super(`Aliyun ${action} failed: ${cloudCode ?? status}`);
   }
 }
 export async function imageRpc<T>(credentials: ImageCredentials, action: string, parameters: Record<string, string> = {}): Promise<T> {
+  if (credentials.provider !== undefined && credentials.provider !== 'alibaba_cloud') {
+    throw new BadGatewayException('当前镜像操作尚未适配该云厂商。');
+  }
   const query = signAliyunRpcQuery({ Action: action, AccessKeyId: credentials.accessKeyId, Format: 'JSON', RegionId: credentials.regionId,
     SignatureMethod: 'HMAC-SHA1', SignatureNonce: randomUUID(), SignatureVersion: '1.0',
     Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), Version: '2014-05-26', ...parameters }, credentials.accessKeySecret);
