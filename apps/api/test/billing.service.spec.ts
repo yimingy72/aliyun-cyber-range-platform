@@ -1,5 +1,8 @@
 import { BillingService } from '../src/admin/billing.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { createProvenBillingLedger } from './support/create-billing-fixture';
+
+const executionContext = { cloudAccountContextId: 'test-context', cloudAccountUid: '1234567890', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' };
 
 describe('BillingService', () => {
   it('includes platform users without billing items in the user list', async () => {
@@ -40,7 +43,8 @@ describe('BillingService', () => {
       role: 'user',
     });
 
-    const ledger = await repository.createBillingLedgerResource({
+    const { ledger } = await createProvenBillingLedger(repository, {
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
       cloudResourceType: 'ecs',
@@ -49,7 +53,8 @@ describe('BillingService', () => {
       billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
       tagsSnapshot: {},
     });
-    const platformLedger = await repository.createBillingLedgerResource({
+    const { ledger: platformLedger } = await createProvenBillingLedger(repository, {
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'eip-1',
       cloudResourceType: 'eip',
@@ -60,6 +65,7 @@ describe('BillingService', () => {
 
     await repository.upsertBillingLineItems([
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'a',
         billCycle: '2026-07',
@@ -77,6 +83,7 @@ describe('BillingService', () => {
         rawPayload: {},
       },
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'b',
         billCycle: '2026-07',
@@ -94,6 +101,7 @@ describe('BillingService', () => {
         rawPayload: {},
       },
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'unmatched-platform-charge',
         billCycle: '2026-07',
@@ -130,7 +138,9 @@ describe('BillingService', () => {
       endAt: '2026-07-16',
       totalPretaxAmount: 1.75,
       platformPretaxAmount: 0.5,
-      anomalyCount: 1,
+      billingScope: 'platform_resources',
+      anomalyCount: 0,
+      unallocatedCurrencyTotals: [],
       resourceTypeTotals: [
         { resourceType: 'ecs', pretaxAmount: 1.25 },
         { resourceType: 'eip', pretaxAmount: 0.5 },
@@ -178,12 +188,14 @@ describe('BillingService', () => {
       name: 'web-lab',
       ownerUserId: 'user-1',
       instanceMode: 'range',
+      resourceSummary: { mode: 'opentofu', executionContext },
       status: 'running',
     });
     const singleInstance = await repository.createRangeInstance({
       name: 'ubuntu-training',
       ownerUserId: 'user-1',
       instanceMode: 'single',
+      resourceSummary: { mode: 'opentofu', executionContext },
       status: 'running',
     });
     const rangeJob = await repository.createProvisionJob({
@@ -206,6 +218,7 @@ describe('BillingService', () => {
     });
 
     const rangeLedger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-range',
       cloudResourceType: 'ecs',
@@ -217,6 +230,7 @@ describe('BillingService', () => {
       tagsSnapshot: {},
     });
     const singleLedger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-single',
       cloudResourceType: 'ecs',
@@ -230,6 +244,7 @@ describe('BillingService', () => {
 
     await repository.upsertBillingLineItems([
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'range-ecs',
         billCycle: '2026-07',
@@ -246,6 +261,7 @@ describe('BillingService', () => {
         rawPayload: {},
       },
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'single-ecs',
         billCycle: '2026-07',
@@ -262,6 +278,7 @@ describe('BillingService', () => {
         rawPayload: {},
       },
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'legacy',
         billCycle: '2026-07',
@@ -328,7 +345,7 @@ describe('BillingService', () => {
     });
   });
 
-  it('associates legacy billing ledgers with a failed launch instead of reporting them as unlinked', async () => {
+  it('keeps a legacy failed launch with no ledger source job pending verification instead of counting its costs', async () => {
     const repository = createMemoryAdminRepository();
     const service = new BillingService(repository);
 
@@ -355,6 +372,7 @@ describe('BillingService', () => {
       finishedAt: new Date('2026-07-29T03:11:00.000Z'),
     });
     const ledger = await repository.createBillingLedgerResource({
+      cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-failed-range',
       cloudResourceType: 'ecs',
@@ -366,6 +384,7 @@ describe('BillingService', () => {
     });
     await repository.upsertBillingLineItems([
       {
+        cloudAccountUid: '1234567890',
         syncBatchId: 'sync-1',
         sourceFingerprint: 'failed-range-ecs',
         billCycle: '2026-07',
@@ -384,20 +403,11 @@ describe('BillingService', () => {
     ]);
 
     await expect(service.listUserGroups({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toMatchObject({
-      items: [
-        expect.objectContaining({
-          id: job.id,
-          kind: 'range_launch',
-          provisionJobStatus: 'failed',
-          title: '开启编排实例',
-          ownerUsername: 'alice',
-          pretaxAmount: 0.25,
-          resourceCount: 1,
-        }),
-      ],
-      page: 1,
-      pageSize: 20,
-      total: 1,
+      items: [], page: 1, pageSize: 20, total: 0,
+    });
+    await expect(service.getSummary({ startAt: '2026-07-29', endAt: '2026-07-29' })).resolves.toMatchObject({
+      billingScope: 'platform_resources', totalPretaxAmount: 0, unallocatedCurrencyTotals: [],
+      reconciliationIssues: [expect.objectContaining({ resourceType: 'unknown', resourceCount: 1 })],
     });
   });
 });
