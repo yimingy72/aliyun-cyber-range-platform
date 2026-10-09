@@ -101,6 +101,7 @@ for (const scriptRelativePath of [
           ...process.env,
           OPENTOFU_PROVIDER_MIRROR_ROOT: mirrorRoot,
           OPENTOFU_WORKSPACES_ROOT: path.join(tempRoot, 'workspaces'),
+          ALICLOUD_PROVIDER_VERSION: '1.282.0',
           ALICLOUD_PROVIDER_SHA256: sha256(archive),
         },
         stdio: 'pipe',
@@ -127,9 +128,9 @@ test('container build and compose configuration use the host provider cache', ()
   }
 
   for (const [composePath, mirrorPath] of [
-    ['docker-compose.yml', './.local/provider-mirror'],
-    ['deploy/current-system/docker-compose.yml', '../../.local/provider-mirror'],
-    ['deploy/current-system/docker-compose.images.yml', '../../.local/provider-mirror'],
+    ['docker-compose.yml', './.local/provider-fast-wait/mirror'],
+    ['deploy/current-system/docker-compose.yml', '../../.local/provider-fast-wait/mirror'],
+    ['deploy/current-system/docker-compose.images.yml', '../../.local/provider-fast-wait/mirror'],
   ]) {
     const compose = fs.readFileSync(path.join(repoRoot, composePath), 'utf8');
     assert.match(compose, new RegExp(`\\$\\{OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-${mirrorPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}:/var/lib/cyber-range/provider-mirror:ro`));
@@ -153,7 +154,7 @@ test('concurrent Docker seeds reuse one immutable mirror and publish its path to
   fs.mkdirSync(path.dirname(archivePath), { recursive: true });
   fs.writeFileSync(archivePath, archive);
   const env = { ...process.env, OPENTOFU_PROVIDER_MIRROR_ROOT: mirrorRoot,
-    OPENTOFU_WORKSPACES_ROOT: path.join(tempRoot, 'workspaces'), ALICLOUD_PROVIDER_SHA256: sha256(archive) };
+    OPENTOFU_WORKSPACES_ROOT: path.join(tempRoot, 'workspaces'), ALICLOUD_PROVIDER_VERSION: '1.282.0', ALICLOUD_PROVIDER_SHA256: sha256(archive) };
   try {
     const results = await Promise.all(Array.from({ length: 4 }, (_, index) => promisify(execFile)('/bin/sh', [
       path.join(repoRoot, index % 2 ? 'scripts/docker/seed-provider-mirror.sh' : 'deploy/current-system/scripts/docker/seed-provider-mirror.sh'),

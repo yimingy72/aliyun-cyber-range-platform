@@ -62,17 +62,9 @@ for compose_file in docker-compose.yml deploy/current-system/docker-compose.yml 
 done
 
 if [ "${#CI_PROVIDER_MIRROR_ARGS[@]}" = 0 ]; then
-  # Fetch once before entering the isolated verification network; all checks then use a read-only mirror.
-  mkdir -p "$CONTEXT_DIR/provider-mirror"
-  docker run --rm -v "$CONTEXT_DIR/provider-mirror:/provider-mirror" \
-    -e OPENTOFU_PROVIDER_MIRROR_HOST_PATH=/provider-mirror \
-    -e CI_MIRROR_UID="$(id -u)" -e CI_MIRROR_GID="$(id -g)" \
-    "$CI_IMAGE" sh -ec '
-      cleanup_mirror_ownership() { chown -R "$CI_MIRROR_UID:$CI_MIRROR_GID" /provider-mirror; }
-      trap cleanup_mirror_ownership EXIT
-      pnpm provider:download
-    '
-  CI_PROVIDER_MIRROR_ARGS=(-v "$CONTEXT_DIR/provider-mirror:/app/.local/provider-mirror:ro")
+  # Build the pinned source patch in Docker before isolated tests use its read-only mirror.
+  ALICLOUD_PROVIDER_BUILD_OUTPUT="$REPO_ROOT/.local/provider-fast-wait" sh scripts/provider/alicloud-fast-wait/build.sh
+  CI_PROVIDER_MIRROR_ARGS=(-v "$REPO_ROOT/.local/provider-fast-wait/mirror:/app/.local/provider-mirror:ro")
 fi
 
 docker network create --internal "$CI_NETWORK" >/dev/null
@@ -138,6 +130,5 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$IMAGE_TAG_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
-    pnpm provider:download
-    ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0_linux_amd64.zip pnpm iac:validate
+    ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0-range.1_linux_amd64.zip pnpm iac:validate
   '

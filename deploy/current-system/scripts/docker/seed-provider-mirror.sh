@@ -4,8 +4,8 @@ set -eu
 MIRROR_ROOT="${OPENTOFU_PROVIDER_MIRROR_ROOT:-/var/lib/cyber-range/provider-mirror}"
 WORKSPACES_ROOT="${OPENTOFU_WORKSPACES_ROOT:-/var/lib/cyber-range/workspaces}"
 PROVIDER_DIR="${MIRROR_ROOT}/registry.opentofu.org/aliyun/alicloud"
-ALICLOUD_PROVIDER_VERSION="${ALICLOUD_PROVIDER_VERSION:-1.282.0}"
-ALICLOUD_PROVIDER_SHA256="${ALICLOUD_PROVIDER_SHA256:-75cd138f29602271d79b4900f83bd5def4f2c16ebe19fdd97bd0439b74901807}"
+ALICLOUD_PROVIDER_VERSION="${ALICLOUD_PROVIDER_VERSION:-1.282.0-range.1}"
+ALICLOUD_PROVIDER_SHA256="${ALICLOUD_PROVIDER_SHA256:-9d9a30cacfd70d8307bfe0bc55b98cc95ca34c30f942264eac60a65ef5535f5b}"
 PROVIDER_ZIP_PATH="${PROVIDER_DIR}/terraform-provider-alicloud_${ALICLOUD_PROVIDER_VERSION}_linux_amd64.zip"
 
 sha256_file() {
@@ -23,7 +23,7 @@ mkdir -p "${WORKSPACES_ROOT}"
 
 if [ ! -f "${PROVIDER_ZIP_PATH}" ]; then
   echo "Missing Alibaba Cloud provider cache: ${PROVIDER_ZIP_PATH}" >&2
-  echo "Run 'pnpm provider:download' on the host before starting Docker Compose." >&2
+  echo "Run 'pnpm provider:build' on the host before starting Docker Compose." >&2
   exit 1
 fi
 

@@ -150,7 +150,7 @@ output "resource_summary" {
   required_providers {
     alicloud = {
       source  = "aliyun/alicloud"
-      version = "~> 1.253"
+      version = "= 1.282.0-range.1"
     }
   }
 }

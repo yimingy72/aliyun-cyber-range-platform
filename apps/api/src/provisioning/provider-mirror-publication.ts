@@ -22,6 +22,20 @@ export function writeProviderConfigAtomically(destination: string, contents: str
   return publishAtomically(destination, temporary => fs.writeFile(temporary, contents, 'utf8'));
 }
 
+export async function migrateAliCloudWorkspaceProvider(workspaceDir: string) {
+  const versionsPath = path.join(workspaceDir, 'versions.tf');
+  const existing = await fs.readFile(versionsPath, 'utf8');
+  const next = existing.replace(/\balicloud\s*=\s*\{[^}]*\}/g, block => {
+    if (!/\bsource\s*=\s*"aliyun\/alicloud"/.test(block)) return block;
+    const version = block.match(/\bversion\s*=\s*"([^"]+)"/);
+    if (!version || !['~> 1.253', '= 1.282.0', '= 1.282.0-range.1'].includes(version[1])) {
+      throw new Error('Persisted Alibaba Cloud provider constraint is not supported for migration');
+    }
+    return block.replace(version[0], 'version = "= 1.282.0-range.1"');
+  });
+  if (next !== existing) await writeProviderConfigAtomically(versionsPath, next);
+}
+
 export async function prepareOpenTofuProviderEnv(input: {
   providerZipPath?: string;
   workspacesRootDir: string;
@@ -36,7 +50,7 @@ export async function prepareOpenTofuProviderEnv(input: {
       sha256?: string; version?: string; platform?: string; executable?: string;
     };
     if (!ready.sha256 || !/^[a-f0-9]{64}$/.test(ready.sha256) || path.basename(mirrorRoot) !== ready.sha256
-      || !ready.version || !/^\d+\.\d+\.\d+$/.test(ready.version) || ready.platform !== 'linux_amd64'
+      || !ready.version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/.test(ready.version) || ready.platform !== 'linux_amd64'
       || !ready.executable || path.basename(ready.executable) !== ready.executable
       || !ready.executable.startsWith('terraform-provider-alicloud_')) {
       throw new Error('Unpacked provider mirror readiness is malformed');
