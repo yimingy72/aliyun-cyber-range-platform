@@ -316,3 +316,72 @@ describe('billing-ledger-sync', () => {
     );
   });
 });
+
+describe('billing ledger ownership and scoped reads', () => {
+  const start = new Date('2026-10-09T00:00:00Z');
+  async function fixture() {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({ name: 'scoped-billing', ownerUserId: 'alice', status: 'running' });
+    const input = { repository, instance, regionId: 'cn-hangzhou', cloudAccountUid: 'account-a',
+      resourceSummary: { mode: 'opentofu' as const, hostIds: { app: 'i-a' }, systemDiskIds: { app: 'd-a' } }, billingStartAt: start };
+    return { repository, instance, input };
+  }
+
+  it('reads only the requested instance history for create and release, retaining packed images and unrelated resources', async () => {
+    const { repository, instance, input } = await fixture();
+    const list = jest.spyOn(repository, 'listBillingLedgerResources');
+    const unrelated = await repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudAccountUid: 'account-b', cloudResourceId: 'i-other', cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: 'bob', rangeInstanceId: 'other', billingStartAt: start });
+    const image = await repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudAccountUid: 'account-a', cloudResourceId: 'm-packed', cloudResourceType: 'image', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: instance.id, billingStartAt: start });
+    await syncRangeInstanceBillingLedger(input);
+    const ended = new Date('2026-10-09T01:00:00Z');
+    await releaseRangeInstanceBillingLedger(repository, instance.id, ended);
+    expect(list.mock.calls).toEqual([[{ rangeInstanceId: instance.id }], [{ rangeInstanceId: instance.id }]]);
+    const rows = await repository.listBillingLedgerResources();
+    expect(rows.filter(row => ['i-a', 'd-a'].includes(row.cloudResourceId)).every(row => row.releasedAt?.getTime() === ended.getTime())).toBe(true);
+    expect(rows.find(row => row.id === unrelated.id)).toEqual(unrelated);
+    expect(rows.find(row => row.id === image.id)).toEqual(image);
+  });
+
+  it.each([
+    { cloudAccountUid: 'account-b' }, { ownerUserId: 'bob' }, { rangeInstanceId: 'other' }, { singleInstanceBatchId: 'other-batch' },
+  ])('refuses to transfer existing resource billing history with %j', async conflict => {
+    const { repository, instance, input } = await fixture();
+    const original = await repository.createBillingLedgerResource({ regionId: input.regionId, cloudAccountUid: 'account-a', cloudResourceId: 'i-a', cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: instance.id, billingStartAt: start, ...conflict });
+    await expect(syncRangeInstanceBillingLedger(input)).rejects.toThrow('ownership conflicts');
+    expect(await repository.listBillingLedgerResources()).toEqual([original]);
+  });
+
+  it('rechecks ownership if another writer creates the resource between lookup and insertion', async () => {
+    const { repository, instance, input } = await fixture();
+    const create = repository.createBillingLedgerResource.bind(repository);
+    const conflict = { code: 'P2002' };
+    jest.spyOn(repository, 'createBillingLedgerResource').mockImplementationOnce(async value => {
+      await create({ ...value, ownerUserId: 'bob', rangeInstanceId: 'other' });
+      throw conflict;
+    });
+    await expect(syncRangeInstanceBillingLedger(input)).rejects.toThrow('ownership conflicts');
+    expect((await repository.listBillingLedgerResources())[0]).toMatchObject({ ownerUserId: 'bob', rangeInstanceId: 'other' });
+    expect(instance.ownerUserId).toBe('alice');
+  });
+
+  it('recovers a same-owner duplicate insert without resetting its first billing time or successful source job', async () => {
+    const { repository, instance, input } = await fixture();
+    const source = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'alice' });
+    await repository.updateProvisionJob(source.id, { status: 'succeeded' });
+    const create = repository.createBillingLedgerResource.bind(repository);
+    jest.spyOn(repository, 'createBillingLedgerResource').mockImplementationOnce(async value => {
+      await create({ ...value, billingStartAt: start, sourceProvisionJobId: source.id });
+      throw { code: 'P2002' };
+    });
+    await syncRangeInstanceBillingLedger({ ...input, billingStartAt: new Date('2026-10-09T01:00:00Z'), sourceProvisionJobId: 'retry' });
+    const rows = await repository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.cloudResourceId === 'i-a')).toMatchObject({ billingStartAt: start, sourceProvisionJobId: source.id });
+  });
+
+  it('does not swallow non-unique persistence failures', async () => {
+    const { repository, input } = await fixture();
+    jest.spyOn(repository, 'createBillingLedgerResource').mockRejectedValue(new Error('write unavailable'));
+    await expect(syncRangeInstanceBillingLedger(input)).rejects.toThrow('write unavailable');
+  });
+});

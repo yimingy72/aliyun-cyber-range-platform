@@ -1659,8 +1659,8 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
-    async listBillingLedgerResources() {
-      return cloneList(billingLedgerResources);
+    async listBillingLedgerResources(filter = {}) {
+      return cloneList(billingLedgerResources.filter(item => filter.rangeInstanceId === undefined || item.rangeInstanceId === filter.rangeInstanceId));
     },
     async getLatestBillingLineItemDate(cloudAccountUid?: string) {
       const latest = billingLineItems.filter(item => cloudAccountUid === undefined || item.cloudAccountUid === cloudAccountUid).reduce<Date | null>(

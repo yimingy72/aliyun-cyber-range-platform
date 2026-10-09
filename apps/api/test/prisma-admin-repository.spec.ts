@@ -34,3 +34,14 @@ describe('PrismaAdminRepository', () => {
     );
   });
 });
+
+describe('PrismaAdminRepository billing scope', () => {
+  it('pushes the exact instance predicate into the indexed database query', async () => {
+    const prisma = { billingLedgerResource: { findMany: jest.fn().mockResolvedValue([]) } };
+    const repository = new PrismaAdminRepository(prisma as never);
+    await repository.listBillingLedgerResources({ rangeInstanceId: 'only-this-instance' });
+    expect(prisma.billingLedgerResource.findMany).toHaveBeenCalledWith({ where: { rangeInstanceId: 'only-this-instance' }, orderBy: { createdAt: 'desc' } });
+    await repository.listBillingLedgerResources();
+    expect(prisma.billingLedgerResource.findMany).toHaveBeenLastCalledWith({ orderBy: { createdAt: 'desc' } });
+  });
+});
