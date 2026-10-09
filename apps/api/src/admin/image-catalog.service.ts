@@ -1,4 +1,5 @@
 import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 import {
   ADMIN_REPOSITORY,
@@ -140,10 +141,10 @@ export class ImageCatalogService {
     view: PlatformImageView = 'platform',
   ): Promise<PlatformImageAssetsPayload> {
     const accountContext = await this.selectedContext();
+    const workspace = getCurrentCloudWorkspaceScope();
+    const historical = workspace && !('system' in workspace) && workspace.isReadOnly;
     const baseFilter = {
-      provider: accountContext.provider,
-      accountUid: accountContext.accountUid,
-      regionId: accountContext.defaultRegion,
+      ...(historical ? {} : { provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion }),
       ...(view === 'platform' ? { visibility: 'platform' as const } : { ownerUserId: currentUser.id }),
     };
 
@@ -455,19 +456,18 @@ export class ImageCatalogService {
 
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {
     const accountContext = await this.selectedContext();
+    const workspace = getCurrentCloudWorkspaceScope();
+    const placement = workspace && !('system' in workspace) && workspace.isReadOnly ? {}
+      : { provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion };
 
     const [snapshots, catalogItems, packedArtifacts] = await Promise.all([
       this.adminRepository.listImageSnapshots({
-        provider: accountContext.provider,
-        accountUid: accountContext.accountUid,
-        regionId: accountContext.defaultRegion,
+        ...placement,
         scope,
       }),
       this.adminRepository.listImageCatalogItems({
-        provider: accountContext.provider,
+        ...placement,
         scope,
-        accountUid: accountContext.accountUid,
-        regionId: accountContext.defaultRegion,
       }),
       scope === 'custom' ? this.adminRepository.listPackedImageArtifacts() : Promise.resolve([]),
     ]);

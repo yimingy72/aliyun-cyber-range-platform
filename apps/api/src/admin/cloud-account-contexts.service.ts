@@ -110,7 +110,8 @@ export class CloudAccountContextsService {
       regionId: context.regionId,
       zoneId: context.zoneId,
       accessKeyId: context.accessKeyId,
-      accessKeySecret: context.provider === 'tencent_cloud' ? decryptCloudCredential(context.accessKeySecret, { ...context, provider: 'tencent_cloud' }) : context.accessKeySecret,
+      accessKeySecret: context.provider === 'tencent_cloud' || context.accessKeySecret.startsWith('cloud-credential:v1:')
+        ? decryptCloudCredential(context.accessKeySecret, context) : context.accessKeySecret,
       imageImportBucket: context.imageImportBucket,
       status: context.status,
       ...(context.cloudWorkspaceId ? { cloudWorkspaceId: context.cloudWorkspaceId } : {}),
@@ -189,6 +190,7 @@ export class CloudAccountContextsService {
     return runInSystemCloudWorkspaceScope(async () => {
       if (input.provider === 'tencent_cloud') return this.saveTencentCloudContext(input);
       if (input.provider !== 'alibaba_cloud') throw new BadRequestException('不支持该云厂商。');
+      const encryptionKey = readCloudCredentialEncryptionKey();
       const values = { regionId: input.regionId.trim(), zoneId: input.zoneId.trim(), accessKeyId: input.accessKeyId.trim(), accessKeySecret: input.accessKeySecret.trim() };
       if (!values.accessKeyId || !values.accessKeySecret || values.accessKeyId === '********' || values.accessKeySecret === '********'
         || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(values.regionId)
@@ -202,7 +204,9 @@ export class CloudAccountContextsService {
       this.assertImageImportBucketName(imageImportBucket);
       await this.assertImageImportBucketCanChange(existing, imageImportBucket);
       const bucketVerification = await this.verifyImageImportBucket({ bucket: imageImportBucket, ...values });
-      const data = { ...values, provider: 'alibaba_cloud' as const, accountUid, cloudWorkspaceId: space.id,
+      const data = { ...values, accessKeySecret: encryptCloudCredential(values.accessKeySecret,
+        { provider: 'alibaba_cloud', accountUid, regionId: values.regionId, accessKeyId: values.accessKeyId }, encryptionKey),
+        provider: 'alibaba_cloud' as const, accountUid, cloudWorkspaceId: space.id,
         displayName: `阿里云 ${accountUid} · ${values.regionId}`, imageImportBucket, status: 'ready' as const,
         ...bucketVerification };
       const context = await this.prisma.cloudAccountContext.upsert({

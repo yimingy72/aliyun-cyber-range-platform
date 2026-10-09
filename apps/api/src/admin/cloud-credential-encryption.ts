@@ -3,7 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 
 const PREFIX = 'cloud-credential:v1:';
 export type CloudCredentialBinding = {
-  provider: 'tencent_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   accountUid: string;
   regionId: string;
   accessKeyId: string;
