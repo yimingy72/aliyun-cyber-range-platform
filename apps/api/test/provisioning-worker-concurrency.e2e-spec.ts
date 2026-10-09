@@ -10,6 +10,7 @@ const frozenSingleAccount = { cloudAccountUid: 'worker-test-account', cloudAccou
 
 function createSystemConfigServiceStub() {
   return {
+    getAccountContext: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', cloudAccountContextId: frozenSingleAccount.cloudAccountContextId, accountUid: frozenSingleAccount.cloudAccountUid, accountUidResolved: true, defaultRegion: frozenSingleAccount.regionId, defaultZoneId: frozenSingleAccount.zoneId, accessKeyId: 'test-ak', accessKeySecret: 'test-sk' }),
     getAccountContextById: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', cloudAccountContextId: frozenSingleAccount.cloudAccountContextId, accountUid: frozenSingleAccount.cloudAccountUid, accountUidResolved: true, defaultRegion: frozenSingleAccount.regionId, defaultZoneId: frozenSingleAccount.zoneId, accessKeyId: 'test-ak', accessKeySecret: 'test-sk' }),
     getInstanceTypeAvailabilityInContext:jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m1.large'}],warning:null}),
     getSnapshot: jest.fn().mockResolvedValue({
@@ -272,15 +273,43 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
     await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
 
-    const create = jest.fn().mockRejectedValue(new Error('OpenTofu apply partially created resources.'));
+    const create = jest.fn(async (input) => {
+      await input.onApplyStart?.();
+      throw new Error('OpenTofu apply partially created resources.');
+    });
+    const inventory = { mode: 'opentofu' as const, hostIds: { entry: 'i-partial-create' }, systemDiskIds: { entry: 'd-partial-create' } };
+    const inspectResources = jest.fn().mockResolvedValue(inventory);
+    const verificationRequests: string[] = [];
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const query = new URL(String(input)).searchParams;
+      const action = query.get('Action')!;
+      verificationRequests.push(action);
+      const metadata = { RequestId: 'verified-empty', TotalCount: 0, PageSize: 100, PageNumber: 1 };
+      if (action === 'DescribeInstances') {
+        expect(JSON.parse(query.get('InstanceIds')!)).toEqual(['i-partial-create']);
+        return new Response(JSON.stringify({ ...metadata, Instances: { Instance: [] } }));
+      }
+      if (action === 'DescribeDisks') {
+        expect(JSON.parse(query.get('DiskIds')!)).toEqual(['d-partial-create']);
+        return new Response(JSON.stringify({ ...metadata, Disks: { Disk: [] } }));
+      }
+      throw new Error(`Unexpected cleanup verification action: ${action}`);
+    });
     const destroy = jest.fn().mockResolvedValue(undefined);
     const worker = new ProvisioningWorkerService(
       repository,
-      { create, destroy } as unknown as RangeProvisioner,
+      { create, destroy, inspectResources } as unknown as RangeProvisioner,
       createSystemConfigServiceStub() as any,
     );
 
-    await worker.process(job.id);
+    try {
+      await worker.process(job.id);
+    } finally {
+      fetchMock.mockRestore();
+    }
+
+    expect(inspectResources).toHaveBeenCalledTimes(1);
+    expect(verificationRequests.sort()).toEqual(['DescribeDisks', 'DescribeInstances']);
 
     expect(destroy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -323,6 +352,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(create).toHaveBeenCalled();
 
+    const beforeReclaim = await repository.getRangeInstanceById(instance.id);
     await repository.requeueInterruptedProvisionJobs(new Date(Date.now() + 6 * 60_000));
     const newClaim = new Date(Date.now() + 1_000);
     await repository.claimProvisionJob(job.id, newClaim);
@@ -334,7 +364,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     await execution;
     expect(destroy).not.toHaveBeenCalled();
     await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(expect.objectContaining({ status: 'running', startedAt: newClaim }));
-    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(expect.objectContaining({ status: 'creating', resourceSummary: null }));
+    await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(expect.objectContaining({ status: 'creating', resourceSummary: beforeReclaim!.resourceSummary }));
   });
 
   it('claims and heartbeats every batch member without stealing a sibling owned by another worker', async () => {
@@ -1138,6 +1168,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       allocatedCidr: '10.80.0.0/16',
       resourceSummary: {
         mode: 'opentofu',
+        executionContext: frozenSingleAccount,
         workspaceDir: '/tmp/destroy-retry-workspace',
       },
     });
@@ -1153,6 +1184,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
 
     const provisioner: RangeProvisioner = {
+      inspectResources: jest.fn().mockResolvedValue(instance.resourceSummary),
       create: jest.fn(),
       destroy: jest.fn().mockRejectedValue(new Error('simulated destroy failure')),
     };
@@ -1213,6 +1245,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       allocatedCidr: '10.81.0.0/16',
       resourceSummary: {
         mode: 'opentofu',
+        executionContext: frozenSingleAccount,
         vpcId: 'vpc-residual',
         hostIds: {
           'ecs-1': 'i-residual',
@@ -1234,6 +1267,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
 
     const provisioner: RangeProvisioner = {
+      inspectResources: jest.fn().mockResolvedValue(instance.resourceSummary),
       create: jest.fn(),
       destroy: jest.fn().mockResolvedValue(undefined),
     };
@@ -1263,7 +1297,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     );
   });
 
-  it('treats a missing VPC as sufficient evidence that linked vswitches are already gone during destroy verification', async () => {
+  it('retains cleanup failure when a linked vswitch still exists even though its VPC is missing', async () => {
     const repository = createMemoryAdminRepository();
     const template = await repository.createRangeTemplate({
       name: 'Destroy Verification Missing VPC Template',
@@ -1306,6 +1340,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       allocatedCidr: '10.82.0.0/16',
       resourceSummary: {
         mode: 'opentofu',
+        executionContext: frozenSingleAccount,
         vpcId: 'vpc-gone',
         hostIds: {
           'ecs-1': 'i-gone',
@@ -1327,6 +1362,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
 
     const provisioner: RangeProvisioner = {
+      inspectResources: jest.fn().mockResolvedValue(instance.resourceSummary),
       create: jest.fn(),
       destroy: jest.fn().mockResolvedValue(undefined),
     };
@@ -1339,25 +1375,31 @@ describe('ProvisioningWorkerService concurrency', () => {
     jest.spyOn(worker as any, 'checkNatGatewayExists').mockResolvedValue(false);
     jest.spyOn(worker as any, 'checkEipExists').mockResolvedValue(false);
 
-    await worker.process(job.id);
+    jest.useFakeTimers();
+    try {
+      const execution = worker.process(job.id);
+      await jest.advanceTimersByTimeAsync(60_000);
+      await execution;
+    } finally {
+      jest.useRealTimers();
+    }
 
     expect(provisioner.destroy).toHaveBeenCalledTimes(1);
-    expect(checkVpcExistsSpy).toHaveBeenCalledTimes(1);
-    expect(checkVSwitchExistsSpy).not.toHaveBeenCalled();
+    expect(checkVpcExistsSpy).toHaveBeenCalledTimes(12);
+    expect(checkVSwitchExistsSpy).toHaveBeenCalledTimes(12);
     await expect(repository.getProvisionJobById(job.id)).resolves.toEqual(
       expect.objectContaining({
         id: job.id,
-        status: 'succeeded',
-        errorSummary: null,
+        status: 'failed',
+        errorSummary: expect.stringContaining('vswitch:vsw-gone'),
       }),
     );
     await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
       expect.objectContaining({
         id: instance.id,
-        status: 'destroyed',
-        errorSummary: null,
-        accessEntry: null,
-        resourceSummary: null,
+        status: 'destroy_failed',
+        errorSummary: expect.stringContaining('vswitch:vsw-gone'),
+        resourceSummary: expect.objectContaining({ vpcId: 'vpc-gone', subnetIds: { dmz: 'vsw-gone' } }),
       }),
     );
   });
@@ -2032,6 +2074,7 @@ describe('ProvisioningWorkerService concurrency', () => {
 
     const instance = await repository.createRangeInstance({
       name: '并发实例 Runtime Update',
+      resourceSummary: { mode: 'opentofu', executionContext: frozenSingleAccount },
       templateId: template.id,
       status: 'running',
       allocatedCidr: '10.79.0.0/16',
@@ -2380,6 +2423,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     };
     const instance = await repository.createRangeInstance({
       name: 'frozen-update-instance',
+      resourceSummary: { mode: 'opentofu', executionContext: frozenSingleAccount },
       templateId: template.id,
       status: 'running',
       allocatedCidr: '10.88.0.0/16',
@@ -2458,6 +2502,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
     const instance = await repository.createRangeInstance({
       name: 'missing-snapshot-instance',
+      resourceSummary: { mode: 'opentofu', executionContext: frozenSingleAccount },
       templateId: template.id,
       status: 'running',
       allocatedCidr: '10.88.0.0/16',
@@ -2478,7 +2523,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     });
     const worker = new ProvisioningWorkerService(
       repository,
-      { create, destroy: jest.fn() } as unknown as RangeProvisioner,
+      { create, destroy: jest.fn(), inspectResources: jest.fn().mockResolvedValue(instance.resourceSummary) } as unknown as RangeProvisioner,
       createSystemConfigServiceStub() as any,
     );
 
