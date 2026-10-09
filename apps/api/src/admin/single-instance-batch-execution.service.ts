@@ -242,7 +242,13 @@ export class SingleInstanceBatchExecutionService {
         const instanceId = resolveHostInstanceId(item.instance);
         if (!instanceId)
           throw new Error('Single-instance ECS instance id is missing');
-        const [detail] = await this.waitForInstancesVisible({ accountContext, instanceIds: [instanceId], requirePublicIp: true, requireRunning: true });
+        // A readiness poll must release its slot; the worker schedules another poll when needed.
+        const [detail] = await this.describeInstances({ accountContext, instanceIds: [instanceId] });
+        if (!detail) {
+          await this.assertCurrent(item);
+          await this.adminRepository.commitSingleInstanceClaim(item.job, {}, { status: 'succeeded', finishedAt: new Date(), errorSummary: null });
+          return;
+        }
         await this.assertCurrent(item);
         const hostKey = item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
         const username = item.instance.runtimeCredentials?.[hostKey]?.username ?? 'root';
