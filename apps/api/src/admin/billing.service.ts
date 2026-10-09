@@ -167,6 +167,15 @@ export class BillingService {
       .map(item => [item.sourceFingerprint, item])).values()].map(item => ({ item, evidence: pendingEvidence(item, proof) }));
     const unallocatedItems = pending.filter(row => row.evidence?.kind === 'resource_pending').map(row => row.item);
     const pendingResources = new Map<'snapshot' | 'oss' | 'unknown', Set<string>>();
+    const deferredProducts = new Set<string>();
+    for (const item of trackedLineItems) {
+      if (item.rawPayload.__platformBillingSyncDeferred !== true || !['snapshot', 'oss'].includes(item.productCode)) continue;
+      const type = item.productCode as 'snapshot' | 'oss';
+      deferredProducts.add(type);
+      const ids = pendingResources.get(type) ?? new Set<string>();
+      ids.add(`ledger:${item.matchedLedgerId}`);
+      pendingResources.set(type, ids);
+    }
     for (const { item, evidence } of pending) {
       if (!evidence || evidence.kind === 'resource_pending') continue;
       const type = evidence.kind === 'source_pending' ? 'unknown'
@@ -203,7 +212,9 @@ export class BillingService {
       oss: '平台导入对象仍需可核验的费用明细；配置或使用 Bucket 不代表整桶由平台独占，未将整桶金额计入平台。',
       unknown: '已找到平台创建记录，但历史云账号或归属证明尚未核实；记录继续保留，不按零费用处理。',
     };
-    const reconciliationIssues = [...pendingResources].map(([resourceType, ids]) => ({ resourceType, resourceCount: ids.size, reason: reasons[resourceType] }));
+    const reconciliationIssues = [...pendingResources].map(([resourceType, ids]) => ({ resourceType, resourceCount: ids.size,
+      reason: deferredProducts.has(resourceType)
+        ? `本次分账未核实，暂保留上次已核验金额，等待完整账单后更新。${reasons[resourceType]}` : reasons[resourceType] }));
     const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
     const resourcesWithoutBillCount = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
       && billingDayText(item.billingStartAt) <= window.endAtText

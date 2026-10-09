@@ -25,6 +25,23 @@ async function fixture() {
 describe('platform-created billing read scope', () => {
   beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-09-01')));
   afterEach(() => jest.useRealTimers());
+
+  it('labels retained proven split charges as awaiting reconciliation without counting them twice', async () => {
+    const { repository, service } = await fixture();
+    const artifact = await repository.createPackedImageArtifact({ cloudAccountContextId: 'context', cloudAccountUid: UID,
+      regionId: 'cn-hangzhou', ownerUserId: 'alice', sourceRangeInstanceId: 'source-range', sourceHostKey: 'host',
+      sourceInstanceId: 'i-source', sourceDiskIds: ['d-source'] });
+    await repository.updatePackedImageArtifact(artifact.id, { imageId: 'm-owned', backingSnapshotIds: ['s-owned'] });
+    const ledger = await repository.createBillingLedgerResource({ ...baseLedger, cloudResourceId: 's-owned',
+      cloudResourceType: 'snapshot', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: 'source-range' });
+    await repository.upsertBillingLineItems([bill(ledger, { rawPayload: { OwnerID: UID, Region: 'cn-hangzhou',
+      __platformBillingSource: 'DescribeSplitItemBill', __platformBillingSyncDeferred: true } })]);
+    await expect(service.getSummary(WINDOW)).resolves.toMatchObject({ totalPretaxAmount: 1.25,
+      unallocatedCurrencyTotals: [], reconciliationIssues: [{ resourceType: 'snapshot', resourceCount: 1,
+        reason: expect.stringContaining('暂保留上次已核验金额') }] });
+    expect(await service.exportPlatformCsv(WINDOW)).toContain('暂保留上次已核验金额');
+  });
+
   it('excludes historical external ledgers and tagged whole-bucket charges from every read and export', async () => {
     const { repository, service } = await fixture();
     const owned = await createProvenBillingLedger(repository, { ...baseLedger, cloudResourceId: 'i-owned', cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: 'alice' });
