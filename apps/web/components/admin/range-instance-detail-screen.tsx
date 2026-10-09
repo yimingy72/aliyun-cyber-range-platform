@@ -38,7 +38,7 @@ import {
 import { nextAvailableSwitchCidr, reconcileHostNicConnections } from '../../lib/scenario-graph-linking';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
-import { RangeInstanceDetailBodySkeleton } from './range-instance-detail-loading';
+import { RangeInstanceDetailBodySkeleton, RangeInstanceTopologyLoading } from './range-instance-detail-loading';
 import { AsyncContentState } from './shared/async-content-state';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminDialog } from './shared/admin-dialog';
@@ -72,32 +72,25 @@ type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
 
 const INSTANCE_TOPOLOGY_SCHEMA_VERSION = '2.0.0';
 
-function TopologyWorkspaceLoading() {
-  return (
-    <>
-      <div className="range-instance-detail-main range-instance-topology-main" aria-busy="true">
-        <div className="admin-workbench-empty">
-          <p>正在加载拓扑...</p>
-        </div>
-      </div>
+let topologyWorkspaceRequest: Promise<typeof import('./range-instance-topology-workspace')['RangeInstanceTopologyWorkspace']> | null = null;
 
-      <aside className="template-editor-panel template-property-panel" aria-busy="true">
-        <div className="admin-section-header template-property-panel-header">
-          <h2>属性面板</h2>
-        </div>
-      </aside>
-    </>
-  );
+export function preloadRangeInstanceTopologyWorkspace() {
+  if (!topologyWorkspaceRequest) {
+    topologyWorkspaceRequest = import('./range-instance-topology-workspace')
+      .then(({ RangeInstanceTopologyWorkspace: Component }) => Component)
+      .catch((error) => {
+        topologyWorkspaceRequest = null;
+        throw error;
+      });
+  }
+  return topologyWorkspaceRequest;
 }
 
 const RangeInstanceTopologyWorkspace = dynamic(
-  () =>
-    import('./range-instance-topology-workspace').then(
-      ({ RangeInstanceTopologyWorkspace: Component }) => Component,
-    ),
+  preloadRangeInstanceTopologyWorkspace,
   {
     ssr: false,
-    loading: TopologyWorkspaceLoading,
+    loading: RangeInstanceTopologyLoading,
   },
 );
 
@@ -919,6 +912,10 @@ export function RangeInstanceDetailScreen({
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
+  }, [detail?.id, isPageActive]);
 
   function replaceTopologyDraft(nextGraph: Record<string, unknown> | null) {
     const parsed = readTopologyGraphDraft(nextGraph);
@@ -1989,7 +1986,9 @@ export function RangeInstanceDetailScreen({
                   <TabsTrigger value="directory">
                     节点目录
                   </TabsTrigger>
-                  <TabsTrigger value="topology">
+                  <TabsTrigger value="topology"
+                    onMouseEnter={() => void preloadRangeInstanceTopologyWorkspace().catch(() => undefined)}
+                    onFocus={() => void preloadRangeInstanceTopologyWorkspace().catch(() => undefined)}>
                     拓扑结构
                   </TabsTrigger>
                 </TabsList>

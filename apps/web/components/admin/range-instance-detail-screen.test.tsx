@@ -1171,6 +1171,20 @@ describe('RangeInstanceDetailScreen', () => {
     expect(peer.textContent).not.toContain('172.16.50.21');
   });
 
+  it('puts the single scroll region and keyboard focus on the shared table container', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'destroyed', runtimeTopologyGraph: createValidTopologyGraph() });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await screen.findByText('checker');
+    const scroller = screen.getByRole('region', { name: '实例节点目录，可横向滚动' });
+    expect(scroller.getAttribute('data-slot')).toBe('table-container');
+    expect(scroller.getAttribute('tabindex')).toBe('0');
+    const outer = scroller.closest('.range-instance-directory-table')!;
+    expect(outer.getAttribute('role')).toBeNull();
+    expect(outer.getAttribute('tabindex')).toBeNull();
+    expect(screen.getByRole('table', { name: '实例节点目录' }).querySelectorAll('th')).toHaveLength(8);
+  });
+
   it('does not advertise a draft-only or undeployed DNAT mapping as a public node entry', async () => {
     fetchRangeInstanceDetailMock.mockReset();
     fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', accessEntry: { publicIp: '47.1.1.1' },

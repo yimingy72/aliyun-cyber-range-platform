@@ -53,10 +53,19 @@ export function RangeInstanceNodeDirectory({
 }: RangeInstanceNodeDirectoryProps) {
   const [copiedPasswordNodeId, setCopiedPasswordNodeId] = useState<string | null>(null);
   const copiedPasswordTimerRef = useRef<number | null>(null);
+  const directoryRef = useRef<HTMLDivElement | null>(null);
   const hostNodes = nodes.filter((node) => node.kind === 'ecs');
 
   useEffect(() => () => {
     if (copiedPasswordTimerRef.current !== null) window.clearTimeout(copiedPasswordTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    // Focus the shared table's native scroll container, not a second outer scroller.
+    const scroller = directoryRef.current?.querySelector<HTMLElement>('[data-slot="table-container"]');
+    scroller?.setAttribute('tabindex', '0');
+    scroller?.setAttribute('role', 'region');
+    scroller?.setAttribute('aria-label', '实例节点目录，可横向滚动');
   }, []);
 
   async function handleCopyPassword(node: RangeInstanceWorkbenchNode) {
@@ -75,7 +84,7 @@ export function RangeInstanceNodeDirectory({
   }
 
   return (
-    <div className="range-instance-directory-table" role="region" aria-label="实例节点目录，可横向滚动" tabIndex={0}>
+    <div className="range-instance-directory-table" ref={directoryRef}>
       <AdminDataTable columns={COLUMNS} label="实例节点目录" isRefreshing={isRefreshing}
         contentVersion={hostNodes.length}>
         {(columns) => isLoading ? (
