@@ -131,7 +131,8 @@ export class SystemConfigService {
         defaultRegion: activeContext.regionId,
         defaultZoneId: activeContext.zoneId,
         accessKeyId: activeContext.accessKeyId,
-        accessKeySecret: activeContext.accessKeySecret,
+        accessKeySecret: typeof activeContext.accessKeySecret === 'string' && activeContext.accessKeySecret.startsWith('cloud-credential:v1:')
+          ? (await this.cloudAccountContextsService.getCredentials(activeContext.id)).accessKeySecret : activeContext.accessKeySecret,
         imageImportBucket: activeContext.imageImportBucket,
       });
       this.syncProcessEnv(snapshot);
@@ -219,7 +220,8 @@ export class SystemConfigService {
         defaultRegion: activeContext.regionId,
         defaultZoneId: activeContext.zoneId,
         accessKeyId: activeContext.accessKeyId,
-        accessKeySecret: activeContext.accessKeySecret,
+        accessKeySecret: typeof activeContext.accessKeySecret === 'string' && activeContext.accessKeySecret.startsWith('cloud-credential:v1:')
+          ? (await this.cloudAccountContextsService.getCredentials(activeContext.id)).accessKeySecret : activeContext.accessKeySecret,
         imageImportBucket: activeContext.imageImportBucket,
       });
       return {
