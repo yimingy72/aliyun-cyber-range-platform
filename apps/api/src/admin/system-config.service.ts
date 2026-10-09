@@ -327,6 +327,31 @@ export class SystemConfigService {
     return await this.readSelectedContext() ?? this.getAccountContext();
   }
 
+  async getExecutionAccountContext(options: { cloudAccountContextId?: string | null } = {}): Promise<SystemCloudAccountContext> {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (scope && !('system' in scope) && scope.isReadOnly) {
+      throw new BadRequestException('历史待核验空间不能执行云资源操作。');
+    }
+    const hasFrozenContext = Object.hasOwn(options, 'cloudAccountContextId');
+    if (hasFrozenContext && (typeof options.cloudAccountContextId !== 'string'
+      || !options.cloudAccountContextId.trim() || options.cloudAccountContextId.length > 192)) {
+      throw new BadRequestException('执行任务缺少有效的冻结账号配置。');
+    }
+    const context = hasFrozenContext
+      ? await this.getAccountContextById(options.cloudAccountContextId!.trim())
+      : await this.getSelectedAccountContext();
+    if (!context.cloudAccountContextId || !context.accountUidResolved || !context.accountUid
+      || !context.defaultRegion || !context.defaultZoneId
+      || !context.accessKeyId || !context.accessKeySecret) {
+      throw new BadRequestException('云资源执行缺少已验证且冻结的云账号配置。');
+    }
+    if (scope && !('system' in scope)
+      && (context.provider !== scope.provider || context.accountUid !== scope.accountUid)) {
+      throw new BadRequestException('执行账号与原云厂商工作空间不一致。');
+    }
+    return { ...context };
+  }
+
   async getDisplaySnapshot() {
     const snapshot = await this.getSelectedAccountContext();
     return { provider: snapshot.provider, defaultRegion: snapshot.defaultRegion, defaultZoneId: snapshot.defaultZoneId,
