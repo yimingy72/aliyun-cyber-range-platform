@@ -60,7 +60,10 @@ export class CloudAccountContextsService {
       orderBy: [{ updatedAt: 'desc' }],
     });
 
-    return contexts.map((context) => this.toView(context));
+    const workspace = scope && !('system' in scope)
+      ? await this.prisma.cloudWorkspace.findUnique({ where: { id: scope.cloudWorkspaceId } }) : null;
+    return contexts.map((context) => this.toView({ ...context,
+      ...(workspace ? { isActive: context.id === workspace.activeCloudAccountContextId } : {}) }));
   }
 
   async getCredentials(
