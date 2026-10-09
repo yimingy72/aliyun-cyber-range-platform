@@ -136,14 +136,16 @@ export class SingleInstanceBatchExecutionService {
           if (!profile || profile.regionId !== accountContext.defaultRegion
             || (config.cloudAccountUid && profile.cloudAccountUid !== config.cloudAccountUid))
             throw new Error('Single instance network profile does not match its launch identity');
-          const availability = await this.systemConfigService.getInstanceTypeAvailabilityInContext({ cpu: config.cpu, memory: config.memory }, accountContext);
+          const availability = group.some(item => !item.instance.singleInstanceConfig?.nativeCreateJobId)
+            ? await this.systemConfigService.getInstanceTypeAvailabilityInContext({ cpu: config.cpu, memory: config.memory }, accountContext)
+            : { exactAvailable: true, matches: [], warning: null };
           const type = availability.matches.find((match) => match.instanceTypeId === config.resolvedInstanceType)?.instanceTypeId
             ?? availability.matches[0]?.instanceTypeId;
           await processWithConcurrency(group.sort(compareByQuantityIndex), CREATE_ITEM_CONCURRENCY, async (item) => {
-            const previousRequest = item.instance.singleInstanceConfig?.nativeCreateJobId === item.job.id;
+            const previousRequest = Boolean(item.instance.singleInstanceConfig?.nativeCreateJobId);
             const memberType = previousRequest ? item.instance.singleInstanceConfig?.resolvedInstanceType : type;
             if (!memberType || !previousRequest && !availability.exactAvailable) {
-              await this.markCreateFailure([item], availability.warning ?? 'Requested instance type is not available');
+              await this.markCreateFailure([item], availability.warning ?? 'Requested instance type is not available', false, previousRequest);
               return;
             }
             let createRequestStarted = previousRequest;
@@ -214,7 +216,7 @@ export class SingleInstanceBatchExecutionService {
           for (const item of group) {
             const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
             const sourceUnverified = error instanceof UnverifiedSingleInstanceAccountError;
-            await this.markCreateFailure([item], sourceUnverified ? error.message : current?.errorSummary ?? (error instanceof Error ? error.message : 'Native batch preparation failed'), false, sourceUnverified || current?.status === 'destroy_failed' || Object.values(current?.resourceSummary?.hostIds ?? {}).length > 0);
+            await this.markCreateFailure([item], sourceUnverified ? error.message : current?.errorSummary ?? (error instanceof Error ? error.message : 'Native batch preparation failed'), false, sourceUnverified || Boolean(current?.singleInstanceConfig?.nativeCreateJobId) || current?.status === 'destroy_failed' || Object.values(current?.resourceSummary?.hostIds ?? {}).length > 0);
           }
         }
       }
@@ -657,11 +659,13 @@ export class SingleInstanceBatchExecutionService {
   private async markCreateFailure(items: SingleInstanceExecutionItem[], message: string, clearRecoveredResourceState = false, cleanupFailed = false) {
     for (const item of items) {
       if (!(await this.isCurrent(item))) continue;
+      const clearedConfig = { ...item.instance.singleInstanceConfig! };
+      delete clearedConfig.nativeCreateJobId;
       if (clearRecoveredResourceState) await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           await this.adminRepository.commitSingleInstanceClaim(item.job, { status: cleanupFailed ? 'destroy_failed' : 'create_failed', errorSummary: message,
-            ...(clearRecoveredResourceState ? { accessEntry: null, resourceSummary: null } : {}) }, { status: 'failed', finishedAt: new Date(), errorSummary: message });
+            ...(clearRecoveredResourceState ? { accessEntry: null, resourceSummary: null, singleInstanceConfig: clearedConfig } : {}) }, { status: 'failed', finishedAt: new Date(), errorSummary: message });
           break;
         }
         catch (error) {
