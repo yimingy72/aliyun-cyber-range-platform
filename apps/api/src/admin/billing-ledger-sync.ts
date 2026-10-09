@@ -7,6 +7,7 @@ import type {
   RangeInstanceRecord,
   RangeResourceSummary,
 } from './admin.repository';
+import { inventoryDiskIds } from './instance-disk-inventory';
 
 type SyncRangeInstanceBillingLedgerInput = {
   repository: AdminRepository;
@@ -45,14 +46,14 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
     return [];
   }
 
-  const specs: LedgerSpec[] = [];
+  const specs: LedgerSpec[] = resourceSummary.retiredResources ? buildLedgerSpecs({ ...resourceSummary.retiredResources, retiredResources: null }) : [];
   const hostIds = collectResourceIds(resourceSummary.hostIds);
 
   for (const hostId of hostIds) {
     specs.push({ cloudResourceId: hostId, cloudResourceType: 'ecs' });
   }
 
-  for (const diskId of collectResourceIds(resourceSummary.systemDiskIds)) {
+  for (const diskId of inventoryDiskIds(resourceSummary)) {
     specs.push({ cloudResourceId: diskId, cloudResourceType: 'disk' });
   }
 
@@ -77,7 +78,7 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
     specs.push({ cloudResourceId: dnatEntryId, cloudResourceType: 'dnat_entry' });
   }
 
-  return specs;
+  return [...new Map(specs.map(spec => [`${spec.cloudResourceType}:${spec.cloudResourceId}`, spec])).values()];
 }
 
 function assertLedgerOwnership(ledger: BillingLedgerResourceRecord, input: SyncRangeInstanceBillingLedgerInput) {

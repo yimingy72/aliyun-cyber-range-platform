@@ -364,7 +364,8 @@ describe('PlatformApiClient', () => {
             ? 'billingDate,pretaxAmount\n'
             : input.endsWith('/sync')
               ? { syncedDays: 1, importedLineItems: 2, anomalyCount: 0, deferredCount: 0 }
-              : { totalPretaxAmount: 12.5 }
+              : { totalPretaxAmount: 12.5, billingStatus: 'provisional', resourcesWithoutBillCount: 3,
+                  unallocatedCurrencyTotals: [{ currency: 'USD', pretaxAmount: 2 }] }
           : input.includes('/image-imports')
             ? input.endsWith('/retry')
               ? { id: 'import-1', status: 'importing' }
@@ -381,6 +382,9 @@ describe('PlatformApiClient', () => {
     await expect(client.retryImageImport('import-1')).resolves.toMatchObject({ id: 'import-1', status: 'importing' });
     await expect(client.getBillingSummary({ startAt: '2026-07-01', endAt: '2026-07-07' })).resolves.toMatchObject({
       totalPretaxAmount: 12.5,
+      billingStatus: 'provisional',
+      resourcesWithoutBillCount: 3,
+      unallocatedCurrencyTotals: [{ currency: 'USD', pretaxAmount: 2 }],
     });
     await expect(client.syncBilling({ startAt: '2026-07-01', endAt: '2026-07-07' })).resolves.toMatchObject({
       syncedDays: 1,

@@ -63,7 +63,7 @@ describe('Provisioning worker bounded scheduling', () => {
     const fixture = await ranges(5), release = gate(), started = gate();
     let active = 0, peak = 0;
     const create = jest.fn(async () => { active += 1; peak = Math.max(peak, active); if (active === 2) started.release(); await release.promise; active -= 1; return result; });
-    const worker = new ProvisioningWorkerService(fixture.repository, { create, destroy: jest.fn() }, config as any);
+    const worker = new ProvisioningWorkerService(fixture.repository, { mode: 'dry-run', create, destroy: jest.fn() }, config as any);
     expect(await scheduler(worker).startEligiblePendingJobs()).toBe(2);
     await started.promise;
     expect(await scheduler(worker).startEligiblePendingJobs()).toBe(0);
@@ -145,7 +145,7 @@ describe('Provisioning worker bounded scheduling', () => {
   it('keeps atomic claims across two worker instances and never runs a job twice', async () => {
     const fixture = await ranges(6); const seen: string[] = [];
     const create = jest.fn(async (input: { rangeInstanceId: string }) => { seen.push(input.rangeInstanceId); await new Promise(resolve => setTimeout(resolve, 15)); return result; });
-    const workers = [0, 1].map(() => new ProvisioningWorkerService(fixture.repository, { create, destroy: jest.fn() }, config as any));
+    const workers = [0, 1].map(() => new ProvisioningWorkerService(fixture.repository, { mode: 'dry-run', create, destroy: jest.fn() }, config as any));
     await drain(workers, fixture.repository);
     expect(seen).toHaveLength(6); expect(new Set(seen).size).toBe(6);
     expect((await fixture.repository.listProvisionJobs()).every(job => job.status === 'succeeded')).toBe(true);
@@ -166,7 +166,7 @@ describe('Provisioning worker bounded scheduling', () => {
       jest.spyOn(fixture.repository, 'updateRangeInstanceForProvisionJob').mockImplementation((id, when, input) => id === failedId ? fail() : original(id, when, input));
     }
     const create = jest.fn(async () => { if (create.mock.calls.length === 1) started.release(); await release.promise; return result; });
-    const worker = new ProvisioningWorkerService(fixture.repository, { create, destroy: jest.fn() }, config as any);
+    const worker = new ProvisioningWorkerService(fixture.repository, { mode: 'dry-run', create, destroy: jest.fn() }, config as any);
     const errors = jest.spyOn((worker as any).logger, 'error').mockImplementation(() => {});
     expect(await scheduler(worker).startEligiblePendingJobs()).toBe(2);
     const firstTasks = [...scheduler(worker).activeTasks];
@@ -221,7 +221,7 @@ describe('Provisioning worker bounded scheduling', () => {
       process.env.PROVISIONING_WORKER_RANGE_CONCURRENCY = String(concurrency);
       const fixture = await ranges(6); let active = 0, peak = 0;
       const create = jest.fn(async () => { active += 1; peak = Math.max(peak, active); await new Promise(resolve => setTimeout(resolve, 100)); active -= 1; return result; });
-      const worker = new ProvisioningWorkerService(fixture.repository, { create, destroy: jest.fn() }, config as any);
+      const worker = new ProvisioningWorkerService(fixture.repository, { mode: 'dry-run', create, destroy: jest.fn() }, config as any);
       const began = performance.now(); await drain([worker], fixture.repository);
       measurements.push({ concurrency, jobs: 6, owners: 6, simulatedProvisionerDelayMs: 100, elapsedMs: Math.round(performance.now() - began), peak });
       expect(peak).toBe(concurrency); expect(create).toHaveBeenCalledTimes(6);

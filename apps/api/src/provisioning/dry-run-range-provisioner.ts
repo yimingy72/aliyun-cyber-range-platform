@@ -11,6 +11,7 @@ import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
 
 @Injectable()
 export class DryRunRangeProvisioner implements RangeProvisioner {
+  readonly mode = 'dry-run' as const;
   async create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult> {
     const plan = buildEnterpriseProvisionPlan({
       rangeInstanceId: input.rangeInstanceId,

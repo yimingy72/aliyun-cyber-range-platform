@@ -54,7 +54,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     const [snapshot] = await repository.listImageSnapshots({ imageId: `m-fixture${suffix.replaceAll('-', '')}` });
     asset = await repository.collectPlatformImageAsset({ snapshotId: snapshot!.id, displayName: 'Fixture Linux', ownerUserId: alice.id, visibility: 'platform' });
     config = { getSnapshot: async () => ({ accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h' }),
-      getAccountContext: async () => ({ accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accountUid: 'test-account' }),
+      getAccountContext: async () => ({ accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accountUid: 'test-account', accountUidResolved: true, cloudAccountContextId: 'fixture-context' }),
     };
     cloudCalls = [];
     const cloudTags = new Map<string, Record<string, string>>();
@@ -63,21 +63,31 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
       cloudCalls.push({ action: query.get('Action')!, instanceId: query.get('InstanceId') });
       if (query.get('Action') === 'DescribeInstances') {
         const ids = JSON.parse(query.get('InstanceIds') ?? '[]') as string[];
-        return { ok: true, json: async () => ({ Instances: { Instance: ids.flatMap(id => cloudTags.has(id) ? [{
+        return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: 100, PageNumber: 1, TotalCount: ids.filter(id => cloudTags.has(id)).length, Instances: { Instance: ids.flatMap(id => cloudTags.has(id) ? [{
           InstanceId: id, Status: 'Running', Tags: { Tag: Object.entries(cloudTags.get(id)!).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) },
         }] : []) } }) } as Response;
       }
-      return { ok: true, json: async () => ({ Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
+      if (query.get('Action') === 'DescribeDisks') {
+        const requested = query.has('DiskIds') ? JSON.parse(query.get('DiskIds')!) as string[] : null;
+        const disks = [...cloudTags].flatMap(([instanceId, tags]) => ['system', 'data'].map(type => ({
+          DiskId: `d-${instanceId.slice(2)}-${type}`, InstanceId: instanceId, Type: type, DeleteWithInstance: true,
+          Tags: { Tag: Object.entries(tags).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) },
+        }))).filter(disk => requested ? requested.includes(disk.DiskId) : disk.InstanceId === query.get('InstanceId'));
+        return { ok: true, json: async () => ({ RequestId: 'fixture-disks', PageSize: 100, PageNumber: 1,
+          TotalCount: disks.length, Disks: { Disk: disks } }) } as Response;
+      }
+      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: 100, PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
     });
     apply = jest.fn(async (options: { workspaceDir: string }) => {
       const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));
-      await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, resources: [
-        { name: 'range-owner', type: 'terraform_data', mode: 'managed', instances: [{ attributes: { rangeInstanceId: path.basename(options.workspaceDir), ownerUserId: vars.tags.PlatformUserId } }] },
+      await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [
+        { name: 'range-owner', type: 'terraform_data', mode: 'managed', instances: [{ attributes: { id: 'owner-id', rangeInstanceId: path.basename(options.workspaceDir), ownerUserId: vars.tags.PlatformUserId } }] },
       ] }));
       return { stdout: 'apply complete', stderr: '' };
     });
     const runner: any = {
       init: jest.fn().mockResolvedValue({ stdout: 'init', stderr: '' }), validate: jest.fn().mockResolvedValue({ stdout: 'validate', stderr: '' }),
+      showPlan: jest.fn().mockResolvedValue({ planned_values: { root_module: { resources: [{ mode: 'managed', address: 'terraform_data.range-owner' }] } } }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan', stderr: '' }), apply,
       output: jest.fn(async (options: { workspaceDir: string }) => {
         const id = path.basename(options.workspaceDir);
@@ -97,7 +107,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
       destroy: jest.fn(async (options: { workspaceDir: string }) => {
         const id = path.basename(options.workspaceDir);
         for (const key of cloudTags.keys()) if (key.startsWith(`i-${id}-`)) cloudTags.delete(key);
-        await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, resources: [] }));
+        await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [] }));
         return { stdout: 'destroy complete', stderr: '' };
       }),
     };
@@ -164,6 +174,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
   it('keeps concurrent Alice/Bob 2-ECS workspaces, outputs, control and ledger ownership separate', async () => {
     const { a, b } = await launchBoth();
     expect(a.status).toBe('running'); expect(b.status).toBe('running'); expect(a.id).not.toBe(b.id);
+    expect(a.resourceSummary).toMatchObject({ creationAttempted: true, executionContext: { cloudAccountContextId: 'fixture-context', cloudAccountUid: 'test-account', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' } });
     const aVars = JSON.parse(await fs.readFile(path.join(root, a.id, 'range.auto.tfvars.json'), 'utf8'));
     const bVars = JSON.parse(await fs.readFile(path.join(root, b.id, 'range.auto.tfvars.json'), 'utf8'));
     expect(aVars.hosts).toHaveLength(2); expect(bVars.hosts).toHaveLength(2);
@@ -197,6 +208,8 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     await expect(jobs.getById(a.lastJobId!, bob)).rejects.toMatchObject({ status: 403 });
     expect((await jobs.getById(a.lastJobId!, alice)).topologySnapshot).not.toHaveProperty('runtimeCredentials');
     const allLedgers = await repository.listBillingLedgerResources();
+    expect(allLedgers.filter(row => row.rangeInstanceId === a.id && row.cloudResourceType === 'disk')).toHaveLength(4);
+    expect(allLedgers.filter(row => row.rangeInstanceId === b.id && row.cloudResourceType === 'disk')).toHaveLength(4);
     expect(allLedgers.filter(row => row.rangeInstanceId === a.id).every(row => row.ownerUserId === alice.id)).toBe(true);
     expect(allLedgers.filter(row => row.rangeInstanceId === b.id).every(row => row.ownerUserId === bob.id)).toBe(true);
     const bobState = await fs.readFile(path.join(root, b.id, 'terraform.tfstate'), 'utf8');
@@ -244,8 +257,8 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
 
   it('atomically arbitrates create/retry and destroy/retry requests against the same state', async () => {
     const { a } = await launchBoth();
-    await fs.writeFile(path.join(root, a.id, 'terraform.tfstate'), JSON.stringify({ version: 4, resources: [] }));
-    await repository.updateRangeInstance(a.id, { status: 'create_failed', resourceSummary: null, accessEntry: null });
+    // Simulate database completion failure after a fully persisted apply; recovery keeps the original identity and state.
+    await repository.updateRangeInstance(a.id, { status: 'create_failed', accessEntry: null });
     const creates = await Promise.allSettled([service.triggerCreate(a.id, alice), service.triggerRetry(a.id, alice)]);
     expect(creates.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     let pending = (await repository.listProvisionJobs()).filter(job => job.rangeInstanceId === a.id && ['pending', 'running'].includes(job.status));
@@ -313,7 +326,8 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     await repository.heartbeatRangeProvisionJob(update.id, oldStart, oldStart);
     await repository.requeueInterruptedProvisionJobs(new Date(Date.now() - 300000));
     const newStart = new Date(); await repository.claimRangeProvisionJob(update.id, newStart);
-    expect(await repository.updateRangeInstanceForProvisionJob(update.id, oldStart, { name: 'stale overwrite' })).toBeNull();
+    expect(await repository.updateRangeInstanceForProvisionJob(update.id, oldStart, { name: 'stale overwrite', resourceSummary: null })).toBeNull();
+    expect((await repository.getRangeInstanceById(a.id))!.resourceSummary).toMatchObject({ creationAttempted: true, executionContext: { cloudAccountUid: 'test-account' } });
     expect(await repository.updateRangeProvisionJob(update.id, oldStart, { status: 'failed' })).toBe(false);
     expect((await repository.getRangeInstanceById(a.id))!.name).not.toBe('stale overwrite');
     const stale = await repository.createProvisionJob({ rangeInstanceId: a.id, jobType: 'update', triggeredBy: alice.id,

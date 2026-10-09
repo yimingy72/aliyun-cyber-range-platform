@@ -24,6 +24,25 @@ describe('Image catalog preservation and collection', () => {
     fetchMock = jest.spyOn(globalThis, 'fetch');
   });
   afterEach(() => jest.restoreAllMocks());
+  it('keeps image-only deletions visible for explicit later snapshot cleanup, then removes the fully reclaimed row', async () => {
+    const artifact = await repository.createPackedImageArtifact({ cloudAccountContextId: 'ctx', cloudAccountUid: account.accountUid, regionId: account.defaultRegion, ownerUserId: owner.id, sourceRangeInstanceId: 'range', sourceHostKey: 'host', sourceInstanceId: 'i-owned', sourceDiskIds: ['d-one', 'd-two'] });
+    await repository.updatePackedImageArtifact(artifact.id, { imageId: 'm-existing', sourceSnapshotId: sourceId, status: 'available', backingSnapshotIds: ['s-one', 's-two'] });
+    expect((await service.listCustom()).snapshots[0]).toMatchObject({ ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
+    await repository.upsertImageSnapshots({ provider: account.provider, accountUid: account.accountUid, regionId: account.defaultRegion, scope: 'custom', snapshots: [{ imageId: 'm-existing', sourceImageName: 'existing', status: 'Deleted', isAvailable: false, lastSyncedAt: new Date() }] });
+    expect((await service.listCustom()).snapshots[0]).toMatchObject({ id: sourceId, status: 'Deleted', ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
+    await repository.updatePackedImageArtifact(artifact.id, { status: 'deleting', deletedSnapshotIds: ['s-one'] });
+    expect((await service.listCustom()).snapshots[0]).toMatchObject({ ownedSnapshotCleanup: { snapshotCount: 1, status: 'deleting' } });
+    await repository.updatePackedImageArtifact(artifact.id, { status: 'deleted', deletedSnapshotIds: ['s-one', 's-two'] });
+    expect((await service.listCustom()).snapshots).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each(['legacy', 'foreign account', 'foreign region', 'different image', 'incomplete manifest', 'still creating'])('does not advertise snapshot cleanup for %s', async kind => {
+    if (kind !== 'legacy') {
+      const artifact = await repository.createPackedImageArtifact({ cloudAccountContextId: 'ctx', cloudAccountUid: kind === 'foreign account' ? 'other' : account.accountUid, regionId: kind === 'foreign region' ? 'cn-beijing' : account.defaultRegion, ownerUserId: owner.id, sourceRangeInstanceId: 'range', sourceHostKey: 'host', sourceInstanceId: 'i-owned', sourceDiskIds: ['d-one'] });
+      await repository.updatePackedImageArtifact(artifact.id, { imageId: kind === 'different image' ? 'm-other' : 'm-existing', sourceSnapshotId: sourceId, status: kind === 'still creating' ? 'creating' : 'available', backingSnapshotIds: kind === 'incomplete manifest' ? [] : ['s-one'] });
+    }
+    expect((await service.listCustom()).snapshots[0]).not.toHaveProperty('ownedSnapshotCleanup');
+  });
   it.each([
     { Code: 'InvalidAccessKeyId.NotFound' },
     { Success: false, TotalCount: 0 },

@@ -15,4 +15,14 @@ describe('billing currency and export contracts', () => {
     const result = await tool.call({ scopes: new Set(['billing:read']), client: { exportBillingUsersCsv: async () => csv } as unknown as PlatformApiClientLike }, {});
     expect(result).toMatchObject({ rowCount: 2, csv });
   });
+
+  it('preserves provisional and unallocated coverage without combining it with matched totals', () => {
+    const result = { startAt: '2026-10-01', endAt: '2026-10-01', totalPretaxAmount: 10, platformPretaxAmount: 2,
+      anomalyCount: 2, resourceTypeTotals: [], dailyTotals: [], billingStatus: 'provisional', resourcesWithoutBillCount: 5,
+      unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 3 }, { currency: 'USD', pretaxAmount: -1 }] };
+    expect(billingSummaryOutputSchema.parse({ result })).toEqual({ result });
+    expect(billingSummaryOutputSchema.safeParse({ result: { ...result, resourcesWithoutBillCount: -1 } }).success).toBe(false);
+    const { billingStatus: _status, unallocatedCurrencyTotals: _amounts, resourcesWithoutBillCount: _count, ...legacy } = result;
+    expect(billingSummaryOutputSchema.parse({ result: legacy })).toEqual({ result: legacy });
+  });
 });

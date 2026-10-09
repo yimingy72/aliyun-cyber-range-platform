@@ -62,6 +62,19 @@ describe('billing-ledger-sync', () => {
     );
   });
 
+  it('records every owned full-image disk once and excludes unverified external disks', async () => {
+    const repository = createMemoryAdminRepository();
+    const instance = await repository.createRangeInstance({ name: 'full-image', ownerUserId: 'alice', status: 'running' });
+    await syncRangeInstanceBillingLedger({ repository, instance, regionId: 'cn-hangzhou', cloudAccountUid: 'uid-alice',
+      resourceSummary: { mode: 'opentofu', hostIds: { host: 'i-full-image' }, systemDiskIds: { host: 'd-system' },
+        dataDiskIds: { 'host:1': 'd-data', 'host:2': 'd-data' }, unverifiedDiskIds: { 'host:3': 'd-external' } },
+      sourceProvisionJobId: 'job-full-image', billingStartAt: new Date() });
+    const rows = await repository.listBillingLedgerResources();
+    expect(rows.map(row => row.cloudResourceId).sort()).toEqual(['d-data','d-system','i-full-image']);
+    expect(rows.filter(row => row.cloudResourceType === 'disk')).toHaveLength(2);
+    expect(rows.every(row => row.ownerUserId === 'alice' && row.cloudAccountUid === 'uid-alice')).toBe(true);
+  });
+
   it('marks an instance ledger as released on destroy', async () => {
     const repository = createMemoryAdminRepository();
     const instance = await repository.createRangeInstance({

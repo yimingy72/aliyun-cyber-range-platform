@@ -41,6 +41,7 @@ export class BillingBssClient {
     let nextToken: string | null = null;
     const items: RawBssItem[] = [];
     const seenTokens = new Set<string>();
+    let expectedCount: number | null = null;
 
     do {
       const payload: DescribeInstanceBillResponse = await this.performRpcRequest<DescribeInstanceBillResponse>({
@@ -60,6 +61,13 @@ export class BillingBssClient {
       });
 
       if (!payload.Data) throw new Error('DescribeInstanceBill returned no billing data');
+      if (payload.Data.TotalCount !== undefined) {
+        if (!Number.isSafeInteger(payload.Data.TotalCount) || payload.Data.TotalCount < 0
+          || expectedCount !== null && payload.Data.TotalCount !== expectedCount) {
+          throw new Error('DescribeInstanceBill returned an inconsistent row count; previous bills were retained');
+        }
+        expectedCount = payload.Data.TotalCount;
+      }
       if (payload.Data.NextToken != null && typeof payload.Data.NextToken !== 'string') {
         throw new Error('DescribeInstanceBill returned an invalid pagination token');
       }
@@ -73,6 +81,10 @@ export class BillingBssClient {
         seenTokens.add(nextToken);
       }
     } while (nextToken);
+
+    if (expectedCount !== null && items.length !== expectedCount) {
+      throw new Error('DescribeInstanceBill returned an incomplete bill; previous bills were retained');
+    }
 
     return items;
   }

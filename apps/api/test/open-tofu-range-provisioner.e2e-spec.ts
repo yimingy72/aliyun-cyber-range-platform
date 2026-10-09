@@ -1,3 +1,4 @@
+import { fixturePlan, fixtureState, persistSuccessfulApply } from './opentofu-state-fixture';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,7 +34,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -136,7 +138,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.90.10.10', ssh: null } },
         resource_summary: { value: { vpc_id: 'vpc-runtime-password' } },
@@ -220,7 +223,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.91.10.10', ssh: null } },
         resource_summary: { value: { vpc_id: 'vpc-fixed-image' } },
@@ -289,13 +293,14 @@ describe('OpenTofuRangeProvisioner', () => {
 
     await fs.mkdir(moduleDir, { recursive: true });
     await fs.mkdir(workspaceDir, { recursive: true });
-    await fs.writeFile(sentinelPath, '{"version":4,"resources":[]}', 'utf8');
+    await fs.writeFile(sentinelPath, JSON.stringify(fixtureState), 'utf8');
 
     const runner = {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue({ ...fixturePlan, resource_changes: [] }),
       output: jest.fn().mockResolvedValue({
         public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.92.10.10', ssh: null } },
         resource_summary: { value: { vpc_id: 'vpc-update' } },
@@ -351,7 +356,7 @@ describe('OpenTofuRangeProvisioner', () => {
       },
     });
 
-    await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('{"version":4,"resources":[]}');
+    await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe(JSON.stringify(fixtureState));
   });
 
   it('renders the single ECS module with existing network ids when instanceMode is single', async () => {
@@ -432,7 +437,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: { value: { host_role: 'dmz', public_ip: null, private_ip: '10.93.10.10', ssh: null } },
         resource_summary: { value: { vpc_id: 'vpc-fixed-policy' } },
@@ -548,7 +554,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -1063,6 +1070,7 @@ describe('OpenTofuRangeProvisioner', () => {
         }),
       ),
       apply: jest.fn(),
+      showPlan: jest.fn(),
       output: jest.fn(),
       destroy: jest.fn(),
     };
@@ -1174,7 +1182,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -1314,7 +1323,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -1533,7 +1543,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -1725,7 +1736,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -1986,7 +1998,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -2152,7 +2165,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -2291,7 +2305,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -2488,7 +2503,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -2704,7 +2720,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -3035,7 +3052,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -3195,7 +3213,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -3438,7 +3457,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -3628,7 +3648,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -3770,7 +3791,8 @@ describe('OpenTofuRangeProvisioner', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: {
           value: {
@@ -3897,7 +3919,8 @@ describe('OpenTofuRangeProvisioner', () => {
         init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
         validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
         plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-        apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+        apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
         output: jest.fn().mockResolvedValue({
           public_entry: {
             value: {
@@ -3995,6 +4018,7 @@ describe('OpenTofuRangeProvisioner', () => {
         validate: jest.fn(),
         plan: jest.fn(),
         apply: jest.fn(),
+        showPlan: jest.fn(),
         output: jest.fn(),
         destroy: jest.fn(),
       },

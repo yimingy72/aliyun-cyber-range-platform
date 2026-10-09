@@ -279,6 +279,9 @@ model CloudImageSnapshot {
 model ImageImportJob {
   id                    String               @id @default(cuid())
   cloudAccountContextId String
+  cloudAccountUid       String?
+  regionId              String?
+  imageImportBucket     String?
   ownerUserId           String
   displayName           String
   defaultHostName       String?
@@ -296,6 +299,7 @@ model ImageImportJob {
   objectKey             String               @unique
   uploadExpiresAt       DateTime
   uploadCompletedAt     DateTime?
+  submissionRejected    Boolean              @default(false)
   lastPolledAt          DateTime?
   status                ImageImportJobStatus @default(awaiting_upload)
   imageId               String?              @unique
@@ -303,7 +307,12 @@ model ImageImportJob {
   sourceSnapshotId      String?
   platformImageAssetId  String?
   cloudImageDeletedAt   DateTime?
+  backingSnapshotIds    String[]             @default([])
+  deletedSnapshotIds    String[]             @default([])
+  snapshotCleanupCompletedAt DateTime?
   temporaryObjectDeletedAt DateTime?
+  leaseToken            String?
+  leaseExpiresAt        DateTime?
   errorMessage          String?              @db.Text
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt

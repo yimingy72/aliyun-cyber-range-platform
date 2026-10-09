@@ -75,8 +75,9 @@ function createSystemConfigServiceStub() {
       defaultZoneId: 'cn-hangzhou-h',
       accessKeyId: 'test-ak',
       accessKeySecret: 'test-sk',
-      accountUid: null,
-      accountUidResolved: false,
+      accountUid: 'admin-resource-account',
+      cloudAccountContextId: 'admin-resource-context',
+      accountUidResolved: true,
     }),
   };
 }
@@ -84,20 +85,26 @@ function createSystemConfigServiceStub() {
 describe('Admin resources', () => {
   let app: INestApplication;
   let repository: AdminRepository;
+  let cloudDeleted = false;
+  const resourceSummary = { mode: 'opentofu' as const, hostIds: { entry: 'i-admin-resource' }, systemDiskIds: { entry: 'd-admin-resource' } };
   const provisioner: RangeProvisioner & {
     create: jest.Mock;
     destroy: jest.Mock;
   } = {
-    create: jest.fn().mockResolvedValue({
-      accessEntry: {
-        url: 'https://range.local/fake',
-        ssh: 'ssh root@range.local',
-      },
-      resourceSummary: {
-        mode: 'fake-provisioner',
-      },
+    mode: 'opentofu',
+    inspectResources: jest.fn(async () => resourceSummary),
+    create: jest.fn(async (input) => {
+      await input.onApplyStart?.();
+      cloudDeleted = false;
+      return {
+        accessEntry: {
+          hostRole: 'entry', publicIp: null, privateIp: '10.70.10.10',
+          url: 'https://range.local/fake', ssh: 'ssh root@range.local',
+        },
+        resourceSummary,
+      };
     }),
-    destroy: jest.fn().mockResolvedValue(undefined),
+    destroy: jest.fn(async () => { cloudDeleted = true; }),
   };
 
   beforeAll(async () => {
@@ -148,7 +155,7 @@ describe('Admin resources', () => {
 
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'admin-resource-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       snapshots: [
@@ -163,7 +170,7 @@ describe('Admin resources', () => {
     });
     const [snapshot] = await repository.listImageSnapshots({
       provider: 'alibaba_cloud',
-      accountUid: null,
+      accountUid: 'admin-resource-account',
       regionId: 'cn-hangzhou',
       scope: 'custom',
       imageId: platformImageId,
@@ -433,32 +440,58 @@ describe('Admin resources', () => {
       .send({})
       .expect(201);
 
-    await worker.process(createJob.body.id);
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const query = new URL(String(input)).searchParams;
+      const metadata = { RequestId: 'admin-resource-query', PageNumber: 1, PageSize: 100 };
+      if (query.get('Action') === 'DescribeDisks') {
+        if (query.has('InstanceId')) {
+          expect(query.get('InstanceId')).toBe('i-admin-resource');
+          expect(cloudDeleted).toBe(false);
+          return new Response(JSON.stringify({ ...metadata, TotalCount: 1, Disks: { Disk: [{
+            DiskId: 'd-admin-resource', InstanceId: 'i-admin-resource', Type: 'system', DeleteWithInstance: true,
+          }] } }));
+        }
+        expect(JSON.parse(query.get('DiskIds')!)).toEqual(['d-admin-resource']);
+        expect(cloudDeleted).toBe(true);
+        return new Response(JSON.stringify({ ...metadata, TotalCount: 0, Disks: { Disk: [] } }));
+      }
+      if (query.get('Action') === 'DescribeInstances') {
+        expect(JSON.parse(query.get('InstanceIds')!)).toEqual(['i-admin-resource']);
+        expect(cloudDeleted).toBe(true);
+        return new Response(JSON.stringify({ ...metadata, TotalCount: 0, Instances: { Instance: [] } }));
+      }
+      throw new Error(`Unexpected fixture cloud action: ${query.get('Action')}`);
+    });
+    try {
+      await worker.process(createJob.body.id);
 
-    expect(await repository.getRangeInstanceById(instance.body.id)).toEqual(
-      expect.objectContaining({
-        status: 'running',
-        accessEntry: expect.objectContaining({
-          url: 'https://range.local/fake',
+      expect(await repository.getRangeInstanceById(instance.body.id)).toEqual(
+        expect.objectContaining({
+          status: 'running',
+          accessEntry: expect.objectContaining({
+            url: 'https://range.local/fake',
+          }),
         }),
-      }),
-    );
-    expect(provisioner.create).toHaveBeenCalled();
+      );
+      expect(provisioner.create).toHaveBeenCalled();
 
-    const destroyJob = await request(app.getHttpServer())
-      .post(`/admin/ranges/${instance.body.id}/destroy`)
-      .set('authorization', 'Bearer dev-admin-token')
-      .send({})
-      .expect(201);
+      const destroyJob = await request(app.getHttpServer())
+        .post(`/admin/ranges/${instance.body.id}/destroy`)
+        .set('authorization', 'Bearer dev-admin-token')
+        .send({})
+        .expect(201);
 
-    await worker.process(destroyJob.body.id);
+      await worker.process(destroyJob.body.id);
 
-    expect(await repository.getRangeInstanceById(instance.body.id)).toEqual(
-      expect.objectContaining({
-        status: 'destroyed',
-      }),
-    );
-    expect(provisioner.destroy).toHaveBeenCalled();
+      expect(await repository.getRangeInstanceById(instance.body.id)).toEqual(
+        expect.objectContaining({
+          status: 'destroyed',
+        }),
+      );
+      expect(provisioner.destroy).toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it('deletes unused templates and templates referenced only by destroyed instances', async () => {

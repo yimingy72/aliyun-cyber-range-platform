@@ -96,7 +96,7 @@ type ImageCenterMetadata = {
 };
 type ImageCenterConfirmState =
   | { type: 'remove-platform'; asset: PlatformImageAsset }
-  | { type: 'delete-custom'; snapshot: ImageSnapshot }
+  | { type: 'delete-custom'; snapshot: ImageSnapshot; deleteOwnedSnapshots: boolean }
   | null;
 type ImageImportDialogDraft = {
   file: File | null;
@@ -302,6 +302,7 @@ function removeSnapshot(scopePayload: ImageCatalogScopePayload | null, snapshotI
   return {
     ...scopePayload,
     snapshots: scopePayload.snapshots.filter((snapshot) => snapshot.id !== snapshotId),
+    catalogItems: scopePayload.catalogItems.filter(item => item.sourceSnapshotId !== snapshotId),
   } satisfies ImageCatalogScopePayload;
 }
 
@@ -1528,7 +1529,7 @@ export function ImageCenterScreen({
     }
   }
 
-  async function handleDeleteCustomSnapshot(snapshot: ImageSnapshot) {
+  async function handleDeleteCustomSnapshot(snapshot: ImageSnapshot, deleteOwnedSnapshots: boolean) {
     if (!session.token) {
       return;
     }
@@ -1540,11 +1541,16 @@ export function ImageCenterScreen({
     try {
       setActionErrorMessage('');
       beginAction(actionKey);
-      await deleteCustomImageSnapshot(apiBaseUrl, session.token, snapshot.id);
+      await deleteCustomImageSnapshot(apiBaseUrl, session.token, snapshot.id, { deleteOwnedSnapshots });
 
       if (customScopeRequestVersionRef.current === requestVersion) {
-        setCustomScope((previous) => removeSnapshot(previous, snapshot.id));
+        setCustomScope((previous) => {
+          const withoutImage = removeSnapshot(previous, snapshot.id);
+          if (!withoutImage || !previous || deleteOwnedSnapshots || !snapshot.ownedSnapshotCleanup) return withoutImage;
+          return { ...withoutImage, snapshots: previous.snapshots.map(item => item.id === snapshot.id ? { ...item, status: 'Deleted', isAvailable: false } : item) };
+        });
       }
+      for (const asset of [...platformAssets, ...myAssets]) if (asset.sourceSnapshotId === snapshot.id) removeAssetFromViews(asset.id);
       closeConfirmDialog();
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -1778,7 +1784,7 @@ export function ImageCenterScreen({
             {snapshot.imageId}
           </AdminDataTableCell>
           <AdminDataTableCell column={statusColumn!}>
-            <Badge variant={snapshot.isAvailable ? 'default' : 'secondary'}>{formatImageStatus(snapshot)}</Badge>
+            <Badge variant={snapshot.isAvailable ? 'default' : 'secondary'}>{snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '快照待回收' : formatImageStatus(snapshot)}</Badge>
           </AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
             <div className="flex justify-start gap-1">
@@ -1797,13 +1803,16 @@ export function ImageCenterScreen({
               {scope === 'custom' && session.isAdmin && !isImportingSnapshot ? (
                 <Button
                   disabled={isDeletePending}
-                  aria-label={`删除 ${snapshot.sourceImageName}`}
-                  onClick={() => setConfirmState({ type: 'delete-custom', snapshot })}
+                  aria-label={`${snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'} ${snapshot.sourceImageName}`}
+                  onClick={() => {
+                    setActionErrorMessage('');
+                    setConfirmState({ type: 'delete-custom', snapshot, deleteOwnedSnapshots: Boolean(snapshot.ownedSnapshotCleanup && (snapshot.status === 'Deleted' || snapshot.ownedSnapshotCleanup.status === 'deleting')) });
+                  }}
                   size="sm"
                   type="button"
                   variant="destructive"
                 >
-                  删除
+                  {snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'}
                 </Button>
               ) : null}
             </div>
@@ -2331,15 +2340,33 @@ export function ImageCenterScreen({
           ) : null}
 
           {confirmState?.type === 'delete-custom' ? (
-            <AdminConfirmationDialog
-              confirmLabel="确认删除"
-              description={`即将删除阿里云上的自定义镜像“${confirmState.snapshot.sourceImageName}”。此操作会影响该镜像的后续使用，关联快照仍会保留并可能产生费用；完整回收新平台打包镜像请使用显式的镜像及快照回收操作。`}
+            <AdminDialog
+              description={`镜像：${confirmState.snapshot.sourceImageName}（${confirmState.snapshot.imageId}）。${confirmState.snapshot.status === 'Deleted' ? '云镜像已删除，所属快照仍需单独回收。' : '删除后无法再使用该镜像创建实例。'}`}
               open
               pending={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
-              title="确认删除阿里云自定义镜像"
-              onConfirm={() => void handleDeleteCustomSnapshot(confirmState.snapshot)}
+              size="compact"
+              title={confirmState.snapshot.status === 'Deleted' ? '回收所属快照' : '确认删除阿里云自定义镜像'}
               onOpenChange={(open) => !open && closeConfirmDialog()}
-            />
+              footer={<>
+                <Button disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)} type="button" variant="outline" onClick={closeConfirmDialog}>取消</Button>
+                <Button disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)} type="button" variant="destructive" onClick={() => void handleDeleteCustomSnapshot(confirmState.snapshot, confirmState.deleteOwnedSnapshots)}>
+                  {confirmState.deleteOwnedSnapshots ? (confirmState.snapshot.status === 'Deleted' ? '确认回收快照' : '确认回收镜像及快照') : '确认删除'}
+                </Button>
+              </>}
+            >
+              <fieldset className="grid gap-3 text-sm" disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}>
+                <legend className="mb-2 font-medium">删除范围</legend>
+                {confirmState.snapshot.status !== 'Deleted' && confirmState.snapshot.ownedSnapshotCleanup?.status !== 'deleting' ? <label className="flex items-start gap-2">
+                  <input checked={!confirmState.deleteOwnedSnapshots} className="mt-1 accent-[var(--primary)]" name="custom-image-delete-scope" type="radio" onChange={() => setConfirmState({ ...confirmState, deleteOwnedSnapshots: false })} />
+                  <span>仅删除镜像<span className="mt-1 block text-xs text-muted-foreground">保留关联快照，快照存储费用继续产生。</span></span>
+                </label> : null}
+                {confirmState.snapshot.ownedSnapshotCleanup ? <label className="flex items-start gap-2">
+                  <input checked={confirmState.deleteOwnedSnapshots} className="mt-1 accent-[var(--primary)]" name="custom-image-delete-scope" type="radio" onChange={() => setConfirmState({ ...confirmState, deleteOwnedSnapshots: true })} />
+                  <span>{confirmState.snapshot.status === 'Deleted' ? '回收所属快照' : '同时清理所属快照'}<span className="mt-1 block text-xs text-muted-foreground">{confirmState.snapshot.ownedSnapshotCleanup.snapshotCount} 个待回收。仅清理本平台打包生成且无其它引用的快照；回收后无法恢复。</span></span>
+                </label> : <p className="text-xs text-muted-foreground">该镜像缺少可核验的打包快照来源，平台不会自动删除其快照。</p>}
+              </fieldset>
+              {actionErrorMessage ? <p className="mt-3 text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
+            </AdminDialog>
           ) : null}
       </section>
     </div>

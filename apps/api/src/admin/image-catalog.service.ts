@@ -26,7 +26,7 @@ type ImageCatalogScopePayload = {
     Pick<
       CloudImageSnapshotRecord,
       'id' | 'provider' | 'scope' | 'imageId' | 'sourceImageName' | 'platform' | 'status' | 'isAvailable'
-    >
+    > & { ownedSnapshotCleanup?: { snapshotCount: number; status: 'ready' | 'deleting' } }
   >;
   catalogItems: Array<
     Pick<ImageCatalogItemRecord, 'id' | 'displayName' | 'imageId' | 'scope' | 'enabled' | 'sourceSnapshotId'>
@@ -480,7 +480,7 @@ export class ImageCatalogService {
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {
     const accountContext = await this.systemConfigService.getAccountContext();
 
-    const [snapshots, catalogItems] = await Promise.all([
+    const [snapshots, catalogItems, packedArtifacts] = await Promise.all([
       this.adminRepository.listImageSnapshots({
         provider: accountContext.provider,
         accountUid: accountContext.accountUid,
@@ -493,10 +493,16 @@ export class ImageCatalogService {
         accountUid: accountContext.accountUid,
         regionId: accountContext.defaultRegion,
       }),
+      scope === 'custom' ? this.adminRepository.listPackedImageArtifacts() : Promise.resolve([]),
     ]);
+    const cleanupBySnapshot = new Map(packedArtifacts.filter(artifact =>
+      artifact.cloudAccountUid === accountContext.accountUid && artifact.regionId === accountContext.defaultRegion
+      && artifact.sourceSnapshotId && ['available', 'failed', 'deleting'].includes(artifact.status)
+      && artifact.backingSnapshotIds.length > 0 && artifact.backingSnapshotIds.length === artifact.sourceDiskIds.length,
+    ).map(artifact => [artifact.sourceSnapshotId, artifact]));
 
     return {
-      snapshots: snapshots.filter(snapshot => snapshot.status !== 'Deleted').map((snapshot) => ({
+      snapshots: snapshots.filter(snapshot => snapshot.status !== 'Deleted' || cleanupBySnapshot.get(snapshot.id)?.imageId === snapshot.imageId).map((snapshot) => ({
         id: snapshot.id,
         provider: snapshot.provider,
         scope: snapshot.scope,
@@ -505,6 +511,12 @@ export class ImageCatalogService {
         platform: snapshot.platform,
         status: snapshot.status,
         isAvailable: snapshot.isAvailable,
+        ...(cleanupBySnapshot.get(snapshot.id)?.imageId === snapshot.imageId ? {
+          ownedSnapshotCleanup: {
+            snapshotCount: cleanupBySnapshot.get(snapshot.id)!.backingSnapshotIds.length - cleanupBySnapshot.get(snapshot.id)!.deletedSnapshotIds.length,
+            status: cleanupBySnapshot.get(snapshot.id)!.status === 'deleting' ? 'deleting' as const : 'ready' as const,
+          },
+        } : {}),
       })),
       catalogItems: catalogItems.map((item) => ({
         id: item.id,

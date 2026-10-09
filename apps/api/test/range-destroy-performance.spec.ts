@@ -35,7 +35,7 @@ describe('range destroy verification performance and completeness', () => {
     service.performAliyunRpcRequest = jest.fn(async input => {
       expect(input.parameters.PageSize).toBe('100');
       const ids = JSON.parse(input.parameters.InstanceIds) as string[];
-      return { TotalCount: ids.length, Instances: { Instance: ids.map(InstanceId => ({ InstanceId })) } };
+      return { RequestId: 'fixture', PageSize: 100, PageNumber: 1, TotalCount: ids.length, Instances: { Instance: ids.map(InstanceId => ({ InstanceId })) } };
     });
     const ids = Array.from({ length: 205 }, (_, index) => `i-${index}`);
     expect(await service.findExistingInstanceIds([...ids, ids[0]], account, account.defaultRegion)).toEqual(ids);
@@ -50,6 +50,38 @@ describe('range destroy verification performance and completeness', () => {
   ])('rejects malformed or partial ECS absence evidence %#', async payload => {
     const service = worker(); service.performAliyunRpcRequest = jest.fn().mockResolvedValue(payload);
     await expect(service.findExistingInstanceIds(['i-owned'], account, account.defaultRegion)).rejects.toThrow('destroy verification response');
+  });
+
+  it.each([
+    ['checkVpcExists', 'Vpcs', 'Vpc', 'VpcId', 'vpc-owned'],
+    ['checkVSwitchExists', 'VSwitches', 'VSwitch', 'VSwitchId', 'vsw-owned'],
+    ['checkNetworkInterfaceExists', 'NetworkInterfaceSets', 'NetworkInterfaceSet', 'NetworkInterfaceId', 'eni-owned'],
+    ['checkNatGatewayExists', 'NatGateways', 'NatGateway', 'NatGatewayId', 'nat-owned'],
+    ['checkEipExists', 'EipAddresses', 'EipAddress', 'AllocationId', 'eip-owned'],
+  ])('validates complete absence and exact identities for %s', async (method, group, item, field, id) => {
+    const service = worker();
+    const valid = { RequestId: 'fixture', TotalCount: 0, PageSize: 100, PageNumber: 1, [group]: { [item]: [] } };
+    service.performAliyunRpcRequest = jest.fn().mockResolvedValue(valid);
+    await expect(service[method](id, account, account.defaultRegion)).resolves.toBe(false);
+    expect(service.performAliyunRpcRequest.mock.calls[0][0].parameters).toMatchObject({ PageSize: '100', PageNumber: '1',
+      [method === 'checkNetworkInterfaceExists' ? 'NetworkInterfaceId.1' : field]: id });
+    for (const broken of [{}, { ...valid, RequestId: undefined }, { ...valid, TotalCount: 1 }, { ...valid, PageNumber: 2 },
+      { ...valid, NextToken: 'more' }, { ...valid, Code: 'Forbidden' },
+      { ...valid, TotalCount: 1, [group]: { [item]: [{ [field]: 'foreign' }] } }]) {
+      service.performAliyunRpcRequest.mockResolvedValue(broken);
+      await expect(service[method](id, account, account.defaultRegion)).rejects.toThrow('destroy verification response');
+    }
+  });
+
+  it('verifies detached system disks even after the VPC is absent', async () => {
+    const service = worker(); service.checkVpcExists = jest.fn().mockResolvedValue(false);
+    service.checkVSwitchExists = jest.fn().mockResolvedValue(false);
+    service.performAliyunRpcRequest = jest.fn(async input => {
+      expect(input.action).toBe('DescribeDisks'); expect(JSON.parse(input.parameters.DiskIds)).toEqual(['d-detached']);
+      return { RequestId: 'fixture', PageSize: 100, PageNumber: 1, TotalCount: 1, Disks: { Disk: [{ DiskId: 'd-detached' }] } };
+    });
+    expect(await service.findResidualCloudResources({ mode: 'opentofu', vpcId: 'vpc-gone', subnetIds: { old: 'vsw-owned' }, systemDiskIds: { entry: 'd-detached' } },account)).toEqual(['disk:d-detached']);
+    expect(service.checkVSwitchExists).toHaveBeenCalled();
   });
 
   it('does not query the cloud for synthetic dry-run resource summaries', async () => {

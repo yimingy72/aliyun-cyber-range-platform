@@ -111,8 +111,13 @@ export const billingSummaryOutputSchema = resultOutputSchema(
     ...billingWindowFields,
     currency: z.string().nullable().optional(),
     currencyTotals: z.array(z.object({ currency: nonEmptyString, totalPretaxAmount: z.number(), platformPretaxAmount: z.number() })).optional(),
-    totalPretaxAmount: z.number().nullable().describe('统计窗口内含税前总费用。'),
-    platformPretaxAmount: z.number().nullable().describe('平台自有资源税前费用。'),
+    totalPretaxAmount: z.number().nullable().describe('已同步并已归属的 BSS 应付金额（PretaxAmount），不包含未归属费用。'),
+    platformPretaxAmount: z.number().nullable().describe('已归属平台公共资源的 BSS 应付金额。'),
+    billingStatus: z.literal('provisional').optional().describe('账单可能因延迟出账、退款和调账变化；缺失表示接口未提供状态。'),
+    unallocatedCurrencyTotals: z.array(z.object({ currency: nonEmptyString, pretaxAmount: z.number() })).optional()
+      .describe('已同步但未归属的金额，按币种单列，不分摊给用户或计入平台公共费用；缺失表示未知。'),
+    resourcesWithoutBillCount: z.number().int().nonnegative().optional()
+      .describe('统计窗口内尚未匹配账单的可能计费资源数，不含单独的 SNAT/DNAT 条目；缺失表示未知，待出账不代表免费。'),
     anomalyCount: z.number().int().nonnegative().describe('未归属或异常账单条目数。'),
     resourceTypeTotals: z.array(z.object({ resourceType: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),
     dailyTotals: z.array(z.object({ billingDate: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),

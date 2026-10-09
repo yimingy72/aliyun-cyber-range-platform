@@ -1,5 +1,7 @@
 import { PrismaService } from '../src/database/prisma.service';
 import { PrismaAdminRepository } from '../src/database/prisma-admin.repository';
+import { ImageImportsService } from '../src/admin/image-imports.service';
+import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 const url = process.env.PACKED_IMAGE_TEST_DATABASE_URL;
 if (url && (new URL(url).hostname !== 'packed-image-test-postgres' || new URL(url).pathname !== '/packed_image_test')) throw new Error('Packed-image DB tests require isolated packed_image_test');
 const describeDb = url ? describe : describe.skip;
@@ -14,6 +16,7 @@ describeDb('Packed-image repository in isolated PostgreSQL', () => {
   });
   afterAll(async () => { await prisma?.$disconnect(); });
   beforeEach(async () => {
+    await prisma.imageImportJob.deleteMany(); await prisma.cloudAccountContext.deleteMany();
     await prisma.platformImageAsset.deleteMany(); await prisma.cloudImageSnapshot.deleteMany(); await prisma.packedImageArtifact.deleteMany(); await prisma.platformUser.deleteMany();
   });
   const newArtifact = () => repository.createPackedImageArtifact({ cloudAccountContextId: 'ctx', cloudAccountUid: '100001', regionId: 'cn-hangzhou', ownerUserId: 'owner', sourceRangeInstanceId: 'range', sourceHostKey: 'ecs', sourceInstanceId: 'i-owned', sourceDiskIds: ['d-owned'] });
@@ -50,5 +53,28 @@ describeDb('Packed-image repository in isolated PostgreSQL', () => {
     await repository.upsertImageSnapshots({ ...input, snapshots: [{ ...input.snapshots[0], status: 'Deleted', isAvailable: false }] });
     await repository.upsertImageSnapshots(input);
     expect(await repository.getImageSnapshotById(source.id)).toMatchObject({ status: 'Deleted', isAvailable: false });
+  });
+  it('fences concurrent import workers and stale cleanup writers while retaining exact snapshot progress', async () => {
+    await repository.createPlatformUser({ id: 'owner', username: 'owner', passwordHash: 'mock', role: 'user' });
+    await prisma.cloudAccountContext.create({ data: { id: 'ctx', displayName: 'fixture', accountUid: '100001', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', accessKeyId: 'mock', accessKeySecret: 'mock', imageImportBucket: 'fixture-bucket' } });
+    const job = await prisma.imageImportJob.create({ data: { cloudAccountContextId: 'ctx', cloudAccountUid: '100001', regionId: 'cn-hangzhou', imageImportBucket: 'fixture-bucket', ownerUserId: 'owner', displayName: 'fixture', osType: 'linux', architecture: 'x86_64', bootMode: 'BIOS', imageFormat: 'qcow2', systemDiskSize: 40, sourceFileName: 'fixture.qcow2', sourceContentType: 'application/octet-stream', sourceSizeBytes: '1024', objectKey: 'fixture/object', uploadExpiresAt: new Date(Date.now() + 60000) } });
+    const a = new ImageImportsService(repository, prisma, {} as CloudAccountContextsService) as any;
+    const b = new ImageImportsService(repository, prisma, {} as CloudAccountContextsService) as any;
+    let release!: () => void, entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { entered = resolve; });
+    let stale: any;
+    const first = a.withClaim(job.id, async (held: any) => { stale = held; await a.updateJob(held, { status: 'failed', imageId: 'm-fixture', backingSnapshotIds: ['s-first', 's-second'], deletedSnapshotIds: ['s-first'] }); entered(); await blocked; });
+    await acquired;
+    let overlapped = false;
+    await b.withClaim(job.id, async () => { overlapped = true; });
+    expect(overlapped).toBe(false);
+    await prisma.imageImportJob.update({ where: { id: job.id }, data: { leaseExpiresAt: new Date(0) } });
+    await b.withClaim(job.id, async (held: any) => {
+      await expect(a.updateJob(stale, { snapshotCleanupCompletedAt: new Date() })).rejects.toThrow();
+      await b.updateJob(held, { deletedSnapshotIds: ['s-first', 's-second'] });
+    });
+    release(); await first;
+    expect(await prisma.imageImportJob.findUnique({ where: { id: job.id } })).toMatchObject({ backingSnapshotIds: ['s-first', 's-second'], deletedSnapshotIds: ['s-first', 's-second'], snapshotCleanupCompletedAt: null, leaseToken: null });
   });
 });

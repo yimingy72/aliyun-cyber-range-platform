@@ -99,13 +99,18 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     const intervalMs = Number(process.env.BILLING_SYNC_INTERVAL_MS ?? '');
 
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0 || intervalMs > 2_147_483_647) {
       return;
     }
 
     this.timer = setInterval(() => {
-      void this.syncRecentDays(7).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
+      // Month-end settlement can revise bills older than the default seven-day manual window.
+      const today = resolveBillingWindow({}, 1).endAt;
+      const previousMonthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+      const days = Math.round((today.getTime() - previousMonthStart.getTime()) / 86_400_000);
+      void this.syncRecentDays(days).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
     }, intervalMs);
+    this.timer.unref();
   }
 
   onModuleDestroy() {
@@ -119,10 +124,11 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     const today = resolveBillingWindow({}, days).endAt;
     const endAt = new Date(today.getTime() - 86_400_000);
     const startAt = new Date(endAt.getTime() - (days - 1) * 86_400_000);
-    return this.syncRange({ startAt, endAt }, true);
+    // Daily BSS results are revised after their first appearance; revisit the whole overlap window.
+    return this.syncRange({ startAt, endAt });
   }
 
-  async syncRange(input: { startAt: string | Date; endAt: string | Date }, incremental = false) {
+  async syncRange(input: { startAt: string | Date; endAt: string | Date }) {
     if (this.isRunning) {
       return {
         syncedDays: 0,
@@ -144,8 +150,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const cloudConfig = await this.systemConfigService.getAccountContext();
       const cloudAccountUid = cloudConfig.accountUid;
       if (!cloudAccountUid || !cloudConfig.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
-      const latestBillingDate = incremental ? await this.adminRepository.getLatestBillingLineItemDate(cloudAccountUid) : null;
-      const startAt = latestBillingDate && latestBillingDate > requestedStartAt ? latestBillingDate : requestedStartAt;
+      const startAt = requestedStartAt;
 
       if (startAt > endAt) {
         return {
@@ -169,6 +174,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           readNumber(line, 'PretaxAmount');
           if (!/^[A-Z]{3}$/.test(readString(line, 'Currency'))) throw new Error('BSS returned an invalid currency; previous bills were retained');
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
+          if (line.BillingDate !== undefined && readString(line, 'BillingDate') !== billingDate) throw new Error('BSS returned a bill for a different billing date; previous bills were retained');
         }
         await this.reconcilePlatformImageBillingLedgers(ledgerResources, cloudAccountUid);
         const dayItems = new Map<string, CreateBillingLineItemInput>();
@@ -186,6 +192,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
                 billingDate,
                 cloudAccountUid,
                 ['Refund', 'Adjustment'].includes(readString(line, 'Item')),
+                explicitRegionId(line),
               ) ??
               (await this.findTaggedLedgerResource({
                 line,
@@ -315,7 +322,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
     const tagged = parsePlatformBillingTags(input.line.Tag);
 
-    if (!tagged || !input.classification.cloudResourceId) {
+    if (!tagged || !input.classification.cloudResourceId
+      || tagged.tags.CloudAccountUid && tagged.tags.CloudAccountUid !== input.cloudAccountUid) {
       return null;
     }
 
@@ -327,16 +335,22 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (existing) {
+      const regionId = explicitRegionId(input.line, tagged.tags);
+      if (regionId && existing.regionId !== regionId) return null;
       return isLedgerActiveForBillingDate(existing, input.billingDate, ['Refund', 'Adjustment'].includes(readString(input.line, 'Item'))) ? existing : null;
     }
 
     const regionId = explicitRegionId(input.line, tagged.tags);
     if (!regionId || (tagged.billingScope === 'user' && !tagged.ownerUserId)) return null;
+    // The legacy unique key omits account UID. An unproven collision must not abort all other bills for this day.
+    if (input.ledgerResources.some(item => item.regionId === regionId && item.cloudResourceId === input.classification.cloudResourceId
+      && item.cloudResourceType === input.classification.cloudResourceType && item.cloudAccountUid !== input.cloudAccountUid)) return null;
     if (tagged.billingScope === 'user') {
       if (!(await this.adminRepository.getPlatformUserById(tagged.ownerUserId!))) return null;
       if (tagged.rangeInstanceId) {
         const instance = await this.adminRepository.getRangeInstanceById(tagged.rangeInstanceId);
         if (!instance || instance.ownerUserId !== tagged.ownerUserId
+          || instance.singleInstanceConfig?.cloudAccountUid && instance.singleInstanceConfig.cloudAccountUid !== input.cloudAccountUid
           || (tagged.singleInstanceBatchId && instance.singleInstanceBatchId !== tagged.singleInstanceBatchId)) return null;
       }
     }
@@ -560,10 +574,11 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     billingDate: string,
     cloudAccountUid: string,
     correction: boolean,
+    regionId: string | null,
   ) {
     const matchedLedger = this.findLedgerResource(ledgerResources, cloudResourceId, cloudResourceType, cloudAccountUid);
 
-    if (!matchedLedger) {
+    if (!matchedLedger || regionId && matchedLedger.regionId !== regionId) {
       return null;
     }
 

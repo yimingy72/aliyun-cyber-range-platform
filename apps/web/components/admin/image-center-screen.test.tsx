@@ -1574,10 +1574,68 @@ describe('ImageCenterScreen', () => {
         'http://localhost:3001',
         'dev-admin-token',
         'custom-snapshot-1',
+        { deleteOwnedSnapshots: false },
       );
     });
 
     expect(screen.queryByText('Blue Team Ubuntu 22.04')).toBeNull();
+  });
+
+  async function openCustomDelete(snapshot: ImageSnapshot = customSnapshot) {
+    fetchCustomImageCatalogScopeMock.mockResolvedValue({ snapshots: [snapshot], catalogItems: [] });
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '阿里云自定义镜像' }));
+    fireEvent.click(await screen.findByRole('button', { name: `${snapshot.status === 'Deleted' ? '回收快照' : '删除'} ${snapshot.sourceImageName}` }));
+    return screen.getByRole('dialog', { name: snapshot.status === 'Deleted' ? '回收所属快照' : '确认删除阿里云自定义镜像' });
+  }
+
+  it('offers explicit owned-snapshot cleanup without selecting it by default', async () => {
+    const dialog = await openCustomDelete({ ...customSnapshot, ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
+    expect((within(dialog).getByRole('radio', { name: /仅删除镜像/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(dialog).getByRole('radio', { name: /同时清理所属快照/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
+    await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', customSnapshot.id, { deleteOwnedSnapshots: true }));
+    await waitFor(() => expect(screen.queryByText(customSnapshot.sourceImageName)).toBeNull());
+  });
+
+  it('does not offer automatic snapshot deletion without platform ownership proof', async () => {
+    const dialog = await openCustomDelete();
+    expect(within(dialog).queryByRole('radio', { name: /同时清理所属快照/ })).toBeNull();
+    expect(within(dialog).getByText(/缺少可核验的打包快照来源/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(deleteCustomImageSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('retains a recovery entry when only the cloud image was removed', async () => {
+    const dialog = await openCustomDelete({ ...customSnapshot, ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }));
+    const retry = await screen.findByRole('button', { name: `回收快照 ${customSnapshot.sourceImageName}` });
+    expect(screen.getByText('快照待回收')).toBeTruthy();
+    fireEvent.click(retry);
+    const cleanupDialog = screen.getByRole('dialog', { name: '回收所属快照' });
+    expect(within(cleanupDialog).queryByRole('radio', { name: /仅删除镜像/ })).toBeNull();
+    fireEvent.click(within(cleanupDialog).getByRole('button', { name: '确认回收快照' }));
+    await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', customSnapshot.id, { deleteOwnedSnapshots: true }));
+  });
+
+  it('keeps the exact cleanup selection and visible failure inside the dialog for retry', async () => {
+    deleteCustomImageSnapshotMock.mockRejectedValueOnce(new Error('快照仍被其它镜像引用，拒绝回收。'));
+    const dialog = await openCustomDelete({ ...customSnapshot, ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
+    fireEvent.click(within(dialog).getByRole('radio', { name: /同时清理所属快照/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('快照仍被其它镜像引用');
+    expect((within(dialog).getByRole('radio', { name: /同时清理所属快照/ }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(customSnapshot.sourceImageName).closest('tr')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
+    await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('continues a partial cleanup using the same snapshot target', async () => {
+    const dialog = await openCustomDelete({ ...customSnapshot, status: 'Deleting', isAvailable: false, ownedSnapshotCleanup: { snapshotCount: 1, status: 'deleting' } });
+    expect(within(dialog).queryByRole('radio', { name: /仅删除镜像/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
+    await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', customSnapshot.id, { deleteOwnedSnapshots: true }));
   });
 
   it('changes rendered rows when the page-size selector changes', async () => {

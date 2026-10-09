@@ -9,9 +9,10 @@ describe('CIDR allocation', () => {
   let rangeInstanceId: string;
   const originalCidrPool = process.env.RANGE_CIDR_POOL;
   const provisionerSpy: RangeProvisioner & { create: jest.Mock; destroy: jest.Mock } = {
+    mode: 'dry-run',
     create: jest.fn().mockResolvedValue({
       accessEntry: { url: 'https://range.local/fake', ssh: 'ssh root@range.local' },
-      resourceSummary: { mode: 'fake-provisioner' },
+      resourceSummary: { mode: 'dry-run' },
     }),
     destroy: jest.fn().mockResolvedValue(undefined),
   };

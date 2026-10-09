@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { APPLY_PENDING_FILE, fileExists, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
-import { OpenTofuRunner, type OpenTofuInitOptions, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, } from '@aliyun-cyber-range/iac-runner';
+import { OpenTofuRunner, type OpenTofuInitOptions, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, type OpenTofuShowPlanOptions, } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
 import { buildBillingTags } from '../admin/billing-tagging';
 import type { SingleInstanceNetworkProfileRecord, UpsertSingleInstanceNetworkProfileInput } from '../admin/admin.repository';
@@ -16,6 +17,7 @@ type BootstrapRunnerLike = {
   apply(options: OpenTofuApplyOptions): Promise<OpenTofuCommandResult>;
   destroy(options: OpenTofuDestroyOptions): Promise<OpenTofuCommandResult>;
   output<T>(options: OpenTofuWorkspaceCommandOptions): Promise<T>;
+  showPlan<T>(options: OpenTofuShowPlanOptions): Promise<T>;
 };
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
 const PROXY_ENV_KEYS = [
@@ -45,6 +47,9 @@ export class SingleInstanceNetworkBootstrapService {
   }
   async bootstrapDefaultProfile(input: {
     provider: 'alibaba_cloud';
+    onApplyStart?: () => Promise<void>;
+    onCleanupStart?: (profile: UpsertSingleInstanceNetworkProfileInput) => Promise<void>;
+    onCleanupVerified?: () => Promise<void>;
     createdByUserId?:string;
     cloudAccountUid: string;
     cloudAccountContextId: string;
@@ -58,8 +63,10 @@ export class SingleInstanceNetworkBootstrapService {
     const outputsFilePath = path.join(workspaceDir, 'outputs.json');
     const varsFilePath = path.join(workspaceDir, 'terraform.tfvars.json');
     const moduleDir = path.resolve(this.projectRootDir, 'infra/opentofu/modules/alicloud-single-instance-network');
-    if (existsSync(path.join(workspaceDir, 'terraform.tfstate')))
-      throw new Error('Default network state already exists without a registered profile; recover it before creating another network');
+    for (const file of ['terraform.tfstate', 'terraform.tfstate.backup', 'errored.tfstate', APPLY_PENDING_FILE, '.range-apply-complete.json']) {
+      if (await fileExists(path.join(workspaceDir, file)))
+        throw new Error('Default network state or apply intent already exists without a registered profile; recover it before creating another network');
+    }
     const existingWorkspaceConfig = await readExistingWorkspaceConfig(workspaceDir);
     const vpcCidr = existingWorkspaceConfig?.vpcCidr ??
       this.cidrPoolService.allocate(this.cidrPoolService.getPool(), input.occupiedCidrs ?? []);
@@ -82,6 +89,7 @@ export class SingleInstanceNetworkBootstrapService {
       await fs.writeFile(path.join(workspaceDir, fileName), contents, 'utf8');
     }));
     const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
+    let applyInvoked = false;
     try {
       await this.runner.init({ workspaceDir, env: runnerEnv, upgrade: true });
       await this.runner.plan({
@@ -90,11 +98,16 @@ export class SingleInstanceNetworkBootstrapService {
         planFilePath,
         varsFilePath,
       });
+      const planned = await this.runner.showPlan({ workspaceDir, env: runnerEnv, planFilePath });
+      await recordApplyPlan(workspaceDir, planned);
+      await input.onApplyStart?.();
+      applyInvoked = true;
       await this.runner.apply({
         workspaceDir,
         env: runnerEnv,
         planFilePath,
       });
+      await completeApply(workspaceDir);
       const outputs = await this.runner.output<{
         vpc_id?: {
           value?: string;
@@ -128,13 +141,25 @@ export class SingleInstanceNetworkBootstrapService {
       };
     }
     catch (error) {
+      if (!applyInvoked) {
+        await input.onCleanupVerified?.();
+        await fs.rm(workspaceDir, { recursive: true, force: true });
+        throw error;
+      }
       if (existsSync(path.join(workspaceDir, 'terraform.tfstate'))) {
         try {
           await this.assertOwnedState(workspaceDir, input.cloudAccountUid);
+          const priorState = (await readWorkspaceState(workspaceDir, true))!;
+          const unresolvedApply = await hasUnresolvedApply(workspaceDir, priorState);
+          const recovery = await this.readRecoveryProfile({ provider: input.provider, createdByUserId: input.createdByUserId, cloudAccountUid: input.cloudAccountUid, cloudAccountContextId: input.cloudAccountContextId, regionId: input.regionId, zoneId: input.zoneId });
+          if (!recovery) throw new Error('Default network recovery identity is missing');
+          await input.onCleanupStart?.(recovery);
           await this.runner.destroy({ workspaceDir, env: runnerEnv, varsFilePath });
+          await assertDestroyComplete(workspaceDir, priorState, unresolvedApply);
           const remaining = await this.assertOwnedState(workspaceDir, input.cloudAccountUid);
           if (remaining.some(value => value.instances.length))
             throw new Error('Default network cleanup did not finish');
+          await input.onCleanupVerified?.();
           await fs.rm(workspaceDir, { recursive: true, force: true });
         }
         catch (cleanupError) {
@@ -154,16 +179,19 @@ export class SingleInstanceNetworkBootstrapService {
   }): Promise<UpsertSingleInstanceNetworkProfileInput | null> {
     const workspaceKey = singleNetworkWorkspaceKey(input.cloudAccountUid, input.regionId, input.zoneId);
     const dir = path.join(this.workspacesRootDir, workspaceKey);
-    if (!existsSync(path.join(dir, 'terraform.tfstate')))
-      return null;
-    const resources = await this.assertOwnedState(dir, input.cloudAccountUid);
-    if (!resources.length)
-      return null;
+    let resources: Awaited<ReturnType<SingleInstanceNetworkBootstrapService['assertOwnedState']>> = [];
+    try {
+      if (await readWorkspaceState(dir)) resources = await this.assertOwnedState(dir, input.cloudAccountUid);
+      else return null;
+    } catch {
+      // Preserve unknown attempts as registered recovery work, including attempts with no returned resource ID.
+      if (!(await Promise.all(['terraform.tfstate', 'terraform.tfstate.backup', 'errored.tfstate', APPLY_PENDING_FILE, '.range-apply-complete.json'].map(file => fileExists(path.join(dir, file))))).some(Boolean)) return null;
+    }
     const config = await readExistingWorkspaceConfig(dir);
     const ids = (type: string) => resources.filter(value => value.type === type).flatMap(value => value.instances.map((entry: any) => String(entry.attributes.id)));
     return { ...input, status: 'destroying', workspaceKey, managedByPlatform: true, vpcId: ids('alicloud_vpc')[0] ?? '', vpcCidr: config?.vpcCidr ?? '', vswitchIds: ids('alicloud_vswitch'), vswitchCidrs: config?.vswitchCidrs ?? [], securityGroupId: ids('alicloud_security_group')[0] ?? '', securityGroupName: 'single-instance-default-open-all' };
   }
-  async destroyDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig) {
+  async destroyDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig, onCleanupVerified?: () => Promise<void>) {
     if (!profile.managedByPlatform || !profile.cloudAccountUid || profile.workspaceKey !== singleNetworkWorkspaceKey(profile.cloudAccountUid, profile.regionId, profile.zoneId))
       throw new Error('Only a bound, platform-created network profile can be destroyed');
     const dir = path.join(this.workspacesRootDir, profile.workspaceKey);
@@ -172,33 +200,22 @@ export class SingleInstanceNetworkBootstrapService {
     const expected = [profile.vpcId, profile.securityGroupId, ...profile.vswitchIds].filter(Boolean).sort();
     if (ids.some(id => !expected.includes(id)))
       throw new Error('Default network state does not match the requested profile');
+    const priorState = (await readWorkspaceState(dir, true))!;
+    const unresolvedApply = await hasUnresolvedApply(dir, priorState);
     const env = await this.buildRunnerEnv(runtimeConfig);
     await migrateAliCloudWorkspaceProvider(dir);
     await this.runner.init({ workspaceDir: dir, env, upgrade: true });
     await this.runner.destroy({ workspaceDir: dir, env, varsFilePath: path.join(dir, 'terraform.tfvars.json') });
+    await assertDestroyComplete(dir, priorState, unresolvedApply);
     const remaining = await this.assertOwnedState(dir, profile.cloudAccountUid);
     if (remaining.some(value => value.instances.length))
       throw new Error('Default network state still contains resources after destroy');
+    await onCleanupVerified?.();
     await fs.rm(dir, { recursive: true, force: true });
   }
   private async assertOwnedState(dir: string, accountUid: string) {
-    const state = JSON.parse(await fs.readFile(path.join(dir, 'terraform.tfstate'), 'utf8')) as {
-      version?: number;
-      lineage?: string;
-      resources?: Array<{
-        module?: string;
-        type: string;
-        mode: string;
-        instances: Array<{
-          attributes: Record<string, any>;
-        }>;
-      }>;
-    };
-    if (state.version !== 4 || !state.lineage)
-      throw new Error('Default network state identity is malformed');
-    state.resources ??= [];
-    if (!Array.isArray(state.resources))
-      throw new Error('Default network state is missing or malformed');
+    const strictState = (await readWorkspaceState(dir, true))!;
+    const state = { resources: strictState.instances.map(instance => ({ module: instance.module, mode: 'managed', type: instance.type, instances: [{ attributes: instance.attributes as Record<string, any> }] })) };
     const allowed = new Set(['alicloud_vpc', 'alicloud_vswitch', 'alicloud_security_group', 'alicloud_security_group_rule']);
     for (const resource of state.resources) {
       if (resource.mode !== 'managed' || resource.module !== 'module.network' || !allowed.has(resource.type))

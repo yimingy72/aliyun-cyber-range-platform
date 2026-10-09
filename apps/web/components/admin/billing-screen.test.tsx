@@ -412,6 +412,75 @@ describe('BillingScreen', () => {
     expect(aside.textContent).not.toContain('¥ 20.00');
   });
 
+  it('shows unallocated currencies and unmatched resources separately from attributed costs', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 10, platformPretaxAmount: 2, currency: 'CNY', anomalyCount: 2,
+      billingStatus: 'provisional', unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 3 }, { currency: 'USD', pretaxAmount: 4 }], resourcesWithoutBillCount: 5 });
+    fetchBillingUsersMock.mockResolvedValue([{ userId: 'user-1', username: 'alice', pretaxAmount: 8, itemCount: 1, launchCount: 1 }]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await waitFor(() => expect(screen.getByText('未分配费用').parentElement?.textContent).toContain('USD'));
+    expect(screen.getByText('已归属费用合计').parentElement?.textContent).toBe('已归属费用合计¥ 10.00');
+    expect(screen.getByText('平台公共费用').parentElement?.textContent).toBe('平台公共费用¥ 2.00');
+    expect(screen.getByText('未分配费用').parentElement?.textContent).toContain('¥ 3.00');
+    expect(screen.getByText('尚未匹配账单资源').parentElement?.textContent).toContain('5 项');
+    expect(screen.getByRole('complementary', { name: '用户账单' }).textContent).toContain('¥ 8.00');
+    expect(screen.getByText(/待出账不代表免费/).textContent).toContain('未计入用户或平台公共费用');
+    expect(screen.getByText(/账单可能因延迟出账/)).toBeTruthy();
+  });
+
+  it('shows unknown coverage for older API responses instead of inventing zero unallocated costs', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 8, platformPretaxAmount: 0, anomalyCount: 0 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText(/对账信息尚不完整/);
+    expect(screen.getByText('未分配费用').parentElement?.textContent).toBe('未分配费用未知');
+    expect(screen.getByText('尚未匹配账单资源').parentElement?.textContent).toBe('尚未匹配账单资源未知');
+    expect(screen.queryByText('无未分配记录')).toBeNull();
+  });
+
+  it('distinguishes a reported empty coverage result from missing coverage', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0,
+      billingStatus: 'provisional', unallocatedCurrencyTotals: [], resourcesWithoutBillCount: 0 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('无未分配记录');
+    expect(screen.getByText('尚未匹配账单资源').parentElement?.textContent).toBe('尚未匹配账单资源0 项');
+    expect(screen.queryByText(/对账信息尚不完整/)).toBeNull();
+    expect(screen.getByText(/待出账不代表免费/)).toBeTruthy();
+  });
+
+  it('does not display zero costs after the first overview request fails', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockRejectedValue(new AdminApiError(503, 'fixture unavailable'));
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('账单费用加载失败，请稍后重试。');
+    expect(screen.getByLabelText('账单概览').textContent).not.toContain('0.00');
+    expect(screen.getByText('已归属费用合计').parentElement?.textContent).toContain('未知');
+  });
+
+  it('uses the selected entire calendar month when refreshing bills', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    triggerBillingSyncMock.mockResolvedValue({ syncedDays: 30, importedLineItems: 3, anomalyCount: 0, deferredCount: 0 });
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('当前账期没有费用明细');
+    fireEvent.change(screen.getByLabelText('开始账期'), { target: { value: '2026-09-01' } });
+    fireEvent.change(screen.getByLabelText('结束账期'), { target: { value: '2026-09-30' } });
+    fireEvent.click(screen.getByRole('button', { name: '立即同步' }));
+    await waitFor(() => expect(triggerBillingSyncMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token',
+      { startAt: '2026-09-01', endAt: '2026-09-30' }));
+    expect(screen.getByText(/整月对账可选择月初至月末后同步/)).toBeTruthy();
+  });
+
   it.each([503, 401])('handles CSV export failure %s with feedback or login redirect', async status => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
     adminSession.logout.mockClear();

@@ -152,6 +152,9 @@ export type RangeResourceTopologySummary = {
 };
 
 export type RangeResourceSummary = {
+  retiredResources?: RangeResourceSummary | null;
+  creationAttempted?: boolean;
+  executionContext?: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string };
   mode: 'dry-run' | 'opentofu' | 'ecs-native';
   modulePath?: string;
   workspaceDir?: string;
@@ -162,6 +165,10 @@ export type RangeResourceSummary = {
   securityGroupIds?: Record<string, string> | null;
   hostIds?: Record<string, string> | null;
   systemDiskIds?: Record<string, string> | null;
+  dataDiskIds?: Record<string, string> | null;
+  unverifiedDiskIds?: Record<string, string> | null;
+  diskInventoryHostIds?: Record<string, string> | null;
+  diskOwnershipProofs?: Record<string, { instanceId: string | null; method: 'persisted' | 'tags' }> | null;
   secondaryNetworkInterfaceIds?: Record<string, string> | null;
   natGatewayIds?: Record<string, string> | null;
   snatEntryIds?: Record<string, string> | null;
@@ -192,6 +199,7 @@ export type SingleInstanceConfig = {
   networkProfileId?: string;
   resolvedInstanceType?: string;
   nativeCreateJobId?: string;
+  opentofuCreateJobId?: string | null;
   autoReleaseTime?: string | null;
   baseName: string;
   quantityIndex: number;

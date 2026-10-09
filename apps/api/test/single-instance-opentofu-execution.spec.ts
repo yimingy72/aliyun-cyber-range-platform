@@ -49,6 +49,8 @@ describe('single-instance OpenTofu batch execution', () => {
     const cloud = new Map<string, any>();
     const native = {
       resolveInstanceAccount: jest.fn(async () => account),
+      captureInstanceDisks: jest.fn(async (_item: unknown, _account: unknown, summary: any) => summary),
+      assertInstanceDisksAbsent: jest.fn(async () => {}),
       readOpenTofuInstances: jest.fn(async (_account: unknown, ids: string[]) => ids.flatMap(id => cloud.has(id) ? [cloud.get(id)] : [])),
       readOpenTofuInstancesByTag: jest.fn(async (instance: RangeInstanceRecord) => [...cloud.values()].filter(value => value.tags.RangeInstanceId === instance.id)),
       deleteOwnedUntrackedOpenTofuInstances: jest.fn(async (_item: unknown, ids: string[], assertLease: () => Promise<void>) => { await assertLease(); ids.forEach(id => cloud.delete(id)); }),
@@ -111,6 +113,18 @@ describe('single-instance OpenTofu batch execution', () => {
     for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
     throw new Error('progress did not become observable');
   }
+
+  it('keeps data-disk billing active when ECS deletion succeeds but a disk remains', async () => {
+    const test = fixture(1);
+    test.native.captureInstanceDisks.mockImplementation(async (_item, _account, summary) => ({ ...summary, dataDiskIds: { 'host-1:d-data': 'd-data' } }));
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.ledger).toEqual(expect.arrayContaining([expect.objectContaining({ cloudResourceId: 'd-data', cloudResourceType: 'disk', releasedAt: null })]));
+    test.native.assertInstanceDisksAbsent.mockRejectedValue(new Error('ECS disks remain after instance deletion: d-data'));
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.cloud.size).toBe(0); expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.instances[0].resourceSummary?.dataDiskIds).toEqual({ 'host-1:d-data': 'd-data' });
+    expect(test.ledger.every(row => row.releasedAt === null)).toBe(true);
+  });
 
   it('publishes 50 verified members in one cloud read before apply returns without finalizing their jobs or reading partial state', async () => {
     const test = fixture(50);
@@ -190,6 +204,8 @@ describe('single-instance OpenTofu batch execution', () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     test.native.readOpenTofuInstances.mockImplementationOnce(async () => { await gate; return [...test.cloud.values()]; });
     test.onApply = async options => {
+      expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe('job-1');
+      test.repository.commitSingleInstanceClaim.mockClear();
       await test.createMember('member-1'); options.onResourceApplied(progressEvent('member-1'));
       await waitFor(() => test.native.readOpenTofuInstances.mock.calls.length === 1);
       if (kind === 'abort') test.controller.abort();
@@ -234,7 +250,7 @@ describe('single-instance OpenTofu batch execution', () => {
       throw new Error('second member failed');
     };
     await test.service.executeCreateBatch(test.items, test.lease);
-    expect(test.instances.map(instance => instance.status)).toEqual(['running', 'create_failed']);
+    expect(test.instances.map(instance => instance.status)).toEqual(['running', 'destroy_failed']);
     expect([...test.cloud.keys()]).toEqual(['i-member-1']);
     expect(test.jobs.get('job-1')?.status).toBe('succeeded');
     expect(test.ledger).toHaveLength(2);
@@ -309,7 +325,22 @@ describe('single-instance OpenTofu batch execution', () => {
     await test.service.executeCreateBatch(test.items, test.lease);
     expect(test.instances[0].status).toBe('destroy_failed'); expect(test.instances[0].resourceSummary?.hostIds).toEqual({ 'host-1': 'i-member-1' });
     expect(test.stateMembers.size).toBe(1); await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
-    expect(test.repository.updateBillingLedgerResource).not.toHaveBeenCalled();
+    expect(test.repository.updateBillingLedgerResource.mock.calls.every(([,patch]) => !(patch as any).releasedAt)).toBe(true);
+  });
+
+  it('attributes a fresh explicit retry to its new creation job only after prior cleanup is proven', async () => {
+    const test = fixture(1);
+    test.onApply = async () => {
+      await test.createMember('member-1', { tainted: true }); test.onApply = undefined; throw new Error('first creation failed');
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('create_failed'); expect(test.cloud.size).toBe(0);
+    const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    await test.service.executeCreateBatch([retry], test.lease);
+    expect(test.instances[0].status).toBe('running');
+    expect(test.cloud.get('i-member-1').tags.PlatformCreateJobId).toBe(retry.job.id);
+    expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe(retry.job.id);
+    expect(test.ledger.every(row => row.sourceProvisionJobId === retry.job.id)).toBe(true);
   });
 
   it('rejects a plan that touches a healthy sibling and never applies that plan', async () => {
@@ -332,9 +363,22 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.instances[0].status).toBe('create_failed'); expect(test.native.readOpenTofuInstancesByTag).toHaveBeenCalled();
   });
 
+  it('refuses creation when the launch expires while init and plan are running', async () => {
+    const test = fixture(1);
+    test.instances[0].expiresAt = new Date(Date.now() + 60_000);
+    const inspect = test.runner.showPlan.getMockImplementation()!;
+    test.runner.showPlan.mockImplementation(async () => {
+      const result = await inspect(); test.instances[0].expiresAt = new Date(Date.now() - 1); return result;
+    });
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.runner.apply).not.toHaveBeenCalled();
+    expect(test.instances[0].status).toBe('create_failed');
+    expect(test.cloud.size).toBe(0);
+  });
+
   it('stops on lost lease after partial apply without cleanup, commits or error leakage', async () => {
     const test = fixture(1);
-    test.onApply = async () => { await test.createMember('member-1'); test.controller.abort(); throw new Error('interrupted'); };
+    test.onApply = async () => { test.repository.commitSingleInstanceClaim.mockClear(); await test.createMember('member-1'); test.controller.abort(); throw new Error('interrupted'); };
     await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
     expect(test.cloud.size).toBe(1); expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
     expect(test.repository.commitSingleInstanceClaim).not.toHaveBeenCalled();
@@ -436,6 +480,101 @@ describe('single-instance OpenTofu batch execution', () => {
     await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('retains an unknown create outcome across empty queries, worker restart and explicit retry', async () => {
+    const test = fixture(1);
+    test.onApply = async () => {
+      await test.createMember('member-1');
+      await fs.rm(path.join(test.workspace, 'terraform.tfstate'));
+      test.stateMembers.clear();
+      throw new Error('accepted create response and state lost');
+    };
+    test.native.readOpenTofuInstancesByTag.mockResolvedValue([]);
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.cloud.size).toBe(1);
+    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
+    const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    await test.service.executeCreateBatch([retry], test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    expect(retry.instance.status).toBe('destroy_failed');
+    test.native.readOpenTofuInstancesByTag.mockImplementation(async () => [...test.cloud.values()]);
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.instances[0].status).toBe('destroyed');
+    expect(test.cloud.size).toBe(0);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the database create intent to block a second apply after the entire workspace is lost', async () => {
+    const test = fixture(1);
+    test.onApply = async () => {
+      expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe('job-1');
+      await test.createMember('member-1'); test.stateMembers.clear();
+      await fs.rm(test.workspace, { recursive: true }); throw new Error('all local state and markers lost');
+    };
+    test.native.readOpenTofuInstancesByTag.mockResolvedValue([]);
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    await test.service.executeCreateBatch([retry], test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe('job-1');
+    test.native.readOpenTofuInstancesByTag.mockImplementation(async () => [...test.cloud.values()]);
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.cloud.size).toBe(0);
+    expect(test.instances[0].status).toBe('destroyed');
+    expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBeNull();
+    expect(test.ledger[0].sourceProvisionJobId).toBe('job-1');
+  });
+
+  it('never starts apply when its durable database create intent cannot be saved', async () => {
+    const test = fixture(1); const commit = test.repository.commitSingleInstanceClaim.getMockImplementation()!;
+    test.repository.commitSingleInstanceClaim.mockImplementation(async (...args) => {
+      if ((args[1] as any).singleInstanceConfig?.opentofuCreateJobId) throw new Error('database unavailable');
+      return commit(...args);
+    });
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.runner.apply).not.toHaveBeenCalled();
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.cloud.size).toBe(0);
+  });
+
+  it('keeps deletion retryable when releasing the billing ledger fails after cloud deletion', async () => {
+    const test = fixture(1); await test.service.executeCreateBatch(test.items, test.lease);
+    const updateLedger = test.repository.updateBillingLedgerResource.getMockImplementation()!;
+    let failRelease = true;
+    test.repository.updateBillingLedgerResource.mockImplementation(async (id, patch) => {
+      if ((patch as any).releasedAt && failRelease) { failRelease = false; throw new Error('billing database unavailable'); }
+      return updateLedger(id, patch);
+    });
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.cloud.size).toBe(0);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.instances[0].resourceSummary?.hostIds).toEqual({ 'host-1': 'i-member-1' });
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.instances[0].status).toBe('destroyed');
+    expect(test.ledger.every(row => row.releasedAt instanceof Date)).toBe(true);
+  });
+
+  it('retains unknown creation IDs when cleanup first switches the marker to a destroy subplan', async () => {
+    const test = fixture();
+    test.onApply = async () => {
+      await test.createMember('member-1', { tainted: true });
+      await test.createMember('member-2'); test.stateMembers.delete('member-2'); await test.saveState();
+      test.onApply = undefined; throw new Error('second member response lost');
+    };
+    test.native.readOpenTofuInstancesByTag.mockResolvedValue([]);
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances.map(instance => instance.status)).toEqual(['create_failed', 'destroy_failed']);
+    const marker = JSON.parse(await fs.readFile(path.join(test.workspace, '.single-batch-apply-started'), 'utf8'));
+    expect(marker.kind).toBe('destroy'); expect(marker.createIds).toEqual(['member-1', 'member-2']);
+    const retry = test.queueDestroy(1); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    await test.service.executeCreateBatch([retry], test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(2);
+    expect(test.instances[1].status).toBe('destroy_failed');
+    expect([...test.cloud.keys()]).toEqual(['i-member-2']);
+  });
+
   it('keeps recovery material for a superseded unclaimed sibling left by an interrupted apply', async () => {
     const test = fixture();
     test.onApply = async () => { await test.createMember('member-1'); await test.createMember('member-2'); await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear(); test.controller.abort(); };
@@ -464,6 +603,16 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(destroy.instance.status).toBe('destroy_failed');
     expect(destroy.instance.resourceSummary?.hostIds).toEqual({ 'host-1': 'i-member-1' }); expect(destroy.instance.errorSummary).not.toContain('test-Passw0rd');
     expect(test.ledger.every(row => row.releasedAt === null)).toBe(true);
+  });
+
+  it.each(['null', 'false', '[]'])('does not treat a recovery marker containing %s as a missing marker', async contents => {
+    const test = fixture(1); await test.service.executeCreateBatch(test.items, test.lease);
+    await fs.writeFile(path.join(test.workspace, '.single-batch-apply-started'), contents);
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.cloud.size).toBe(1);
+    expect(await fs.readFile(path.join(test.workspace, '.single-batch-apply-started'), 'utf8')).toBe(contents);
   });
 
   it.each(['errored', 'backup-only'])('preserves %s durable state material and never replans from an incomplete main state', async kind => {

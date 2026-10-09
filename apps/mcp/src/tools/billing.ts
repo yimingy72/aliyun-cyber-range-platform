@@ -53,7 +53,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_summary_get',
     title: '查询账单费用汇总',
-    description: '对应账单费用页的概览。返回已出账并完成归属的费用，按币种分别汇总。多币种总金额为null并读取currencyTotals；新资源尚未出账时需等待账单更新。',
+    description: '对应账单费用页的概览。返回已同步并完成归属的应付费用，多币种总金额为null并读取currencyTotals。unallocatedCurrencyTotals单列未分配金额，禁止计入用户或平台公共费用；resourcesWithoutBillCount是尚未匹配账单的可能计费资源数，待出账不代表免费。billingStatus=provisional表示已同步金额仍可能补账或调整；旧接口缺失这些字段表示未知，不能当作零。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingSummaryInputSchema,
@@ -153,7 +153,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_sync',
     title: '同步账单数据',
-    description: '对应账单费用页的“同步账单”。按当前已验证云账号UID和完整账期原子刷新BSS账单；显式日期精确刷新，今天和未来日期延后并返回deferredDates。新资源即时无账单不能判定费用为零，调用前必须取得用户确认。',
+    description: '对应账单费用页的“同步账单”。按当前已验证云账号UID和完整账期原子刷新BSS账单；省略日期重刷最近7个完整账日，显式日期精确刷新，可选择月初至月末核对整月费用。今天和未来日期延后并返回deferredDates。新资源即时无账单不能判定费用为零，调用前必须取得用户确认。',
     requiredScopes: ['billing:sync'],
     annotations: { idempotentHint: true },
     inputSchema: billingSyncInputSchema,

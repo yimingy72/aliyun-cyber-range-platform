@@ -11,7 +11,7 @@ import {
   type ProvisionJobRecord,
   type ProvisionJobStatus,
 } from './admin.repository';
-import { resolveBillingWindow } from './billing-window';
+import { billingDayText, resolveBillingWindow } from './billing-window';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -115,7 +115,7 @@ export class BillingService {
 
   async getSummary(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const [lineItems, anomalies] = await Promise.all([
+    const [lineItems, anomalies, ledgerResources] = await Promise.all([
       this.adminRepository.listBillingLineItems({
         startAt: window.startAt,
         endAt: window.endAt,
@@ -124,12 +124,20 @@ export class BillingService {
         startAt: window.startAt,
         endAt: window.endAt,
       }),
+      this.adminRepository.listBillingLedgerResources(),
     ]);
 
     const trackedLineItems = lineItems.filter(isTrackedBillingLineItem);
     const resourceTypeTotals = this.groupByResourceType(trackedLineItems);
     const dailyTotals = this.groupByBillingDate(trackedLineItems);
     const money = moneySummary(trackedLineItems);
+    const unallocatedItems = new Map([...lineItems.filter(item => !isTrackedBillingLineItem(item)), ...anomalies]
+      .map(item => [item.sourceFingerprint, item]));
+    const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
+    const resourcesWithoutBillCount = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
+      && billingDayText(item.billingStartAt) <= window.endAtText
+      && (!item.releasedAt || billingDayText(item.releasedAt) >= window.startAtText)
+      && !billedResourceIds.has(item.id)).length;
 
     return {
       startAt: window.startAtText,
@@ -139,6 +147,9 @@ export class BillingService {
       platformPretaxAmount: money.currency ? sumPretax(trackedLineItems.filter(item => item.billingScope === 'platform')) : null,
       currencyTotals: money.amounts.map(amount => ({ currency: amount.currency, totalPretaxAmount: amount.pretaxAmount, platformPretaxAmount: sumPretax(trackedLineItems.filter(item => item.currency === amount.currency && item.billingScope === 'platform')) })),
       anomalyCount: anomalies.length,
+      billingStatus: 'provisional' as const,
+      unallocatedCurrencyTotals: currencyAmounts([...unallocatedItems.values()]),
+      resourcesWithoutBillCount,
       resourceTypeTotals,
       dailyTotals,
     };
@@ -308,6 +319,11 @@ export class BillingService {
       ['platformPretaxAmount', summary.platformPretaxAmount],
       ['currency', summary.currency ?? 'MULTIPLE'],
       ['anomalyCount', summary.anomalyCount],
+      ['billingStatus', summary.billingStatus],
+      ['resourcesWithoutBillCount', summary.resourcesWithoutBillCount],
+      [],
+      ['unallocatedCurrency', 'unallocatedPretaxAmount'],
+      ...summary.unallocatedCurrencyTotals.map(item => [item.currency, item.pretaxAmount]),
       [],
       ['currency', 'totalPretaxAmount', 'platformPretaxAmount'],
       ...summary.currencyTotals.map(item => [item.currency, item.totalPretaxAmount, item.platformPretaxAmount]),

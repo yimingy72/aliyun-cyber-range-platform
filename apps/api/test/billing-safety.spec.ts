@@ -63,6 +63,87 @@ describe('billing safety', () => {
     expect(await f.repository.listBillingLineItems()).toHaveLength(4);
   });
 
+  it('revisits earlier days after a later bill has arrived so delayed charges are not lost', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-08T04:00:00Z'));
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: '2026-10-07', endAt: '2026-10-07' });
+    const dates: string[] = [];
+    const service = new BillingSyncService(f.repository, { listDailyBillingItems: async ({ billingDate }: { billingDate: string }) => {
+      dates.push(billingDate); return [row({ PretaxAmount: billingDate === DAY ? 4 : 1 })];
+    } } as unknown as BillingBssClient, config);
+    await service.syncRecentDays(7);
+    expect(dates).toEqual(['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07']);
+    expect((await f.repository.listBillingLineItems({ startAt: DAY, endAt: DAY }))[0].pretaxAmount).toBe(4);
+  });
+
+  it.each([
+    { Items: [row()], TotalCount: 2 },
+    { Items: [], TotalCount: -1 },
+    { Items: [], TotalCount: 0.5 },
+  ])('retains previous bills when the BSS result is truncated or has invalid row counts: %j', async data => {
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+    const previous = await f.repository.listBillingLineItems();
+    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: data }));
+    await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow();
+    expect(await f.repository.listBillingLineItems()).toEqual(previous);
+  });
+
+  it('rejects a changed total between pages and bills for a different day', async () => {
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+    const previous = await f.repository.listBillingLineItems();
+    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { Items: [row()], TotalCount: 2, NextToken: 'next' } }))
+      .mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { Items: [row()], TotalCount: 3 } }));
+    await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('inconsistent row count');
+    await expect(f.sync([row({ BillingDate: '2026-09-30' })]).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('different billing date');
+    expect(await f.repository.listBillingLineItems()).toEqual(previous);
+  });
+
+  it('shows unallocated charges and resources awaiting bills without assigning them to users or treating them as free', async () => {
+    const f = await fixture();
+    await f.sync([row({ ProductCode: 'snapshot', InstanceID: 'cn-hangzhou', PretaxAmount: 3 }),
+      row({ ProductCode: 'oss', InstanceID: 'cn-hangzhou;standard', PretaxAmount: 2, Currency: 'USD' })]).syncRange({ startAt: DAY, endAt: DAY });
+    const summary = await new BillingService(f.repository).getSummary({ startAt: DAY, endAt: DAY });
+    expect(summary).toMatchObject({ totalPretaxAmount: 0, platformPretaxAmount: 0, billingStatus: 'provisional', resourcesWithoutBillCount: 1,
+      unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 3 }, { currency: 'USD', pretaxAmount: 2 }] });
+    expect((await new BillingService(f.repository).listPlatformItems({ startAt: DAY, endAt: DAY }))).toEqual([]);
+  });
+
+  it('keeps payable costs separate from cash, coupon and original-price dimensions', async () => {
+    const f = await fixture();
+    await f.sync([row({ PretaxAmount: 7, PretaxGrossAmount: 20, PaymentAmount: 4, CashAmount: 4, DeductedByCashCoupons: 3, InvoiceDiscount: 13 })])
+      .syncRange({ startAt: DAY, endAt: DAY });
+    expect((await new BillingService(f.repository).getSummary({ startAt: DAY, endAt: DAY })).totalPretaxAmount).toBe(7);
+    expect((await f.repository.listBillingLineItems())[0].rawPayload).toMatchObject({ PretaxGrossAmount: 20, PaymentAmount: 4, DeductedByCashCoupons: 3 });
+  });
+
+  it('does not trust a platform tag that claims a different cloud account', async () => {
+    const f = await fixture();
+    await f.sync([row({ InstanceID: 'i-wrong-account', Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:CloudAccountUid value:100002' })])
+      .syncRange({ startAt: DAY, endAt: DAY });
+    expect(await f.repository.listBillingLineItems()).toEqual([]);
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(1);
+  });
+
+  it('retains a resource ID with a conflicting explicit region as unallocated', async () => {
+    const f = await fixture();
+    await f.sync([row({ Region: 'cn-beijing' })]).syncRange({ startAt: DAY, endAt: DAY });
+    expect(await f.repository.listBillingLineItems()).toEqual([]);
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(1);
+  });
+
+  it.each([null, '100002'])('does not let an unproven %s ledger collision block other bills for the day', async uid => {
+    const f = await fixture();
+    await f.repository.createBillingLedgerResource({ cloudAccountUid: uid, regionId: 'cn-hangzhou', cloudResourceId: 'i-collision',
+      cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
+    await f.sync([row(), row({ InstanceID: 'i-collision', Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform' })])
+      .syncRange({ startAt: DAY, endAt: DAY });
+    expect(await f.repository.listBillingLineItems()).toHaveLength(1);
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(1);
+    expect((await f.repository.listBillingLedgerResources()).find(item => item.cloudResourceId === 'i-collision')?.cloudAccountUid).toBe(uid);
+  });
+
   it('separates account progress and never replaces the other account history', async () => {
     const f = await fixture();
     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });

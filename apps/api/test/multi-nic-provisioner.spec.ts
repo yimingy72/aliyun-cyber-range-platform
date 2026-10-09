@@ -1,3 +1,4 @@
+import { fixturePlan, fixtureState, persistSuccessfulApply } from './opentofu-state-fixture';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,7 +25,8 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: { value: { host_role: 'entry', private_ip: '10.90.10.10' } },
         resource_summary: { value: { vpc_id: 'vpc-multi-nic' } },
@@ -201,7 +203,8 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
       init: jest.fn().mockResolvedValue({ stdout: 'init ok', stderr: '' }),
       validate: jest.fn().mockResolvedValue({ stdout: 'validate ok', stderr: '' }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan ok', stderr: '' }),
-      apply: jest.fn().mockResolvedValue({ stdout: 'apply ok', stderr: '' }),
+      apply: jest.fn(persistSuccessfulApply),
+      showPlan: jest.fn().mockResolvedValue(fixturePlan),
       output: jest.fn().mockResolvedValue({
         public_entry: { value: { host_role: 'entry', private_ip: '10.90.10.10' } },
         resource_summary: { value: { vpc_id: 'vpc-multi-nic' } },
