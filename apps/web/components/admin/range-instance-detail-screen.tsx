@@ -38,6 +38,8 @@ import {
 import { nextAvailableSwitchCidr, reconcileHostNicConnections } from '../../lib/scenario-graph-linking';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
+import { RangeInstanceDetailBodySkeleton, RangeInstanceTopologyLoading } from './range-instance-detail-loading';
+import { AsyncContentState } from './shared/async-content-state';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
@@ -70,32 +72,25 @@ type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
 
 const INSTANCE_TOPOLOGY_SCHEMA_VERSION = '2.0.0';
 
-function TopologyWorkspaceLoading() {
-  return (
-    <>
-      <div className="range-instance-detail-main range-instance-topology-main" aria-busy="true">
-        <div className="admin-workbench-empty">
-          <p>正在加载拓扑...</p>
-        </div>
-      </div>
+let topologyWorkspaceRequest: Promise<typeof import('./range-instance-topology-workspace')['RangeInstanceTopologyWorkspace']> | null = null;
 
-      <aside className="template-editor-panel template-property-panel" aria-busy="true">
-        <div className="admin-section-header template-property-panel-header">
-          <h2>属性面板</h2>
-        </div>
-      </aside>
-    </>
-  );
+export function preloadRangeInstanceTopologyWorkspace() {
+  if (!topologyWorkspaceRequest) {
+    topologyWorkspaceRequest = import('./range-instance-topology-workspace')
+      .then(({ RangeInstanceTopologyWorkspace: Component }) => Component)
+      .catch((error) => {
+        topologyWorkspaceRequest = null;
+        throw error;
+      });
+  }
+  return topologyWorkspaceRequest;
 }
 
 const RangeInstanceTopologyWorkspace = dynamic(
-  () =>
-    import('./range-instance-topology-workspace').then(
-      ({ RangeInstanceTopologyWorkspace: Component }) => Component,
-    ),
+  preloadRangeInstanceTopologyWorkspace,
   {
     ssr: false,
-    loading: TopologyWorkspaceLoading,
+    loading: RangeInstanceTopologyLoading,
   },
 );
 
@@ -106,6 +101,8 @@ type WorkbenchNode = {
   statusLabel: string;
   cloudStatus?: string;
   ipAddresses?: string[];
+  publicEntry?: { address: string; ports: string[] };
+  subnetCidrs?: string[];
   specLabel?: string;
   typeLabel?: string;
   account?: string;
@@ -718,6 +715,58 @@ function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefine
   }, readTopologyViewport(graph.viewport));
 }
 
+function readDirectoryNetwork(nodeId: string, graph: Record<string, unknown>, detail: RangeInstanceDetail | null) {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes as Array<Record<string, unknown>> : [];
+  const node = nodes.find((item) => item.id === nodeId);
+  const switches = nodes.filter((item) => item.kind === 'switch');
+  const switchIds = new Set<string>();
+  for (const nic of Array.isArray(node?.nics) ? node.nics : []) {
+    if (typeof nic.switchId === 'string') switchIds.add(nic.switchId);
+  }
+  for (const edge of Array.isArray(graph.edges) ? graph.edges : []) {
+    if (edge.toNodeId === nodeId && typeof edge.fromNodeId === 'string') switchIds.add(edge.fromNodeId);
+    if (edge.fromNodeId === nodeId && typeof edge.toNodeId === 'string') switchIds.add(edge.toNodeId);
+  }
+  const host = readHostSpec(detail, nodeId);
+  const zoneKeys = new Set([node?.zoneKey, host?.zoneKey]);
+  const linkedSwitches = switches.filter((item) => switchIds.has(String(item.id)));
+  const subnetCidrs = (linkedSwitches.length ? linkedSwitches : switches.filter((item) => item.zoneKey && zoneKeys.has(item.zoneKey)))
+    .flatMap((item) => typeof item.cidr === 'string' ? [item.cidr] : []);
+  if (subnetCidrs.length === 0) {
+    for (const nic of Array.isArray(host?.networkInterfaces) ? host.networkInterfaces : []) {
+      const zone = readZoneSpec(detail, nic.zoneKey);
+      if (typeof zone?.cidr === 'string') subnetCidrs.push(zone.cidr);
+    }
+    for (const zoneKey of zoneKeys) {
+      const zone = readZoneSpec(detail, typeof zoneKey === 'string' ? zoneKey : undefined);
+      if (typeof zone?.cidr === 'string') subnetCidrs.push(zone.cidr);
+    }
+  }
+
+  // Directory entry points reflect the deployed runtime, not an unapplied local draft.
+  const compiled = detail?.runtimeCompiledProvisionSpec;
+  const runtimeNodes = Array.isArray(detail?.runtimeTopologyGraph?.nodes)
+    ? detail.runtimeTopologyGraph.nodes as Array<Record<string, unknown>> : [];
+  const mappings = Array.isArray(compiled?.dnatEntries) ? (compiled.dnatEntries as Array<Record<string, unknown>>).filter((entry) => entry.hostKey === nodeId)
+    : runtimeNodes.flatMap((item) => {
+      const nat = item.nat && typeof item.nat === 'object' ? item.nat as Record<string, unknown> : null;
+      return item.kind === 'switch' && Array.isArray(nat?.dnatMappings)
+        ? (nat.dnatMappings as Array<Record<string, unknown>>).filter((mapping) => mapping.targetHostId === nodeId) : [];
+    });
+  const deployedIds = detail?.resourceSummary?.dnatEntryIds;
+  const ports = mappings.filter((mapping) =>
+    typeof mapping.externalPort === 'number' && Number.isInteger(mapping.externalPort) && mapping.externalPort > 0 && mapping.externalPort <= 65535 &&
+    typeof mapping.internalPort === 'number' && Number.isInteger(mapping.internalPort) && mapping.internalPort > 0 && mapping.internalPort <= 65535 &&
+    (mapping.protocol === 'tcp' || mapping.protocol === 'udp') &&
+    (deployedIds == null || Boolean(deployedIds[`dnat-${nodeId}-${mapping.protocol}-${mapping.externalPort}`])),
+  ).map((mapping) => `${String(mapping.protocol).toUpperCase()} ${mapping.externalPort} → ${mapping.internalPort}`);
+  const address = detail?.accessEntry?.publicIp?.trim();
+  return {
+    subnetCidrs: [...new Set(subnetCidrs)],
+    publicEntry: address && ports.length > 0 ? { address, ports: [...new Set(ports)] } : undefined,
+  };
+}
+
 function readWorkbenchNodesFromGraph(
   graph: Record<string, unknown> | null | undefined,
   detail: RangeInstanceDetail | null,
@@ -766,6 +815,7 @@ function readWorkbenchNodesFromGraph(
         statusLabel,
         cloudStatus,
         ipAddresses,
+        ...(kind === 'ecs' ? readDirectoryNetwork(id, graph, detail) : {}),
         specLabel:
           kind === 'ecs'
             ? `${node.cpu ?? 0} 核 / ${node.memory ?? 0} G`
@@ -824,12 +874,27 @@ export function RangeInstanceDetailScreen({
   const session = useAdminSession();
   const screenCache = useAdminScreenCache();
   const isPageActive = useAdminRouteIsActive(`/admin/ranges/${rangeId}`);
-  const [detail, setDetail] = useState<RangeInstanceDetail | null>(null);
+  const resourceKey = `range-instance-detail:${rangeId}:${session.profile?.id ?? 'current-session'}:${session.profile?.role ?? ''}`;
+  const identityKey = `${apiBaseUrl}\u0000${session.profile?.id ?? 'current-session'}\u0000${session.profile?.role ?? ''}\u0000${rangeId}`;
+  const scopeKey = `${identityKey}\u0000${session.token}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+  const cachedDetail = screenCache?.read<RangeInstanceDetail>(apiBaseUrl, session.token, resourceKey);
+  const [detailState, setDetailState] = useState(() => ({ scope: identityKey, data: cachedDetail?.data ?? null }));
+  const detail = session.isReady && session.token && detailState.scope === identityKey ? detailState.data : null;
+  function setDetail(next: React.SetStateAction<RangeInstanceDetail | null>) {
+    if (scopeRef.current !== scopeKey) return;
+    setDetailState((current) => ({ scope: identityKey, data: typeof next === 'function'
+      ? next(current.scope === identityKey ? current.data : null) : next }));
+  }
+  const detailRequestRef = useRef(0);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [isRefreshingDetail, setIsRefreshingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('directory');
   const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
-  const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(null);
+  const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(() => cachedDetail?.data.draftTopologyGraph ?? cachedDetail?.data.runtimeTopologyGraph ?? null);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSyncingTemplate, setIsSyncingTemplate] = useState(false);
   const [isTemplateSyncDialogOpen, setIsTemplateSyncDialogOpen] = useState(false);
@@ -847,6 +912,10 @@ export function RangeInstanceDetailScreen({
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
+  }, [detail?.id, isPageActive]);
 
   function replaceTopologyDraft(nextGraph: Record<string, unknown> | null) {
     const parsed = readTopologyGraphDraft(nextGraph);
@@ -876,6 +945,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function receiveDetailSnapshot(payload: RangeInstanceDetail) {
+    if (scopeRef.current !== scopeKey || payload.id !== rangeId) return;
     const hasLocalChanges = loadedRangeIdRef.current === rangeId && historyRef.current !== null &&
       JSON.stringify(historyRef.current.present) !== persistedSnapshotRef.current;
 
@@ -890,11 +960,15 @@ export function RangeInstanceDetailScreen({
   }
 
   async function reloadDetailSnapshot() {
-    if (!session.token) {
+    if (!session.token || scopeRef.current !== scopeKey) {
       return null;
     }
 
-    const payload = await fetchRangeInstanceDetail(apiBaseUrl, session.token, rangeId);
+    const request = ++detailRequestRef.current;
+    screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
+    const payload = await (screenCache?.load(apiBaseUrl, session.token, resourceKey,
+      () => fetchRangeInstanceDetail(apiBaseUrl, session.token!, rangeId)) ?? fetchRangeInstanceDetail(apiBaseUrl, session.token, rangeId));
+    if (request !== detailRequestRef.current || scopeRef.current !== scopeKey) return null;
     receiveDetailSnapshot(payload);
     return payload;
   }
@@ -905,10 +979,30 @@ export function RangeInstanceDetailScreen({
     }
 
     let isActive = true;
-
-    void fetchRangeInstanceDetail(apiBaseUrl, session.token, rangeId)
+    const request = ++detailRequestRef.current;
+    const cached = screenCache?.read<RangeInstanceDetail>(apiBaseUrl, session.token, resourceKey);
+    setErrorMessage(null);
+    if (detailState.scope !== identityKey) {
+      replaceTopologyDraft(null);
+      loadedRangeIdRef.current = '';
+      setDetail(null);
+      setTrackedUpdateJobId(null);
+      setPackImageDialog(null);
+      setIsTemplateSyncDialogOpen(false);
+      setPendingNodeAction(null);
+      setSuccessMessage(null);
+      setIsSavingDraft(false);
+      setIsSyncingTemplate(false);
+    }
+    if (cached) {
+      receiveDetailSnapshot(cached.data);
+      setTrackedUpdateJobId(cached.data.lastJobId ?? null);
+    }
+    setIsRefreshingDetail(Boolean(cached && !cached.isFresh));
+    const load = () => fetchRangeInstanceDetail(apiBaseUrl, session.token!, rangeId);
+    void (screenCache?.load(apiBaseUrl, session.token, resourceKey, load, { force: loadAttempt > 0 }) ?? load())
       .then((payload) => {
-        if (!isActive) {
+        if (!isActive || request !== detailRequestRef.current || scopeRef.current !== scopeKey) {
           return;
         }
 
@@ -916,7 +1010,7 @@ export function RangeInstanceDetailScreen({
         setTrackedUpdateJobId(payload.lastJobId ?? null);
       })
       .catch((error: unknown) => {
-        if (!isActive) {
+        if (!isActive || request !== detailRequestRef.current || scopeRef.current !== scopeKey) {
           return;
         }
 
@@ -927,12 +1021,14 @@ export function RangeInstanceDetailScreen({
         }
 
         setErrorMessage('实例详情加载失败，请稍后重试。');
+      }).finally(() => {
+        if (isActive && request === detailRequestRef.current) setIsRefreshingDetail(false);
       });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isPageActive, rangeId, router, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, loadAttempt, rangeId, router, screenCache, session.isReady, session.token, session.profile?.id, session.profile?.role]);
 
   useEffect(() => {
     if (!isPageActive || !session.token || !trackedUpdateJobId) {
@@ -959,6 +1055,7 @@ export function RangeInstanceDetailScreen({
           receiveDetailSnapshot(payload);
           setTrackedUpdateJobId(null);
           screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
+          screenCache?.invalidate(apiBaseUrl, token, resourceKey);
           setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
           setErrorMessage(job.status === 'succeeded' ? null : job.errorSummary || '实例配置变更未完成，请检查任务后重试。');
           return;
@@ -981,7 +1078,7 @@ export function RangeInstanceDetailScreen({
       isActive = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, trackedUpdateJobId]);
+  }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, trackedUpdateJobId, scopeKey]);
 
   const topologyDraft = useMemo(() => {
     return (
@@ -1215,12 +1312,14 @@ export function RangeInstanceDetailScreen({
         draftCompiledProvisionSpec: payload.compiledProvisionSpec,
         expectedDraftRevision: detail.draftRevision ?? 0,
       });
+      if (scopeRef.current !== scopeKey) return null;
 
       const nextDetail = {
         ...updated,
         sourceTemplateRevision: updated.sourceTemplateRevision ?? detail.sourceTemplateRevision ?? null,
       };
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
       setDetail(nextDetail);
       replaceTopologyDraft(
         (nextDetail.draftTopologyGraph as Record<string, unknown> | null) ??
@@ -1228,6 +1327,7 @@ export function RangeInstanceDetailScreen({
       );
       return nextDetail;
     } catch (error: unknown) {
+      if (scopeRef.current !== scopeKey) return null;
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1266,10 +1366,13 @@ export function RangeInstanceDetailScreen({
       }
 
       const job = await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, expectedDraftRevision);
+      if (scopeRef.current !== scopeKey) return;
       setTrackedUpdateJobId(job.id);
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
       setSuccessMessage('实例配置变更已提交应用。');
     } catch (error: unknown) {
+      if (scopeRef.current !== scopeKey) return;
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1278,7 +1381,7 @@ export function RangeInstanceDetailScreen({
 
       setErrorMessage('应用变更失败，请稍后重试。');
     } finally {
-      setIsSavingDraft(false);
+      if (scopeRef.current === scopeKey) setIsSavingDraft(false);
     }
   }
 
@@ -1300,7 +1403,7 @@ export function RangeInstanceDetailScreen({
 
       setSuccessMessage('实例草稿已保存。');
     } finally {
-      setIsSavingDraft(false);
+      if (scopeRef.current === scopeKey) setIsSavingDraft(false);
     }
   }
 
@@ -1338,11 +1441,14 @@ export function RangeInstanceDetailScreen({
         saved.draftRevision,
         saved.sourceTemplateRevision,
       );
+      if (scopeRef.current !== scopeKey) return;
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
       screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
       setSuccessMessage('当前实例拓扑已更新到模板草稿。');
       setIsTemplateSyncDialogOpen(false);
     } catch (error: unknown) {
+      if (scopeRef.current !== scopeKey) return;
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1351,7 +1457,7 @@ export function RangeInstanceDetailScreen({
 
       setErrorMessage(error instanceof Error ? error.message : '更新编排拓扑失败，请稍后重试。');
     } finally {
-      setIsSyncingTemplate(false);
+      if (scopeRef.current === scopeKey) setIsSyncingTemplate(false);
     }
   }
 
@@ -1393,8 +1499,10 @@ export function RangeInstanceDetailScreen({
         defaultPassword: packImageDialog.defaultPassword,
         description: packImageDialog.description,
       });
+      if (scopeRef.current !== scopeKey) return;
 
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
       screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
       screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
       setPackImageDialog(null);
@@ -1404,6 +1512,7 @@ export function RangeInstanceDetailScreen({
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
     } catch (error: unknown) {
+      if (scopeRef.current !== scopeKey) return;
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1412,7 +1521,7 @@ export function RangeInstanceDetailScreen({
 
       setErrorMessage(error instanceof Error ? error.message : '二次打包镜像失败，请稍后重试。');
     } finally {
-      setPendingNodeAction(null);
+      if (scopeRef.current === scopeKey) setPendingNodeAction(null);
     }
   }
 
@@ -1447,7 +1556,9 @@ export function RangeInstanceDetailScreen({
       }
 
       const result = await runRangeInstanceNodeAction(apiBaseUrl, session.token, detail.id, nodeId, action, {});
+      if (scopeRef.current !== scopeKey) { vncWindow?.close(); return; }
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
 
       if (action === 'start') {
         setNodeStatusOverrides((current) => ({
@@ -1499,6 +1610,7 @@ export function RangeInstanceDetailScreen({
         }, 2500);
       }
     } catch (error: unknown) {
+      if (scopeRef.current !== scopeKey) { vncWindow?.close(); return; }
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1508,7 +1620,7 @@ export function RangeInstanceDetailScreen({
       vncWindow?.close();
       setErrorMessage(error instanceof Error ? error.message : '节点操作失败，请稍后重试。');
     } finally {
-      setPendingNodeAction(null);
+      if (scopeRef.current === scopeKey) setPendingNodeAction(null);
     }
   }
 
@@ -1815,7 +1927,7 @@ export function RangeInstanceDetailScreen({
   }
 
   return (
-    <main className="admin-screen range-instance-detail-screen">
+    <main className="admin-screen range-instance-detail-screen min-w-0">
       <section className="admin-workbench-surface range-instance-detail-workbench">
         <AdminPageHeader
           description="查看实例运行状态、节点目录与拓扑编排。"
@@ -1874,7 +1986,9 @@ export function RangeInstanceDetailScreen({
                   <TabsTrigger value="directory">
                     节点目录
                   </TabsTrigger>
-                  <TabsTrigger value="topology">
+                  <TabsTrigger value="topology"
+                    onMouseEnter={() => void preloadRangeInstanceTopologyWorkspace().catch(() => undefined)}
+                    onFocus={() => void preloadRangeInstanceTopologyWorkspace().catch(() => undefined)}>
                     拓扑结构
                   </TabsTrigger>
                 </TabsList>
@@ -1931,6 +2045,7 @@ export function RangeInstanceDetailScreen({
                     onNodeAction={handleNodeAction}
                     allowActions={canOperateInstance}
                     pendingAction={pendingNodeAction}
+                    isRefreshing={isRefreshingDetail}
                   />
                 </div>
               ) : (
@@ -1959,11 +2074,8 @@ export function RangeInstanceDetailScreen({
               )}
             </div>
           </>
-        ) : (
-          <div className="admin-workbench-empty">
-            <p>正在加载实例详情...</p>
-          </div>
-        )}
+        ) : errorMessage ? <AsyncContentState title="实例详情加载失败" description="请重试加载或返回编排实例列表。" variant="error" onRetry={() => setLoadAttempt((attempt) => attempt + 1)} />
+          : <RangeInstanceDetailBodySkeleton />}
       </section>
 
       <ConfirmActionDialog
@@ -1976,7 +2088,7 @@ export function RangeInstanceDetailScreen({
         title="更新编排拓扑"
       />
 
-      {packImageDialog ? (
+      {packImageDialog && detail ? (
         <AdminDialog
           footer={
             <>

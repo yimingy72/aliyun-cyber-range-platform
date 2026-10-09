@@ -1,5 +1,6 @@
 import type { AdminRepository, PlatformImageAssetRecord } from '../src/admin/admin.repository';
 import { ImageCatalogService } from '../src/admin/image-catalog.service';
+import type { PackedImagesService } from '../src/admin/packed-images.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 
 const OWNER = { id: 'owner-1', username: 'owner', role: 'user' as const };
@@ -32,7 +33,7 @@ function createAsset(): PlatformImageAssetRecord {
 }
 
 describe('ImageCatalogService import operation guard', () => {
-  function createService() {
+  function createService(packedImages?: PackedImagesService) {
     const asset = createAsset();
     const snapshot = {
       id: 'snapshot-1',
@@ -65,6 +66,7 @@ describe('ImageCatalogService import operation guard', () => {
       listPackedImageArtifacts: jest.fn().mockResolvedValue([]),
       listRangeInstances: jest.fn().mockResolvedValue([]),
       listRangeTemplates: jest.fn().mockResolvedValue([]),
+      getRangeTemplateVersionById: jest.fn().mockResolvedValue(null),
       listBillingLedgerResources: jest.fn().mockResolvedValue([]),
       findBillingLedgerResource: jest.fn().mockResolvedValue(null),
       createBillingLedgerResource: jest.fn().mockImplementation(async (input) => ({ id: `ledger-${input.cloudResourceType}`, ...input })),
@@ -72,6 +74,7 @@ describe('ImageCatalogService import operation guard', () => {
       deletePlatformImageAssetsBySnapshotId: jest.fn(),
       listImageSnapshots: jest.fn().mockResolvedValue([snapshot]),
       reconcileImageSnapshots: jest.fn(),
+      upsertImageSnapshots: jest.fn(),
     };
     const systemConfigServiceMock = {
       getAccountContext: jest.fn().mockResolvedValue({
@@ -85,6 +88,7 @@ describe('ImageCatalogService import operation guard', () => {
     const service = new ImageCatalogService(
       adminRepositoryMock as unknown as AdminRepository,
       systemConfigServiceMock as unknown as SystemConfigService,
+      packedImages,
     );
 
     return { service, adminRepositoryMock, asset, snapshot };
@@ -344,5 +348,208 @@ describe('ImageCatalogService import operation guard', () => {
     await expect(service.removePlatformAsset('asset-1', OWNER)).rejects.toThrow('已发布');
 
     expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
+  });
+
+  function version(id: string, imageId: string) {
+    return {
+      id,
+      topologySpec: {},
+      topologyGraph: { nodes: [{ id: 'ecs-1', imageId }] },
+      scenarioTemplateSpec: { hosts: [{ key: 'ecs-1', imageId }] },
+      compiledProvisionSpec: { hosts: [{ key: 'ecs-1', imageId }] },
+      compiledSpec: { resources: [{ id: 'ecs-1', config: { imageId } }] },
+    };
+  }
+
+  function replacementTemplate(imageId: string) {
+    const old = version('version-old', imageId);
+    const current = version('version-current', 'm-replacement');
+    return {
+      ...old,
+      id: 'template-1', name: 'test1-test1', ownerUserId: OWNER.id, visibility: 'private',
+      currentDraftVersionId: current.id, currentDraftVersion: current,
+      currentPublishedVersionId: old.id, currentPublishedVersion: old,
+      versions: [old, current],
+    };
+  }
+
+  function cloudDeleteMock() {
+    let exists = true;
+    global.fetch = jest.fn().mockImplementation(async (input) => {
+      const action = new URL(String(input)).searchParams.get('Action');
+      if (action === 'DeleteImage') {
+        exists = false;
+        return new Response('{}', { status: 200 });
+      }
+      return new Response(JSON.stringify({ TotalCount: exists ? 1 : 0, Images: {
+        Image: exists ? [{ ImageId: 'm-importing-image', Status: 'Available' }] : [],
+      } }), { status: 200 });
+    });
+  }
+
+  it('allows cloud deletion after replacement when only old versions and stale top-level copies reference the image', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([replacementTemplate(snapshot.imageId)]);
+    adminRepositoryMock.listRangeInstances.mockResolvedValue([{ status: 'destroyed', runtimeScenarioTemplateSpec: version('runtime-old', snapshot.imageId) }]);
+    cloudDeleteMock();
+
+    await expect(service.prepareCustomDelete(snapshot.id, ADMIN, false)).resolves.toMatchObject({ imageId: snapshot.imageId });
+    expect(global.fetch).not.toHaveBeenCalled();
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).resolves.toMatchObject({ removed: true });
+
+    expect((global.fetch as jest.Mock).mock.calls.map(([input]) => new URL(String(input)).searchParams.get('Action')))
+      .toEqual(['DescribeImages', 'DeleteImage', 'DescribeImages']);
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith(snapshot.id);
+  });
+
+  it('still protects the old public version while a new owner draft uses a replacement', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([{ ...replacementTemplate(snapshot.imageId), visibility: 'platform' }]);
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).rejects.toThrow('重新发布或回退为私有');
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
+  });
+
+  it('protects a current private draft without telling users to destroy unrelated instances', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    const template = replacementTemplate(snapshot.imageId);
+    template.currentDraftVersion = version(template.currentDraftVersionId, snapshot.imageId);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([template]);
+    cloudDeleteMock();
+
+    const message = await service.deleteCustomSnapshot(snapshot.id, {}, ADMIN).then(() => '', (error: Error) => error.message);
+    expect(message).toContain('模板“test1-test1”');
+    expect(message).toContain('替换镜像并检测保存');
+    expect(message).not.toContain('销毁相关实例');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('resolves the current version by ID when its relation is not included', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    const template = replacementTemplate(snapshot.imageId);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([{ ...template, currentDraftVersion: null }]);
+    adminRepositoryMock.getRangeTemplateVersionById.mockResolvedValue(version(template.currentDraftVersionId, snapshot.imageId));
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).rejects.toThrow('模板“test1-test1”');
+    expect(adminRepositoryMock.getRangeTemplateVersionById).toHaveBeenCalledWith(template.currentDraftVersionId);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['scenarioTemplateSpec', 'compiledProvisionSpec', 'topologyGraph'])('protects the legacy %s fallback used by an incomplete current version', async (field) => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    const template = replacementTemplate(snapshot.imageId);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([{ ...template,
+      currentDraftVersion: { ...template.currentDraftVersion, [field]: null },
+    }]);
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).rejects.toThrow('模板“test1-test1”');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('protects a legacy template without current version pointers', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([{ name: 'legacy', scenarioTemplateSpec: version('legacy', snapshot.imageId) }]);
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).rejects.toThrow('模板“legacy”');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('protects the private published fallback when there is no current owner draft', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([{ ...replacementTemplate(snapshot.imageId), currentDraftVersion: null, currentDraftVersionId: null }]);
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).rejects.toThrow('模板“test1-test1”');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('still protects a live instance and gives an instance-specific remedy', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    adminRepositoryMock.listRangeInstances.mockResolvedValue([{ name: 'running-test', status: 'running', runtimeScenarioTemplateSpec: version('runtime', snapshot.imageId) }]);
+    cloudDeleteMock();
+
+    const message = await service.deleteCustomSnapshot(snapshot.id, {}, ADMIN).then(() => '', (error: Error) => error.message);
+    expect(message).toContain('实例“running-test”');
+    expect(message).toContain('销毁相关实例');
+    expect(message).not.toContain('检测保存');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('uses the same current-version guard for owned image and snapshot cleanup', async () => {
+    const cleanup = jest.fn().mockResolvedValue({ removed: true, status: 'deleted' });
+    const { service, adminRepositoryMock, snapshot } = createService({ cleanup } as unknown as PackedImagesService);
+    adminRepositoryMock.listPackedImageArtifacts.mockResolvedValue([{
+      cloudAccountUid: snapshot.accountUid, regionId: snapshot.regionId, imageId: snapshot.imageId, ownerUserId: OWNER.id,
+    }]);
+    const template = replacementTemplate(snapshot.imageId);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([template]);
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, { deleteOwnedSnapshots: true }, OWNER))
+      .resolves.toMatchObject({ removed: true, status: 'deleted' });
+    expect(cleanup).toHaveBeenCalledWith(snapshot.id, OWNER);
+
+    template.currentDraftVersion = version(template.currentDraftVersionId, snapshot.imageId);
+    await expect(service.deleteCustomSnapshot(snapshot.id, { deleteOwnedSnapshots: true }, OWNER)).rejects.toThrow('模板“test1-test1”');
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('protects an unfrozen legacy create/retry source version while allowing unrelated old sources after runtime replacement', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+    const legacy = { name: 'legacy-retry', status: 'create_failed', sourceTemplateVersionId: 'version-old' };
+    adminRepositoryMock.listRangeInstances.mockResolvedValue([legacy]);
+    adminRepositoryMock.getRangeTemplateVersionById.mockResolvedValue(version('version-old', snapshot.imageId));
+    cloudDeleteMock();
+
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).rejects.toThrow('实例“legacy-retry”');
+    expect(adminRepositoryMock.getRangeTemplateVersionById).toHaveBeenCalledWith('version-old');
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    adminRepositoryMock.listRangeInstances.mockResolvedValue([{ ...legacy, status: 'running', runtimeScenarioTemplateSpec: version('current-runtime', 'm-replacement') }]);
+    adminRepositoryMock.getRangeTemplateVersionById.mockClear();
+    await expect(service.deleteCustomSnapshot(snapshot.id, {}, ADMIN)).resolves.toMatchObject({ removed: true });
+    expect(adminRepositoryMock.getRangeTemplateVersionById).not.toHaveBeenCalled();
+  });
+
+  it('returns exact administrator reference details during preflight without invoking cloud or deletion', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    const template = replacementTemplate(snapshot.imageId);
+    template.currentDraftVersion = version(template.currentDraftVersionId, snapshot.imageId);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([template]);
+    cloudDeleteMock();
+
+    const response = await service.prepareCustomDelete(snapshot.id, ADMIN, false)
+      .then(() => null, (error: { getResponse(): unknown }) => error.getResponse());
+    expect(response).toMatchObject({ references: [{ kind: 'template', id: 'template-1', name: 'test1-test1', ownerId: OWNER.id, basis: ['current-draft'] }] });
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.upsertImageSnapshots).not.toHaveBeenCalled();
+  });
+
+  it('keeps other private reference IDs and owner IDs out of an ordinary image owner preflight', async () => {
+    const cleanup = jest.fn();
+    const { service, adminRepositoryMock, snapshot } = createService({ cleanup } as unknown as PackedImagesService);
+    adminRepositoryMock.listPackedImageArtifacts.mockResolvedValue([{
+      cloudAccountUid: snapshot.accountUid, regionId: snapshot.regionId, imageId: snapshot.imageId, ownerUserId: OWNER.id,
+    }]);
+    const template = replacementTemplate(snapshot.imageId);
+    template.currentDraftVersion = version(template.currentDraftVersionId, snapshot.imageId);
+    adminRepositoryMock.listRangeTemplates.mockResolvedValue([template]);
+    cloudDeleteMock();
+
+    const response = await service.prepareCustomDelete(snapshot.id, OWNER, true)
+      .then(() => null, (error: { getResponse(): unknown }) => error.getResponse());
+    expect(response).toMatchObject({ message: expect.stringContaining('替换镜像并检测保存') });
+    expect(response).not.toHaveProperty('references');
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

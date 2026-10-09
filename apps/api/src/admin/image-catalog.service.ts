@@ -387,6 +387,7 @@ export class ImageCatalogService {
       const account = await this.systemConfigService.getAccountContext();
       if (!this.isSnapshotInScope(snapshot, account)) throw new NotFoundException('Image snapshot not found');
     }
+    await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
     return { imageId: snapshot.imageId, snapshotId, cloudAccountUid: snapshot.accountUid, regionId: snapshot.regionId };
   }
 
@@ -404,7 +405,7 @@ export class ImageCatalogService {
     if (options.deleteOwnedSnapshots) {
       if (!currentUser || !this.packedImages) throw new ForbiddenException('完整回收需要已认证 owner 和打包来源记录。');
       await this.prepareCustomDelete(snapshotId, currentUser, true);
-      await this.assertCustomSnapshotNotInUse(snapshot);
+      await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
       return this.packedImages.cleanup(snapshotId, currentUser);
     }
     if (currentUser && currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
@@ -419,19 +420,31 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
-    await this.assertCustomSnapshotNotInUse(snapshot);
+    await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
     await this.assertImageSnapshotNotImporting(snapshot);
 
-    if (await this.describeImageById(snapshot.imageId, accountContext)) await this.performAliyunRpcRequest({
-      accessKeyId: accountContext.accessKeyId,
-      accessKeySecret: accountContext.accessKeySecret,
-      regionId: accountContext.defaultRegion,
-      action: 'DeleteImage',
-      parameters: {
-        ImageId: snapshot.imageId,
-        Force: 'false',
-      },
-    });
+    if (await this.describeImageById(snapshot.imageId, accountContext)) {
+      await this.performAliyunRpcRequest({
+        accessKeyId: accountContext.accessKeyId,
+        accessKeySecret: accountContext.accessKeySecret,
+        regionId: accountContext.defaultRegion,
+        action: 'DeleteImage',
+        parameters: {
+          ImageId: snapshot.imageId,
+          Force: 'false',
+        },
+      });
+      await this.adminRepository.upsertImageSnapshots({
+        provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, scope: 'custom',
+        snapshots: [{ imageId: snapshot.imageId, sourceImageName: snapshot.sourceImageName,
+          osType: snapshot.osType, platform: snapshot.platform, architecture: snapshot.architecture,
+          status: 'Deleting', isAvailable: false, lastSyncedAt: new Date() }],
+      });
+      const assets = await this.adminRepository.listPlatformImageAssets({
+        provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, imageId: snapshot.imageId,
+      });
+      await Promise.all(assets.map(asset => this.adminRepository.setPlatformImageAssetEnabled(asset.id, false)));
+    }
     if (await this.describeImageById(snapshot.imageId, accountContext)) throw new ConflictException('云镜像删除尚未确认，请用相同目标重试。');
 
     // ponytail: O(n) ledger scan is fine for now; add a dedicated repository query once image billing volume grows.
@@ -777,7 +790,7 @@ export class ImageCatalogService {
     return matchingSnapshot ?? null;
   }
 
-  private async assertCustomSnapshotNotInUse(snapshot: CloudImageSnapshotRecord) {
+  private async assertCustomSnapshotNotInUse(snapshot: CloudImageSnapshotRecord, currentUser?: SessionUserProfile) {
     const assets = await this.adminRepository.listPlatformImageAssets({
       provider: snapshot.provider,
       accountUid: snapshot.accountUid,
@@ -788,36 +801,57 @@ export class ImageCatalogService {
     const imageIds = new Set([snapshot.imageId]);
 
     const instances = await this.adminRepository.listRangeInstances();
-    const referencingInstances = instances.filter((instance) => {
+    const sourceVersions = await Promise.all(instances.map((instance) =>
+      instance.status !== 'destroyed' && !instance.singleInstanceConfig &&
+      !instance.runtimeScenarioTemplateSpec && !instance.runtimeCompiledProvisionSpec && instance.sourceTemplateVersionId
+        ? this.adminRepository.getRangeTemplateVersionById(instance.sourceTemplateVersionId) : null,
+    ));
+    const instanceBasis = new Map<string, string[]>();
+    const referencingInstances = instances.filter((instance, index) => {
       if (instance.status === 'destroyed') {
         return false;
       }
 
       const singleInstanceConfig = instance.singleInstanceConfig;
-      return (
-        (singleInstanceConfig?.platformImageAssetId ? assetIds.has(singleInstanceConfig.platformImageAssetId) : false) ||
-        (singleInstanceConfig?.imageId ? imageIds.has(singleInstanceConfig.imageId) : false) ||
-        containsImageReference(instance.runtimeScenarioTemplateSpec, assetIds, imageIds) ||
-        containsImageReference(instance.runtimeCompiledProvisionSpec, assetIds, imageIds) ||
-        containsImageReference(instance.draftScenarioTemplateSpec, assetIds, imageIds) ||
-        containsImageReference(instance.draftCompiledProvisionSpec, assetIds, imageIds) ||
-        containsImageReference(instance.resourceSummary, assetIds, imageIds)
-      );
+      const basis = [
+        ...((singleInstanceConfig?.platformImageAssetId && assetIds.has(singleInstanceConfig.platformImageAssetId)) ||
+          (singleInstanceConfig?.imageId && imageIds.has(singleInstanceConfig.imageId)) ? ['single-instance'] : []),
+        ...(containsImageReference(instance.runtimeScenarioTemplateSpec, assetIds, imageIds) ||
+          containsImageReference(instance.runtimeCompiledProvisionSpec, assetIds, imageIds) ? ['runtime'] : []),
+        ...(containsImageReference(instance.draftScenarioTemplateSpec, assetIds, imageIds) ||
+          containsImageReference(instance.draftCompiledProvisionSpec, assetIds, imageIds) ? ['draft'] : []),
+        ...(containsImageReference(instance.resourceSummary, assetIds, imageIds) ? ['resource-summary'] : []),
+        ...(containsImageReference(sourceVersions[index], assetIds, imageIds) ? ['unfrozen-source-version'] : []),
+      ];
+      if (basis.length > 0) instanceBasis.set(instance.id, basis);
+      return basis.length > 0;
     });
 
     const templates = await this.adminRepository.listRangeTemplates();
-    const referencingTemplates = templates.filter((template) =>
-      [
-        template.topologySpec,
-        template.topologyGraph,
-        template.scenarioTemplateSpec,
-        template.compiledProvisionSpec,
-        template.compiledSpec,
-        template.currentDraftVersion,
-        template.currentPublishedVersion,
-        ...(template.versions ?? []),
-      ].some((value) => containsImageReference(value, assetIds, imageIds)),
-    );
+    const referencingTemplates: typeof templates = [];
+    const templateBasis = new Map<string, string[]>();
+    for (const template of templates) {
+      const draft = template.currentDraftVersion ?? (template.currentDraftVersionId
+        ? await this.adminRepository.getRangeTemplateVersionById(template.currentDraftVersionId) : null);
+      const published = template.currentPublishedVersion ?? (template.currentPublishedVersionId
+        ? await this.adminRepository.getRangeTemplateVersionById(template.currentPublishedVersionId) : null);
+      // Owners consume the current draft; other users consume the current public version, never historical versions.
+      const consumedVersions = [{ version: draft ?? published,
+        basis: draft ? 'current-draft' : published
+          ? template.visibility === 'platform' ? 'current-publication' : 'published-fallback' : 'legacy-current' }];
+      if (template.visibility === 'platform' && published && draft) consumedVersions.push({ version: published, basis: 'current-publication' });
+      const basis = consumedVersions.filter(({ version }) => [
+        version?.topologySpec ?? template.topologySpec,
+        version?.topologyGraph ?? template.topologyGraph,
+        version?.scenarioTemplateSpec ?? template.scenarioTemplateSpec,
+        version?.compiledProvisionSpec ?? template.compiledProvisionSpec,
+        version?.compiledSpec ?? template.compiledSpec,
+      ].some((value) => containsImageReference(value, assetIds, imageIds))).map(({ basis }) => basis);
+      if (basis.length > 0) {
+        referencingTemplates.push(template);
+        templateBasis.set(template.id, basis);
+      }
+    }
 
     if (referencingInstances.length === 0 && referencingTemplates.length === 0) {
       return;
@@ -829,10 +863,24 @@ export class ImageCatalogService {
     ];
     const omitted = referencingInstances.length + referencingTemplates.length - references.length;
     const suffix = omitted > 0 ? ` 等 ${omitted + references.length} 个引用` : '';
+    const remedies = [
+      ...(referencingTemplates.length > 0
+        ? ['请在相关模板中替换镜像并检测保存；若已发布版本仍引用，还需重新发布或回退为私有。'] : []),
+      ...(referencingInstances.length > 0
+        ? ['请替换相关实例运行或草稿中的镜像并应用变更，或销毁相关实例。'] : []),
+    ];
 
-    throw new BadRequestException(
-      `镜像仍被${references.join('、')}${suffix}引用。请先替换镜像或销毁相关实例，再删除云端自定义镜像。`,
-    );
+    throw new BadRequestException({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: `镜像仍被${references.join('、')}${suffix}引用。${remedies.join('')}完成后再删除云端自定义镜像。`,
+      ...(currentUser?.role === 'admin' ? { references: [
+        ...referencingInstances.map((instance) => ({ kind: 'instance', id: instance.id, name: instance.name,
+          ownerId: instance.ownerUserId, basis: instanceBasis.get(instance.id) })),
+        ...referencingTemplates.map((template) => ({ kind: 'template', id: template.id, name: template.name,
+          ownerId: template.ownerUserId, basis: templateBasis.get(template.id) })),
+      ] } : {}),
+    });
   }
 
   private isSnapshotInScope(

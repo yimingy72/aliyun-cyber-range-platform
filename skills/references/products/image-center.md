@@ -34,6 +34,8 @@
 - 收录、发布和取消发布仅管理员可执行。发布或取消发布前，必须检查资产返回的 `canChangeVisibility`。只有 owner-backed 资产可切换可见性；从公共或自定义云镜像目录收录的资产可能已固定为 `platform` 且 `canChangeVisibility: false`，此时不得调用发布/取消发布工具或重试，应如实说明平台限制。
 - `platform_image_remove` 仅移出平台目录，保留云镜像、快照和仍计费的台账；删除前确认未被已发布拓扑引用。
 - `image_catalog_custom_delete` 默认只允许管理员删除云镜像及关联平台资产，保留 backing snapshots 和快照费用。MCP 使用二阶段确认及相同的业务参数、操作元数据。
+- 云镜像删除保护当前模板草稿、当前仍公开的发布版本及未销毁实例的运行/草稿引用；仅历史版本引用不阻止删除。没有活动实例也可能存在有效模板引用，此时应在模板中替换镜像并检测保存；公开发布版本仍引用时，还需重新发布或回退为私有。仅删除平台目录的保护仍针对已发布拓扑。
+- MCP删除预确认也检查有效引用，阻塞时管理员会收到`references`（kind/id/name/ownerId/basis）以定位准确模板或实例；不包含凭据，也不访问云端。首次请求若返回确认要求只表示预检通过，不能当作已经删除；仅诊断引用时不要重放`confirmationId`。
 - 完整回收本次平台打包镜像时显式设置 `deleteOwnedSnapshots: true`。仅 owner 或管理员可操作，且必须有新打包生成的持久化来源记录、云账号 UID、地域、owner、全部源磁盘、镜像绑定快照、唯一来源标签和台账证明；旧镜像、外部或共享快照拒绝自动回收。删除不用 Force，每个云资源确认消失后才释放对应台账；仅 `removed: true` 且 `status: deleted` 表示全部完成。
 - 清理失败保留确切镜像/快照清单和已删除进度，使用相同 `snapshotId` 重试；不得改成其它镜像、强制删除或删掉审计材料。worker 也会继续恢复已开始的清理。
 - `snapshotId` 使用目录来源行的 `id` 或资产的 `sourceSnapshotId`；完整回收结果中的 `snapshotIds` 和 `deletedSnapshotIds` 是真实阿里云 backing snapshot ID。若前一次已确认操作进入 `failed`，保持业务目标不变，用新的幂等键重新取得确认再重试；同一次二阶段确认必须复用相同幂等键。

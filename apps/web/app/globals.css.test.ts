@@ -39,6 +39,24 @@ function getAtRuleBlock(css: string, atRule: string) {
 describe('design system CSS transition contract', () => {
   const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
 
+  it('keeps one table scroller and gives cold topology the same bounded workspace footprint', () => {
+    const outer = getRuleBlock(stylesheet, '.range-instance-directory-table');
+    expect(outer).toContain('min-width: 0');
+    expect(outer).toContain('max-width: 100%');
+    expect(outer).not.toContain('overflow-x: auto');
+    expect(getRuleBlock(stylesheet, ".range-instance-directory-table [data-slot='admin-data-table-frame']")).toContain('min-width: 0');
+    expect(getRuleBlock(stylesheet, ".range-instance-directory-table [data-slot='table']")).toContain('min-width: 1200px');
+    const grid = getRuleBlock(stylesheet, '.range-instance-topology-grid');
+    expect(grid).toContain('max-width: 100%');
+    expect(grid).toContain('min-width: 0');
+    expect(grid).toContain('height: max(680px, calc(100dvh - 240px))');
+    expect(getRuleBlock(stylesheet, '.range-instance-topology-placeholder')).toContain('height: 100%');
+    expect(getRuleBlock(stylesheet, '.range-instance-topology-grid:has(.topology-flow-workbench) > .template-property-panel')).toContain('position: absolute');
+    const reducedMotion = stylesheet.slice(stylesheet.indexOf('@media (prefers-reduced-motion: reduce)', stylesheet.indexOf('.range-instance-topology-placeholder')));
+    expect(reducedMotion).toContain('.range-instance-topology-grid > .template-property-panel');
+    expect(reducedMotion).toContain('animation: none');
+  });
+
   it('defines the Tailwind import and core shadcn tokens', () => {
     expect(stylesheet).toContain('@import "tailwindcss";');
     expect(stylesheet).toContain('--background:');

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "pnpm --parallel --stream --filter @aliyun-cyber-range/api --filter @aliyun-cyber-range/web dev",
     "build": "pnpm -r build",
-    "test": "pnpm -r test && node --test test/*.test.mjs",
+    "test": "pnpm --workspace-concurrency=1 -r test && node --test test/*.test.mjs",
     "verify:bootstrap": "pnpm test && pnpm build && pnpm iac:validate && docker compose config",
     "provider:download": "sh scripts/dev/download-alicloud-provider.sh",
     "iac:validate": "bash scripts/dev/validate-opentofu-example.sh",
