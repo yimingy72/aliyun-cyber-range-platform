@@ -5,6 +5,7 @@ import { CloudAccountContextsService } from './cloud-account-contexts.service';
 import { SaveCloudAccountContextDto } from './dto/cloud-account-context.dto';
 import { SystemConfigService } from './system-config.service';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
+import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 @Controller('admin/cloud-contexts')
 @UseGuards(AdminAuthGuard)
@@ -12,6 +13,7 @@ export class CloudAccountContextsController {
   constructor(
     private readonly cloudAccountContextsService: CloudAccountContextsService,
     private readonly systemConfigService: SystemConfigService,
+    private readonly operationControl: OperationControlService,
   ) {}
 
   @Get()
@@ -26,8 +28,32 @@ export class CloudAccountContextsController {
   }
 
   @Post()
-  save(@Body() payload: SaveCloudAccountContextDto) {
-    return this.cloudAccountContextsService.saveTencentCloudContext(payload);
+  async save(@Req() request: AuthenticatedPlatformRequest, @Body() payload: SaveCloudAccountContextDto) {
+    if (request.adminUser.role !== 'admin') throw new ForbiddenException('仅管理员可保存云账号。');
+    const metadata = readOperationRequestMetadata(request);
+    const execute = () => this.cloudAccountContextsService.saveTencentCloudContext(payload);
+    if (request.authContext.source === 'mcp') {
+      return this.operationControl.executeConfirmed({
+        context: request.authContext, metadata, toolName: 'tencent_cloud_account_save', arguments: { ...payload },
+        targetType: 'cloud_account_context',
+        resolveConfirmation: async () => ({
+          targetId: null, targetSnapshot: { provider: 'tencent_cloud', regionId: payload.regionId, zoneId: payload.zoneId },
+          summary: { targetName: '腾讯云账号', regionId: payload.regionId, zoneId: payload.zoneId, activatesResourceCreation: false },
+        }),
+        execute: async () => ({ result: await execute() }),
+      });
+    }
+    const audit = { requestId: metadata.requestId, operationId: metadata.requestId, actorUserId: request.adminUser.id,
+      source: request.authContext.source, oauthClientId: request.authContext.oauthClientId, toolName: 'tencent_cloud_account_save', targetType: 'cloud_account_context', sanitizedInput: { ...payload } };
+    await this.operationControl.audit({ ...audit, phase: 'requested' });
+    try {
+      const result = await execute();
+      await this.operationControl.audit({ ...audit, phase: 'succeeded', targetId: result.id });
+      return result;
+    } catch (error) {
+      await this.operationControl.audit({ ...audit, phase: 'failed', errorCode: 'TENCENT_ACCOUNT_SAVE_FAILED' });
+      throw error;
+    }
   }
 
   @Get(':id/instance-type-availability')

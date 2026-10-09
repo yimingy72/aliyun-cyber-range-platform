@@ -6,6 +6,7 @@ import { AdminAuthGuard } from '../src/admin/admin-auth.guard';
 import { CloudAccountContextsController } from '../src/admin/cloud-account-contexts.controller';
 import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import { OperationControlService } from '../src/operations/operation-control.service';
 
 const input = { provider: 'tencent_cloud', regionId: 'ap-shanghai', zoneId: 'ap-shanghai-2', accessKeyId: 'synthetic-key', accessKeySecret: 'synthetic-secret' };
 describe('Cloud contexts HTTP trust boundaries', () => {
@@ -15,20 +16,39 @@ describe('Cloud contexts HTTP trust boundaries', () => {
   const list = jest.fn().mockResolvedValue([]);
   const getAccountContextById = jest.fn().mockResolvedValue({ provider: 'tencent_cloud' });
   const getInstanceTypeAvailabilityInContext = jest.fn().mockResolvedValue({ matches: [] });
+  const audit = jest.fn().mockResolvedValue(undefined);
+  const executeConfirmed = jest.fn();
+  let source = 'web';
   beforeAll(async () => {
     const module = await Test.createTestingModule({ controllers: [CloudAccountContextsController], providers: [
       { provide: CloudAccountContextsService, useValue: { saveTencentCloudContext: save, list } },
       { provide: SystemConfigService, useValue: { getAccountContextById, getInstanceTypeAvailabilityInContext } },
+      { provide: OperationControlService, useValue: { audit, executeConfirmed } },
     ] }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) {
-      const req = context.switchToHttp().getRequest(); req.adminUser = { role }; req.authContext = { user: { role }, source: 'web' }; return true;
+      const req = context.switchToHttp().getRequest(); req.adminUser = { id: 'admin-fixture', role }; req.authContext = { user: { id: 'admin-fixture', role }, source, oauthClientId: 'fixture' }; return true;
     } }).compile();
     app = module.createNestApplication(); configureApp(app); await app.init();
   });
-  beforeEach(() => { jest.clearAllMocks(); role = 'admin'; });
+  beforeEach(() => { jest.clearAllMocks(); role = 'admin'; source = 'web'; });
   afterAll(async () => app.close());
   it('accepts only explicit Tencent account inputs at the independent save endpoint', async () => {
     const response = await request(app.getHttpServer()).post('/admin/cloud-contexts').send(input).expect(201);
     expect(response.body).toEqual({ id: 'tencent-context', provider: 'tencent_cloud', isActive: false });
+    expect(save).toHaveBeenCalledWith(expect.objectContaining(input));
+    expect(audit.mock.calls.map(([event]) => event.phase)).toEqual(['requested', 'succeeded']);
+  });
+  it('requires MCP confirmation before credentials are verified or persisted', async () => {
+    source = 'mcp';
+    executeConfirmed.mockResolvedValue({ confirmationRequired: true });
+    await request(app.getHttpServer()).post('/admin/cloud-contexts').set('x-idempotency-key', 'fixture-idempotency').send(input).expect(201);
+    expect(save).not.toHaveBeenCalled();
+    const control = executeConfirmed.mock.calls[0][0];
+    expect(control.toolName).toBe('tencent_cloud_account_save');
+    expect(control.metadata.idempotencyKey).toBe('fixture-idempotency');
+    const confirmation = await control.resolveConfirmation();
+    expect(confirmation.summary.activatesResourceCreation).toBe(false);
+    expect(JSON.stringify(confirmation)).not.toContain(input.accessKeySecret);
+    await control.execute();
     expect(save).toHaveBeenCalledWith(expect.objectContaining(input));
   });
   it.each([{}, { ...input, provider: 'alibaba_cloud' }, { ...input, accessKeyId: null }, { ...input, accessKeySecret: 123 }, { ...input, accessKeySecret: '********' }, { ...input, imageImportBucket: 'alibaba-bucket' }, { ...input, isActive: true }])('rejects incomplete or unsupported writes before service %j', async (payload) => {

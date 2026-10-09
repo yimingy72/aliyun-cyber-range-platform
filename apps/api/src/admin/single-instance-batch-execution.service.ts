@@ -286,6 +286,9 @@ export class SingleInstanceBatchExecutionService {
     });
   }
   async resolveInstanceAccount(instance: RangeInstanceRecord) {
+    if (instance.cloudProvider !== 'alibaba_cloud') {
+      throw new UnverifiedSingleInstanceAccountError('该云厂商的单实例执行与回收尚未开放；已保留资源材料。');
+    }
     const config = instance.singleInstanceConfig;
     if (!config?.cloudAccountContextId?.trim() || !config.cloudAccountUid?.trim()) {
       throw new UnverifiedSingleInstanceAccountError('缺少原云账号绑定，需核验实例来源后才能继续；已保留实例记录和资源材料。');
@@ -293,6 +296,9 @@ export class SingleInstanceBatchExecutionService {
     const account = await this.systemConfigService.getAccountContextById(config.cloudAccountContextId).catch(() => {
       throw new UnverifiedSingleInstanceAccountError('原云账号绑定不可用，需核验实例来源后才能继续；已保留实例记录和资源材料。');
     });
+    if (account.provider !== 'alibaba_cloud') {
+      throw new UnverifiedSingleInstanceAccountError('原云账号厂商与单实例执行器不符；未调用云端接口。');
+    }
     if (!account.accountUidResolved || account.cloudAccountContextId !== config.cloudAccountContextId || account.accountUid !== config.cloudAccountUid) {
       throw new UnverifiedSingleInstanceAccountError('原云账号身份未核验或与实例绑定不符，需核验实例来源后才能继续；已保留实例记录和资源材料。');
     }
@@ -302,7 +308,7 @@ export class SingleInstanceBatchExecutionService {
     const region = config?.regionId ?? topology?.defaultRegion;
     if ((region && region !== account.defaultRegion) || (config?.cloudAccountUid && config.cloudAccountUid !== account.accountUid))
       throw new Error('Single instance cloud context differs from its immutable launch identity');
-    return { ...account, defaultZoneId: config?.zoneId ?? account.defaultZoneId };
+    return { ...account, provider: 'alibaba_cloud' as const, defaultZoneId: config?.zoneId ?? account.defaultZoneId };
   }
   async captureInstanceDisks(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
     summary: RangeResourceSummary, destroying = false, assertLease: () => Promise<void> = async () => {}) {

@@ -39,7 +39,7 @@ export class SingleInstanceNetworkService {
       };
       try {
         const profile = await this.bootstrap.bootstrapDefaultProfile({
-          ...identity, occupiedCidrs: occupied, runtimeConfig: { ...snapshot, provider: 'alibaba_cloud' },
+          ...identity, occupiedCidrs: occupied, runtimeConfig: snapshot,
           onApplyStart: async () => {
             const recovery = await this.bootstrap.readRecoveryProfile(identity);
             if (!recovery) throw new ConflictException('Default network apply intent could not be persisted');
@@ -120,7 +120,10 @@ export class SingleInstanceNetworkService {
       if(!cleanupRunId||profile.cleanupRunId!==cleanupRunId||profile.cleanupRegisteredByUserId!==currentUser.id) throw new ConflictException('Network cleanup requires its pre-registered run ID and registering administrator');
       if (!profile.managedByPlatform || !profile.cloudAccountContextId)
         throw new ConflictException('Legacy or unbound shared networks cannot be destroyed through this endpoint');
-      const account = await this.systemConfigService.getAccountContextById(profile.cloudAccountContextId);
+      const sourceAccount = await this.systemConfigService.getAccountContextById(profile.cloudAccountContextId);
+      if (profile.provider !== 'alibaba_cloud' || sourceAccount.provider !== 'alibaba_cloud')
+        throw new ConflictException('该云厂商的默认网络回收尚未开放。');
+      const account = { ...sourceAccount, provider: 'alibaba_cloud' as const };
       if (account.accountUid !== profile.cloudAccountUid || account.defaultRegion !== profile.regionId)
         throw new ConflictException('Network cloud source does not match its persisted identity');
       const references = (await this.adminRepository.listRangeInstances()).filter(instance => instance.singleInstanceConfig?.networkProfileId === id || instance.resourceSummary?.vpcId === profile.vpcId || profile.vswitchIds.includes(instance.singleInstanceConfig?.assignedVswitchId ?? ''));
