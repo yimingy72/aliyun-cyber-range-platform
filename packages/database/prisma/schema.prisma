@@ -347,6 +347,7 @@ model CloudImageSnapshot {
 model ImageImportJob {
   cloudProvider CloudProvider @default(alibaba_cloud)
   managedBucketId String?
+  managedBucket CloudImageImportBucket? @relation(fields: [cloudWorkspaceId, managedBucketId], references: [cloudWorkspaceId, id], onDelete: Restrict)
   sourceObjectProof Json?
   sourceDiskIds Json @default("[]")
   osVersion String?
@@ -900,6 +901,8 @@ model CloudImageImportBucket {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+  imageImportJobs ImageImportJob[]
+  @@unique([cloudWorkspaceId, id])
   @@index([cloudWorkspaceId, cloudProvider, cloudAccountUid, regionId], map: "CloudImageImportBucket_workspace_identity_idx")
   @@index([status, leaseExpiresAt])
 }

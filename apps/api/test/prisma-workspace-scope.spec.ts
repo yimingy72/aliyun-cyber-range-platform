@@ -70,4 +70,11 @@ describe('cloud workspace query boundary', () => {
     expect(scopePrismaQuery('OperationAuditEvent', 'create', { data: { phase: 'requested' } }, history).data.cloudWorkspaceId).toBe(scope.cloudWorkspaceId);
     expect(scopePrismaQuery('RangeInstance', 'findMany', {}, history).where.cloudWorkspaceId).toBe(scope.cloudWorkspaceId);
   });
+  it('fences COS bucket identity mutations and scopes nested managed-bucket attachment', () => {
+    for (const operation of ['update', 'upsert']) expect(() => scopePrismaQuery('CloudImageImportBucket', operation,
+      operation === 'upsert' ? { where: { id: 'bucket' }, create: {}, update: { regionId: 'ap-other' } } : { where: { id: 'bucket' }, data: { regionId: 'ap-other' } }, scope)).toThrow('immutable');
+    expect(scopePrismaQuery('CloudImageImportBucket', 'findUnique', { where: { id: 'foreign' } }, scope).where).toEqual({ id: 'foreign', cloudWorkspaceId: scope.cloudWorkspaceId });
+    expect(scopePrismaQuery('ImageImportJob', 'create', { data: { managedBucket: { connect: { id: 'foreign' } } } }, scope).data.managedBucket.connect).toEqual({ id: 'foreign', cloudWorkspaceId: scope.cloudWorkspaceId });
+  });
+
 });

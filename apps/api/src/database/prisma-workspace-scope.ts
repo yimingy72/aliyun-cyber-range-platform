@@ -24,7 +24,8 @@ const compoundKeys: Record<string, string[]> = {
 const relationModels: Record<string, Record<string, string>> = {
   PlatformUser: { platformImageAssets: 'PlatformImageAsset', createdImageTags: 'PlatformImageTag', rangeTemplates: 'RangeTemplate', rangeInstances: 'RangeInstance', singleInstanceBatches: 'SingleInstanceBatch', imageImportJobs: 'ImageImportJob' },
   CloudImageSnapshot: { catalogItems: 'ImageCatalogItem', platformAssets: 'PlatformImageAsset' },
-  ImageImportJob: { ownerUser: 'PlatformUser' },
+  ImageImportJob: { ownerUser: 'PlatformUser', managedBucket: 'CloudImageImportBucket' },
+  CloudImageImportBucket: { imageImportJobs: 'ImageImportJob' },
   ImageCatalogItem: { sourceSnapshot: 'CloudImageSnapshot' },
   PlatformImageAsset: { ownerUser: 'PlatformUser', sourceSnapshot: 'CloudImageSnapshot', tags: 'PlatformImageAssetTag' },
   PlatformImageTag: { createdByUser: 'PlatformUser', imageAssets: 'PlatformImageAssetTag' },
@@ -61,6 +62,11 @@ export function scopePrismaWhere(model: string, where: unknown, cloudWorkspaceId
 
 function scopeData(model: string, value: unknown, scope: CloudWorkspaceScope, creating: boolean): Record<string, any> {
   const data = { ...object(value) };
+  if (model === 'CloudImageImportBucket' && !creating) {
+    const identityFields = ['cloudWorkspaceId', 'cloudProvider', 'cloudAccountUid', 'cloudAccountContextId', 'appId', 'regionId', 'bucketName', 'creationNonce', 'creatorUserId', 'ownershipMarkerKey'];
+    if (identityFields.some(field => field in data)) throw new ForbiddenException('Managed COS bucket creation identity is immutable');
+    if ('activeSlot' in data && (data.activeSlot !== null || data.status !== 'deleted')) throw new ForbiddenException('Managed COS bucket active slot may only clear after deletion');
+  }
   if ('cloudWorkspaceId' in data && data.cloudWorkspaceId !== scope.cloudWorkspaceId) {
     throw new ForbiddenException('Resources cannot move between cloud workspaces');
   }
