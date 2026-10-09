@@ -183,7 +183,7 @@ describe('BillingScreen', () => {
 
   it('defaults to all-user launch details, filters by user, and switches the single detail panel to platform fees', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
       startAt: '2026-06-17',
       endAt: '2026-07-16',
       totalPretaxAmount: 8.9,
@@ -313,7 +313,7 @@ describe('BillingScreen', () => {
 
   it('keeps the fee detail workspace present while launch groups are loading', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
       startAt: '2026-06-17',
       endAt: '2026-07-16',
       totalPretaxAmount: 8.9,
@@ -335,7 +335,7 @@ describe('BillingScreen', () => {
 
   it('paginates every user summary and displays the total user count', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 101, platformPretaxAmount: 0 });
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 101, platformPretaxAmount: 0 });
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     fetchBillingUsersMock.mockImplementation(async (_api: string, _token: string, input: { page: number; pageSize: 20 | 50 | 100 }) => ({
       page: input.page, pageSize: input.pageSize, total: 101,
@@ -368,7 +368,7 @@ describe('BillingScreen', () => {
 
   it('keeps the latest user page and jump value when an older page request finishes later', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 101, platformPretaxAmount: 0 });
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 101, platformPretaxAmount: 0 });
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     const pageResult = (page: number) => ({
       page, pageSize: 20, total: 101,
@@ -399,7 +399,7 @@ describe('BillingScreen', () => {
 
   it('renders totals and user amounts by their currencies without a mixed total', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: null, platformPretaxAmount: null, currency: null, currencyTotals: [{ currency: 'CNY', totalPretaxAmount: 10, platformPretaxAmount: 0 }, { currency: 'USD', totalPretaxAmount: 20, platformPretaxAmount: 0 }] });
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: null, platformPretaxAmount: null, currency: null, currencyTotals: [{ currency: 'CNY', totalPretaxAmount: 10, platformPretaxAmount: 0 }, { currency: 'USD', totalPretaxAmount: 20, platformPretaxAmount: 0 }] });
     fetchBillingUsersMock.mockResolvedValue([{ userId: 'user-1', username: 'alice', pretaxAmount: null, currency: null, amounts: [{ currency: 'CNY', pretaxAmount: 10 }, { currency: 'USD', pretaxAmount: 20 }], itemCount: 2, launchCount: 1 }]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
@@ -414,43 +414,77 @@ describe('BillingScreen', () => {
 
   it('shows unallocated currencies and unmatched resources separately from attributed costs', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 10, platformPretaxAmount: 2, currency: 'CNY', anomalyCount: 2,
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 10, platformPretaxAmount: 2, currency: 'CNY', anomalyCount: 2,
       billingStatus: 'provisional', unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 3 }, { currency: 'USD', pretaxAmount: 4 }], resourcesWithoutBillCount: 5 });
     fetchBillingUsersMock.mockResolvedValue([{ userId: 'user-1', username: 'alice', pretaxAmount: 8, itemCount: 1, launchCount: 1 }]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
-    await waitFor(() => expect(screen.getByText('未分配费用').parentElement?.textContent).toContain('USD'));
-    expect(screen.getByText('已归属费用合计').parentElement?.textContent).toBe('已归属费用合计¥ 10.00');
+    await waitFor(() => expect(screen.getByText('平台待分配费用').parentElement?.textContent).toContain('USD'));
+    expect(screen.getByText('平台已归属费用').parentElement?.textContent).toBe('平台已归属费用¥ 10.00');
     expect(screen.getByText('平台公共费用').parentElement?.textContent).toBe('平台公共费用¥ 2.00');
-    expect(screen.getByText('未分配费用').parentElement?.textContent).toContain('¥ 3.00');
-    expect(screen.getByText('尚未匹配账单资源').parentElement?.textContent).toContain('5 项');
+    expect(screen.getByText('平台待分配费用').parentElement?.textContent).toContain('¥ 3.00');
+    expect(screen.getByText('平台资源待对账').parentElement?.textContent).toContain('5 项');
     expect(screen.getByRole('complementary', { name: '用户账单' }).textContent).toContain('¥ 8.00');
-    expect(screen.getByText(/待出账不代表免费/).textContent).toContain('未计入用户或平台公共费用');
+    expect(screen.getByText(/待出账不代表免费/).textContent).toContain('尚未计入用户或平台公共费用');
     expect(screen.getByText(/账单可能因延迟出账/)).toBeTruthy();
   });
 
-  it('shows unknown coverage for older API responses instead of inventing zero unallocated costs', async () => {
+  it('shows unknown coverage for incomplete scoped responses instead of inventing zero unallocated costs', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 8, platformPretaxAmount: 0, anomalyCount: 0 });
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 8, platformPretaxAmount: 0, anomalyCount: 0 });
     fetchBillingUsersMock.mockResolvedValue([]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText(/对账信息尚不完整/);
-    expect(screen.getByText('未分配费用').parentElement?.textContent).toBe('未分配费用未知');
-    expect(screen.getByText('尚未匹配账单资源').parentElement?.textContent).toBe('尚未匹配账单资源未知');
+    expect(screen.getByText('平台待分配费用').parentElement?.textContent).toBe('平台待分配费用未知');
+    expect(screen.getByText('平台资源待对账').parentElement?.textContent).toBe('平台资源待对账未知');
     expect(screen.queryByText('无未分配记录')).toBeNull();
+  });
+
+  it('does not relabel account-wide legacy totals or anomalies as platform spending', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 10, platformPretaxAmount: 2, anomalyCount: 24,
+      billingStatus: 'provisional', unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 99 }], resourcesWithoutBillCount: 50 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText(/账单范围尚未确认/);
+    expect(within(screen.getByLabelText('账单概览')).getAllByText('范围待确认')).toHaveLength(4);
+    expect(screen.getByLabelText('账单概览').textContent).not.toContain('99');
+    expect(screen.queryByText(/24 条/)).toBeNull();
+  });
+
+  it('shows known platform resource reconciliation issues without account aggregate spending', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', billingStatus: 'provisional',
+      totalPretaxAmount: 10, platformPretaxAmount: 2, anomalyCount: 0, unallocatedCurrencyTotals: [], resourcesWithoutBillCount: 3,
+      reconciliationIssues: [
+        { resourceType: 'snapshot', resourceCount: 2, reason: '等待快照分账明细。' },
+        { resourceType: 'oss', resourceCount: 1, reason: '共享存储桶仍需核实费用归属。' },
+        { resourceType: 'unknown', resourceCount: 2, reason: '历史创建记录缺少原账号证明。' },
+      ] });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    const issues = await screen.findByLabelText('平台资源对账提示');
+    expect(issues.textContent).toContain('快照：2 项平台资源待核对。等待快照分账明细。');
+    expect(issues.textContent).toContain('OSS：1 项平台资源待核对。共享存储桶仍需核实费用归属。');
+    expect(issues.textContent).toContain('平台资源来源待核验：2 项。历史创建记录缺少原账号证明。');
+    expect(issues.textContent).not.toContain('¥');
+    expect(screen.getByText('平台待分配费用').parentElement?.textContent).toContain('无未分配记录');
   });
 
   it('distinguishes a reported empty coverage result from missing coverage', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0,
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0,
       billingStatus: 'provisional', unallocatedCurrencyTotals: [], resourcesWithoutBillCount: 0 });
     fetchBillingUsersMock.mockResolvedValue([]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('无未分配记录');
-    expect(screen.getByText('尚未匹配账单资源').parentElement?.textContent).toBe('尚未匹配账单资源0 项');
+    expect(screen.getByText('平台资源待对账').parentElement?.textContent).toBe('平台资源待对账0 项');
     expect(screen.queryByText(/对账信息尚不完整/)).toBeNull();
+    expect(screen.queryByLabelText('平台资源对账提示')).toBeNull();
     expect(screen.getByText(/待出账不代表免费/)).toBeTruthy();
   });
 
@@ -462,12 +496,12 @@ describe('BillingScreen', () => {
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('账单费用加载失败，请稍后重试。');
     expect(screen.getByLabelText('账单概览').textContent).not.toContain('0.00');
-    expect(screen.getByText('已归属费用合计').parentElement?.textContent).toContain('未知');
+    expect(screen.getByText('平台已归属费用').parentElement?.textContent).toContain('未知');
   });
 
   it('uses the selected entire calendar month when refreshing bills', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0 });
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0 });
     fetchBillingUsersMock.mockResolvedValue([]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     triggerBillingSyncMock.mockResolvedValue({ syncedDays: 30, importedLineItems: 3, anomalyCount: 0, deferredCount: 0 });
@@ -484,7 +518,7 @@ describe('BillingScreen', () => {
   it.each([503, 401])('handles CSV export failure %s with feedback or login redirect', async status => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
     adminSession.logout.mockClear();
-    fetchBillingSummaryMock.mockResolvedValue({ totalPretaxAmount: 0, platformPretaxAmount: 0 });
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 0, platformPretaxAmount: 0 });
     fetchBillingUsersMock.mockResolvedValue([]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     exportPlatformBillingCsvMock.mockRejectedValue(new AdminApiError(status, 'fixture export error'));
@@ -502,7 +536,7 @@ describe('BillingScreen', () => {
 
   it('restores cached billing data without skeletons or duplicate requests after returning', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
       startAt: '2026-06-17',
       endAt: '2026-07-16',
       totalPretaxAmount: 8.9,
@@ -549,7 +583,7 @@ describe('BillingScreen', () => {
 
   it('renders empty launch groups within the fee detail workspace', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
       startAt: '2026-06-17',
       endAt: '2026-07-16',
       totalPretaxAmount: 0,
@@ -572,7 +606,7 @@ describe('BillingScreen', () => {
 
   it('keeps a failed launch-group request inside the fee detail workspace with a retry action', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
       startAt: '2026-06-17',
       endAt: '2026-07-16',
       totalPretaxAmount: 0,
@@ -596,7 +630,7 @@ describe('BillingScreen', () => {
 
   it('does not leave the detail workspace busy when the active view is selected again', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
-    fetchBillingSummaryMock.mockResolvedValue({
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
       startAt: '2026-06-17',
       endAt: '2026-07-16',
       totalPretaxAmount: 8.4,

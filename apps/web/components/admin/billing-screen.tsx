@@ -198,6 +198,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const [isLoadingGroups, setIsLoadingGroups] = useState(() => !cachedGroups);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  const hasPlatformBillingScope = summary?.billingScope === 'platform_resources';
   const users = usersResult.items;
   const groups = groupsResult.items;
   const hasOverviewSnapshot = loadedOverviewResource !== null;
@@ -665,7 +666,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               </Button>
             </>
           }
-          description="查看已同步并完成归属的应付费用。账单可能因延迟出账、退款或调账继续变化。"
+          description="仅统计平台创建资源的应付费用。账单可能因延迟出账、退款或调账继续变化。"
           title="账单费用"
         />
 
@@ -675,44 +676,57 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           className="mt-4 flex flex-wrap items-stretch gap-y-3 border-l border-border"
         >
           <div className="grid min-w-36 gap-1 border-r border-border px-4">
-            <dt className="text-xs font-medium text-muted-foreground">已归属费用合计</dt>
+            <dt className="text-xs font-medium text-muted-foreground">平台已归属费用</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.totalPretaxAmount, item.currency)}</span>) : formatMoney(summary.totalPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
+              {hasPlatformBillingScope ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.totalPretaxAmount, item.currency)}</span>) : formatMoney(summary.totalPretaxAmount, summary.currency ?? 'CNY') : summary ? '范围待确认' : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
             </dd>
           </div>
           <div className="grid min-w-36 gap-1 border-r border-border px-4">
             <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.platformPretaxAmount, item.currency)}</span>) : formatMoney(summary.platformPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
+              {hasPlatformBillingScope ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.platformPretaxAmount, item.currency)}</span>) : formatMoney(summary.platformPretaxAmount, summary.currency ?? 'CNY') : summary ? '范围待确认' : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
             </dd>
           </div>
           <div className="grid min-w-36 gap-1 border-r border-border px-4">
-            <dt className="text-xs font-medium text-muted-foreground">未分配费用</dt>
+            <dt className="text-xs font-medium text-muted-foreground">平台待分配费用</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary?.unallocatedCurrencyTotals
+              {hasPlatformBillingScope && summary.unallocatedCurrencyTotals
                 ? summary.unallocatedCurrencyTotals.length
                   ? summary.unallocatedCurrencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>)
                   : '无未分配记录'
-                : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
+                : summary && !hasPlatformBillingScope ? '范围待确认' : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
             </dd>
           </div>
           <div className="grid min-w-36 gap-1 px-4">
-            <dt className="text-xs font-medium text-muted-foreground">尚未匹配账单资源</dt>
+            <dt className="text-xs font-medium text-muted-foreground">平台资源待对账</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {typeof summary?.resourcesWithoutBillCount === 'number' ? `${summary.resourcesWithoutBillCount} 项`
-                : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
+              {hasPlatformBillingScope && typeof summary.resourcesWithoutBillCount === 'number' ? `${summary.resourcesWithoutBillCount} 项`
+                : summary && !hasPlatformBillingScope ? '范围待确认' : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
             </dd>
           </div>
         </dl>
 
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          待出账不代表免费。未分配费用单列，未计入用户或平台公共费用。
-          {summary && (summary.billingStatus === undefined || summary.unallocatedCurrencyTotals === undefined || summary.resourcesWithoutBillCount === undefined)
-            ? ' 对账信息尚不完整，未知项不能按零计算。' : null}
+          待出账不代表免费。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
+          {summary && !hasPlatformBillingScope
+            ? ' 账单范围尚未确认，暂不展示平台汇总。'
+            : summary && (summary.billingStatus === undefined || summary.unallocatedCurrencyTotals === undefined || summary.resourcesWithoutBillCount === undefined || summary.reconciliationIssues === undefined)
+              ? ' 对账信息尚不完整，未知项不能按零计算。' : null}
         </p>
 
-        {summary && summary.anomalyCount > 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">{summary.anomalyCount} 条账单暂未归属，汇总仅包含已归属费用。</p>
+        {hasPlatformBillingScope && summary.anomalyCount > 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">{summary.anomalyCount} 条平台账单待分配，汇总仅包含已归属费用。</p>
+        ) : null}
+        {hasPlatformBillingScope && summary.reconciliationIssues?.length ? (
+          <ul aria-label="平台资源对账提示" className="mt-2 grid gap-1 text-xs leading-5 text-muted-foreground">
+            {summary.reconciliationIssues.map((issue, index) => (
+              <li className="break-words" key={`${issue.resourceType}-${index}`}>
+                {issue.resourceType === 'unknown'
+                  ? `平台资源来源待核验：${issue.resourceCount} 项。`
+                  : `${issue.resourceType === 'snapshot' ? '快照' : 'OSS'}：${issue.resourceCount} 项平台资源待核对。`}{issue.reason}
+              </li>
+            ))}
+          </ul>
         ) : null}
 
         {errorMessage ? (
