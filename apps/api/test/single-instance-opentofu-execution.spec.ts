@@ -49,6 +49,8 @@ describe('single-instance OpenTofu batch execution', () => {
     const cloud = new Map<string, any>();
     const native = {
       resolveInstanceAccount: jest.fn(async () => account),
+      captureInstanceDisks: jest.fn(async (_item: unknown, _account: unknown, summary: any) => summary),
+      assertInstanceDisksAbsent: jest.fn(async () => {}),
       readOpenTofuInstances: jest.fn(async (_account: unknown, ids: string[]) => ids.flatMap(id => cloud.has(id) ? [cloud.get(id)] : [])),
       readOpenTofuInstancesByTag: jest.fn(async (instance: RangeInstanceRecord) => [...cloud.values()].filter(value => value.tags.RangeInstanceId === instance.id)),
       deleteOwnedUntrackedOpenTofuInstances: jest.fn(async (_item: unknown, ids: string[], assertLease: () => Promise<void>) => { await assertLease(); ids.forEach(id => cloud.delete(id)); }),
@@ -111,6 +113,18 @@ describe('single-instance OpenTofu batch execution', () => {
     for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
     throw new Error('progress did not become observable');
   }
+
+  it('keeps data-disk billing active when ECS deletion succeeds but a disk remains', async () => {
+    const test = fixture(1);
+    test.native.captureInstanceDisks.mockImplementation(async (_item, _account, summary) => ({ ...summary, dataDiskIds: { 'host-1:d-data': 'd-data' } }));
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.ledger).toEqual(expect.arrayContaining([expect.objectContaining({ cloudResourceId: 'd-data', cloudResourceType: 'disk', releasedAt: null })]));
+    test.native.assertInstanceDisksAbsent.mockRejectedValue(new Error('ECS disks remain after instance deletion: d-data'));
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(test.cloud.size).toBe(0); expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.instances[0].resourceSummary?.dataDiskIds).toEqual({ 'host-1:d-data': 'd-data' });
+    expect(test.ledger.every(row => row.releasedAt === null)).toBe(true);
+  });
 
   it('publishes 50 verified members in one cloud read before apply returns without finalizing their jobs or reading partial state', async () => {
     const test = fixture(50);
@@ -311,7 +325,7 @@ describe('single-instance OpenTofu batch execution', () => {
     await test.service.executeCreateBatch(test.items, test.lease);
     expect(test.instances[0].status).toBe('destroy_failed'); expect(test.instances[0].resourceSummary?.hostIds).toEqual({ 'host-1': 'i-member-1' });
     expect(test.stateMembers.size).toBe(1); await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
-    expect(test.repository.updateBillingLedgerResource).not.toHaveBeenCalled();
+    expect(test.repository.updateBillingLedgerResource.mock.calls.every(([,patch]) => !(patch as any).releasedAt)).toBe(true);
   });
 
   it('attributes a fresh explicit retry to its new creation job only after prior cleanup is proven', async () => {
@@ -527,7 +541,12 @@ describe('single-instance OpenTofu batch execution', () => {
 
   it('keeps deletion retryable when releasing the billing ledger fails after cloud deletion', async () => {
     const test = fixture(1); await test.service.executeCreateBatch(test.items, test.lease);
-    test.repository.updateBillingLedgerResource.mockRejectedValueOnce(new Error('billing database unavailable'));
+    const updateLedger = test.repository.updateBillingLedgerResource.getMockImplementation()!;
+    let failRelease = true;
+    test.repository.updateBillingLedgerResource.mockImplementation(async (id, patch) => {
+      if ((patch as any).releasedAt && failRelease) { failRelease = false; throw new Error('billing database unavailable'); }
+      return updateLedger(id, patch);
+    });
     await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
     expect(test.cloud.size).toBe(0);
     expect(test.instances[0].status).toBe('destroy_failed');

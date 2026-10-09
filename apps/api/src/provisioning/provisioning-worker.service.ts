@@ -581,6 +581,8 @@ export class ProvisioningWorkerService {
       return;
     }
     if (topologySnapshot.operation) await this.assertRangeSnapshotImages(input.instance, topologySnapshot);
+    const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
+    if (beforeUpdate?.resourceSummary) await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true);
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
       templateModulePath: topologySnapshot.templateModulePath,
@@ -782,7 +784,7 @@ export class ProvisioningWorkerService {
   }
 
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs',
+    const inventory = Object.fromEntries(['vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();
@@ -828,6 +830,9 @@ export class ProvisioningWorkerService {
     const bound = summary.executionContext;
     if (!bound || !context.accountUid || bound.cloudAccountUid !== context.accountUid || bound.regionId !== context.defaultRegion)
       throw new Error('Disk inventory requires the range frozen account identity');
+    const initial = await this.updateRangeForClaim(job, { resourceSummary: summary });
+    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: initial, resourceSummary: summary,
+      regionId: context.defaultRegion, cloudAccountUid: context.accountUid, sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });
     const expectedTags: Record<string, string> = { CreatedBy: 'cyber-range-platform', RangeInstanceId: instance.id,
       PlatformScope: instance.ownerUserId ? 'user' : 'platform', CloudAccountUid: bound.cloudAccountUid,
       CloudAccountContextId: bound.cloudAccountContextId,
@@ -838,9 +843,10 @@ export class ProvisioningWorkerService {
       const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
         endpoint: `ecs.${context.defaultRegion}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action,
         accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret, parameters: { RegionId: context.defaultRegion, ...parameters } }),
-        instanceId, knownSystemDiskIds: summary.systemDiskIds?.[hostKey] ? [summary.systemDiskIds[hostKey]] : [],
-        knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}), expectedTags });
-      summary = mergeDiskInventory(summary, hostKey, disks);
+        instanceId, knownSystemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId), expectedTags });
+      summary = mergeDiskInventory(summary, hostKey, disks, instanceId);
       inventories.push(disks);
     }
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });

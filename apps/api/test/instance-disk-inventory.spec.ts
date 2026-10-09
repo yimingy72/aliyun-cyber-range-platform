@@ -23,10 +23,10 @@ describe('owned ECS disk inventory', () => {
     expect(() => assertDiskInventorySafe(inventory, true)).toThrow('unverified');
   });
   it('preserves an external retained disk without billing it or authorizing its deletion', async () => {
-    const inventory = await read(async () => page([disk('d-external','data',{ Tags: undefined, DeleteWithInstance: false })]));
+    const inventory = await read(async () => page([disk('d-system','system'),disk('d-external','data',{ Tags: undefined, DeleteWithInstance: false })]));
     expect(() => assertDiskInventorySafe(inventory, true)).not.toThrow();
     expect(() => assertDiskInventorySafe(inventory, false)).toThrow('unverified');
-    expect(mergeDiskInventory({ mode: 'opentofu' }, 'host', inventory)).toMatchObject({ dataDiskIds: {}, unverifiedDiskIds: { 'host:d-external':'d-external' } });
+    expect(mergeDiskInventory({ mode: 'opentofu' }, 'host', inventory, 'i-owned')).toMatchObject({ dataDiskIds: {}, unverifiedDiskIds: { 'host:d-external':'d-external' } });
   });
   it('refuses conflicting ownership even if the disk ID was persisted', async () => {
     const result = await read(async () => page([disk('d-system','system',{ Tags: tags({ PlatformUserId: 'bob' }) })]), { knownSystemDiskIds: ['d-system'] });

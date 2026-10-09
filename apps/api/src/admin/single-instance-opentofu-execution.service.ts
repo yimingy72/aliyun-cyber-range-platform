@@ -401,7 +401,7 @@ export class SingleInstanceOpenTofuExecutionService {
       let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
         hostIds: { [hostKey]: state.id }, systemDiskIds: { [hostKey]: state.diskId },
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
-      summary = await this.native.captureInstanceDisks(item, context.account, summary);
+      summary = await this.native.captureInstanceDisks(item, context.account, summary, false, () => this.assertLease(context.lease));
       if (!await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary, status: detail.status === 'Running' && detail.publicIp ? 'running' : 'creating',
         runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
         runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
@@ -455,7 +455,7 @@ export class SingleInstanceOpenTofuExecutionService {
       let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH,
         workspaceDir: context.workspace, hostIds: { [hostKey]: state.id }, systemDiskIds: state.diskId ? { [hostKey]: state.diskId } : null,
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
-      summary = await this.native.captureInstanceDisks(item, context.account, summary, destroying);
+      summary = await this.native.captureInstanceDisks(item, context.account, summary, destroying, () => this.assertLease(context.lease));
       if (await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) await this.syncLedger(context, item, summary);
     }
   }
@@ -479,7 +479,7 @@ export class SingleInstanceOpenTofuExecutionService {
         await this.assertLease(context.lease);
         let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
           hostIds: Object.fromEntries(details.map((detail, index) => [index ? `${hostKey}-recovery-${index}` : hostKey, detail.instanceId])) };
-        summary = await this.native.captureInstanceDisks(item, context.account, summary, true);
+        summary = await this.native.captureInstanceDisks(item, context.account, summary, true, () => this.assertLease(context.lease));
         if (await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) await this.syncLedger(context, item, summary);
         await this.native.deleteOwnedUntrackedOpenTofuInstances(item, details.map(detail => detail.instanceId), () => this.assertLease(context.lease));
         message = `${message}; emergency-api cleanup of exact bound, untracked member`;

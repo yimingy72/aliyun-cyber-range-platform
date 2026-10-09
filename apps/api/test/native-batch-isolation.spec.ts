@@ -57,7 +57,10 @@ async function fixture(failDiskForOwner?: string) {
         expect(records.find(instance => instance.id === entry.tags.RangeInstanceId)?.resourceSummary?.hostIds).toBeTruthy();
         throw new Error('Synthetic disk lookup failure');
       }
-      return { Disks: { Disk: entry ? [{ DiskId: entry.diskId }] : [] } };
+      const requested = p.DiskIds ? JSON.parse(p.DiskIds) : null;
+      const rows = requested ? [...cloud.values()].filter(value => requested.includes(value.diskId)) : entry ? [entry] : [];
+      return { RequestId: 'disks', PageNumber: 1, PageSize: 100, TotalCount: rows.length, Disks: { Disk: rows.map(value => ({
+        DiskId: value.diskId, InstanceId: value.id, Type: 'system', DeleteWithInstance: true, Tags: { Tag: Object.entries(value.tags).map(([TagKey,TagValue]) => ({ TagKey,TagValue })) } })) } };
     }
     if (input.action === 'DeleteInstances') {
       for (const [key, value] of Object.entries(p))
@@ -153,7 +156,7 @@ describe('legacy native batches: real ECS response contract, two platform users 
     expect((await f.repo.listProvisionJobs()).filter(job => job.jobType === 'destroy')).toHaveLength(4);
     await f.drain();
     expect(f.cloud.size).toBe(0);
-    expect((await f.repo.listRangeInstances()).every(instance => instance.status === 'destroyed')).toBe(true);
+    expect((await f.repo.listRangeInstances()).map(instance => ({ status: instance.status, error: instance.errorSummary }))).toEqual(Array.from({length:4}, () => ({status:'destroyed',error:null})));
     await f.network.destroy(f.profile.id, admin,'synthetic-run');
     expect(await f.repo.getSingleInstanceNetworkProfileById(f.profile.id)).toBeNull();
   });
@@ -221,6 +224,7 @@ describe('legacy native batches: real ECS response contract, two platform users 
       return base(input);
     };
     await f.native.executeCreateBatch([{instance,job}]);
+    expect((await f.repo.getRangeInstanceById(instance.id))?.errorSummary).not.toMatch(/unverified|malformed|incomplete/);
     expect(f.cloud.size).toBe(0);expect(f.calls.some(call=>call.action==='DeleteInstances')).toBe(true);
     expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('create_failed');
   });
@@ -294,7 +298,7 @@ describe('legacy native batches: real ECS response contract, two platform users 
     await f.service.destroy(a.instances[0].id, alice); await f.drain();
     expect((await f.repo.getRangeInstanceById(a.instances[0].id))?.status).toBe('destroy_failed');
     await f.service.destroy(a.instances[0].id, alice); await f.drain();
-    expect((await f.repo.getRangeInstanceById(a.instances[0].id))?.status).toBe('destroyed');
+    expect(await f.repo.getRangeInstanceById(a.instances[0].id)).toMatchObject({status:'destroyed',errorSummary:null});
     const rows = await f.repo.listBillingLedgerResources({ rangeInstanceId: a.instances[0].id });
     expect(rows.every(row => row.releasedAt !== null)).toBe(true);
   });

@@ -303,11 +303,15 @@ export class SingleInstanceBatchExecutionService {
     return { ...account, defaultZoneId: config?.zoneId ?? account.defaultZoneId };
   }
   async captureInstanceDisks(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
-    summary: RangeResourceSummary, destroying = false) {
+    summary: RangeResourceSummary, destroying = false, assertLease: () => Promise<void> = async () => {}) {
+    await assertLease();
     await this.assertCurrent(item);
     const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
     summary = { ...current?.resourceSummary, ...summary,
       dataDiskIds: { ...current?.resourceSummary?.dataDiskIds, ...summary.dataDiskIds } };
+    if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
+    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
+      regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: item.job.id, billingStartAt: item.instance.createdAt });
     const expectedTags: Record<string, string> = { CreatedBy: 'cyber-range-platform', RangeInstanceId: item.instance.id,
       PlatformScope: item.instance.ownerUserId ? 'user' : 'platform',
       ...(item.instance.ownerUserId ? { PlatformUserId: item.instance.ownerUserId } : {}),
@@ -319,11 +323,14 @@ export class SingleInstanceBatchExecutionService {
       await this.assertCurrent(item);
       const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
         accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action, parameters }),
-        instanceId, knownSystemDiskIds: summary.systemDiskIds?.[hostKey] ? [summary.systemDiskIds[hostKey]] : [],
-        knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}), expectedTags });
-      summary = mergeDiskInventory(summary, hostKey, disks);
+        instanceId, knownSystemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId), expectedTags });
+      await assertLease();
+      summary = mergeDiskInventory(summary, hostKey, disks, instanceId);
       inventories.push(disks);
     }
+    await assertLease();
     await this.assertCurrent(item);
     if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,

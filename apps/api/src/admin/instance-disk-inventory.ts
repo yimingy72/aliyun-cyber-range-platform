@@ -4,7 +4,7 @@ export type DiskRpc = (action: string, parameters: Record<string, string>) => Pr
 type Disk = { DiskId: string; InstanceId?: string; Type: 'system' | 'data'; DeleteWithInstance?: boolean;
   Tags?: { Tag?: Array<{ TagKey: string; TagValue: string }> };
 };
-export type AttachedDiskInventory = { systemDiskIds: string[]; dataDiskIds: string[]; unverifiedDisks: Array<{ id: string; deleteWithInstance: boolean | null }>; proofs: NonNullable<RangeResourceSummary['diskOwnershipProofs']> };
+export type AttachedDiskInventory = { complete: boolean; systemDiskIds: string[]; dataDiskIds: string[]; unverifiedDisks: Array<{ id: string; deleteWithInstance: boolean | null }>; proofs: NonNullable<RangeResourceSummary['diskOwnershipProofs']> };
 
 let activeQueries = 0;
 const waitingQueries: Array<() => void> = [];
@@ -39,11 +39,11 @@ async function readDiskPages(rpc: DiskRpc, parameters: Record<string, string>) {
 }
 
 export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceId: string;
-  knownSystemDiskIds?: string[]; knownDataDiskIds?: string[]; expectedTags: Record<string, string> }): Promise<AttachedDiskInventory> {
+  knownSystemDiskIds?: string[]; knownDataDiskIds?: string[]; previouslyInventoried?: boolean; expectedTags: Record<string, string> }): Promise<AttachedDiskInventory> {
   if (input.expectedTags.CreatedBy !== 'cyber-range-platform' || !input.expectedTags.RangeInstanceId
     || !['user', 'platform'].includes(input.expectedTags.PlatformScope)) throw new Error('Disk inventory requires proven platform ownership');
   const disks = await readDiskPages(input.rpc, { InstanceId: input.instanceId });
-  const result: AttachedDiskInventory = { systemDiskIds: [], dataDiskIds: [], unverifiedDisks: [], proofs: {} };
+  const result: AttachedDiskInventory = { complete: input.previouslyInventoried === true, systemDiskIds: [], dataDiskIds: [], unverifiedDisks: [], proofs: {} };
   for (const disk of disks) {
     if (disk.InstanceId !== input.instanceId || !['system', 'data'].includes(disk.Type)
       || disk.DeleteWithInstance !== undefined && typeof disk.DeleteWithInstance !== 'boolean')
@@ -59,6 +59,18 @@ export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceI
       (disk.Type === 'system' ? result.systemDiskIds : result.dataDiskIds).push(disk.DiskId);
       result.proofs[disk.DiskId] = { instanceId: input.instanceId, method: known ? 'persisted' : 'tags' };
     } else result.unverifiedDisks.push({ id: disk.DiskId, deleteWithInstance: disk.DeleteWithInstance ?? null });
+  }
+  result.complete ||= result.systemDiskIds.length > 0;
+  if (!disks.length && !result.complete) {
+    // Attachment queries cannot discover retained disks after a legacy ECS has already disappeared.
+    const parameters = Object.fromEntries(Object.entries(input.expectedTags).flatMap(([key,value], index) => [[`Tag.${index+1}.Key`,key],[`Tag.${index+1}.Value`,value]]));
+    for (const disk of await readDiskPages(input.rpc, parameters)) {
+      const tags = Object.fromEntries((disk.Tags?.Tag ?? []).map(tag => [tag.TagKey,tag.TagValue]));
+      if (!['system','data'].includes(disk.Type) || Object.entries(input.expectedTags).some(([key,value]) => tags[key] !== value))
+        throw new Error('Detached disk discovery returned an unproven resource');
+      (disk.Type === 'system' ? result.systemDiskIds : result.dataDiskIds).push(disk.DiskId);
+      result.proofs[disk.DiskId] = { instanceId: disk.InstanceId ?? null, method: 'tags' };
+    }
   }
   return result;
 }
@@ -77,13 +89,15 @@ export async function findExistingInventoryDiskIds(rpc: DiskRpc, ids: string[]) 
 export function inventoryDiskIds(summary: RangeResourceSummary | null | undefined) {
   return [...new Set([...Object.values(summary?.systemDiskIds ?? {}), ...Object.values(summary?.dataDiskIds ?? {})])];
 }
-export function mergeDiskInventory(summary: RangeResourceSummary, hostKey: string, disks: AttachedDiskInventory): RangeResourceSummary {
-  return { ...summary, diskOwnershipProofs: { ...summary.diskOwnershipProofs, ...disks.proofs },
+export function mergeDiskInventory(summary: RangeResourceSummary, hostKey: string, disks: AttachedDiskInventory, instanceId: string): RangeResourceSummary {
+  const verified = new Set([...disks.systemDiskIds, ...disks.dataDiskIds]);
+  return { ...summary, diskInventoryHostIds: { ...summary.diskInventoryHostIds, ...(disks.complete ? { [hostKey]: instanceId } : {}) }, diskOwnershipProofs: { ...summary.diskOwnershipProofs, ...disks.proofs },
     systemDiskIds: { ...summary.systemDiskIds, ...Object.fromEntries(disks.systemDiskIds.map((id, index) => [index ? `${hostKey}:${id}` : hostKey, id])) },
     dataDiskIds: { ...summary.dataDiskIds, ...Object.fromEntries(disks.dataDiskIds.map(id => [`${hostKey}:${id}`, id])) },
-    unverifiedDiskIds: { ...summary.unverifiedDiskIds, ...Object.fromEntries(disks.unverifiedDisks.map(disk => [`${hostKey}:${disk.id}`, disk.id])) } };
+    unverifiedDiskIds: { ...Object.fromEntries(Object.entries(summary.unverifiedDiskIds ?? {}).filter(([,id]) => !verified.has(id))), ...Object.fromEntries(disks.unverifiedDisks.map(disk => [`${hostKey}:${disk.id}`, disk.id])) } };
 }
 export function assertDiskInventorySafe(inventory: AttachedDiskInventory, destroying: boolean) {
+  if (!inventory.complete) throw new Error('ECS disk inventory completeness is unverified; retain historical resource and billing evidence');
   if (inventory.unverifiedDisks.some(disk => !destroying || disk.deleteWithInstance !== false))
     throw new Error('Attached disk ownership is unverified; preserve resource inventory before billing or deleting the ECS');
 }

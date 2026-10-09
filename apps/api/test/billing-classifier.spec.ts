@@ -1,6 +1,12 @@
 import { classifyBillLine } from '../src/admin/billing-classifier';
 
 describe('classifyBillLine', () => {
+  it('classifies an image data disk by physical ID even when its inherited tag says ecs', () => {
+    const line = { ProductCode: 'ecs', BillingItem: '数据盘', InstanceID: 'd-image-data',
+      Tag: 'key:CreatedBy value:cyber-range-platform;key:PlatformResourceType value:ecs' };
+    expect(classifyBillLine(line))
+      .toEqual({ kind: 'direct', cloudResourceId: 'd-image-data', cloudResourceType: 'disk' });
+  });
   it('classifies direct ecs configuration charges', () => {
     expect(
       classifyBillLine({
