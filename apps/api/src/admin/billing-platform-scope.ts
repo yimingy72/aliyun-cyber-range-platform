@@ -25,18 +25,19 @@ function inventoryIncludes(summary: RangeResourceSummary | null | undefined, led
 }
 
 export async function loadPlatformBillingProof(repository: AdminRepository, options: { ledgers?: BillingLedgerResourceRecord[] } = {}): Promise<PlatformBillingProof> {
-  const [ledgers, imageImports, packedImages, instances] = await Promise.all([
+  const [ledgers, imageImports, packedImages, instances, sourceJobs] = await Promise.all([
     options.ledgers ?? repository.listBillingLedgerResources(), repository.listBillingImageImportResources(),
-    repository.listPackedImageArtifacts(), repository.listRangeInstances(),
+    repository.listPackedImageArtifacts(), repository.listRangeInstances(), repository.listProvisionJobs(),
   ]);
-  const jobs = new Map(await Promise.all([...new Set(ledgers.flatMap(ledger => ledger.sourceProvisionJobId ? [ledger.sourceProvisionJobId] : []))]
-    .map(async id => [id, await repository.getProvisionJobById(id)] as const)));
+  const jobs = new Map(sourceJobs.map(job => [job.id, job]));
+  const instancesById = new Map(instances.map(instance => [instance.id, instance]));
+  const launchInstanceIds = new Set(sourceJobs.filter(job => ['create', 'retry', 'update'].includes(job.jobType)).map(job => job.rangeInstanceId));
   const createdLedgerIds = new Set<string>();
   const unverifiedSourceLedgerIds = new Set<string>();
   for (const ledger of ledgers) {
     const sourceJob = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
-    const sourceInstance = instances.find(instance => instance.id === ledger.rangeInstanceId);
-    const hasSource = Boolean(sourceInstance && sourceJob?.rangeInstanceId === sourceInstance.id)
+    const sourceInstance = instancesById.get(ledger.rangeInstanceId ?? '');
+    const hasSource = Boolean(sourceInstance && (sourceJob?.rangeInstanceId === sourceInstance.id || launchInstanceIds.has(sourceInstance.id)))
       || packedImages.some(artifact => ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : ledger.cloudResourceType === 'snapshot' && artifact.backingSnapshotIds.includes(ledger.cloudResourceId))
       || imageImports.some(job => ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : ledger.cloudResourceType === 'snapshot' && job.backingSnapshotIds.includes(ledger.cloudResourceId));
     if (hasSource) unverifiedSourceLedgerIds.add(ledger.id);
@@ -44,7 +45,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       || ['oss_bucket', 'snapshot_region', 'unknown'].includes(ledger.cloudResourceType)) continue;
     if (ledger.cloudResourceType === 'image' || ledger.cloudResourceType === 'snapshot') {
       const packed = packedImages.some(artifact => artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
-        && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
+        && ledger.billingScope === 'user' && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
         && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId)));
       const imported = imageImports.some(job => job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
         && ledger.billingScope === 'platform' && ledger.ownerUserId === null
@@ -52,12 +53,13 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       if (packed || imported) createdLedgerIds.add(ledger.id);
       continue;
     }
-    const instance = instances.find(instance => instance.id === ledger.rangeInstanceId);
+    const instance = instancesById.get(ledger.rangeInstanceId ?? '');
     const job = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
     const context = instance?.singleInstanceConfig ?? instance?.resourceSummary?.executionContext;
     if (instance && job?.rangeInstanceId === instance.id && (['create', 'retry', 'update'].includes(job.jobType) || job.jobType === 'destroy' && inventoryIncludes(instance.resourceSummary, ledger))
       && (!context?.cloudAccountUid || context.cloudAccountUid === ledger.cloudAccountUid)
       && (!context?.regionId || context.regionId === ledger.regionId)
+      && ledger.billingScope === (instance.ownerUserId ? 'user' : 'platform')
       && (instance.ownerUserId ?? null) === ledger.ownerUserId
       && (instance.singleInstanceBatchId ?? null) === ledger.singleInstanceBatchId) createdLedgerIds.add(ledger.id);
   }
@@ -97,7 +99,7 @@ export function ledgerBillingDateMatches(ledger: BillingLedgerResourceRecord, bi
 }
 
 export type PlatformBillingEvidence = {
-  kind: 'resource_pending' | 'aggregate_pending';
+  kind: 'resource_pending' | 'aggregate_pending' | 'source_pending';
   ledgerIds: string[];
   imageImportJobIds: string[];
 };
@@ -117,7 +119,10 @@ export function pendingPlatformBillingEvidence(input: {
   if (classification.kind !== 'aggregated') {
     // A late charge for a known released resource still needs investigation; do not silently drop it.
     const exact = owned.filter(ledger => ledger.cloudResourceId === classification.cloudResourceId);
-    return exact.length ? { kind: 'resource_pending', ledgerIds: exact.map(ledger => ledger.id), imageImportJobIds: [] } : null;
+    if (!exact.length) return null;
+    const scoped = exact.filter(ledger => !regionId || ledger.regionId === regionId);
+    return { kind: billRegionConflict(input.line) || scoped.length !== 1 ? 'source_pending' : 'resource_pending',
+      ledgerIds: (scoped.length ? scoped : exact).map(ledger => ledger.id), imageImportJobIds: [] };
   }
   const candidates = owned.filter(ledger => ledger.regionId === regionId && ledgerBillingDateMatches(ledger, input.billingDate, correction));
   // An unknown aggregation region is not evidence that any platform resource participated.
@@ -143,7 +148,7 @@ export function readPlatformBillingEvidence(rawPayload: Record<string, unknown>)
   const evidence = rawPayload.__platformBillingScope;
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null;
   const value = evidence as Partial<PlatformBillingEvidence>;
-  if (!['resource_pending', 'aggregate_pending'].includes(value.kind ?? '')
+  if (!['resource_pending', 'aggregate_pending', 'source_pending'].includes(value.kind ?? '')
     || !Array.isArray(value.ledgerIds) || !value.ledgerIds.every(id => typeof id === 'string')
     || !Array.isArray(value.imageImportJobIds) || !value.imageImportJobIds.every(id => typeof id === 'string')) return null;
   return value as PlatformBillingEvidence;

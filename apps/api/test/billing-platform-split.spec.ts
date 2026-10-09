@@ -43,12 +43,12 @@ describe('platform-only split reconciliation', () => {
     expect(anomalies[0].rawPayload).toMatchObject({ SplitItemID: 'i-source', __platformBillingScope: { kind: 'aggregate_pending', ledgerIds: [f.ledger.id] } });
   });
 
-  it.each(['unavailable', 'empty', 'amount', 'currency', 'commodity', 'item'] as const)('preserves prior proven exact splits on %s and keeps unresolved source evidence', async failure => {
+  it.each(['unavailable', 'empty', 'amount', 'currency', 'commodity', 'item', 'region', 'source-instance'] as const)('preserves prior proven exact splits on %s and keeps unresolved source evidence', async failure => {
     const f = await fixture();
     await f.service([line()], [line({ SplitItemID: 's-owned' })]).syncRange({ startAt: DAY, endAt: DAY });
     const previous = await f.repository.listBillingLineItems();
     const split = failure === 'unavailable' ? new BillingSplitBillUnavailableError('NotEnabled') : failure === 'empty' ? [] : [line({ SplitItemID: 's-owned',
-      ...(failure === 'amount' ? { PretaxAmount: 9 } : failure === 'currency' ? { Currency: 'USD' } : failure === 'commodity' ? { CommodityCode: 'different' } : { Item: 'Refund' }) })];
+      ...(failure === 'amount' ? { PretaxAmount: 9 } : failure === 'currency' ? { Currency: 'USD' } : failure === 'commodity' ? { CommodityCode: 'different' } : failure === 'region' ? { Region: 'cn-beijing' } : failure === 'source-instance' ? { InstanceID: 'cn-hangzhou;another-tier' } : { Item: 'Refund' }) })];
     await f.service([line()], split).syncRange({ startAt: DAY, endAt: DAY });
     expect((await f.repository.listBillingLineItems()).map(item => item.sourceFingerprint)).toEqual(previous.map(item => item.sourceFingerprint));
     expect(await f.repository.listBillingAnomalies()).toHaveLength(1);

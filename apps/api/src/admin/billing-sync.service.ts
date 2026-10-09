@@ -193,7 +193,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             currency: readString(line, 'Currency') || 'CNY',
             reason: evidence.kind === 'aggregate_pending'
               ? '该账单覆盖的平台资源费用尚待资源级分账；源账单总额可能包含外部资源，不计入平台费用或平台待归属金额。'
-              : '已找到平台创建资源，但账单类型、地域或计费时间尚未核对一致，待核实后入账。',
+              : evidence.kind === 'source_pending' ? '资源 ID 与平台记录相同，但地域或来源存在冲突；该金额不计入平台费用或平台待归属金额。'
+              : '已找到平台创建资源，但账单类型尚未核对一致，待核实后入账。',
             rawPayload: { ...line, __platformBillingScope: evidence },
           };
           dayAnomalies.set(anomaly.sourceFingerprint, anomaly);
@@ -286,7 +287,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       for (const line of lines) {
         const currency = readString(line, 'Currency');
         if (!/^[A-Z]{3}$/.test(currency)) return null;
-        const key = JSON.stringify([readString(line, 'ProductCode'), currency, readString(line, 'CommodityCode'),
+        const key = JSON.stringify([readString(line, 'ProductCode'), currency, billRegionId(line), readString(line, 'InstanceID'), readString(line, 'CommodityCode'),
           readString(line, 'BillingItemCode') || readString(line, 'BillingItem'), readString(line, 'Item')]);
         totals.set(key, (totals.get(key) ?? new Prisma.Decimal(0)).plus(readNumber(line, 'PretaxAmount')));
       }

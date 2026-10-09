@@ -50,6 +50,25 @@ describe('platform-created billing scope', () => {
     expect((await loadPlatformBillingProof(repository)).createdLedgerIds.size).toBe(0);
   });
 
+  it('keeps a legacy range source with a failed create job visible when the ledger job link is missing', async () => {
+    const repository = createMemoryAdminRepository();
+    const { ledger, job } = await createProvenBillingLedger(repository, base);
+    await repository.updateProvisionJob(job.id, { status: 'failed' });
+    await repository.updateBillingLedgerResource(ledger.id, { sourceProvisionJobId: null });
+    const proof = await loadPlatformBillingProof(repository);
+    expect(proof.createdLedgerIds.has(ledger.id)).toBe(false);
+    expect(proof.unverifiedSourceLedgerIds.has(ledger.id)).toBe(true);
+  });
+
+  it('keeps a real creation source visible for investigation when owner scope has been overwritten', async () => {
+    const repository = createMemoryAdminRepository();
+    const { ledger } = await createProvenBillingLedger(repository, { ...base, billingScope: 'user', ownerUserId: 'user-1' });
+    await repository.updateBillingLedgerResource(ledger.id, { billingScope: 'platform' });
+    const proof = await loadPlatformBillingProof(repository);
+    expect(proof.createdLedgerIds.has(ledger.id)).toBe(false);
+    expect(proof.unverifiedSourceLedgerIds.has(ledger.id)).toBe(true);
+  });
+
   it('keeps historical creation proof when successful cleanup cleared the resource summary', async () => {
     const repository = createMemoryAdminRepository();
     const f = await createProvenBillingLedger(repository, base);
@@ -110,6 +129,8 @@ describe('platform-created billing scope', () => {
     await createProvenBillingLedger(repository, base);
     await sync(repository, [bill({ RegionId: 'cn-beijing' })]);
     expect(await repository.listBillingLineItems()).toEqual([]);
-    expect(await repository.listBillingAnomalies()).toHaveLength(1);
+    const pending = await repository.listBillingAnomalies();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].rawPayload).toMatchObject({ __platformBillingScope: { kind: 'source_pending' } });
   });
 });

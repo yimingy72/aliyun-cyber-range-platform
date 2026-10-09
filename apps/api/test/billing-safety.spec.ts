@@ -225,7 +225,7 @@ describe('billing safety', () => {
     expect(summary.currency).toBeNull();
     expect(summary.currencyTotals).toEqual([{ currency: 'CNY', totalPretaxAmount: 0.3, platformPretaxAmount: 0.3 }, { currency: 'USD', totalPretaxAmount: 20, platformPretaxAmount: 20 }]);
     const groups = await service.listPlatformGroups({ startAt: DAY, endAt: DAY });
-    expect(groups.items.map(item => [item.currency, item.pretaxAmount])).toEqual([['CNY', 0.3], ['USD', 20]]);
+    expect(groups.items.map(item => [item.currency, item.pretaxAmount]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))).toEqual([['CNY', 0.3], ['USD', 20]]);
     const csv = await service.exportPlatformCsv({ startAt: DAY, endAt: DAY });
     expect(csv).toContain('CNY,0.3,0.3');
     expect(csv).toContain('USD,20,20');
