@@ -26,7 +26,7 @@ test('root workspace declares scripts and package globs', () => {
   assert.equal(typeof packageJson.scripts['db:up'], 'string');
   assert.equal(typeof packageJson.scripts['db:down'], 'string');
   assert.equal(typeof packageJson.scripts['db:logs'], 'string');
-  assert.match(packageJson.scripts.test, /\bpnpm -r test\b/);
+  assert.match(packageJson.scripts.test, /\bpnpm --workspace-concurrency=1 -r test\b/);
   assert.match(packageJson.scripts.test, /node --test test\/\*\.test\.mjs/);
   assert.match(packageJson.scripts['verify:bootstrap'], /\bpnpm test\b/);
   assert.match(packageJson.scripts['verify:bootstrap'], /\bpnpm build\b/);
