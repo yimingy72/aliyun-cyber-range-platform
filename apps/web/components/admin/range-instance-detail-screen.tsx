@@ -1121,6 +1121,7 @@ export function RangeInstanceDetailScreen({
     [selection, topologyNodes],
   );
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
+  const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1360,7 +1361,7 @@ export function RangeInstanceDetailScreen({
   }
 
   async function handleApplyDraft() {
-    if (!session.token || !detail || trackedUpdateJobId) {
+    if (!session.token || !detail || trackedUpdateJobId || !canApplyInstance) {
       return;
     }
 
@@ -2026,7 +2027,8 @@ export function RangeInstanceDetailScreen({
                       {isSavingDraft ? '处理中...' : '保存草稿'}
                   </Button>
                   <Button
-                    disabled={isSavingDraft || isSyncingTemplate || Boolean(trackedUpdateJobId)}
+                    disabled={!canApplyInstance || isSavingDraft || isSyncingTemplate || Boolean(trackedUpdateJobId)}
+                    title={!canApplyInstance ? '当前云账号尚未开放编排资源变更。' : undefined}
                     onClick={() => void handleApplyDraft()}
                     size="sm"
                     type="button"
