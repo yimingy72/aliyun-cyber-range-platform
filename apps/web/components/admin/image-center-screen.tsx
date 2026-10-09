@@ -78,7 +78,7 @@ import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
 import { useCloudWorkspace } from './cloud-workspace-provider';
-import { TencentImageCenterScreen } from './tencent-image-center-screen';
+import { cloudProviderLabel } from './cloud-workspace-provider';
 import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 
 type ImageCenterScreenProps = {
@@ -109,6 +109,7 @@ type ImageImportDialogDraft = {
   description: string;
   osType: 'linux' | 'windows';
   platform: string;
+  osVersion: string;
   architecture: 'x86_64' | 'arm64';
   bootMode: 'BIOS' | 'UEFI';
   imageFormat: 'qcow2' | 'raw' | 'vhd';
@@ -131,7 +132,7 @@ const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
 ];
 
-function createImageImportDraft(): ImageImportDialogDraft {
+function createImageImportDraft(provider: 'alibaba_cloud' | 'tencent_cloud' = 'alibaba_cloud'): ImageImportDialogDraft {
   return {
     file: null,
     displayName: '',
@@ -140,10 +141,11 @@ function createImageImportDraft(): ImageImportDialogDraft {
     description: '',
     osType: 'linux',
     platform: '',
+    osVersion: '',
     architecture: 'x86_64',
     bootMode: 'BIOS',
     imageFormat: 'qcow2',
-    systemDiskSize: '40',
+    systemDiskSize: provider === 'tencent_cloud' ? '50' : '40',
   };
 }
 
@@ -175,14 +177,14 @@ function uploadFileToOss(input: { url: string; headers: Record<string, string>; 
         input.onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
       }
     };
-    request.onerror = () => reject(new Error('镜像文件上传到 OSS 失败，请检查网络和 Bucket CORS 配置。'));
+    request.onerror = () => reject(new Error('镜像文件上传到对象存储失败，请检查网络和 Bucket CORS 配置。'));
     request.onload = () => {
       if (request.status >= 200 && request.status < 300) {
         input.onProgress(100);
         resolve();
         return;
       }
-      reject(new Error(`镜像文件上传到 OSS 失败（HTTP ${request.status}）。`));
+      reject(new Error(`镜像文件上传到对象存储失败（HTTP ${request.status}）。`));
     };
     request.send(input.file);
   });
@@ -509,11 +511,13 @@ function CloudSourceTabs({
   activeTab,
   children,
   isCloudView,
+  providerName,
   onTabChange,
 }: {
   activeTab: ActiveTab;
   children: React.ReactNode;
   isCloudView: boolean;
+  providerName: string;
   onTabChange: (tab: 'custom' | 'public') => void;
 }) {
   if (!isCloudView) {
@@ -532,8 +536,8 @@ function CloudSourceTabs({
       value={cloudTab}
     >
       <TabsList aria-label="云上镜像来源切换" variant="line">
-        <TabsTrigger value="custom">阿里云自定义镜像</TabsTrigger>
-        <TabsTrigger value="public">阿里云公共镜像</TabsTrigger>
+        <TabsTrigger value="custom">{providerName}自定义镜像</TabsTrigger>
+        <TabsTrigger value="public">{providerName}公共镜像</TabsTrigger>
       </TabsList>
       <TabsContent className="mt-4" value={cloudTab}>
         {children}
@@ -546,17 +550,40 @@ export function ImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
   const current = useCloudWorkspace();
-  if (current?.workspace?.provider === 'tencent_cloud') return <TencentImageCenterScreen key={current.workspace.id} apiBaseUrl={apiBaseUrl} workspace={current.workspace} />;
-  return <AliCloudImageCenterScreen apiBaseUrl={apiBaseUrl} />;
+  return <CloudImageCenterScreen key={current?.workspace?.id ?? 'legacy'} apiBaseUrl={apiBaseUrl} />;
 }
 
-function AliCloudImageCenterScreen({
+function CloudImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
+  const provider = workspace?.provider ?? 'alibaba_cloud';
+  const providerName = cloudProviderLabel(provider);
+  const objectStorageName = provider === 'tencent_cloud' ? 'COS' : 'OSS';
   const isPageActive = useAdminRouteIsActive('/admin/image-center');
+  function verifyImageSpace(items: Array<{ provider: string; accountUid?: string | null }>) {
+    if (workspace?.provider === 'tencent_cloud' && (!workspace.accountUid || items.some(item => item.provider !== workspace.provider || item.accountUid !== workspace.accountUid))) {
+      throw new Error('镜像返回的账号或查询范围不一致，请刷新核对。');
+    }
+  }
+  async function checkedPlatformImages(url: string, token: string, view: 'platform' | 'mine') {
+    const payload = await fetchPlatformImages(url, token, view);
+    verifyImageSpace(payload.items);
+    return payload;
+  }
+  async function checkedPublicCatalog(url: string, token: string) {
+    const payload = await fetchPublicImageCatalogScope(url, token);
+    verifyImageSpace([...payload.snapshots, ...payload.catalogItems]);
+    return payload;
+  }
+  async function checkedCustomCatalog(url: string, token: string) {
+    const payload = await fetchCustomImageCatalogScope(url, token);
+    verifyImageSpace([...payload.snapshots, ...payload.catalogItems]);
+    return payload;
+  }
+
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const screenCache = useAdminScreenCache();
   const cachedPlatformAssets = screenCache?.read<PlatformImageAssetListPayload>(
@@ -710,6 +737,7 @@ function AliCloudImageCenterScreen({
   }
 
   function syncAssetAcrossViews(nextAsset: PlatformImageAsset) {
+    verifyImageSpace([nextAsset]);
     setPlatformAssets((previous) => {
       if (nextAsset.visibility === 'private') {
         return previous.filter((item) => item.id !== nextAsset.id);
@@ -753,18 +781,18 @@ function AliCloudImageCenterScreen({
     setActiveTab(nextView);
   }
 
-  const activeCloudContext = (workspace ? workspace.contexts : cloudContexts).find((context) => context.provider === 'alibaba_cloud' && context.status === 'ready' && (workspace ? context.id === workspace.activeCloudAccountContextId && context.cloudWorkspaceId === workspace.id : context.isActive)) ?? null;
+  const activeCloudContext = (workspace ? workspace.contexts : cloudContexts).find((context) => context.provider === provider && context.status === 'ready' && (workspace ? context.id === workspace.activeCloudAccountContextId && context.cloudWorkspaceId === workspace.id : context.isActive)) ?? null;
   const imageImportUnavailableMessage = !activeCloudContext
-    ? '请先由管理员保存云配置并完成阿里云账号验证。'
+    ? `请先由管理员保存云配置并完成${providerName}账号验证。`
     : !activeCloudContext.imageImportBucket.trim() || activeCloudContext.bucketStatus === 'unconfigured'
-      ? '当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。'
+      ? `当前${providerName}账号未配置镜像导入 Bucket，请先在云配置中填写自定义 ${objectStorageName} 存储桶名。`
       : activeCloudContext.bucketStatus !== 'ready'
         ? activeCloudContext.lastError?.trim() || '配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。'
         : null;
-  const canImportImages = !workspace?.isReadOnly && imageImportUnavailableMessage === null;
+  const canImportImages = !workspace?.isReadOnly && (!workspace || workspace.capabilities.imageImport) && imageImportUnavailableMessage === null;
 
   function openImageImportDialog() {
-    setImageImportDraft(createImageImportDraft());
+    setImageImportDraft(createImageImportDraft(provider));
     setImageImportErrorMessage('');
     setImageImportSuccessMessage('');
     setImageImportProgress(null);
@@ -816,7 +844,7 @@ function AliCloudImageCenterScreen({
                     async (): Promise<ImageCenterMineSnapshot> => {
                       const [jobsPayload, myAssetsPayload] = await Promise.all([
                         fetchImageImportJobs(apiBaseUrl, token),
-                        fetchPlatformImages(apiBaseUrl, token, 'mine'),
+                        checkedPlatformImages(apiBaseUrl, token, 'mine'),
                       ]);
 
                       return {
@@ -828,7 +856,7 @@ function AliCloudImageCenterScreen({
                   )
                 : Promise.all([
                     fetchImageImportJobs(apiBaseUrl, token),
-                    fetchPlatformImages(apiBaseUrl, token, 'mine'),
+                    checkedPlatformImages(apiBaseUrl, token, 'mine'),
                   ]).then(([jobsPayload, myAssetsPayload]) => ({
                     assets: myAssetsPayload.items,
                     jobs: jobsPayload.items,
@@ -1039,10 +1067,10 @@ function AliCloudImageCenterScreen({
                   apiBaseUrl,
                   token,
                   'platform-images:platform',
-                  () => fetchPlatformImages(apiBaseUrl, token, 'platform'),
+                  () => checkedPlatformImages(apiBaseUrl, token, 'platform'),
                   { force: loadAttempt > 0 },
                 )
-              : fetchPlatformImages(apiBaseUrl, token, 'platform')
+              : checkedPlatformImages(apiBaseUrl, token, 'platform')
           ).then((payload) => {
             if (!isActive || platformRequestVersionRef.current !== platformRequestVersion) {
               return;
@@ -1060,10 +1088,10 @@ function AliCloudImageCenterScreen({
                       apiBaseUrl,
                       token,
                       'image-center:custom',
-                      () => fetchCustomImageCatalogScope(apiBaseUrl, token),
+                      () => checkedCustomCatalog(apiBaseUrl, token),
                       { force: loadAttempt > 0 },
                     )
-                  : fetchCustomImageCatalogScope(apiBaseUrl, token)
+                  : checkedCustomCatalog(apiBaseUrl, token)
               ).then((scope) => {
                 if (!isActive || customScopeRequestVersionRef.current !== customRequestVersion) {
                   return;
@@ -1078,10 +1106,10 @@ function AliCloudImageCenterScreen({
                       apiBaseUrl,
                       token,
                       'image-center:public',
-                      () => fetchPublicImageCatalogScope(apiBaseUrl, token),
+                      () => checkedPublicCatalog(apiBaseUrl, token),
                       { force: loadAttempt > 0 },
                     )
-                  : fetchPublicImageCatalogScope(apiBaseUrl, token)
+                  : checkedPublicCatalog(apiBaseUrl, token)
               ).then((scope) => {
                 if (!isActive || publicScopeRequestVersionRef.current !== publicRequestVersion) {
                   return;
@@ -1154,6 +1182,7 @@ function AliCloudImageCenterScreen({
       setTabRefreshing('public', true);
       beginAction(actionKey);
       const nextScope = await syncPublicImages(apiBaseUrl, session.token);
+      verifyImageSpace([...nextScope.snapshots, ...nextScope.catalogItems]);
 
       if (publicScopeRequestVersionRef.current === requestVersion) {
         setPublicScope(nextScope);
@@ -1186,6 +1215,7 @@ function AliCloudImageCenterScreen({
       setTabRefreshing('custom', true);
       beginAction(actionKey);
       const nextScope = await syncCustomImages(apiBaseUrl, session.token);
+      verifyImageSpace([...nextScope.snapshots, ...nextScope.catalogItems]);
 
       if (customScopeRequestVersionRef.current === requestVersion) {
         setCustomScope(nextScope);
@@ -1235,6 +1265,11 @@ function AliCloudImageCenterScreen({
       return;
     }
 
+    if (provider === 'tencent_cloud' && (!imageImportDraft.platform.trim() || !imageImportDraft.osVersion.trim())) {
+      setImageImportErrorMessage('请填写实际操作系统发行版和版本，腾讯云会核对支持的导入系统。');
+      return;
+    }
+
     const actionKey = 'create:image-import';
 
     try {
@@ -1250,6 +1285,7 @@ function AliCloudImageCenterScreen({
         description: imageImportDraft.description.trim() || undefined,
         osType: imageImportDraft.osType,
         platform: imageImportDraft.platform.trim() || undefined,
+        ...(provider === 'tencent_cloud' ? { osVersion: imageImportDraft.osVersion.trim() } : {}),
         architecture: imageImportDraft.architecture,
         bootMode: imageImportDraft.bootMode,
         imageFormat,
@@ -1275,7 +1311,7 @@ function AliCloudImageCenterScreen({
         setImageImportDraft(null);
         setImageImportProgress(null);
         setActionErrorMessage(
-          `${completedJob.errorMessage || '阿里云尚未接受导入请求。'} 已保留已上传文件，请在“我的镜像”的导入任务中点击“重试导入”。`,
+          `${completedJob.errorMessage || `${providerName}尚未接受导入请求。`} 已保留已上传文件，请在“我的镜像”的导入任务中点击“重试导入”。`,
         );
         return;
       }
@@ -1283,7 +1319,7 @@ function AliCloudImageCenterScreen({
       setActiveTab('mine');
       setImageImportDraft(null);
       setImageImportProgress(null);
-      setImageImportSuccessMessage('镜像文件已上传，阿里云正在导入；导入完成后会自动启用“我的镜像”。');
+      setImageImportSuccessMessage(`镜像文件已上传，${providerName}正在导入；导入完成后会自动启用“我的镜像”。`);
       void refreshMyAssets(session.token, () => true, { isRevalidation: true });
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
@@ -1686,7 +1722,7 @@ function AliCloudImageCenterScreen({
         importingAssetIds.has(asset.id) ||
         importingAssetIds.has(asset.imageId) ||
         /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? '');
-      const canCreate = !workspace?.isReadOnly && canCreateInstanceFromAsset(asset);
+      const canCreate = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && canCreateInstanceFromAsset(asset);
       const statusVariant = asset.sourceSnapshotAvailable !== true || !asset.enabled ? 'secondary' : 'default';
 
       return (
@@ -1695,7 +1731,7 @@ function AliCloudImageCenterScreen({
             <div className="flex min-w-48 flex-col gap-1">
               <AdminDataTableText>{asset.displayName}</AdminDataTableText>
               <span className="text-xs text-muted-foreground">
-                来源：{asset.sourceScope === 'custom' ? '阿里云自定义镜像' : '阿里云公共镜像'}
+                来源：{asset.sourceScope === 'custom' ? `${providerName}自定义镜像` : `${providerName}公共镜像`}
               </span>
             </div>
           </AdminDataTableCell>
@@ -1850,8 +1886,8 @@ function AliCloudImageCenterScreen({
       : activeTab === 'mine'
         ? '我的镜像'
         : activeTab === 'custom'
-          ? '阿里云自定义镜像'
-          : '阿里云公共镜像';
+          ? `${providerName}自定义镜像`
+          : `${providerName}公共镜像`;
   const activeColumns = activeTab === 'platform' || activeTab === 'mine' ? ASSET_COLUMNS : CLOUD_IMAGE_COLUMNS;
   const activeTabError = tabErrors[activeTab] ?? '';
   const activeRevalidationError = revalidationErrors[activeTab] ?? '';
@@ -2025,6 +2061,7 @@ function AliCloudImageCenterScreen({
               }
             >
               <CloudSourceTabs
+                providerName={providerName}
                 activeTab={activeTab}
                 isCloudView={activeMainView === 'cloud'}
                 onTabChange={setActiveTab}
@@ -2189,7 +2226,7 @@ function AliCloudImageCenterScreen({
                 }}
               >
                 <p className="image-import-dialog-copy">
-                  文件会直接上传到当前云账号的私有 OSS Bucket，再由阿里云导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。
+                  文件会直接上传到当前云账号的私有 {objectStorageName} Bucket，再由{providerName}导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。
                 </p>
                 <fieldset className="grid gap-4 border-0 p-0" disabled={pendingActionKeys.includes('create:image-import')}>
                   <div className="grid gap-2">
@@ -2249,9 +2286,14 @@ function AliCloudImageCenterScreen({
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="image-import-platform">系统版本 / 平台</Label>
-                    <Input aria-label="上传镜像系统版本" id="image-import-platform" value={imageImportDraft.platform} onChange={(event) => updateImageImportDraft({ platform: event.target.value })} placeholder="例如 Ubuntu 22.04" />
+                    <Label htmlFor="image-import-platform">{provider === 'tencent_cloud' ? '操作系统发行版' : '系统版本 / 平台'}</Label>
+                    <Input aria-label="上传镜像系统版本" id="image-import-platform" value={imageImportDraft.platform} onChange={(event) => updateImageImportDraft({ platform: event.target.value })} placeholder={provider === 'tencent_cloud' ? '例如 Ubuntu' : '例如 Ubuntu 22.04'} required={provider === 'tencent_cloud'} />
                   </div>
+                  {provider === 'tencent_cloud' ? <div className="grid gap-2">
+                    <Label htmlFor="image-import-os-version">操作系统版本</Label>
+                    <Input aria-label="上传镜像操作系统版本" id="image-import-os-version" value={imageImportDraft.osVersion} onChange={(event) => updateImageImportDraft({ osVersion: event.target.value })} placeholder="填写镜像实际系统版本" required />
+                    <p className="text-sm text-muted-foreground">发行版和版本须与镜像一致，提交后由腾讯云核验支持矩阵。</p>
+                  </div> : null}
                   <div className="grid gap-2">
                     <Label htmlFor="image-import-architecture">架构</Label>
                     <AdminSelectField
@@ -2308,7 +2350,7 @@ function AliCloudImageCenterScreen({
                 </fieldset>
                 {imageImportProgress !== null ? (
                   <div className="image-import-progress" aria-live="polite">
-                    <span>{imageImportProgress < 100 ? `正在上传到 OSS：${imageImportProgress}%` : '文件上传完成，正在提交阿里云导入任务…'}</span>
+                    <span>{imageImportProgress < 100 ? `正在上传到 ${objectStorageName}：${imageImportProgress}%` : `文件上传完成，正在提交${providerName}导入任务…`}</span>
                     <progress value={imageImportProgress} max="100">{imageImportProgress}%</progress>
                   </div>
                 ) : null}
@@ -2345,7 +2387,7 @@ function AliCloudImageCenterScreen({
           {confirmState?.type === 'remove-platform' ? (
             <AdminConfirmationDialog
               confirmLabel="确认删除"
-              description={`删除“${confirmState.asset.displayName}”后会将其移出平台收录目录，但不会删除阿里云上的原始镜像。`}
+              description={`删除“${confirmState.asset.displayName}”后会将其移出平台收录目录，但不会删除${providerName}上的原始镜像。`}
               open
               pending={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)}
               title="确认删除镜像"
@@ -2360,7 +2402,7 @@ function AliCloudImageCenterScreen({
               open
               pending={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}
               size="compact"
-              title={confirmState.snapshot.status === 'Deleted' ? '回收所属快照' : '确认删除阿里云自定义镜像'}
+              title={confirmState.snapshot.status === 'Deleted' ? '回收所属快照' : `确认删除${providerName}自定义镜像`}
               onOpenChange={(open) => !open && closeConfirmDialog()}
               footer={<>
                 <Button disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)} type="button" variant="outline" onClick={closeConfirmDialog}>取消</Button>

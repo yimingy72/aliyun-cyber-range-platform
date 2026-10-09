@@ -3,7 +3,12 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { writeAdminSession } from '../../../lib/admin-auth-storage';
+import { setCloudWorkspaceSelection, workspaceStorageKey } from '../../../lib/cloud-workspace-selection';
 import type { TopologyFlowCanvas } from './topology-flow-canvas';
+
+const workspaceState = vi.hoisted(() => ({ value: null as any }));
+vi.mock('../cloud-workspace-provider', () => ({ useCloudWorkspace: () => workspaceState.value }));
 
 type TopologyFlowCanvasMockProps = React.ComponentProps<typeof TopologyFlowCanvas>;
 
@@ -310,6 +315,8 @@ function buildUpdatedTemplateResponse(
 }
 
 beforeEach(() => {
+  workspaceState.value = null;
+  setCloudWorkspaceSelection('template-author-fixture', null);
   const store = new Map<string, string>();
   Object.defineProperty(window, 'localStorage', {
     configurable: true,
@@ -3496,9 +3503,19 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('拓扑检测通过，已保存')).toBeTruthy();
   });
 
-  it('creates a new topology only after the complete local canvas passes detection', async () => {
+  it.each(['alibaba_cloud', 'tencent_cloud'] as const)('creates a new %s topology only after the complete local canvas passes detection', async provider => {
+    if (provider === 'tencent_cloud') {
+      writeAdminSession({ token: 'dev-admin-token', profile: { id: 'template-author-fixture', username: 'fixture-author', role: 'admin' } });
+      setCloudWorkspaceSelection('template-author-fixture', 'tencent-workspace');
+      workspaceState.value = { workspace: { id: 'tencent-workspace', provider, isReadOnly: false, capabilities: { provisioning: true } } };
+      fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'platform-image-1', provider, accountUid: '100001', regionId: 'ap-shanghai', imageId: 'img-tencent-fixture',
+        displayName: 'Ubuntu 24.04 LTS', enabled: true, tags: [], architecture: 'x86_64', minimumSystemDiskSize: 80 }] });
+      fetchInstanceTypeAvailabilityMock.mockImplementation(async (_url, _token, cpu, memory) => ({ cpu, memory, regionId: 'ap-shanghai', zoneId: 'ap-shanghai-1', exactAvailable: true, warning: null,
+        matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu, memoryGiB: memory, family: 'S5', generation: 'S5', architecture: 'X86_64' }] }));
+    }
+    const draftKey = workspaceStorageKey('template-editor:new-template');
     window.sessionStorage.setItem(
-      'template-editor:new-template',
+      draftKey,
       JSON.stringify({
         name: '新建攻防拓扑',
         description: '首次检测通过后创建',
@@ -3549,7 +3566,12 @@ describe('TemplateEditorScreen', () => {
     );
     expect(createRangeTemplateMock.mock.calls[0]?.[2]).not.toHaveProperty('expectedRevision');
     expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
-    expect(window.sessionStorage.getItem('template-editor:new-template')).toBeNull();
+    const createdPayload = createRangeTemplateMock.mock.calls[0]?.[2];
+    expect(createdPayload.scenarioTemplateSpec.metadata.cloudProvider).toBe(provider);
+    expect(createdPayload.compiledProvisionSpec.identity.cloudProvider).toBe(provider);
+    expect(createdPayload.compiledSpec.resources.every((resource: { provider: string }) => resource.provider === provider)).toBe(true);
+    if (provider === 'tencent_cloud') expect(JSON.stringify(createdPayload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies)).not.toContain('ecs.');
+    expect(window.sessionStorage.getItem(draftKey)).toBeNull();
     expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios/template-created');
   });
 

@@ -174,6 +174,31 @@ describe('SingleInstancesScreen', () => {
     expect(launchSingleInstancesMock).not.toHaveBeenCalled();
   });
 
+  it('uses Tencent image minimum disk and ten-minute expiry while retaining the existing launch flow', async () => {
+    workspaceState.value = { workspace: { provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    fetchSingleInstancesMock.mockResolvedValue({ batches: [], standaloneInstances: [] });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'tencent-image', provider: 'tencent_cloud', accountScopeKey: '100001', regionId: 'ap-shanghai', sourceScope: 'public',
+      imageId: 'img-tencent', displayName: 'Tencent Linux', enabled: true, tags: [], architecture: 'x86_64', minimumSystemDiskSize: 80 }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, regionId: 'ap-shanghai', zoneId: 'ap-shanghai-1', exactAvailable: true, matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu: 2, memoryGiB: 2, family: 'S5', generation: 'S5', architecture: 'x86_64' }], warning: null });
+    launchSingleInstancesMock.mockResolvedValue({ batch: { id: 'new-batch' }, instances: [] });
+    render(<SingleInstancesScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    expect((await screen.findByLabelText('磁盘大小') as HTMLInputElement).value).toBe('80');
+    expect((screen.getByLabelText('磁盘大小') as HTMLInputElement).min).toBe('80');
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'Tencent instance' } });
+    const soon = new Date(Date.now() + 5 * 60_000);
+    const localText = (date: Date) => new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: localText(soon) } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    fireEvent.submit(document.getElementById('single-instance-create-form')!);
+    expect(await screen.findByText('腾讯云实例到期时间至少需要在 10 分钟后。')).toBeTruthy();
+    expect(launchSingleInstancesMock).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: localText(new Date(Date.now() + 60 * 60_000)) } });
+    fireEvent.submit(document.getElementById('single-instance-create-form')!);
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 })));
+  });
+
   it('renders list/history, opens create dialog, and submits the launch payload without triggeredBy', async () => {
     fetchSingleInstancesMock.mockResolvedValue([
       {

@@ -6,6 +6,7 @@ import type { EcsTemplateNode, SwitchTemplateNode, TemplateNode } from './scenar
 type CompileTopologyGraphInput = {
   topologySpec?: RangeTemplateTopologySpec | null;
   nodes: TemplateNode[];
+  cloudProvider?: 'alibaba_cloud' | 'tencent_cloud';
 };
 
 type GraphNode = Extract<TemplateNode, { kind: 'router' | 'switch' | 'ecs' }>;
@@ -33,10 +34,10 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
       ...graphNodes.map((node) => ({
         id: node.id,
         type: node.kind === 'ecs' ? 'host' : node.kind,
-        provider: 'alibaba_cloud' as const,
+        provider: input.cloudProvider ?? 'alibaba_cloud',
         config: compileNodeConfig(node, graphNodes, publicEntryHostId),
       })),
-      ...buildDerivedNatResources(graphNodes),
+      ...buildDerivedNatResources(graphNodes, input.cloudProvider ?? 'alibaba_cloud'),
     ],
     ...(input.topologySpec
       ? {
@@ -122,7 +123,7 @@ function compileNodeConfig(
   }
 }
 
-function buildDerivedNatResources(nodes: GraphNode[]) {
+function buildDerivedNatResources(nodes: GraphNode[], provider: 'alibaba_cloud' | 'tencent_cloud') {
   const natEnabledSwitches = nodes.filter((node): node is SwitchTemplateNode => {
     if (node.kind !== 'switch') {
       return false;
@@ -143,7 +144,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
         {
       id: sharedNatGatewayKey,
       type: 'nat_gateway' as const,
-      provider: 'alibaba_cloud' as const,
+      provider,
       config: {
         label: '共享 NAT',
         zoneKey: sharedNatSwitch.zoneKey,
@@ -155,7 +156,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
               {
                 id: sharedSnatEipKey,
                 type: 'eip' as const,
-                provider: 'alibaba_cloud' as const,
+                provider,
                 config: {
                   label: '共享 SNAT EIP',
                   bindTargetType: 'nat_gateway' as const,
@@ -170,7 +171,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
               {
                 id: sharedDnatEipKey,
                 type: 'eip' as const,
-                provider: 'alibaba_cloud' as const,
+                provider,
                 config: {
                   label: '共享 DNAT EIP',
                   bindTargetType: 'nat_gateway' as const,
@@ -192,7 +193,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
       {
         id: `${node.id}-snat-1`,
         type: 'snat_entry' as const,
-        provider: 'alibaba_cloud' as const,
+        provider,
         config: {
           label: `${node.label} SNAT`,
           natGatewayKey: sharedNatGatewayKey,
@@ -211,7 +212,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
     return (node.nat?.dnatMappings ?? []).map((mapping, index) => ({
       id: `${mapping.targetHostId}-dnat-${index + 1}`,
       type: 'dnat_entry' as const,
-      provider: 'alibaba_cloud' as const,
+      provider,
       config: {
         label: mapping.key,
         natGatewayKey: sharedNatGatewayKey,

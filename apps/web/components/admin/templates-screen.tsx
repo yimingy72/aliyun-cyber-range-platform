@@ -27,6 +27,7 @@ import {
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { workspaceStorageKey } from '../../lib/cloud-workspace-selection';
+import { cloudExpiryError } from '@/lib/cloud-execution-policy';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -733,6 +734,8 @@ export function TemplatesScreen({
       return;
     }
 
+    const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
+    if (expiryError) { setActionErrorMessage(expiryError); return; }
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
     setIsSubmitting(true);
@@ -1032,6 +1035,7 @@ export function TemplatesScreen({
                 value={createDraft.description}
                 onChange={(event) => setCreateDraft((previous) => ({ ...previous, description: event.target.value }))}
               />
+              {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
             </div>
           </div>
       </AdminDialog>
@@ -1078,6 +1082,7 @@ export function TemplatesScreen({
                 value={editDraft.description}
                 onChange={(event) => setEditDraft((previous) => ({ ...previous, description: event.target.value }))}
               />
+              {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
             </div>
           </div>
       </AdminDialog>
@@ -1121,6 +1126,7 @@ export function TemplatesScreen({
                 value={launchDraft.expiresAt}
                 onChange={(event) => setLaunchDraft((previous) => ({ ...previous, expiresAt: event.target.value }))}
               />
+              {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
             </div>
           </div>
       </AdminDialog>

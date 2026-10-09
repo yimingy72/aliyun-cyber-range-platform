@@ -20,6 +20,8 @@ import {
   syncRangeInstanceTemplate,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
+import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -420,8 +422,8 @@ function createDefaultSwitchNode(id: string, label: string, ordinal: number): Sw
   };
 }
 
-function createDefaultEcsNode(id: string, label: string, ordinal: number): EcsTemplateNode {
-  const preferredInstanceTypes = resolvePreferredInstanceTypes(2, 2);
+function createDefaultEcsNode(id: string, label: string, ordinal: number, provider: 'alibaba_cloud' | 'tencent_cloud' = 'alibaba_cloud'): EcsTemplateNode {
+  const preferredInstanceTypes = provider === 'tencent_cloud' ? [] : resolvePreferredInstanceTypes(2, 2);
 
   return {
     id,
@@ -1118,7 +1120,7 @@ export function RangeInstanceDetailScreen({
         : null,
     [selection, topologyNodes],
   );
-  const canOperateInstance = !workspace?.isReadOnly && detail?.status === 'running';
+  const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1269,7 +1271,7 @@ export function RangeInstanceDetailScreen({
               name?: string;
               slug?: string;
               version?: string;
-              cloudProvider?: 'alibaba_cloud';
+              cloudProvider?: 'alibaba_cloud' | 'tencent_cloud';
               iacType?: 'opentofu' | 'terraform';
               description?: string;
             })
@@ -1285,17 +1287,33 @@ export function RangeInstanceDetailScreen({
         typeof (currentSpec.topology as Record<string, unknown>).vpcCidr === 'string'
           ? ((currentSpec.topology as Record<string, unknown>).vpcCidr as string)
           : detail.resourceSummary?.topologySpec?.vpcCidr ?? '10.0.0.0/16';
+      let verifiedNodes = topologyDraft.nodes;
+      if ((metadata.cloudProvider ?? detail.cloudProvider ?? workspace?.provider) === 'tencent_cloud') {
+        verifiedNodes = await Promise.all(topologyDraft.nodes.map(async node => {
+          if (node.kind !== 'ecs') return node;
+          const image = platformImageAssets.find(asset => asset.id === node.platformImageAssetId && asset.imageId === node.imageId);
+          if (!image) throw new Error(`${node.label} 请选择当前工作空间的可用镜像。`);
+          const imageError = tencentImageError(image);
+          if (imageError) throw new Error(`${node.label} ${imageError}`);
+          const cpu = Number(node.cpu); const memory = Number(node.memory);
+          if (!Number.isInteger(cpu) || cpu <= 0 || !Number.isInteger(memory) || memory <= 0) throw new Error(`${node.label} 请填写有效的 CPU 和内存规格。`);
+          const snapshot = await fetchInstanceTypeAvailability(apiBaseUrl, session.token!, cpu, memory);
+          const instanceTypes = verifiedTencentInstanceTypes(snapshot, cpu, memory);
+          return { ...node, instanceType: instanceTypes[0], instanceTypeStrategy: { mode: 'prefer-list' as const, preferredInstanceTypes: instanceTypes } };
+        }));
+        if (scopeRef.current !== scopeKey || workspace?.id && readCloudWorkspaceSelection() !== workspace.id) throw new Error('云账号工作空间已切换，请在当前空间重新保存。');
+      }
       const payload = buildTopologyDraftPayload({
         graph: {
           schemaVersion: topologyDraft.schemaVersion,
-          nodes: topologyDraft.nodes,
+          nodes: verifiedNodes,
           edges: topologyDraft.edges,
         },
         metadata: {
           name: metadata.name ?? detail.name ?? 'instance-draft',
           slug: metadata.slug ?? detail.id,
           version: metadata.version ?? 'v1',
-          cloudProvider: metadata.cloudProvider ?? 'alibaba_cloud',
+          cloudProvider: metadata.cloudProvider ?? detail.cloudProvider ?? workspace?.provider ?? 'alibaba_cloud',
           iacType: metadata.iacType ?? 'opentofu',
           ...(metadata.description ? { description: metadata.description } : {}),
           ...(typeof currentTopology.defaultRegion === 'string' ? { defaultRegion: currentTopology.defaultRegion } : {}),
@@ -1722,7 +1740,7 @@ export function RangeInstanceDetailScreen({
               readDefaultNodeLabel('switch', kindOrdinal),
               kindOrdinal,
             ), cidr: switchCidr, zoneKey: nextAvailableGraphId('zone', topologyNodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch').map((node) => node.zoneKey)) }
-          : createDefaultEcsNode(nextNodeId, readDefaultNodeLabel('ecs', kindOrdinal), kindOrdinal);
+          : createDefaultEcsNode(nextNodeId, readDefaultNodeLabel('ecs', kindOrdinal), kindOrdinal, detail?.cloudProvider ?? workspace?.provider);
     const positionedNode =
       position && Number.isFinite(position.x) && Number.isFinite(position.y)
         ? { ...nextNode, position }
@@ -1844,7 +1862,7 @@ export function RangeInstanceDetailScreen({
       }
 
       const privateIp = nextNode.nics?.[0]?.privateIp.trim() || nextNode.privateIp.trim();
-      const preferredInstanceTypes = resolvePreferredInstanceTypes(nextNode.cpu, nextNode.memory);
+      const preferredInstanceTypes = (detail?.cloudProvider ?? workspace?.provider) === 'tencent_cloud' ? [] : resolvePreferredInstanceTypes(nextNode.cpu, nextNode.memory);
       return {
         ...nextNode,
         privateIp,

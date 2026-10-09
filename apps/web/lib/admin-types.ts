@@ -64,7 +64,7 @@ export type RangeTemplate = {
   revision: number;
   description?: string | null;
   slug: string;
-  cloudProvider?: 'alibaba_cloud';
+  cloudProvider?: 'alibaba_cloud' | 'tencent_cloud';
   iacType?: 'opentofu' | 'terraform';
   topologySpec?: RangeTemplateTopologySpec | null;
   topologyGraph?: Record<string, unknown> | null;
@@ -82,7 +82,7 @@ export type RangeTemplate = {
 export type RangeTemplateCompiledResource = {
   id: string;
   type: string;
-  provider: 'alibaba_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   config: Record<string, unknown>;
 };
 
@@ -247,6 +247,7 @@ export type RangeRecoverySummary = {
 };
 
 export type RangeInstance = {
+  cloudProvider?: 'alibaba_cloud' | 'tencent_cloud';
   id: string;
   name?: string | null;
   createdBy?: string | null;
@@ -510,7 +511,7 @@ export type InstanceTypeAvailabilitySnapshot = {
 
 export type ImageSnapshot = {
   id: string;
-  provider: 'alibaba_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   accountUid?: string | null;
   regionId: string;
   scope: 'public' | 'custom' | string;
@@ -525,13 +526,14 @@ export type ImageSnapshot = {
   lastSyncedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  minimumSystemDiskSize?: number | null;
 };
 
 export type ImageCatalogItem = {
   id: string;
   displayName: string;
   imageId: string;
-  provider: 'alibaba_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   scope: 'public' | 'custom' | string;
   accountUid?: string | null;
   regionId: string;
@@ -548,7 +550,7 @@ export type PlatformImageTag = {
 
 export type PlatformImageAsset = {
   id: string;
-  provider: 'alibaba_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   accountUid?: string | null;
   ownerUserId?: string | null;
   createdBy?: string | null;
@@ -569,6 +571,8 @@ export type PlatformImageAsset = {
   tags: PlatformImageTag[];
   createdAt?: string | null;
   updatedAt?: string | null;
+  minimumSystemDiskSize?: number | null;
+  architecture?: string | null;
 };
 
 export type ImageCatalogScopePayload = {
@@ -633,6 +637,7 @@ export type ImageImportJob = {
   description?: string | null;
   osType: 'linux' | 'windows' | string;
   platform?: string | null;
+  osVersion?: string | null;
   architecture: 'x86_64' | 'arm64' | string;
   bootMode: 'BIOS' | 'UEFI' | string;
   imageFormat: 'qcow2' | 'raw' | 'vhd' | string;
@@ -661,6 +666,7 @@ export type CreateImageImportInput = {
   description?: string;
   osType: 'linux' | 'windows';
   platform?: string;
+  osVersion?: string;
   architecture: 'x86_64' | 'arm64';
   bootMode: 'BIOS' | 'UEFI';
   imageFormat: 'qcow2' | 'raw' | 'vhd';
