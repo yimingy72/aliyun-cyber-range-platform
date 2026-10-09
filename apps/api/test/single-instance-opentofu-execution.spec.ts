@@ -17,7 +17,7 @@ describe('single-instance OpenTofu batch execution', () => {
     const instances: RangeInstanceRecord[] = [];
     const jobs = new Map<string, ProvisionJobRecord>();
     const ledger: any[] = [];
-    const account = { accountUid: 'uid-a', cloudAccountContextId: 'ctx-a', accountUidResolved: true,
+    const account = { provider: 'alibaba_cloud', accountUid: 'uid-a', cloudAccountContextId: 'ctx-a', accountUidResolved: true,
       defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'test-access-key', accessKeySecret: 'test-secret-key' };
     for (let index = 1; index <= count; index++) {
       const job = { id: `job-${index}`, rangeInstanceId: `member-${index}`, jobType: 'create', status: 'running', startedAt: new Date(), createdAt: new Date() } as ProvisionJobRecord;

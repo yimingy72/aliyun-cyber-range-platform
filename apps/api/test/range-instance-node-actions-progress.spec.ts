@@ -5,7 +5,7 @@ import type { PackedImagesService } from '../src/admin/packed-images.service';
 
 describe('OpenTofu member progress action guards', () => {
   function fixture(status = 'running', jobType = 'create') {
-    const instance = { id: 'member-1', ownerUserId: 'alice', instanceMode: 'single', status: 'running', lastJobId: 'job-1',
+    const instance = { id: 'member-1', cloudProvider: 'alibaba_cloud', ownerUserId: 'alice', instanceMode: 'single', status: 'running', lastJobId: 'job-1',
       singleInstanceConfig: { executionBackend: 'opentofu', hostKey: 'host-1' }, resourceSummary: { hostIds: { 'host-1': 'i-test' } } };
     const repository = { getRangeInstanceById: jest.fn(async () => instance), getProvisionJobById: jest.fn(async () => ({ status, jobType })) };
     const config = { getAccountContext: jest.fn(async () => { throw new Error('passed-active-create-guard'); }) };

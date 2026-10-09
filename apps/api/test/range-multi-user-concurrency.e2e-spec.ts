@@ -54,7 +54,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     const [snapshot] = await repository.listImageSnapshots({ imageId: `m-fixture${suffix.replaceAll('-', '')}` });
     asset = await repository.collectPlatformImageAsset({ snapshotId: snapshot!.id, displayName: 'Fixture Linux', ownerUserId: alice.id, visibility: 'platform' });
     config = { getSnapshot: async () => ({ accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h' }),
-      getAccountContext: async () => ({ accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accountUid: 'test-account', accountUidResolved: true, cloudAccountContextId: 'fixture-context' }),
+      getAccountContext: async () => ({ provider: 'alibaba_cloud', accessKeyId: 'test-ak', accessKeySecret: 'test-sk', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accountUid: 'test-account', accountUidResolved: true, cloudAccountContextId: 'fixture-context' }),
     };
     cloudCalls = [];
     const cloudTags = new Map<string, Record<string, string>>();
