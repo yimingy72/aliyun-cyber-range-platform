@@ -185,9 +185,10 @@ export class BillingService {
       for (const id of evidence.imageImportJobIds) ids.add(`import:${id}`);
       pendingResources.set(type, ids);
     }
+    const referencedLedgerIds = new Set(lineItems.flatMap(item => item.matchedLedgerId ? [item.matchedLedgerId] : []));
     const unverified = proof.ledgers.filter(ledger => proof.unverifiedSourceLedgerIds.has(ledger.id)
-      && billingDayText(ledger.billingStartAt) <= window.endAtText
-      && (!ledger.releasedAt || billingDayText(ledger.releasedAt) >= window.startAtText));
+      && (referencedLedgerIds.has(ledger.id) || billingDayText(ledger.billingStartAt) <= window.endAtText
+        && (!ledger.releasedAt || billingDayText(ledger.releasedAt) >= window.startAtText)));
     if (unverified.length) {
       const ids = pendingResources.get('unknown') ?? new Set<string>();
       for (const ledger of unverified) ids.add(`ledger:${ledger.id}`);

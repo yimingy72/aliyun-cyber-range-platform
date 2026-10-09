@@ -26,6 +26,16 @@ describe('platform-created billing read scope', () => {
   beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-09-01')));
   afterEach(() => jest.useRealTimers());
 
+  it('keeps late charges visible as a source issue even when an unverified platform ledger was released earlier', async () => {
+    const { repository, service } = await fixture();
+    const source = await createProvenBillingLedger(repository, { ...baseLedger, cloudResourceId: 'i-old-source',
+      cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: 'alice', releasedAt: new Date('2026-09-20') });
+    await repository.upsertBillingLineItems([bill(source.ledger)]);
+    await repository.updateBillingLedgerResource(source.ledger.id, { cloudAccountUid: null });
+    await expect(service.getSummary(WINDOW)).resolves.toMatchObject({ totalPretaxAmount: 0,
+      unallocatedCurrencyTotals: [], reconciliationIssues: [{ resourceType: 'unknown', resourceCount: 1 }] });
+  });
+
   it('labels retained proven split charges as awaiting reconciliation without counting them twice', async () => {
     const { repository, service } = await fixture();
     const artifact = await repository.createPackedImageArtifact({ cloudAccountContextId: 'context', cloudAccountUid: UID,
