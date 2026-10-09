@@ -23,6 +23,28 @@ function createSystemConfigServiceStub() {
   };
 }
 
+function mockRangeAttachedDisks(worker: ProvisioningWorkerService, instance: RangeInstanceRecord, cloudInstanceId: string) {
+  const tags = {
+    CreatedBy: 'cyber-range-platform', RangeInstanceId: instance.id, PlatformScope: instance.ownerUserId ? 'user' : 'platform',
+    CloudAccountUid: frozenSingleAccount.cloudAccountUid, CloudAccountContextId: frozenSingleAccount.cloudAccountContextId,
+    ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}),
+  };
+  return jest.spyOn(worker as any, 'performAliyunRpcRequest').mockImplementation(async (input: any) => {
+    expect(input.action).toBe('DescribeDisks');
+    expect(input.parameters.PageSize).toBe('100');
+    expect(input.parameters.PageNumber).toBe('1');
+    const diskId = `d-${cloudInstanceId}`;
+    if (input.parameters.InstanceId) {
+      expect(input.parameters.InstanceId).toBe(cloudInstanceId);
+      return { RequestId: 'disk-inventory', TotalCount: 1, PageSize: 100, PageNumber: 1,
+        Disks: { Disk: [{ DiskId: diskId, InstanceId: cloudInstanceId, Type: 'system', DeleteWithInstance: true,
+          Tags: { Tag: Object.entries(tags).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) } }] } };
+    }
+    expect(JSON.parse(input.parameters.DiskIds)).toEqual([diskId]);
+    return { RequestId: 'disk-deletion-verified', TotalCount: 0, PageSize: 100, PageNumber: 1, Disks: { Disk: [] } };
+  });
+}
+
 function createImmutableUpdateTopologySnapshot(draftRevision = 1) {
   return {
     draftRevision,
@@ -135,7 +157,9 @@ describe('ProvisioningWorkerService concurrency', () => {
       createSystemConfigServiceStub() as any,
     );
 
+    mockRangeAttachedDisks(worker, instance, 'i-retry-state');
     await worker.process(job.id);
+    await expect(repository.getProvisionJobById(job.id)).resolves.toMatchObject({ status: 'succeeded' });
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -277,8 +301,9 @@ describe('ProvisioningWorkerService concurrency', () => {
       await input.onApplyStart?.();
       throw new Error('OpenTofu apply partially created resources.');
     });
-    const inventory = { mode: 'opentofu' as const, hostIds: { entry: 'i-partial-create' }, systemDiskIds: { entry: 'd-partial-create' } };
+    const inventory = { mode: 'opentofu' as const, hostIds: { entry: 'i-partial-create' }, systemDiskIds: { entry: 'd-partial-create' }, dataDiskIds: { 'entry:data': 'd-partial-data' } };
     const inspectResources = jest.fn().mockResolvedValue(inventory);
+    let destroyed = false;
     const verificationRequests: string[] = [];
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const query = new URL(String(input)).searchParams;
@@ -290,12 +315,27 @@ describe('ProvisioningWorkerService concurrency', () => {
         return new Response(JSON.stringify({ ...metadata, Instances: { Instance: [] } }));
       }
       if (action === 'DescribeDisks') {
-        expect(JSON.parse(query.get('DiskIds')!)).toEqual(['d-partial-create']);
+        if (query.has('InstanceId')) {
+          expect(query.get('InstanceId')).toBe('i-partial-create');
+          expect(destroyed).toBe(false);
+          return new Response(JSON.stringify({ ...metadata, TotalCount: 2,
+            Disks: { Disk: [
+              { DiskId: 'd-partial-create', InstanceId: 'i-partial-create', Type: 'system', DeleteWithInstance: true },
+              { DiskId: 'd-partial-data', InstanceId: 'i-partial-create', Type: 'data', DeleteWithInstance: true },
+            ] } }));
+        }
+        expect(destroyed).toBe(true);
+        expect(JSON.parse(query.get('DiskIds')!)).toEqual(['d-partial-create', 'd-partial-data']);
         return new Response(JSON.stringify({ ...metadata, Disks: { Disk: [] } }));
       }
       throw new Error(`Unexpected cleanup verification action: ${action}`);
     });
-    const destroy = jest.fn().mockResolvedValue(undefined);
+    const destroy = jest.fn(async () => {
+      const ledger = await repository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+      expect(ledger.map(row => row.cloudResourceId).sort()).toEqual(['d-partial-create', 'd-partial-data', 'i-partial-create']);
+      expect(ledger.every(row => row.cloudAccountUid === frozenSingleAccount.cloudAccountUid && row.releasedAt === null)).toBe(true);
+      destroyed = true;
+    });
     const worker = new ProvisioningWorkerService(
       repository,
       { create, destroy, inspectResources } as unknown as RangeProvisioner,
@@ -309,7 +349,10 @@ describe('ProvisioningWorkerService concurrency', () => {
     }
 
     expect(inspectResources).toHaveBeenCalledTimes(1);
-    expect(verificationRequests.sort()).toEqual(['DescribeDisks', 'DescribeInstances']);
+    expect(verificationRequests.sort()).toEqual(['DescribeDisks', 'DescribeDisks', 'DescribeInstances']);
+    const releasedLedger = await repository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+    expect(releasedLedger).toHaveLength(3);
+    expect(releasedLedger.every(row => row.releasedAt !== null && Number.isFinite(row.releasedAt.getTime()))).toBe(true);
 
     expect(destroy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -691,6 +734,8 @@ describe('ProvisioningWorkerService concurrency', () => {
               Instance: [
                 {
                   InstanceId: 'i-single-create-uncertain',
+                  Status: 'Running',
+                  BlockDeviceMappings: { BlockDeviceMapping: [{ DiskId: 'd-single-create-uncertain' }] },
                   Tags: { Tag: createdTags },
                 },
               ],
@@ -1273,6 +1318,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     };
 
     const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+    mockRangeAttachedDisks(worker, instance, 'i-residual');
     const verifySpy = jest
       .spyOn(worker as any, 'verifyDestroyCompletion')
       .mockRejectedValue(new Error('Residual cloud resources still exist after destroy.'));
@@ -1368,6 +1414,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     };
 
     const worker = new ProvisioningWorkerService(repository, provisioner, createSystemConfigServiceStub() as any);
+    mockRangeAttachedDisks(worker, instance, 'i-gone');
     const checkVpcExistsSpy = jest.spyOn(worker as any, 'checkVpcExists').mockResolvedValue(false);
     const checkVSwitchExistsSpy = jest.spyOn(worker as any, 'checkVSwitchExists').mockResolvedValue(true);
     jest.spyOn(worker as any, 'findExistingInstanceIds').mockResolvedValue([]);
