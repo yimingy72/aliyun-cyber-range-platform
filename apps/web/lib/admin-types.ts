@@ -516,6 +516,7 @@ export type ImageSnapshot = {
   architecture?: string | null;
   status?: string | null;
   isAvailable: boolean;
+  ownedSnapshotCleanup?: { snapshotCount: number; status: 'ready' | 'deleting' };
   lastSyncedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;

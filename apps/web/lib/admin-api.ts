@@ -1116,8 +1116,9 @@ export async function removePlatformImage(apiBaseUrl: string, token: string, id:
   }
 }
 
-export async function deleteCustomImageSnapshot(apiBaseUrl: string, token: string, snapshotId: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/custom/${snapshotId}`, {
+export async function deleteCustomImageSnapshot(apiBaseUrl: string, token: string, snapshotId: string, options: { deleteOwnedSnapshots: boolean } = { deleteOwnedSnapshots: false }) {
+  const query = options.deleteOwnedSnapshots ? '?deleteOwnedSnapshots=true' : '';
+  const response = await fetch(`${apiBaseUrl}/admin/image-catalog/custom/${snapshotId}${query}`, {
     method: 'DELETE',
     headers: createAdminHeaders(token),
   });
@@ -1140,5 +1141,9 @@ export async function deleteCustomImageSnapshot(apiBaseUrl: string, token: strin
         : `Admin API request failed with status ${response.status}`;
 
     throw new AdminApiError(response.status, message, details);
+  }
+  if (options.deleteOwnedSnapshots) {
+    const result = await response.json() as { removed?: boolean; status?: string };
+    if (result.removed !== true || result.status !== 'deleted') throw new AdminApiError(409, '镜像及快照回收尚未全部确认，请稍后继续回收。', result);
   }
 }
