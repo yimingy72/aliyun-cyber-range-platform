@@ -25,6 +25,8 @@ import {
   validateAndSaveRangeTemplate,
 } from '../../../lib/admin-api';
 import { useAdminScreenCache } from '../../../lib/admin-screen-cache';
+import { workspaceStorageKey } from '../../../lib/cloud-workspace-selection';
+import { useCloudWorkspace } from '../cloud-workspace-provider';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset, RangeTemplate } from '../../../lib/admin-types';
 import { resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
 import {
@@ -193,7 +195,7 @@ function readTopologyCacheKey(template: RangeTemplate | null | undefined, fallba
     return null;
   }
 
-  return `${TOPOLOGY_CACHE_PREFIX}:${resolvedTemplateId}:${revision}`;
+  return workspaceStorageKey(`${TOPOLOGY_CACHE_PREFIX}:${resolvedTemplateId}:${revision}`);
 }
 
 function readTopologyGraphFromCache(
@@ -784,7 +786,7 @@ function readNewTemplateSession(): NewTemplateDraft {
 
   if (typeof window !== 'undefined') {
     try {
-      seed = JSON.parse(window.sessionStorage.getItem(NEW_TEMPLATE_SESSION_KEY) ?? '{}') as typeof seed;
+      seed = JSON.parse(window.sessionStorage.getItem(workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY)) ?? '{}') as typeof seed;
     } catch {
       seed = {};
     }
@@ -797,7 +799,7 @@ function readNewTemplateSession(): NewTemplateDraft {
 
   if (typeof window !== 'undefined' && seed.draftId !== draftId) {
     window.sessionStorage.setItem(
-      NEW_TEMPLATE_SESSION_KEY,
+      workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY),
       JSON.stringify({ ...seed, draftId }),
     );
   }
@@ -1078,6 +1080,8 @@ export function TemplateEditorScreen({
   template: providedTemplate,
 }: TemplateEditorScreenProps) {
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
+  const canEdit = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const router = useRouter();
   const screenCache = useAdminScreenCache();
   const [template, setTemplate] = useState<RangeTemplate | null>(() =>
@@ -1810,7 +1814,7 @@ export function TemplateEditorScreen({
   }
 
   async function handleDetectTopology() {
-    if (!template || !session.token || isSubmitting) {
+    if (!canEdit || !template || !session.token || isSubmitting) {
       return;
     }
 
@@ -1852,7 +1856,7 @@ export function TemplateEditorScreen({
       }
 
       if (template.id === 'new' && typeof window !== 'undefined') {
-        window.sessionStorage.removeItem(NEW_TEMPLATE_SESSION_KEY);
+        window.sessionStorage.removeItem(workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY));
       }
 
       applyTemplateState(nextTemplate);
@@ -1870,7 +1874,7 @@ export function TemplateEditorScreen({
   }
 
   async function handlePublishTemplate() {
-    if (!template || !session.token || isSubmitting) {
+    if (!canEdit || !template || !session.token || isSubmitting) {
       return;
     }
 
@@ -1961,7 +1965,7 @@ export function TemplateEditorScreen({
         <div className="template-editor-toolbar-actions">
           <Button
             className="border border-destructive/40 bg-card hover:bg-destructive/10 hover:text-destructive"
-            disabled={(selection.nodeIds.length === 0 && selection.edgeIds.length === 0) || isSubmitting}
+            disabled={!canEdit || (selection.nodeIds.length === 0 && selection.edgeIds.length === 0) || isSubmitting}
             onClick={handleDeleteSelection}
             size="sm"
             type="button"
@@ -1970,7 +1974,7 @@ export function TemplateEditorScreen({
             删除选中
           </Button>
           <Button
-            disabled={isSubmitting}
+            disabled={!canEdit || isSubmitting}
             onClick={() => void handleDetectTopology()}
             size="sm"
             type="button"
@@ -1979,7 +1983,7 @@ export function TemplateEditorScreen({
             检测与保存
           </Button>
           <Button
-            disabled={isSubmitting}
+            disabled={!canEdit || isSubmitting}
             onClick={() => void handlePublishTemplate()}
             size="sm"
             type="button"
@@ -1991,6 +1995,7 @@ export function TemplateEditorScreen({
 
       <div className="template-editor-grid">
         <TopologyFlowCanvas
+          mode={canEdit ? 'edit' : 'readonly'}
           nodes={nodes}
           edges={edges}
           viewport={viewport}
@@ -2008,6 +2013,7 @@ export function TemplateEditorScreen({
         />
         {selectedNode && isPropertyPanelOpen ? (
           <TemplatePropertyPanel
+            readOnly={!canEdit}
             selectedNode={selectedNode}
             allNodes={nodes}
             platformImageAssets={platformImageAssets}

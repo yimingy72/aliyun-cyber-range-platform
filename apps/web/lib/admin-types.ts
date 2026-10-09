@@ -5,6 +5,8 @@ export type AdminProfile = {
   id: string;
   username: string;
   role: 'admin' | 'user';
+  isPlatformManager?: boolean;
+  cloudWorkspaceId?: string | null;
 };
 
 export type AdminSessionPayload = {
@@ -25,6 +27,7 @@ export type AdminUserStatus = 'active' | 'disabled';
 export type AdminUser = {
   id: string;
   username: string;
+  loginUsername?: string;
   role: AdminUserRole;
   status: AdminUserStatus;
   isCurrentUser?: boolean;
@@ -583,6 +586,7 @@ export type PlatformImageTagListPayload = {
 
 export type CloudAccountContext = {
   id: string;
+  cloudWorkspaceId?: string;
   displayName: string;
   provider: 'alibaba_cloud' | 'tencent_cloud';
   accountUid: string;
@@ -596,6 +600,28 @@ export type CloudAccountContext = {
   lastVerifiedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+};
+
+export type CloudWorkspaceView = {
+  id: string;
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  accountUid: string | null;
+  displayName: string;
+  isReadOnly: boolean;
+  activeCloudAccountContextId: string | null;
+  contexts: CloudAccountContext[];
+  capabilities: { provisioning: boolean; imageImport: boolean; billingSync: boolean };
+};
+
+export type SaveCloudAccountInput = {
+  cloudWorkspaceId?: string;
+  provider: CloudWorkspaceView['provider'];
+  regionId: string;
+  zoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+  imageImportBucket?: string;
+  displayName?: string;
 };
 
 export type ImageImportJob = {

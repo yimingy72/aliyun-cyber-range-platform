@@ -38,6 +38,9 @@ const { writeTextMock } = vi.hoisted(() => ({
   writeTextMock: vi.fn(),
 }));
 
+const workspaceState = vi.hoisted(() => ({ value: null as null | { workspace: { provider: string; isReadOnly: boolean; capabilities: { provisioning: boolean } } } }));
+vi.mock('./cloud-workspace-provider', () => ({ useCloudWorkspace: () => workspaceState.value, cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云' }));
+
 const { createObjectUrlMock, revokeObjectUrlMock } = vi.hoisted(() => ({
   createObjectUrlMock: vi.fn(),
   revokeObjectUrlMock: vi.fn(),
@@ -121,6 +124,7 @@ function readBlobAsBytes(blob: Blob) {
 
 describe('SingleInstancesScreen', () => {
   beforeEach(() => {
+    workspaceState.value = null;
     fetchSingleInstancesMock.mockReset();
     fetchProvisionJobsMock.mockReset();
     fetchPlatformImagesMock.mockReset();
@@ -156,6 +160,18 @@ describe('SingleInstancesScreen', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps undeveloped provider launches disabled even when that workspace has a usable image', async () => {
+    workspaceState.value = { workspace: { provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: false } } };
+    fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'workspace-image', imageId: 'img-fixture', displayName: '可用腾讯镜像', enabled: true, sourceSnapshotAvailable: true }] });
+    render(<SingleInstancesScreen />);
+    await waitFor(() => expect(fetchPlatformImagesMock).toHaveBeenCalled());
+    expect(screen.getByText('腾讯云实例创建仍在开发。')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '创建实例' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
+    expect(launchSingleInstancesMock).not.toHaveBeenCalled();
   });
 
   it('renders list/history, opens create dialog, and submits the launch payload without triggeredBy', async () => {

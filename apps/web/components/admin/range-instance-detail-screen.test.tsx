@@ -371,7 +371,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     expect((await screen.findAllByText('实例名')).length).toBeGreaterThan(0);
     expect(screen.getByRole('heading', { name: '实例详情' })).toBeTruthy();
-    expect(screen.getByRole('tablist', { name: '实例详情视图切换' })).toBeTruthy();
+    expect(await screen.findByRole('tablist', { name: '实例详情视图切换' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '节点目录' })).toBeTruthy();
     expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();

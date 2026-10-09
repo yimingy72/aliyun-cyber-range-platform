@@ -16,6 +16,7 @@ import {
   triggerSingleInstanceAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { cloudProviderLabel, useCloudWorkspace } from './cloud-workspace-provider';
 import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
@@ -517,6 +518,8 @@ export function SingleInstancesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
+  const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const isPageActive = useAdminRouteIsActive('/admin/instances');
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
@@ -1014,7 +1017,7 @@ export function SingleInstancesScreen({
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!session.token) {
+    if (!session.token || !canProvision) {
       return;
     }
 
@@ -1380,6 +1383,7 @@ export function SingleInstancesScreen({
   }
 
   function renderInstanceActions(instance: RangeInstance, actions: MenuAction[]) {
+    if (workspace?.isReadOnly) return null;
     const inlineActions = actions.filter(isPrimaryInlineAction);
     const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
     const isActionPending = pendingActionInstanceId === instance.id;
@@ -1537,6 +1541,7 @@ export function SingleInstancesScreen({
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" />
+        {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
           {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
@@ -1545,7 +1550,7 @@ export function SingleInstancesScreen({
             <AdminListToolbar
               activeView={listMode}
               action={
-                <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+                <Button disabled={!canProvision || !enabledPlatformImages.length} onClick={openCreateDialog} type="button">
                   <Plus aria-hidden="true" data-icon="inline-start" />
                   创建实例
                 </Button>
@@ -1782,7 +1787,7 @@ export function SingleInstancesScreen({
                 type="button"
                 className="template-workbench-primary-action"
                 onClick={openCreateDialog}
-                disabled={!enabledPlatformImages.length}
+                disabled={!canProvision || !enabledPlatformImages.length}
               >
                 创建实例
               </button>
@@ -2165,7 +2170,7 @@ export function SingleInstancesScreen({
               <Button disabled={isSubmitting} type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
                 取消
               </Button>
-              <Button disabled={isSubmitting || !enabledPlatformImages.length} form="single-instance-create-form" type="submit">
+              <Button disabled={!canProvision || isSubmitting || !enabledPlatformImages.length} form="single-instance-create-form" type="submit">
                 确认创建
               </Button>
             </>

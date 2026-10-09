@@ -12,6 +12,7 @@ import {
   triggerRangeAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   ProvisionJob,
@@ -171,6 +172,7 @@ export function RangeInstancesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
   const isPageActive = useAdminRouteIsActive('/admin/ranges');
   const [listMode, setListMode] = useState<RangeListMode>(() => readRangeListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
@@ -721,7 +723,7 @@ export function RangeInstancesScreen({
                             </Button>
                             {actionLabel ? (
                               <Button
-                                disabled={isSubmittingAction !== null}
+                                disabled={workspace?.isReadOnly || isSubmittingAction !== null}
                                 onClick={() => void handleListDestroyAction(instance)}
                                 size="sm"
                                 type="button"

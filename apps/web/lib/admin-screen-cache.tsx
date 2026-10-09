@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, type ReactNode, useContext, useMemo, useRef } from 'react';
+import { readCloudWorkspaceSelection } from './cloud-workspace-selection';
 
 const DEFAULT_STALE_TIME_MS = 20_000;
 
@@ -123,7 +124,7 @@ type AdminScreenCacheContextValue = {
 const AdminScreenCacheContext = createContext<AdminScreenCacheContextValue | null>(null);
 
 function buildCacheKey(apiBaseUrl: string, token: string, resource: string) {
-  return `${apiBaseUrl}\u0000${token}\u0000${resource}`;
+  return `${apiBaseUrl}\u0000${token}\u0000${readCloudWorkspaceSelection() ?? ''}\u0000${resource}`;
 }
 
 export function AdminScreenCacheProvider({ children }: { children: ReactNode }) {

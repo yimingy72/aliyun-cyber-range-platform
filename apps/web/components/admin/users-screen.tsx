@@ -23,6 +23,7 @@ import {
   updateAdminUserStatus,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type { AdminUser, CreateAdminUserInput } from '../../lib/admin-types';
 import {
@@ -101,6 +102,7 @@ export function UsersScreen({
 }: UsersScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
   const isPageActive = useAdminRouteIsActive('/admin/users');
   const screenCache = useAdminScreenCache();
   const usersResource = 'users:list';
@@ -125,6 +127,15 @@ export function UsersScreen({
   const createUserNameRef = useRef<HTMLInputElement>(null);
   const resetPasswordRef = useRef<HTMLInputElement>(null);
   const { pageSize, setPageSize } = useAdminPageSize();
+
+  async function copyLoginUsername(user: AdminUser) {
+    try {
+      await navigator.clipboard.writeText(user.loginUsername ?? user.username);
+      setActionSuccessMessage('登录账号已复制。');
+    } catch {
+      setActionErrorMessage('登录账号复制失败，请从列表选择文字复制。');
+    }
+  }
 
   useEffect(() => {
     if (!isPageActive || !session.isReady) {
@@ -341,7 +352,7 @@ export function UsersScreen({
       setLoadedUsersSource(usersSource);
       setErrorMessage(null);
       closeCreateDialog();
-      setActionSuccessMessage(`用户 ${createdUser.username} 已创建。`);
+      setActionSuccessMessage(`用户 ${createdUser.username} 已创建。${createdUser.loginUsername && createdUser.loginUsername !== createdUser.username ? `登录账号：${createdUser.loginUsername}` : ''}`);
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
@@ -524,7 +535,7 @@ export function UsersScreen({
                   <span>管理员 {counts.adminCount}</span>
                   <span>已禁用 {counts.disabledCount}</span>
                 </div>
-                <Button disabled={isSubmitting} onClick={() => { setActionErrorMessage(null); setIsCreateDialogOpen(true); }} type="button">
+                <Button disabled={isSubmitting || workspace?.isReadOnly} onClick={() => { setActionErrorMessage(null); setIsCreateDialogOpen(true); }} type="button">
                   <Plus aria-hidden="true" data-icon="inline-start" />
                   创建用户
                 </Button>
@@ -608,7 +619,7 @@ export function UsersScreen({
                     return (
                       <TableRow key={user.id}>
                         <AdminDataTableCell className="font-medium" column={usernameColumn!}>
-                          {user.username}
+                          <div className="grid min-w-0 gap-1"><span>{user.username}</span>{user.loginUsername && user.loginUsername !== user.username ? <span className="break-all text-xs font-normal text-muted-foreground">登录账号：{user.loginUsername}</span> : null}</div>
                         </AdminDataTableCell>
                         <AdminDataTableCell column={roleColumn!}>{getUserRoleLabel(user.role)}</AdminDataTableCell>
                         <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
@@ -619,7 +630,7 @@ export function UsersScreen({
                         <AdminDataTableCell column={actionsColumn!}>
                           <div className="flex justify-start gap-1">
                             <Button
-                              disabled={isSubmitting}
+                              disabled={isSubmitting || workspace?.isReadOnly}
                               onClick={() =>
                                 void handleUpdateUserStatus(user, user.status === 'active' ? 'disabled' : 'active')
                               }
@@ -633,7 +644,7 @@ export function UsersScreen({
                               <DropdownMenuTrigger asChild>
                                 <Button
                                   aria-label="更多操作"
-                                  disabled={isSubmitting}
+                                  disabled={isSubmitting || workspace?.isReadOnly}
                                   size="icon-sm"
                                   type="button"
                                   variant="ghost"
@@ -642,14 +653,15 @@ export function UsersScreen({
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
+                                <DropdownMenuItem onSelect={() => void copyLoginUsername(user)}>复制登录账号</DropdownMenuItem>
                                 <DropdownMenuItem
-                                  disabled={isSubmitting}
+                                  disabled={isSubmitting || workspace?.isReadOnly}
                                   onSelect={() => void handleUpdateUserRole(user, user.role === 'admin' ? 'user' : 'admin')}
                                 >
                                   {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  disabled={isSubmitting}
+                                  disabled={isSubmitting || workspace?.isReadOnly}
                                   onSelect={() =>
                                     setResetPasswordState({
                                       userId: user.id,
@@ -682,7 +694,7 @@ export function UsersScreen({
             <Button disabled={isSubmitting} onClick={closeCreateDialog} type="button" variant="outline">
               取消
             </Button>
-            <Button disabled={isSubmitting} onClick={() => void handleCreateUser()} type="button">
+            <Button disabled={isSubmitting || workspace?.isReadOnly} onClick={() => void handleCreateUser()} type="button">
               确认创建
             </Button>
           </>
@@ -722,7 +734,7 @@ export function UsersScreen({
               <AdminSelectField
                 ariaLabel="角色"
                 className="w-full"
-                disabled={isSubmitting}
+                disabled={isSubmitting || workspace?.isReadOnly}
                 onValueChange={(value) =>
                   setCreateDraft((currentValue) => ({
                     ...currentValue,
@@ -745,7 +757,7 @@ export function UsersScreen({
             <Button disabled={isSubmitting} onClick={closeResetPasswordDialog} type="button" variant="outline">
               取消
             </Button>
-            <Button disabled={isSubmitting} onClick={() => void handleResetPassword()} type="button">
+            <Button disabled={isSubmitting || workspace?.isReadOnly} onClick={() => void handleResetPassword()} type="button">
               确认重置
             </Button>
           </>

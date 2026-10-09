@@ -26,6 +26,8 @@ import {
   updateRangeTemplate,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { workspaceStorageKey } from '../../lib/cloud-workspace-selection';
+import { useCloudWorkspace } from './cloud-workspace-provider';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   RangeTemplateView,
@@ -186,6 +188,8 @@ export function TemplatesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
+  const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
   const [activeView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
@@ -549,7 +553,7 @@ export function TemplatesScreen({
       return;
     }
 
-    window.sessionStorage.setItem('template-editor:new-template', JSON.stringify(payload));
+    window.sessionStorage.setItem(workspaceStorageKey('template-editor:new-template'), JSON.stringify(payload));
     closeCreateDialog();
     router.push('/admin/scenarios/new');
   }
@@ -681,7 +685,7 @@ export function TemplatesScreen({
       return;
     }
 
-    if (canManageTemplate(template)) {
+    if (workspace?.isReadOnly || canManageTemplate(template)) {
       setPendingEditorTemplateId(template.id);
       router.push(`/admin/scenarios/${template.id}`);
       return;
@@ -711,6 +715,7 @@ export function TemplatesScreen({
   }
 
   async function handleLaunchInstance() {
+    if (!canProvision) return;
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -766,7 +771,7 @@ export function TemplatesScreen({
   const isActiveViewLoading = !loadedViews[activeView] && !errorMessage;
 
   function canManageTemplate(template: Scenario) {
-    return template.canManage ?? session.isAdmin;
+    return !workspace?.isReadOnly && (template.canManage ?? session.isAdmin);
   }
 
   return (
@@ -776,6 +781,7 @@ export function TemplatesScreen({
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
+        {!canProvision ? <p className="mt-4 text-sm text-muted-foreground">{workspace?.isReadOnly ? "当前账号工作空间为只读历史。" : "当前云厂商的拓扑编排与实例创建仍在开发。"}</p> : null}
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             activeView={activeView}
@@ -793,7 +799,7 @@ export function TemplatesScreen({
               { label: '平台拓扑', value: 'platform' },
             ]}
             action={
-              <Button onClick={() => setIsCreateDialogOpen(true)} type="button">
+              <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button">
                 <Plus aria-hidden="true" />
                 新建拓扑
               </Button>
@@ -891,7 +897,7 @@ export function TemplatesScreen({
                     const isShared = template.visibility === 'platform';
                     const canManageCurrentTemplate = canManageTemplate(template);
                     const canConsumeTemplate = canManageCurrentTemplate || isPublished;
-                    const canEnterTemplate = canManageCurrentTemplate || isShared;
+                    const canEnterTemplate = workspace?.isReadOnly || canManageCurrentTemplate || isShared;
 
                     return (
                       <TableRow key={template.id}>
@@ -941,7 +947,7 @@ export function TemplatesScreen({
                                   </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
-                                  <DropdownMenuItem onSelect={() => void handleCloneTemplate(template)}>
+                                  <DropdownMenuItem disabled={workspace?.isReadOnly} onSelect={() => void handleCloneTemplate(template)}>
                                     复制模板
                                   </DropdownMenuItem>
                                   {canManageCurrentTemplate ? (
@@ -960,7 +966,7 @@ export function TemplatesScreen({
                                       )}
                                     </>
                                   ) : null}
-                                  <DropdownMenuItem onSelect={() => void handleOpenGenerateInstance(template)}>
+                                  <DropdownMenuItem disabled={!canProvision} onSelect={() => void handleOpenGenerateInstance(template)}>
                                     生成实例
                                   </DropdownMenuItem>
                                   {canManageCurrentTemplate ? (
@@ -1082,7 +1088,7 @@ export function TemplatesScreen({
             <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeLaunchDialog}>
               取消
             </Button>
-            <Button disabled={isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
+            <Button disabled={!canProvision || isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
               确认生成
             </Button>
           </>

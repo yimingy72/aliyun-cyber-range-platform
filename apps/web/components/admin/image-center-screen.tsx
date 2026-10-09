@@ -77,6 +77,9 @@ import { AdminDialog, AdminConfirmationDialog, type AdminDialogSize } from './sh
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
+import { useCloudWorkspace } from './cloud-workspace-provider';
+import { TencentImageCenterScreen } from './tencent-image-center-screen';
+import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 
 type ImageCenterScreenProps = {
   apiBaseUrl?: string;
@@ -542,8 +545,17 @@ function CloudSourceTabs({
 export function ImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
+  const current = useCloudWorkspace();
+  if (current?.workspace?.provider === 'tencent_cloud') return <TencentImageCenterScreen key={current.workspace.id} apiBaseUrl={apiBaseUrl} workspace={current.workspace} />;
+  return <AliCloudImageCenterScreen apiBaseUrl={apiBaseUrl} />;
+}
+
+function AliCloudImageCenterScreen({
+  apiBaseUrl = 'http://localhost:3001',
+}: ImageCenterScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
   const isPageActive = useAdminRouteIsActive('/admin/image-center');
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const screenCache = useAdminScreenCache();
@@ -741,7 +753,7 @@ export function ImageCenterScreen({
     setActiveTab(nextView);
   }
 
-  const activeCloudContext = cloudContexts.find((context) => context.isActive && context.status === 'ready') ?? null;
+  const activeCloudContext = (workspace ? workspace.contexts : cloudContexts).find((context) => context.provider === 'alibaba_cloud' && context.status === 'ready' && (workspace ? context.id === workspace.activeCloudAccountContextId && context.cloudWorkspaceId === workspace.id : context.isActive)) ?? null;
   const imageImportUnavailableMessage = !activeCloudContext
     ? '请先由管理员保存云配置并完成阿里云账号验证。'
     : !activeCloudContext.imageImportBucket.trim() || activeCloudContext.bucketStatus === 'unconfigured'
@@ -749,7 +761,7 @@ export function ImageCenterScreen({
       : activeCloudContext.bucketStatus !== 'ready'
         ? activeCloudContext.lastError?.trim() || '配置的镜像导入 Bucket 不可用，请检查名称、地域和权限。'
         : null;
-  const canImportImages = imageImportUnavailableMessage === null;
+  const canImportImages = !workspace?.isReadOnly && imageImportUnavailableMessage === null;
 
   function openImageImportDialog() {
     setImageImportDraft(createImageImportDraft());
@@ -1253,7 +1265,10 @@ export function ImageCenterScreen({
         file,
         onProgress: setImageImportProgress,
       });
-      const completedJob = await completeImageImport(apiBaseUrl, session.token, sessionPayload.job.id);
+      const completedJob = workspace
+        ? await completeImageImport(apiBaseUrl, session.token, sessionPayload.job.id, workspace.id)
+        : await completeImageImport(apiBaseUrl, session.token, sessionPayload.job.id);
+      if (workspace && readCloudWorkspaceSelection() !== workspace.id) return;
       setImageImportJobs((current) => [completedJob, ...current.filter((job) => job.id !== completedJob.id)]);
 
       if (completedJob.status === 'failed' && !completedJob.imageId) {
@@ -1660,18 +1675,18 @@ export function ImageCenterScreen({
       const isPending = [renameActionKey, toggleActionKey, visibilityActionKey, taggingActionKey, removeActionKey].some((key) =>
         pendingActionKeys.includes(key),
       );
-      const canManageAsset =
-        typeof options.allowManagement === 'function' ? options.allowManagement(asset) : options.allowManagement;
+      const canManageAsset = !workspace?.isReadOnly &&
+        (typeof options.allowManagement === 'function' ? options.allowManagement(asset) : options.allowManagement);
       const canToggleVisibility =
         typeof options.allowVisibilityToggle === 'function'
           ? options.allowVisibilityToggle(asset)
           : options.allowVisibilityToggle ?? false;
-      const canManageTags = (activeTab === 'platform' && session.isAdmin) || (activeTab === 'mine' && canManageAsset);
+      const canManageTags = !workspace?.isReadOnly && ((activeTab === 'platform' && session.isAdmin) || (activeTab === 'mine' && canManageAsset));
       const isImportingAsset =
         importingAssetIds.has(asset.id) ||
         importingAssetIds.has(asset.imageId) ||
         /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? '');
-      const canCreate = canCreateInstanceFromAsset(asset);
+      const canCreate = !workspace?.isReadOnly && canCreateInstanceFromAsset(asset);
       const statusVariant = asset.sourceSnapshotAvailable !== true || !asset.enabled ? 'secondary' : 'default';
 
       return (
@@ -1788,7 +1803,7 @@ export function ImageCenterScreen({
           </AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
             <div className="flex justify-start gap-1">
-              {session.isAdmin ? (
+              {session.isAdmin && !workspace?.isReadOnly ? (
                 <Button
                   disabled={isCollected || isCollectPending || !snapshot.isAvailable || isImportingSnapshot}
                   aria-label={`${isCollected ? '已收录' : '收录到平台'} ${snapshot.sourceImageName}`}
@@ -1800,7 +1815,7 @@ export function ImageCenterScreen({
                   {isCollected ? '已收录' : '收录到平台'}
                 </Button>
               ) : null}
-              {scope === 'custom' && session.isAdmin && !isImportingSnapshot ? (
+              {scope === 'custom' && session.isAdmin && !workspace?.isReadOnly && !isImportingSnapshot ? (
                 <Button
                   disabled={isDeletePending}
                   aria-label={`${snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'} ${snapshot.sourceImageName}`}
@@ -1966,7 +1981,7 @@ export function ImageCenterScreen({
                 </Button>
               ) : activeTab === 'custom' && session.isAdmin ? (
                 <Button
-                  disabled={pendingActionKeys.includes('sync:custom')}
+                  disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:custom')}
                   onClick={() => void handleSyncCustomImages()}
                   size="sm"
                   type="button"
@@ -1977,7 +1992,7 @@ export function ImageCenterScreen({
                 </Button>
               ) : activeTab === 'public' && session.isAdmin ? (
                 <Button
-                  disabled={pendingActionKeys.includes('sync:public')}
+                  disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:public')}
                   onClick={() => void handleSyncPublicImages()}
                   size="sm"
                   type="button"
@@ -2024,7 +2039,7 @@ export function ImageCenterScreen({
                           {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
                           {job.status === 'failed' && !job.imageId ? (
                             <Button
-                              disabled={pendingActionKeys.includes(`retry:image-import:${job.id}`)}
+                              disabled={workspace?.isReadOnly || pendingActionKeys.includes(`retry:image-import:${job.id}`)}
                               onClick={() => void handleRetryImageImport(job)}
                               size="sm"
                               type="button"

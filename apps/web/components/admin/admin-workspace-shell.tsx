@@ -27,6 +27,9 @@ import { AdminPageCache } from './admin-page-cache';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
 import { PlatformBrand } from './platform-brand';
 import { useAdminSession } from './use-admin-session';
+import { fetchAuthenticatedAdminProfile } from '@/lib/admin-api';
+import { resolveAdminApiBaseUrl } from '@/lib/admin-api-base-url';
+import { CloudWorkspaceProvider, cloudProviderLabel, useCloudWorkspace } from './cloud-workspace-provider';
 
 type AdminWorkspaceShellProps = {
   children: ReactNode;
@@ -146,8 +149,15 @@ function AdminNavigation({ items, onNavigate, pathname, pendingHref, className }
 
 export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
   const pathname = usePathname();
+  if (pathname === '/admin/login' || pathname === '/admin/callback') return <AdminWorkspaceShellContent>{children}</AdminWorkspaceShellContent>;
+  return <CloudWorkspaceProvider><AdminWorkspaceShellContent>{children}</AdminWorkspaceShellContent></CloudWorkspaceProvider>;
+}
+
+function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
+  const pathname = usePathname();
   const router = useRouter();
   const session = useAdminSession();
+  const cloudWorkspace = useCloudWorkspace();
   const oidcIssuer = resolveAdminOidcIssuer();
   const oidcClientId = resolveAdminOidcClientId();
   const isLoginRoute = pathname === '/admin/login';
@@ -200,8 +210,12 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
         return;
       }
 
+      const profile = await fetchAuthenticatedAdminProfile(resolveAdminApiBaseUrl(), nextSession.token);
+      if (loggingOutRef.current || readAdminSession()?.refreshToken !== session.refreshToken) return;
+
       writeAdminSession({
         ...nextSession,
+        profile,
         idToken: nextSession.idToken ?? currentSession.idToken,
         refreshToken: nextSession.refreshToken ?? currentSession.refreshToken,
         sessionGeneration: currentSession.sessionGeneration,
@@ -381,6 +395,10 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
               </SheetContent>
             </Sheet>
 
+            {cloudWorkspace?.workspace ? <div className="flex min-w-0 max-w-[48%] items-center gap-2 text-xs text-muted-foreground" aria-label="当前云账号工作空间">
+              <span className="shrink-0 font-semibold text-foreground">{cloudProviderLabel(cloudWorkspace.workspace.provider)}</span>
+              <span className="hidden truncate sm:inline" title={cloudWorkspace.workspace.displayName}>{cloudWorkspace.workspace.displayName} · {cloudWorkspace.workspace.accountUid ?? '历史数据'}</span>
+            </div> : null}
             <div className="admin-topbar-meta ml-auto">
               {isRenewingSession ? <span role="status">正在续期管理会话</span> : null}
               {session.profile ? (
@@ -404,9 +422,12 @@ export function AdminWorkspaceShell({ children }: AdminWorkspaceShellProps) {
 
         <div className="admin-main-content-shell">
           <section className="admin-main-content">
-            <AdminScreenCacheProvider key={session.profile?.id}>
+            {cloudWorkspace && !cloudWorkspace.isReady ? <div className="admin-workbench-surface min-h-48" aria-busy={!cloudWorkspace.error}>
+              {cloudWorkspace.error ? <div className="grid gap-4"><p role="alert" className="text-sm text-destructive">{cloudWorkspace.error}</p><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={cloudWorkspace.retry}>重新加载工作空间</Button><Button variant="outline" onClick={cloudWorkspace.resetSelection}>使用登录账号默认工作空间</Button></div></div> : <span className="sr-only">正在恢复云账号工作空间</span>}
+            </div> : cloudWorkspace && !cloudWorkspace.workspace && pathname !== '/admin/settings/cloud' ? <div className="admin-workbench-surface"><p className="text-sm">尚未绑定云账号工作空间。</p>{session.profile?.isPlatformManager ? <Link className="mt-4 inline-block text-sm text-primary" href="/admin/settings/cloud">前往基础配置绑定云账号</Link> : null}</div> :
+            <AdminScreenCacheProvider key={`${session.profile?.id}:${cloudWorkspace?.workspace?.id ?? ''}:${cloudWorkspace?.workspace?.activeCloudAccountContextId ?? ''}`}>
               <AdminPageCache pathname={pathname}>{children}</AdminPageCache>
-            </AdminScreenCacheProvider>
+            </AdminScreenCacheProvider>}
           </section>
         </div>
       </div>

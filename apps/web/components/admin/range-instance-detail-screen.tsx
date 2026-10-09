@@ -20,6 +20,7 @@ import {
   syncRangeInstanceTemplate,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   InstanceTypeAvailabilitySnapshot,
@@ -872,6 +873,7 @@ export function RangeInstanceDetailScreen({
 }: RangeInstanceDetailScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
   const screenCache = useAdminScreenCache();
   const isPageActive = useAdminRouteIsActive(`/admin/ranges/${rangeId}`);
   const resourceKey = `range-instance-detail:${rangeId}:${session.profile?.id ?? 'current-session'}:${session.profile?.role ?? ''}`;
@@ -1116,7 +1118,7 @@ export function RangeInstanceDetailScreen({
         : null,
     [selection, topologyNodes],
   );
-  const canOperateInstance = detail?.status === 'running';
+  const canOperateInstance = !workspace?.isReadOnly && detail?.status === 'running';
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};

@@ -35,6 +35,9 @@ function normalizeAdminProfile(profile: unknown): AdminProfile | null {
     id,
     username,
     role,
+    ...(typeof nextProfile.isPlatformManager === 'boolean' ? { isPlatformManager: nextProfile.isPlatformManager } : {}),
+    ...(nextProfile.cloudWorkspaceId === null || typeof nextProfile.cloudWorkspaceId === 'string'
+      ? { cloudWorkspaceId: nextProfile.cloudWorkspaceId as string | null } : {}),
   };
 }
 

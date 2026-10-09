@@ -42,8 +42,13 @@ import type {
   UpdateAdminUserStatusInput,
 } from './admin-types';
 import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from './admin-types';
+import type { CloudWorkspaceView, SaveCloudAccountInput } from './admin-types';
+import { readCloudWorkspaceSelection } from './cloud-workspace-selection';
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
+export async function fetchAuthenticatedAdminProfile(apiBaseUrl: string, token: string) {
+  return readJson<import('./admin-types').AdminProfile>(await fetch(`${apiBaseUrl}/admin/session`, { headers: createAdminHeaders(token, null) }));
+}
 
 export class AdminApiError extends Error {
   constructor(
@@ -56,11 +61,28 @@ export class AdminApiError extends Error {
   }
 }
 
-function createAdminHeaders(token: string) {
+function createAdminHeaders(token: string, workspaceId: string | null = readCloudWorkspaceSelection()) {
   return {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
+    ...(workspaceId ? { 'x-cloud-workspace-id': workspaceId } : {}),
   };
+}
+
+export async function fetchCloudWorkspaces(apiBaseUrl: string, token: string) {
+  return readJson<CloudWorkspaceView[]>(await fetch(`${apiBaseUrl}/admin/cloud-workspaces`, { headers: createAdminHeaders(token, null) }));
+}
+
+export async function fetchCurrentCloudWorkspace(apiBaseUrl: string, token: string, cloudWorkspaceId: string | null = null) {
+  return readJson<CloudWorkspaceView | null>(await fetch(`${apiBaseUrl}/admin/cloud-workspaces/current`, { headers: createAdminHeaders(token, cloudWorkspaceId) }));
+}
+
+export async function switchCloudWorkspace(apiBaseUrl: string, token: string, workspaceId: string) {
+  return readJson<CloudWorkspaceView>(await fetch(`${apiBaseUrl}/admin/cloud-workspaces/${encodeURIComponent(workspaceId)}/switch`, { method: 'POST', headers: createAdminHeaders(token), body: '{}' }));
+}
+
+export async function saveCloudAccount(apiBaseUrl: string, token: string, input: SaveCloudAccountInput) {
+  return readJson<CloudAccountContext>(await fetch(`${apiBaseUrl}/admin/cloud-contexts`, { method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify(input) }));
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -1022,10 +1044,10 @@ export async function createImageImport(apiBaseUrl: string, token: string, paylo
   return readJson<ImageImportUploadSession>(response);
 }
 
-export async function completeImageImport(apiBaseUrl: string, token: string, id: string) {
+export async function completeImageImport(apiBaseUrl: string, token: string, id: string, workspaceId?: string) {
   const response = await fetch(`${apiBaseUrl}/admin/image-imports/${encodeURIComponent(id)}/complete`, {
     method: 'POST',
-    headers: createAdminHeaders(token),
+    headers: createAdminHeaders(token, workspaceId ?? readCloudWorkspaceSelection()),
   });
 
   return readJson<ImageImportJob>(response);
