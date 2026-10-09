@@ -10,22 +10,31 @@ type DescribeInstanceBillResponse = {
   Success?: boolean;
   Code?: string;
   Data?: {
+    AccountID?: string;
+    BillingCycle?: string;
     Items?: RawBssItem[];
     NextToken?: string;
     TotalCount?: number;
   };
 };
 
+export class BillingSplitBillUnavailableError extends Error {
+  constructor(readonly code: string) {
+    super(`DescribeSplitItemBill unavailable: ${code}; enable split bills and verify permissions; previous bills were retained`);
+    this.name = 'BillingSplitBillUnavailableError';
+  }
+}
+
 function formatAliyunTimestamp(value: Date) {
   return value.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function normalizeItems(value: unknown) {
+function normalizeItems(value: unknown, action = 'DescribeInstanceBill') {
   if (!Array.isArray(value)) {
-    throw new Error('DescribeInstanceBill returned an invalid item list');
+    throw new Error(`${action} returned an invalid item list`);
   }
   if (value.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
-    throw new Error('DescribeInstanceBill returned an invalid bill row');
+    throw new Error(`${action} returned an invalid bill row`);
   }
   return value as RawBssItem[];
 }
@@ -33,6 +42,58 @@ function normalizeItems(value: unknown) {
 @Injectable()
 export class BillingBssClient {
   constructor(private readonly systemConfigService: SystemConfigService) {}
+
+  async listDailySplitBillingItems(input: { billingDate: string; productCode: 'snapshot' | 'oss' }, capturedContext?: SystemCloudAccountContext) {
+    const { billingDate, productCode } = input;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(billingDate) || !Number.isFinite(Date.parse(billingDate))
+      || new Date(billingDate).toISOString().slice(0, 10) !== billingDate
+      || !['snapshot', 'oss'].includes(productCode)) throw new Error('Invalid split bill query');
+    const context = capturedContext ?? await this.systemConfigService.getAccountContext();
+    if (!context.accountUid || !context.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
+    const action = 'DescribeSplitItemBill';
+    const billingCycle = billingDate.slice(0, 7);
+    const items: RawBssItem[] = [];
+    const seenTokens = new Set<string>();
+    let nextToken: string | null = null;
+    let expectedCount: number | null = null;
+    do {
+      const payload: DescribeInstanceBillResponse = await this.performRpcRequest<DescribeInstanceBillResponse>({
+        accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret, action,
+        parameters: { BillingCycle: billingCycle, BillingDate: billingDate, Granularity: 'DAILY',
+          ProductCode: productCode, BillOwnerId: context.accountUid, MaxResults: '300', IsHideZeroCharge: 'true',
+          ...(nextToken ? { NextToken: nextToken } : {}) },
+      });
+      const data = payload.Data;
+      if (!data || data.AccountID !== context.accountUid || data.BillingCycle !== billingCycle) {
+        throw new Error(`${action} returned a different or unverified billing account/cycle; previous bills were retained`);
+      }
+      if (!Number.isSafeInteger(data.TotalCount) || data.TotalCount! < 0
+        || expectedCount !== null && data.TotalCount !== expectedCount) {
+        throw new Error(`${action} returned an inconsistent row count; previous bills were retained`);
+      }
+      expectedCount = data.TotalCount!;
+      const page = normalizeItems(data.Items ?? (expectedCount === 0 ? [] : undefined), action);
+      for (const row of page) {
+        // BillingDate is not supported in split responses; the documented split date is authoritative.
+        if (row.SplitBillingDate !== billingDate || row.SplitBillingCycle != null && row.SplitBillingCycle !== billingCycle
+          || row.ProductCode !== productCode) throw new Error(`${action} returned a different billing date/product; previous bills were retained`);
+        for (const key of ['OwnerID', 'SplitAccountID']) {
+          if (row[key] != null && row[key] !== '' && row[key] !== context.accountUid) {
+            throw new Error(`${action} returned a different resource account; previous bills were retained`);
+          }
+        }
+      }
+      items.push(...page);
+      if (data.NextToken != null && typeof data.NextToken !== 'string') throw new Error(`${action} returned an invalid pagination token`);
+      nextToken = data.NextToken || null;
+      if (nextToken) {
+        if (!page.length || seenTokens.has(nextToken) || items.length >= expectedCount) throw new Error(`${action} returned an incomplete or repeated pagination token`);
+        seenTokens.add(nextToken);
+      }
+    } while (nextToken);
+    if (items.length !== expectedCount) throw new Error(`${action} returned an incomplete bill; previous bills were retained`);
+    return items;
+  }
 
   async listDailyBillingItems(input: { billingDate: string }, capturedContext?: SystemCloudAccountContext) {
     const snapshot = capturedContext ?? await this.systemConfigService.getAccountContext();
@@ -125,7 +186,7 @@ export class BillingBssClient {
     try {
       payload = await response.json();
     } catch {
-      throw new Error('DescribeInstanceBill returned invalid JSON; previous bills were retained');
+      throw new Error(`${input.action} returned invalid JSON; previous bills were retained`);
     }
 
     if (!response.ok || !payload || typeof payload !== 'object'
@@ -138,6 +199,7 @@ export class BillingBssClient {
         typeof (payload as { Code?: unknown }).Code === 'string'
           ? (payload as { Code: string }).Code
           : `HTTP_${response.status}`;
+      if (input.action === 'DescribeSplitItemBill') throw new BillingSplitBillUnavailableError(errorCode);
       throw new Error(`${input.action} failed: ${errorCode}; previous bills were retained`);
     }
 
