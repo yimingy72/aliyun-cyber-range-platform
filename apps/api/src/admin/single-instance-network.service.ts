@@ -1,8 +1,8 @@
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
-import { ADMIN_REPOSITORY, type AdminRepository, type SingleInstanceNetworkProfileRecord } from './admin.repository';
+import { ADMIN_REPOSITORY, type AdminRepository, type SingleInstanceNetworkProfileRecord, type OperationAuditPhase, type UpsertSingleInstanceNetworkProfileInput } from './admin.repository';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
-import { SingleInstanceNetworkBootstrapService } from '../provisioning/single-instance-network-bootstrap';
+import { SingleInstanceNetworkBootstrapService, singleNetworkWorkspaceKey } from '../provisioning/single-instance-network-bootstrap';
 import type { SessionUserProfile } from './admin-user-auth';
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 @Injectable()
@@ -30,15 +30,58 @@ export class SingleInstanceNetworkService {
       }
       const occupied = (await this.adminRepository.listRangeInstances()).map(value => value.allocatedCidr).filter((value): value is string => Boolean(value));
       occupied.push(...(await this.adminRepository.listSingleInstanceNetworkProfiles()).map(profile => profile.vpcCidr));
+      let pendingProfile: SingleInstanceNetworkProfileRecord | null = null;
+      let cleanupVerified = false;
+      const recordPending = async (recovery: UpsertSingleInstanceNetworkProfileInput) => {
+        pendingProfile = await this.adminRepository.upsertSingleInstanceNetworkProfile({ ...recovery, ...identity, status: 'destroying' });
+        return pendingProfile;
+      };
       try {
-        const profile = await this.bootstrap.bootstrapDefaultProfile({ ...identity, occupiedCidrs: occupied, runtimeConfig: snapshot });
-        return await this.adminRepository.upsertSingleInstanceNetworkProfile({ ...profile, ...identity });
+        const profile = await this.bootstrap.bootstrapDefaultProfile({
+          ...identity, occupiedCidrs: occupied, runtimeConfig: snapshot,
+          onApplyStart: async () => {
+            const recovery = await this.bootstrap.readRecoveryProfile(identity);
+            if (!recovery) throw new ConflictException('Default network apply intent could not be persisted');
+            const pending = await recordPending(recovery);
+            await this.auditNetwork(pending, creatorUserId, 'bootstrap', 'dispatched');
+          },
+          onCleanupStart: async recovery => {
+            const pending = await recordPending(recovery);
+            await this.auditNetwork(pending, creatorUserId, 'bootstrap_cleanup', 'dispatched');
+          },
+          onCleanupVerified: async () => {
+            pendingProfile ??= await this.adminRepository.getSingleInstanceNetworkProfile(identity);
+            if (pendingProfile) {
+              if (pendingProfile.status !== 'destroying' || !pendingProfile.managedByPlatform ||
+                  pendingProfile.cloudAccountContextId !== identity.cloudAccountContextId ||
+                  pendingProfile.workspaceKey !== singleNetworkWorkspaceKey(identity.cloudAccountUid, identity.regionId, identity.zoneId))
+                throw new ConflictException('Default network cleanup intent identity does not match');
+              await this.auditNetwork(pendingProfile, creatorUserId, 'bootstrap', 'failed', 'NETWORK_BOOTSTRAP_FAILED_CLEANED');
+              await this.auditNetwork(pendingProfile, creatorUserId, 'bootstrap_cleanup', 'succeeded');
+              await this.adminRepository.deleteSingleInstanceNetworkProfile(pendingProfile.id);
+              pendingProfile = null;
+            }
+            cleanupVerified = true;
+          },
+        });
+        const ready = await this.adminRepository.upsertSingleInstanceNetworkProfile({ ...profile, ...identity, status: 'ready' });
+        await this.auditNetwork(ready, creatorUserId, 'bootstrap', 'succeeded');
+        return ready;
       }
       catch (error) {
-        const recovery = await this.bootstrap.readRecoveryProfile(identity);
-        if (recovery) {
-          const profile = await this.adminRepository.upsertSingleInstanceNetworkProfile(recovery);
-          throw new ConflictException(`Default network cleanup is required for profile ${profile.id}`);
+        if (!cleanupVerified) {
+          const recovery = await this.bootstrap.readRecoveryProfile(identity);
+          if (recovery) {
+            // An empty post-cleanup state must not erase IDs already retained before compensation.
+            const retained = pendingProfile as SingleInstanceNetworkProfileRecord | null;
+            const pending = await recordPending({ ...recovery,
+              vpcId: recovery.vpcId || retained?.vpcId || '',
+              securityGroupId: recovery.securityGroupId || retained?.securityGroupId || '',
+              vswitchIds: [...new Set([...(retained?.vswitchIds ?? []), ...recovery.vswitchIds])],
+            });
+            await this.auditNetwork(pending, creatorUserId, 'bootstrap', 'failed', 'NETWORK_RECOVERY_REQUIRED');
+            throw new ConflictException(`Default network cleanup is required for profile ${pending.id}`);
+          }
         }
         throw error;
       }
@@ -88,10 +131,21 @@ export class SingleInstanceNetworkService {
         throw new ConflictException('Default network still has resource jobs');
       if (!this.execution)
         throw new ConflictException('Network lifecycle executor unavailable');
+      await this.auditNetwork(profile, currentUser.id, 'destroy', 'requested');
       await this.adminRepository.markSingleInstanceNetworkDestroying(id);
-      await this.execution.assertNetworkUnused(profile, account);
-      await this.bootstrap.destroyDefaultProfile(profile, account);
-      await this.adminRepository.deleteSingleInstanceNetworkProfile(id);
+      try {
+        await this.execution.assertNetworkUnused(profile, account);
+        let cleanupVerified = false;
+        await this.bootstrap.destroyDefaultProfile(profile, account, async () => {
+          await this.auditNetwork(profile, currentUser.id, 'destroy', 'succeeded');
+          await this.adminRepository.deleteSingleInstanceNetworkProfile(id);
+          cleanupVerified = true;
+        });
+        if (!cleanupVerified) throw new ConflictException('Default network cleanup verification was not completed');
+      } catch (error) {
+        await this.auditNetwork(profile, currentUser.id, 'destroy', 'failed', 'NETWORK_CLEANUP_FAILED');
+        throw error;
+      }
       return { networkProfileId: id, status: 'destroyed', vpcId: profile.vpcId, vswitchIds: profile.vswitchIds, securityGroupId: profile.securityGroupId };
     });
   }
@@ -101,6 +155,23 @@ export class SingleInstanceNetworkService {
     const parts = network.split('.');
     return { vswitchId: profile.vswitchIds[index], vswitchCidr: profile.vswitchCidrs[index], zoneKey: `zone-${index + 1}`, privateIp: `${parts[0]}.${parts[1]}.${parts[2]}.${10 + (Math.abs(offset) % 200)}` };
   }
+  private auditNetwork(profile: SingleInstanceNetworkProfileRecord, actorUserId: string | undefined,
+    action: 'bootstrap' | 'bootstrap_cleanup' | 'destroy', phase: OperationAuditPhase, errorCode?: string) {
+    const operationId = `single-network:${profile.id}:${action}`;
+    return this.adminRepository.appendOperationAuditEvent({
+      operationId, requestId: operationId, actorUserId: actorUserId ?? profile.createdByUserId ?? 'system',
+      source: 'system', toolName: `single_instance_network_${action}`, phase,
+      targetType: 'single_instance_network', targetId: profile.id, errorCode,
+      sanitizedInput: {
+        networkProfileId: profile.id, cloudAccountUid: profile.cloudAccountUid,
+        cloudAccountContextId: profile.cloudAccountContextId, regionId: profile.regionId, zoneId: profile.zoneId,
+        workspaceKey: profile.workspaceKey, vpcId: profile.vpcId, vpcCidr: profile.vpcCidr,
+        vswitchIds: profile.vswitchIds, vswitchCidrs: profile.vswitchCidrs, securityGroupId: profile.securityGroupId,
+        cleanupRunId: profile.cleanupRunId, cleanupVerified: phase === 'succeeded' && action !== 'bootstrap',
+      },
+    });
+  }
+
   private assertAdmin(user: SessionUserProfile) {
     if (user.role !== 'admin') throw new ForbiddenException('Only administrators can inspect or destroy shared networks');
   }

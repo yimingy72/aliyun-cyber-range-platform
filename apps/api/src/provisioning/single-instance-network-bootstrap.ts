@@ -48,6 +48,8 @@ export class SingleInstanceNetworkBootstrapService {
   async bootstrapDefaultProfile(input: {
     provider: 'alibaba_cloud';
     onApplyStart?: () => Promise<void>;
+    onCleanupStart?: (profile: UpsertSingleInstanceNetworkProfileInput) => Promise<void>;
+    onCleanupVerified?: () => Promise<void>;
     createdByUserId?:string;
     cloudAccountUid: string;
     cloudAccountContextId: string;
@@ -87,6 +89,7 @@ export class SingleInstanceNetworkBootstrapService {
       await fs.writeFile(path.join(workspaceDir, fileName), contents, 'utf8');
     }));
     const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
+    let applyInvoked = false;
     try {
       await this.runner.init({ workspaceDir, env: runnerEnv, upgrade: true });
       await this.runner.plan({
@@ -98,6 +101,7 @@ export class SingleInstanceNetworkBootstrapService {
       const planned = await this.runner.showPlan({ workspaceDir, env: runnerEnv, planFilePath });
       await recordApplyPlan(workspaceDir, planned);
       await input.onApplyStart?.();
+      applyInvoked = true;
       await this.runner.apply({
         workspaceDir,
         env: runnerEnv,
@@ -137,16 +141,25 @@ export class SingleInstanceNetworkBootstrapService {
       };
     }
     catch (error) {
+      if (!applyInvoked) {
+        await input.onCleanupVerified?.();
+        await fs.rm(workspaceDir, { recursive: true, force: true });
+        throw error;
+      }
       if (existsSync(path.join(workspaceDir, 'terraform.tfstate'))) {
         try {
           await this.assertOwnedState(workspaceDir, input.cloudAccountUid);
           const priorState = (await readWorkspaceState(workspaceDir, true))!;
           const unresolvedApply = await hasUnresolvedApply(workspaceDir, priorState);
+          const recovery = await this.readRecoveryProfile({ provider: input.provider, createdByUserId: input.createdByUserId, cloudAccountUid: input.cloudAccountUid, cloudAccountContextId: input.cloudAccountContextId, regionId: input.regionId, zoneId: input.zoneId });
+          if (!recovery) throw new Error('Default network recovery identity is missing');
+          await input.onCleanupStart?.(recovery);
           await this.runner.destroy({ workspaceDir, env: runnerEnv, varsFilePath });
           await assertDestroyComplete(workspaceDir, priorState, unresolvedApply);
           const remaining = await this.assertOwnedState(workspaceDir, input.cloudAccountUid);
           if (remaining.some(value => value.instances.length))
             throw new Error('Default network cleanup did not finish');
+          await input.onCleanupVerified?.();
           await fs.rm(workspaceDir, { recursive: true, force: true });
         }
         catch (cleanupError) {
@@ -178,7 +191,7 @@ export class SingleInstanceNetworkBootstrapService {
     const ids = (type: string) => resources.filter(value => value.type === type).flatMap(value => value.instances.map((entry: any) => String(entry.attributes.id)));
     return { ...input, status: 'destroying', workspaceKey, managedByPlatform: true, vpcId: ids('alicloud_vpc')[0] ?? '', vpcCidr: config?.vpcCidr ?? '', vswitchIds: ids('alicloud_vswitch'), vswitchCidrs: config?.vswitchCidrs ?? [], securityGroupId: ids('alicloud_security_group')[0] ?? '', securityGroupName: 'single-instance-default-open-all' };
   }
-  async destroyDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig) {
+  async destroyDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig, onCleanupVerified?: () => Promise<void>) {
     if (!profile.managedByPlatform || !profile.cloudAccountUid || profile.workspaceKey !== singleNetworkWorkspaceKey(profile.cloudAccountUid, profile.regionId, profile.zoneId))
       throw new Error('Only a bound, platform-created network profile can be destroyed');
     const dir = path.join(this.workspacesRootDir, profile.workspaceKey);
@@ -197,6 +210,7 @@ export class SingleInstanceNetworkBootstrapService {
     const remaining = await this.assertOwnedState(dir, profile.cloudAccountUid);
     if (remaining.some(value => value.instances.length))
       throw new Error('Default network state still contains resources after destroy');
+    await onCleanupVerified?.();
     await fs.rm(dir, { recursive: true, force: true });
   }
   private async assertOwnedState(dir: string, accountUid: string) {
