@@ -298,6 +298,8 @@ export class SingleInstanceBatchExecutionService {
     const ids = [...new Set(instanceIds)];
     const matches = (detail: NormalizedInstanceDetail) => ids.includes(detail.instanceId)
       && detail.tags.RangeInstanceId === item.instance.id && detail.tags.SingleInstanceBatchId === item.instance.singleInstanceBatchId
+      && detail.tags.CloudAccountUid === item.instance.singleInstanceConfig?.cloudAccountUid
+      && detail.tags.CloudAccountContextId === item.instance.singleInstanceConfig?.cloudAccountContextId && detail.tags.ExecutionBackend === 'opentofu'
       && detail.tags.CreatedBy === 'cyber-range-platform'
       && detail.tags.PlatformScope === (item.instance.ownerUserId ? 'user' : 'platform')
       && (detail.tags.PlatformUserId ?? null) === item.instance.ownerUserId;
@@ -308,7 +310,8 @@ export class SingleInstanceBatchExecutionService {
     await assertLease();
     await this.assertCurrent(item);
     if (ids.length) await this.deleteInstancesWithRetry({ accessKeyId: account.accessKeyId,
-      accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, instanceIds: ids });
+      accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, instanceIds: ids,
+      assertCurrent: async () => { await assertLease(); await this.assertCurrent(item); } });
     let empty = 0;
     for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt += 1) {
       await assertLease();
@@ -389,10 +392,12 @@ export class SingleInstanceBatchExecutionService {
     accessKeySecret: string;
     regionId: string;
     instanceIds: string[];
+    assertCurrent?: () => Promise<void>;
   }) {
     let pendingInstanceIds = input.instanceIds.slice();
     let lastError: unknown;
     for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt += 1) {
+      await input.assertCurrent?.();
       if (!pendingInstanceIds.length) {
         return;
       }
@@ -831,7 +836,8 @@ function normalizeInstanceDetails(response: AliyunDescribeInstancesResponse): No
         privateIp: normalizeStringArray(instance.VpcAttributes?.PrivateIpAddress?.IpAddress)[0] ?? null,
         publicIp: normalizeStringArray(instance.PublicIpAddress?.IpAddress)[0] ?? null,
         status: instance.Status?.trim() || null,
-        tags:Object.fromEntries((instance.Tags?.Tag??[]).filter(tag=>['PlatformUserId','RangeInstanceId','SingleInstanceBatchId','CreatedBy','PlatformScope'].includes(tag.TagKey??'') && typeof tag.TagValue==='string').map(tag=>[tag.TagKey!,tag.TagValue!])),
+        tags:Object.fromEntries((instance.Tags?.Tag??[]).filter(tag=>['PlatformUserId','RangeInstanceId','SingleInstanceBatchId','CreatedBy','PlatformScope',
+          'CloudAccountUid','CloudAccountContextId','ExecutionBackend','PlatformCreateJobId'].includes(tag.TagKey??'') && typeof tag.TagValue==='string').map(tag=>[tag.TagKey!,tag.TagValue!])),
       },
     ];
   });
