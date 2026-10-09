@@ -411,11 +411,18 @@ export function graphFromTemplate(template: Record<string, unknown>): ScenarioGr
 }
 
 function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMetadata) {
+  if (metadata.cloudProvider !== 'alibaba_cloud' && metadata.cloudProvider !== 'tencent_cloud') {
+    throw new Error('Unsupported template cloud provider');
+  }
   if (!metadata.modulePathOrRef.trim()) {
     throw new Error('modulePathOrRef 不能为空');
   }
   if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
     throw new Error('topologyGraph 必须包含 nodes 和 edges 数组');
+  }
+  if (metadata.cloudProvider === 'tencent_cloud' && graph.nodes.some(node => node.kind === 'switch'
+    && (node.nat?.dnatMappings?.length ?? 0) > 0 && !node.nat?.snatEnabled)) {
+    throw new Error('腾讯云公网 DNAT 入口网段必须显式开启 SNAT，当前云接口无法保证仅 DNAT 的出网隔离。');
   }
   const primaryVpcCidr =
     metadata.primaryVpcCidr ??

@@ -35,6 +35,11 @@ describe('template runtime semantics',()=>{
     expect(metadataFromTemplate({...metadata,cloudProvider:'tencent_cloud'}).cloudProvider).toBe('tencent_cloud');
     expect(()=>metadataFromTemplate({...metadata,cloudProvider:'unsupported'})).toThrow('Unsupported');
   });
+  it('rejects Tencent DNAT-only entry instead of silently enabling its default SNAT',()=>{
+    const value=graph(); value.nodes[1].nat.snatEnabled=false;
+    expect(()=>compileTemplateTopology(value,{...metadata,cloudProvider:'tencent_cloud'})).toThrow('必须显式开启 SNAT');
+    expect(()=>compileTemplateTopology(value,metadata)).not.toThrow();
+  });
   it('preserves primary and secondary NIC auxiliary IPs through rendering',()=>{
     const payload:any=compileTemplateTopology(graph(),metadata); const vars=render(payload);
     expect(payload.topologyGraph.nodes.find((n:any)=>n.id==='h').nics[0].secondaryIps).toEqual(['10.0.1.11']);
