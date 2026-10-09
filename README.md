@@ -78,7 +78,7 @@ PROVISIONING_WORKER_RANGE_CONCURRENCY=2
 PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY=3
 ```
 
-这两个上限按进程生效。增加 worker 数量也会增加总体并发；调高前应检查容器内存、CPU 和阿里云账号限流。配置必须是正的安全整数，非法值会回退到默认值。调小上限只影响后续任务，不打断已执行的任务。
+这两个上限按进程生效。增加 worker 数量也会增加总体并发；调高前应检查容器内存、CPU 和阿里云账号限流。配置必须是正的安全整数，非法值会回退到默认值。变更配置后需在无在途资源任务时重建容器。
 
 升级运行时前应等待资源任务结束，备份工作区状态卷，并保留旧镜像。不同版本的已保存 plan 不跨版本复用，新的任务会重新生成 plan。升级说明与验证记录见 [OpenTofu 升级与并发优化](docs/operations/2026-10-09-opentofu-performance.md)。
 

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-IMAGE="${TOFU_DOCKER_IMAGE:-vdagxumcha4qdz-ghcr.xuanyuan.dev/opentofu/opentofu:1.13.1-minimal}"
+IMAGE="${TOFU_DOCKER_IMAGE:-ghcr.io/opentofu/opentofu:1.13.1-minimal}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKDIR="$(pwd)"
 CONTAINER_ROOT="/workspace"
