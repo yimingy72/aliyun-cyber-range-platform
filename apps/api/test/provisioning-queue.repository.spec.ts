@@ -18,7 +18,7 @@ describe('provisioning queue repository', () => {
       const expected = jobs.filter((_, index) => ![2, 4].includes(index)).map(job => job.id).sort();
       expect([...first, ...second].map(job => job.id)).toEqual(expected);
       expect(first).toHaveLength(3);
-      expect(Object.keys(first[0]).sort()).toEqual(['createdAt', 'id', 'jobType', 'rangeInstanceId', 'status']);
+      expect(Object.keys(first[0]).sort()).toEqual(['cloudWorkspaceId', 'createdAt', 'id', 'jobType', 'rangeInstanceId', 'status']);
       expect(await repository.listPendingProvisionJobs({ after: second.at(-1) })).toEqual([]);
     } finally { jest.useRealTimers(); }
   });
@@ -41,7 +41,7 @@ describe('provisioning queue repository', () => {
     expect(expired.map(instance => instance.id).sort()).toEqual(expected.sort());
     const selected = await repository.listProvisioningInstancesByIds([expected[0], expected[0], 'missing']);
     expect(selected).toHaveLength(1);
-    expect(Object.keys(selected[0]).sort()).toEqual(['expiresAt', 'id', 'instanceMode', 'lastJobId', 'ownerUserId', 'singleInstanceBatchId', 'status']);
+    expect(Object.keys(selected[0]).sort()).toEqual(['cloudWorkspaceId', 'expiresAt', 'id', 'instanceMode', 'lastJobId', 'ownerUserId', 'singleInstanceBatchId', 'status']);
     expect(await repository.listProvisioningInstancesByIds([])).toEqual([]);
   });
 
@@ -123,7 +123,7 @@ describe('provisioning queue repository', () => {
     expect(findMany).toHaveBeenCalledWith({ where: { status: 'pending', availableAt: { lte: now }, OR: [
       { createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } },
     ] }, take: 40, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], select: {
-      id: true, rangeInstanceId: true, jobType: true, status: true, createdAt: true,
+      cloudWorkspaceId: true, id: true, rangeInstanceId: true, jobType: true, status: true, createdAt: true,
     } });
     await repository.listPendingProvisionJobs();
     expect(findMany.mock.calls[1][0].take).toBe(100);
