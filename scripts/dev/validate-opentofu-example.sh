@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-EXAMPLE_DIR="$ROOT_DIR/infra/opentofu/examples/alicloud-enterprise-range"
 TOFU_VERSION="${TOFU_VERSION:-1.13.1}"
 TOFU_IMAGE="${TOFU_IMAGE:-ghcr.io/opentofu/opentofu:${TOFU_VERSION}-minimal}"
 TOFU_IMAGE_BINARY_PATH="${TOFU_IMAGE_BINARY_PATH:-/usr/local/bin/tofu}"
@@ -268,17 +267,19 @@ run_tofu_root() {
   )
 }
 
-run_tofu_in_example() {
+run_tofu_in_directory() {
+  local relative_dir="$1"
+  shift
   detect_tofu_mode
   prepare_alicloud_provider_mirror
 
   if [ "$TOFU_MODE" = "docker" ]; then
-    run_tofu_docker "/workspace/infra/opentofu/examples/alicloud-enterprise-range" "$@"
+    run_tofu_docker "/workspace/$relative_dir" "$@"
     return
   fi
 
   (
-    cd "$EXAMPLE_DIR"
+    cd "$ROOT_DIR/$relative_dir"
     if [ -n "$TOFU_CLI_CONFIG_FILE_HOST" ]; then
       TF_CLI_CONFIG_FILE="$TOFU_CLI_CONFIG_FILE_HOST" "$TOFU_BIN" "$@"
     else
@@ -287,7 +288,19 @@ run_tofu_in_example() {
   )
 }
 
+run_tofu_in_example() {
+  run_tofu_in_directory "infra/opentofu/examples/alicloud-enterprise-range" "$@"
+}
+
 cd "$ROOT_DIR"
 run_tofu_root fmt -check -recursive infra/opentofu
 run_tofu_in_example init -backend=false
 run_tofu_in_example validate
+
+for module in alicloud-enterprise-range alicloud-vpc-single-ecs alicloud-single-instance-network; do
+  run_tofu_in_directory "infra/opentofu/modules/$module" init -backend=false
+  run_tofu_in_directory "infra/opentofu/modules/$module" validate
+done
+run_tofu_in_directory "infra/opentofu/examples/alicloud-vpc-single-ecs" init -backend=false
+run_tofu_in_directory "infra/opentofu/examples/alicloud-vpc-single-ecs" validate
+run_tofu_in_directory "infra/opentofu/modules/alicloud-vpc-single-ecs" test -no-color

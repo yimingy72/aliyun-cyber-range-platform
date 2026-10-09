@@ -20,7 +20,7 @@
 
 - 使用 Docker 中真实 OpenTofu 1.12.3 生成无云资源的 `terraform_data` 状态，1.13.1 读取后 plan 为 `no-op`，再执行更新、output 和 destroy。此状态作为 iac-runner 回归 fixture 留存，不包含云凭据或实际资源。
 - 真实 1.13.1 的软中断测试验证超时后仍落盘部分状态，并可销毁；不关闭 stdio 或强杀来缩短等待。
-- 使用阿里云 provider 1.282.0 镜像缓存完成模块 fmt、init 和 validate。
+- 使用阿里云 provider 1.282.0 镜像缓存完成三个模块及两个示例的 fmt、init 和 validate，并通过单实例模块的 mock provider 规划测试，验证 ECS 的 PlatformHostKey 标签。扩大验证时修复了旧单实例模块未声明 host_key、wrapper 未传入 host_key 的缺陷。
 - 并发与查询性能通过容器中的受控慢后端验证，不产生新的收费云资源；耗时结果不代表阿里云实测开通时间。
 
 升级当前运行容器前，应通过平台确认无在途资源任务，备份 OpenTofu 工作区状态卷，并保留旧 API/worker 镜像。回滚遵循 [官方升级指南](https://opentofu.org/docs/intro/upgrading/)：备份当前状态、切回旧镜像，执行 init 和 plan，先确认无意外资源变更。不要直接拿旧状态覆盖已发生新资源操作的状态。

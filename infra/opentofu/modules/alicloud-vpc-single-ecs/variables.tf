@@ -15,6 +15,12 @@ variable "host_name" {
   default     = ""
 }
 
+variable "host_key" {
+  type        = string
+  description = "Logical host key used for ECS resource ownership and billing tags."
+  default     = "single-ecs"
+}
+
 variable "zone_id" {
   type        = string
   description = "Alibaba Cloud zone used by the vSwitch and ECS instance, for example cn-hangzhou-h."
