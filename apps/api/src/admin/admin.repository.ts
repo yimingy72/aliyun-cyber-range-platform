@@ -529,6 +529,22 @@ export type SingleInstanceNetworkProfileRecord = {
   updatedAt: Date;
 };
 
+// Only identifiers and lifecycle evidence needed for billing; no upload credentials or image password.
+export type BillingImageImportResourceRecord = {
+  id: string;
+  cloudAccountUid: string | null;
+  regionId: string | null;
+  imageImportBucket: string | null;
+  objectKey: string;
+  imageId: string | null;
+  backingSnapshotIds: string[];
+  cloudImageDeletedAt: Date | null;
+  snapshotCleanupCompletedAt: Date | null;
+  createdAt: Date;
+  uploadCompletedAt: Date | null;
+  temporaryObjectDeletedAt: Date | null;
+};
+
 export type BillingLedgerResourceRecord = {
   id: string;
   cloudProvider: CloudProvider;
@@ -1173,6 +1189,7 @@ export interface AdminRepository {
   upsertSingleInstanceNetworkProfile(
     input: UpsertSingleInstanceNetworkProfileInput,
   ): Promise<SingleInstanceNetworkProfileRecord>;
+  listBillingImageImportResources(): Promise<BillingImageImportResourceRecord[]>;
   createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;

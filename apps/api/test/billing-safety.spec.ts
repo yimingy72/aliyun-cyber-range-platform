@@ -3,6 +3,7 @@ import { BillingService } from '../src/admin/billing.service';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { releaseRangeInstanceBillingLedger } from '../src/admin/billing-ledger-sync';
+import { createProvenBillingLedger } from './support/create-billing-fixture';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import type { SystemConfigService } from '../src/admin/system-config.service';
 
@@ -15,7 +16,7 @@ const originalFetch = global.fetch;
 
 async function fixture() {
   const repository = createMemoryAdminRepository();
-  const ledger = await repository.createBillingLedgerResource({ cloudAccountUid: CONTEXT.accountUid, regionId: 'cn-hangzhou', cloudResourceId: 'i-test', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
+  const { ledger } = await createProvenBillingLedger(repository, { cloudAccountUid: CONTEXT.accountUid, regionId: 'cn-hangzhou', cloudResourceId: 'i-test', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
   const sync = (items: Record<string, unknown>[], context = config) => new BillingSyncService(repository, { listDailyBillingItems: async () => items } as unknown as BillingBssClient, context);
   return { repository, ledger, sync };
 }
@@ -100,13 +101,13 @@ describe('billing safety', () => {
     expect(await f.repository.listBillingLineItems()).toEqual(previous);
   });
 
-  it('shows unallocated charges and resources awaiting bills without assigning them to users or treating them as free', async () => {
+  it('ignores unrelated account aggregates while retaining platform resources awaiting bills', async () => {
     const f = await fixture();
     await f.sync([row({ ProductCode: 'snapshot', InstanceID: 'cn-hangzhou', PretaxAmount: 3 }),
       row({ ProductCode: 'oss', InstanceID: 'cn-hangzhou;standard', PretaxAmount: 2, Currency: 'USD' })]).syncRange({ startAt: DAY, endAt: DAY });
     const summary = await new BillingService(f.repository).getSummary({ startAt: DAY, endAt: DAY });
     expect(summary).toMatchObject({ totalPretaxAmount: 0, platformPretaxAmount: 0, billingStatus: 'provisional', resourcesWithoutBillCount: 1,
-      unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 3 }, { currency: 'USD', pretaxAmount: 2 }] });
+      unallocatedCurrencyTotals: [] });
     expect((await new BillingService(f.repository).listPlatformItems({ startAt: DAY, endAt: DAY }))).toEqual([]);
   });
 
@@ -123,7 +124,7 @@ describe('billing safety', () => {
     await f.sync([row({ InstanceID: 'i-wrong-account', Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:CloudAccountUid value:100002' })])
       .syncRange({ startAt: DAY, endAt: DAY });
     expect(await f.repository.listBillingLineItems()).toEqual([]);
-    expect(await f.repository.listBillingAnomalies()).toHaveLength(1);
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(0);
   });
 
   it('retains a resource ID with a conflicting explicit region as unallocated', async () => {
@@ -140,7 +141,7 @@ describe('billing safety', () => {
     await f.sync([row(), row({ InstanceID: 'i-collision', Tag: 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform' })])
       .syncRange({ startAt: DAY, endAt: DAY });
     expect(await f.repository.listBillingLineItems()).toHaveLength(1);
-    expect(await f.repository.listBillingAnomalies()).toHaveLength(1);
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(0);
     expect((await f.repository.listBillingLedgerResources()).find(item => item.cloudResourceId === 'i-collision')?.cloudAccountUid).toBe(uid);
   });
 
@@ -148,7 +149,7 @@ describe('billing safety', () => {
     const f = await fixture();
     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
     const secondConfig = { getAccountContext: async () => ({ ...CONTEXT, accountUid: '100002' }) } as unknown as SystemConfigService;
-    await f.repository.createBillingLedgerResource({ cloudAccountUid: '100002', regionId: 'cn-hangzhou', cloudResourceId: 'i-second', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
+    await createProvenBillingLedger(f.repository, { cloudAccountUid: '100002', regionId: 'cn-hangzhou', cloudResourceId: 'i-second', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
     const dates: string[] = [];
     const second = new BillingSyncService(f.repository, { listDailyBillingItems: async ({ billingDate }: { billingDate: string }) => { dates.push(billingDate); return [row({ OwnerID: '100002', InstanceID: 'i-second', PretaxAmount: 20 })]; } } as unknown as BillingBssClient, secondConfig);
     await second.syncRange({ startAt: '2026-09-30', endAt: DAY });
@@ -163,8 +164,8 @@ describe('billing safety', () => {
     const tag = 'key:CreatedBy value:cyber-range-platform; key:PlatformScope value:platform; key:BillingStartAt value:2026-01-01';
     await f.sync([row({ InstanceID: 'i-singapore', Region: 'ap-southeast-1', Tag: tag }), row({ InstanceID: 'i-unknown', Region: 'Unknown human label', Tag: tag }), row({ InstanceID: 'i-forged', Tag: tag.replace('value:platform;', 'value:user;') + '; key:PlatformUserId value:unknown-user' })]).syncRange({ startAt: DAY, endAt: DAY });
     const singapore = (await f.repository.listBillingLedgerResources()).find(item => item.cloudResourceId === 'i-singapore');
-    expect(singapore).toMatchObject({ regionId: 'ap-southeast-1', cloudAccountUid: CONTEXT.accountUid });
-    expect(await f.repository.listBillingAnomalies()).toHaveLength(2);
+    expect(singapore).toBeUndefined();
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(0);
   });
 
   it('defers unfinished dates and still accepts refunds after the original resource release', async () => {
@@ -189,12 +190,16 @@ describe('billing safety', () => {
   });
 
   it('retains packed images and snapshots after the original instance is released', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-01-01'));
     const f = await fixture();
+    const packed = await f.repository.createPackedImageArtifact({ cloudAccountContextId: 'test-cloud', cloudAccountUid: CONTEXT.accountUid, regionId: 'cn-hangzhou', ownerUserId: 'test-user', sourceRangeInstanceId: 'source-instance', sourceHostKey: 'host', sourceInstanceId: 'i-test', sourceDiskIds: [] });
+    await f.repository.updatePackedImageArtifact(packed.id, { imageId: 'm-packed', backingSnapshotIds: ['s-packed'] });
     for (const [cloudResourceId, cloudResourceType] of [['m-packed', 'image'], ['s-packed', 'snapshot']] as const) {
-      await f.repository.createBillingLedgerResource({ cloudAccountUid: CONTEXT.accountUid, regionId: 'cn-hangzhou', cloudResourceId, cloudResourceType, billingScope: 'platform', rangeInstanceId: 'source-instance', billingStartAt: new Date('2026-01-01') });
+      await f.repository.createBillingLedgerResource({ cloudAccountUid: CONTEXT.accountUid, regionId: 'cn-hangzhou', cloudResourceId, cloudResourceType, billingScope: 'user', ownerUserId: 'test-user', rangeInstanceId: 'source-instance', billingStartAt: new Date('2026-01-01') });
     }
     await releaseRangeInstanceBillingLedger(f.repository, 'source-instance', new Date('2026-09-01'));
     expect((await f.repository.listBillingLedgerResources()).filter(item => item.rangeInstanceId === 'source-instance').every(item => item.releasedAt === null)).toBe(true);
+    jest.setSystemTime(new Date('2026-10-09'));
     await f.sync([row({ ProductCode: 'snapshot', BillingItem: 'snapshot storage', InstanceID: 's-packed', PretaxAmount: 2 })]).syncRange({ startAt: DAY, endAt: DAY });
     expect((await f.repository.listBillingLineItems())[0].pretaxAmount).toBe(2);
   });
