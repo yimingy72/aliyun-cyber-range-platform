@@ -86,7 +86,7 @@ export class RangeInstanceNodeActionsService {
     if (source?.cloudAccountContextId && (source.cloudAccountContextId !== accountContext.cloudAccountContextId
       || source.cloudAccountUid !== accountContext.accountUid || source.regionId !== accountContext.defaultRegion || !accountContext.accountUidResolved))
       throw new ConflictException('实例云账号与创建时绑定不符。');
-    if (accountContext.provider === 'tencent_cloud') return this.runTencentNodeAction(instance, nodeId, hostInstanceId, action, accountContext);
+    if (accountContext.provider === 'tencent_cloud' && action !== 'pack-image') return this.runTencentNodeAction(instance, nodeId, hostInstanceId, action, accountContext);
 
 
     if (action === 'start') {
@@ -166,10 +166,12 @@ export class RangeInstanceNodeActionsService {
     const ownerUserId = instance.ownerUserId ?? instance.createdBy;
     if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('打包需要明确 owner 和已验证云账号。');
     const artifact = await this.packedImages.begin({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
-      id: accountContext.cloudAccountContextId, provider: 'alibaba_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
+      id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
     });
     try {
-      const createImageResponse = await this.performAliyunRpcRequest<{
+      const createImageResponse = accountContext.provider === 'tencent_cloud'
+        ? await this.packedImages.submitTencentImage(artifact, { id: accountContext.cloudAccountContextId, provider: 'tencent_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready' }, { name: displayName, description })
+        : await this.performAliyunRpcRequest<{
         ImageId?: string;
       }>({
         accessKeyId: accountContext.accessKeyId,
@@ -206,7 +208,7 @@ export class RangeInstanceNodeActionsService {
       const { platformImageAsset, snapshot } = await this.adminRepository.withPackedImageArtifactClaim(artifact.id, artifact.submissionToken, async claimed => {
         const syncedAt = new Date();
         await claimed.upsertImageSnapshots({
-          provider: 'alibaba_cloud',
+          provider: accountContext.provider,
           accountUid: accountContext.accountUid,
           regionId: accountContext.defaultRegion,
           scope: 'custom',
@@ -222,7 +224,7 @@ export class RangeInstanceNodeActionsService {
       });
 
       const snapshot = (await claimed.listImageSnapshots({
-        provider: 'alibaba_cloud',
+        provider: accountContext.provider,
         accountUid: accountContext.accountUid,
         regionId: accountContext.defaultRegion,
         scope: 'custom',
