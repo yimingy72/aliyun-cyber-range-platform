@@ -99,13 +99,14 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     const intervalMs = Number(process.env.BILLING_SYNC_INTERVAL_MS ?? '');
 
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0 || intervalMs > 2_147_483_647) {
       return;
     }
 
     this.timer = setInterval(() => {
       void this.syncRecentDays(7).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
     }, intervalMs);
+    this.timer.unref();
   }
 
   onModuleDestroy() {
