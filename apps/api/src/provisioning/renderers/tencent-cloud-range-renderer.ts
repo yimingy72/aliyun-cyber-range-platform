@@ -70,8 +70,8 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     vpc_cidr: plan.network.vpcCidr, secondary_vpc_cidrs: plan.network.secondaryVpcCidrs, entry_host_key: plan.entryHostKey,
     network_zones: plan.networkZones.map(zone => ({ key: zone.key, name: zone.name, cidr: zone.cidr })), hosts, network_interfaces: interfaces,
     host_passwords: input.hostPasswords, security_group_rules: rules(plan.securityGroupRules), acls: rules(plan.aclDefinitions),
-    nat_gateways: plan.natGateways.map(nat => ({ key: nat.key, name: nat.name, zone_key: nat.zoneKey })),
-    eips: plan.eipDefinitions.map(eip => ({ key: eip.key, name: eip.name, nat_key: eip.bindTargetKey, bandwidth: eip.bandwidthMbps })),
+    nat_gateways: plan.natGateways.map(nat => ({ key: nat.key, name: nat.name, zone_key: nat.zoneKey, creation_intent_id: createHash('sha256').update(JSON.stringify(['nat',account.cloudAccountContextId,account.accountUid,input.rangeInstanceId,input.tags.PlatformCreateJobId,nat.key])).digest('hex').slice(0,32) })),
+    eips: plan.eipDefinitions.map(eip => ({ key: eip.key, name: eip.name, nat_key: eip.bindTargetKey, bandwidth: eip.bandwidthMbps, creation_intent_id: createHash('sha256').update(JSON.stringify(['eip',account.cloudAccountContextId,account.accountUid,input.rangeInstanceId,input.tags.PlatformCreateJobId,eip.key,eip.bandwidthMbps])).digest('hex').slice(0,32) })),
     snat_entries: plan.snatEntries.map(entry => ({ key: entry.key, nat_key: entry.natGatewayKey, zone_key: entry.sourceZoneKey, eip_key: entry.eipKey })),
     dnat_entries: plan.dnatEntries.map(entry => ({ key: entry.key, nat_key: entry.natGatewayKey, eip_key: entry.eipKey, host_key: entry.backendHostKey, external_port: entry.externalPort, internal_port: entry.internalPort, protocol: entry.protocol.toUpperCase() })),
     tags: { ...input.tags, CloudProvider: 'tencent_cloud', CloudAccountUid: account.accountUid, CloudAccountContextId: account.cloudAccountContextId, RangeInstanceId: input.rangeInstanceId, CreatedBy: 'cyber-range-platform', PlatformManaged: 'true' } };

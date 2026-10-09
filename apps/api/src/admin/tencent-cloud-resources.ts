@@ -10,6 +10,7 @@ export type TencentResourceEvidence = { provider: 'tencent_cloud'; accountUid: s
   regionId: string; action: string; requestIds: string[]; observedAt: string };
 export type TencentResource = { id: string; kind: TencentResourceKind; tags: Record<string, string>; evidence: TencentResourceEvidence;
   instanceId: string | null; vpcId: string | null; diskUsage: string | null; deleteWithInstance: boolean | null;
+  name?: string; state?: string; publicIp?: string; publicIpAddresses?: string[]; instanceType?: string; imageId?: string; zoneId?: string; subnetId?: string; natProductVersion?: number; bandwidth?: number; maxConcurrent?: number;
   shared: boolean; chargeType: string | null; createdAt?: string; detail?: NormalizedInstanceDetail };
 type Query = { ids?: string[]; tags?: Record<string, string>; vpcId?: string; instanceId?: string; diskIds?: string[] };
 const TAG_KEYS = new Set(['CloudProvider', 'PlatformManaged', 'CreatedBy', 'PlatformScope', 'PlatformUserId', 'RangeInstanceId',
@@ -119,7 +120,11 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
         deleteWithInstance: typeof row.DeleteWithInstance === 'boolean' ? row.DeleteWithInstance : null,
         shared: row.Shareable === true || Array.isArray(row.InstanceIdList) && row.InstanceIdList.length > 1,
         chargeType: string(row.InstanceChargeType ?? row.DiskChargeType),
-        ...(typeof row.CreateTime === 'string' ? { createdAt: row.CreateTime } : {}) };
+        ...(typeof (row.CreateTime ?? row.CreatedTime) === 'string' ? { createdAt: String(row.CreateTime ?? row.CreatedTime) } : {}),
+        name: string(row.NatGatewayName ?? row.AddressName ?? row.InstanceName) ?? undefined, state: string(row.State ?? row.AddressStatus ?? row.InstanceState) ?? undefined, publicIp: string(row.AddressIp) ?? undefined,
+        publicIpAddresses: Array.isArray(row.PublicIpAddressSet) ? row.PublicIpAddressSet.map(value => string(object(value).PublicIpAddress) ?? '') : undefined,
+        instanceType: string(row.InstanceType) ?? undefined, imageId: string(row.ImageId) ?? undefined, zoneId: string(row.Zone ?? (row.Placement ? object(row.Placement).Zone : undefined)) ?? undefined, subnetId: string(row.SubnetId ?? vpc.SubnetId) ?? undefined,
+        natProductVersion: typeof row.NatProductVersion === 'number' ? row.NatProductVersion : undefined, bandwidth: typeof row.InternetMaxBandwidthOut === 'number' ? row.InternetMaxBandwidthOut : undefined, maxConcurrent: typeof row.MaxConcurrentConnection === 'number' ? row.MaxConcurrentConnection : undefined };
       if (kind === 'ecs') {
         if (typeof row.InstanceState !== 'string' || !/^[A-Z_]+$/.test(row.InstanceState)) throw new Error('Tencent instance state is malformed');
         const systemDiskId = row.SystemDisk ? string(object(row.SystemDisk).DiskId) : null;

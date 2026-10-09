@@ -30,8 +30,8 @@ variable "host_passwords" {
 }
 variable "security_group_rules" { type = list(object({ key = string, host_key = string, device_index = number, direction = string, action = string, protocol = string, port = string, cidr_block = string, priority = number, description = string })) }
 variable "acls" { type = list(object({ key = string, zone_key = string, direction = string, action = string, protocol = string, port = string, cidr_block = string, priority = number, description = string })) }
-variable "nat_gateways" { type = list(object({ key = string, name = string, zone_key = string })) }
-variable "eips" { type = list(object({ key = string, name = string, nat_key = string, bandwidth = number })) }
+variable "nat_gateways" { type = list(object({ key = string, name = string, zone_key = string, creation_intent_id = string })) }
+variable "eips" { type = list(object({ key = string, name = string, nat_key = string, bandwidth = number, creation_intent_id = string })) }
 variable "snat_entries" { type = list(object({ key = string, nat_key = string, zone_key = string, eip_key = string })) }
 variable "dnat_entries" { type = list(object({ key = string, nat_key = string, eip_key = string, host_key = string, external_port = number, internal_port = number, protocol = string })) }
 variable "tags" {

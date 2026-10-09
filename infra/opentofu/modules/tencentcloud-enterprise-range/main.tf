@@ -144,16 +144,16 @@ resource "tencentcloud_vpc_acl_attachment" "zones" {
   subnet_id = tencentcloud_subnet.zones[each.key].id
 }
 resource "tencentcloud_eip" "range" {
-  client_token               = substr(sha256(jsonencode([var.tags.CloudAccountContextId, var.tags.CloudAccountUid, var.region, var.zone_id, var.range_instance_id, each.key, each.value.bandwidth])), 0, 32)
+  client_token               = each.value.creation_intent_id
   for_each                   = local.eips
-  name                       = substr("${var.resource_name_prefix}-${each.key}", 0, 60)
+  name                       = "${var.resource_name_prefix}-${substr(each.value.creation_intent_id, 0, 16)}"
   internet_charge_type       = "TRAFFIC_POSTPAID_BY_HOUR"
   internet_max_bandwidth_out = each.value.bandwidth
-  tags                       = var.tags
+  tags                       = merge(var.tags, { CreationIntentId = each.value.creation_intent_id, PlatformResourceType = "eip" })
 }
 resource "tencentcloud_nat_gateway" "shared" {
   for_each            = local.nats
-  name                = substr("${var.resource_name_prefix}-${each.key}", 0, 60)
+  name                = "${var.resource_name_prefix}-${substr(each.value.creation_intent_id, 0, 16)}"
   vpc_id              = tencentcloud_vpc.range.id
   subnet_id           = tencentcloud_subnet.zones[each.value.zone_key].id
   zone                = var.zone_id

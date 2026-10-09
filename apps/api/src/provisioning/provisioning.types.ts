@@ -96,5 +96,6 @@ export interface RangeProvisioner {
   readonly mode?: 'opentofu' | 'dry-run';
   create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult>;
   destroy(input: RangeProvisionDestroyInput): Promise<void>;
+  recoverUntrackedResources?(input: RangeProvisionDestroyInput, assertCurrent: () => Promise<void>, persist: (summary: RangeResourceSummary, sourceProvisionJobId: string) => Promise<void>): Promise<void>;
   inspectResources?(input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null>;
 }

@@ -905,6 +905,19 @@ export class ProvisioningWorkerService {
         (summary as any)[field] = value;
       }
     }
+    if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
+      await this.rangeProvisioner.recoverUntrackedResources(inspectedInput,async () => {
+        input.signal?.throwIfAborted();
+        if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
+      },async (recovered,sourceJobId) => {
+        const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
+        if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt) throw new Error('Tencent recovery has no original submitted platform job');
+        for (const field of ['natGatewayIds','eipAllocationIds'] as const) summary[field] = { ...summary[field], ...recovered[field] };
+        const saved = await this.updateRangeForClaim(job,{ resourceSummary: summary });
+        await this.recordRangeResourceInventory(job,summary);
+        await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: saved, resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid, sourceProvisionJobId: sourceJobId, billingStartAt: instance.createdAt });
+      });
+    }
     summary = await this.captureRangeDisks(job, instance, summary, context, true);
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
     await this.recordRangeResourceInventory(job, summary);

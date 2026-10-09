@@ -18,8 +18,8 @@ variables {
   host_passwords       = { entry = "FixturePassword123!" }
   security_group_rules = [{ key = "http", host_key = "entry", device_index = 0, direction = "ingress", action = "ACCEPT", protocol = "TCP", port = "80", cidr_block = "0.0.0.0/0", priority = 1, description = "HTTP" }, { key = "egress", host_key = "entry", device_index = null, direction = "egress", action = "ACCEPT", protocol = "ALL", port = "all", cidr_block = "0.0.0.0/0", priority = 100, description = "Egress" }]
   acls                 = [{ key = "in", zone_key = "dmz", direction = "inbound", action = "ACCEPT", protocol = "TCP", port = "80", cidr_block = "0.0.0.0/0", priority = 1, description = "HTTP" }]
-  nat_gateways         = [{ key = "shared", name = "NAT", zone_key = "dmz" }]
-  eips                 = [{ key = "snat", name = "SNAT", nat_key = "shared", bandwidth = 10 }, { key = "dnat", name = "DNAT", nat_key = "shared", bandwidth = 10 }]
+  nat_gateways         = [{ key = "shared", name = "NAT", zone_key = "dmz", creation_intent_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }]
+  eips                 = [{ key = "snat", name = "SNAT", nat_key = "shared", bandwidth = 10, creation_intent_id = "cccccccccccccccccccccccccccccccc" }, { key = "dnat", name = "DNAT", nat_key = "shared", bandwidth = 10, creation_intent_id = "dddddddddddddddddddddddddddddddd" }]
   snat_entries         = [{ key = "dmz", nat_key = "shared", zone_key = "dmz", eip_key = "snat" }]
   dnat_entries         = [{ key = "http", nat_key = "shared", eip_key = "dnat", host_key = "entry", external_port = 80, internal_port = 80, protocol = "TCP" }]
   tags                 = { CloudProvider = "tencent_cloud", CloudAccountContextId = "ctx-fixture", CloudAccountUid = "100000000001", RangeInstanceId = "range-fixture", PlatformCreateJobId = "job-fixture", CreatedBy = "cyber-range-platform", PlatformScope = "user", PlatformUserId = "owner-fixture" }
