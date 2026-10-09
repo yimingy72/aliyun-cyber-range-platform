@@ -46,7 +46,7 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
     return [];
   }
 
-  const specs: LedgerSpec[] = [];
+  const specs: LedgerSpec[] = resourceSummary.retiredResources ? buildLedgerSpecs({ ...resourceSummary.retiredResources, retiredResources: null }) : [];
   const hostIds = collectResourceIds(resourceSummary.hostIds);
 
   for (const hostId of hostIds) {
@@ -78,7 +78,7 @@ function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerS
     specs.push({ cloudResourceId: dnatEntryId, cloudResourceType: 'dnat_entry' });
   }
 
-  return specs;
+  return [...new Map(specs.map(spec => [`${spec.cloudResourceType}:${spec.cloudResourceId}`, spec])).values()];
 }
 
 function assertLedgerOwnership(ledger: BillingLedgerResourceRecord, input: SyncRangeInstanceBillingLedgerInput) {

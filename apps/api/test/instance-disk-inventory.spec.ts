@@ -39,7 +39,7 @@ describe('owned ECS disk inventory', () => {
   });
   it.each([
     {}, page([], { RequestId: undefined }), page([], { TotalCount: 1 }), page([], { PageNumber: 2 }),
-    page([], { NextToken: 'unfinished' }), page([disk('d-1','data'), disk('d-1','data')]),
+    page([], { NextToken: 'unfinished' }), page([], { Code:'Forbidden' }), page([], {PageSize:1.5}), page([disk('d-1','data'), disk('d-1','data')]),
     page([disk('d-1','data', { InstanceId: 'i-foreign' })]), page([disk('d-1','invalid')]),
   ])('rejects incomplete or conflicting inventory %j', async body => { await expect(read(async () => body)).rejects.toThrow(); });
   it('verifies residual data disks by the exact recorded IDs and rejects other resources', async () => {
@@ -48,6 +48,20 @@ describe('owned ECS disk inventory', () => {
     expect(rpc).toHaveBeenCalledWith('DescribeDisks', { DiskIds: '["d-system","d-data"]', PageNumber:'1',PageSize:'100' });
     await expect(findExistingInventoryDiskIds(rpc, ['d-system'])).rejects.toThrow('unrequested');
   });
+  it('finds detached tagged disks but never calls an incomplete historical inventory fully reclaimed', async () => {
+    const rpc = jest.fn(async (_action, parameters) => parameters.InstanceId ? page([]) : page([disk('d-orphan','data',{InstanceId:undefined,DeleteWithInstance:false})]));
+    const result = await read(rpc);
+    expect(result.complete).toBe(false); expect(result.dataDiskIds).toEqual(['d-orphan']);
+    expect(() => assertDiskInventorySafe(result,true)).toThrow('completeness');
+    expect(rpc.mock.calls[1][1]).toMatchObject({'Tag.1.Key':'CreatedBy','Tag.1.Value':'cyber-range-platform'});
+  });
+  it('accepts empty attachments after a previously complete inventory, while retaining every recorded disk for exact verification', async () => {
+    const result = await read(async () => page([]),{previouslyInventoried:true,knownSystemDiskIds:['d-system'],knownDataDiskIds:['d-data']});
+    expect(()=>assertDiskInventorySafe(result,true)).not.toThrow();
+    const merged=mergeDiskInventory({mode:'opentofu',systemDiskIds:{host:'d-system'},dataDiskIds:{'host:data':'d-data'}},'host',result,'i-owned');
+    expect(merged.dataDiskIds).toEqual({'host:data':'d-data'}); expect(merged.diskInventoryHostIds).toEqual({host:'i-owned'});
+  });
+
   it('limits independent instance queries to four in flight', async () => {
     let active = 0, max = 0;
     const rpc = async () => { max = Math.max(max, ++active); await new Promise(resolve => setTimeout(resolve, 2)); active--; return page([]); };

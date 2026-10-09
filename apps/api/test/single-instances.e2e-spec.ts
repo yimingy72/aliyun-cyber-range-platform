@@ -1300,6 +1300,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-1': 'i-destroy-order-01' },
+        systemDiskIds: { 'single-ecs-1': 'd-destroy-order-01' },
         hostIds: {
           'single-ecs-1': 'i-destroy-order-01',
         },
@@ -1328,6 +1330,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-2': 'i-destroy-order-02' },
+        systemDiskIds: { 'single-ecs-2': 'd-destroy-order-02' },
         hostIds: {
           'single-ecs-2': 'i-destroy-order-02',
         },
@@ -1452,6 +1456,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-1': 'i-destroy-dispatch-failure-01' },
+        systemDiskIds: { 'single-ecs-1': 'd-destroy-dispatch-failure-01' },
         hostIds: {
           'single-ecs-1': 'i-destroy-dispatch-failure-01',
         },
@@ -1480,6 +1486,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-2': 'i-destroy-dispatch-failure-02' },
+        systemDiskIds: { 'single-ecs-2': 'd-destroy-dispatch-failure-02' },
         hostIds: {
           'single-ecs-2': 'i-destroy-dispatch-failure-02',
         },
@@ -1839,6 +1847,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-1': 'i-destroy-01' },
+        systemDiskIds: { 'single-ecs-1': 'd-destroy-01' },
         hostIds: {
           'single-ecs-1': 'i-destroy-01',
         },
@@ -1874,6 +1884,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-2': 'i-destroy-02' },
+        systemDiskIds: { 'single-ecs-2': 'd-destroy-02' },
         hostIds: {
           'single-ecs-2': 'i-destroy-02',
         },
@@ -1973,6 +1985,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-1': 'i-auto-release-01' },
+        systemDiskIds: { 'single-ecs-1': 'd-auto-release-01' },
         hostIds: {
           'single-ecs-1': 'i-auto-release-01',
         },
@@ -2057,6 +2071,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-1': 'i-destroy-retry-01' },
+        systemDiskIds: { 'single-ecs-1': 'd-destroy-retry-01' },
         hostIds: {
           'single-ecs-1': 'i-destroy-retry-01',
         },
@@ -2086,6 +2102,8 @@ describe('single instances', () => {
       },
       resourceSummary: {
         mode: 'ecs-native',
+        diskInventoryHostIds: { 'single-ecs-2': 'i-destroy-retry-02' },
+        systemDiskIds: { 'single-ecs-2': 'd-destroy-retry-02' },
         hostIds: {
           'single-ecs-2': 'i-destroy-retry-02',
         },

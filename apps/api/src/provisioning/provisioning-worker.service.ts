@@ -15,6 +15,7 @@ import {
 import { buildBillingTags } from '../admin/billing-tagging';
 import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
+import { retiredResourceInventory, retiredBillableIds } from './retired-resource-inventory';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
@@ -582,7 +583,8 @@ export class ProvisioningWorkerService {
     }
     if (topologySnapshot.operation) await this.assertRangeSnapshotImages(input.instance, topologySnapshot);
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
-    if (beforeUpdate?.resourceSummary) await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true);
+    const beforeResources = beforeUpdate?.resourceSummary
+      ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
       templateModulePath: topologySnapshot.templateModulePath,
@@ -613,11 +615,27 @@ export class ProvisioningWorkerService {
     }
     await this.runWorkerStep(input.reportStep, 'persist_update_result', async () => {
       const current = await this.adminRepository.getRangeInstanceById(input.instance.id);
-      const resourceSummary = await this.captureRangeDisks(input.job, input.instance, { ...current?.resourceSummary, ...result.resourceSummary,
+      let resourceSummary = await this.captureRangeDisks(input.job, input.instance, { ...result.resourceSummary,
+        retiredResources: retiredResourceInventory(beforeResources, result.resourceSummary),
+        diskInventoryHostIds: beforeResources?.diskInventoryHostIds,
         creationAttempted: current?.resourceSummary?.creationAttempted, executionContext: current?.resourceSummary?.executionContext }, input.accountContext, false);
+      resourceSummary = { ...resourceSummary, retiredResources: retiredResourceInventory(beforeResources, resourceSummary) };
       await this.updateRangeForClaim(input.job, { resourceSummary });
       await this.recordRangeResourceInventory(input.job, resourceSummary);
       await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: input.instance, regionId: input.accountContext.defaultRegion, cloudAccountUid: input.accountContext.accountUid, resourceSummary, sourceProvisionJobId: input.job.id, billingStartAt: input.instance.createdAt });
+      if (resourceSummary.retiredResources) {
+        const remaining = await this.findResidualCloudResources(resourceSummary.retiredResources, input.runtimeConfig);
+        if (remaining.length) throw new Error(`Replaced range resources remain after update: ${remaining.join(', ')}`);
+        const retiredIds = retiredBillableIds(resourceSummary.retiredResources);
+        for (const ledger of await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: input.instance.id })) {
+          if (retiredIds.has(ledger.cloudResourceId) && ledger.regionId === input.accountContext.defaultRegion
+            && ledger.cloudAccountUid === input.accountContext.accountUid && ledger.ownerUserId === input.instance.ownerUserId && !ledger.releasedAt) {
+            if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
+            await this.adminRepository.updateBillingLedgerResource(ledger.id, { releasedAt: new Date() });
+          }
+        }
+        resourceSummary = { ...resourceSummary, retiredResources: null };
+      }
       await this.adminRepository.completeRangeInstanceDraftApply(input.instance.id, {
         runtimeTopologyGraph: topologySnapshot.topologyGraph,
         runtimeScenarioTemplateSpec: topologySnapshot.scenarioTemplateSpec,
@@ -736,8 +754,8 @@ export class ProvisioningWorkerService {
     return false;
   }
 
-  private rangeSummaryHasIds(summary: RangeResourceSummary | null) {
-    return Boolean(summary && (summary.vpcId || summary.eipAllocationId
+  private rangeSummaryHasIds(summary: RangeResourceSummary | null): boolean {
+    return Boolean(summary && (this.rangeSummaryHasIds(summary.retiredResources ?? null) || summary.vpcId || summary.eipAllocationId
       || ['hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
         .some(field => Object.values((summary as any)[field] ?? {}).some(Boolean))));
   }
@@ -784,7 +802,7 @@ export class ProvisioningWorkerService {
   }
 
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
+    const inventory = Object.fromEntries(['retiredResources','vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();
@@ -1437,6 +1455,8 @@ export class ProvisioningWorkerService {
     if (failed) throw failed.reason;
     residualResources.push(...results.flat());
 
+    if (resourceSummary.retiredResources) residualResources.push(...await this.findResidualCloudResources(
+      { ...resourceSummary.retiredResources, retiredResources: null }, runtimeConfig));
     return residualResources;
   }
 

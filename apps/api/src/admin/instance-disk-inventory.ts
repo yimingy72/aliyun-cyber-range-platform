@@ -23,8 +23,8 @@ async function readDiskPages(rpc: DiskRpc, parameters: Record<string, string>) {
   for (let page = 1; page <= 100; page++) {
     const body = await query(rpc, 'DescribeDisks', { ...parameters, PageNumber: String(page), PageSize: '100' }) as any;
     const rows = body?.Disks?.Disk;
-    if (typeof body?.RequestId !== 'string' || !body.RequestId || !Array.isArray(rows) || !Number.isSafeInteger(body.TotalCount) || body.TotalCount < 0
-      || Number(body.PageNumber) !== page || Number(body.PageSize) < 1 || Number(body.PageSize) > 100
+    if (body?.Code || typeof body?.RequestId !== 'string' || !body.RequestId || !Array.isArray(rows) || !Number.isSafeInteger(body.TotalCount) || body.TotalCount < 0
+      || Number(body.PageNumber) !== page || !Number.isInteger(Number(body.PageSize)) || Number(body.PageSize) < 1 || Number(body.PageSize) > 100
       || body.NextToken || expectedTotal !== undefined && expectedTotal !== body.TotalCount
       || rows.some(row => !row || typeof row.DiskId !== 'string' || !/^d-[A-Za-z0-9-]+$/.test(row.DiskId))
       || rows.length > Number(body.PageSize)) throw new Error('Disk inventory response is incomplete or malformed');
@@ -39,9 +39,10 @@ async function readDiskPages(rpc: DiskRpc, parameters: Record<string, string>) {
 }
 
 export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceId: string;
-  knownSystemDiskIds?: string[]; knownDataDiskIds?: string[]; previouslyInventoried?: boolean; expectedTags: Record<string, string> }): Promise<AttachedDiskInventory> {
+  knownSystemDiskIds?: string[]; knownDataDiskIds?: string[]; previouslyInventoried?: boolean; expectedTags: Record<string, string>; optionalExpectedTags?: Record<string, string> }): Promise<AttachedDiskInventory> {
   if (input.expectedTags.CreatedBy !== 'cyber-range-platform' || !input.expectedTags.RangeInstanceId
-    || !['user', 'platform'].includes(input.expectedTags.PlatformScope)) throw new Error('Disk inventory requires proven platform ownership');
+    || !['user', 'platform'].includes(input.expectedTags.PlatformScope)
+    || input.expectedTags.PlatformScope === 'user' && !input.expectedTags.PlatformUserId) throw new Error('Disk inventory requires proven platform ownership');
   const disks = await readDiskPages(input.rpc, { InstanceId: input.instanceId });
   const result: AttachedDiskInventory = { complete: input.previouslyInventoried === true, systemDiskIds: [], dataDiskIds: [], unverifiedDisks: [], proofs: {} };
   for (const disk of disks) {
@@ -52,7 +53,8 @@ export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceI
     if (!Array.isArray(tagRows) || tagRows.some(tag => !tag || typeof tag.TagKey !== 'string' || typeof tag.TagValue !== 'string')
       || new Set(tagRows.map(tag => tag.TagKey)).size !== tagRows.length) throw new Error('Disk ownership tags are malformed');
     const tags = Object.fromEntries(tagRows.map(tag => [tag.TagKey, tag.TagValue]));
-    const conflict = Object.entries(input.expectedTags).some(([key, value]) => tags[key] !== undefined && tags[key] !== value);
+    const conflict = input.expectedTags.PlatformScope === 'platform' && Boolean(tags.PlatformUserId)
+      || Object.entries({ ...input.optionalExpectedTags, ...input.expectedTags }).some(([key, value]) => tags[key] !== undefined && tags[key] !== value);
     const tagged = Object.entries(input.expectedTags).every(([key, value]) => tags[key] === value);
     const known = (disk.Type === 'system' ? input.knownSystemDiskIds : input.knownDataDiskIds)?.includes(disk.DiskId);
     if (!conflict && (tagged || known)) {
@@ -65,8 +67,13 @@ export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceI
     // Attachment queries cannot discover retained disks after a legacy ECS has already disappeared.
     const parameters = Object.fromEntries(Object.entries(input.expectedTags).flatMap(([key,value], index) => [[`Tag.${index+1}.Key`,key],[`Tag.${index+1}.Value`,value]]));
     for (const disk of await readDiskPages(input.rpc, parameters)) {
-      const tags = Object.fromEntries((disk.Tags?.Tag ?? []).map(tag => [tag.TagKey,tag.TagValue]));
-      if (!['system','data'].includes(disk.Type) || Object.entries(input.expectedTags).some(([key,value]) => tags[key] !== value))
+      const rows = disk.Tags?.Tag;
+      if (!Array.isArray(rows) || rows.some(tag => !tag || typeof tag.TagKey !== 'string' || typeof tag.TagValue !== 'string')
+        || new Set(rows.map(tag => tag.TagKey)).size !== rows.length) throw new Error('Detached disk ownership tags are malformed');
+      const tags = Object.fromEntries(rows.map(tag => [tag.TagKey,tag.TagValue]));
+      if (!['system','data'].includes(disk.Type) || Object.entries(input.expectedTags).some(([key,value]) => tags[key] !== value)
+        || input.expectedTags.PlatformScope === 'platform' && Boolean(tags.PlatformUserId)
+        || Object.entries(input.optionalExpectedTags ?? {}).some(([key,value]) => tags[key] !== undefined && tags[key] !== value))
         throw new Error('Detached disk discovery returned an unproven resource');
       (disk.Type === 'system' ? result.systemDiskIds : result.dataDiskIds).push(disk.DiskId);
       result.proofs[disk.DiskId] = { instanceId: disk.InstanceId ?? null, method: 'tags' };

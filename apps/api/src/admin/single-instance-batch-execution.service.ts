@@ -325,7 +325,8 @@ export class SingleInstanceBatchExecutionService {
         accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action, parameters }),
         instanceId, knownSystemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
         knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
-        previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId), expectedTags });
+        previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId), expectedTags,
+        optionalExpectedTags: { CloudAccountUid: account.accountUid!, CloudAccountContextId: account.cloudAccountContextId! } });
       await assertLease();
       summary = mergeDiskInventory(summary, hostKey, disks, instanceId);
       inventories.push(disks);

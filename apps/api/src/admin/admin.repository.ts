@@ -152,6 +152,7 @@ export type RangeResourceTopologySummary = {
 };
 
 export type RangeResourceSummary = {
+  retiredResources?: RangeResourceSummary | null;
   creationAttempted?: boolean;
   executionContext?: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string };
   mode: 'dry-run' | 'opentofu' | 'ecs-native';

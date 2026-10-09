@@ -1,10 +1,16 @@
 // Upgrade old fixtures to separate disks and multi-ID queries. Production never reads BlockDeviceMappings.
 export function withEcsResponseContract(implementation: typeof fetch): typeof fetch {
   const disks = new Map<string, string[]>();
+  const submittedTags = new Map<string, Array<{TagKey: string; TagValue: string}>>();
   const instanceTags = new Map<string, Array<{ TagKey: string; TagValue: string }>>();
   return async (input, init) => {
     const query = new URLSearchParams(init?.method === 'POST' ? String(init.body ?? '') : new URL(String(input)).search);
     const action = query.get('Action');
+    if (action === 'RunInstances') {
+      const tags = [...query.keys()].filter(key => /^Tag\.\d+\.Key$/.test(key)).map(key => ({TagKey:query.get(key)!,TagValue:query.get(key.replace('.Key','.Value'))!}));
+      const rangeId = tags.find(tag => tag.TagKey === 'RangeInstanceId')?.TagValue;
+      if (rangeId) submittedTags.set(rangeId,tags);
+    }
     if (action === 'DescribeDisks') {
       const id = query.get('InstanceId');
       const requested = query.get('DiskIds') ? JSON.parse(query.get('DiskIds')!) as string[] : null;
@@ -46,7 +52,10 @@ export function withEcsResponseContract(implementation: typeof fetch): typeof fe
         disks.set(instance.InstanceId, instance.BlockDeviceMappings.BlockDeviceMapping.map((disk:{DiskId:string})=>disk.DiskId));
         delete instance.BlockDeviceMappings;
       }
-      if (instance.Tags?.Tag?.length) instanceTags.set(instance.InstanceId, instance.Tags.Tag);
+      const rangeId = instance.Tags?.Tag?.find((tag: {TagKey:string}) => tag.TagKey === 'RangeInstanceId')?.TagValue
+        ?? (query.get('Tag.1.Key') === 'RangeInstanceId' ? query.get('Tag.1.Value') : null);
+      if (rangeId && submittedTags.has(rangeId)) instanceTags.set(instance.InstanceId, submittedTags.get(rangeId)!);
+      else if (instance.Tags?.Tag?.length) instanceTags.set(instance.InstanceId, instance.Tags.Tag);
     }
     return new Response(JSON.stringify(body),{status:response.status});
   };

@@ -51,7 +51,7 @@ async function fixture(failDiskForOwner?: string) {
     }
     if (input.action === 'DescribeDisks') {
       const entry = cloud.get(p.InstanceId);
-      if (!failed && entry?.tags.PlatformUserId === failDiskForOwner) {
+      if (failDiskForOwner && !failed && entry?.tags.PlatformUserId === failDiskForOwner) {
         failed = true;
         const records = await repo.listRangeInstances();
         expect(records.find(instance => instance.id === entry.tags.RangeInstanceId)?.resourceSummary?.hostIds).toBeTruthy();
@@ -79,7 +79,7 @@ async function fixture(failDiskForOwner?: string) {
   const launch = async (actor: typeof alice) => {
     const result = await service.launch({ name: actor.username, platformImageAssetId: asset.id, cpu: 2, memory: 2, quantity: 2, expiresAt: new Date(Date.now() + 60 * 60000).toISOString() }, actor.id);
     await markQueuedInstancesAsLegacyNative(repo, result.instances.map(instance => instance.id));
-    return result;
+    return { ...result, instances: await Promise.all(result.instances.map(async member => (await repo.getRangeInstanceById(member.id))!)) };
   };
   const drain = () => pumpLegacySingleInstanceWorker(worker, repo);
   return { repo, config, native, cloud, calls, profile, network, service, worker, launch, drain };
