@@ -81,9 +81,12 @@ export class CloudWorkspacesService {
         displayName: context.displayName, accountUid: context.accountUid, regionId: context.regionId, zoneId: context.zoneId,
         imageImportBucket: context.imageImportBucket, isActive: context.id === space.activeCloudAccountContextId,
         status: context.status, bucketStatus: context.bucketStatus, lastVerifiedAt: context.lastVerifiedAt })),
-      capabilities: { provisioning: !space.isReadOnly && Boolean(active) && space.provider === 'alibaba_cloud',
-        imageImport: !space.isReadOnly && Boolean(active?.imageImportBucket && active.bucketStatus === 'ready') && space.provider === 'alibaba_cloud',
-        billingSync: !space.isReadOnly && Boolean(active) && space.provider === 'alibaba_cloud' },
+      capabilities: { provisioning: !space.isReadOnly && Boolean(active),
+        rangeProvisioning: !space.isReadOnly && Boolean(active)
+          && (space.provider === 'alibaba_cloud' || process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED === '1'),
+        imageImport: !space.isReadOnly && Boolean(active) && (space.provider === 'tencent_cloud'
+          || Boolean(active?.imageImportBucket && active.bucketStatus === 'ready')),
+        billingSync: !space.isReadOnly && Boolean(active) },
     };
   }
 }

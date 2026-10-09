@@ -3546,6 +3546,7 @@ describe('TemplateEditorScreen', () => {
     selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     addDnatEntry();
+    if (provider === 'tencent_cloud') fireEvent.click(screen.getByLabelText('允许访问互联网（SNAT）'));
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
     await waitFor(() => {

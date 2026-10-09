@@ -28,7 +28,7 @@ const tencentAccountSchema = cloudContextSchema.extend({ provider: z.literal('te
 const sensitiveKey = z.string().trim().min(1).refine(value => value !== '********', 'Masked access keys cannot be reused').describe('敏感凭据，仅用于明确授权的云账号操作；不得回显。');
 const cloudWorkspaceSchema = z.object({ id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), accountUid: z.string().nullable(),
   displayName: z.string(), isReadOnly: z.boolean(), activeCloudAccountContextId: z.string().nullable(), contexts: z.array(cloudContextSchema),
-  capabilities: z.object({ provisioning: z.boolean(), imageImport: z.boolean(), billingSync: z.boolean() }) });
+  capabilities: z.object({ provisioning: z.boolean(), rangeProvisioning: z.boolean().optional(), imageImport: z.boolean(), billingSync: z.boolean() }) });
 function safeCloudContext(value: CloudAccountContext) {
   return cloudContextSchema.parse(value);
 }

@@ -24,7 +24,23 @@ describe('cloud account workspace metadata and selection', () => {
     expect(db.platformUser.update).toHaveBeenCalledTimes(2);
     const listed = await service.list(manager); expect(listed).toHaveLength(2);
     expect(JSON.stringify(listed)).not.toContain('private-key'); expect(JSON.stringify(listed)).not.toContain('private-secret');
-    expect(listed[0].capabilities.provisioning).toBe(true); expect(listed[1].capabilities.provisioning).toBe(false);
+    expect(listed[0].capabilities.provisioning).toBe(true); expect(listed[1].capabilities.provisioning).toBe(true);
+    expect(listed[0].capabilities.rangeProvisioning).toBe(true);
+    expect(listed[1].capabilities.billingSync).toBe(true);
+  });
+  it('keeps Tencent NAT range launch closed until explicit controlled validation is enabled', async () => {
+    const original = process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED;
+    try {
+      delete process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED;
+      const { service } = fixture();
+      const closed = (await service.list(manager))[1].capabilities;
+      expect(closed).toMatchObject({ provisioning: true, rangeProvisioning: false, billingSync: true, imageImport: true });
+      process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED = '1';
+      expect((await service.list(manager))[1].capabilities.rangeProvisioning).toBe(true);
+    } finally {
+      if (original === undefined) delete process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED;
+      else process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED = original;
+    }
   });
   it('does not elevate a workspace administrator into a platform manager or fall back from a bad ID', async () => {
     const { service, db } = fixture(); expect((await service.list(member)).map(space => space.id)).toEqual(['space-a']);

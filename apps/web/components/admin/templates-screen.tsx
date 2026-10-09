@@ -191,6 +191,7 @@ export function TemplatesScreen({
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
+  const canLaunchRange = canProvision && (!workspace || (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud'));
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
   const [activeView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
@@ -716,7 +717,7 @@ export function TemplatesScreen({
   }
 
   async function handleLaunchInstance() {
-    if (!canProvision) return;
+    if (!canLaunchRange) return;
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -785,6 +786,7 @@ export function TemplatesScreen({
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
         {!canProvision ? <p className="mt-4 text-sm text-muted-foreground">{workspace?.isReadOnly ? "当前账号工作空间为只读历史。" : "当前云厂商的拓扑编排与实例创建仍在开发。"}</p> : null}
+        {canProvision && !canLaunchRange ? <p className="mt-4 text-sm text-muted-foreground">腾讯云编排开启待受控回收验证；可继续编辑模板和创建单实例。</p> : null}
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             activeView={activeView}
@@ -969,7 +971,7 @@ export function TemplatesScreen({
                                       )}
                                     </>
                                   ) : null}
-                                  <DropdownMenuItem disabled={!canProvision} onSelect={() => void handleOpenGenerateInstance(template)}>
+                                  <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
                                     生成实例
                                   </DropdownMenuItem>
                                   {canManageCurrentTemplate ? (
@@ -1093,7 +1095,7 @@ export function TemplatesScreen({
             <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeLaunchDialog}>
               取消
             </Button>
-            <Button disabled={!canProvision || isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
+            <Button disabled={!canLaunchRange || isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
               确认生成
             </Button>
           </>

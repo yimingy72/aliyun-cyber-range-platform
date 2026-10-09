@@ -614,7 +614,7 @@ export type CloudWorkspaceView = {
   isReadOnly: boolean;
   activeCloudAccountContextId: string | null;
   contexts: CloudAccountContext[];
-  capabilities: { provisioning: boolean; imageImport: boolean; billingSync: boolean };
+  capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean };
 };
 
 export type SaveCloudAccountInput = {
