@@ -9,6 +9,7 @@ import {
   type BillingLedgerResourceRecord,
   type CreateBillingLineItemInput,
   type CreateBillingAnomalyInput,
+  type BillingLineItemRecord,
 } from './admin.repository';
 import { BillingBssClient } from './billing-bss-client';
 import { billRegionId, billRegionConflict, classifyPlatformBillLine, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
@@ -145,12 +146,17 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
           if (line.BillingDate !== undefined && readString(line, 'BillingDate') !== billingDate) throw new Error('BSS returned a bill for a different billing date; previous bills were retained');
         }
-        const resolved = await this.resolveSplitItems(items, billingDate, cloudAccountUid, cloudConfig, proof);
+        const previous: BillingLineItemRecord[] = (await this.adminRepository.listBillingLineItems({ cloudAccountUid, startAt: billingDate, endAt: billingDate }))
+          .filter(line => proof.ledgers.some(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, proof)
+            && ledger.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType));
+        const resolved = await this.resolveSplitItems(items, billingDate, cloudAccountUid, cloudConfig, proof, previous);
         const dayItems = new Map<string, CreateBillingLineItemInput>();
         const dayAnomalies = new Map<string, CreateBillingAnomalyInput>();
 
         for (const line of resolved.items) {
           const classification = classifyPlatformBillLine(line);
+          // A deferred product is one coherent previous revision, never a mixture of old splits and new direct charges.
+          if (resolved.retainedProducts.has(readString(line, 'ProductCode')) && classification.kind === 'direct') continue;
 
           if (classification.kind === 'direct' && !billRegionConflict(line)) {
             const matchedLedger =
@@ -200,12 +206,12 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           dayAnomalies.set(anomaly.sourceFingerprint, anomaly);
         }
         if (resolved.retainedProducts.size) {
-          const previous = await this.adminRepository.listBillingLineItems({ cloudAccountUid, startAt: billingDate, endAt: billingDate });
           for (const line of previous) {
             const ledger = proof.ledgers.find(item => item.id === line.matchedLedgerId && isPlatformCreatedLedger(item, proof));
-            if (resolved.retainedProducts.has(line.productCode) && line.rawPayload.__platformBillingSource === 'DescribeSplitItemBill'
+            if (resolved.retainedProducts.has(line.productCode)
               && ledger?.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType) {
-              dayItems.set(line.sourceFingerprint, { ...line, billingDate, cloudAccountUid, ownerUserId: ledger.ownerUserId, billingScope: ledger.billingScope });
+              dayItems.set(line.sourceFingerprint, { ...line, billingDate, cloudAccountUid, ownerUserId: ledger.ownerUserId, billingScope: ledger.billingScope,
+                rawPayload: { ...line.rawPayload, __platformBillingSyncDeferred: true } });
             }
           }
         }
@@ -257,13 +263,19 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveSplitItems(items: RawBillLine[], billingDate: string, cloudAccountUid: string,
-    context: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, proof: PlatformBillingProof) {
+    context: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, proof: PlatformBillingProof, previous: BillingLineItemRecord[]) {
     let resolved = items;
     const retainedProducts = new Set<string>();
     for (const productCode of ['snapshot', 'oss'] as const) {
       const original = items.filter(line => readString(line, 'ProductCode') === productCode);
+      const previousProduct = previous.filter(line => line.productCode === productCode);
+      if (!original.length && previousProduct.length) {
+        retainedProducts.add(productCode);
+        continue;
+      }
       if (!original.some(line => classifyPlatformBillLine(line).kind === 'aggregated'
-        && pendingPlatformBillingEvidence({ line, cloudAccountUid, billingDate, proof }))) continue;
+        && pendingPlatformBillingEvidence({ line, cloudAccountUid, billingDate, proof }))
+        && !previousProduct.some(line => line.rawPayload.__platformBillingSource === 'DescribeSplitItemBill')) continue;
       try {
         const split = await this.billingBssClient.listDailySplitBillingItems({ billingDate, productCode }, context);
         // Mixed direct and aggregate source bills require an exact group join; keep their evidence until one is available.
@@ -274,7 +286,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           ...split.map(line => ({ ...line, __platformBillingSource: 'DescribeSplitItemBill' }))];
       } catch {
         // Split billing can be disabled or settle later; preserve proven earlier allocations and expose coverage work.
-        retainedProducts.add(productCode);
+        if (previousProduct.length) retainedProducts.add(productCode);
       }
     }
     return { items: resolved, retainedProducts };
