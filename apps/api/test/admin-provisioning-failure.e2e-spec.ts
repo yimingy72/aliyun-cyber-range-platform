@@ -1,4 +1,5 @@
 import request from 'supertest';
+import { SystemConfigService } from '../src/admin/system-config.service';
 
 import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
 import { collectRangeFixtureImage, createRangeApiFixture, futureExpiration, rangeTemplatePayload } from './support/range-api-fixture';
@@ -7,6 +8,8 @@ describe('Admin provisioning failures', () => {
   let fixture: Awaited<ReturnType<typeof createRangeApiFixture>>;
   let image: Awaited<ReturnType<typeof collectRangeFixtureImage>>;
   const failingProvisioner: RangeProvisioner = {
+    mode: 'opentofu',
+    async inspectResources() { return { mode: 'opentofu' }; },
     async create(input) {
       await input.reportStep?.({ stepName: 'tofu_plan', status: 'running', message: 'Fake plan started.' });
       await input.reportStep?.({
@@ -20,9 +23,14 @@ describe('Admin provisioning failures', () => {
 
   beforeAll(async () => {
     fixture = await createRangeApiFixture(failingProvisioner);
+    jest.spyOn(fixture.app.get(SystemConfigService), 'getAccountContext').mockResolvedValue({
+      provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h',
+      accessKeyId: 'fixture-ak', accessKeySecret: 'fixture-sk', accountUid: 'failure-account',
+      cloudAccountContextId: 'failure-context', accountUidResolved: true,
+    } as any);
     image = await collectRangeFixtureImage(fixture.repository);
   });
-  afterAll(async () => { await fixture.app.close(); });
+  afterAll(async () => { jest.restoreAllMocks(); await fixture.app.close(); });
 
   async function createInstance(name: string, vpcCidr: string) {
     const template = await request(fixture.app.getHttpServer()).post('/admin/scenarios')
