@@ -159,6 +159,9 @@ describe('Admin billing', () => {
         totalPretaxAmount: 1.75,
         platformPretaxAmount: 0.5,
         anomalyCount: 1,
+        billingStatus: 'provisional',
+        unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 0.88 }],
+        resourcesWithoutBillCount: 0,
         resourceTypeTotals: [
           { resourceType: 'ecs', currency: 'CNY', pretaxAmount: 1.25 },
           { resourceType: 'eip', currency: 'CNY', pretaxAmount: 0.5 },

@@ -189,6 +189,7 @@ export class PlatformResourceReconciliationService {
       return { recovered: 0, drifts: 0, skipped: true };
     }
 
+    const cloudReadStartedAt = new Date();
     const [instances, cloudInstances] = await Promise.all([
       this.adminRepository.listRangeInstances(),
       this.aliyunEcsResourceClient.listPlatformManagedInstances(credentials),
@@ -226,7 +227,9 @@ export class PlatformResourceReconciliationService {
       }
 
       if (platformInstance.instanceMode === 'single' && platformInstance.singleInstanceConfig?.executionBackend === 'opentofu') {
-        recovered += await this.reconcileCompletedOpenTofuMember(credentials, platformInstance.id, cloudInstance, now);
+        const result = await this.reconcileCompletedOpenTofuMember(credentials, platformInstance.id, cloudInstance, now, cloudReadStartedAt);
+        recovered += result.recovered;
+        drifts += result.drifts;
         continue;
       }
 
@@ -306,8 +309,9 @@ export class PlatformResourceReconciliationService {
           repository: this.adminRepository,
           instance: reconciledInstance,
           regionId: credentials.regionId,
+          cloudAccountUid: credentials.accountUid,
           resourceSummary: reconciledInstance.resourceSummary,
-          billingStartAt: now,
+          billingStartAt: reconciledInstance.createdAt,
         });
       }
 
@@ -323,37 +327,55 @@ export class PlatformResourceReconciliationService {
   }
 
   private async reconcileCompletedOpenTofuMember(credentials: AliyunEcsCredentials, instanceId: string,
-    cloudInstance: AliyunEcsInstanceResource, now: Date): Promise<number> {
+    cloudInstance: AliyunEcsInstanceResource, now: Date, cloudReadStartedAt: Date) {
     // Intake takes this same lock. Recheck after the cloud read so a newly queued destroy cannot be overwritten.
     return this.adminRepository.withSingleInstanceControlLock(async () => {
       const instance = await this.adminRepository.getRangeInstanceById(instanceId);
       const config = instance?.singleInstanceConfig;
+      const skipped = { recovered: 0, drifts: 0 };
       if (!instance || instance.instanceMode !== 'single' || config?.executionBackend !== 'opentofu'
-        || instance.status !== 'running' || !instance.lastJobId) return 0;
+        || !['running', 'create_failed', 'destroy_failed', 'destroyed'].includes(instance.status)
+        || !instance.lastJobId || instance.updatedAt > cloudReadStartedAt) return skipped;
       const job = await this.adminRepository.getProvisionJobById(instance.lastJobId);
-      if (!job || job.rangeInstanceId !== instance.id || job.status !== 'succeeded') return 0;
+      if (!job || job.rangeInstanceId !== instance.id || !['succeeded', 'failed'].includes(job.status)) return skipped;
+      const unverifiedOwnership = async () => {
+        await this.recordDrift({ cloudInstance, rangeInstanceId: instance.id, regionId: credentials.regionId, observedAt: now,
+          reason: 'Tagged ECS ownership does not match the frozen platform account, user, batch, host or creation job; no user bill was assigned.' });
+        return { recovered: 0, drifts: 1 };
+      };
       if (!credentials.accountUidResolved || !credentials.accountUid || !credentials.cloudAccountContextId
         || config.cloudAccountUid !== credentials.accountUid || config.cloudAccountContextId !== credentials.cloudAccountContextId
-        || config.regionId !== credentials.regionId || !instance.singleInstanceBatchId) return 0;
+        || config.regionId !== credentials.regionId || !instance.singleInstanceBatchId) return unverifiedOwnership();
       const tags = cloudInstance.tags;
       if (tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformManaged !== 'true' || tags.ExecutionBackend !== 'opentofu'
         || tags.CloudAccountUid !== config.cloudAccountUid || tags.CloudAccountContextId !== config.cloudAccountContextId
         || tags.RangeInstanceId !== instance.id || tags.SingleInstanceBatchId !== instance.singleInstanceBatchId
         || (tags.PlatformUserId ?? null) !== instance.ownerUserId || tags.PlatformScope !== (instance.ownerUserId ? 'user' : 'platform')
-        || tags.PlatformResourceType !== 'ecs' || tags.PlatformHostKey !== config.hostKey || !tags.PlatformCreateJobId) return 0;
+        || tags.PlatformResourceType !== 'ecs' || tags.PlatformHostKey !== config.hostKey || !tags.PlatformCreateJobId) return unverifiedOwnership();
       const sourceJob = await this.adminRepository.getProvisionJobById(tags.PlatformCreateJobId);
-      if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create', 'retry'].includes(sourceJob.jobType)) return 0;
+      if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create', 'retry'].includes(sourceJob.jobType)) return unverifiedOwnership();
+      if (instance.status !== 'running' || job.status !== 'succeeded') {
+        // A failed job does not make the surviving cloud resource free. Record evidence without reviving its lifecycle.
+        await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance,
+          regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
+          resourceSummary: { mode: 'opentofu', hostIds: { [config.hostKey]: cloudInstance.instanceId },
+            systemDiskIds: Object.fromEntries(cloudInstance.diskIds.map((id, index) => [`observed-disk-${index}`, id])) },
+          billingStartAt: instance.createdAt, sourceProvisionJobId: sourceJob.id });
+        await this.recordDrift({ cloudInstance, rangeInstanceId: instance.id, regionId: credentials.regionId, observedAt: now,
+          reason: `Platform instance is ${instance.status} but its owned ECS still exists; billing remains open until cloud deletion is verified.` });
+        return { recovered: 0, drifts: 1 };
+      }
       const hostKey = config.hostKey;
       const currentSummary = instance.resourceSummary;
       const existingHostId = currentSummary?.hostIds?.[hostKey];
       const existingDiskId = currentSummary?.systemDiskIds?.[hostKey];
       if (existingHostId && existingHostId !== cloudInstance.instanceId
         || existingDiskId && !cloudInstance.diskIds.includes(existingDiskId)
-        || !existingDiskId && cloudInstance.diskIds.length !== 1) return 0;
+        || !existingDiskId && cloudInstance.diskIds.length !== 1) return unverifiedOwnership();
       const needsSummaryRecovery = !existingHostId || !existingDiskId || currentSummary?.mode !== 'opentofu';
       if (needsSummaryRecovery) await this.restoreResourceSummary(instance, hostKey, { ...cloudInstance, diskIds: [existingDiskId ?? cloudInstance.diskIds[0]] });
       const reconciled = needsSummaryRecovery ? await this.adminRepository.getRangeInstanceById(instance.id) : instance;
-      if (!reconciled) return 0;
+      if (!reconciled) return skipped;
       // OpenTofu owns volume_tags; this path performs no cloud mutations while holding the intake lock.
       await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: reconciled,
         regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
@@ -361,7 +383,7 @@ export class PlatformResourceReconciliationService {
         sourceProvisionJobId: ['create', 'retry'].includes(job.jobType) ? job.id : null });
       await this.adminRepository.resolveCloudResourceDrift({ regionId: credentials.regionId, cloudResourceType: 'ecs',
         cloudResourceId: cloudInstance.instanceId, resolvedAt: now });
-      return needsSummaryRecovery ? 1 : 0;
+      return { recovered: needsSummaryRecovery ? 1 : 0, drifts: 0 };
     });
   }
 

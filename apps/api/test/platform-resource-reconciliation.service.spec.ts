@@ -187,10 +187,12 @@ describe('OpenTofu member reconciliation isolation', () => {
     if (kind === 'tag-mode') test.cloud[0].tags.ExecutionBackend = 'ecs-native';
     if (kind === 'tag-scope') test.cloud[0].tags.PlatformScope = 'platform';
     const update = jest.spyOn(test.repository, 'updateRangeInstance');
+    const drift = jest.spyOn(test.repository, 'upsertCloudResourceDrift');
     await test.service.reconcile();
     expect(update).not.toHaveBeenCalled();
     expect(test.client.tagResources).not.toHaveBeenCalled();
     expect(await test.repository.listBillingLedgerResources()).toEqual([]);
+    expect(drift).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical', cloudResourceId: 'i-0' }));
   });
 
   it.each(['pending_destroy', 'destroying', 'destroyed', 'destroy_failed', 'create_failed'])('does not revive a %s member from a stale pre-destroy cloud snapshot', async status => {
@@ -227,6 +229,38 @@ describe('OpenTofu member reconciliation isolation', () => {
     resume();
     await Promise.all([reconcile, destroy]);
     expect(await test.repository.getRangeInstanceById(test.instances[0].id)).toMatchObject({ status: 'destroyed', resourceSummary: null });
+    expect(test.client.tagResources).not.toHaveBeenCalled();
+  });
+
+  it.each(['create_failed', 'destroy_failed', 'destroyed'])('records surviving owned resources for %s without reviving or retagging them', async status => {
+    const test = await fixture();
+    const instance = test.instances[0];
+    await test.repository.updateProvisionJob(test.jobs[0].id, { status: 'failed' });
+    await test.repository.updateRangeInstance(instance.id, { status: status as never, resourceSummary: null, errorSummary: 'cleanup requires retry' });
+    test.cloud[0].diskIds.push('d-attached');
+    const update = jest.spyOn(test.repository, 'updateRangeInstance');
+    const drift = jest.spyOn(test.repository, 'upsertCloudResourceDrift');
+    await expect(test.service.reconcile()).resolves.toEqual({ recovered: 0, drifts: 1, skipped: false });
+    expect(update).not.toHaveBeenCalled();
+    expect(test.client.tagResources).not.toHaveBeenCalled();
+    expect(await test.repository.getRangeInstanceById(instance.id)).toMatchObject({ status, resourceSummary: null, errorSummary: 'cleanup requires retry' });
+    expect((await test.repository.listBillingLedgerResources()).map(row => row.cloudResourceId).sort()).toEqual(['d-0', 'd-attached', 'i-0']);
+    expect((await test.repository.listBillingLedgerResources()).every(row => row.cloudAccountUid === 'account-a'
+      && row.sourceProvisionJobId === test.jobs[0].id && row.ownerUserId === 'alice' && row.releasedAt === null)).toBe(true);
+    expect(drift).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical', rangeInstanceId: instance.id }));
+  });
+
+  it('does not reopen released billing from a stale cloud snapshot after destruction completes during the read', async () => {
+    const test = await fixture();
+    test.client.listPlatformManagedInstances.mockImplementationOnce(async () => {
+      await test.repository.updateRangeInstance(test.instances[0].id, { status: 'destroyed', resourceSummary: null });
+      const instance = await test.repository.getRangeInstanceById(test.instances[0].id);
+      // Millisecond timestamps may otherwise match on a fast in-memory repository.
+      jest.spyOn(test.repository, 'getRangeInstanceById').mockResolvedValue({ ...instance!, updatedAt: new Date(Date.now() + 1_000) });
+      return test.cloud;
+    });
+    await test.service.reconcile();
+    expect(await test.repository.listBillingLedgerResources()).toEqual([]);
     expect(test.client.tagResources).not.toHaveBeenCalled();
   });
 });
