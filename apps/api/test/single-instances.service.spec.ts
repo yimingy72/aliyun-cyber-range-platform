@@ -17,7 +17,7 @@ function createLaunchFixture() {
   jest.spyOn(repository, 'getPlatformImageAssetById').mockImplementation(async () => ({ ...image }) as never);
   jest.spyOn(repository, 'getImageSnapshotById').mockImplementation(async () => ({ ...source }) as never);
   const availability = { exactAvailable: true, matches: [{ instanceTypeId: 'ecs.fixture' }], warning: null };
-  const config = { getAccountContext: jest.fn().mockImplementation(async () => ({ ...account })),
+  const config = { getExecutionAccountContext: jest.fn().mockImplementation(async () => ({ ...account })),
     getInstanceTypeAvailabilityInContext: jest.fn().mockResolvedValue(availability) };
   let inControlLock = false;
   const controlLock = repository.withSingleInstanceControlLock.bind(repository);

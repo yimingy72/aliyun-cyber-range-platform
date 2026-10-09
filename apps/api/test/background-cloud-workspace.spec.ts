@@ -35,11 +35,11 @@ const packed = (repository: ReturnType<typeof createMemoryAdminRepository>, id: 
 describe('Frozen source workspaces for background tasks', () => {
   afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
 
-  it('rejects a frozen UID mismatch before executing and filters unverified or unsupported polling spaces', async () => {
+  it('rejects a frozen UID mismatch before executing and filters unverified polling spaces and retains both supported providers', async () => {
     const config = runner(), execute = jest.fn(async () => undefined);
     await expect(runInExecutionCloudWorkspace(config, 'account-a', execute, { provider: 'alibaba_cloud', accountUid: 'uid-b' })).rejects.toThrow('frozen cloud workspace');
     expect(execute).not.toHaveBeenCalled();
-    await expect(listExecutionCloudWorkspaces(config)).resolves.toEqual(spaces.slice(0, 2));
+    await expect(listExecutionCloudWorkspaces(config)).resolves.toEqual(spaces.slice(0, 3));
   });
 
   it('refuses missing background runners in production', async () => {
@@ -108,12 +108,12 @@ describe('Frozen source workspaces for background tasks', () => {
     const reconcile = jest.fn(async () => { visited.push(getCurrentCloudWorkspaceId()!); if (getCurrentCloudWorkspaceId() === 'account-a') throw new Error('Synthetic permission failure'); return {}; });
     const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
     await expect(worker.reconcilePlatformResources(new Date())).rejects.toThrow('other source workspaces');
-    expect(visited).toEqual(['account-a', 'account-b']);
+    expect(visited).toEqual(['account-a', 'account-b', 'account-tencent']);
   });
 
   it('reconciles every verified region of an account after its UI default region changes', async () => {
     const config = { ...runner(),
-      listWorkspaceAccountContextIds: jest.fn(async () => getCurrentCloudWorkspaceId() === 'account-a' ? ['a-hangzhou', 'a-shanghai', 'a-hangzhou'] : ['b-beijing']),
+      listWorkspaceAccountContextIds: jest.fn(async () => getCurrentCloudWorkspaceId() === 'account-a' ? ['a-hangzhou', 'a-shanghai', 'a-hangzhou'] : getCurrentCloudWorkspaceId() === 'account-b' ? ['b-beijing'] : ['tencent-nanjing']),
       runInAccountContext: jest.fn(async (contextId: string, work: () => Promise<unknown>) => {
         const current = getCurrentCloudWorkspaceScope();
         if (!current || 'system' in current) throw new Error('Missing source workspace');
@@ -125,14 +125,14 @@ describe('Frozen source workspaces for background tasks', () => {
     const reconcile = jest.fn(async () => { visited.push([getCurrentCloudWorkspaceId(), (getCurrentCloudWorkspaceScope() as any).cloudAccountContextId]); return {}; });
     const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
     await runInCloudWorkspace(scope('account-tencent'), () => worker.reconcilePlatformResources(new Date()));
-    expect(visited).toEqual([['account-a', 'a-hangzhou'], ['account-a', 'a-shanghai'], ['account-b', 'b-beijing']]);
-    expect(config.runInAccountContext).toHaveBeenCalledTimes(3);
+    expect(visited).toEqual([['account-a', 'a-hangzhou'], ['account-a', 'a-shanghai'], ['account-b', 'b-beijing'], ['account-tencent', 'tencent-nanjing']]);
+    expect(config.runInAccountContext).toHaveBeenCalledTimes(4);
     expect(getCurrentCloudWorkspaceScope()).toBeNull();
   });
 
   it('continues another region and account after one regional cloud scan fails', async () => {
     const config = { ...runner(),
-      listWorkspaceAccountContextIds: jest.fn(async () => getCurrentCloudWorkspaceId() === 'account-a' ? ['a-hangzhou', 'a-shanghai'] : ['b-beijing']),
+      listWorkspaceAccountContextIds: jest.fn(async () => getCurrentCloudWorkspaceId() === 'account-a' ? ['a-hangzhou', 'a-shanghai'] : getCurrentCloudWorkspaceId() === 'account-b' ? ['b-beijing'] : ['tencent-nanjing']),
       runInAccountContext: jest.fn(async (contextId: string, work: () => Promise<unknown>) => {
         const current = getCurrentCloudWorkspaceScope();
         if (!current || 'system' in current) throw new Error('Missing source workspace');
@@ -147,7 +147,7 @@ describe('Frozen source workspaces for background tasks', () => {
     });
     const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
     await expect(worker.reconcilePlatformResources(new Date())).rejects.toThrow('other source workspaces');
-    expect(visited).toEqual(['a-hangzhou', 'a-shanghai', 'b-beijing']);
+    expect(visited).toEqual(['a-hangzhou', 'a-shanghai', 'b-beijing', 'tencent-nanjing']);
   });
 
   it('refuses production reconciliation when regional context enumeration is missing', async () => {
@@ -177,7 +177,7 @@ describe('Frozen source workspaces for background tasks', () => {
     jest.spyOn(service, 'refreshImport').mockImplementation(async id => { visited.push([id, getCurrentCloudWorkspaceId()]); return {} as any; });
     await runInCloudWorkspace(scope('account-tencent'), () => service.refreshPendingImports());
     expect(visited.sort()).toEqual([['import-account-a', 'account-a'], ['import-account-b', 'account-b']]);
-    expect(queries.every(query => JSON.stringify(query.where.cloudWorkspaceId) === JSON.stringify({ in: ['account-a', 'account-b'] }))).toBe(true);
+    expect(queries.every(query => JSON.stringify(query.where.cloudWorkspaceId) === JSON.stringify({ in: ['account-a', 'account-b', 'account-tencent'] }))).toBe(true);
   });
 
   it('keeps packed artifact and snapshot accounting in the source workspace', async () => {
@@ -194,12 +194,12 @@ describe('Frozen source workspaces for background tasks', () => {
     expect(ledgers.map(row => [row.cloudResourceId, row.cloudWorkspaceId, row.cloudAccountUid]).sort()).toEqual([[`s-${a.id}`, 'account-a', 'uid-a'], [`s-${b.id}`, 'account-b', 'uid-b']].sort());
   });
 
-  it('schedules billing for every verified Ali account rather than the selected UI account', async () => {
+  it('schedules billing for every verified cloud account rather than the selected UI account', async () => {
     jest.useFakeTimers(); jest.setSystemTime(new Date('2026-10-09T00:00:00Z'));
     const previous = process.env.BILLING_SYNC_INTERVAL_MS; process.env.BILLING_SYNC_INTERVAL_MS = '21600000';
     const config = runner(), service = new BillingSyncService({} as any, {} as any, config as any), visited: string[] = [];
     jest.spyOn(service, 'syncRecentDays').mockImplementation(async () => { visited.push(getCurrentCloudWorkspaceId()!); return {} as any; });
-    try { runInCloudWorkspace(scope('account-tencent'), () => service.onModuleInit()); await jest.advanceTimersByTimeAsync(21600000); expect(visited).toEqual(['account-a', 'account-b']); }
+    try { runInCloudWorkspace(scope('account-tencent'), () => service.onModuleInit()); await jest.advanceTimersByTimeAsync(21600000); expect(visited).toEqual(['account-a', 'account-b', 'account-tencent']); }
     finally { service.onModuleDestroy(); if (previous === undefined) delete process.env.BILLING_SYNC_INTERVAL_MS; else process.env.BILLING_SYNC_INTERVAL_MS = previous; }
   });
 
