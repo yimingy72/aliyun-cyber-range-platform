@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,12 @@ function prisma(...args) {
 }
 try {
   cpSync(path.join(packageDir, 'prisma'), path.join(scratch, 'prisma'), { recursive: true });
-  rmSync(path.join(scratch, 'prisma', 'migrations', '20261009230000_cloud_workspaces'), { recursive: true });
+  const baselineMigrations = path.join(scratch, 'prisma', 'migrations');
+  // Build the legacy schema before this checkpoint; its later migrations require workspace columns.
+  for (const entry of readdirSync(baselineMigrations, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name >= '20261009230000_cloud_workspaces')
+      rmSync(path.join(baselineMigrations, entry.name), { recursive: true });
+  }
   prisma('migrate', 'deploy', '--schema', schema);
   prisma('db', 'execute', '--schema', schema, '--file', path.join(packageDir, 'test', 'fixtures', 'cloud-workspaces-legacy.seed.sql'));
   prisma('migrate', 'deploy', '--schema', path.join(packageDir, 'prisma', 'schema.prisma'));
