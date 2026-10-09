@@ -9,6 +9,7 @@ export type CloudWorkspaceScope = {
   isReadOnly?: boolean;
   actorUserId?: string;
   isPlatformManager?: boolean;
+  cloudAccountContextId?: string;
 };
 
 export type SystemCloudWorkspaceScope = { system: true };

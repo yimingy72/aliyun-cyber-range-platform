@@ -352,6 +352,22 @@ export class SystemConfigService {
     }));
   }
 
+  async listWorkspaceAccountContextIds() {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope || 'system' in scope || !scope.accountUid) throw new BadRequestException('资源核对缺少云账号工作空间。');
+    return (await this.prisma.cloudAccountContext.findMany({
+      where: { cloudWorkspaceId: scope.cloudWorkspaceId, provider: scope.provider, accountUid: scope.accountUid, status: 'ready' },
+      select: { id: true }, orderBy: { id: 'asc' },
+    })).map(context => context.id);
+  }
+
+  async runInAccountContext<T>(id: string, work: () => Promise<T>): Promise<T> {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope || 'system' in scope || scope.isReadOnly) throw new BadRequestException('资源核对缺少已验证云账号工作空间。');
+    await this.getAccountContextById(id);
+    return runInCloudWorkspace({ ...scope, cloudAccountContextId: id }, work);
+  }
+
   private async readSelectedContext(): Promise<SystemCloudAccountContext | null> {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope) return null;
@@ -359,12 +375,13 @@ export class SystemConfigService {
     if (!space || space.provider !== scope.provider || space.accountUid !== scope.accountUid) {
       throw new BadRequestException('当前云账号工作空间已变化，请重新选择。');
     }
-    if (!space.activeCloudAccountContextId) {
+    const selectedContextId = scope.cloudAccountContextId ?? space.activeCloudAccountContextId;
+    if (!selectedContextId) {
       if (space.isReadOnly && !space.accountUid) return { provider: space.provider, cloudAccountContextId: null,
         accountUid: null, accountUidResolved: false, defaultRegion: '', defaultZoneId: '', accessKeyId: '', accessKeySecret: '', imageImportBucket: '' };
       throw new BadRequestException('当前工作空间未绑定可用的云账号配置。');
     }
-    const context = await this.getAccountContextById(space.activeCloudAccountContextId);
+    const context = await this.getAccountContextById(selectedContextId);
     if (context.provider !== space.provider || context.accountUid !== space.accountUid) throw new BadRequestException('云账号配置与当前数据空间不匹配。');
     return context;
   }
