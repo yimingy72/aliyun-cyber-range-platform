@@ -52,7 +52,7 @@ describe('native DescribeInstances short-window coalescing', () => {
     expect(f.rpc).toHaveBeenCalledTimes(2);
     expect(f.rpc.mock.calls.map(([input]) => JSON.parse(input.parameters.InstanceIds))).toEqual([['i-a'], ['i-b']]);
   });
-  it('caps every RPC at100 IDs and bounds chunk requests sequentially', async () => {
+  it('caps every RPC at 100 IDs and bounds chunk requests sequentially', async () => {
     const f = fixture();
     let active = 0, peak = 0;
     const base = f.rpc.getMockImplementation()!;
