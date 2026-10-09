@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { OpenTofuRunner, type OpenTofuCommandResult, type OpenTofuWorkspaceCommandOptions, type OpenTofuPlanOptions, type OpenTofuApplyOptions } from '@aliyun-cyber-range/iac-runner';
 import type { AdminRepository, RangeInstanceRecord, SingleInstanceBatchWithInstancesRecord, SingleInstanceConfig, RangeResourceSummary } from './admin.repository';
-import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type SingleInstanceExecutionItem, type NormalizedInstanceDetail } from './single-instance-batch-execution.service';
+import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type SingleInstanceExecutionItem, type NormalizedInstanceDetail, patchRuntimeScenarioTemplate, patchRuntimeCompiledProvisionSpec } from './single-instance-batch-execution.service';
 import { SystemConfigService } from './system-config.service';
 import { buildBillingTags } from './billing-tagging';
 import { syncRangeInstanceBillingLedger, releaseRangeInstanceBillingLedger } from './billing-ledger-sync';
@@ -290,6 +290,8 @@ export class SingleInstanceOpenTofuExecutionService {
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
       if (!await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary, status: detail.status === 'Running' && detail.publicIp ? 'running' : 'creating',
         runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
+        runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
+        runtimeCompiledProvisionSpec: patchRuntimeCompiledProvisionSpec(item.instance.runtimeCompiledProvisionSpec, hostKey, detail),
         accessEntry: { hostRole: hostKey, publicIp: detail.publicIp, privateIp: detail.privateIp, ssh: detail.publicIp && item.instance.runtimeCredentials?.[hostKey]?.username !== 'Administrator' ? `ssh ${item.instance.runtimeCredentials?.[hostKey]?.username ?? 'root'}@${detail.publicIp}` : null }, errorSummary: null })) continue;
       await this.assertLease(context.lease);
       await syncRangeInstanceBillingLedger({ repository: this.repository, instance: item.instance, regionId: context.account.defaultRegion,

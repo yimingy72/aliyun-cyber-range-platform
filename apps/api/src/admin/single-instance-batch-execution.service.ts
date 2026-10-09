@@ -871,7 +871,7 @@ export function patchRuntimeTopologyGraph(graph: Record<string, unknown> | null,
     }),
   };
 }
-function patchRuntimeScenarioTemplate(scenarioTemplateSpec: Record<string, unknown> | null, hostKey: string, detail: NormalizedInstanceDetail) {
+export function patchRuntimeScenarioTemplate(scenarioTemplateSpec: Record<string, unknown> | null, hostKey: string, detail: NormalizedInstanceDetail) {
   if (!scenarioTemplateSpec || !Array.isArray(scenarioTemplateSpec.hosts)) {
     return scenarioTemplateSpec;
   }
@@ -890,7 +890,7 @@ function patchRuntimeScenarioTemplate(scenarioTemplateSpec: Record<string, unkno
     }),
   };
 }
-function patchRuntimeCompiledProvisionSpec(compiledProvisionSpec: Record<string, unknown> | null, hostKey: string, detail: NormalizedInstanceDetail) {
+export function patchRuntimeCompiledProvisionSpec(compiledProvisionSpec: Record<string, unknown> | null, hostKey: string, detail: NormalizedInstanceDetail) {
   if (!compiledProvisionSpec || !Array.isArray(compiledProvisionSpec.hosts)) {
     return compiledProvisionSpec;
   }

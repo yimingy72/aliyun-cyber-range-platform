@@ -37,6 +37,7 @@
 - `retry` 仅处理创建或销毁失败；`reboot` 仅针对运行中的单台实例。销毁前确认单台 `singleInstanceId` 或整批 `batchId`。
 - `single_instance_pack_image` 会创建私有镜像资产；`open_vnc`、访问凭据和 CSV 按敏感输出规则处理。
 
+- 新单实例以 OpenTofu 批次工作区执行创建与销毁，API 只提交任务；每台 ECS 仍有独立状态、归属与账单。既有 API 实例使用兼容回收路径，不自动导入新状态。
 - 新实例固定云账号 UID、地域、网络 profile 和精确可售规格。两个平台用户共享网络但 ECS 按 owner/batch/RangeInstanceId 隔离，私网 IP 由 ECS 分配。
 - 普通查询不返回运行密码；敏感凭据必须使用访问工具。批次仍在创建时不能销毁；重复销毁不新增任务。
 - 测试结束，先销毁全部成员并核验云端不存在，再由管理员 list 取得本次新建 profile 的准确 ID，确认后 network_destroy；旧未绑定网络、任何活动引用/作业或云端 ECS 均会阻止回收。
