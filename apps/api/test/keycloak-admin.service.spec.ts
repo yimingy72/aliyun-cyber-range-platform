@@ -44,6 +44,7 @@ describe('KeycloakAdminService', () => {
       const service = new serviceModule.KeycloakAdminService();
       const subject = await service.createUser({
         username: 'alice',
+        loginUsername: 'alice~workspace-a',
         password: 'TemporaryPassword123!',
         role: 'user',
         status: 'active',
@@ -58,12 +59,12 @@ describe('KeycloakAdminService', () => {
       );
       expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual(
         expect.objectContaining({
-          username: 'alice',
+          username: 'alice~workspace-a',
           enabled: true,
           emailVerified: true,
           firstName: 'Platform',
           lastName: 'User',
-          email: 'alice@example.local',
+          email: expect.stringMatching(/^[a-f0-9]{64}@example\.local$/),
           credentials: [{ type: 'password', value: 'TemporaryPassword123!', temporary: false }],
           requiredActions: [],
         }),

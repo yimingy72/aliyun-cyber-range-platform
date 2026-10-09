@@ -9,6 +9,8 @@ import { KeycloakAdminService } from '../src/admin/keycloak-admin.service';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { PrismaService } from '../src/database/prisma.service';
 import { loginAsPrismaUser, overrideTestOidc } from './support/test-oidc';
+import { runInSystemCloudWorkspaceScope } from '../src/auth/cloud-workspace-scope';
+const workspaceId = 'users-api-test-workspace';
 
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/cyber_range?schema=public';
 
@@ -43,7 +45,8 @@ describe('Admin users', () => {
     await prisma.$connect();
   });
 
-  beforeEach(async () => {
+  beforeEach(async () => runInSystemCloudWorkspaceScope(async () => {
+    await prisma.cloudWorkspace.upsert({ where: { id: workspaceId }, create: { id: workspaceId, provider: 'alibaba_cloud', accountUid: 'users-api-test-account', displayName: 'Users API test' }, update: {} });
     keycloakSequence = 0;
 
     await prisma.platformUser.deleteMany({
@@ -60,15 +63,19 @@ describe('Admin users', () => {
       },
       data: {
         username: 'admin',
+        loginUsername: 'admin',
+        cloudWorkspaceId: null,
+        isPlatformManager: true,
+        selectedCloudWorkspaceId: workspaceId,
         role: 'admin',
         status: 'active',
         oidcIssuer: null,
         oidcSubject: null,
       },
     });
-  });
+  }));
 
-  afterAll(async () => {
+  afterAll(async () => runInSystemCloudWorkspaceScope(async () => {
     await prisma.platformUser.deleteMany({
       where: {
         id: {
@@ -83,6 +90,7 @@ describe('Admin users', () => {
       },
       data: {
         username: 'admin',
+        selectedCloudWorkspaceId: null,
         role: 'admin',
         status: 'active',
         oidcIssuer: null,
@@ -91,7 +99,7 @@ describe('Admin users', () => {
     });
 
     await app.close();
-  });
+  }));
 
   it('lets an admin create and disable a regular user, and blocks that user from using the API afterward', async () => {
     const adminToken = await login('admin', 'change-me');
@@ -111,6 +119,7 @@ describe('Admin users', () => {
     expect(createResponse.body).toEqual({
       id: expect.any(String),
       username,
+      loginUsername: expect.any(String),
       role: 'user',
       status: 'active',
       createdAt: expect.any(String),
@@ -135,7 +144,7 @@ describe('Admin users', () => {
       ]),
     );
 
-    const userToken = await login(username, password);
+    const userToken = await login(createResponse.body.loginUsername, password);
 
     await request(app.getHttpServer())
       .get('/admin/scenarios')
@@ -158,6 +167,7 @@ describe('Admin users', () => {
     expect(disableResponse.body).toEqual({
       id: createdUserId,
       username,
+      loginUsername: createResponse.body.loginUsername,
       role: 'user',
       status: 'disabled',
       isCurrentUser: false,
@@ -171,11 +181,12 @@ describe('Admin users', () => {
       .expect(401);
   });
 
-  it('does not let the last active admin be disabled', async () => {
+  it('does not let the last active workspace admin be disabled', async () => {
     const adminToken = await login('admin', 'change-me');
+    const businessAdmin = await createUser(adminToken, { username: `admin-${randomUUID()}`, password: 'SyntheticAdmin123!', role: 'admin' });
 
     await request(app.getHttpServer())
-      .patch('/admin/users/admin/status')
+      .patch(`/admin/users/${businessAdmin.id}/status`)
       .set('authorization', `Bearer ${adminToken}`)
       .send({
         status: 'disabled',
@@ -188,11 +199,12 @@ describe('Admin users', () => {
       });
   });
 
-  it('does not let the last active admin be demoted to a regular user', async () => {
+  it('does not let the last active workspace admin be demoted to a regular user', async () => {
     const adminToken = await login('admin', 'change-me');
+    const businessAdmin = await createUser(adminToken, { username: `admin-${randomUUID()}`, password: 'SyntheticAdmin123!', role: 'admin' });
 
     await request(app.getHttpServer())
-      .patch('/admin/users/admin/role')
+      .patch(`/admin/users/${businessAdmin.id}/role`)
       .set('authorization', `Bearer ${adminToken}`)
       .send({
         role: 'user',
@@ -205,14 +217,14 @@ describe('Admin users', () => {
       });
   });
 
-  it('keeps the seeded admin user disabled once another admin disables it', async () => {
+  it('prevents a workspace admin from disabling the platform manager', async () => {
     const adminToken = await login('admin', 'change-me');
     const secondAdmin = await createUser(adminToken, {
       username: `admin-${randomUUID()}`,
       password: 'SecondAdmin123!',
       role: 'admin',
     });
-    const secondAdminToken = await login(secondAdmin.username, 'SecondAdmin123!');
+    const secondAdminToken = await login(secondAdmin.loginUsername, 'SecondAdmin123!');
 
     await request(app.getHttpServer())
       .patch('/admin/users/admin/status')
@@ -220,7 +232,7 @@ describe('Admin users', () => {
       .send({
         status: 'disabled',
       })
-      .expect(200);
+      .expect(404);
 
     const persistedAdmin = await prisma.platformUser.findUnique({
       where: {
@@ -231,27 +243,27 @@ describe('Admin users', () => {
     expect(persistedAdmin).toEqual(
       expect.objectContaining({
         id: 'admin',
-        status: 'disabled',
+        status: 'active',
         role: 'admin',
       }),
     );
 
-    const disabledAdminToken = await login('admin', 'change-me');
+    const managerToken = await login('admin', 'change-me');
 
     await request(app.getHttpServer())
       .get('/admin/scenarios')
-      .set('authorization', `Bearer ${disabledAdminToken}`)
-      .expect(401);
+      .set('authorization', `Bearer ${managerToken}`)
+      .expect(200);
   });
 
-  it('keeps the seeded admin user demoted once another admin changes its role', async () => {
+  it('prevents a workspace admin from demoting the platform manager', async () => {
     const adminToken = await login('admin', 'change-me');
     const secondAdmin = await createUser(adminToken, {
       username: `admin-${randomUUID()}`,
       password: 'SecondAdmin123!',
       role: 'admin',
     });
-    const secondAdminToken = await login(secondAdmin.username, 'SecondAdmin123!');
+    const secondAdminToken = await login(secondAdmin.loginUsername, 'SecondAdmin123!');
 
     await request(app.getHttpServer())
       .patch('/admin/users/admin/role')
@@ -259,7 +271,7 @@ describe('Admin users', () => {
       .send({
         role: 'user',
       })
-      .expect(200);
+      .expect(404);
 
     const persistedAdmin = await prisma.platformUser.findUnique({
       where: {
@@ -270,22 +282,22 @@ describe('Admin users', () => {
     expect(persistedAdmin).toEqual(
       expect.objectContaining({
         id: 'admin',
-        role: 'user',
+        role: 'admin',
         status: 'active',
       }),
     );
 
-    const demotedAdminToken = await login('admin', 'change-me');
+    const managerToken = await login('admin', 'change-me');
 
     await request(app.getHttpServer())
       .get('/admin/scenarios')
-      .set('authorization', `Bearer ${demotedAdminToken}`)
+      .set('authorization', `Bearer ${managerToken}`)
       .expect(200);
 
     await request(app.getHttpServer())
       .get('/admin/users')
-      .set('authorization', `Bearer ${demotedAdminToken}`)
-      .expect(403);
+      .set('authorization', `Bearer ${managerToken}`)
+      .expect(200);
   });
 
   it('keeps OIDC access valid after an admin password reset', async () => {
@@ -295,7 +307,7 @@ describe('Admin users', () => {
       password: 'ResetOld123!',
       role: 'admin',
     });
-    const issuedToken = await login(adminUser.username, 'ResetOld123!');
+    const issuedToken = await login(adminUser.loginUsername, 'ResetOld123!');
 
     await request(app.getHttpServer())
       .post(`/admin/users/${adminUser.id}/reset-password`)
@@ -310,7 +322,7 @@ describe('Admin users', () => {
       .set('authorization', `Bearer ${issuedToken}`)
       .expect(200);
 
-    const refreshedToken = await login(adminUser.username, 'ResetNew123!');
+    const refreshedToken = await login(adminUser.loginUsername, 'ResetNew123!');
 
     await request(app.getHttpServer())
       .get('/admin/users')
@@ -340,6 +352,7 @@ describe('Admin users', () => {
     return response.body as {
       id: string;
       username: string;
+      loginUsername: string;
       role: 'admin' | 'user';
       status: 'active' | 'disabled';
       createdAt: string;

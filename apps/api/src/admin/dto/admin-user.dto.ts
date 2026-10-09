@@ -1,4 +1,4 @@
-import { IsIn, IsNotEmpty, IsString } from 'class-validator';
+import { IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 
 import type { UserRole, UserStatus } from '../admin.repository';
 
@@ -18,6 +18,7 @@ export class LoginAdminSessionDto {
 export class CreateAdminUserDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(128)
   username!: string;
 
   @IsString()
@@ -47,6 +48,7 @@ export class ResetAdminUserPasswordDto {
 export class AdminUserDto {
   id!: string;
   username!: string;
+  loginUsername!: string;
   role!: UserRole;
   status!: UserStatus;
   createdAt!: Date;

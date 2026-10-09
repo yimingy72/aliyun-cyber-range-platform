@@ -1,9 +1,11 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 
 import type { UserRole, UserStatus } from './admin.repository';
 
 type CreateKeycloakUserInput = {
   username: string;
+  loginUsername?: string;
   password: string;
   role: UserRole;
   status: UserStatus;
@@ -42,6 +44,10 @@ type KeycloakRealmRole = {
 export class KeycloakAdminService {
   private readonly logger = new Logger(KeycloakAdminService.name);
   async createUser(input: CreateKeycloakUserInput): Promise<string> {
+    const loginUsername = input.loginUsername ?? input.username;
+    const identityEmail = input.loginUsername
+      ? `${createHash('sha256').update(loginUsername).digest('hex')}@example.local`
+      : `${input.username}@example.local`;
     const accessToken = await this.getAccessToken();
     let response: Response;
     try {
@@ -50,12 +56,12 @@ export class KeycloakAdminService {
         method: 'POST',
         headers: this.jsonHeaders(accessToken),
         body: JSON.stringify({
-          username: input.username,
+          username: loginUsername,
           enabled: input.status === 'active',
           emailVerified: true,
           firstName: 'Platform',
           lastName: 'User',
-          email: `${input.username}@example.local`,
+          email: identityEmail,
           credentials: [{ type: 'password', value: input.password, temporary: false }],
           requiredActions: [],
         }),
@@ -77,7 +83,7 @@ export class KeycloakAdminService {
     let subject = location?.split('/').pop();
     if (!subject) {
       try {
-        subject = await this.findUserSubjectByUsername(input.username) ?? undefined;
+        subject = await this.findUserSubjectByUsername(loginUsername) ?? undefined;
       } catch {
         this.logger.error('Created identity could not be identified for setup or cleanup');
         throw new ServiceUnavailableException('Created identity could not be identified; reconcile the identity before retrying creation');

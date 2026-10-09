@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { AuthenticatedPlatformRequest, RequestAuthContext } from '../auth/request-auth-context';
 import { ADMIN_REPOSITORY, type IdempotentOperationRecord, type OperationAuditEventInput } from '../admin/admin.repository';
 import type { AdminRepository } from '../admin/admin.repository';
+import { requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
 
 const SENSITIVE_KEYS = new Set(['password', 'defaultPassword', 'token', 'accessToken', 'refreshToken', 'vncUrl', 'webTerminalUrl', 'accessKeyId', 'accessKeySecret']);
 const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
@@ -27,8 +28,13 @@ export class OperationControlService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository) {}
 
   async audit(input: OperationAuditEventInput) {
+    const cloudWorkspaceId = requireCurrentCloudWorkspaceId();
+    if (input.cloudWorkspaceId && input.cloudWorkspaceId !== cloudWorkspaceId) {
+      throw new ConflictException('Operation audit does not match the current cloud workspace');
+    }
     return this.repository.appendOperationAuditEvent({
       ...input,
+      cloudWorkspaceId,
       sanitizedInput: sanitize(input.sanitizedInput ?? null),
     });
   }
@@ -43,8 +49,10 @@ export class OperationControlService {
     resolveConfirmation: () => Promise<{ targetId: string | null; targetSnapshot: Record<string, unknown> | null; summary: Record<string, unknown> }>;
     execute: () => Promise<TResult>;
   }) {
-    const argumentsHash = hash(input.arguments);
+    const cloudWorkspaceId = requireCurrentCloudWorkspaceId();
+    const argumentsHash = hash({ cloudWorkspaceId, arguments: input.arguments });
     const auditBase = {
+      cloudWorkspaceId,
       requestId: input.metadata.requestId,
       actorUserId: input.context.user.id,
       source: input.context.source,
@@ -64,6 +72,7 @@ export class OperationControlService {
 
     if (input.metadata.confirmationId && (
       !confirmation ||
+      confirmation.cloudWorkspaceId !== cloudWorkspaceId ||
       confirmation.actorUserId !== input.context.user.id ||
       confirmation.oauthClientId !== (input.context.oauthClientId ?? 'web') ||
       confirmation.toolName !== input.toolName ||
@@ -79,12 +88,13 @@ export class OperationControlService {
       idempotencyKey,
     );
     if (existing) {
-      return this.existing(existing, argumentsHash);
+      return this.existing(existing, argumentsHash, cloudWorkspaceId);
     }
 
     if (!input.metadata.confirmationId) {
       const resolved = await input.resolveConfirmation();
       const confirmation = await this.repository.createOperationConfirmation({
+        cloudWorkspaceId,
         actorUserId: input.context.user.id,
         oauthClientId: input.context.oauthClientId ?? 'web',
         toolName: input.toolName,
@@ -119,9 +129,9 @@ export class OperationControlService {
 
     await this.audit({ ...auditBase, operationId: confirmation.id, phase: 'confirmed' });
 
-    const operation = await this.begin(input.context.user.id, input.toolName, idempotencyKey, argumentsHash);
+    const operation = await this.begin(cloudWorkspaceId, input.context.user.id, input.toolName, idempotencyKey, argumentsHash);
     if ('existing' in operation && operation.existing) {
-      return this.existing(operation.existing, argumentsHash);
+      return this.existing(operation.existing, argumentsHash, cloudWorkspaceId);
     }
 
     try {
@@ -142,10 +152,10 @@ export class OperationControlService {
     }
   }
 
-  private async begin(actorUserId: string, toolName: string, idempotencyKey: string, argumentsHash: string) {
+  private async begin(cloudWorkspaceId: string, actorUserId: string, toolName: string, idempotencyKey: string, argumentsHash: string) {
     const operationId = randomUUID();
     try {
-      const operation = await this.repository.createIdempotentOperation({ actorUserId, toolName, idempotencyKey, argumentsHash, operationId });
+      const operation = await this.repository.createIdempotentOperation({ cloudWorkspaceId, actorUserId, toolName, idempotencyKey, argumentsHash, operationId });
       return { id: operation.id, operationId };
     } catch (error) {
       const existing = await this.repository.getIdempotentOperation(actorUserId, toolName, idempotencyKey);
@@ -156,8 +166,8 @@ export class OperationControlService {
     }
   }
 
-  private existing(operation: IdempotentOperationRecord, argumentsHash: string) {
-    if (operation.argumentsHash !== argumentsHash) {
+  private existing(operation: IdempotentOperationRecord, argumentsHash: string, cloudWorkspaceId: string) {
+    if (operation.cloudWorkspaceId !== cloudWorkspaceId || operation.argumentsHash !== argumentsHash) {
       throw new ConflictException('Operation idempotency key is already bound to different arguments');
     }
     return {

@@ -2,6 +2,8 @@ import { ConflictException } from '@nestjs/common';
 
 import { OperationControlService } from '../src/operations/operation-control.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
+const workspace = { cloudWorkspaceId: 'workspace-a', provider: 'alibaba_cloud' as const, accountUid: 'synthetic-account-a' };
 
 describe('OperationControlService', () => {
   const context = {
@@ -10,7 +12,7 @@ describe('OperationControlService', () => {
     oauthClientId: 'mcp-gateway',
   };
 
-  it('generates a fresh key for each implicit operation and binds a keyless replay to its confirmation', async () => {
+  it('generates a fresh key for each implicit operation and binds a keyless replay to its confirmation', async () => runInCloudWorkspace(workspace, async () => {
     const service = new OperationControlService(createMemoryAdminRepository());
     const execute = jest.fn().mockResolvedValue({ status: 'submitted' });
     const input = {
@@ -31,9 +33,9 @@ describe('OperationControlService', () => {
     }
     expect(new Set(keys).size).toBe(2);
     expect(execute).toHaveBeenCalledTimes(2);
-  });
+  }));
 
-  it.each(['actor', 'client', 'tool', 'arguments', 'key'])('rejects a confirmation with a different %s', async (changed) => {
+  it.each(['actor', 'client', 'tool', 'arguments', 'key'])('rejects a confirmation with a different %s', async (changed) => runInCloudWorkspace(workspace, async () => {
     const service = new OperationControlService(createMemoryAdminRepository());
     const execute = jest.fn().mockResolvedValue({ status: 'submitted' });
     const input = {
@@ -52,9 +54,9 @@ describe('OperationControlService', () => {
     if (changed === 'key') replay.metadata.idempotencyKey = 'idem-2';
     await expect(service.executeConfirmed(replay)).rejects.toThrow('Operation confirmation does not match this request');
     expect(execute).not.toHaveBeenCalled();
-  });
+  }));
 
-  it('requires one matching confirmation and reuses an idempotent result', async () => {
+  it('requires one matching confirmation and reuses an idempotent result', async () => runInCloudWorkspace(workspace, async () => {
     const repository = createMemoryAdminRepository();
     const service = new OperationControlService(repository);
     const execute = jest.fn().mockResolvedValue({ batchId: 'batch-1' });
@@ -95,6 +97,55 @@ describe('OperationControlService', () => {
       service.executeConfirmed({ ...input, metadata: { ...input.metadata, confirmationId: null } }),
     ).resolves.toMatchObject({ status: 'succeeded', result: { batchId: 'batch-1' } });
     expect(execute).toHaveBeenCalledTimes(1);
+  }));
+
+  it('rejects a confirmation replay after changing workspace and binds audits to the selected account', async () => {
+    const base = createMemoryAdminRepository();
+    const audit = jest.fn(base.appendOperationAuditEvent);
+    const repository = { ...base, appendOperationAuditEvent: audit };
+    const service = new OperationControlService(repository);
+    const execute = jest.fn().mockResolvedValue({ status: 'submitted' });
+    const input = {
+      context, metadata: { requestId: 'request-cross-space', idempotencyKey: 'same-key', confirmationId: null as string | null },
+      toolName: 'range_instance_destroy', arguments: { rangeInstanceId: 'range-a' }, targetType: 'range_instance',
+      resolveConfirmation: async () => ({ targetId: 'range-a', targetSnapshot: null, summary: {} }), execute,
+    };
+    const required = await runInCloudWorkspace(workspace, () => confirmationRequired(() => service.executeConfirmed(input)));
+    await expect(runInCloudWorkspace({ ...workspace, cloudWorkspaceId: 'workspace-b' }, () => service.executeConfirmed({
+      ...input, metadata: { ...input.metadata, confirmationId: required.confirmationId },
+    }))).rejects.toThrow('Operation confirmation does not match this request');
+    expect(execute).not.toHaveBeenCalled();
+    expect(audit.mock.calls.map(([row]) => row.cloudWorkspaceId)).toEqual(['workspace-a', 'workspace-a', 'workspace-b']);
+  });
+
+  it('runs the same explicit idempotency key independently in two account workspaces', async () => {
+    const service = new OperationControlService(createMemoryAdminRepository());
+    const execute = jest.fn().mockResolvedValue({ status: 'submitted' });
+    const input = {
+      context, metadata: { requestId: 'request-1', idempotencyKey: 'shared-key', confirmationId: null as string | null },
+      toolName: 'admin_user_create', arguments: { username: 'alice' }, targetType: 'platform_user',
+      resolveConfirmation: async () => ({ targetId: null, targetSnapshot: null, summary: {} }), execute,
+    };
+    for (const cloudWorkspaceId of ['workspace-a', 'workspace-b']) {
+      await runInCloudWorkspace({ ...workspace, cloudWorkspaceId }, async () => {
+        const required = await confirmationRequired(() => service.executeConfirmed(input));
+        await service.executeConfirmed({ ...input, metadata: { ...input.metadata, confirmationId: required.confirmationId } });
+        await expect(service.executeConfirmed(input)).resolves.toMatchObject({ status: 'succeeded' });
+      });
+    }
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a forged audit workspace even when its actor is unchanged', async () => {
+    const base = createMemoryAdminRepository();
+    const audit = jest.fn(base.appendOperationAuditEvent);
+    const repository = { ...base, appendOperationAuditEvent: audit };
+    const service = new OperationControlService(repository);
+    await expect(runInCloudWorkspace(workspace, () => service.audit({
+      cloudWorkspaceId: 'workspace-b', operationId: 'operation-a', requestId: 'request-a', actorUserId: context.user.id,
+      source: 'mcp', toolName: 'admin_user_create', phase: 'requested',
+    }))).rejects.toThrow('Operation audit does not match the current cloud workspace');
+    expect(audit).not.toHaveBeenCalled();
   });
 });
 

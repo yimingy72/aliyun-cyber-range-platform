@@ -3,7 +3,7 @@ import { OidcAdminBootstrapService } from '../src/oidc-admin-bootstrap.service';
 describe('OIDC administrator bootstrap', () => {
   const environment = { ...process.env };
   const issuer = 'https://test-issuer.example/realms/cyber-range';
-  const seed = { id: 'admin', username: 'admin', role: 'admin', status: 'active', oidcIssuer: null, oidcSubject: null };
+  const seed = { cloudWorkspaceId: null, isPlatformManager: true, loginUsername: 'admin', id: 'admin', username: 'admin', role: 'admin', status: 'active', oidcIssuer: null, oidcSubject: null };
 
   beforeEach(() => {
     process.env.NODE_ENV = 'development';
@@ -26,18 +26,18 @@ describe('OIDC administrator bootstrap', () => {
     await service.initialize();
     expect(keycloak.findUserSubjectByUsername).toHaveBeenCalledWith('custom-admin');
     expect(prisma.platformUser.update).toHaveBeenCalledWith({
-      where: { id: 'admin' }, data: { username: 'custom-admin', oidcIssuer: issuer, oidcSubject: 'custom-subject' },
+      where: { id: 'admin' }, data: { username: 'custom-admin', loginUsername: 'custom-admin', oidcIssuer: issuer, oidcSubject: 'custom-subject' },
     });
   });
 
   it('finds an existing administrator by username even when its ID is different', async () => {
-    const { prisma, service } = setup({ ...seed, id: 'admin-uuid', username: 'custom-admin' });
+    const { prisma, service } = setup({ ...seed, id: 'admin-uuid', username: 'custom-admin', loginUsername: 'custom-admin' });
     await service.initialize();
     expect(prisma.platformUser.findUnique).toHaveBeenCalledTimes(1);
     expect(prisma.platformUser.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'admin-uuid' } }));
   });
 
-  it.each([{ role: 'user' }, { status: 'disabled' }])('does not grant access to an unsuitable configured account %j', async (patch) => {
+  it.each([{ role: 'user' }, { status: 'disabled' }, { isPlatformManager: false }, { cloudWorkspaceId: 'workspace-a' }])('does not grant access to an unsuitable configured account %j', async (patch) => {
     const { prisma, keycloak, service } = setup({ ...seed, username: 'custom-admin', ...patch });
     await service.initialize();
     expect(keycloak.findUserSubjectByUsername).not.toHaveBeenCalled();
@@ -45,7 +45,7 @@ describe('OIDC administrator bootstrap', () => {
   });
 
   it('leaves an already bound identity unchanged', async () => {
-    const { prisma, service } = setup({ ...seed, username: 'custom-admin', oidcIssuer: issuer, oidcSubject: 'custom-subject' });
+    const { prisma, service } = setup({ ...seed, username: 'custom-admin', loginUsername: 'custom-admin', oidcIssuer: issuer, oidcSubject: 'custom-subject' });
     await service.initialize();
     expect(prisma.platformUser.update).not.toHaveBeenCalled();
   });
