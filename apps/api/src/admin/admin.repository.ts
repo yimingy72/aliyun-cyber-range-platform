@@ -418,6 +418,7 @@ export type OperationAuditEventInput = {
 };
 
 export type OperationAuditEventRecord = Required<Pick<OperationAuditEventInput, 'operationId' | 'requestId' | 'actorUserId' | 'source' | 'toolName' | 'phase'>> & {
+  cloudWorkspaceId?: string;
   id: string;
   oauthClientId: string | null;
   targetType: string | null;

@@ -63,6 +63,12 @@ function scopeData(model: string, value: unknown, scope: CloudWorkspaceScope, cr
     throw new ForbiddenException('Resources cannot move between cloud workspaces');
   }
   if (creating) data.cloudWorkspaceId = scope.cloudWorkspaceId;
+  for (const field of ['provider', 'cloudProvider']) {
+    if (field in data && data[field] !== scope.provider) throw new ForbiddenException('Cloud provider does not match the selected workspace');
+  }
+  for (const field of ['accountUid', 'cloudAccountUid']) {
+    if (data[field] != null && data[field] !== scope.accountUid) throw new ForbiddenException('Cloud account does not match the selected workspace');
+  }
   for (const [field, target] of Object.entries(relationModels[model] ?? {})) {
     if (!(field in data)) continue;
     const nested = { ...object(data[field]) };
