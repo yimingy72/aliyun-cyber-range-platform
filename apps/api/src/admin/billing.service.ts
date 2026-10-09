@@ -168,8 +168,9 @@ export class BillingService {
     const unallocatedItems = pending.filter(row => row.evidence?.kind === 'resource_pending').map(row => row.item);
     const pendingResources = new Map<'snapshot' | 'oss' | 'unknown', Set<string>>();
     for (const { item, evidence } of pending) {
-      if (evidence?.kind !== 'aggregate_pending') continue;
-      const type = item.rawPayload.ProductCode === 'snapshot' || item.cloudResourceType === 'snapshot_region' ? 'snapshot' : 'oss';
+      if (!evidence || evidence.kind === 'resource_pending') continue;
+      const type = evidence.kind === 'source_pending' ? 'unknown'
+        : item.rawPayload.ProductCode === 'snapshot' || item.cloudResourceType === 'snapshot_region' ? 'snapshot' : 'oss';
       const ids = pendingResources.get(type) ?? new Set<string>();
       for (const id of evidence.ledgerIds) ids.add(`ledger:${id}`);
       for (const id of evidence.imageImportJobIds) ids.add(`import:${id}`);
@@ -178,9 +179,27 @@ export class BillingService {
     const unverified = proof.ledgers.filter(ledger => proof.unverifiedSourceLedgerIds.has(ledger.id)
       && billingDayText(ledger.billingStartAt) <= window.endAtText
       && (!ledger.releasedAt || billingDayText(ledger.releasedAt) >= window.startAtText));
-    if (unverified.length) pendingResources.set('unknown', new Set(unverified.map(ledger => ledger.id)));
+    if (unverified.length) {
+      const ids = pendingResources.get('unknown') ?? new Set<string>();
+      for (const ledger of unverified) ids.add(`ledger:${ledger.id}`);
+      pendingResources.set('unknown', ids);
+    }
+    // Old image jobs may predate snapshot inventory; missing IDs must remain visible without inventing a charge.
+    for (const source of [...proof.imageImports, ...proof.packedImages]) {
+      if (!source.imageId || billingDayText(source.createdAt) > window.endAtText
+        || ('snapshotCleanupCompletedAt' in source && source.snapshotCleanupCompletedAt
+          && billingDayText(source.snapshotCleanupCompletedAt) < window.startAtText)) continue;
+      const missingInventory = !source.backingSnapshotIds.length || source.backingSnapshotIds.some(id => !ledgerResources.some(ledger =>
+        ledger.cloudResourceType === 'snapshot' && ledger.cloudResourceId === id
+        && ledger.cloudAccountUid === source.cloudAccountUid && ledger.regionId === source.regionId));
+      if (!missingInventory) continue;
+      const type = source.cloudAccountUid && source.regionId ? 'snapshot' : 'unknown';
+      const ids = pendingResources.get(type) ?? new Set<string>();
+      ids.add(`image-source:${source.id}`);
+      pendingResources.set(type, ids);
+    }
     const reasons = {
-      snapshot: '平台快照仍需资源级费用证明；源 ECS 汇总可能包含其它快照，未将整组金额计入平台。',
+      snapshot: '平台镜像或快照仍需补齐资源清单及费用明细；源 ECS 汇总可能包含其它快照，未将整组金额计入平台。',
       oss: '平台导入对象仍需可核验的费用明细；配置或使用 Bucket 不代表整桶由平台独占，未将整桶金额计入平台。',
       unknown: '已找到平台创建记录，但历史云账号或归属证明尚未核实；记录继续保留，不按零费用处理。',
     };
