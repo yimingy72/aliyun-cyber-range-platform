@@ -149,6 +149,7 @@ export class CloudAccountContextsService {
     try {
       const identity = await requestTencentCloud<{ AccountId?: unknown }>({
         service: 'sts', version: '2018-08-13', action: 'GetCallerIdentity',
+        regionId: normalized.regionId,
         accessKeyId: normalized.accessKeyId, accessKeySecret: normalized.accessKeySecret,
       });
       if (typeof identity.AccountId !== 'string' || !/^[1-9]\d{0,19}$/.test(identity.AccountId)) {

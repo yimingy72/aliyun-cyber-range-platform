@@ -30,7 +30,12 @@ describe('Tencent cloud account persistence and isolation', () => {
   afterEach(() => jest.restoreAllMocks());
   afterAll(() => { if (previousKey === undefined) delete process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY; else process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = previousKey; });
   function validCloud() {
-    return jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ AccountId: '100001', UserId: '200001' }))
+    return jest.spyOn(globalThis, 'fetch').mockImplementationOnce(async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get('x-tc-region') !== input.regionId)
+        return json({ Error: { Code: 'MissingParameter' } });
+      return json({ AccountId: '100001', UserId: '200001' });
+    })
       .mockResolvedValueOnce(json({ TotalCount: 1, ZoneSet: [{ Zone: input.zoneId, ZoneState: 'AVAILABLE' }] }));
   }
   it('verifies the root AccountId and zone, stores an encrypted inactive context, and leaves Alibaba global config alone', async () => {
