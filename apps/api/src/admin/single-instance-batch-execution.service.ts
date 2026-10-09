@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { ADMIN_REPOSITORY, type AdminRepository, type ProvisionJobRecord, type RangeInstanceRecord, } from './admin.repository';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from './billing-ledger-sync';
@@ -29,6 +29,7 @@ export type SingleInstanceExecutionItem = {
   instance: RangeInstanceRecord;
   job: ProvisionJobRecord;
 };
+class UnverifiedSingleInstanceAccountError extends ConflictException {}
 type AliyunRunInstancesResponse = {
   InstanceIdSets?: {
     InstanceIdSet?: string[] | string;
@@ -97,7 +98,9 @@ export class SingleInstanceBatchExecutionService {
   }
   async findCloudInstanceIdsByRangeInstanceId(rangeInstanceId: string, instance?: RangeInstanceRecord) {
     return this.runWithSlot(async () => {
-      const accountContext = instance ? await this.resolveInstanceAccount(instance) : await this.resolveAccountContext();
+      const scopedInstance = instance ?? await this.adminRepository.getRangeInstanceById(rangeInstanceId);
+      if (!scopedInstance || scopedInstance.id !== rangeInstanceId) throw new UnverifiedSingleInstanceAccountError('缺少原云账号绑定，需核验实例来源后才能继续。');
+      const accountContext = await this.resolveInstanceAccount(scopedInstance);
       const details = await this.findSingleInstanceDetailsByRangeInstanceTag({
         accessKeyId: accountContext.accessKeyId,
         accessKeySecret: accountContext.accessKeySecret,
@@ -209,7 +212,8 @@ export class SingleInstanceBatchExecutionService {
         catch (error) {
           for (const item of group) {
             const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
-            await this.markCreateFailure([item], current?.errorSummary ?? (error instanceof Error ? error.message : 'Native batch preparation failed'), false, current?.status === 'destroy_failed' || Object.values(current?.resourceSummary?.hostIds ?? {}).length > 0);
+            const sourceUnverified = error instanceof UnverifiedSingleInstanceAccountError;
+            await this.markCreateFailure([item], sourceUnverified ? error.message : current?.errorSummary ?? (error instanceof Error ? error.message : 'Native batch preparation failed'), false, sourceUnverified || current?.status === 'destroy_failed' || Object.values(current?.resourceSummary?.hostIds ?? {}).length > 0);
           }
         }
       }
@@ -280,9 +284,15 @@ export class SingleInstanceBatchExecutionService {
   }
   async resolveInstanceAccount(instance: RangeInstanceRecord) {
     const config = instance.singleInstanceConfig;
-    const account = config?.cloudAccountContextId
-      ? await this.systemConfigService.getAccountContextById(config.cloudAccountContextId)
-      : await this.resolveAccountContext();
+    if (!config?.cloudAccountContextId?.trim() || !config.cloudAccountUid?.trim()) {
+      throw new UnverifiedSingleInstanceAccountError('缺少原云账号绑定，需核验实例来源后才能继续；已保留实例记录和资源材料。');
+    }
+    const account = await this.systemConfigService.getAccountContextById(config.cloudAccountContextId).catch(() => {
+      throw new UnverifiedSingleInstanceAccountError('原云账号绑定不可用，需核验实例来源后才能继续；已保留实例记录和资源材料。');
+    });
+    if (!account.accountUidResolved || account.cloudAccountContextId !== config.cloudAccountContextId || account.accountUid !== config.cloudAccountUid) {
+      throw new UnverifiedSingleInstanceAccountError('原云账号身份未核验或与实例绑定不符，需核验实例来源后才能继续；已保留实例记录和资源材料。');
+    }
     const topology = instance.runtimeScenarioTemplateSpec?.topology as {
       defaultRegion?: string;
     } | undefined;
@@ -692,28 +702,6 @@ export class SingleInstanceBatchExecutionService {
       await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
       await this.adminRepository.commitSingleInstanceClaim(item.job, { status: 'destroyed', errorSummary: null }, { status: 'succeeded', finishedAt: new Date(), errorSummary: null });
     }
-  }
-  private async resolveAccountContext() {
-    const service = this.systemConfigService as SystemConfigService & {
-      getAccountContext?: () => Promise<{
-        provider: 'alibaba_cloud';
-        defaultRegion: string;
-        defaultZoneId: string;
-        accessKeyId: string;
-        accessKeySecret: string;
-        accountUid: string | null;
-        accountUidResolved: boolean;
-      }>;
-    };
-    if (typeof service.getAccountContext === 'function') {
-      return service.getAccountContext();
-    }
-    const snapshot = await this.systemConfigService.getSnapshot();
-    return {
-      ...snapshot,
-      accountUid: null,
-      accountUidResolved: false,
-    };
   }
   private async tagAliyunResources(input: {
     accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;

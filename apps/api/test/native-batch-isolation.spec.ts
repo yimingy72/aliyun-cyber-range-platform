@@ -82,6 +82,51 @@ async function fixture(failDiskForOwner?: string) {
   return { repo, config, native, cloud, calls, profile, network, service, worker, launch, drain };
 }
 describe('legacy native batches: real ECS response contract, two platform users and complete cleanup', () => {
+  it.each([
+    ['create', 'cloudAccountContextId'], ['create', 'cloudAccountUid'],
+    ['destroy', 'cloudAccountContextId'], ['destroy', 'cloudAccountUid'],
+  ] as const)('blocks unbound legacy %s when %s is missing and preserves cloud and billing evidence', async (operation, missing) => {
+    const f = await fixture(); const a = await f.launch(alice); await f.drain();
+    const original = (await f.repo.getRangeInstanceById(a.instances[0].id))!;
+    const config = { ...original.singleInstanceConfig! }; delete config[missing];
+    const job = await f.repo.createProvisionJob({ rangeInstanceId: original.id, jobType: operation === 'create' ? 'retry' : 'destroy', triggeredBy: alice.id });
+    await f.repo.updateRangeInstance(original.id, { singleInstanceConfig: config, lastJobId: job.id, status: operation === 'create' ? 'creating' : 'destroying', errorSummary: 'Earlier failure must not hide the missing original account' });
+    const instance = (await f.repo.getRangeInstanceById(original.id))!;
+    const claimed = await f.repo.claimProvisionJob(job.id, new Date());
+    const ledgerBefore = await f.repo.listBillingLedgerResources({ rangeInstanceId: original.id });
+    f.calls.length = 0; f.config.getAccountContext.mockClear(); f.config.getSnapshot.mockClear(); f.config.getAccountContextById.mockClear();
+    if (operation === 'create') await f.native.executeCreateBatch([{ instance, job: claimed }]);
+    else await f.native.executeDestroyBatch([{ instance, job: claimed }]);
+    const after = (await f.repo.getRangeInstanceById(original.id))!;
+    expect(after.status).toBe('destroy_failed'); expect(after.errorSummary).toContain('缺少原云账号绑定');
+    expect(after.resourceSummary).toEqual(original.resourceSummary);
+    expect(after.runtimeCredentials).toEqual(original.runtimeCredentials);
+    expect(await f.repo.listBillingLedgerResources({ rangeInstanceId: original.id })).toEqual(ledgerBefore);
+    expect(f.cloud.size).toBe(2); expect(f.calls).toHaveLength(0);
+    expect(f.config.getAccountContext).not.toHaveBeenCalled(); expect(f.config.getSnapshot).not.toHaveBeenCalled();
+    expect(f.config.getAccountContextById).not.toHaveBeenCalled();
+    await expect(f.service.retry(original.id, alice)).rejects.toThrow('缺少原云账号绑定');
+    await expect(f.native.findCloudInstanceIdsByRangeInstanceId(original.id)).rejects.toThrow('缺少原云账号绑定');
+  });
+
+  it.each([{ accountUidResolved: false }, { accountUid: 'other-account' }, { cloudAccountContextId: 'other-context' }, null])('refuses unavailable, unverified or mismatched saved account context %j', async invalid => {
+    const f = await fixture(); const a = await f.launch(alice); await f.drain();
+    const original = (await f.repo.getRangeInstanceById(a.instances[0].id))!;
+    const job = await f.repo.createProvisionJob({ rangeInstanceId: original.id, jobType: 'destroy', triggeredBy: alice.id });
+    await f.repo.updateRangeInstance(original.id, { lastJobId: job.id, status: 'destroying' });
+    const instance = (await f.repo.getRangeInstanceById(original.id))!;
+    const claimed = await f.repo.claimProvisionJob(job.id, new Date());
+    const ledgerBefore = await f.repo.listBillingLedgerResources({ rangeInstanceId: original.id });
+    if (invalid) f.config.getAccountContextById.mockResolvedValue({ ...account, ...invalid });
+    else f.config.getAccountContextById.mockRejectedValue(new Error('Saved cloud account context is unavailable'));
+    f.calls.length = 0;
+    await f.native.executeDestroyBatch([{ instance, job: claimed }]);
+    expect((await f.repo.getRangeInstanceById(original.id))?.status).toBe('destroy_failed');
+    expect((await f.repo.getRangeInstanceById(original.id))?.errorSummary).toContain('原云账号');
+    expect(await f.repo.listBillingLedgerResources({ rangeInstanceId: original.id })).toEqual(ledgerBefore);
+    expect(f.cloud.size).toBe(2); expect(f.calls).toHaveLength(0);
+  });
+
   it('runs Alice/Bob simultaneously with distinct IPs, ownership, batch tags and credentials; fixed context survives default changes', async () => {
     const f = await fixture();
     const [a, b] = await Promise.all([f.launch(alice), f.launch(bob)]);

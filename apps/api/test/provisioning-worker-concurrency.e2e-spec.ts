@@ -6,8 +6,11 @@ import type { RangeProvisioner } from '../src/provisioning/provisioning.types';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
+const frozenSingleAccount = { cloudAccountUid: 'worker-test-account', cloudAccountContextId: 'worker-test-context', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' };
+
 function createSystemConfigServiceStub() {
   return {
+    getAccountContextById: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', cloudAccountContextId: frozenSingleAccount.cloudAccountContextId, accountUid: frozenSingleAccount.cloudAccountUid, accountUidResolved: true, defaultRegion: frozenSingleAccount.regionId, defaultZoneId: frozenSingleAccount.zoneId, accessKeyId: 'test-ak', accessKeySecret: 'test-sk' }),
     getInstanceTypeAvailabilityInContext:jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m1.large'}],warning:null}),
     getSnapshot: jest.fn().mockResolvedValue({
       provider: 'alibaba_cloud',
@@ -347,6 +350,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         const instance = await repository.createRangeInstance({
           name: `heartbeat-${index}`, instanceMode: 'single', singleInstanceBatchId: batch.id, status: 'pending_create',
           singleInstanceConfig: {
+            ...frozenSingleAccount,
             baseName: batch.name, quantityIndex: index + 1, hostKey: `host-${index}`, hostName: `host-${index}`,
             platformImageAssetId: batch.platformImageAssetId, imageId: batch.imageId, imageDisplayName: batch.imageDisplayName,
             cpu: 2, memory: 2, systemDiskSize: 40,
@@ -446,6 +450,7 @@ describe('ProvisioningWorkerService concurrency', () => {
 
     try {
       const profile = await repository.upsertSingleInstanceNetworkProfile({
+        ...frozenSingleAccount,
         provider: 'alibaba_cloud',
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
@@ -482,6 +487,7 @@ describe('ProvisioningWorkerService concurrency', () => {
           },
         },
         singleInstanceConfig: {
+          ...frozenSingleAccount,
           baseName: batch.name,
           quantityIndex: 1,
           hostKey: 'single-ecs-1',
@@ -568,6 +574,7 @@ describe('ProvisioningWorkerService concurrency', () => {
 
     try {
       const profile = await repository.upsertSingleInstanceNetworkProfile({
+        ...frozenSingleAccount,
         provider: 'alibaba_cloud',
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
@@ -590,6 +597,7 @@ describe('ProvisioningWorkerService concurrency', () => {
           },
         },
         singleInstanceConfig: {
+          ...frozenSingleAccount,
           baseName: 'system-disk-tags',
           quantityIndex: 1,
           hostKey: 'single-ecs-1',
@@ -672,6 +680,7 @@ describe('ProvisioningWorkerService concurrency', () => {
 
     try {
       const profile = await repository.upsertSingleInstanceNetworkProfile({
+        ...frozenSingleAccount,
         provider: 'alibaba_cloud',
         regionId: 'cn-hangzhou',
         zoneId: 'cn-hangzhou-h',
@@ -708,6 +717,7 @@ describe('ProvisioningWorkerService concurrency', () => {
           },
         },
         singleInstanceConfig: {
+          ...frozenSingleAccount,
           baseName: batch.name,
           quantityIndex: 1,
           hostKey: 'single-ecs-1',
@@ -778,6 +788,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        ...frozenSingleAccount,
         baseName: 'fallback',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -809,6 +820,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       status: 'pending_destroy',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        ...frozenSingleAccount,
         baseName: 'fallback',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -890,6 +902,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       status: 'pending_create',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        ...frozenSingleAccount,
         baseName: 'refresh',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -998,6 +1011,7 @@ describe('ProvisioningWorkerService concurrency', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        ...frozenSingleAccount,
         baseName: 'refresh-process',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -2100,6 +2114,7 @@ describe('ProvisioningWorkerService concurrency', () => {
   it('provisions single-instance create jobs without requiring a template id', async () => {
     const repository = createMemoryAdminRepository();
     const profile = await repository.upsertSingleInstanceNetworkProfile({
+      ...frozenSingleAccount,
       provider: 'alibaba_cloud',
       regionId: 'cn-hangzhou',
       zoneId: 'cn-hangzhou-h',
@@ -2127,6 +2142,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
       singleInstanceConfig: {
+        ...frozenSingleAccount,
         baseName: 'single-web-lab',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -2226,6 +2242,7 @@ describe('ProvisioningWorkerService concurrency', () => {
   it('uses the single instance launch-time region and zone when destroying after system defaults change', async () => {
     const repository = createMemoryAdminRepository();
     const launchProfile = await repository.upsertSingleInstanceNetworkProfile({
+      ...frozenSingleAccount,
       provider: 'alibaba_cloud',
       regionId: 'cn-hangzhou',
       zoneId: 'cn-hangzhou-h',
@@ -2247,6 +2264,7 @@ describe('ProvisioningWorkerService concurrency', () => {
         },
       },
       singleInstanceConfig: {
+        ...frozenSingleAccount,
         baseName: 'single-destroy-launch-identity',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',

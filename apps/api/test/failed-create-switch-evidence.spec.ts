@@ -6,11 +6,13 @@ import { FAILED_CREATE_CLEANUP_PROOF_STEP } from '../src/admin/failed-create-cle
 const snapshot={provider:'alibaba_cloud',defaultRegion:'cn-beijing',defaultZoneId:'cn-beijing-h',accessKeyId:'audit-fake',accessKeySecret:'audit-fake-secret',imageImportBucket:'',accountUid:'audit-uid',accountUidResolved:true};
 async function nativeSetup() {
   const repo=createMemoryAdminRepository();
-  await repo.upsertSingleInstanceNetworkProfile({provider:'alibaba_cloud',regionId:'cn-beijing',zoneId:'cn-beijing-h',vpcId:'audit-vpc',vpcCidr:'10.10.0.0/16',vswitchIds:['audit-vswitch'],vswitchCidrs:['10.10.1.0/24'],securityGroupId:'audit-sg',securityGroupName:'Audit'});
-  const instance=await repo.createRangeInstance({name:'Audit failure',status:'pending_create',instanceMode:'single',singleInstanceConfig:{cpu:2,memory:4,imageId:'audit-image',systemDiskSize:40,hostKey:'ecs',quantityIndex:1},runtimeCredentials:{ecs:{password:'Audit-Test-Password-Only!'}}} as any);
+  const nativeAccount={...snapshot,cloudAccountContextId:'native-source-context'};
+  const binding={cloudAccountUid:nativeAccount.accountUid,cloudAccountContextId:nativeAccount.cloudAccountContextId,regionId:nativeAccount.defaultRegion,zoneId:nativeAccount.defaultZoneId};
+  await repo.upsertSingleInstanceNetworkProfile({...binding,provider:'alibaba_cloud',vpcId:'audit-vpc',vpcCidr:'10.10.0.0/16',vswitchIds:['audit-vswitch'],vswitchCidrs:['10.10.1.0/24'],securityGroupId:'audit-sg',securityGroupName:'Audit'});
+  const instance=await repo.createRangeInstance({name:'Audit failure',status:'pending_create',instanceMode:'single',singleInstanceConfig:{...binding,cpu:2,memory:4,imageId:'audit-image',systemDiskSize:40,hostKey:'ecs',quantityIndex:1},runtimeCredentials:{ecs:{password:'Audit-Test-Password-Only!'}}} as any);
   const job=await repo.createProvisionJob({rangeInstanceId:instance.id,jobType:'create',triggeredBy:'admin'});
   await repo.updateRangeInstance(instance.id,{lastJobId:job.id});
-  const sys={getInstanceTypeAvailabilityInContext:jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m2.large'}],warning:null}),getSnapshot:jest.fn().mockResolvedValue(snapshot),getAccountContext:jest.fn().mockResolvedValue(snapshot)};
+  const sys={getInstanceTypeAvailabilityInContext:jest.fn().mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m2.large'}],warning:null}),getSnapshot:jest.fn().mockResolvedValue(snapshot),getAccountContext:jest.fn().mockResolvedValue(nativeAccount),getAccountContextById:jest.fn().mockResolvedValue(nativeAccount)};
   const batch=new SingleInstanceBatchExecutionService(repo,sys as any);
   (batch as any).performAliyunRpcRequest=jest.fn().mockRejectedValue(new Error('Injected RunInstances uncertain failure'));
   return {repo,instance,job,sys,batch};
@@ -22,11 +24,11 @@ describe('native cleanup and request boundaries',()=>{
     await batch.executeCreateBatch([{instance,job:(await repo.claimProvisionJob(job.id,new Date()))!}]);
     expect((await repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
   });
-  it('marks native cloud cleanup success create_failed and clears resource state',async()=>{
+  it('retains an unknown native create outcome when only empty tag queries are available',async()=>{
     const {repo,instance,job,batch}=await nativeSetup();
     (batch as any).findSingleInstanceIdsByRangeInstanceTag=jest.fn().mockResolvedValue([]);
     await batch.executeCreateBatch([{instance,job:(await repo.claimProvisionJob(job.id,new Date()))!}]);
-    expect(await repo.getRangeInstanceById(instance.id)).toMatchObject({status:'create_failed',resourceSummary:null,accessEntry:null});
+    expect(await repo.getRangeInstanceById(instance.id)).toMatchObject({status:'destroy_failed',singleInstanceConfig:{nativeCreateJobId:job.id}});
   });
   it('preserves destroy_failed when the outer worker catch handles a transient job persistence failure',async()=>{
     const {repo,instance,job,sys,batch}=await nativeSetup();
