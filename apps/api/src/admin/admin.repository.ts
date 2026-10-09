@@ -589,6 +589,7 @@ export type BillingLedgerResourceRecord = {
 };
 
 export type BillingLineItemRecord = {
+  cloudProvider?: CloudProvider;
   cloudWorkspaceId?: string;
   id: string;
   cloudAccountUid?: string | null;
@@ -612,6 +613,7 @@ export type BillingLineItemRecord = {
 };
 
 export type BillingAnomalyRecord = {
+  cloudProvider?: CloudProvider;
   cloudWorkspaceId?: string;
   id: string;
   cloudAccountUid?: string | null;
@@ -719,6 +721,7 @@ export type UpdateBillingLedgerResourceInput = Partial<{
 }>;
 
 export type CreateBillingLineItemInput = {
+  cloudProvider?: CloudProvider;
   cloudWorkspaceId?: string;
   cloudAccountUid?: string | null;
   syncBatchId: string;
@@ -739,6 +742,7 @@ export type CreateBillingLineItemInput = {
 };
 
 export type ListBillingLineItemsFilter = Partial<{
+  cloudProvider: CloudProvider;
   cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
@@ -748,6 +752,7 @@ export type ListBillingLineItemsFilter = Partial<{
 }>;
 
 export type CreateBillingAnomalyInput = {
+  cloudProvider?: CloudProvider;
   cloudWorkspaceId?: string;
   cloudAccountUid?: string | null;
   syncBatchId: string;
@@ -763,6 +768,7 @@ export type CreateBillingAnomalyInput = {
 };
 
 export type ListBillingAnomaliesFilter = Partial<{
+  cloudProvider: CloudProvider;
   cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
@@ -1252,6 +1258,7 @@ export interface AdminRepository {
   listBillingLedgerResources(filter?: { rangeInstanceId?: string }): Promise<BillingLedgerResourceRecord[]>;
   getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;
   replaceBillingDay(input: {
+    cloudProvider?: CloudProvider;
     cloudAccountUid: string;
     billingDate: string;
     lineItems: CreateBillingLineItemInput[];

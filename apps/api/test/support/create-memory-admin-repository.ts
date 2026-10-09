@@ -1734,14 +1734,17 @@ export function createMemoryAdminRepository(): AdminRepository {
       return latest ? new Date(latest) : null;
     },
     async replaceBillingDay(input) {
+      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const scope = getCurrentCloudWorkspaceScope();
+      if (scope && !('system' in scope) && (scope.provider !== cloudProvider || scope.accountUid !== input.cloudAccountUid)) throw new Error('Billing replacement workspace, provider, account or date mismatch');
       const date = new Date(input.billingDate).getTime();
-      if ([...input.lineItems, ...input.anomalies].some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
+      if (!input.cloudAccountUid || !Number.isFinite(date) || [...input.lineItems, ...input.anomalies].some(item => (item.cloudProvider ?? 'alibaba_cloud') !== cloudProvider || item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
       const oldLines = cloneList(billingLineItems);
       const oldAnomalies = cloneList(billingAnomalies);
       try {
-        for (const item of billingLineItems) if (item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
-        for (let i = billingLineItems.length - 1; i >= 0; i--) if (visibleInWorkspace(billingLineItems[i]) && billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
-        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (visibleInWorkspace(billingAnomalies[i]) && billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
+        for (const item of billingLineItems) if ((item.cloudProvider ?? 'alibaba_cloud') === cloudProvider && item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudProvider === cloudProvider && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === item.cloudResourceType && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
+        for (let i = billingLineItems.length - 1; i >= 0; i--) if (visibleInWorkspace(billingLineItems[i]) && (billingLineItems[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
+        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (visibleInWorkspace(billingAnomalies[i]) && (billingAnomalies[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
         await this.upsertBillingLineItems(input.lineItems);
         for (const item of input.anomalies) await this.createBillingAnomaly(item);
       } catch (error) {
@@ -1763,9 +1766,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
 
       return input.map((item) => {
-        const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint);
+        const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint && (entry.cloudProvider ?? 'alibaba_cloud') === (item.cloudProvider ?? 'alibaba_cloud'));
 
         if (existing) {
+          existing.cloudProvider = item.cloudProvider ?? 'alibaba_cloud';
           existing.cloudAccountUid = item.cloudAccountUid ?? null;
           existing.syncBatchId = item.syncBatchId;
           existing.billCycle = item.billCycle;
@@ -1788,6 +1792,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
         const created: BillingLineItemRecord = {
           id: nextId(),
+          cloudProvider: item.cloudProvider ?? 'alibaba_cloud',
           cloudAccountUid: item.cloudAccountUid ?? null,
           syncBatchId: item.syncBatchId,
           sourceFingerprint: item.sourceFingerprint,
@@ -1816,7 +1821,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(
         billingLineItems.filter(
           (item) =>
-            inDateRange(item.billingDate, filter.startAt, filter.endAt) &&
+            inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudProvider === undefined || (item.cloudProvider ?? 'alibaba_cloud') === filter.cloudProvider) &&
             (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid) &&
             (filter.ownerUserId === undefined || item.ownerUserId === filter.ownerUserId) &&
             (filter.billingScope === undefined || item.billingScope === filter.billingScope) &&
@@ -1825,9 +1830,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       );
     },
     async createBillingAnomaly(input: CreateBillingAnomalyInput) {
-      const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint);
+      const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint && (item.cloudProvider ?? 'alibaba_cloud') === (input.cloudProvider ?? 'alibaba_cloud'));
 
       if (existing) {
+        existing.cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
         existing.cloudAccountUid = input.cloudAccountUid ?? null;
         existing.syncBatchId = input.syncBatchId;
         existing.billCycle = input.billCycle;
@@ -1846,6 +1852,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
       const record: BillingAnomalyRecord = {
         id: nextId(),
+        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
         cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
@@ -1873,7 +1880,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
     },
     async listBillingAnomalies(filter: ListBillingAnomaliesFilter = {}) {
-      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
+      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudProvider === undefined || (item.cloudProvider ?? 'alibaba_cloud') === filter.cloudProvider) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
   return new Proxy(repository, {

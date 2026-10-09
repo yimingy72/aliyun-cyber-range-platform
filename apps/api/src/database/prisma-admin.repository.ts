@@ -98,6 +98,7 @@ function isSerializableTransactionConflict(error: unknown) {
 function toBillingLineItemRecord(
   record: {
     id: string;
+    cloudProvider: CloudProvider;
     cloudAccountUid: string | null;
     syncBatchId: string;
     sourceFingerprint: string;
@@ -128,6 +129,7 @@ function toBillingLineItemRecord(
 function toBillingAnomalyRecord(
   record: {
     id: string;
+    cloudProvider: CloudProvider;
     cloudAccountUid: string | null;
     syncBatchId: string;
     sourceFingerprint: string;
@@ -2263,28 +2265,36 @@ export class PrismaAdminRepository implements AdminRepository {
     return result._max.billingDate;
   }
 
-  async replaceBillingDay(input: { cloudAccountUid: string; billingDate: string; lineItems: CreateBillingLineItemInput[]; anomalies: CreateBillingAnomalyInput[] }): Promise<void> {
+  async replaceBillingDay(input: { cloudProvider?: CloudProvider; cloudAccountUid: string; billingDate: string; lineItems: CreateBillingLineItemInput[]; anomalies: CreateBillingAnomalyInput[] }): Promise<void> {
+    const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+    const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
+    const scope = getCurrentCloudWorkspaceScope();
     const billingDate = new Date(`${input.billingDate}T00:00:00.000Z`);
     const records = [...input.lineItems, ...input.anomalies];
-    if (!input.cloudAccountUid || records.some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== billingDate.getTime())) {
-      throw new Error('Billing replacement account or date mismatch');
+    if (!input.cloudAccountUid || !Number.isFinite(billingDate.getTime())
+      || scope && !('system' in scope) && (scope.provider !== cloudProvider || scope.accountUid !== input.cloudAccountUid)
+      || records.some(item => (item.cloudProvider ?? 'alibaba_cloud') !== cloudProvider
+        || item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== billingDate.getTime()
+        || item.cloudWorkspaceId !== undefined && item.cloudWorkspaceId !== cloudWorkspaceId)) {
+      throw new Error('Billing replacement workspace, provider, account or date mismatch');
     }
     await this.prisma.$transaction(async tx => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing:${input.cloudAccountUid}:${input.billingDate}`}, 0))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing:${cloudWorkspaceId}:${cloudProvider}:${input.cloudAccountUid}:${input.billingDate}`}, 0))`;
       await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
         FROM "BillingLedgerResource" l WHERE b."cloudAccountUid" IS NULL
         AND b."matchedLedgerId" = l."id" AND l."cloudAccountUid" = ${input.cloudAccountUid}
-        AND b."billingDate" = ${billingDate}
-        AND b."cloudWorkspaceId" = ${getCurrentCloudWorkspaceId() ?? 'legacy-unbound'}
+        AND b."cloudProvider" = ${cloudProvider}::"CloudProvider" AND l."cloudProvider" = b."cloudProvider"
+        AND l."cloudResourceId" = b."cloudResourceId" AND l."cloudResourceType" = b."cloudResourceType"
+        AND b."billingDate" = ${billingDate} AND b."cloudWorkspaceId" = ${cloudWorkspaceId}
         AND l."cloudWorkspaceId" = b."cloudWorkspaceId"`;
-      const where = { cloudAccountUid: input.cloudAccountUid, billingDate };
+      const where = { cloudWorkspaceId, cloudProvider, cloudAccountUid: input.cloudAccountUid, billingDate };
       await tx.billingLineItem.deleteMany({ where });
       await tx.billingAnomaly.deleteMany({ where });
       if (input.lineItems.length) {
-        await tx.billingLineItem.createMany({ data: input.lineItems.map(item => ({ ...item, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
+        await tx.billingLineItem.createMany({ data: input.lineItems.map(item => ({ ...item, cloudWorkspaceId, cloudProvider, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
       }
       if (input.anomalies.length) {
-        await tx.billingAnomaly.createMany({ data: input.anomalies.map(item => ({ ...item, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
+        await tx.billingAnomaly.createMany({ data: input.anomalies.map(item => ({ ...item, cloudWorkspaceId, cloudProvider, billingDate, pretaxAmount: new Prisma.Decimal(item.pretaxAmount), rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue })) });
       }
     }, { timeout: 30_000 });
   }
@@ -2302,9 +2312,10 @@ export class PrismaAdminRepository implements AdminRepository {
       input.map((item) =>
         this.prisma.billingLineItem.upsert({
           where: {
-            cloudWorkspaceId_sourceFingerprint: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceFingerprint: item.sourceFingerprint },
+            cloudWorkspaceId_cloudProvider_sourceFingerprint: { cloudProvider: item.cloudProvider ?? 'alibaba_cloud', cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceFingerprint: item.sourceFingerprint },
           },
           update: {
+            cloudProvider: item.cloudProvider ?? 'alibaba_cloud',
             cloudAccountUid: item.cloudAccountUid ?? null,
             syncBatchId: item.syncBatchId,
             billCycle: item.billCycle,
@@ -2322,6 +2333,7 @@ export class PrismaAdminRepository implements AdminRepository {
             rawPayload: (item.rawPayload ?? {}) as Prisma.InputJsonValue,
           },
           create: {
+            cloudProvider: item.cloudProvider ?? 'alibaba_cloud',
             cloudAccountUid: item.cloudAccountUid ?? null,
             syncBatchId: item.syncBatchId,
             sourceFingerprint: item.sourceFingerprint,
@@ -2354,6 +2366,7 @@ export class PrismaAdminRepository implements AdminRepository {
       : null;
     const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
     const where: Prisma.BillingLineItemWhereInput = {
+      ...(filter.cloudProvider !== undefined ? { cloudProvider: filter.cloudProvider } : {}),
       ...(filter.cloudAccountUid !== undefined ? { cloudAccountUid: filter.cloudAccountUid } : {}),
       ...(startAt || endAt
         ? {
@@ -2387,9 +2400,10 @@ export class PrismaAdminRepository implements AdminRepository {
   async createBillingAnomaly(input: CreateBillingAnomalyInput): Promise<BillingAnomalyRecord> {
     const record = await this.prisma.billingAnomaly.upsert({
       where: {
-        cloudWorkspaceId_sourceFingerprint: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceFingerprint: input.sourceFingerprint },
+        cloudWorkspaceId_cloudProvider_sourceFingerprint: { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceFingerprint: input.sourceFingerprint },
       },
       update: {
+        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
         cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         billCycle: input.billCycle,
@@ -2402,6 +2416,7 @@ export class PrismaAdminRepository implements AdminRepository {
         rawPayload: (input.rawPayload ?? {}) as Prisma.InputJsonValue,
       },
       create: {
+        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
         cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
@@ -2436,6 +2451,7 @@ export class PrismaAdminRepository implements AdminRepository {
     const endAt = filter.endAt ? (filter.endAt instanceof Date ? filter.endAt : new Date(filter.endAt)) : null;
     const records = await this.prisma.billingAnomaly.findMany({
       where: {
+        ...(filter.cloudProvider !== undefined ? { cloudProvider: filter.cloudProvider } : {}),
         ...(filter.cloudAccountUid !== undefined ? { cloudAccountUid: filter.cloudAccountUid } : {}),
         ...(startAt || endAt
           ? {

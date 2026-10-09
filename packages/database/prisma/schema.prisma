@@ -809,6 +809,7 @@ model BillingLedgerResource {
 model BillingLineItem {
   cloudWorkspaceId String @default("legacy-unbound")
   id                String                    @id @default(cuid())
+  cloudProvider     CloudProvider @default(alibaba_cloud)
   cloudAccountUid   String?
   syncBatchId       String
   sourceFingerprint String
@@ -829,12 +830,12 @@ model BillingLineItem {
   updatedAt         DateTime                  @updatedAt
 
   @@index([billingDate, billingScope])
-  @@index([cloudAccountUid, billingDate])
+  @@index([cloudWorkspaceId, cloudProvider, cloudAccountUid, billingDate], map: "BillingLineItem_workspace_provider_account_date_idx")
   @@index([ownerUserId, billingDate])
   @@index([matchedLedgerId])
   @@index([cloudResourceId, cloudResourceType])
   @@index([cloudWorkspaceId])
-  @@unique([cloudWorkspaceId, sourceFingerprint])
+  @@unique([cloudWorkspaceId, cloudProvider, sourceFingerprint], map: "BillingLineItem_workspace_provider_fingerprint_key")
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
 
 }
@@ -842,6 +843,7 @@ model BillingLineItem {
 model BillingAnomaly {
   cloudWorkspaceId String @default("legacy-unbound")
   id                String                    @id @default(cuid())
+  cloudProvider     CloudProvider @default(alibaba_cloud)
   cloudAccountUid   String?
   syncBatchId       String
   sourceFingerprint String
@@ -857,10 +859,10 @@ model BillingAnomaly {
   updatedAt         DateTime                  @updatedAt
 
   @@index([billingDate])
-  @@index([cloudAccountUid, billingDate])
+  @@index([cloudWorkspaceId, cloudProvider, cloudAccountUid, billingDate], map: "BillingAnomaly_workspace_provider_account_date_idx")
   @@index([cloudResourceId, cloudResourceType])
   @@index([cloudWorkspaceId])
-  @@unique([cloudWorkspaceId, sourceFingerprint])
+  @@unique([cloudWorkspaceId, cloudProvider, sourceFingerprint], map: "BillingAnomaly_workspace_provider_fingerprint_key")
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
 
 }

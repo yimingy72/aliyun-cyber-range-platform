@@ -62,7 +62,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
 
   it('replaces legacy rows only after their existing ledger proves the account', async () => {
     const ledger = await repository.createBillingLedgerResource({ cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: 'i-known', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date(DAY) });
-    await repository.upsertBillingLineItems([{ ...record('legacy', 'proved-history', 10), cloudAccountUid: null, matchedLedgerId: ledger.id }, { ...record('legacy', 'unproved-history', 5), cloudAccountUid: null }]);
+    await repository.upsertBillingLineItems([{ ...record('legacy', 'proved-history', 10), cloudAccountUid: null, cloudResourceId: ledger.cloudResourceId, matchedLedgerId: ledger.id }, { ...record('legacy', 'unproved-history', 5), cloudAccountUid: null }]);
     await repository.replaceBillingDay({ cloudAccountUid: '100001', billingDate: DAY, lineItems: [record('100001', 'fresh', 20)], anomalies: [] });
     expect((await repository.listBillingLineItems({ cloudAccountUid: '100001' }))[0].pretaxAmount).toBe(20);
     const unknown = await repository.listBillingLineItems({ cloudAccountUid: null });
