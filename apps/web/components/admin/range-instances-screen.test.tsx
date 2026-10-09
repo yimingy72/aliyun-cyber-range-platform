@@ -3,10 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
+  fetchRangeInstanceDetailMock,
   createRangeInstanceMock,
   fetchAdminBootstrapMock,
   triggerRangeActionMock,
 } = vi.hoisted(() => ({
+  fetchRangeInstanceDetailMock: vi.fn().mockResolvedValue({ id: 'range-1', status: 'running' }),
   createRangeInstanceMock: vi.fn(),
   fetchAdminBootstrapMock: vi.fn(),
   triggerRangeActionMock: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock('../../lib/admin-api', () => ({
   AdminApiError: class AdminApiError extends Error {
     status = 500;
   },
+  fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
   createRangeInstance: createRangeInstanceMock,
   fetchProvisionJobs: async () => {
     const snapshot = await fetchAdminBootstrapMock();
@@ -72,9 +75,12 @@ vi.mock('../../lib/admin-api', () => ({
 }));
 
 import { RangeInstancesScreen } from './range-instances-screen';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 describe('RangeInstancesScreen', () => {
   beforeEach(() => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running' });
     createRangeInstanceMock.mockReset();
     fetchAdminBootstrapMock.mockReset();
     triggerRangeActionMock.mockReset();
@@ -409,4 +415,17 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '销毁' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
   });
+
+  it('prefetches scoped detail on intent and reuses the request when opening the row', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue({ rangeTemplates: [], provisionJobs: [], rangeInstances: [{ id: 'range-1', name: '待查看实例', status: 'running' }] });
+    render(<AdminScreenCacheProvider><RangeInstancesScreen /></AdminScreenCacheProvider>);
+    const button = await screen.findByRole('button', { name: '查看详情' });
+    fireEvent.mouseEnter(button);
+    fireEvent.focus(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(fetchRangeInstanceDetailMock).toHaveBeenCalledOnce());
+    expect(fetchRangeInstanceDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1');
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
+  });
+
 });

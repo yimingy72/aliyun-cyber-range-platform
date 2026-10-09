@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type TopologyFlowCanvasMockProps = {
@@ -178,7 +178,7 @@ const {
       push: pushMock,
       replace: replaceMock,
     },
-    sessionState: { token: 'dev-admin-token' },
+    sessionState: { token: 'dev-admin-token', profile: { id: 'admin', username: 'admin', role: 'admin' as 'admin' | 'user' } },
   };
 });
 
@@ -209,6 +209,7 @@ vi.mock('../../lib/admin-api', () => ({
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
     token: sessionState.token,
+    profile: sessionState.profile,
     isReady: true,
     logout: vi.fn(),
   }),
@@ -220,10 +221,13 @@ vi.mock('./template-editor/topology-flow-canvas', () => ({
 
 import { RangeInstanceDetailScreen } from './range-instance-detail-screen';
 import { AdminPageCache } from './admin-page-cache';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 describe('RangeInstanceDetailScreen', () => {
   beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     sessionState.token = 'dev-admin-token';
+    sessionState.profile = { id: 'admin', username: 'admin', role: 'admin' };
     fetchProvisionJobDetailMock.mockReset();
     fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-1', jobType: 'update', status: 'succeeded' }, steps: [] });
     fetchInstanceTypeAvailabilityMock.mockResolvedValue({
@@ -247,6 +251,7 @@ describe('RangeInstanceDetailScreen', () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -371,7 +376,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '更多操作' })).toBeTruthy();
-    expect(screen.getAllByText('root / 暂无')).toHaveLength(2);
+    expect(screen.getAllByText('root / 暂无')).toHaveLength(1);
     fireEvent.mouseDown(screen.getByRole('tab', { name: '拓扑结构' }));
     expect(screen.getByRole('button', { name: '保存草稿' }).getAttribute('data-variant')).toBe('outline');
     expect(screen.getByRole('button', { name: '应用变更' }).getAttribute('data-variant')).toBe('outline');
@@ -380,7 +385,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getByText('DNAT 已下发 1 条 / SNAT 已下发 2 条')).toBeTruthy();
   });
 
-  it('opens the node more-actions menu inline like the template workbench', async () => {
+  it('opens the shared portal menu outside the scrollable directory table', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -400,13 +405,14 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     const moreButton = await screen.findByRole('button', { name: '更多操作' });
-    fireEvent.click(moreButton);
+    fireEvent.keyDown(moreButton, { key: 'Enter', code: 'Enter' });
 
-    expect(screen.getByText('二次打包镜像').closest('.template-workbench-action-menu')).not.toBeNull();
-    expect(screen.getByText('ECS 1').closest('.range-instance-directory-row')?.className.includes('is-menu-open')).toBe(true);
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: '二次打包镜像' })).toBeTruthy();
+    expect(menu.closest('.range-instance-directory-table')).toBeNull();
   });
 
-  it('lists every primary and secondary private IP for an ECS node', async () => {
+  it('shows linked subnet CIDRs instead of primary and auxiliary private IP lists', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -418,6 +424,7 @@ describe('RangeInstanceDetailScreen', () => {
       runtimeTopologyGraph: {
         schemaVersion: '1',
         nodes: [
+          { id: 'switch-1', kind: 'switch', cidr: '10.0.0.0/24' },
           {
             id: 'host-2',
             kind: 'ecs',
@@ -441,8 +448,9 @@ describe('RangeInstanceDetailScreen', () => {
 
     const nodeRow = (await screen.findByText('ECS 2')).closest('.range-instance-directory-row');
     expect(nodeRow).not.toBeNull();
-    expect(nodeRow?.textContent).toContain('10.0.0.20');
-    expect(nodeRow?.textContent).toContain('10.0.0.21');
+    expect(nodeRow?.textContent).toContain('10.0.0.0/24');
+    expect(nodeRow?.textContent).not.toContain('10.0.0.20');
+    expect(nodeRow?.textContent).not.toContain('10.0.0.21');
   });
 
   it('blocks applying an instance draft with duplicate DNAT external ports', async () => {
@@ -597,7 +605,8 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('root / ******')).toBeTruthy();
-    expect(screen.getByText('root / ChangeMe123!')).toBeTruthy();
+    fireEvent.focus(screen.getByText('root / ******'));
+    expect(await screen.findByRole('tooltip')).toHaveProperty('textContent', 'root / ChangeMe123!');
 
     fireEvent.click(screen.getByRole('button', { name: '复制密码' }));
 
@@ -644,7 +653,8 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('draft-admin / ******')).toBeTruthy();
-    expect(screen.getByText('draft-admin / DraftPass999!')).toBeTruthy();
+    fireEvent.focus(screen.getByText('draft-admin / ******'));
+    expect(await screen.findByRole('tooltip')).toHaveProperty('textContent', 'draft-admin / DraftPass999!');
   });
 
   it('keeps local topology edits without re-fetching the detail snapshot on every render', async () => {
@@ -1068,8 +1078,8 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     const moreButton = await screen.findByRole('button', { name: '更多操作' });
-    fireEvent.click(moreButton);
-    fireEvent.click(screen.getByRole('button', { name: '二次打包镜像' }));
+    fireEvent.keyDown(moreButton, { key: 'Enter', code: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '二次打包镜像' }));
 
     expect(screen.getByRole('dialog', { name: '二次打包镜像' })).toBeTruthy();
     expect(screen.getByLabelText('镜像名')).toBeTruthy();
@@ -1134,6 +1144,139 @@ describe('RangeInstanceDetailScreen', () => {
     expect(body.draftScenarioTemplateSpec.topology.defaultRegion).toBe('cn-hangzhou');
     expect(body.draftScenarioTemplateSpec.topology.defaultZoneId).toBe('cn-hangzhou-h');
     expect(body.draftTopologySpec.publicEntry.protocols).toEqual([{ protocol: 'http', port: 8080 }]);
+  });
+
+
+  it('shows DNAT address and mapped ports only on its exact runtime node', async () => {
+    const graph: { schemaVersion: string; nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>> } = createValidTopologyGraph('入口节点');
+    graph.nodes.push({ id: 'internal-switch', kind: 'switch', cidr: '172.16.50.0/24' });
+    graph.nodes.push({ id: 'peer', kind: 'ecs', label: '内网节点', nics: [{ switchId: 'internal-switch', privateIp: '172.16.50.20', secondaryIps: ['172.16.50.21'] }] });
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', accessEntry: { publicIp: '47.1.1.1' }, runtimeTopologyGraph: graph,
+      runtimeCompiledProvisionSpec: { dnatEntries: [
+        { hostKey: 'host-1', protocol: 'tcp', externalPort: 2222, internalPort: 22 },
+        { hostKey: 'host-1', protocol: 'udp', externalPort: 8080, internalPort: 80 },
+      ] }, resourceSummary: { dnatEntryIds: { 'dnat-host-1-tcp-2222': 'fwd-1', 'dnat-host-1-udp-8080': 'fwd-2' } },
+    });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    const entry = (await screen.findByText('入口节点')).closest('tr')!;
+    const peer = screen.getByText('内网节点').closest('tr')!;
+    expect(entry.textContent).toContain('47.1.1.1');
+    expect(entry.textContent).toContain('TCP 2222 → 22');
+    expect(entry.textContent).toContain('UDP 8080 → 80');
+    expect(entry.textContent).not.toContain('10.0.10.10');
+    expect(peer.textContent).toContain('172.16.50.0/24');
+    expect(peer.textContent).not.toContain('47.1.1.1');
+    expect(peer.textContent).not.toContain('172.16.50.20');
+    expect(peer.textContent).not.toContain('172.16.50.21');
+  });
+
+  it('does not advertise a draft-only or undeployed DNAT mapping as a public node entry', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', accessEntry: { publicIp: '47.1.1.1' },
+      runtimeTopologyGraph: createValidTopologyGraph(), draftTopologyGraph: createValidTopologyGraph(),
+      runtimeCompiledProvisionSpec: { dnatEntries: [{ hostKey: 'host-1', protocol: 'tcp', externalPort: 2222, internalPort: 22 }] },
+      resourceSummary: { dnatEntryIds: {} },
+    });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    const row = (await screen.findByText('checker')).closest('tr')!;
+    expect(row.textContent).toContain('10.0.10.0/24');
+    expect(row.textContent).not.toContain('47.1.1.1');
+    expect(row.textContent).not.toContain('2222');
+  });
+
+  it('uses a stable overview and table skeleton without visible detail-loading text', () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockReturnValue(new Promise(() => {}));
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    expect(screen.getByTestId('range-detail-skeleton').getAttribute('aria-busy')).toBe('true');
+    expect(screen.queryByText('正在加载实例详情...')).toBeNull();
+    expect(screen.getByRole('table', { name: '实例节点目录' })).toBeTruthy();
+    expect(screen.getAllByTestId('table-loading-row')).toHaveLength(2);
+  });
+
+  it('restores a fresh scoped detail cache immediately without another API request', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('缓存节点') });
+    const view = (visible: boolean) => <AdminScreenCacheProvider>{visible ? <RangeInstanceDetailScreen rangeId="range-1" /> : <p>其它页面</p>}</AdminScreenCacheProvider>;
+    const { rerender } = render(view(true));
+    await screen.findByText('缓存节点');
+    rerender(view(false));
+    rerender(view(true));
+    expect(screen.getByText('缓存节点')).toBeTruthy();
+    expect(screen.queryByTestId('range-detail-skeleton')).toBeNull();
+    await waitFor(() => expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps a previous route response from replacing the new detail scope', async () => {
+    let resolveOld!: (value: unknown) => void;
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue({ id: 'range-2', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('新范围节点') });
+    const { rerender } = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    rerender(<RangeInstanceDetailScreen rangeId="range-2" />);
+    await screen.findByText('新范围节点');
+    await act(async () => { resolveOld({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('过时节点') }); });
+    expect(screen.queryByText('过时节点')).toBeNull();
+    expect(screen.getByText('新范围节点')).toBeTruthy();
+  });
+
+  it('does not show a previous user scoped detail while a different account is loading', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('原账号节点') })
+      .mockReturnValue(new Promise(() => {}));
+    const { rerender } = render(<AdminScreenCacheProvider><RangeInstanceDetailScreen rangeId="range-1" /></AdminScreenCacheProvider>);
+    await screen.findByText('原账号节点');
+    sessionState.token = 'other-account-token';
+    sessionState.profile = { id: 'other-account', username: 'other-account', role: 'admin' };
+    rerender(<AdminScreenCacheProvider><RangeInstanceDetailScreen rangeId="range-1" /></AdminScreenCacheProvider>);
+    expect(screen.queryByText('原账号节点')).toBeNull();
+    expect(screen.getByTestId('range-detail-skeleton')).toBeTruthy();
+  });
+
+  it('does not reuse a previous administrator cache when the same account loses its role', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('管理员节点') })
+      .mockReturnValue(new Promise(() => {}));
+    const { rerender } = render(<AdminScreenCacheProvider><RangeInstanceDetailScreen rangeId="range-1" /></AdminScreenCacheProvider>);
+    await screen.findByText('管理员节点');
+    sessionState.profile = { ...sessionState.profile, role: 'user' };
+    rerender(<AdminScreenCacheProvider><RangeInstanceDetailScreen rangeId="range-1" /></AdminScreenCacheProvider>);
+    expect(screen.queryByText('管理员节点')).toBeNull();
+    expect(screen.getByTestId('range-detail-skeleton')).toBeTruthy();
+    await waitFor(() => expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('offers retry after an initial error without leaving a perpetual loading skeleton', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('恢复节点') });
+    render(<AdminScreenCacheProvider><RangeInstanceDetailScreen rangeId="range-1" /></AdminScreenCacheProvider>);
+    const retry = await screen.findByRole('button', { name: '重试加载' });
+    expect(screen.queryByTestId('range-detail-skeleton')).toBeNull();
+    fireEvent.click(retry);
+    await screen.findByText('恢复节点');
+    expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(2);
+  });
+
+
+  it('does not apply a delayed previous-scope save to the new runtime draft', async () => {
+    let resolveSave!: (value: unknown) => void;
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('原范围节点') })
+      .mockResolvedValue({ id: 'range-2', status: 'running', runtimeTopologyGraph: createValidTopologyGraph('新范围节点') });
+    saveRangeInstanceDraftMock.mockReset();
+    saveRangeInstanceDraftMock.mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    const { rerender } = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    await screen.findByRole('button', { name: '原范围节点' });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalledOnce());
+    rerender(<RangeInstanceDetailScreen rangeId="range-2" />);
+    await screen.findByRole('button', { name: '新范围节点' });
+    await act(async () => { resolveSave({ id: 'range-1', status: 'running', draftRevision: 1, draftTopologyGraph: createValidTopologyGraph('旧保存节点') }); });
+    expect(screen.queryByRole('button', { name: '旧保存节点' })).toBeNull();
+    expect(screen.getByRole('button', { name: '新范围节点' })).toBeTruthy();
   });
 
 });

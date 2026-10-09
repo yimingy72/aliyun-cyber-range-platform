@@ -8,6 +8,7 @@ import { TableCell, TableRow } from '@/components/ui/table';
 import {
   fetchProvisionJobs,
   fetchRangeInstances,
+  fetchRangeInstanceDetail,
   triggerRangeAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
@@ -438,7 +439,16 @@ export function RangeInstancesScreen({
     }));
   }
 
+  function prefetchDetail(instanceId: string) {
+    router.prefetch?.(`/admin/ranges/${instanceId}`);
+    if (session.token && screenCache) {
+      void screenCache.load(apiBaseUrl, session.token, `range-instance-detail:${instanceId}:${session.profile?.id ?? 'current-session'}:${session.profile?.role ?? ''}`,
+        () => fetchRangeInstanceDetail(apiBaseUrl, session.token!, instanceId)).catch(() => {});
+    }
+  }
+
   function handleViewDetail(instanceId: string) {
+    prefetchDetail(instanceId);
     router.push(`/admin/ranges/${instanceId}`);
   }
 
@@ -676,7 +686,7 @@ export function RangeInstancesScreen({
                           </AdminDataTableCell>
                           <AdminDataTableCell column={actionsColumn}>
                             <div className="flex justify-start" data-slot="range-history-detail-action">
-                              <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
+                              <Button onMouseEnter={() => prefetchDetail(instance.id)} onFocus={() => prefetchDetail(instance.id)} onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                                 查看详情
                               </Button>
                             </div>
@@ -706,7 +716,7 @@ export function RangeInstancesScreen({
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn}>
                           <div className="flex justify-start gap-1">
-                            <Button onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
+                            <Button onMouseEnter={() => prefetchDetail(instance.id)} onFocus={() => prefetchDetail(instance.id)} onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                               查看详情
                             </Button>
                             {actionLabel ? (

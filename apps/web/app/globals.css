@@ -4670,6 +4670,9 @@ body {
 
 .range-instance-detail-workbench {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
   gap: 16px;
   align-content: start;
 }
@@ -4710,142 +4713,47 @@ body {
 }
 
 .range-instance-directory-table {
-  border-radius: 6px;
-  background: #fff;
-  border: 1px solid #e7ecf2;
-  overflow: visible;
-}
-
-.range-instance-directory-body {
-  display: grid;
-  overflow: visible;
-}
-
-.range-instance-directory-head,
-.range-instance-directory-row {
-  display: grid;
-  grid-template-columns:
-    minmax(116px, 0.88fr)
-    88px
-    minmax(240px, 1.48fr)
-    minmax(108px, 0.82fr)
-    minmax(136px, 0.96fr)
-    minmax(156px, 0.96fr)
-    minmax(156px, 0.96fr)
-    minmax(224px, 1.08fr);
-  gap: 14px;
-}
-
-.range-instance-directory-head {
-  min-height: 44px;
-  background: #f7f9fc;
-  border-bottom: 1px solid #e7ecf2;
-  padding: 0 18px;
-}
-
-.range-instance-directory-head > div {
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0;
-  color: #6f8099;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.range-instance-directory-row {
-  position: relative;
-  min-height: 76px;
-  padding: 0 18px;
-  background: #fff;
-  border-bottom: 1px solid #edf1f5;
-}
-
-.range-instance-directory-row.is-menu-open {
-  z-index: 40;
-}
-
-.range-instance-directory-row:last-child {
-  border-bottom: 0;
-}
-
-.range-instance-directory-cell {
-  display: grid;
-  gap: 4px;
-  align-content: center;
+  width: 100%;
   min-width: 0;
-  min-height: 76px;
-  padding: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border-radius: var(--radius);
 }
 
-.range-instance-directory-cell span {
-  color: #65758d;
-  font-size: 11px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.range-instance-directory-table [data-slot='admin-data-table-frame'] {
+  min-width: 1200px;
 }
 
-.range-instance-ip-list {
+.range-instance-directory-row,
+.range-instance-directory-table [data-testid='table-loading-row'] {
+  height: 76px;
+}
+
+.range-instance-address-cell {
   display: grid;
   gap: 3px;
   min-width: 0;
-}
-
-.range-instance-directory-cell strong {
-  color: #22314d;
+  color: var(--muted-foreground);
   font-size: 12px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.45;
 }
 
-.range-instance-directory-cell .range-instance-credential-cell {
-  width: 100%;
-  overflow: visible;
-}
-
-.range-instance-directory-cell .single-instance-credential-mask {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.range-instance-directory-cell .single-instance-credential-tooltip {
-  overflow: visible;
-  text-overflow: clip;
+.range-instance-address-cell span {
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-.range-instance-directory-primary strong {
-  font-size: 13px;
+.range-instance-detail-skeleton {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
 }
 
-.range-instance-directory-actions {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
-  align-items: center;
-  align-content: center;
-  justify-content: flex-start;
-}
-
-.range-instance-directory-actions .template-workbench-secondary-action {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.range-instance-directory-row-menu {
-  flex: 0 0 auto;
-  min-width: fit-content;
-  z-index: 30;
-}
-
-.range-instance-directory-action-menu {
-  width: 148px;
+@media (prefers-reduced-motion: reduce) {
+  .range-instance-detail-skeleton [data-slot='skeleton'] {
+    animation: none;
+  }
 }
 
 .range-instance-workbench-actions {
@@ -4857,6 +4765,7 @@ body {
 
 .range-instance-detail-toolbar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
@@ -4873,7 +4782,9 @@ body {
 }
 
 .range-instance-detail-content.is-directory {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .range-instance-detail-content.is-topology {
@@ -4948,113 +4859,11 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .range-instance-directory-head,
-  .range-instance-directory-row {
-    grid-template-columns:
-      minmax(104px, 0.84fr)
-      80px
-      minmax(180px, 1.3fr)
-      minmax(94px, 0.8fr)
-      minmax(122px, 0.92fr)
-      minmax(146px, 0.94fr)
-      minmax(146px, 0.94fr)
-      minmax(204px, 1fr);
-  }
-
   .range-instance-detail-content {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 640px) {
-  .range-instance-directory-table {
-    border: 0;
-    background: transparent;
-  }
-
-  .range-instance-directory-head {
-    display: none;
-  }
-
-  .range-instance-directory-body {
-    gap: 10px;
-  }
-
-  .range-instance-directory-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0;
-    min-height: 0;
-    padding: 0;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-
-  .range-instance-directory-cell {
-    min-height: 0;
-    padding: 10px 12px;
-    gap: 4px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .range-instance-directory-cell:nth-child(odd) {
-    border-right: 1px solid var(--border);
-  }
-
-  .range-instance-directory-cell::before {
-    color: var(--muted-foreground);
-    font-size: 10px;
-    line-height: 1.2;
-  }
-
-  .range-instance-directory-cell:nth-child(1)::before {
-    content: '实例名';
-  }
-
-  .range-instance-directory-cell:nth-child(2)::before {
-    content: '状态';
-  }
-
-  .range-instance-directory-cell:nth-child(3)::before {
-    content: '镜像信息';
-  }
-
-  .range-instance-directory-cell:nth-child(4)::before {
-    content: 'IP 地址';
-  }
-
-  .range-instance-directory-cell:nth-child(5)::before {
-    content: '账号信息';
-  }
-
-  .range-instance-directory-cell:nth-child(6)::before {
-    content: '有效期';
-  }
-
-  .range-instance-directory-cell:nth-child(7)::before {
-    content: '创建时间';
-  }
-
-  .range-instance-directory-actions {
-    grid-column: 1 / -1;
-    min-height: 0;
-    justify-content: flex-start;
-    border-right: 0 !important;
-    border-bottom: 0;
-  }
-
-  .range-instance-directory-actions::before {
-    content: '操作';
-    width: 100%;
-  }
-
-  .range-instance-directory-actions > span {
-    width: 100%;
-    overflow: visible;
-    text-overflow: clip;
-    white-space: normal;
-  }
-}
 
 .billing-screen {
   gap: 18px;
