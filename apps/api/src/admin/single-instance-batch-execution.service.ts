@@ -280,6 +280,48 @@ export class SingleInstanceBatchExecutionService {
       throw new Error('Single instance cloud context differs from its immutable launch identity');
     return { ...account, defaultZoneId: config?.zoneId ?? account.defaultZoneId };
   }
+  async readOpenTofuInstances(account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, instanceIds: string[]) {
+    return this.runWithSlot(() => this.describeInstances({ accountContext: account, instanceIds }));
+  }
+  async readOpenTofuInstancesByTag(instance: RangeInstanceRecord) {
+    return this.runWithSlot(async () => {
+      const account = await this.resolveInstanceAccount(instance);
+      return this.findSingleInstanceDetailsByRangeInstanceTag({ accessKeyId: account.accessKeyId,
+        accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: instance.id }, true);
+    });
+  }
+  async deleteOwnedUntrackedOpenTofuInstances(item: SingleInstanceExecutionItem, instanceIds: string[], assertLease: () => Promise<void>) {
+    if ((item.instance.singleInstanceConfig as { executionBackend?: string } | null)?.executionBackend !== 'opentofu'
+      || !item.instance.singleInstanceBatchId || !item.instance.singleInstanceConfig?.cloudAccountUid
+      || !item.instance.singleInstanceConfig.cloudAccountContextId) throw new Error('Emergency cleanup requires a new bound OpenTofu member');
+    const account = await this.resolveInstanceAccount(item.instance);
+    const ids = [...new Set(instanceIds)];
+    const matches = (detail: NormalizedInstanceDetail) => ids.includes(detail.instanceId)
+      && detail.tags.RangeInstanceId === item.instance.id && detail.tags.SingleInstanceBatchId === item.instance.singleInstanceBatchId
+      && detail.tags.CreatedBy === 'cyber-range-platform'
+      && detail.tags.PlatformScope === (item.instance.ownerUserId ? 'user' : 'platform')
+      && (detail.tags.PlatformUserId ?? null) === item.instance.ownerUserId;
+    await assertLease();
+    await this.assertCurrent(item);
+    const before = await this.describeInstances({ accountContext: account, instanceIds: ids });
+    if (before.some((detail) => !matches(detail))) throw new Error('Emergency cleanup ownership could not be verified');
+    await assertLease();
+    await this.assertCurrent(item);
+    if (ids.length) await this.deleteInstancesWithRetry({ accessKeyId: account.accessKeyId,
+      accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, instanceIds: ids });
+    let empty = 0;
+    for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt += 1) {
+      await assertLease();
+      await this.assertCurrent(item);
+      const [byId, byTag] = await Promise.all([
+        this.describeInstances({ accountContext: account, instanceIds: ids }), this.readOpenTofuInstancesByTag(item.instance),
+      ]);
+      if ([...byId, ...byTag].some((detail) => !matches(detail))) throw new Error('Emergency cleanup found an unproven additional resource');
+      if (!byId.length && !byTag.length) { if (++empty >= 2) return; } else empty = 0;
+      if (attempt < DESTROY_RETRY_ATTEMPTS - 1) await sleep(readDestroyRetryIntervalMs());
+    }
+    throw new Error('Emergency cleanup absence could not be confirmed');
+  }
   private async isCurrent(item: SingleInstanceExecutionItem) {
     const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
     return current?.instanceMode === 'single' && !['destroyed', 'create_failed'].includes(current.status) && current.lastJobId === item.job.id && Boolean(item.job.startedAt)
@@ -723,7 +765,7 @@ function percentEncode(value: string) {
 function compareAliyunRpcKeys(leftKey: string, rightKey: string) {
   return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
-type NormalizedInstanceDetail = {
+export type NormalizedInstanceDetail = {
   instanceId: string;
   instanceName: string;
   hostName: string;
@@ -798,7 +840,7 @@ function resolveHostInstanceId(instance: RangeInstanceRecord) {
   const hostKey = instance.singleInstanceConfig?.hostKey ?? '';
   return hostKey ? instance.resourceSummary?.hostIds?.[hostKey] ?? null : null;
 }
-function patchRuntimeTopologyGraph(graph: Record<string, unknown> | null, hostKey: string, detail: NormalizedInstanceDetail) {
+export function patchRuntimeTopologyGraph(graph: Record<string, unknown> | null, hostKey: string, detail: NormalizedInstanceDetail) {
   if (!graph || !Array.isArray(graph.nodes)) {
     return graph;
   }

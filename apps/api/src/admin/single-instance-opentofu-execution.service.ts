@@ -1,0 +1,432 @@
+import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { OpenTofuRunner, type OpenTofuCommandResult, type OpenTofuWorkspaceCommandOptions, type OpenTofuPlanOptions, type OpenTofuApplyOptions } from '@aliyun-cyber-range/iac-runner';
+import type { AdminRepository, RangeInstanceRecord, SingleInstanceBatchWithInstancesRecord, SingleInstanceConfig, RangeResourceSummary } from './admin.repository';
+import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type SingleInstanceExecutionItem, type NormalizedInstanceDetail } from './single-instance-batch-execution.service';
+import { SystemConfigService } from './system-config.service';
+import { buildBillingTags } from './billing-tagging';
+import { syncRangeInstanceBillingLedger, releaseRangeInstanceBillingLedger } from './billing-ledger-sync';
+import * as mirrors from '../provisioning/provider-mirror-publication';
+
+export type SingleInstanceOpenTofuBatchLease = { batchId: string; assertCurrent(): Promise<void>; signal: AbortSignal };
+type CommandOptions = OpenTofuWorkspaceCommandOptions & { signal?: AbortSignal };
+type PlanOptions = OpenTofuPlanOptions & { signal?: AbortSignal; targets?: string[]; destroy?: boolean };
+type BatchRunner = {
+  init(options: CommandOptions): Promise<OpenTofuCommandResult>;
+  plan(options: PlanOptions): Promise<OpenTofuCommandResult>;
+  apply(options: OpenTofuApplyOptions & { signal?: AbortSignal }): Promise<OpenTofuCommandResult>;
+  showPlan?<T>(options: CommandOptions & { planFilePath: string }): Promise<T>;
+  output<T>(options: CommandOptions): Promise<T>;
+};
+export type SingleInstanceOpenTofuExecutionOptions = { projectRootDir?: string; workspacesRootDir?: string; env?: NodeJS.ProcessEnv; runner?: BatchRunner };
+type Config = SingleInstanceConfig & { executionBackend?: string };
+type Identity = { batchId: string; ownerId: string | null; contextId: string; accountUid: string; region: string; zone: string; profileId: string; securityGroupId: string };
+type Definition = { instance_name: string; host_name: string; instance_type: string; image_id: string; vswitch_id: string;
+  system_disk_category: string; system_disk_size: number; internet_max_bandwidth_out: number; auto_release_time: string; tags: Record<string, string> };
+type CatalogMember = { definition: Definition; password: string; hostKey: string; sourceJobId: string };
+type Manifest = { schemaVersion: 1; identity: Identity; members: Record<string, CatalogMember>; pending?: { kind: 'create' | 'destroy'; ids: string[]; jobIds: string[] } };
+type StateMember = { id: string; diskId: string; privateIp: string | null; publicIp: string | null; status: string; tainted: boolean; tags: Record<string, string> };
+type Plan = { format_version: string; resource_changes?: Array<{ address: string; type: string; mode?: string; change: { actions: string[] } }> };
+type Context = { lease: SingleInstanceOpenTofuBatchLease; items: SingleInstanceExecutionItem[]; batch: SingleInstanceBatchWithInstancesRecord;
+  account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]> };
+const MODULE_PATH = 'infra/opentofu/modules/alicloud-single-instance-batch';
+const MANIFEST_FILE = 'single-batch-manifest.json';
+const APPLY_MARKER = '.single-batch-apply-started';
+const CURRENT_STATUSES = new Set(['pending_create', 'creating', 'running']);
+
+export class SingleInstanceOpenTofuLeaseLostError extends Error {}
+export class SingleInstanceOpenTofuExecutionService {
+  private readonly runner: BatchRunner;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly projectRoot: string;
+  private readonly workspaceRoot: string;
+  constructor(private readonly repository: AdminRepository, private readonly config: SystemConfigService,
+    private readonly native: SingleInstanceBatchExecutionService, options: SingleInstanceOpenTofuExecutionOptions = {}) {
+    this.env = { ...process.env, ...options.env };
+    this.projectRoot = options.projectRootDir ?? process.cwd();
+    this.workspaceRoot = options.workspacesRootDir ?? path.resolve(this.projectRoot, this.env.OPENTOFU_WORKSPACES_ROOT ?? '.local/opentofu-workspaces');
+    this.runner = options.runner ?? new OpenTofuRunner({ binaryPath: this.env.OPENTOFU_BINARY ?? 'tofu' }) as BatchRunner;
+  }
+
+  async executeCreateBatch(items: SingleInstanceExecutionItem[], lease: SingleInstanceOpenTofuBatchLease) {
+    if (!items.length) return;
+    let context: Context | undefined;
+    try {
+      context = await this.prepare(items, lease);
+      if (this.env.RANGE_PROVISIONER_MODE === 'dry-run') { await this.simulate(context, false); return; }
+      const valid = [] as SingleInstanceExecutionItem[];
+      for (const item of items) if (await this.itemCurrent(item)) valid.push(item);
+      if (!valid.length) return;
+      if (await exists(path.join(context.workspace, APPLY_MARKER)) && context.state.size === 0) {
+        await this.cleanupUntracked(context, valid, 'Interrupted OpenTofu apply has no durable state');
+        await this.finishOperation(context);
+        return;
+      }
+      if (!context.state.size && context.batch.instances.some(member => Object.keys(member.resourceSummary?.hostIds ?? {}).length)) {
+        throw new Error('Existing OpenTofu resources have lost batch state; recovery is required before new creation');
+      }
+      await this.writeInputs(context);
+      const prepared = context;
+      await this.command(prepared, () => this.runner.init(this.commandOptions(prepared)));
+      const ids = valid.map(item => item.instance.id);
+      await this.applyPlan(context, ids, false);
+      context.state = await this.readState(context);
+      await this.completeCreated(context, valid, false);
+      await this.finishOperation(context);
+    } catch (error) {
+      if (error instanceof SingleInstanceOpenTofuLeaseLostError) throw error;
+      if (!context) { await this.assertLease(lease); await this.markFailures(items, 'OpenTofu batch preparation failed; frozen resource material was preserved', true); return; }
+      await this.assertLease(context.lease);
+      await this.recoverPartialCreate(context, items, sanitize(error, context.secrets));
+    }
+  }
+
+  async executeDestroyBatch(items: SingleInstanceExecutionItem[], lease: SingleInstanceOpenTofuBatchLease) {
+    const legacy = items.filter(item => backend(item.instance) !== 'opentofu');
+    if (legacy.length) await this.native.executeDestroyBatch(legacy);
+    const targets = items.filter(item => backend(item.instance) === 'opentofu');
+    if (!targets.length) return;
+    let context: Context | undefined;
+    try {
+      context = await this.prepare(targets, lease);
+      if (this.env.RANGE_PROVISIONER_MODE === 'dry-run' || targets.every(item => item.instance.resourceSummary?.mode === 'dry-run')) {
+        await this.simulate(context, true); return;
+      }
+      const valid: SingleInstanceExecutionItem[] = [];
+      for (const item of targets) if (await this.itemCurrent(item)) valid.push(item);
+      if (!valid.length) return;
+      if (!context.state.size) {
+        await this.cleanupUntracked(context, valid, 'OpenTofu state is unavailable for requested destruction', true);
+        await this.finishOperation(context);
+        return;
+      }
+      await this.writeInputs(context);
+      const prepared = context;
+      await this.command(prepared, () => this.runner.init(this.commandOptions(prepared)));
+      await this.applyPlan(context, valid.map(item => item.instance.id), true);
+      context.state = await this.readState(context);
+      for (const item of valid) {
+        await this.assertLease(lease);
+        if (!await this.itemCurrent(item)) continue;
+        if (context.state.has(item.instance.id)) throw new Error('OpenTofu state still contains the requested member');
+        await this.assertAbsent(context, item);
+        await this.finishDestroyed(item);
+      }
+      await this.finishOperation(context);
+    } catch (error) {
+      if (error instanceof SingleInstanceOpenTofuLeaseLostError) throw error;
+      if (context) await this.assertLease(context.lease);
+      await this.assertLease(lease);
+      await this.markFailures(targets, context ? sanitize(error, context.secrets) : 'OpenTofu batch preparation failed; frozen resource material was preserved', true);
+    }
+  }
+
+  private async prepare(items: SingleInstanceExecutionItem[], lease: SingleInstanceOpenTofuBatchLease): Promise<Context> {
+    await this.assertLease(lease);
+    const first = items[0].instance;
+    if (!first.singleInstanceBatchId || lease.batchId !== first.singleInstanceBatchId || items.some(item => item.instance.singleInstanceBatchId !== lease.batchId || backend(item.instance) !== 'opentofu')) {
+      throw new Error('A bound OpenTofu batch and its active lease are required');
+    }
+    const lookup = (this.repository as AdminRepository & { getSingleInstanceBatchWithInstancesById?: (id: string) => Promise<SingleInstanceBatchWithInstancesRecord | null> }).getSingleInstanceBatchWithInstancesById;
+    const batch = lookup ? await lookup.call(this.repository, lease.batchId)
+      : (await this.repository.listSingleInstanceBatchesWithInstances()).find(value => value.batch.id === lease.batchId);
+    if (!batch) throw new Error('OpenTofu batch not found');
+    const account = await this.native.resolveInstanceAccount(first);
+    const cfg = first.singleInstanceConfig as Config;
+    if (!account.accountUid || !account.cloudAccountContextId || !account.accountUidResolved || !cfg.networkProfileId) throw new Error('OpenTofu launch must have a verified frozen account and network profile');
+    const profile = await this.repository.getSingleInstanceNetworkProfileById(cfg.networkProfileId);
+    if (!profile || profile.status !== 'ready' || profile.cloudAccountUid !== account.accountUid || profile.regionId !== account.defaultRegion
+      || profile.zoneId !== cfg.zoneId || profile.cloudAccountContextId !== account.cloudAccountContextId) throw new Error('OpenTofu network does not match frozen launch identity');
+    const identity: Identity = { batchId: lease.batchId, ownerId: batch.batch.ownerUserId, contextId: account.cloudAccountContextId,
+      accountUid: account.accountUid, region: account.defaultRegion, zone: profile.zoneId, profileId: profile.id, securityGroupId: profile.securityGroupId };
+    for (const member of batch.instances) {
+      const config = member.singleInstanceConfig as Config | null;
+      if (!config || backend(member) !== 'opentofu' || member.ownerUserId !== identity.ownerId || config.cloudAccountContextId !== identity.contextId
+        || config.cloudAccountUid !== identity.accountUid || config.regionId !== identity.region || config.zoneId !== identity.zone || config.networkProfileId !== profile.id
+        || !config.assignedVswitchId || !profile.vswitchIds.includes(config.assignedVswitchId)) throw new Error('Batch contains a member outside its immutable owner/account/network scope');
+    }
+    const key = `single-instance-batch-${createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 40)}`;
+    const workspace = path.join(this.workspaceRoot, key);
+    await this.assertLease(lease);
+    if (await exists(path.join(workspace, '.terraform.tfstate.lock.info'))) throw new Error('OpenTofu workspace has an active or unrecovered state lock');
+    let manifest = await readJson<Manifest>(path.join(workspace, MANIFEST_FILE));
+    if (!manifest && await exists(path.join(workspace, 'terraform.tfstate'))) throw new Error('Unregistered state cannot be adopted by a new batch');
+    if (manifest && (manifest.schemaVersion !== 1 || JSON.stringify(manifest.identity) !== JSON.stringify(identity))) throw new Error('OpenTofu workspace identity differs from this batch');
+    manifest ??= { schemaVersion: 1, identity, members: {} };
+    for (const item of items) {
+      if (!batch.instances.some(member => member.id === item.instance.id)) throw new Error('Execution item is not a member of this batch');
+      manifest.members[item.instance.id] ??= this.definition(item, identity);
+    }
+    for (const member of batch.instances) {
+      if (CURRENT_STATUSES.has(member.status) && !manifest.members[member.id]) {
+        const job = member.lastJobId ? await this.repository.getProvisionJobById(member.lastJobId) : null;
+        if (!job || job.rangeInstanceId !== member.id) throw new Error('Active sibling has no frozen OpenTofu creation job');
+        manifest.members[member.id] = this.definition({ instance: member, job }, identity);
+      }
+    }
+    const secrets = [...collectSecrets(batch.instances.map(instance => ({ instance }))), account.accessKeyId, account.accessKeySecret,
+      ...Object.values(manifest.members).map(member => member.password)].filter(Boolean);
+    const context: Context = { lease, items, batch, account, manifest, workspace, secrets, env: {}, state: new Map(),
+      knownIds: new Map(batch.instances.map(member => [member.id, Object.values(member.resourceSummary?.hostIds ?? {}).filter((id): id is string => Boolean(id))])) };
+    context.state = await this.readState(context);
+    for (const [id, member] of context.state) context.knownIds.set(id, [...new Set([...(context.knownIds.get(id) ?? []), member.id])]);
+    await this.assertLease(lease);
+    await fs.mkdir(workspace, { recursive: true, mode: 0o700 });
+    await this.atomicJson(context, MANIFEST_FILE, manifest);
+    const prepareProvider = (mirrors as unknown as { prepareOpenTofuProviderEnv?: (input: { providerZipPath?: string; workspacesRootDir: string; unpackedMirrorRootDir?: string }) => Promise<NodeJS.ProcessEnv> }).prepareOpenTofuProviderEnv;
+    const providerEnv = prepareProvider ? await prepareProvider({ providerZipPath: this.env.ALICLOUD_PROVIDER_ZIP_PATH,
+      workspacesRootDir: this.workspaceRoot, unpackedMirrorRootDir: this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT }) : {};
+    if (!prepareProvider && (this.env.ALICLOUD_PROVIDER_ZIP_PATH || this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT)) throw new Error('Verified provider environment runtime is unavailable');
+    context.env = { PATH: this.env.PATH, ...providerEnv, ALICLOUD_ACCESS_KEY: account.accessKeyId, ALICLOUD_SECRET_KEY: account.accessKeySecret, ALICLOUD_REGION: identity.region };
+    return context;
+  }
+
+  private definition(item: SingleInstanceExecutionItem, identity: Identity): CatalogMember {
+    const config = item.instance.singleInstanceConfig!;
+    const password = item.instance.runtimeCredentials?.[config.hostKey]?.password;
+    if (!password || !config.resolvedInstanceType) throw new Error('Frozen password and exact instance type are required');
+    return { password, hostKey: config.hostKey, sourceJobId: item.job.id, definition: { instance_name: instanceName(item.instance.name),
+      host_name: config.hostName ?? '', instance_type: config.resolvedInstanceType, image_id: config.imageId, vswitch_id: config.assignedVswitchId!,
+      system_disk_category: this.env.OPENTOFU_SYSTEM_DISK_CATEGORY ?? 'cloud_essd', system_disk_size: config.systemDiskSize,
+      internet_max_bandwidth_out: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT ?? 10), auto_release_time: config.autoReleaseTime ?? '',
+      tags: { ...buildBillingTags({ billingScope: item.instance.ownerUserId ? 'user' : 'platform', ownerUserId: item.instance.ownerUserId,
+        rangeInstanceId: item.instance.id, singleInstanceBatchId: identity.batchId, platformResourceType: 'ecs', platformHostKey: config.hostKey, billingStartAt: item.instance.createdAt }),
+        CloudAccountUid: identity.accountUid, CloudAccountContextId: identity.contextId, ExecutionBackend: 'opentofu', PlatformCreateJobId: item.job.id } } };
+  }
+
+  private async writeInputs(context: Context) {
+    await this.assertLease(context.lease);
+    const live = await this.getBatch(context.lease.batchId);
+    if (!live) throw new Error('OpenTofu batch disappeared while its workspace was locked');
+    const ids = new Set(live.instances.filter(member => CURRENT_STATUSES.has(member.status)).map(member => member.id));
+    for (const member of live.instances) {
+      if (member.singleInstanceBatchId !== context.lease.batchId || member.ownerUserId !== context.manifest.identity.ownerId
+        || member.singleInstanceConfig?.cloudAccountContextId !== context.manifest.identity.contextId
+        || member.singleInstanceConfig?.cloudAccountUid !== context.manifest.identity.accountUid
+        || member.singleInstanceConfig?.regionId !== context.manifest.identity.region) throw new Error('Batch membership changed outside its frozen execution scope');
+      if (ids.has(member.id) && !context.manifest.members[member.id]) throw new Error('A desired member has no frozen workspace definition');
+    }
+    const members = Object.fromEntries(Object.entries(context.manifest.members).filter(([id]) => ids.has(id)));
+    const wrapper = `provider "alicloud" { region = var.region_id }\nmodule "single_batch" {\n  source = ${JSON.stringify(path.join(this.projectRoot, MODULE_PATH))}\n  members = var.members\n  member_passwords = var.member_passwords\n  security_group_id = var.security_group_id\n}\noutput "members" { value = module.single_batch.members }\n`;
+    const variables = 'variable "region_id" { type = string }\nvariable "members" { type = any }\nvariable "security_group_id" { type = string }\nvariable "member_passwords" { type = map(string)\n sensitive = true }\n';
+    await this.atomicText(context, 'main.tf', wrapper);
+    await this.atomicText(context, 'variables.tf', variables);
+    await this.atomicText(context, 'versions.tf', 'terraform {\n  required_providers {\n    alicloud = { source = "aliyun/alicloud", version = "= 1.282.0" }\n  }\n}\n');
+    await this.atomicJson(context, 'terraform.tfvars.json', { region_id: context.manifest.identity.region, security_group_id: context.manifest.identity.securityGroupId,
+      members: Object.fromEntries(Object.entries(members).map(([id, member]) => [id, member.definition])), member_passwords: Object.fromEntries(Object.entries(members).map(([id, member]) => [id, member.password])) });
+  }
+
+  private async applyPlan(context: Context, ids: string[], destroy: boolean) {
+    await this.assertLease(context.lease);
+    if (!this.runner.showPlan) throw new Error('OpenTofu plan JSON inspection runtime is required');
+    const planFilePath = path.join(context.workspace, 'single-batch.tfplan');
+    const targets = ids.map(id => `module.single_batch.alicloud_instance.members[${JSON.stringify(id)}]`);
+    await this.command(context, () => this.runner.plan({ ...this.commandOptions(context), varsFilePath: path.join(context.workspace, 'terraform.tfvars.json'), planFilePath, targets, destroy }));
+    const plan = await this.command(context, () => this.runner.showPlan!<Plan>({ ...this.commandOptions(context), planFilePath }));
+    if (!plan || typeof plan.format_version !== 'string' || !plan.format_version
+      || plan.resource_changes !== undefined && !Array.isArray(plan.resource_changes)) throw new Error('OpenTofu plan JSON is malformed');
+    for (const change of plan.resource_changes ?? []) {
+      if (!change?.change || !Array.isArray(change.change.actions) || !change.change.actions.length
+        || change.change.actions.some(action => !['no-op', 'read', 'create', 'update', 'delete'].includes(action))) throw new Error('OpenTofu plan actions are malformed');
+      if (change.change.actions.every(action => action === 'no-op' || action === 'read')) continue;
+      if (change.type !== 'alicloud_instance' || !targets.includes(change.address)
+        || destroy && change.change.actions.some(action => action !== 'delete')) throw new Error('OpenTofu plan would change an unrequested batch resource');
+      if (!destroy && change.change.actions.includes('delete')) throw new Error('Creation cannot replace a pre-existing batch member');
+    }
+    context.manifest.pending = { kind: destroy ? 'destroy' : 'create', ids, jobIds: context.items.map(item => item.job.id) };
+    await this.atomicJson(context, MANIFEST_FILE, context.manifest);
+    await this.atomicJson(context, APPLY_MARKER, context.manifest.pending);
+    await this.command(context, () => this.runner.apply({ ...this.commandOptions(context), planFilePath }));
+  }
+
+  private async completeCreated(context: Context, items: SingleInstanceExecutionItem[], partial: boolean): Promise<SingleInstanceExecutionItem[]> {
+    const known = items.filter(item => { const state = context.state.get(item.instance.id); return state && !state.tainted && Boolean(state.diskId); });
+    const cloud = known.length ? await this.native.readOpenTofuInstances(context.account, known.map(item => context.state.get(item.instance.id)!.id)) : [];
+    const completed: SingleInstanceExecutionItem[] = [];
+    for (const item of known) {
+      await this.assertLease(context.lease);
+      if (!await this.itemCurrent(item)) continue;
+      const state = context.state.get(item.instance.id)!;
+      const detail = cloud.find(value => value.instanceId === state.id);
+      if (!detail || !matchesCloud(detail, item.instance) || partial && detail.status !== 'Running') continue;
+      const hostKey = item.instance.singleInstanceConfig!.hostKey;
+      const summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
+        hostIds: { [hostKey]: state.id }, systemDiskIds: { [hostKey]: state.diskId },
+        resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
+      if (!await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary, status: detail.status === 'Running' && detail.publicIp ? 'running' : 'creating',
+        runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
+        accessEntry: { hostRole: hostKey, publicIp: detail.publicIp, privateIp: detail.privateIp, ssh: detail.publicIp && item.instance.runtimeCredentials?.[hostKey]?.username !== 'Administrator' ? `ssh ${item.instance.runtimeCredentials?.[hostKey]?.username ?? 'root'}@${detail.publicIp}` : null }, errorSummary: null })) continue;
+      await this.assertLease(context.lease);
+      await syncRangeInstanceBillingLedger({ repository: this.repository, instance: item.instance, regionId: context.account.defaultRegion,
+        cloudAccountUid: context.account.accountUid, resourceSummary: summary, sourceProvisionJobId: context.manifest.members[item.instance.id].sourceJobId, billingStartAt: item.instance.createdAt });
+      await this.assertLease(context.lease);
+      if (await this.repository.commitSingleInstanceClaim(item.job, {}, { status: 'succeeded', finishedAt: new Date(), errorSummary: null })) completed.push(item);
+    }
+    if (!partial && completed.length !== items.length) throw new Error('OpenTofu did not prove every requested member complete');
+    return completed;
+  }
+
+  private async recoverPartialCreate(context: Context, items: SingleInstanceExecutionItem[], message: string) {
+    try {
+      context.state = await this.readState(context);
+      const completed = await this.completeCreated(context, items, true);
+      const failed: SingleInstanceExecutionItem[] = [];
+      for (const item of items) if (!completed.includes(item) && await this.itemCurrent(item)) failed.push(item);
+      if (!failed.length) { await this.finishOperation(context); return; }
+      const tracked = failed.filter(item => context.state.has(item.instance.id));
+      if (tracked.length) {
+        await this.writeInputs(context);
+        await this.command(context, () => this.runner.init(this.commandOptions(context)));
+        await this.applyPlan(context, tracked.map(item => item.instance.id), true);
+        context.state = await this.readState(context);
+      }
+      for (const item of tracked) {
+        if (context.state.has(item.instance.id)) throw new Error('Partial OpenTofu cleanup left a tracked member');
+        await this.assertAbsent(context, item);
+        await this.markFailures([item], message, false, true);
+      }
+      await this.cleanupUntracked(context, failed.filter(item => !tracked.includes(item)), message);
+      await this.finishOperation(context);
+    } catch (error) {
+      if (error instanceof SingleInstanceOpenTofuLeaseLostError) throw error;
+      await this.assertLease(context.lease);
+      await this.markFailures(items, `${message}; ${sanitize(error, context.secrets)}`, true);
+    }
+  }
+
+  private async cleanupUntracked(context: Context, items: SingleInstanceExecutionItem[], message: string, destroy = false) {
+    for (const item of items) {
+      await this.assertLease(context.lease);
+      if (!await this.itemCurrent(item)) continue;
+      const [tagged, known] = await Promise.all([this.native.readOpenTofuInstancesByTag(item.instance),
+        this.native.readOpenTofuInstances(context.account, context.knownIds.get(item.instance.id) ?? [])]);
+      const details = [...new Map([...tagged, ...known].map(detail => [detail.instanceId, detail])).values()];
+      if (details.some(detail => !matchesCloud(detail, item.instance))) throw new Error('Untracked cloud resource has an unproven owner or batch');
+      if (details.length) {
+        await this.native.deleteOwnedUntrackedOpenTofuInstances(item, details.map(detail => detail.instanceId), () => this.assertLease(context.lease));
+        message = `${message}; emergency-api cleanup of exact bound, untracked member`;
+      }
+      await this.assertAbsent(context, item);
+      if (destroy) await this.finishDestroyed(item);
+      else await this.markFailures([item], message, false, true);
+    }
+  }
+  private async assertAbsent(context: Context, item: SingleInstanceExecutionItem) {
+    for (let round = 0; round < 2; round += 1) {
+      await this.assertLease(context.lease);
+      const [tagged, known] = await Promise.all([this.native.readOpenTofuInstancesByTag(item.instance),
+        this.native.readOpenTofuInstances(context.account, context.knownIds.get(item.instance.id) ?? [])]);
+      if (tagged.length || known.length) throw new Error('Cloud member deletion has not been confirmed');
+    }
+  }
+  private async finishDestroyed(item: SingleInstanceExecutionItem) {
+    if (await this.repository.commitSingleInstanceClaim(item.job, { status: 'destroyed', accessEntry: null, resourceSummary: null, errorSummary: null },
+      { status: 'succeeded', finishedAt: new Date(), errorSummary: null })) await releaseRangeInstanceBillingLedger(this.repository, item.instance.id, new Date());
+  }
+  private async markFailures(items: SingleInstanceExecutionItem[], message: string, destroy: boolean, cleared = false) {
+    for (const item of items) {
+      if (!await this.itemCurrent(item)) continue;
+      const saved = await this.repository.commitSingleInstanceClaim(item.job, { status: destroy ? 'destroy_failed' : 'create_failed', errorSummary: message,
+        ...(cleared ? { resourceSummary: null, accessEntry: null } : {}) }, { status: 'failed', finishedAt: new Date(), errorSummary: message });
+      if (saved && cleared) await releaseRangeInstanceBillingLedger(this.repository, item.instance.id, new Date());
+    }
+  }
+  private async simulate(context: Context, destroy: boolean) {
+    for (const item of context.items) {
+      await this.assertLease(context.lease);
+      if (!await this.itemCurrent(item)) continue;
+      if (destroy) await this.finishDestroyed(item);
+      else await this.repository.commitSingleInstanceClaim(item.job, { status: 'running', resourceSummary: { mode: 'dry-run', hostIds: { [item.instance.singleInstanceConfig!.hostKey]: `dry-run-${item.instance.id}` } }, accessEntry: null, errorSummary: null }, { status: 'succeeded', finishedAt: new Date(), errorSummary: null });
+    }
+  }
+  private async readState(context: Context) {
+    const state = await readJson<{ version: number; lineage: string; resources?: Array<{ mode: string; type: string; name: string; module: string; instances: Array<{ index_key: string; status?: string; deposed?: string; attributes: Record<string, unknown> }> }> }>(path.join(context.workspace, 'terraform.tfstate'));
+    const members = new Map<string, StateMember>();
+    if (!state) return members;
+    if (state.version !== 4 || !state.lineage || !Array.isArray(state.resources)) throw new Error('OpenTofu batch state identity is malformed');
+    for (const resource of state.resources) {
+      if (resource.mode !== 'managed' || resource.type !== 'alicloud_instance' || resource.name !== 'members' || resource.module !== 'module.single_batch' || !Array.isArray(resource.instances)) throw new Error('OpenTofu state contains resources outside this ECS batch');
+      for (const entry of resource.instances) {
+        const frozen = context.manifest.members[entry.index_key];
+        const attrs = entry.attributes;
+        const tags = attrs?.tags as Record<string, string> | undefined;
+        if (!frozen || typeof attrs?.id !== 'string' || !attrs.id || !tags || tags.CloudAccountUid !== context.manifest.identity.accountUid
+          || tags.CloudAccountContextId !== context.manifest.identity.contextId || tags.ExecutionBackend !== 'opentofu'
+          || tags.RangeInstanceId !== entry.index_key || tags.SingleInstanceBatchId !== context.lease.batchId
+          || tags.PlatformScope !== (context.manifest.identity.ownerId ? 'user' : 'platform')
+          || (tags.PlatformUserId ?? null) !== context.manifest.identity.ownerId || tags.CreatedBy !== 'cyber-range-platform') throw new Error('OpenTofu member state ownership cannot be verified');
+        if (members.has(entry.index_key)) throw new Error('OpenTofu member has multiple or deposed physical instances; recovery is required');
+        members.set(entry.index_key, { id: attrs.id, diskId: typeof attrs.system_disk_id === 'string' ? attrs.system_disk_id : '',
+          privateIp: typeof attrs.private_ip === 'string' && attrs.private_ip ? attrs.private_ip : null,
+          publicIp: typeof attrs.public_ip === 'string' && attrs.public_ip ? attrs.public_ip : null,
+          status: String(attrs.status ?? ''), tainted: entry.status === 'tainted' || Boolean(entry.deposed), tags });
+      }
+    }
+    if (new Set([...members.values()].map(member => member.id)).size !== members.size) throw new Error('OpenTofu batch has duplicate cloud IDs');
+    return members;
+  }
+  private async itemCurrent(item: SingleInstanceExecutionItem) {
+    const current = await this.repository.getRangeInstanceById(item.instance.id);
+    return Boolean(current?.instanceMode === 'single' && current.lastJobId === item.job.id && item.job.startedAt
+      && await this.repository.heartbeatProvisionJob(item.job.id, item.job.startedAt!, new Date()));
+  }
+  private async getBatch(id: string) {
+    const lookup = (this.repository as AdminRepository & { getSingleInstanceBatchWithInstancesById?: (id: string) => Promise<SingleInstanceBatchWithInstancesRecord | null> }).getSingleInstanceBatchWithInstancesById;
+    return lookup ? lookup.call(this.repository, id) : (await this.repository.listSingleInstanceBatchesWithInstances()).find(value => value.batch.id === id) ?? null;
+  }
+  private async assertLease(lease: SingleInstanceOpenTofuBatchLease) {
+    if (!lease || !lease.batchId || typeof lease.assertCurrent !== 'function' || lease.signal?.aborted) throw new SingleInstanceOpenTofuLeaseLostError('OpenTofu batch lease is not active');
+    try { await lease.assertCurrent(); } catch { throw new SingleInstanceOpenTofuLeaseLostError('OpenTofu batch lease was lost'); }
+  }
+  private commandOptions(context: Context): CommandOptions { return { workspaceDir: context.workspace, env: context.env, signal: context.lease.signal }; }
+  private async command<T>(context: Context, work: () => Promise<T>): Promise<T> {
+    await this.assertLease(context.lease);
+    try { const result = await work(); await this.assertLease(context.lease); return result; }
+    catch (error) { await this.assertLease(context.lease); throw new Error(sanitize(error, context.secrets)); }
+  }
+  private async atomicText(context: Context, name: string, contents: string) {
+    await this.assertLease(context.lease);
+    const temporary = path.join(context.workspace, `.${name}.${randomUUID()}.tmp`);
+    try { await fs.writeFile(temporary, contents, { mode: 0o600 }); await this.assertLease(context.lease); await fs.rename(temporary, path.join(context.workspace, name)); }
+    finally { await fs.rm(temporary, { force: true }); }
+  }
+  private atomicJson(context: Context, name: string, value: unknown) { return this.atomicText(context, name, `${JSON.stringify(value, null, 2)}\n`); }
+  private async finishOperation(context: Context) {
+    await this.assertLease(context.lease);
+    // A superseded member may no longer be part of this claim. Do not erase the
+    // recovery marker until every missing member from that apply is proven absent.
+    for (const id of context.manifest.pending?.ids ?? []) {
+      if (context.state.has(id)) continue;
+      const instance = context.batch.instances.find(member => member.id === id);
+      if (!instance) throw new Error('Recovery marker refers to an unknown batch member');
+      await this.assertAbsent(context, { instance, job: context.items[0].job });
+    }
+    delete context.manifest.pending;
+    await this.atomicJson(context, MANIFEST_FILE, context.manifest);
+    await fs.rm(path.join(context.workspace, APPLY_MARKER), { force: true });
+  }
+}
+function backend(instance: RangeInstanceRecord) { return (instance.singleInstanceConfig as Config | null)?.executionBackend; }
+function matchesCloud(detail: NormalizedInstanceDetail, instance: RangeInstanceRecord) {
+  return detail.tags.RangeInstanceId === instance.id && detail.tags.SingleInstanceBatchId === instance.singleInstanceBatchId
+    && detail.tags.CreatedBy === 'cyber-range-platform' && (detail.tags.PlatformUserId ?? null) === instance.ownerUserId
+    && detail.tags.PlatformScope === (instance.ownerUserId ? 'user' : 'platform');
+}
+function collectSecrets(items: Array<{ instance: RangeInstanceRecord }>) { return items.flatMap(item => Object.values(item.instance.runtimeCredentials ?? {}).map(value => value.password)).filter(Boolean); }
+function sanitize(error: unknown, secrets: string[]) {
+  let text = error instanceof Error ? error.message : 'OpenTofu batch operation failed';
+  const encoded = secrets.flatMap(value => [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]).filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const secret of encoded) text = text.split(secret).join('[REDACTED]');
+  return text;
+}
+async function readJson<T>(file: string): Promise<T | null> {
+  const contents = await fs.readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw new Error('OpenTofu workspace material cannot be read'); });
+  if (contents === null) return null;
+  try { return JSON.parse(contents) as T; } catch { throw new Error('OpenTofu workspace material is malformed'); }
+}
+async function exists(file: string) { return fs.access(file).then(() => true, () => false); }
+function instanceName(value: string) {
+  const clean = value.normalize('NFKC').trim().replace(/[^A-Za-z0-9._\-\u3400-\u9FFF]+/g, '-').replace(/[-_.]{2,}/g, '-').replace(/^[-_.]+|[-_.]+$/g, '');
+  return Array.from(/^[A-Za-z\u3400-\u9FFF]/.test(clean) ? clean : `cr-${clean || 'instance'}`).slice(0, 128).join('');
+}
