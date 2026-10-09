@@ -139,6 +139,20 @@ describe('SingleInstancesService', () => {
     } finally { jest.useRealTimers(); }
   });
 
+  it.each(['image', 'source'] as const)('rechecks %s after first-network preparation before recording any jobs', async target => {
+    const fixture = createLaunchFixture();
+    const prepareNetwork = fixture.network.ensureDefaultProfile.getMockImplementation()!;
+    fixture.network.ensureDefaultProfile.mockImplementationOnce(async () => {
+      const profile = await prepareNetwork();
+      if (target === 'image') fixture.image.enabled = false;
+      else fixture.source.isAvailable = false;
+      return profile;
+    });
+    await expect(fixture.service.launch(fixture.input, fixture.actor.id)).rejects.toThrow(target === 'image' ? 'not found' : 'exporting');
+    expect(await fixture.repository.listProvisionJobs()).toEqual([]);
+    expect(await fixture.repository.listSingleInstanceBatchesWithInstances()).toEqual([]);
+  });
+
   it('only queues batch destruction and retries; neither endpoint invokes the API executor', async () => {
     const fixture = createLaunchFixture();
     const launched = await fixture.service.launch(fixture.input, fixture.actor.id);

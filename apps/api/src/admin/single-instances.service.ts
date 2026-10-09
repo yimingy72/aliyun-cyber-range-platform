@@ -228,9 +228,10 @@ export class SingleInstancesService {
 
     if (accountContextFingerprint(accountContext) !== accountContextFingerprint(await this.systemConfigService.getAccountContext()))
       throw new ConflictException('云账号配置在规格检查期间发生变化，请重新提交。');
-    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile(accountContext,currentUserId);
     this.assertFutureInstanceExpiration(input.expiresAt);
+    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
     const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
     const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
