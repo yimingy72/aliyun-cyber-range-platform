@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { ADMIN_REPOSITORY, type AdminRepository, type ProvisionJobRecord, type RangeInstanceRecord, } from './admin.repository';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
@@ -12,6 +12,8 @@ const DEFAULT_INTERNET_MAX_BANDWIDTH_OUT = 10;
 const DESCRIBE_INSTANCE_ATTEMPTS = 30;
 const DESCRIBE_INSTANCE_INTERVAL_MS = 2000;
 const CREATE_ITEM_CONCURRENCY = 10;
+const DESCRIBE_BATCH_WINDOW_MS = 5;
+const DESCRIBE_BATCH_MAX_IDS = 100;
 const DESTROY_RETRYABLE_ERROR_CODE = 'IncorrectInstanceStatus.Initializing';
 const DESTROY_ALREADY_GONE_ERROR_CODES = [
   'InvalidInstanceId.NotFound',
@@ -56,12 +58,22 @@ type AliyunInstanceDetail = {
     IpAddress?: string[] | string;
   };
 };
+type InstanceDescribeInput = {
+  accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+  instanceIds: string[];
+};
+type PendingInstanceDescribe = {
+  input: InstanceDescribeInput;
+  resolve: (details: NormalizedInstanceDetail[]) => void;
+  reject: (error: unknown) => void;
+};
 @Injectable()
 export class SingleInstanceBatchExecutionService {
   // ponytail: one shared slot pool for create/destroy/refresh; split pools only if ECS throttling shows up.
   private readonly maxConcurrency = 3;
   private inFlight = 0;
   private queue: Array<() => void> = [];
+  private readonly pendingInstanceDescribes = new Map<string, PendingInstanceDescribe[]>();
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
@@ -71,14 +83,16 @@ export class SingleInstanceBatchExecutionService {
       await new Promise<void>((resolve) => {
         this.queue.push(resolve);
       });
+    } else {
+      this.inFlight += 1;
     }
-    this.inFlight += 1;
     try {
       return await work();
     }
     finally {
-      this.inFlight -= 1;
-      this.queue.shift()?.();
+      const next = this.queue.shift();
+      if (next) next();
+      else this.inFlight -= 1;
     }
   }
   async findCloudInstanceIdsByRangeInstanceId(rangeInstanceId: string, instance?: RangeInstanceRecord) {
@@ -395,14 +409,61 @@ export class SingleInstanceBatchExecutionService {
     }
     throw new Error('Timed out waiting for ECS instances to become visible.');
   }
-  private async describeInstances(input: {
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
-    instanceIds: string[];
-  }) {
+  private describeInstances(input: InstanceDescribeInput): Promise<NormalizedInstanceDetail[]> {
+    if (!input.instanceIds.length) return Promise.resolve([]);
+    const account = input.accountContext;
+    if (!account.accountUid || !account.accountUidResolved || !account.cloudAccountContextId) {
+      return this.requestInstanceDetails(input);
+    }
+    const key = createHash('sha256').update(JSON.stringify([account.provider, account.cloudAccountContextId,
+      account.accountUid, account.defaultRegion, account.defaultZoneId, account.accessKeyId, account.accessKeySecret])).digest('hex');
+    return new Promise((resolve, reject) => {
+      let pending = this.pendingInstanceDescribes.get(key);
+      if (!pending) {
+        pending = [];
+        this.pendingInstanceDescribes.set(key, pending);
+        const batch = pending;
+        setTimeout(() => void this.flushInstanceDescribes(key, batch), DESCRIBE_BATCH_WINDOW_MS);
+      }
+      pending.push({ input: { accountContext: { ...account }, instanceIds: [...new Set(input.instanceIds)] }, resolve, reject });
+    });
+  }
+  private async flushInstanceDescribes(key: string, pending: PendingInstanceDescribe[]) {
+    // No response cache or in-flight reuse: every subsequent verification round queries the cloud again.
+    this.pendingInstanceDescribes.delete(key);
+    const ids = [...new Set(pending.flatMap((request) => request.input.instanceIds))];
+    try {
+      const details: NormalizedInstanceDetail[] = [];
+      for (let offset = 0; offset < ids.length; offset += DESCRIBE_BATCH_MAX_IDS) {
+        details.push(...await this.requestInstanceDetails({ accountContext: pending[0].input.accountContext,
+          instanceIds: ids.slice(offset, offset + DESCRIBE_BATCH_MAX_IDS) }));
+      }
+      for (const request of pending) {
+        const requested = new Set(request.input.instanceIds);
+        request.resolve(details.filter((detail) => requested.has(detail.instanceId))
+          .map((detail) => ({ ...detail, tags: { ...detail.tags } })));
+      }
+    } catch (error) {
+      for (const request of pending) request.reject(error);
+    }
+  }
+  private async requestInstanceDetails(input: InstanceDescribeInput) {
     const account = input.accountContext;
     const response = await this.performAliyunRpcRequest<AliyunDescribeInstancesResponse>({ accessKeyId: account.accessKeyId,
       accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action: 'DescribeInstances', parameters: { InstanceIds: JSON.stringify(input.instanceIds), PageSize: '100' } });
-    return normalizeInstanceDetails(response);
+    const raw = response.Instances?.Instance;
+    const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : null;
+    if (!rows || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row)
+      || typeof row.InstanceId !== 'string' || !row.InstanceId.trim())) {
+      throw new Error('DescribeInstances response contains malformed instance identities');
+    }
+    const details = normalizeInstanceDetails(response);
+    if (response.TotalCount !== undefined && (!Number.isSafeInteger(response.TotalCount) || response.TotalCount !== details.length)
+      || new Set(details.map((detail) => detail.instanceId)).size !== details.length
+      || details.some((detail) => !input.instanceIds.includes(detail.instanceId))) {
+      throw new Error('DescribeInstances response is incomplete or contains duplicate instance ids');
+    }
+    return details;
   }
   private async listExistingInstanceIds(input: {
     accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
