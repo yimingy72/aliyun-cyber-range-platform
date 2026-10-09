@@ -3,6 +3,11 @@ import { BadGatewayException } from '@nestjs/common';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 
 export type ImageCredentials = { accessKeyId: string; accessKeySecret: string; regionId: string };
+export class AliyunImageRpcError extends BadGatewayException {
+  constructor(action: string, readonly cloudCode: string | null, status: number) {
+    super(`Aliyun ${action} failed: ${cloudCode ?? status}`);
+  }
+}
 export async function imageRpc<T>(credentials: ImageCredentials, action: string, parameters: Record<string, string> = {}): Promise<T> {
   const query = signAliyunRpcQuery({ Action: action, AccessKeyId: credentials.accessKeyId, Format: 'JSON', RegionId: credentials.regionId,
     SignatureMethod: 'HMAC-SHA1', SignatureNonce: randomUUID(), SignatureVersion: '1.0',
@@ -13,7 +18,7 @@ export async function imageRpc<T>(credentials: ImageCredentials, action: string,
   let body: Record<string, unknown>;
   try { body = await response.json() as Record<string, unknown>; } catch { throw new BadGatewayException(`Aliyun ${action} returned invalid JSON`); }
   if (!body || typeof body !== 'object' || Array.isArray(body) || !response.ok || (body.Success !== undefined && body.Success !== true) || (body.Code !== undefined && body.Code !== 'Success')) {
-    throw new BadGatewayException(`Aliyun ${action} failed: ${typeof body?.Code === 'string' ? body.Code : response.status}`);
+    throw new AliyunImageRpcError(action, typeof body?.Code === 'string' ? body.Code : null, response.status);
   }
   return body as T;
 }

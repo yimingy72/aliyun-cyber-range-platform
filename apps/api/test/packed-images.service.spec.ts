@@ -184,4 +184,20 @@ describe('Owned packed-image lifecycle', () => {
     await expect(service.cleanup('old-image-without-manifest', { id: 'admin', role: 'admin' } as SessionUserProfile)).rejects.toThrow('旧镜像');
     expect(deletes()).toEqual([]);
   });
+  it('blocks another pack of the same source while the original outcome is unresolved', async () => {
+    await expect(service.begin({ cloudAccountContextId: context.id, cloudAccountUid: context.accountUid, regionId: context.regionId, ownerUserId: owner.id, sourceRangeInstanceId: 'range-new', sourceHostKey: 'ecs-new', sourceInstanceId: 'i-new' }, context)).rejects.toThrow('尚未确认');
+    expect(await repository.listPackedImageArtifacts()).toHaveLength(1);
+  });
+  it('retains the complete snapshot binding and every billable ledger when snapshot tagging fails', async () => {
+    const originalFetch = (globalThis.fetch as jest.Mock).getMockImplementation()!;
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (new URL(String(input)).searchParams.get('Action') === 'TagResources') return new Response(JSON.stringify({ Code: 'Forbidden' }), { status: 403 });
+      return originalFetch(input, init);
+    });
+    await service.refresh(artifactId);
+    expect(await repository.getPackedImageArtifact(artifactId)).toMatchObject({ status: 'creating', backingSnapshotIds: ['s-system', 's-data'] });
+    expect((await repository.listBillingLedgerResources()).find(row => row.cloudResourceId === 's-system')).toMatchObject({ cloudAccountUid: context.accountUid, ownerUserId: owner.id, releasedAt: null });
+    expect((await repository.listBillingLedgerResources()).find(row => row.cloudResourceId === 's-data')).toMatchObject({ cloudAccountUid: context.accountUid, ownerUserId: owner.id, releasedAt: null });
+    expect(deletes()).toEqual([]);
+  });
 });

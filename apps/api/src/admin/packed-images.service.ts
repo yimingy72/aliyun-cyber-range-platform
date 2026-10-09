@@ -23,7 +23,12 @@ export class PackedImagesService {
     if (!sourceDiskIds.length || sourceDiskIds.some(id => !/^d-/.test(id)) || new Set(sourceDiskIds).size !== sourceDiskIds.length || cloudTotal(body) !== sourceDiskIds.length) {
       throw new ConflictException('无法确认源实例的完整磁盘清单，未提交镜像打包。');
     }
-    const artifact = await this.repository.createPackedImageArtifact({ ...input, sourceDiskIds });
+    const artifact = await this.repository.withSingleInstanceControlLock(async () => {
+      const existing = (await this.repository.listPackedImageArtifacts()).find(item => ACTIVE.includes(item.status)
+        && item.cloudAccountUid === input.cloudAccountUid && item.regionId === input.regionId && item.sourceInstanceId === input.sourceInstanceId);
+      if (existing) throw new ConflictException({ message: '该实例已有尚未确认或清理中的打包任务，请先核验原任务，避免重复生成计费快照。', packedImageArtifactId: existing.id });
+      return this.repository.createPackedImageArtifact({ ...input, sourceDiskIds });
+    });
     const submissionToken = randomUUID();
     if (!await this.repository.claimPackedImageArtifact(artifact.id, submissionToken, new Date(Date.now() + 300_000))) throw new ConflictException('打包来源记录正在恢复，请稍后重试。');
     return { ...artifact, submissionToken };
@@ -174,6 +179,8 @@ export class PackedImagesService {
   private async captureSnapshots(artifact: PackedImageArtifactRecord, context: LeasedContext, ids: string[]) {
     if (ids.length !== artifact.sourceDiskIds.length) throw new ConflictException('打包镜像快照清单未覆盖全部源磁盘，等待完整结果。');
     if (artifact.backingSnapshotIds.length && artifact.backingSnapshotIds.sort().join(',') !== [...ids].sort().join(',')) throw new ConflictException('已记录的打包快照绑定发生变化。');
+    // Save the binding before cloud tagging; a denied tag request must not lose billable identities.
+    await this.updateClaimed(artifact.id, context.artifactLease!.token, { backingSnapshotIds: ids });
     const capturedDisks = new Set<string>();
     for (const sid of ids) {
       const snapshot = await this.describeSnapshot(context, sid);
@@ -184,9 +191,12 @@ export class PackedImagesService {
       if ((existingTags.PlatformPackedImageArtifactId && existingTags.PlatformPackedImageArtifactId !== artifact.id)
         || (existingTags.PlatformUserId && existingTags.PlatformUserId !== artifact.ownerUserId)
         || (existingTags.CreatedBy && existingTags.CreatedBy !== 'cyber-range-platform')) throw new ConflictException('快照已有其它来源或 owner 标记，拒绝覆盖。');
-      const tags = this.tags(artifact);
-      await this.rpc(context, 'TagResources', { ResourceType: 'snapshot', 'ResourceId.1': sid, ...buildAliyunTagParameters({ ...tags, PlatformResourceType: 'snapshot' }) });
+    }
+    for (const sid of ids) {
       await this.upsertLedger(artifact, sid, 'snapshot', context.artifactLease!.token);
+    }
+    for (const sid of ids) {
+      await this.rpc(context, 'TagResources', { ResourceType: 'snapshot', 'ResourceId.1': sid, ...buildAliyunTagParameters({ ...this.tags(artifact), PlatformResourceType: 'snapshot' }) });
     }
     await this.updateClaimed(artifact.id, context.artifactLease!.token, { backingSnapshotIds: ids });
   }

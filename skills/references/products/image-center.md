@@ -41,7 +41,9 @@
 - `snapshotId` 使用目录来源行的 `id` 或资产的 `sourceSnapshotId`；完整回收结果中的 `snapshotIds` 和 `deletedSnapshotIds` 是真实阿里云 backing snapshot ID。若前一次已确认操作进入 `failed`，保持业务目标不变，用新的幂等键重新取得确认再重试；同一次二阶段确认必须复用相同幂等键。
 - 打包返回 `packedImageArtifactId` 与初始 `imageReady: false`。用 `platform_image_list({ view: 'mine' })` 跟踪同一资产；仅 `sourceSnapshotAvailable: true` 且 `enabled: true` 可以创建实例。创建中、失败、云端消失或清理中的资产不可启用/重复收录；重复收录保留 owner、默认配置和现有启停状态。
 - 目录同步查询全部云状态并完整校验分页。云端消失的来源会保留为不可用记录并停用关联资产；错误、业务失败或不完整响应保留原目录。
-- 导入任务仅对 `failed` 状态使用 `image_import_job_retry`。`available` 后才可稳定使用。
+- 导入任务仅对 `failed` 状态使用 `image_import_job_retry`。云端明确拒绝且未返回 ImageId 时可显式重试；超时/断连等未知提交只按原任务唯一标记恢复，不能当成未创建，也不会自动重新提交。`available` 后才可稳定使用。
+- 导入冻结云账号、地域和上传 Bucket，失败清理先核验本任务镜像与完整快照清单，非强制删除镜像后逐个删除无其它引用的自有快照，并确认消失后释放各自费用台账。失败、未知或旧记录缺少证明时保留恢复材料和费用台账，不报告全部回收。
+- 平台“打包镜像”调用 CreateImage，会为实例磁盘生成依赖快照；目前平台未实现 ExportImage。保留云镜像用于后续启动时必须保留依赖快照并计费。若另外在阿里云导出到 OSS，导出文件还涉及 OSS 存储、请求与下载流量费用；导出完成不代表原镜像/快照或 OSS 文件已删除。
 - 本地 QCOW2、RAW、VHD 上传不由 MCP 提供：JSON 工具不能承载二进制，预签名上传地址也不能作为普通工具结果处理。通过平台上传后，用导入任务工具跟踪。
 
 从运行实例生成镜像不属于本模块：独立实例使用 `single_instance_pack_image`，编排节点使用 `range_instance_node_pack_image`。
