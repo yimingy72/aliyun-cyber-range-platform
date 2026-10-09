@@ -20,6 +20,7 @@
 | 取消平台发布 | `platform_image_unpublish` | `platformImageAssetId` | 操作元数据 | `images:write`，仅管理员 |
 | 删除平台镜像资产 | `platform_image_remove` | `platformImageAssetId` | 操作元数据 | `images:write` |
 | 查询镜像目录 | `image_catalog_list` | `scope: public\|custom` | — | `images:read` |
+| 查询腾讯云镜像目录 | `tencent_cloud_image_list` | `cloudAccountContextId`、`scope` | `offset`、`limit` | `settings:read`、`images:read`，仅管理员 |
 | 同步镜像目录 | `image_catalog_sync` | `scope: public\|custom` | — | `images:read` |
 | 删除自定义云镜像 | `image_catalog_custom_delete` | `snapshotId` | `deleteOwnedSnapshots`（默认 `false`）、操作元数据 | `images:write` |
 | 查询导入任务 | `image_import_job_list` | — | — | `images:read` |

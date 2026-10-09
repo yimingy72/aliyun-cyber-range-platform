@@ -122,7 +122,7 @@ async function createApp(
   });
 
   moduleBuilder.overrideProvider(OidcPrincipalResolver).useValue({
-    resolve: jest.fn().mockResolvedValue({ id: 'admin', username: 'admin', role: 'admin', status: 'active' }),
+    resolve: jest.fn().mockResolvedValue({ id: 'admin', username: 'admin', role: 'admin', status: 'active', isPlatformManager: true, cloudWorkspaceId: null }),
   });
 
   const moduleRef = await moduleBuilder.compile();
@@ -156,7 +156,7 @@ describe('Admin system config', () => {
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-hangzhou',
       defaultZoneId: 'cn-hangzhou-h',
-      accessKeyId: 'test-ak',
+      accessKeyId: MASKED_SECRET,
       accessKeySecret: MASKED_SECRET,
       imageImportBucket: '',
     });
@@ -187,7 +187,7 @@ describe('Admin system config', () => {
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-beijing',
       defaultZoneId: 'cn-beijing-k',
-      accessKeyId: 'LTAI-updated',
+      accessKeyId: MASKED_SECRET,
       accessKeySecret: MASKED_SECRET,
       imageImportBucket: '',
     });
@@ -205,7 +205,7 @@ describe('Admin system config', () => {
       .set('authorization', TEST_ADMIN_AUTHORIZATION)
       .expect(200);
 
-    expect(snapshot.body).toEqual(response.body);
+    expect(snapshot.body).toEqual({ ...response.body, accessKeyId: MASKED_SECRET });
 
     await app.close();
   });
@@ -245,7 +245,7 @@ describe('Admin system config', () => {
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-shanghai',
       defaultZoneId: 'cn-shanghai-b',
-      accessKeyId: 'reload-ak',
+      accessKeyId: MASKED_SECRET,
       accessKeySecret: MASKED_SECRET,
       imageImportBucket: '',
     });

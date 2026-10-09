@@ -14,8 +14,10 @@ isolated('Tencent account persistence (isolated PostgreSQL)', () => {
   });
   beforeEach(async () => {
     process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = '12'.repeat(32);
-    await prisma.$executeRaw`TRUNCATE TABLE "CloudAccountContext", "SystemCloudConfig", "RangeInstance", "ProvisionJob", "BillingLedgerResource", "ImageImportJob" CASCADE`;
-    await prisma.cloudAccountContext.create({ data: { id: 'synthetic-active-alibaba', provider: 'alibaba_cloud', displayName: 'Synthetic Alibaba context', accountUid: 'synthetic-alibaba-uid', regionId: 'cn-beijing', zoneId: 'cn-beijing-h', accessKeyId: 'synthetic-alibaba-key', accessKeySecret: 'synthetic-alibaba-secret', imageImportBucket: '', status: 'ready', isActive: true } });
+    await prisma.$executeRaw`TRUNCATE TABLE "CloudAccountContext", "SystemCloudConfig", "RangeInstance", "ProvisionJob", "BillingLedgerResource", "ImageImportJob", "CloudWorkspace" CASCADE`;
+    await prisma.cloudWorkspace.create({ data: { id: 'ali-workspace', provider: 'alibaba_cloud', accountUid: 'synthetic-alibaba-uid', displayName: 'Synthetic Alibaba workspace' } });
+    await prisma.cloudAccountContext.create({ data: { id: 'synthetic-active-alibaba', cloudWorkspaceId: 'ali-workspace', provider: 'alibaba_cloud', displayName: 'Synthetic Alibaba context', accountUid: 'synthetic-alibaba-uid', regionId: 'cn-beijing', zoneId: 'cn-beijing-h', accessKeyId: 'synthetic-alibaba-key', accessKeySecret: 'synthetic-alibaba-secret', imageImportBucket: '', status: 'ready', isActive: true } });
+    await prisma.cloudWorkspace.update({ where: { id: 'ali-workspace' }, data: { activeCloudAccountContextId: 'synthetic-active-alibaba' } });
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, request) => {
       const action = (request?.headers as Record<string, string>)['X-TC-Action'];
       const data = action === 'GetCallerIdentity' ? { AccountId: '100001', UserId: '200001' }
@@ -30,8 +32,10 @@ isolated('Tencent account persistence (isolated PostgreSQL)', () => {
     else process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = priorKey;
   });
   it('persists the Tencent enum and encrypted secret while preserving the active Alibaba account', async () => {
-    const saved = await service.saveTencentCloudContext(input);
+    const saved = await service.saveAccountBinding(input);
     const raw = await prisma.cloudAccountContext.findUniqueOrThrow({ where: { id: saved.id } });
+    const workspace = await prisma.cloudWorkspace.findUniqueOrThrow({ where: { id: raw.cloudWorkspaceId } });
+    expect(workspace).toMatchObject({ provider: 'tencent_cloud', accountUid: '100001', activeCloudAccountContextId: raw.id });
     expect(raw).toMatchObject({ provider: 'tencent_cloud', accountUid: '100001', isActive: false, imageImportBucket: '' });
     expect(raw.accessKeySecret).toMatch(/^cloud-credential:v1:/); expect(raw.accessKeySecret).not.toContain(input.accessKeySecret);
     await expect(service.getCredentials(raw.id)).resolves.toMatchObject({ provider: 'tencent_cloud', accessKeySecret: input.accessKeySecret });
@@ -40,7 +44,7 @@ isolated('Tencent account persistence (isolated PostgreSQL)', () => {
     expect((await service.list({ includeInactive: true })).every((row) => !Object.hasOwn(row, 'accessKeySecret') && !Object.hasOwn(row, 'accessKeyId'))).toBe(true);
   });
   it('coalesces simultaneous verified saves by provider, root account and region', async () => {
-    const results = await Promise.all([service.saveTencentCloudContext(input), service.saveTencentCloudContext(input)]);
+    const results = await Promise.all([service.saveAccountBinding(input), service.saveAccountBinding(input)]);
     expect(results[0].id).toBe(results[1].id);
     expect(await prisma.cloudAccountContext.count({ where: { provider: 'tencent_cloud' } })).toBe(1);
     await expect(service.getCredentials(results[0].id)).resolves.toMatchObject({ accessKeySecret: input.accessKeySecret });

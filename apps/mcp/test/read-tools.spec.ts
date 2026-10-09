@@ -186,6 +186,10 @@ function createClientStub(): ClientStub {
     fetchCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud' }),
     saveCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou' }),
     listCloudAccountContexts: vi.fn().mockResolvedValue([]),
+    listCloudWorkspaces: vi.fn().mockResolvedValue([]),
+    getCurrentCloudWorkspace: vi.fn().mockResolvedValue(null),
+    switchCloudWorkspace: vi.fn(),
+    saveCloudAccountBinding: vi.fn(),
     saveTencentCloudAccount: vi.fn(),
     discoverTencentCloudRegions: vi.fn(),
     listTencentCloudImages: vi.fn(),
@@ -1278,7 +1282,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(80);
+    expect(tools).toHaveLength(83);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

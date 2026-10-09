@@ -4,7 +4,13 @@ const input = { provider: 'tencent_cloud' as const, regionId: 'ap-shanghai', zon
 const json = (value: unknown) => new Response(JSON.stringify({ Response: { RequestId: 'synthetic-request', ...(value as object) } }));
 function fixture() {
   let context: any = null;
+  let workspace: any = null;
   const db = {
+    cloudWorkspace: {
+      findUnique: jest.fn(async () => workspace), findUniqueOrThrow: jest.fn(async () => workspace),
+      upsert: jest.fn(async ({ create, update }) => { workspace = workspace ? { ...workspace, ...update } : { id: 'tencent-workspace', isReadOnly: false, activeCloudAccountContextId: null, ...create }; return workspace; }),
+      update: jest.fn(async ({ data }) => { workspace = { ...workspace, ...data }; return workspace; }),
+    },
     cloudAccountContext: {
       findUnique: jest.fn(async () => context),
       findMany: jest.fn(async () => context ? [context] : []),
@@ -31,6 +37,8 @@ describe('Tencent cloud account persistence and isolation', () => {
     const { db, service } = fixture(); const fetch = validCloud();
     const saved = await service.saveTencentCloudContext(input);
     expect(saved).toMatchObject({ provider: 'tencent_cloud', accountUid: '100001', isActive: false, imageImportBucket: '', bucketStatus: 'unconfigured', status: 'ready' });
+    expect(saved.cloudWorkspaceId).toBe('tencent-workspace');
+    expect(db.cloudWorkspace.update).toHaveBeenCalledWith({ where: { id: 'tencent-workspace' }, data: { activeCloudAccountContextId: saved.id } });
     expect(saved).not.toHaveProperty('accessKeyId'); expect(saved).not.toHaveProperty('accessKeySecret');
     expect(db.cloudAccountContext.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { provider_accountUid_regionId: { provider: 'tencent_cloud', accountUid: '100001', regionId: input.regionId } },
@@ -51,6 +59,21 @@ describe('Tencent cloud account persistence and isolation', () => {
     expect(db.cloudAccountContext.upsert).toHaveBeenCalledTimes(2);
     await expect(service.getCredentials(saved.id)).resolves.toMatchObject({ accessKeySecret: 'rotated-tencent-secret' });
   });
+  it('encrypts a newly bound Alibaba secret and preserves its verified source for decryption', async () => {
+    const { db, service } = fixture();
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ AccountId: '100001' })));
+    const payload = { ...input, provider: 'alibaba_cloud' as const, regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' };
+    const saved = await service.saveAccountBinding(payload);
+    expect(saved).toMatchObject({ provider: 'alibaba_cloud', accountUid: '100001', isActive: false });
+    expect(db.cloudAccountContext.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ accessKeySecret: expect.stringMatching(/^cloud-credential:v1:/) }) }));
+    expect(JSON.stringify(db.cloudAccountContext.upsert.mock.calls)).not.toContain(payload.accessKeySecret);
+    await expect(service.getCredentials(saved.id, { requireReady: true })).resolves.toMatchObject({ provider: 'alibaba_cloud', accountUid: '100001', accessKeySecret: payload.accessKeySecret });
+  });
+  it('rejects a missing encryption key before an Alibaba binding identity query or write', async () => {
+    delete process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY; const { db, service } = fixture(); const fetch = jest.spyOn(globalThis, 'fetch');
+    await expect(service.saveAccountBinding({ ...input, provider: 'alibaba_cloud', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' })).rejects.toThrow('加密密钥未配置');
+    expect(fetch).not.toHaveBeenCalled(); expect(db.cloudWorkspace.upsert).not.toHaveBeenCalled(); expect(db.cloudAccountContext.upsert).not.toHaveBeenCalled();
+  });
   it('rejects missing encryption before cloud reads and persistence', async () => {
     delete process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY; const { db, service } = fixture(); const fetch = jest.spyOn(globalThis, 'fetch');
     await expect(service.saveTencentCloudContext(input)).rejects.toThrow('加密密钥未配置');
@@ -69,7 +92,7 @@ describe('Tencent cloud account persistence and isolation', () => {
     const { db, service } = fixture(); jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ AccountId: '100001' })).mockResolvedValueOnce(json(zones));
     await expect(service.saveTencentCloudContext(input)).rejects.toThrow('可用区未通过云端校验'); expect(db.cloudAccountContext.upsert).not.toHaveBeenCalled();
   });
-  it.each([{ zoneId: 'ap-beijing-1' }, { regionId: '../bad' }, { accessKeySecret: '********' }, { accessKeySecret: '' }, { accessKeyId: '' }, { provider: 'alibaba_cloud' }])('rejects invalid explicit inputs before cloud or database writes %j', async (patch) => {
+  it.each([{ zoneId: 'ap-beijing-1' }, { regionId: '../bad' }, { accessKeySecret: '********' }, { accessKeySecret: '' }, { accessKeyId: '' }, { provider: 'alibaba_cloud' }, { imageImportBucket: 'not-supported' }])('rejects invalid explicit inputs before cloud or database writes %j', async (patch) => {
     const { db, service } = fixture(); const fetch = jest.spyOn(globalThis, 'fetch');
     await expect(service.saveTencentCloudContext({ ...input, ...patch } as never)).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled(); expect(db.cloudAccountContext.upsert).not.toHaveBeenCalled();

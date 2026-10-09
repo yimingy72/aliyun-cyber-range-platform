@@ -5,7 +5,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 # 云上综合靶场平台全产品 Skill
 
-通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 80 个 MCP 工具。
+通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 83 个 MCP 工具。
 
 > ⚠️ **运行时 MCP `tools/list`、工具的 `inputSchema`、`outputSchema`、`annotations` 和当前 scope 是唯一事实源。** 运行时 schema 与静态参考冲突时，以 schema 为准。
 
@@ -37,6 +37,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 - 创建、重试、销毁、更新或打包的响应只能说明“已受理”，直到查询到资源或作业终态。
 - 用户明确请求密码、SSH、VNC 或凭据 CSV 时，再阅读 [敏感输出规则](./references/sensitive-outputs.md)。
 - 授权 smoke test 使用最小资源集；达到验证条件后立即销毁并确认终态。
+- 厂商与主账号共同确定独立数据工作空间。使用当前已验证空间，不能借切换复用其它空间的镜像、模板、实例、用户或账单 ID；后台任务继续使用受理时冻结的空间。
 
 ## 前端模块总览
 
@@ -48,7 +49,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 | 编排实例 | `range-instances` | 从模板启动、查看、修改、控制、访问和销毁整套靶场 | [range-instances.md](./references/products/range-instances.md) |
 | 用户管理 | `user-management` | 管理平台用户、角色、状态和密码 | [user-management.md](./references/products/user-management.md) |
 | 账单费用 | `billing` | 查询、同步和导出平台费用与成本信息 | [billing.md](./references/products/billing.md) |
-| 基础配置 | `settings` | 查询和更新云账号默认配置 | [settings.md](./references/products/settings.md) |
+| 基础配置 | `settings` | 绑定厂商账号、显式切换工作空间和维护地域配置 | [settings.md](./references/products/settings.md) |
 
 异步开通任务是所有模块的通用支撑能力：使用 `provision_job_get({ provisionJobId })` 跟踪开通、更新、销毁和打包任务。
 
@@ -95,7 +96,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 | 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、打包镜像、销毁、获取访问凭据 |
 | 用户管理 | 创建用户、角色/状态变更、重置密码 |
 | 账单费用 | 同步账单、导出费用 CSV |
-| 基础配置 | 更新云配置 |
+| 基础配置 | 绑定/更新云账号、更新云配置 |
 
 调用前先用只读工具核对目标、状态、可见性和权限；参数、目标、范围或到期时间变化时重新展示摘要并获得新确认。
 
