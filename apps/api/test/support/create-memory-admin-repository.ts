@@ -1048,7 +1048,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(provisionJobs.filter(value => value.status === 'pending' && (value.availableAt ?? value.createdAt) <= timestamp && (!input.after
         || value.createdAt > input.after.createdAt || value.createdAt.getTime() === input.after.createdAt.getTime() && value.id > input.after.id))
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)).slice(0, limit)
-        .map(({ id, rangeInstanceId, jobType, status, createdAt }) => ({ id, rangeInstanceId, jobType, status, createdAt })));
+        .map(({ cloudWorkspaceId, id, rangeInstanceId, jobType, status, createdAt }) => ({ cloudWorkspaceId, id, rangeInstanceId, jobType, status, createdAt })));
     },
     async createProvisionJob(input: CreateProvisionJobInput) {
       return clone(createJobRecord(input));
