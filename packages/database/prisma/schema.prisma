@@ -10,6 +10,7 @@ datasource db {
 
 enum CloudProvider {
   alibaba_cloud
+  tencent_cloud
 }
 
 enum IacType {

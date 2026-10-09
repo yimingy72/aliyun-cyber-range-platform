@@ -6,6 +6,7 @@ import { CloudAccountContextsService } from './cloud-account-contexts.service';
 import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import { requestTencentCloud, TencentCloudRequestError } from './tencent-cloud-client';
 
 export type SystemCloudConfig = {
   provider: 'alibaba_cloud';
@@ -16,7 +17,8 @@ export type SystemCloudConfig = {
   imageImportBucket: string;
 };
 
-export type SystemCloudAccountContext = SystemCloudConfig & {
+export type SystemCloudAccountContext = Omit<SystemCloudConfig, 'provider'> & {
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   cloudAccountContextId?: string | null;
   accountUid: string | null;
   accountUidResolved: boolean;
@@ -155,7 +157,10 @@ export class SystemConfigService {
     return snapshot;
   }
 
-  async updateSnapshot(payload: Partial<SystemCloudConfig>): Promise<SystemCloudConfig> {
+  async updateSnapshot(payload: Partial<Omit<SystemCloudConfig, 'provider'>> & { provider?: SystemCloudAccountContext['provider'] }): Promise<SystemCloudConfig> {
+    if (payload.provider !== undefined && payload.provider !== 'alibaba_cloud') {
+      throw new BadRequestException('当前版本仅支持阿里云全局配置；腾讯云账号请通过独立云账号入口保存，暂不能启用为全局账号。');
+    }
     const current = await this.getSnapshot();
     const snapshot: SystemCloudConfig = {
       provider: 'alibaba_cloud',
@@ -176,7 +181,7 @@ export class SystemConfigService {
     return nextSnapshot;
   }
 
-  async getAccountContext(): Promise<SystemCloudAccountContext> {
+  async getAccountContext(): Promise<SystemCloudAccountContext & { provider: 'alibaba_cloud' }> {
     const activeContext = await this.prisma.cloudAccountContext.findFirst({
       where: { isActive: true, status: 'ready' },
       orderBy: { updatedAt: 'desc' },
@@ -218,6 +223,9 @@ export class SystemConfigService {
   }
 
   async getInstanceTypeAvailabilityInContext(input: { cpu: number; memory: number }, accountContext: SystemCloudAccountContext): Promise<InstanceTypeAvailabilitySnapshot> {
+    if (accountContext.provider === 'tencent_cloud') {
+      return this.getTencentInstanceTypeAvailability(input, accountContext);
+    }
     const supportedInstanceTypeIds = new Set(resolvePreferredInstanceTypes(input.cpu, input.memory));
 
     if (supportedInstanceTypeIds.size === 0) {
@@ -315,6 +323,9 @@ export class SystemConfigService {
     accessKeySecret: string;
     imageImportBucket?: string;
   }): SystemCloudConfig {
+    if (config.provider !== 'alibaba_cloud') {
+      throw new BadRequestException('当前版本尚未开放腾讯云全局活跃配置，请保留阿里云全局账号并通过独立入口验证腾讯云。');
+    }
     return {
       provider: 'alibaba_cloud',
       defaultRegion: normalizeValue(config.defaultRegion),
@@ -340,6 +351,53 @@ export class SystemConfigService {
     process.env.ALICLOUD_ZONE_ID = snapshot.defaultZoneId;
     process.env.ALICLOUD_ACCESS_KEY = snapshot.accessKeyId;
     process.env.ALICLOUD_SECRET_KEY = snapshot.accessKeySecret;
+  }
+
+  private async getTencentInstanceTypeAvailability(input: { cpu: number; memory: number }, context: SystemCloudAccountContext): Promise<InstanceTypeAvailabilitySnapshot> {
+    if (!Number.isSafeInteger(input.cpu) || input.cpu <= 0 || !Number.isSafeInteger(input.memory) || input.memory <= 0) {
+      throw new BadRequestException('cpu 和 memory 必须是大于 0 的整数');
+    }
+    let payload: { InstanceTypeQuotaSet?: unknown };
+    try {
+      payload = await requestTencentCloud({
+        service: 'cvm', version: '2017-03-12', action: 'DescribeZoneInstanceConfigInfos',
+        regionId: context.defaultRegion, accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret,
+        parameters: { Filters: [
+          { Name: 'zone', Values: [context.defaultZoneId] },
+          { Name: 'instance-charge-type', Values: ['POSTPAID_BY_HOUR'] },
+        ] },
+      });
+    } catch (error) {
+      if (error instanceof TencentCloudRequestError) throw new BadRequestException(`腾讯云可售机型查询失败（${error.code}）。`);
+      throw error;
+    }
+    if (!Array.isArray(payload.InstanceTypeQuotaSet)) {
+      throw new BadRequestException('腾讯云可售机型响应无效，无法确认库存。');
+    }
+    const matches: InstanceTypeAvailabilityMatch[] = [];
+    const seen = new Set<string>();
+    for (const raw of payload.InstanceTypeQuotaSet) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new BadRequestException('腾讯云可售机型响应无效，无法确认库存。');
+      const item = raw as { Zone?: unknown; InstanceType?: unknown; InstanceChargeType?: unknown; Status?: unknown; Cpu?: unknown; Memory?: unknown; InstanceFamily?: unknown; CpuType?: unknown };
+      if (item.Zone !== context.defaultZoneId || item.InstanceChargeType !== 'POSTPAID_BY_HOUR'
+        || item.Status !== 'SELL' || item.Cpu !== input.cpu || item.Memory !== input.memory) continue;
+      if (typeof item.InstanceType !== 'string' || !/^[A-Za-z0-9]+\.[A-Za-z0-9]+$/.test(item.InstanceType)) {
+        throw new BadRequestException('腾讯云可售机型响应缺少准确的实例规格。');
+      }
+      if (seen.has(item.InstanceType)) continue;
+      seen.add(item.InstanceType);
+      const processor = typeof item.CpuType === 'string' ? item.CpuType : '';
+      matches.push({
+        instanceTypeId: item.InstanceType, cpu: input.cpu, memoryGiB: input.memory,
+        family: typeof item.InstanceFamily === 'string' ? item.InstanceFamily : '', generation: '',
+        architecture: /\b(?:intel|amd|hygon)\b/i.test(processor) ? 'X86_64' : /\b(?:arm|ampere)\b/i.test(processor) ? 'ARM64' : 'UNKNOWN',
+      });
+    }
+    return {
+      cpu: input.cpu, memory: input.memory, regionId: context.defaultRegion, zoneId: context.defaultZoneId,
+      exactAvailable: matches.length > 0, matches,
+      warning: matches.length ? '腾讯云机型库存已核验；当前版本暂未开放腾讯云实例创建。' : `当前腾讯云可用区 ${context.defaultZoneId} 没有可售的 ${input.cpu}C${input.memory}G 按量付费实例规格。`,
+    };
   }
 
   private async describeAvailableInstanceTypeIds(
