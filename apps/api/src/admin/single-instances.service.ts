@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
@@ -18,7 +19,7 @@ import {
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 import { SingleInstanceNetworkService } from './single-instance-network.service';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type InstanceTypeAvailabilitySnapshot, type SystemCloudAccountContext } from './system-config.service';
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
@@ -213,18 +214,23 @@ export class SingleInstancesService {
 
   async launch(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     this.assertFutureInstanceExpiration(input.expiresAt);
-    return this.adminRepository.withSingleInstanceControlLock(() => this.launchLocked(input, currentUserId));
+    const accountContext = { ...await this.systemConfigService.getAccountContext() };
+    if (!accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('创建实例前必须配置并验证云账号。');
+    await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    const availability = await this.systemConfigService.getInstanceTypeAvailabilityInContext({ cpu: input.cpu, memory: input.memory }, accountContext);
+    if (!availability.exactAvailable || !availability.matches.length) throw new ConflictException(availability.warning ?? '规格不可售');
+    return this.adminRepository.withSingleInstanceControlLock(() => this.launchLocked(input, currentUserId, accountContext, availability));
   }
 
-  private async launchLocked(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
+  private async launchLocked(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string,
+    accountContext: SystemCloudAccountContext, availability: InstanceTypeAvailabilitySnapshot) {
     this.assertFutureInstanceExpiration(input.expiresAt);
 
-    const accountContext = await this.systemConfigService.getAccountContext();
-    if (!accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('创建实例前必须配置并验证云账号。');
-    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
-    const availability = await this.systemConfigService.getInstanceTypeAvailabilityInContext({cpu:input.cpu,memory:input.memory},accountContext);
-    if (!availability.exactAvailable || !availability.matches.length) throw new ConflictException(availability.warning ?? '规格不可售');
+    if (accountContextFingerprint(accountContext) !== accountContextFingerprint(await this.systemConfigService.getAccountContext()))
+      throw new ConflictException('云账号配置在规格检查期间发生变化，请重新提交。');
+    const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile(accountContext,currentUserId);
+    this.assertFutureInstanceExpiration(input.expiresAt);
     const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
     const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
@@ -295,6 +301,7 @@ export class SingleInstancesService {
             },
           },
           singleInstanceConfig: {
+            executionBackend: 'opentofu',
             cloudAccountContextId: accountContext.cloudAccountContextId,
             cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
             networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
@@ -335,10 +342,6 @@ export class SingleInstancesService {
         await this.adminRepository.updateRangeInstance(member.id,{status:'create_failed',lastJobId:job?.id??null,errorSummary:'Batch intake aborted before cloud execution'});
       }
       throw error;
-    } finally {
-      for (const jobId of jobIds) {
-        this.provisioningWorkerService.dispatch(jobId);
-      }
     }
 
     const [normalizedBatch] = await attachCreatedByUsernames(this.adminRepository, [batch]);
@@ -366,26 +369,18 @@ export class SingleInstancesService {
     if(currentUser.role !== 'admin' && group.instances.some(instance=>!this.isOwnedBy(instance.ownerUserId,instance.createdBy,currentUser.id))) throw new ForbiddenException('Single instance batch member access denied');
     if (group.instances.some(instance => ['pending_create','creating'].includes(instance.status))) throw new ConflictException('批次仍在创建，请等待创建完成后销毁。');
     const targetInstances = group.instances.filter((instance) => ['running','destroy_failed'].includes(instance.status));
-    const jobIds: string[] = [];
 
-    try {
-      for (const instance of targetInstances) {
-        const job = await this.adminRepository.createProvisionJob({
-          rangeInstanceId: instance.id,
-          jobType: 'destroy',
-          triggeredBy: currentUser.id,
-        });
-        jobIds.push(job.id);
+    for (const instance of targetInstances) {
+      const job = await this.adminRepository.createProvisionJob({
+        rangeInstanceId: instance.id,
+        jobType: 'destroy',
+        triggeredBy: currentUser.id,
+      });
 
-        await this.adminRepository.updateRangeInstance(instance.id, {
-          status: 'pending_destroy',
-          lastJobId: job.id,
-        });
-      }
-    } finally {
-      for (const jobId of jobIds) {
-        this.provisioningWorkerService.dispatch(jobId);
-      }
+      await this.adminRepository.updateRangeInstance(instance.id, {
+        status: 'pending_destroy',
+        lastJobId: job.id,
+      });
     }
 
     return {
@@ -415,7 +410,6 @@ export class SingleInstancesService {
       status: 'pending_destroy',
       lastJobId: job.id,
     });
-    this.provisioningWorkerService.dispatch(job.id);
 
     return job;
   }
@@ -449,7 +443,6 @@ export class SingleInstancesService {
       errorSummary: null,
       lastJobId: job.id,
     });
-    this.provisioningWorkerService.dispatch(job.id);
 
     return job;
   }
@@ -493,9 +486,9 @@ export class SingleInstancesService {
     return instance;
   }
 
-  private async requireEnabledPlatformImage(id: string, currentUserId: string): Promise<PlatformImageAssetRecord> {
+  private async requireEnabledPlatformImage(id: string, currentUserId: string, preparedContext?: SystemCloudAccountContext): Promise<PlatformImageAssetRecord> {
     const image = await this.adminRepository.getPlatformImageAssetById(id);
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = preparedContext ?? await this.systemConfigService.getAccountContext();
 
     if (
       !image ||
@@ -559,6 +552,13 @@ export class SingleInstancesService {
 function normalizeOptionalValue(value: string | null | undefined) {
   const normalized = value?.trim() ?? '';
   return normalized || null;
+}
+
+function accountContextFingerprint(context: SystemCloudAccountContext) {
+  return createHash('sha256').update(JSON.stringify([
+    context.provider, context.cloudAccountContextId, context.accountUid, context.accountUidResolved,
+    context.defaultRegion, context.defaultZoneId, context.accessKeyId, context.accessKeySecret, context.imageImportBucket,
+  ])).digest('hex');
 }
 
 function isSingleInstanceHistoryStatus(status: string) {
