@@ -11,6 +11,8 @@ import type {
   CloudConfigSnapshot,
   CloudAccountContext,
   SaveTencentCloudAccountInput,
+  SaveCloudAccountInput,
+  CloudWorkspaceView,
   TencentCloudRegionsInput,
   TencentCloudRegionsPayload,
   TencentCloudImagesInput,
@@ -67,11 +69,13 @@ export class PlatformApiClient implements PlatformApiClientLike {
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly cloudWorkspaceId: string | undefined;
 
   constructor(options: PlatformApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.token = options.token;
     this.fetchImpl = options.fetch ?? fetch;
+    this.cloudWorkspaceId = options.cloudWorkspaceId;
   }
 
   listRangeTemplates(view: RangeTemplateView = 'platform') {
@@ -357,6 +361,16 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   saveTencentCloudAccount(payload: SaveTencentCloudAccountInput, operation?: OperationRequest) {
     return this.request<CloudAccountContext>('/admin/cloud-contexts', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  saveCloudAccountBinding(payload: SaveCloudAccountInput, operation?: OperationRequest) {
+    return this.request<CloudAccountContext>('/admin/cloud-contexts', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  listCloudWorkspaces() { return this.request<CloudWorkspaceView[]>('/admin/cloud-workspaces'); }
+  getCurrentCloudWorkspace() { return this.request<CloudWorkspaceView | null>('/admin/cloud-workspaces/current'); }
+  switchCloudWorkspace(id: string) {
+    return this.request<CloudWorkspaceView>(`/admin/cloud-workspaces/${encodeURIComponent(id)}/switch`, { method: 'POST', body: '{}' });
   }
 
   discoverTencentCloudRegions(payload: TencentCloudRegionsInput) {
@@ -646,6 +660,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   private buildHeaders(operation?: OperationRequest) {
     return {
       Authorization: `Bearer ${this.token}`,
+      ...(this.cloudWorkspaceId ? { 'x-cloud-workspace-id': this.cloudWorkspaceId } : {}),
       'Content-Type': 'application/json',
       ...(operation?.idempotencyKey ? { 'x-idempotency-key': operation.idempotencyKey } : {}),
       ...(operation?.confirmationId ? { 'x-confirmation-id': operation.confirmationId } : {}),

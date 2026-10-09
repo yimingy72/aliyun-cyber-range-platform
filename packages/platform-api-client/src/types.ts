@@ -13,6 +13,7 @@ export type PlatformApiClientOptions = {
   baseUrl: string;
   token: string;
   fetch?: typeof fetch;
+  cloudWorkspaceId?: string;
 };
 
 export type RangeAccessPayload = {
@@ -154,6 +155,7 @@ export type RangeInstance = Record<string, unknown> & {
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
 export type CloudAccountContext = {
+  cloudWorkspaceId?: string;
   id: string;
   provider: 'alibaba_cloud' | 'tencent_cloud';
   displayName: string;
@@ -172,6 +174,22 @@ export type SaveTencentCloudAccountInput = {
   zoneId: string;
   accessKeyId: string;
   accessKeySecret: string;
+};
+export type SaveCloudAccountInput = Omit<SaveTencentCloudAccountInput, 'provider'> & {
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  cloudWorkspaceId?: string;
+  displayName?: string;
+  imageImportBucket?: string;
+};
+export type CloudWorkspaceView = {
+  id: string;
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  accountUid: string | null;
+  displayName: string;
+  isReadOnly: boolean;
+  activeCloudAccountContextId: string | null;
+  contexts: CloudAccountContext[];
+  capabilities: { provisioning: boolean; imageImport: boolean; billingSync: boolean };
 };
 export type TencentCloudRegionsInput = {
   regionIds: string[];
@@ -363,6 +381,10 @@ export type PlatformApiClientLike = {
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
   listCloudAccountContexts(includeInactive?: boolean): Promise<CloudAccountContext[]>;
   saveTencentCloudAccount(payload: SaveTencentCloudAccountInput, operation?: OperationRequest): Promise<CloudAccountContext>;
+  saveCloudAccountBinding(payload: SaveCloudAccountInput, operation?: OperationRequest): Promise<CloudAccountContext>;
+  listCloudWorkspaces(): Promise<CloudWorkspaceView[]>;
+  getCurrentCloudWorkspace(): Promise<CloudWorkspaceView | null>;
+  switchCloudWorkspace(id: string): Promise<CloudWorkspaceView>;
   discoverTencentCloudRegions(payload: TencentCloudRegionsInput): Promise<TencentCloudRegionsPayload>;
   listTencentCloudImages(input: TencentCloudImagesInput): Promise<TencentCloudImagesPayload>;
   getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;

@@ -203,7 +203,7 @@ export class CloudAccountContextsService {
       const bucketVerification = await this.verifyImageImportBucket({ bucket: imageImportBucket, ...values });
       const data = { ...values, provider: 'alibaba_cloud' as const, accountUid, cloudWorkspaceId: space.id,
         displayName: `阿里云 ${accountUid} · ${values.regionId}`, imageImportBucket, status: 'ready' as const,
-        lastError: null, lastVerifiedAt: new Date(), ...bucketVerification };
+        ...bucketVerification };
       const context = await this.prisma.cloudAccountContext.upsert({
         where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid, regionId: values.regionId } },
         update: data, create: { ...data, isActive: false },

@@ -85,6 +85,8 @@ async function authenticateOidcToken(token: string): Promise<AuthInfo | null> {
       extra: {
         username: user.username,
         role: user.role,
+        cloudWorkspaceId: user.cloudWorkspaceId,
+        isPlatformManager: user.isPlatformManager,
         authType: 'oidc',
         issuer: claims.issuer,
         subject: claims.subject,

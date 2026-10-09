@@ -1,6 +1,6 @@
 import type { ToolDefinition } from './tool-context';
 import { cloudConfigGetInputSchema, cloudConfigUpdateInputSchema, operationSchema } from './input-schemas';
-import type { CloudAccountContext, SaveTencentCloudAccountInput, TencentCloudRegionsInput, TencentCloudImagesInput } from '@aliyun-cyber-range/platform-api-client';
+import type { CloudAccountContext, SaveCloudAccountInput, SaveTencentCloudAccountInput, TencentCloudRegionsInput, TencentCloudImagesInput } from '@aliyun-cyber-range/platform-api-client';
 import * as z from 'zod/v4';
 
 import { resultOutputSchema } from './output-schemas';
@@ -19,17 +19,49 @@ function maskCloudConfig(snapshot: Record<string, unknown>) {
 }
 
 const cloudContextSchema = z.object({
+  cloudWorkspaceId: z.string().optional(),
   id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), displayName: z.string(), accountUid: z.string(),
   regionId: z.string(), zoneId: z.string(), isActive: z.boolean(), status: z.enum(['provisioning', 'ready', 'degraded', 'disabled']),
   imageImportBucket: z.string(), bucketStatus: z.string(), lastVerifiedAt: z.string().nullable().optional(),
 });
 const tencentAccountSchema = cloudContextSchema.extend({ provider: z.literal('tencent_cloud'), isActive: z.literal(false) });
 const sensitiveKey = z.string().trim().min(1).refine(value => value !== '********', 'Masked access keys cannot be reused').describe('敏感凭据，仅用于明确授权的腾讯云账号操作；不得回显。');
+const cloudWorkspaceSchema = z.object({ id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), accountUid: z.string().nullable(),
+  displayName: z.string(), isReadOnly: z.boolean(), activeCloudAccountContextId: z.string().nullable(), contexts: z.array(cloudContextSchema),
+  capabilities: z.object({ provisioning: z.boolean(), imageImport: z.boolean(), billingSync: z.boolean() }) });
 function safeCloudContext(value: CloudAccountContext) {
   return cloudContextSchema.parse(value);
 }
 
 export const settingsTools: ToolDefinition[] = [
+  {
+    name: 'cloud_workspace_list', title: '查询云账号工作空间',
+    description: '查询当前登录用户可选的云账号数据空间及配置状态，不返回凭据。厂商和主账号共同决定独立数据空间。',
+    requiredScopes: ['settings:read'], readOnlyHint: true, inputSchema: z.object({}).strict(),
+    outputSchema: resultOutputSchema(z.array(cloudWorkspaceSchema)),
+    async call(context) { return z.array(cloudWorkspaceSchema).parse(await context.client.listCloudWorkspaces()); },
+  },
+  {
+    name: 'cloud_workspace_switch', title: '切换云账号数据空间',
+    description: '显式切换当前登录用户默认工作空间。后续未显式指定工作空间请求头的操作使用该空间，镜像、用户、靶场、实例和账单隔离；不会创建/销毁云资源或改变已受理任务的冻结账号。',
+    requiredScopes: ['settings:read'], inputSchema: z.object({ cloudWorkspaceId: z.string().trim().min(1).max(192) }).strict(),
+    outputSchema: resultOutputSchema(cloudWorkspaceSchema), annotations: { idempotentHint: true },
+    async call(context, args) { return cloudWorkspaceSchema.parse(await context.client.switchCloudWorkspace(args.cloudWorkspaceId as string)); },
+  },
+  {
+    name: 'cloud_account_bind', title: '绑定或更新云厂商账号',
+    description: '由平台超管使用明确的厂商、账号凭据和地域绑定独立工作空间。保存不切换当前数据；编辑时传目标cloudWorkspaceId，凭据必须属于该账号。平台确认后才验证与保存。',
+    requiredScopes: ['settings:write'], adminOnly: true,
+    inputSchema: operationSchema.extend({ provider: z.enum(['alibaba_cloud', 'tencent_cloud']), cloudWorkspaceId: z.string().trim().min(1).max(192).optional(),
+      displayName: z.string().trim().min(1).max(80).optional(), regionId: z.string().trim().min(1), zoneId: z.string().trim().min(1),
+      accessKeyId: sensitiveKey, accessKeySecret: sensitiveKey, imageImportBucket: z.string().max(63).optional() }).strict(),
+    outputSchema: resultOutputSchema(cloudContextSchema),
+    async call(context, args) {
+      const { idempotencyKey, confirmationId, ...payload } = args;
+      return safeCloudContext(await context.client.saveCloudAccountBinding(payload as SaveCloudAccountInput,
+        operation({ idempotencyKey: idempotencyKey as string | undefined, confirmationId: confirmationId as string | undefined })));
+    },
+  },
   {
     name: 'cloud_account_context_list', title: '查询云账号',
     description: '查询已验证的云账号、厂商和地域，不返回凭据。includeInactive=true可查看尚未启用创建的腾讯云账号。',
@@ -87,7 +119,7 @@ export const settingsTools: ToolDefinition[] = [
     inputSchema: cloudConfigGetInputSchema,
     outputSchema: resultOutputSchema(
       z.object({
-        provider: z.literal('alibaba_cloud').describe('当前云厂商。'),
+        provider: z.enum(['alibaba_cloud', 'tencent_cloud']).describe('当前数据空间的云厂商。'),
         defaultRegion: z.string().describe('默认地域。'),
         defaultZoneId: z.string().describe('默认可用区。'),
       }).passthrough(),
