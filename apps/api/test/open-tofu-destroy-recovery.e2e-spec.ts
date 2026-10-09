@@ -71,9 +71,9 @@ describe('OpenTofu persisted destroy recovery', () => {
     expect(events.map(event => [event.stepName, event.status])).toEqual([
       ['render_template', 'running'], ['render_template', 'succeeded'],
       ['tofu_init', 'running'], ['tofu_init', 'succeeded'],
-      ['tofu_validate', 'running'], ['tofu_validate', 'succeeded'],
       ['destroy', 'running'], ['destroy', 'succeeded'],
     ]);
+    expect(f.runner.validate).not.toHaveBeenCalled();
     f.assertNoLookup();
   });
 

@@ -1,14 +1,14 @@
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { copyProviderArchiveAtomically, writeProviderConfigAtomically } from './provider-mirror-publication';
+import { prepareOpenTofuProviderEnv } from './provider-mirror-publication';
 import { OpenTofuRunner, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
 import { buildBillingTags } from '../admin/billing-tagging';
 import type { SingleInstanceNetworkProfileRecord, UpsertSingleInstanceNetworkProfileInput } from '../admin/admin.repository';
 import { CidrPoolService } from './cidr-pool.service';
 import type { ResolvedProvisioningRuntimeConfig } from './provisioning.types';
-type BootstrapEnv = Partial<Pick<NodeJS.ProcessEnv, 'ALICLOUD_PROVIDER_ZIP_PATH' | 'OPENTOFU_BINARY' | 'OPENTOFU_WORKSPACES_ROOT' | 'PATH' | 'TF_CLI_CONFIG_FILE' | 'OPENTOFU_PASSTHROUGH_PROXY' | 'HTTPS_PROXY' | 'HTTP_PROXY' | 'ALL_PROXY' | 'https_proxy' | 'http_proxy' | 'all_proxy' | 'NO_PROXY' | 'no_proxy'>>;
+type BootstrapEnv = Partial<Pick<NodeJS.ProcessEnv, 'ALICLOUD_PROVIDER_ZIP_PATH' | 'OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT' | 'OPENTOFU_BINARY' | 'OPENTOFU_WORKSPACES_ROOT' | 'PATH' | 'TF_CLI_CONFIG_FILE' | 'OPENTOFU_PASSTHROUGH_PROXY' | 'HTTPS_PROXY' | 'HTTP_PROXY' | 'ALL_PROXY' | 'https_proxy' | 'http_proxy' | 'all_proxy' | 'NO_PROXY' | 'no_proxy'>>;
 type BootstrapRunnerLike = {
   init(options: OpenTofuWorkspaceCommandOptions): Promise<OpenTofuCommandResult>;
   validate(options: OpenTofuValidateOptions): Promise<OpenTofuCommandResult>;
@@ -18,7 +18,6 @@ type BootstrapRunnerLike = {
   output<T>(options: OpenTofuWorkspaceCommandOptions): Promise<T>;
 };
 const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
-const PROVIDER_MIRROR_REGISTRY_PATH = path.join('registry.opentofu.org', 'aliyun', 'alicloud');
 const PROXY_ENV_KEYS = [
   'HTTPS_PROXY',
   'HTTP_PROXY',
@@ -85,11 +84,6 @@ export class SingleInstanceNetworkBootstrapService {
     const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
     try {
       await this.runner.init({ workspaceDir, env: runnerEnv });
-      await this.runner.validate({
-        workspaceDir,
-        env: runnerEnv,
-        varsFilePath,
-      });
       await this.runner.plan({
         workspaceDir,
         env: runnerEnv,
@@ -231,30 +225,13 @@ export class SingleInstanceNetworkBootstrapService {
     if ((this.env.OPENTOFU_PASSTHROUGH_PROXY ?? '').trim() === '1') {
       Object.assign(runnerEnv, pickEnv(process.env, PROXY_ENV_KEYS), pickEnv(this.env, PROXY_ENV_KEYS));
     }
-    if (!providerZipPath) {
-      return runnerEnv;
-    }
-    await assertFileExists(providerZipPath, 'ALICLOUD provider zip does not exist');
-    const providerMirrorRootDir = path.join(this.workspacesRootDir, 'provider-mirror');
-    const providerMirrorDir = path.join(providerMirrorRootDir, PROVIDER_MIRROR_REGISTRY_PATH);
-    const cliConfigFilePath = path.join(providerMirrorRootDir, 'tofu.tfrc');
-    await fs.mkdir(providerMirrorDir, { recursive: true });
-    await copyProviderArchiveAtomically(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
-    await writeProviderConfigAtomically(cliConfigFilePath, [
-      'provider_installation {',
-      '  filesystem_mirror {',
-      `    path    = "${providerMirrorRootDir}"`,
-      '    include = ["registry.opentofu.org/aliyun/alicloud"]',
-      '  }',
-      '  direct {',
-      '    exclude = ["registry.opentofu.org/aliyun/alicloud"]',
-      '  }',
-      '}',
-      '',
-    ].join('\n'));
     return {
       ...runnerEnv,
-      TF_CLI_CONFIG_FILE: cliConfigFilePath,
+      ...await prepareOpenTofuProviderEnv({
+        providerZipPath,
+        workspacesRootDir: this.workspacesRootDir,
+        unpackedMirrorRootDir: this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT?.trim(),
+      }),
     };
   }
 }

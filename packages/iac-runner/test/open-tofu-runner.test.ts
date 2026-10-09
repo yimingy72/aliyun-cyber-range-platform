@@ -99,13 +99,13 @@ describe('OpenTofuRunner', () => {
     expect(executor).toHaveBeenNthCalledWith(
       3,
       'tofu',
-      ['plan', '-input=false', '-no-color', '-out', planFilePath, '-var-file', varsFilePath],
+      ['plan', '-input=false', '-no-color', '-parallelism=10', '-out', planFilePath, '-var-file', varsFilePath],
       expect.objectContaining({ cwd: workspaceDir }),
     );
     expect(executor).toHaveBeenNthCalledWith(
       4,
       'tofu',
-      ['apply', '-input=false', '-no-color', '-auto-approve', planFilePath],
+      ['apply', '-input=false', '-no-color', '-auto-approve', '-parallelism=10', planFilePath],
       expect.objectContaining({ cwd: workspaceDir }),
     );
     expect(executor).toHaveBeenNthCalledWith(
@@ -117,7 +117,7 @@ describe('OpenTofuRunner', () => {
     expect(executor).toHaveBeenNthCalledWith(
       6,
       'tofu',
-      ['destroy', '-input=false', '-no-color', '-auto-approve', '-var-file', varsFilePath],
+      ['destroy', '-input=false', '-no-color', '-auto-approve', '-parallelism=10', '-var-file', varsFilePath],
       expect.objectContaining({ cwd: workspaceDir }),
     );
   });
@@ -191,5 +191,152 @@ output "compatibility" { value = terraform_data.compatibility.output }
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects invalid command timeout %s', commandTimeoutMs => {
     expect(() => new OpenTofuRunner({ commandTimeoutMs })).toThrow('timeout must be a positive number');
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 33])('rejects invalid parallelism %s', parallelism => {
+    expect(() => new OpenTofuRunner({ parallelism })).toThrow('parallelism must be an integer');
+  });
+
+  it('forwards cancellation to a custom executor and uses configured parallelism', async () => {
+    const signal = new AbortController().signal;
+    const executor = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const runner = new OpenTofuRunner({ executor, parallelism: 2 });
+    await runner.plan({ workspaceDir: '/tmp/fixture', planFilePath: 'fixture.tfplan', signal });
+    expect(executor).toHaveBeenCalledWith('tofu', expect.arrayContaining(['-parallelism=2']), expect.objectContaining({ signal }));
+  });
+
+  it('uses default parallelism for an empty optional environment setting', async () => {
+    vi.stubEnv('OPENTOFU_PARALLELISM', ' ');
+    try {
+      const executor = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+      await new OpenTofuRunner({ executor }).destroy({ workspaceDir: '/tmp/fixture' });
+      expect(executor.mock.calls[0][1]).toContain('-parallelism=10');
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('does not start an already-aborted command', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const executor = vi.fn();
+    const runner = new OpenTofuRunner({ executor });
+    await expect(runner.init({ workspaceDir: '/tmp/fixture', signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('uses stable targeted destroy-plan, JSON inspection and import arguments', async () => {
+    const executor = vi.fn().mockResolvedValue({ stdout: JSON.stringify({ resource_changes: [] }), stderr: '' });
+    const runner = new OpenTofuRunner({ executor });
+    const base = { workspaceDir: '/tmp/fixture', planFilePath: 'fixture.tfplan' };
+    const address = 'module.batch.alicloud_instance.member["member-1"]';
+    await runner.plan({ ...base, targets: [address], destroy: true, varsFilePath: 'fixture.tfvars.json' });
+    expect(executor.mock.calls[0][1]).toEqual(['plan', '-input=false', '-no-color', '-parallelism=10', '-out', 'fixture.tfplan', '-destroy', `-target=${address}`, '-var-file', 'fixture.tfvars.json']);
+    await expect(runner.showPlan(base)).resolves.toEqual({ resource_changes: [] });
+    expect(executor.mock.calls[1][1]).toEqual(['show', '-json', 'fixture.tfplan']);
+    await expect(runner.showPlanJson(base)).resolves.toEqual({ resource_changes: [] });
+    await runner.importResource({ workspaceDir: base.workspaceDir, address, resourceId: 'i-owned', varsFilePath: 'fixture.tfvars.json' });
+    expect(executor.mock.calls[3][1]).toEqual(['import', '-input=false', '-no-color', '-var-file', 'fixture.tfvars.json', address, 'i-owned']);
+    await runner.destroy({ workspaceDir: base.workspaceDir, targets: [address] });
+    expect(executor.mock.calls[4][1]).toEqual(['destroy', '-input=false', '-no-color', '-auto-approve', '-parallelism=10', `-target=${address}`]);
+    await expect(runner.plan({ ...base, targets: [''] })).rejects.toThrow('target address');
+    await expect(runner.importResource({ workspaceDir: base.workspaceDir, address, resourceId: '-lock=false' })).rejects.toThrow('exact resource');
+    expect(executor).toHaveBeenCalledTimes(5);
+  });
+
+  it.skipIf(!existsSync('/usr/local/bin/tofu'))('imports a lost builtin member, inspects a targeted destroy plan and preserves the healthy sibling', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-runner-targeted-import-'));
+    const runner = new OpenTofuRunner({ binaryPath: '/usr/local/bin/tofu' });
+    const planFilePath = path.join(workspaceDir, 'fixture.tfplan');
+    const stateFile = path.join(workspaceDir, 'terraform.tfstate');
+    const address = 'terraform_data.fixture[1]';
+    try {
+      await fs.writeFile(path.join(workspaceDir, 'main.tf'), 'resource "terraform_data" "fixture" {\n count = 2\n input = count.index\n}\n');
+      await runner.init({ workspaceDir });
+      await runner.plan({ workspaceDir, planFilePath });
+      await runner.apply({ workspaceDir, planFilePath });
+      const original = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+      const members = original.resources[0].instances;
+      const ownedId = members.find((item: { index_key: number }) => item.index_key === 1).attributes.id;
+      const healthy = JSON.parse(JSON.stringify(members.find((item: { index_key: number }) => item.index_key === 0)));
+      original.resources[0].instances = members.filter((item: { index_key: number }) => item.index_key !== 1);
+      original.serial++;
+      await fs.writeFile(stateFile, JSON.stringify(original));
+      await runner.importResource({ workspaceDir, address, resourceId: ownedId });
+      await runner.plan({ workspaceDir, planFilePath });
+      const recoveryPlan = await runner.showPlan<{ resource_changes: Array<{ address: string; change: { actions: string[] } }> }>({ workspaceDir, planFilePath });
+      expect(recoveryPlan.resource_changes.find(change => change.address === 'terraform_data.fixture[0]')?.change.actions).toEqual(['no-op']);
+      await runner.plan({ workspaceDir, planFilePath, destroy: true, targets: [address] });
+      const targeted = await runner.showPlanJson<{ resource_changes: Array<{ address: string; change: { actions: string[] } }> }>({ workspaceDir, planFilePath });
+      expect(targeted.resource_changes.filter(change => change.change.actions.some(action => action !== 'no-op')).map(change => [change.address, change.change.actions])).toEqual([[address, ['delete']]]);
+      await runner.apply({ workspaceDir, planFilePath });
+      const after = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+      expect(after.resources[0].instances).toEqual([healthy]);
+      await runner.destroy({ workspaceDir });
+      expect(JSON.parse(await fs.readFile(stateFile, 'utf8')).resources).toEqual([]);
+    } finally { await fs.rm(workspaceDir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('keeps stdio open until graceful state persistence after an external abort', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-runner-abort-'));
+    const binaryPath = path.join(workspaceDir, 'graceful-runner');
+    await fs.writeFile(binaryPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+process.on('SIGTERM', () => {
+  console.log('Graceful abort');
+  setTimeout(() => { fs.writeFileSync('persisted-state', 'complete'); process.exit(0); }, 100);
+});
+setInterval(() => {}, 1000);
+`, { mode: 0o755 });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 500);
+    try {
+      const error = await new OpenTofuRunner({ binaryPath }).init({ workspaceDir, signal: controller.signal }).catch(error => error);
+      expect(error.name).toBe('AbortError');
+      expect(error.stdout).toContain('Graceful abort');
+      expect(await fs.readFile(path.join(workspaceDir, 'persisted-state'), 'utf8')).toBe('complete');
+    } finally {
+      clearTimeout(timer);
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!existsSync('/usr/local/bin/tofu'))('externally aborts real OpenTofu and retains partial state for subsequent destroy', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-runner-tofu-abort-'));
+    await fs.writeFile(path.join(workspaceDir, 'main.tf'), `
+resource "terraform_data" "ready" { input = "ready" }
+resource "terraform_data" "slow" {
+  depends_on = [terraform_data.ready]
+  provisioner "local-exec" { command = "sleep 60" }
+}
+`);
+    const runner = new OpenTofuRunner({ binaryPath: '/usr/local/bin/tofu' });
+    const planFilePath = path.join(workspaceDir, 'local.tfplan');
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await runner.init({ workspaceDir });
+      await runner.plan({ workspaceDir, planFilePath });
+      timer = setTimeout(() => controller.abort(), 1500);
+      await expect(runner.apply({ workspaceDir, planFilePath, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+      const state = JSON.parse(await fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8'));
+      expect(state.resources.map((resource: { name: string }) => resource.name)).toEqual(expect.arrayContaining(['ready', 'slow']));
+      await runner.destroy({ workspaceDir });
+      expect(JSON.parse(await fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8')).resources).toEqual([]);
+    } finally {
+      clearTimeout(timer);
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it.skipIf(!existsSync('/usr/local/bin/tofu'))('plan still rejects invalid input without a standalone validate command', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iac-runner-plan-validation-'));
+    try {
+      await fs.writeFile(path.join(workspaceDir, 'main.tf'), 'variable "value" { type = number }\nresource "terraform_data" "fixture" { input = var.value }\n');
+      const varsFilePath = path.join(workspaceDir, 'fixture.tfvars.json');
+      await fs.writeFile(varsFilePath, JSON.stringify({ value: 'invalid-number' }));
+      const runner = new OpenTofuRunner({ binaryPath: '/usr/local/bin/tofu' });
+      await runner.init({ workspaceDir });
+      await expect(runner.plan({ workspaceDir, varsFilePath, planFilePath: path.join(workspaceDir, 'fixture.tfplan') })).rejects.toThrow();
+      expect(existsSync(path.join(workspaceDir, 'terraform.tfstate'))).toBe(false);
+    } finally { await fs.rm(workspaceDir, { recursive: true, force: true }); }
   });
 });

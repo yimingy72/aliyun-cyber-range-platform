@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { copyProviderArchiveAtomically, writeProviderConfigAtomically } from './provider-mirror-publication';
+import { prepareOpenTofuProviderEnv } from './provider-mirror-publication';
 import { createHmac, randomUUID } from 'node:crypto';
 
 import {
@@ -48,6 +48,7 @@ type OpenTofuProvisionerEnv = Partial<
     | 'ALICLOUD_INSTANCE_TYPE'
     | 'ALICLOUD_INSTANCE_TYPE_PREFERENCES'
     | 'ALICLOUD_PROVIDER_ZIP_PATH'
+    | 'OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT'
     | 'RANGE_PROVISIONER_MODE'
     | 'OPENTOFU_BINARY'
     | 'OPENTOFU_WORKSPACES_ROOT'
@@ -182,11 +183,7 @@ const DEFAULT_WORKSPACES_ROOT = '.local/opentofu-workspaces';
 const APPLY_STARTED_FILE = '.range-apply-started';
 const WORKSPACE_STATE_FILES = ['terraform.tfstate', 'terraform.tfstate.backup', 'errored.tfstate'];
 const DESTROY_PLACEHOLDER_PASSWORD = 'DestroyOnly123!';
-const PROVIDER_MIRROR_REGISTRY_PATH = path.join(
-  'registry.opentofu.org',
-  'aliyun',
-  'alicloud',
-);
+
 const DEFAULT_AUTO_INSTANCE_TYPE_PREFERENCES = [
   'ecs.u1-c1m2.large',
   'ecs.e-c1m2.large',
@@ -327,20 +324,6 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         stderrExcerpt: command.stderr,
       };
     });
-    await runProvisionStep(input.reportStep, 'tofu_validate', async () => {
-      const command = await this.runner.validate({
-        workspaceDir: workspace.workspaceDir,
-        env: workspace.runnerEnv,
-        varsFilePath: workspace.varsFilePath,
-      });
-
-      return {
-        result: command,
-        message: 'OpenTofu validate completed.',
-        stdoutExcerpt: command.stdout,
-        stderrExcerpt: command.stderr,
-      };
-    });
     await runProvisionStep(input.reportStep, 'tofu_plan', async () => {
       const command = await this.runner.plan({
         workspaceDir: workspace.workspaceDir,
@@ -472,20 +455,6 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       return {
         result: command,
         message: 'OpenTofu init completed before destroy.',
-        stdoutExcerpt: command.stdout,
-        stderrExcerpt: command.stderr,
-      };
-    });
-    await runProvisionStep(input.reportStep, 'tofu_validate', async () => {
-      const command = await this.runner.validate({
-        workspaceDir: workspace.workspaceDir,
-        env: workspace.runnerEnv,
-        varsFilePath: workspace.varsFilePath,
-      });
-
-      return {
-        result: command,
-        message: 'OpenTofu validate completed before destroy.',
         stdoutExcerpt: command.stdout,
         stderrExcerpt: command.stderr,
       };
@@ -1015,37 +984,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       Object.assign(runnerEnv, pickEnv(process.env, PROXY_ENV_KEYS), pickEnv(this.env, PROXY_ENV_KEYS));
     }
 
-    if (!providerZipPath) {
-      return runnerEnv;
-    }
-
-    await assertFileExists(providerZipPath, 'ALICLOUD provider zip does not exist');
-
-    const providerMirrorRootDir = path.join(this.workspacesRootDir, 'provider-mirror');
-    const providerMirrorDir = path.join(providerMirrorRootDir, PROVIDER_MIRROR_REGISTRY_PATH);
-    const cliConfigFilePath = path.join(providerMirrorRootDir, 'tofu.tfrc');
-
-    await fs.mkdir(providerMirrorDir, { recursive: true });
-    await copyProviderArchiveAtomically(providerZipPath, path.join(providerMirrorDir, path.basename(providerZipPath)));
-    await writeProviderConfigAtomically(
-      cliConfigFilePath,
-      [
-        'provider_installation {',
-        '  filesystem_mirror {',
-        `    path    = "${providerMirrorRootDir}"`,
-        '    include = ["registry.opentofu.org/aliyun/alicloud"]',
-        '  }',
-        '  direct {',
-        '    exclude = ["registry.opentofu.org/aliyun/alicloud"]',
-        '  }',
-        '}',
-        '',
-      ].join('\n'),
-    );
-
     return {
       ...runnerEnv,
-      TF_CLI_CONFIG_FILE: cliConfigFilePath,
+      ...await prepareOpenTofuProviderEnv({
+        providerZipPath,
+        workspacesRootDir: this.workspacesRootDir,
+        unpackedMirrorRootDir: this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT?.trim(),
+      }),
     };
   }
 
