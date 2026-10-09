@@ -297,10 +297,11 @@ run_tofu_root fmt -check -recursive infra/opentofu
 run_tofu_in_example init -backend=false
 run_tofu_in_example validate
 
-for module in alicloud-enterprise-range alicloud-vpc-single-ecs alicloud-single-instance-network; do
+for module in alicloud-enterprise-range alicloud-vpc-single-ecs alicloud-single-instance-network alicloud-single-instance-batch; do
   run_tofu_in_directory "infra/opentofu/modules/$module" init -backend=false
   run_tofu_in_directory "infra/opentofu/modules/$module" validate
 done
 run_tofu_in_directory "infra/opentofu/examples/alicloud-vpc-single-ecs" init -backend=false
 run_tofu_in_directory "infra/opentofu/examples/alicloud-vpc-single-ecs" validate
 run_tofu_in_directory "infra/opentofu/modules/alicloud-vpc-single-ecs" test -no-color
+run_tofu_in_directory "infra/opentofu/modules/alicloud-single-instance-batch" test -no-color
