@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -38,16 +38,27 @@ test('publishes only a verified download and reuses a verified cache', () => {
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
-test('refuses a changed archive and does not overwrite the previous file', () => {
+test('refuses a changed download and never publishes it', () => {
   const f = fixture();
   try {
-    mkdirSync(dirname(f.cached), { recursive: true });
-    writeFileSync(f.cached, 'previous invalid cache');
     writeFileSync(f.archive, 'changed upstream fixture');
     const result = spawnSync('sh', [script], { env: f.env, encoding: 'utf8' });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /checksum mismatch/);
-    assert.equal(readFileSync(f.cached, 'utf8'), 'previous invalid cache');
+    assert.equal(existsSync(f.cached), false);
+    assert.equal(readdirSync(dirname(f.cached)).length, 0);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test('rejects a tampered cache before download and preserves it for inspection', () => {
+  const f = fixture();
+  try {
+    mkdirSync(dirname(f.cached), { recursive: true });
+    writeFileSync(f.cached, 'invalid cache');
+    const result = spawnSync('sh', [script], { env: f.env, encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /cache checksum mismatch/);
+    assert.equal(readFileSync(f.cached, 'utf8'), 'invalid cache');
     assert.equal(readdirSync(dirname(f.cached)).length, 1);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
@@ -60,5 +71,32 @@ test('rejects version path traversal and unpinned checksums before writing the m
       assert.notEqual(result.status, 0);
       assert.equal(existsSync(f.env.TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH), false);
     }
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test('falls back from the official mirror only for download failure, with the pinned hash intact', () => {
+  const f = fixture();
+  try {
+    const bin = join(f.root, 'bin');
+    mkdirSync(bin);
+    const log = join(f.root, 'curl-log.jsonl');
+    const fakeCurl = join(bin, 'curl');
+    writeFileSync(fakeCurl, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const url = args[args.indexOf('-o') - 1];
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(url) + '\\n');
+if (url.startsWith('https://mirrors.tencent.com/')) process.exit(22);
+fs.copyFileSync(${JSON.stringify(f.archive)}, args[args.indexOf('-o') + 1]);
+`);
+    chmodSync(fakeCurl, 0o755);
+    delete f.env.TENCENTCLOUD_PROVIDER_DOWNLOAD_URL;
+    f.env.PATH = `${bin}:${f.env.PATH}`;
+    assert.equal(spawnSync('sh', [script], { env: f.env }).status, 0);
+    const urls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(urls.length, 2);
+    assert.match(urls[0], /^https:\/\/mirrors\.tencent\.com\/terraform\//);
+    assert.match(urls[1], /^https:\/\/github\.com\/tencentcloudstack\/terraform-provider-tencentcloud\/releases\/download\/v1\.83\.34\//);
+    assert.deepEqual(readFileSync(f.cached), f.bytes);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });

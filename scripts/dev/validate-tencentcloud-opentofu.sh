@@ -3,7 +3,8 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
-TOFU_IMAGE="${TENCENTCLOUD_IAC_IMAGE:-range-tencentcloud-iac:validation}"
+VALIDATION_RUN_ID="${TENCENTCLOUD_RUN_ID:-${GITHUB_RUN_ID:-$$}-${GITHUB_RUN_ATTEMPT:-1}}"
+TOFU_IMAGE="${TENCENTCLOUD_IAC_IMAGE:-range-tencentcloud-iac:${VALIDATION_RUN_ID}}"
 MIRROR_ROOT="${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-${REPO_ROOT}/.local/tencentcloud-provider/mirror}"
 VALIDATION_ROOT="${TENCENTCLOUD_VALIDATION_ROOT:-${REPO_ROOT}/.local/tencentcloud-provider/validation}"
 PROVIDER_VERSION="${TENCENTCLOUD_PROVIDER_VERSION:-1.83.34}"
@@ -11,7 +12,9 @@ PROVIDER_SHA256="${TENCENTCLOUD_PROVIDER_SHA256:-c94c2074fef39d38b351c4e24190ec0
 
 mkdir -p "${VALIDATION_ROOT}"
 RUN_ROOT=$(mktemp -d "${VALIDATION_ROOT}/run.XXXXXX")
-docker build --platform linux/amd64 -f "${REPO_ROOT}/scripts/docker/tencentcloud-iac.Dockerfile" -t "${TOFU_IMAGE}" "${REPO_ROOT}"
+docker build --platform linux/amd64 \
+  --build-arg "OPENTOFU_IMAGE=${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.13.1-minimal}" \
+  -f "${REPO_ROOT}/scripts/docker/tencentcloud-iac.Dockerfile" -t "${TOFU_IMAGE}" "${REPO_ROOT}"
 cat >"${RUN_ROOT}/tofu.tfrc" <<'EOF'
 provider_installation {
   filesystem_mirror {

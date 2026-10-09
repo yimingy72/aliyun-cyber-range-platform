@@ -8,10 +8,19 @@ CI_NETWORK="cyber-range-ci-$RUN_ID"
 CI_DB="cyber-range-ci-postgres-$RUN_ID"
 CI_PACKED_DB="cyber-range-ci-packed-postgres-$RUN_ID"
 CI_TAG_DB="cyber-range-ci-image-tags-postgres-$RUN_ID"
+CI_TENCENT_IMAGE="cyber-range-tencentcloud-iac:$RUN_ID"
 CI_PROVIDER_MIRROR_ARGS=()
 if [ -n "${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
   CI_PROVIDER_MIRROR_HOST="$(cd "${OPENTOFU_PROVIDER_MIRROR_HOST_PATH}" && pwd)"
   CI_PROVIDER_MIRROR_ARGS=(-v "${CI_PROVIDER_MIRROR_HOST}:/app/.local/provider-mirror:ro")
+fi
+if [ -n "${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
+  CI_TENCENT_MIRROR_HOST="$(cd "${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH}" && pwd)"
+  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-provider/mirror:ro")
+else
+  CI_TENCENT_MIRROR_HOST="$REPO_ROOT/.local/tencentcloud-provider/mirror"
+  mkdir -p "$CI_TENCENT_MIRROR_HOST"
+  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-provider/mirror")
 fi
 CONTEXT_DIR="$(mktemp -d)"
 CONTEXT_IMAGE="cyber-range-ci-context:$RUN_ID"
@@ -22,6 +31,7 @@ cleanup() {
   docker rm -f "$CI_TAG_DB" >/dev/null 2>&1 || true
   docker network rm "$CI_NETWORK" >/dev/null 2>&1 || true
   docker image rm "$CONTEXT_IMAGE" >/dev/null 2>&1 || true
+  docker image rm "$CI_TENCENT_IMAGE" >/dev/null 2>&1 || true
   rm -rf "$CONTEXT_DIR"
 }
 trap cleanup EXIT
@@ -60,6 +70,15 @@ fi
 for compose_file in docker-compose.yml deploy/current-system/docker-compose.yml deploy/current-system/docker-compose.images.yml; do
   docker compose --env-file /dev/null -f "$compose_file" config --quiet
 done
+
+# Download/verify the pinned public archive in Docker, then test Tencent IaC without cloud network access.
+docker run --rm --user "$(id -u):$(id -g)" "${CI_TENCENT_MIRROR_ARGS[@]}" \
+  -e TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH=/app/.local/tencentcloud-provider/mirror \
+  -e TENCENTCLOUD_PROVIDER_VERSION -e TENCENTCLOUD_PROVIDER_SHA256 -e TENCENTCLOUD_PROVIDER_DOWNLOAD_URL \
+  "$CI_IMAGE" sh scripts/dev/download-tencentcloud-provider.sh
+TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH="$CI_TENCENT_MIRROR_HOST" \
+  TENCENTCLOUD_IAC_IMAGE="$CI_TENCENT_IMAGE" TENCENTCLOUD_RUN_ID="$RUN_ID" \
+  sh scripts/dev/validate-tencentcloud-opentofu.sh
 
 if [ "${#CI_PROVIDER_MIRROR_ARGS[@]}" = 0 ]; then
   # Build the pinned source patch in Docker before isolated tests use its read-only mirror.

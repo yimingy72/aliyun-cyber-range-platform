@@ -24,5 +24,10 @@ jobs:
         with:
           path: .local/provider-fast-wait/cache
           key: ${{ runner.os }}-alicloud-fast-wait-${{ hashFiles('scripts/provider/alicloud-fast-wait/**') }}
+      - name: Cache pinned Tencent Cloud provider archive
+        uses: actions/cache@v4
+        with:
+          path: .local/tencentcloud-provider/mirror
+          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/dev/download-tencentcloud-provider.sh') }}
       - name: Test, build and validate in Docker
         run: bash scripts/ci/verify-docker.sh

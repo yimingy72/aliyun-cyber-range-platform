@@ -61,11 +61,18 @@ sh scripts/dev/validate-tencentcloud-opentofu.sh
 The archive's pinned linux/amd64 SHA-256 is
 `c94c2074fef39d38b351c4e24190ec0bed6f7e1bc6b014f98a8672921eaf2c8b`,
 verified against [the official release](https://github.com/tencentcloudstack/terraform-provider-tencentcloud/releases/tag/v1.83.34).
-If GitHub downloads are slow, the downloader accepts
-`TENCENTCLOUD_PROVIDER_DOWNLOAD_URL` pointing to the identical archive in
-[Tencent's official mirror](https://mirrors.tencent.com/terraform/registry.terraform.io/tencentcloudstack/tencentcloud/1.83.34.json);
-the pinned GitHub SHA-256 remains mandatory.
+The downloader prefers [Tencent's official mirror](https://mirrors.tencent.com/terraform/registry.terraform.io/tencentcloudstack/tencentcloud/1.83.34.json)
+and falls back to the GitHub release only on a transport failure. Every accepted
+archive must match the pinned GitHub SHA-256; a tampered cache or downloaded
+checksum mismatch stops validation. `TENCENTCLOUD_PROVIDER_DOWNLOAD_URL` can
+override the transport URL but cannot bypass the pinned checksum.
 The validator rebuilds its dedicated image, mounts no live state or credentials,
 and uses `--network none` for `validate`, schema inspection and mock plans.
 Mock plans include fifty distinct member identities; they do not measure actual
 cloud creation speed or verify billable resource reclamation.
+
+`scripts/ci/verify-docker.sh` runs the downloader inside the CI container and then
+this offline validator before application tests. GitHub caches only the pinned
+provider archive. `TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH` reuses an existing
+read-only cache; validation images use an isolated run ID so concurrent worktrees
+cannot overwrite each other's image tag.
