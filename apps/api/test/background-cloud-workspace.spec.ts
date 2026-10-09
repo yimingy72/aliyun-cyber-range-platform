@@ -111,6 +111,54 @@ describe('Frozen source workspaces for background tasks', () => {
     expect(visited).toEqual(['account-a', 'account-b']);
   });
 
+  it('reconciles every verified region of an account after its UI default region changes', async () => {
+    const config = { ...runner(),
+      listWorkspaceAccountContextIds: jest.fn(async () => getCurrentCloudWorkspaceId() === 'account-a' ? ['a-hangzhou', 'a-shanghai', 'a-hangzhou'] : ['b-beijing']),
+      runInAccountContext: jest.fn(async (contextId: string, work: () => Promise<unknown>) => {
+        const current = getCurrentCloudWorkspaceScope();
+        if (!current || 'system' in current) throw new Error('Missing source workspace');
+        const contextual = { ...current, cloudAccountContextId: contextId };
+        return runInCloudWorkspace(contextual, work);
+      }),
+    };
+    const visited: Array<[string | null, string]> = [];
+    const reconcile = jest.fn(async () => { visited.push([getCurrentCloudWorkspaceId(), (getCurrentCloudWorkspaceScope() as any).cloudAccountContextId]); return {}; });
+    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
+    await runInCloudWorkspace(scope('account-tencent'), () => worker.reconcilePlatformResources(new Date()));
+    expect(visited).toEqual([['account-a', 'a-hangzhou'], ['account-a', 'a-shanghai'], ['account-b', 'b-beijing']]);
+    expect(config.runInAccountContext).toHaveBeenCalledTimes(3);
+    expect(getCurrentCloudWorkspaceScope()).toBeNull();
+  });
+
+  it('continues another region and account after one regional cloud scan fails', async () => {
+    const config = { ...runner(),
+      listWorkspaceAccountContextIds: jest.fn(async () => getCurrentCloudWorkspaceId() === 'account-a' ? ['a-hangzhou', 'a-shanghai'] : ['b-beijing']),
+      runInAccountContext: jest.fn(async (contextId: string, work: () => Promise<unknown>) => {
+        const current = getCurrentCloudWorkspaceScope();
+        if (!current || 'system' in current) throw new Error('Missing source workspace');
+        const contextual = { ...current, cloudAccountContextId: contextId };
+        return runInCloudWorkspace(contextual, work);
+      }),
+    };
+    const visited: string[] = [];
+    const reconcile = jest.fn(async () => {
+      const id = (getCurrentCloudWorkspaceScope() as any).cloudAccountContextId;
+      visited.push(id); if (id === 'a-hangzhou') throw new Error('Synthetic regional permission failure'); return {};
+    });
+    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
+    await expect(worker.reconcilePlatformResources(new Date())).rejects.toThrow('other source workspaces');
+    expect(visited).toEqual(['a-hangzhou', 'a-shanghai', 'b-beijing']);
+  });
+
+  it('refuses production reconciliation when regional context enumeration is missing', async () => {
+    const previous = process.env.NODE_ENV;
+    const reconcile = jest.fn(async () => ({}));
+    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, runner() as any, {} as any, { reconcile } as any);
+    process.env.NODE_ENV = 'production';
+    try { await expect(worker.reconcilePlatformResources(new Date())).rejects.toThrow('other source workspaces'); expect(reconcile).not.toHaveBeenCalled(); }
+    finally { process.env.NODE_ENV = previous; }
+  });
+
   it('uses the range frozen zone after account defaults change', async () => {
     const config = { ...runner(), getAccountContextById: jest.fn(async () => ({ provider: 'alibaba_cloud', accountUid: 'uid-a', accountUidResolved: true, cloudAccountContextId: 'context-a', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-i' })) };
     const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), { mode: 'opentofu' } as any, config as any);

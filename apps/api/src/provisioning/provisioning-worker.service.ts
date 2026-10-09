@@ -57,6 +57,10 @@ type SingleInstanceJobInput = {
   batchLease?: SingleInstanceOpenTofuBatchLease;
 };
 type SingleInstanceExecutionItem = { instance: RangeInstanceRecord; job: ProvisionJobRecord };
+type ReconciliationAccountContextRunner = {
+  listWorkspaceAccountContextIds(): Promise<string[]>;
+  runInAccountContext<T>(contextId: string, work: () => Promise<T>): Promise<T>;
+};
 
 @Injectable()
 export class ProvisioningWorkerService {
@@ -132,12 +136,24 @@ export class ProvisioningWorkerService {
   async reconcilePlatformResources(now: Date) {
     const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
     if (!spaces) return this.platformResourceReconciliationService.reconcile(now);
-    const results = [];
+    const results: Awaited<ReturnType<PlatformResourceReconciliationService['reconcile']>>[] = [];
     let failed = false;
     for (const space of spaces) {
       try {
-        results.push(await runInExecutionCloudWorkspace(this.systemConfigService, space.id,
-          () => this.platformResourceReconciliationService.reconcile(now), { provider: space.provider, accountUid: space.accountUid }));
+        await runInExecutionCloudWorkspace(this.systemConfigService, space.id, async () => {
+          const contexts = this.systemConfigService as SystemConfigService & Partial<ReconciliationAccountContextRunner>;
+          if (typeof contexts.listWorkspaceAccountContextIds !== 'function' || typeof contexts.runInAccountContext !== 'function') {
+            if (process.env.NODE_ENV !== 'test') throw new Error('Resource reconciliation requires frozen regional account contexts');
+            results.push(await this.platformResourceReconciliationService.reconcile(now));
+            return;
+          }
+          const contextIds = await contexts.listWorkspaceAccountContextIds();
+          for (const contextId of new Set(contextIds)) {
+            try {
+              results.push(await contexts.runInAccountContext(contextId, () => this.platformResourceReconciliationService.reconcile(now)));
+            } catch { failed = true; }
+          }
+        }, { provider: space.provider, accountUid: space.accountUid });
       } catch { failed = true; }
     }
     if (failed) throw new Error('Cloud reconciliation failed for a workspace; other source workspaces were still processed');
