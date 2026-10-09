@@ -102,7 +102,7 @@ function readConfiguredInstanceType(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function readResolvedInstanceTypePolicy(node: Extract<TemplateNode, { kind: 'ecs' }>) {
+function readResolvedInstanceTypePolicy(node: Extract<TemplateNode, { kind: 'ecs' }>, provider: ScenarioTemplateMetadata['cloudProvider']) {
   const fixedInstanceType = readConfiguredInstanceType(node.instanceTypeStrategy.instanceType);
 
   if (node.instanceTypeStrategy.mode === 'fixed' && fixedInstanceType) {
@@ -118,7 +118,7 @@ function readResolvedInstanceTypePolicy(node: Extract<TemplateNode, { kind: 'ecs
   const preferredInstanceTypes =
     configuredPreferredInstanceTypes.length > 0
       ? configuredPreferredInstanceTypes
-      : resolvePreferredInstanceTypes(node.cpu, node.memory);
+      : provider === 'alibaba_cloud' ? resolvePreferredInstanceTypes(node.cpu, node.memory) : [];
 
   if (preferredInstanceTypes.length > 0) {
     return {
@@ -311,7 +311,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
       preferredImageIds: host.imageStrategy.preferredImageIds,
     })),
     instanceTypePolicies: hostNodes.map((host) => {
-      const resolvedPolicy = readResolvedInstanceTypePolicy(host);
+      const resolvedPolicy = readResolvedInstanceTypePolicy(host, input.metadata.cloudProvider);
 
       return {
         key: `${host.id}-instance-type-policy`,

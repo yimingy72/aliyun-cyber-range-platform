@@ -247,7 +247,7 @@ export class SystemConfigService {
     cpu: number;
     memory: number;
   }): Promise<InstanceTypeAvailabilitySnapshot> {
-    const accountContext = await this.getAccountContext();
+    const accountContext = await this.getSelectedAccountContext();
     return this.getInstanceTypeAvailabilityInContext(input, accountContext);
   }
 
@@ -372,7 +372,7 @@ export class SystemConfigService {
 
   async listExecutionCloudWorkspaces() {
     return runInSystemCloudWorkspaceScope(() => this.prisma.cloudWorkspace.findMany({
-      where: { isReadOnly: false, provider: 'alibaba_cloud', accountUid: { not: null }, activeCloudAccountContextId: { not: null } },
+      where: { isReadOnly: false, provider: { in: ['alibaba_cloud', 'tencent_cloud'] }, accountUid: { not: null }, activeCloudAccountContextId: { not: null } },
       select: { id: true, provider: true, accountUid: true, isReadOnly: true }, orderBy: { id: 'asc' },
     }));
   }

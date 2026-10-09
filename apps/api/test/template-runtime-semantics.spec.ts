@@ -28,6 +28,8 @@ describe('template runtime semantics',()=>{
     expect(payload.compiledSpec.resources.every((resource:any)=>resource.provider==='tencent_cloud')).toBe(true);
     expect(payload.compiledSpec.resources.some((resource:any)=>resource.type==='nat_gateway')).toBe(true);
     expect(payload.compiledProvisionSpec.dnatEntries).toHaveLength(1);
+    expect(payload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies[0].preferredInstanceTypes).toBeUndefined();
+    expect(payload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies[0].mode).toBe('auto');
   });
   it('restores Tencent metadata without silently compiling it as Alibaba',()=>{
     expect(metadataFromTemplate({...metadata,cloudProvider:'tencent_cloud'}).cloudProvider).toBe('tencent_cloud');

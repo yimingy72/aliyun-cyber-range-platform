@@ -47,6 +47,7 @@ type CreateRangeTemplateRequest = TemplateTopologyPayload & {
 
 const INTERNAL_TEMPLATE_VERSION = 'v1';
 const INTERNAL_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-enterprise-range';
+const TENCENT_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/tencentcloud-enterprise-range';
 
 @Injectable()
 export class RangeTemplatesService {
@@ -114,9 +115,7 @@ export class RangeTemplatesService {
 
   async create(input: CreateRangeTemplateRequest, currentUser?: AuthenticatedUser) {
     const workspaceScope = getCurrentCloudWorkspaceScope();
-    if (workspaceScope && !('system' in workspaceScope) && workspaceScope.provider !== 'alibaba_cloud') {
-      throw new ConflictException('当前云厂商的靶场编排尚未开放。');
-    }
+    const cloudProvider = workspaceScope && !('system' in workspaceScope) ? workspaceScope.provider : 'alibaba_cloud';
     const actorId = currentUser?.id ?? 'admin';
     const slug = this.buildServerTemplateSlug(input.name);
     const topology = await this.normalizeTopologyMetadata(input, {
@@ -134,9 +133,9 @@ export class RangeTemplatesService {
       ownerUserId: currentUser?.id ?? null,
       slug,
       version: INTERNAL_TEMPLATE_VERSION,
-      cloudProvider: 'alibaba_cloud',
+      cloudProvider,
       iacType: 'opentofu',
-      modulePathOrRef: INTERNAL_TEMPLATE_MODULE_PATH,
+      modulePathOrRef: cloudProvider === 'tencent_cloud' ? TENCENT_TEMPLATE_MODULE_PATH : INTERNAL_TEMPLATE_MODULE_PATH,
       ...topology,
       variableSchema: input.variableSchema ?? {},
       outputSchema: input.outputSchema ?? {},
@@ -477,6 +476,9 @@ export class RangeTemplatesService {
     currentUser?: AuthenticatedUser,
   ): Promise<TemplateTopologyPayload> {
     const systemDefaults = this.systemConfigService ? await this.getTemplatePlacementDefaults() : null;
+    const workspaceScope = getCurrentCloudWorkspaceScope();
+    const cloudProvider = workspaceScope && !('system' in workspaceScope) ? workspaceScope.provider : 'alibaba_cloud';
+    const modulePathOrRef = cloudProvider === 'tencent_cloud' ? TENCENT_TEMPLATE_MODULE_PATH : INTERNAL_TEMPLATE_MODULE_PATH;
     const scenarioMetadata =
       input.scenarioTemplateSpec.metadata &&
       typeof input.scenarioTemplateSpec.metadata === 'object' &&
@@ -522,7 +524,7 @@ export class RangeTemplatesService {
           name: identity.name,
           slug: identity.slug,
           version: identity.version,
-          cloudProvider: 'alibaba_cloud',
+          cloudProvider,
           iacType: 'opentofu',
         },
       },
@@ -536,7 +538,7 @@ export class RangeTemplatesService {
           ...compiledIdentity,
           templateSlug: identity.slug,
           templateVersion: identity.version,
-          cloudProvider: 'alibaba_cloud',
+          cloudProvider,
           iacType: 'opentofu',
         },
       },
@@ -552,9 +554,9 @@ export class RangeTemplatesService {
         name: identity.name,
         slug: identity.slug,
         version: identity.version,
-        cloudProvider: 'alibaba_cloud',
+        cloudProvider,
         iacType: 'opentofu',
-        modulePathOrRef: INTERNAL_TEMPLATE_MODULE_PATH,
+        modulePathOrRef,
         ...(typeof scenarioMetadata.description === 'string' ? { description: scenarioMetadata.description } : {}),
         primaryVpcCidr: input.topologySpec.vpcCidr,
         ...(Array.isArray(scenarioTopology.secondaryVpcCidrs) ? { secondaryVpcCidrs: scenarioTopology.secondaryVpcCidrs as string[] } : {}),
@@ -599,7 +601,8 @@ export class RangeTemplatesService {
   }
 
   private async getTemplatePlacementDefaults() {
-    const snapshot = await this.systemConfigService!.getSnapshot();
+    const snapshot = typeof this.systemConfigService!.getExecutionAccountContext === 'function'
+      ? await this.systemConfigService!.getExecutionAccountContext() : await this.systemConfigService!.getSnapshot();
 
     if (!snapshot.defaultRegion || !snapshot.defaultZoneId) {
       throw new BadRequestException('平台基础配置缺少默认地域或可用区，无法创建或保存模板拓扑');

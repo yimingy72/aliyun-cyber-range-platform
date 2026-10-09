@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { assertTencentOwnedInstance, describeTencentInstances } from './tencent-cloud-resources';
 
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
@@ -224,7 +225,10 @@ export class RangeInstancesService {
   async launch(input: LaunchRangeInstanceDto, currentUser?: AuthenticatedUser) {
     this.assertFutureInstanceExpiration(input.expiresAt);
     const requestScope = getCurrentCloudWorkspaceScope();
-    const account = requestScope && !('system' in requestScope) ? await this.systemConfigService.getAccountContext() : null;
+    const account = requestScope && !('system' in requestScope) ? await this.systemConfigService.getExecutionAccountContext() : null;
+    if (account?.provider === 'tencent_cloud' && Date.parse(input.expiresAt) - Date.now() < 600_000) {
+      throw new ConflictException('腾讯云编排实例有效期至少为 10 分钟，以便设置云端定时回收。');
+    }
     if (account && (!account.cloudAccountContextId || !account.accountUid || !account.accountUidResolved)) {
       throw new ConflictException('创建编排实例前必须验证当前工作空间的云账号。');
     }
@@ -233,6 +237,10 @@ export class RangeInstancesService {
 
     if (!template) {
       throw new NotFoundException('Range template not found');
+    }
+
+    if (account && template.cloudProvider !== account.provider) {
+      throw new ConflictException('模板云厂商与当前已验证账号不一致。');
     }
 
     const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
@@ -278,6 +286,7 @@ export class RangeInstancesService {
       createdBy: actorId,
       ownerUserId: currentUser?.id ?? null,
       instanceMode: 'range',
+      cloudProvider: template.cloudProvider,
       templateId: template.id,
       sourceTemplateVersionId: sourceTemplateVersion.id,
       templateNameSnapshot: template.name,
@@ -289,7 +298,7 @@ export class RangeInstancesService {
       runtimeCompiledProvisionSpec,
       runtimeCredentials,
       ...(account ? { resourceSummary: { mode: 'opentofu' as const, creationAttempted: false,
-        executionContext: { cloudAccountContextId: account.cloudAccountContextId!, cloudAccountUid: account.accountUid!,
+        executionContext: { provider: account.provider, cloudAccountContextId: account.cloudAccountContextId!, cloudAccountUid: account.accountUid!,
           regionId: account.defaultRegion, zoneId: account.defaultZoneId } } } : {}),
       status: 'pending_create',
       expiresAt: input.expiresAt,
@@ -871,11 +880,30 @@ export class RangeInstancesService {
     }
 
     try {
-      const accountContext = await this.systemConfigService.getAccountContext();
+      const frozen = instance?.resourceSummary?.executionContext;
+      const accountContext = frozen?.cloudAccountContextId
+        ? await this.systemConfigService.getExecutionAccountContext({ cloudAccountContextId: frozen.cloudAccountContextId })
+        : process.env.NODE_ENV === 'test' ? await this.systemConfigService.getAccountContext() : null;
+      if (!accountContext || frozen && (frozen.cloudAccountUid !== accountContext.accountUid || frozen.regionId !== accountContext.defaultRegion)) {
+        return { nodeStatuses: null, nodeBillingTags: null };
+      }
       const instanceIds = Object.values(hostIds).filter((value): value is string => Boolean(value));
 
       if (instanceIds.length === 0) {
         return { nodeStatuses: null, nodeBillingTags: null };
+      }
+
+      if (accountContext.provider === 'tencent_cloud') {
+        const details = await describeTencentInstances(accountContext, { instanceIds });
+        const byId = new Map(details.map(detail => [detail.instanceId, detail]));
+        for (const [hostKey, id] of Object.entries(hostIds)) {
+          const detail = byId.get(id);
+          if (detail) assertTencentOwnedInstance(instance!, accountContext, detail, hostKey);
+        }
+        return {
+          nodeStatuses: Object.fromEntries(Object.entries(hostIds).flatMap(([key, id]) => byId.has(id) ? [[key, byId.get(id)!.status]] : [])),
+          nodeBillingTags: Object.fromEntries(Object.entries(hostIds).flatMap(([key, id]) => byId.has(id) ? [[key, byId.get(id)!.tags]] : [])),
+        };
       }
 
       const payload = await this.performAliyunRpcRequest<{
@@ -1059,11 +1087,8 @@ export class RangeInstancesService {
     const primaryVpcCidr =
       this.readNonEmptyString(runtimeTopology?.vpcCidr) ??
       this.readNonEmptyString(compiledProvisionTopology?.vpcCidr);
-    const cloudProvider = metadata?.cloudProvider === 'alibaba_cloud'
-      ? 'alibaba_cloud'
-      : sourceTemplate?.cloudProvider === 'alibaba_cloud'
-        ? 'alibaba_cloud'
-        : null;
+    const declaredProvider = metadata?.cloudProvider ?? sourceTemplate?.cloudProvider;
+    const cloudProvider = declaredProvider === 'alibaba_cloud' || declaredProvider === 'tencent_cloud' ? declaredProvider : null;
     const iacType = metadata?.iacType === 'terraform' || metadata?.iacType === 'opentofu'
       ? metadata.iacType
       : sourceTemplate?.iacType === 'terraform' || sourceTemplate?.iacType === 'opentofu'
