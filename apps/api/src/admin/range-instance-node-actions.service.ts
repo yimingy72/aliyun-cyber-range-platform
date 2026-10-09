@@ -13,6 +13,8 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { PackedImagesService } from './packed-images.service';
 import { imageRpc } from './aliyun-image-rpc';
+import { describeTencentInstances, assertTencentOwnedInstance } from './tencent-cloud-resources';
+import { requestTencentCloud } from './tencent-cloud-client';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 
@@ -46,7 +48,7 @@ export class RangeInstanceNodeActionsService {
     if (currentUser && currentUser.role !== 'admin' && instance.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('Range instance access denied');
     }
-    if (instance.cloudProvider !== 'alibaba_cloud') throw new ConflictException('该云厂商的节点控制与镜像打包尚未开放。');
+    if (!['alibaba_cloud', 'tencent_cloud'].includes(instance.cloudProvider)) throw new ConflictException('该云厂商的节点控制与镜像打包尚未开放。');
 
     if (!isNodeActionName(action)) {
       throw new NotFoundException('Unsupported node action');
@@ -74,8 +76,18 @@ export class RangeInstanceNodeActionsService {
 
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);
     const hostNode = this.resolveHostTopologyNode(instance, nodeId);
-    const accountContext = boundAccountContext ?? await this.systemConfigService.getAccountContext();
-    if (accountContext.provider !== 'alibaba_cloud') throw new ConflictException('云账号厂商与当前节点执行器不符。');
+    const source = instance.instanceMode === 'single' ? instance.singleInstanceConfig : instance.resourceSummary?.executionContext;
+    if (instance.cloudProvider === 'tencent_cloud' && (!source?.cloudAccountContextId || !source.cloudAccountUid || !source.regionId))
+      throw new ConflictException('腾讯云节点操作需要已冻结并核验的原云账号。');
+    const accountContext = boundAccountContext ?? (source?.cloudAccountContextId
+      ? await this.systemConfigService.getAccountContextById(source.cloudAccountContextId)
+      : await this.systemConfigService.getAccountContext());
+    if (accountContext.provider !== instance.cloudProvider) throw new ConflictException('云账号厂商与当前节点执行器不符。');
+    if (source?.cloudAccountContextId && (source.cloudAccountContextId !== accountContext.cloudAccountContextId
+      || source.cloudAccountUid !== accountContext.accountUid || source.regionId !== accountContext.defaultRegion || !accountContext.accountUidResolved))
+      throw new ConflictException('实例云账号与创建时绑定不符。');
+    if (accountContext.provider === 'tencent_cloud') return this.runTencentNodeAction(instance, nodeId, hostInstanceId, action, accountContext);
+
 
     if (action === 'start') {
       const response = await this.performAliyunRpcRequest({
@@ -256,6 +268,30 @@ export class RangeInstanceNodeActionsService {
     }
   }
 
+  private async runTencentNodeAction(instance: RangeInstanceRecord, nodeId: string, instanceId: string, action: NodeActionName, account: SystemCloudAccountContext) {
+    if (action === 'pack-image') throw new ConflictException('腾讯云镜像打包需由已绑定来源的镜像服务执行。');
+    const [detail] = await describeTencentInstances(account, { instanceIds: [instanceId] });
+    if (!detail) throw new NotFoundException('Tencent CVM node was not found');
+    assertTencentOwnedInstance(instance, account, detail, nodeId);
+    if (action === 'start' && detail.status !== 'Stopped' || ['stop', 'reboot'].includes(action) && detail.status !== 'Running')
+      throw new ConflictException('腾讯云节点当前状态不允许此操作。');
+    const cloudAction = { start: 'StartInstances', stop: 'StopInstances', reboot: 'RebootInstances', 'open-vnc': 'DescribeInstanceVncUrl' }[action];
+    const response = await requestTencentCloud<{ RequestId: string; InstanceVncUrl?: string }>({ service: 'cvm', version: '2017-03-12', action: cloudAction,
+      regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret,
+      parameters: action === 'open-vnc' ? { InstanceId: instanceId } : { InstanceIds: [instanceId],
+        ...(action === 'stop' || action === 'reboot' ? { StopType: 'SOFT' } : {}), ...(action === 'stop' ? { StoppedMode: 'KEEP_CHARGING' } : {}) } });
+    if (action !== 'open-vnc') return { status: 'accepted', action, response: { RequestId: response.RequestId } };
+    const raw = response.InstanceVncUrl?.trim();
+    if (!raw) throw new BadGatewayException('腾讯云 VNC 响应缺少访问地址。');
+    let decoded: string, url: URL;
+    try { decoded = raw.includes('%') ? decodeURIComponent(raw) : raw; url = new URL(decoded); }
+    catch { throw new BadGatewayException('腾讯云 VNC 地址响应格式不完整。'); }
+    if (url.protocol !== 'wss:' || !/(^|\.)qcloud\.com$/i.test(url.hostname) || url.username || url.password)
+      throw new BadGatewayException('腾讯云 VNC 地址响应不受支持。');
+    return { status: 'accepted', action, vncUrl: raw,
+      webTerminalUrl: `https://img.qcloud.com/qcloud/app/active_vnc/index.html?InstanceVncUrl=${encodeURIComponent(decoded)}` };
+  }
+
   async runSingleInstanceAction(
     rangeInstanceId: string,
     action: 'reboot' | 'open-vnc' | 'pack-image',
@@ -282,6 +318,8 @@ export class RangeInstanceNodeActionsService {
 
     if(instance.status !== 'running') throw new ConflictException('Single instance action requires running status');
     const config=instance.singleInstanceConfig;
+    if (instance.cloudProvider === 'tencent_cloud' && (!config?.cloudAccountContextId || !config.cloudAccountUid || !config.regionId))
+      throw new ConflictException('腾讯云节点操作需要已冻结并核验的原云账号。');
     const account=config?.cloudAccountContextId?await this.systemConfigService.getAccountContextById(config.cloudAccountContextId):await this.systemConfigService.getAccountContext();
     if((config?.cloudAccountUid && config.cloudAccountUid!==account.accountUid)||(config?.regionId && config.regionId!==account.defaultRegion)) throw new ConflictException('Instance cloud context does not match its launch identity');
     return this.run(rangeInstanceId, hostKey, action, payload, currentUser, account);

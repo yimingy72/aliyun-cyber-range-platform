@@ -4,7 +4,7 @@ import path from 'node:path';
 import { OpenTofuRunner, type OpenTofuCommandResult, type OpenTofuWorkspaceCommandOptions, type OpenTofuPlanOptions, type OpenTofuApplyOptions } from '@aliyun-cyber-range/iac-runner';
 import type { AdminRepository, RangeInstanceRecord, SingleInstanceBatchWithInstancesRecord, SingleInstanceConfig, RangeResourceSummary } from './admin.repository';
 import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type SingleInstanceExecutionItem, type NormalizedInstanceDetail, patchRuntimeScenarioTemplate, patchRuntimeCompiledProvisionSpec } from './single-instance-batch-execution.service';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { buildBillingTags } from './billing-tagging';
 import { syncRangeInstanceBillingLedger, releaseRangeInstanceBillingLedger } from './billing-ledger-sync';
 import * as mirrors from '../provisioning/provider-mirror-publication';
@@ -31,7 +31,7 @@ type Manifest = { schemaVersion: 1; identity: Identity; members: Record<string, 
 type StateMember = { id: string; diskId: string; privateIp: string | null; publicIp: string | null; status: string; tainted: boolean; tags: Record<string, string> };
 type Plan = { format_version: string; resource_changes?: Array<{ address: string; type: string; mode?: string; change: { actions: string[] } }> };
 type Context = { lease: SingleInstanceOpenTofuBatchLease; items: SingleInstanceExecutionItem[]; batch: SingleInstanceBatchWithInstancesRecord;
-  account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]> };
+  account: SystemCloudAccountContext; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]> };
 const MODULE_PATH = 'infra/opentofu/modules/alicloud-single-instance-batch';
 const MANIFEST_FILE = 'single-batch-manifest.json';
 const APPLY_MARKER = '.single-batch-apply-started';
