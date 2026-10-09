@@ -1,4 +1,4 @@
-import { getCurrentCloudWorkspaceId, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -76,7 +76,13 @@ import {
 import { toAccountScopeKey } from '../admin/image-account-scope';
 import { PrismaService } from './prisma.service';
 
+function workspaceProvider(): 'alibaba_cloud' | 'tencent_cloud' {
+  const scope = getCurrentCloudWorkspaceScope();
+  return scope && !('system' in scope) ? scope.provider : 'alibaba_cloud';
+}
+
 const schedulingInstanceSelect = {
+  cloudWorkspaceId: true,
   id: true, instanceMode: true, singleInstanceBatchId: true, status: true,
   lastJobId: true, ownerUserId: true, expiresAt: true,
 } as const;
@@ -467,7 +473,7 @@ export class PrismaAdminRepository implements AdminRepository {
           description: input.description ?? null,
           slug: input.slug,
           version: input.version,
-          cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+          cloudProvider: input.cloudProvider ?? workspaceProvider(),
           iacType: input.iacType ?? 'opentofu',
           modulePathOrRef: input.modulePathOrRef,
           topologySpec: input.topologySpec as Prisma.InputJsonValue,
@@ -1010,6 +1016,7 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async createRangeInstance(input: CreateRangeInstanceInput, initialJob?: { triggeredBy: string; topologySnapshot: ProvisionJobTopologySnapshot; expectedTemplateRevision?: number }): Promise<RangeInstanceRecord> {
     const data = {
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         name: input.name,
         createdBy: input.createdBy ?? 'admin',
         ownerUserId: input.ownerUserId ?? null,
@@ -2187,7 +2194,7 @@ export class PrismaAdminRepository implements AdminRepository {
   async createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord> {
     return this.prisma.billingLedgerResource.create({
       data: {
-        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         cloudAccountUid: input.cloudAccountUid ?? null,
         regionId: input.regionId,
         cloudResourceId: input.cloudResourceId,
@@ -2209,7 +2216,7 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.billingLedgerResource.findUnique({
       where: {
         cloudWorkspaceId_cloudProvider_regionId_cloudResourceId_cloudResourceType: { cloudWorkspaceId: getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
-          cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+          cloudProvider: input.cloudProvider ?? workspaceProvider(),
           regionId: input.regionId,
           cloudResourceId: input.cloudResourceId,
           cloudResourceType: input.cloudResourceType,

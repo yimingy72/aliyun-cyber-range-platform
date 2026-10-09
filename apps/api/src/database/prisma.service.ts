@@ -2,7 +2,7 @@ import { ForbiddenException, Injectable, OnModuleDestroy, OnModuleInit, Optional
 
 import { Prisma, PrismaClient } from '@aliyun-cyber-range/database/generated/client';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
-import { scopePrismaQuery } from './prisma-workspace-scope';
+import { scopePrismaQuery, scopePrismaResult } from './prisma-workspace-scope';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -12,13 +12,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       name: 'cloud-workspace-isolation',
       query: {
         $allModels: {
-          $allOperations({ model, operation, args, query }) {
+          async $allOperations({ model, operation, args, query }) {
             const scope = getCurrentCloudWorkspaceScope();
             if (!scope && process.env.NODE_ENV !== 'test'
               && !['CloudWorkspace', 'CloudAccountContext', 'SystemCloudConfig'].includes(model)) {
               throw new ForbiddenException('Cloud workspace scope is required');
             }
-            return query(scopePrismaQuery(model, operation, args, scope) as typeof args);
+            const result = await query(scopePrismaQuery(model, operation, args, scope) as typeof args);
+            return scopePrismaResult(model, result, args, scope);
           },
         },
       },

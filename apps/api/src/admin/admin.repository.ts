@@ -946,6 +946,7 @@ export type CreateSingleInstanceBatchInput = {
 
 export type CreateRangeInstanceInput = {
   cloudWorkspaceId?: string;
+  cloudProvider?: CloudProvider;
   name: string;
   createdBy?: string;
   ownerUserId?: string | null;

@@ -1,5 +1,5 @@
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInCloudWorkspace, runInSystemCloudWorkspaceScope } from '../src/auth/cloud-workspace-scope';
-import { scopePrismaQuery } from '../src/database/prisma-workspace-scope';
+import { scopePrismaQuery, scopePrismaResult } from '../src/database/prisma-workspace-scope';
 
 const scope = { cloudWorkspaceId: 'workspace-a', provider: 'alibaba_cloud' as const, accountUid: '100001' };
 
@@ -48,9 +48,15 @@ describe('cloud workspace query boundary', () => {
       where: { id: 'image' }, data: { tags: { deleteMany: {}, create: [{ tag: { connect: { id: 'other-tag' } } }] } },
       include: { ownerUser: { select: { username: true } }, tags: { include: { tag: true } } },
     }, scope)).toMatchObject({
-      data: { tags: { deleteMany: { cloudWorkspaceId: scope.cloudWorkspaceId }, create: [{ cloudWorkspaceId: scope.cloudWorkspaceId, tag: { connect: { id: 'other-tag', cloudWorkspaceId: scope.cloudWorkspaceId } } }] } },
-      include: { ownerUser: { where: { cloudWorkspaceId: scope.cloudWorkspaceId }, select: { username: true } }, tags: { where: { cloudWorkspaceId: scope.cloudWorkspaceId }, include: { tag: { where: { cloudWorkspaceId: scope.cloudWorkspaceId } } } } },
+      data: { tags: { deleteMany: { cloudWorkspaceId: scope.cloudWorkspaceId }, create: [{ cloudWorkspace: { connect: { id: scope.cloudWorkspaceId } }, tag: { connect: { id: 'other-tag', cloudWorkspaceId: scope.cloudWorkspaceId } } }] } },
+      include: { ownerUser: { where: { cloudWorkspaceId: scope.cloudWorkspaceId }, select: { username: true } }, tags: { where: { cloudWorkspaceId: scope.cloudWorkspaceId }, include: { tag: {} } } },
     });
+  });
+
+  it('hides required historical cross-workspace profiles and removes internal scope fields', () => {
+    const selection = { include: { ownerUser: { select: { username: true } } } };
+    expect(scopePrismaResult('ImageImportJob', { ownerUser: { username: 'secret-other-user', cloudWorkspaceId: 'other' } }, selection, scope)).toEqual({ ownerUser: null });
+    expect(scopePrismaResult('ImageImportJob', { ownerUser: { username: 'alice', cloudWorkspaceId: scope.cloudWorkspaceId } }, selection, scope)).toEqual({ ownerUser: { username: 'alice' } });
   });
 
   it('keeps historical resources read-only but permits audit and confirmation records', () => {

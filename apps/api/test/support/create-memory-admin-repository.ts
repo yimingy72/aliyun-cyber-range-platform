@@ -63,6 +63,11 @@ import {
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../../src/auth/cloud-workspace-scope';
 
+function workspaceProvider(): 'alibaba_cloud' | 'tencent_cloud' {
+  const scope = getCurrentCloudWorkspaceScope();
+  return scope && !('system' in scope) ? scope.provider : 'alibaba_cloud';
+}
+
 function visibleInWorkspace(record: { cloudWorkspaceId?: string | null; isPlatformManager?: boolean }) {
   const id = getCurrentCloudWorkspaceId();
   return !id || record.cloudWorkspaceId === id || record.isPlatformManager === true;
@@ -104,8 +109,8 @@ function workspaceRecords<T extends { cloudWorkspaceId?: string | null }>() {
   });
 }
 
-function schedulingInstance({ id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt }: RangeInstanceRecord) {
-  return { id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt };
+function schedulingInstance({ cloudWorkspaceId, id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt }: RangeInstanceRecord) {
+  return { cloudWorkspaceId, id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt };
 }
 
 export function createMemoryAdminRepository(): AdminRepository {
@@ -470,7 +475,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         description: input.description ?? null,
         slug: input.slug,
         version: input.version,
-        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         iacType: input.iacType ?? 'opentofu',
         modulePathOrRef: input.modulePathOrRef,
         topologySpec: clone(input.topologySpec),
@@ -821,7 +826,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
         allocatedCidr: input.allocatedCidr ?? null,
-        cloudProvider: 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         accessEntry: cloneIfDefined(input.accessEntry ?? null),
         resourceSummary: cloneIfDefined(input.resourceSummary ?? null),
         errorSummary: input.errorSummary ?? null,
@@ -1194,7 +1199,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async upsertCloudResourceDrift(input: UpsertCloudResourceDriftInput) {
-      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const cloudProvider = input.cloudProvider ?? workspaceProvider();
       const existing = cloudResourceDrifts.find(
         (record) =>
           record.cloudProvider === cloudProvider &&
@@ -1236,7 +1241,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async resolveCloudResourceDrift(input) {
-      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const cloudProvider = input.cloudProvider ?? workspaceProvider();
       const record = cloudResourceDrifts.find(
         (item) =>
           item.cloudProvider === cloudProvider &&
@@ -1655,7 +1660,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
       const record: BillingLedgerResourceRecord = {
         id: nextId(),
-        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         cloudAccountUid: input.cloudAccountUid ?? null,
         regionId: input.regionId,
         cloudResourceId: input.cloudResourceId,
@@ -1680,7 +1685,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     async findBillingLedgerResource(input: FindBillingLedgerResourceInput) {
       const record = billingLedgerResources.find(
         (item) =>
-          item.cloudProvider === (input.cloudProvider ?? 'alibaba_cloud') &&
+          item.cloudProvider === (input.cloudProvider ?? workspaceProvider()) &&
           item.regionId === input.regionId &&
           item.cloudResourceId === input.cloudResourceId &&
           item.cloudResourceType === input.cloudResourceType,
@@ -1864,13 +1869,13 @@ export function createMemoryAdminRepository(): AdminRepository {
   return new Proxy(repository, {
     get(target, property) {
       const value = Reflect.get(target, property);
-      if (typeof value !== 'function') return value;
+      if (typeof value !== 'function' || value._isMockFunction) return value;
       return (...args: unknown[]) => {
         const scope = getCurrentCloudWorkspaceScope();
         const operation = String(property);
         if (scope && !('system' in scope) && scope.isReadOnly
           && /^(create|update|delete|set|collect|replace|reconcile|upsert|queue|claim|consume|apply|complete|save|sync|release|mark|register|renew)/.test(operation)
-          && !/(Operation|Confirmation|Audit)/.test(operation)) throw new Error('Historical cloud workspace is read-only');
+          && !/(Operation|Confirmation|Audit)/.test(operation)) return Promise.reject(new Error('Historical cloud workspace is read-only'));
         return value.apply(target, args);
       };
     },

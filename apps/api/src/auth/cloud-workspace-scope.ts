@@ -15,15 +15,23 @@ export type SystemCloudWorkspaceScope = { system: true };
 
 const storage = new AsyncLocalStorage<CloudWorkspaceScope | SystemCloudWorkspaceScope>();
 
+function runScoped<T>(scope: CloudWorkspaceScope | SystemCloudWorkspaceScope, work: () => T): T {
+  return storage.run(scope, () => {
+    const result = work();
+    // Prisma promises execute lazily: assimilate them before leaving the request scope.
+    return result && typeof (result as any).then === 'function' ? Promise.resolve(result) as T : result;
+  });
+}
+
 export function runInCloudWorkspace<T>(scope: CloudWorkspaceScope, work: () => T): T {
   if (!scope.cloudWorkspaceId.trim() || !['alibaba_cloud', 'tencent_cloud'].includes(scope.provider)) {
     throw new Error('A verified cloud workspace is required');
   }
-  return storage.run(Object.freeze({ ...scope }), work);
+  return runScoped(Object.freeze({ ...scope }), work);
 }
 
 export function runInSystemCloudWorkspaceScope<T>(work: () => T): T {
-  return storage.run({ system: true }, work);
+  return runScoped({ system: true }, work);
 }
 
 export function getCurrentCloudWorkspaceScope(): CloudWorkspaceScope | SystemCloudWorkspaceScope | null {

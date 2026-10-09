@@ -37,6 +37,8 @@ const relationModels: Record<string, Record<string, string>> = {
   ProvisionJobStepLog: { job: 'ProvisionJob' },
 };
 
+const requiredRelations = new Set(['ImageImportJob.ownerUser', 'PlatformImageAssetTag.tag', 'PlatformImageAssetTag.platformImageAsset', 'RangeTemplateVersion.template', 'ProvisionJob.rangeInstance', 'ProvisionJobStepLog.job']);
+
 function object(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 }
@@ -62,7 +64,12 @@ function scopeData(model: string, value: unknown, scope: CloudWorkspaceScope, cr
   if ('cloudWorkspaceId' in data && data.cloudWorkspaceId !== scope.cloudWorkspaceId) {
     throw new ForbiddenException('Resources cannot move between cloud workspaces');
   }
-  if (creating) data.cloudWorkspaceId = scope.cloudWorkspaceId;
+  if (creating) {
+    if (Object.keys(relationModels[model] ?? {}).some(field => data[field])) {
+      delete data.cloudWorkspaceId;
+      data.cloudWorkspace = { connect: { id: scope.cloudWorkspaceId } };
+    } else data.cloudWorkspaceId = scope.cloudWorkspaceId;
+  }
   for (const field of ['provider', 'cloudProvider']) {
     if (field in data && data[field] !== scope.provider) throw new ForbiddenException('Cloud provider does not match the selected workspace');
   }
@@ -111,7 +118,11 @@ function scopeRelations(model: string, args: Record<string, any>, scope: CloudWo
     const selection = { ...args[key] };
     for (const [field, target] of Object.entries(relationModels[model] ?? {})) {
       if (!selection[field]) continue;
-      const nested = { ...object(selection[field]), where: { ...object(object(selection[field]).where), cloudWorkspaceId: scope.cloudWorkspaceId } };
+      const nested = { ...object(selection[field]) };
+      if (requiredRelations.has(`${model}.${field}`)) {
+        // Prisma cannot filter required to-one relations; verify their scope before returning them.
+        if (nested.select) nested.select = { ...nested.select, cloudWorkspaceId: true };
+      } else nested.where = { ...object(nested.where), cloudWorkspaceId: scope.cloudWorkspaceId };
       scopeRelations(target, nested, scope);
       selection[field] = nested;
     }
@@ -140,4 +151,25 @@ export function scopePrismaQuery(model: string, operation: string, value: unknow
   }
   scopeRelations(model, args, scope);
   return args;
+}
+
+export function scopePrismaResult(model: string, value: any, originalArgs: unknown,
+  scope: CloudWorkspaceScope | SystemCloudWorkspaceScope | null): any {
+  if (!scope || 'system' in scope || value == null || globalModels.has(model)) return value;
+  if (Array.isArray(value)) return value.map(item => scopePrismaResult(model, item, originalArgs, scope));
+  const args = object(originalArgs);
+  for (const key of ['include', 'select']) {
+    const selection = object(args[key]);
+    for (const [field, target] of Object.entries(relationModels[model] ?? {})) {
+      if (!selection[field] || value[field] == null) continue;
+      const nestedArgs = object(selection[field]);
+      if (requiredRelations.has(`${model}.${field}`) && value[field].cloudWorkspaceId !== scope.cloudWorkspaceId) {
+        value[field] = null;
+        continue;
+      }
+      value[field] = scopePrismaResult(target, value[field], nestedArgs, scope);
+      if (requiredRelations.has(`${model}.${field}`) && nestedArgs.select && nestedArgs.select.cloudWorkspaceId !== true) delete value[field].cloudWorkspaceId;
+    }
+  }
+  return value;
 }
