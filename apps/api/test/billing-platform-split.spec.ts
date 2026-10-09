@@ -6,7 +6,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 const UID = 'split-cloud';
 const DAY = '2026-10-01';
 const line = (overrides: Record<string, unknown> = {}) => ({ OwnerID: UID, Region: 'cn-hangzhou', ProductCode: 'snapshot', InstanceID: 'cn-hangzhou', Currency: 'CNY', PretaxAmount: 3, Item: 'PayAsYouGoBill', BillingItem: 'storage', ...overrides });
-const config = { getAccountContext: async () => ({ accountUid: UID, accountUidResolved: true, defaultRegion: 'cn-hangzhou' }) } as unknown as SystemConfigService;
+const config = { getAccountContext: async () => ({ provider: 'alibaba_cloud', accountUid: UID, accountUidResolved: true, defaultRegion: 'cn-hangzhou' }) } as unknown as SystemConfigService;
 
 async function fixture() {
   jest.useFakeTimers().setSystemTime(new Date('2026-09-01'));

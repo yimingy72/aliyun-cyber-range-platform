@@ -12,7 +12,7 @@ const base = { cloudAccountUid: UID, regionId: 'cn-hangzhou', cloudResourceId: '
 const bill = (overrides: Record<string, unknown> = {}) => ({ OwnerID: UID, Region: 'cn-hangzhou', ProductCode: 'ecs', InstanceID: 'i-owned', Currency: 'CNY', PretaxAmount: 1, BillingDate: DAY, ...overrides });
 const sync = (repository: ReturnType<typeof createMemoryAdminRepository>, rows: Record<string, unknown>[]) => new BillingSyncService(repository,
   { listDailyBillingItems: async () => rows } as unknown as BillingBssClient,
-  { getAccountContext: async () => ({ accountUid: UID, accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: 'configured-shared-bucket' }) } as unknown as SystemConfigService).syncRange({ startAt: DAY, endAt: DAY });
+  { getAccountContext: async () => ({ provider: 'alibaba_cloud', accountUid: UID, accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: 'configured-shared-bucket' }) } as unknown as SystemConfigService).syncRange({ startAt: DAY, endAt: DAY });
 
 async function snapshotFixture() {
   const repository = createMemoryAdminRepository();

@@ -41,9 +41,12 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       || packedImages.some(artifact => ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : ledger.cloudResourceType === 'snapshot' && artifact.backingSnapshotIds.includes(ledger.cloudResourceId))
       || imageImports.some(job => ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : ledger.cloudResourceType === 'snapshot' && job.backingSnapshotIds.includes(ledger.cloudResourceId));
     if (hasSource) unverifiedSourceLedgerIds.add(ledger.id);
-    if (!ledger.cloudAccountUid || !REGION_ID.test(ledger.regionId) || !ledger.cloudResourceId.trim()
+    if (!['alibaba_cloud', 'tencent_cloud'].includes(ledger.cloudProvider)
+      || !ledger.cloudAccountUid || !REGION_ID.test(ledger.regionId) || !ledger.cloudResourceId.trim()
       || ['oss_bucket', 'snapshot_region', 'unknown'].includes(ledger.cloudResourceType)) continue;
     if (ledger.cloudResourceType === 'image' || ledger.cloudResourceType === 'snapshot') {
+      // Existing import/pack records are Aliyun-only and do not prove Tencent creation.
+      if (ledger.cloudProvider !== 'alibaba_cloud') continue;
       const packed = packedImages.some(artifact => artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
         && ledger.billingScope === 'user' && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
         && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId)));
@@ -57,6 +60,8 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
     const job = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
     const context = instance?.singleInstanceConfig ?? instance?.resourceSummary?.executionContext;
     if (instance && job?.rangeInstanceId === instance.id && (['create', 'retry', 'update'].includes(job.jobType) || job.jobType === 'destroy' && inventoryIncludes(instance.resourceSummary, ledger))
+      && instance.cloudProvider === ledger.cloudProvider
+      && (!context || !('provider' in context) || context.provider === ledger.cloudProvider)
       && (!context?.cloudAccountUid || context.cloudAccountUid === ledger.cloudAccountUid)
       && (!context?.regionId || context.regionId === ledger.regionId)
       && ledger.billingScope === (instance.ownerUserId ? 'user' : 'platform')
@@ -72,7 +77,14 @@ export function isPlatformCreatedLedger(ledger: BillingLedgerResourceRecord, pro
   return proof.createdLedgerIds.has(ledger.id);
 }
 
+export function isAlibabaBillingPayload(line: Record<string, unknown>) {
+  // Unmarked rows predate multi-cloud support; they can only match Aliyun ledgers.
+  return (!('__platformCloudProvider' in line) || line.__platformCloudProvider === 'alibaba_cloud')
+    && (!('__platformBillingSource' in line) || ['DescribeInstanceBill', 'DescribeSplitItemBill'].includes(String(line.__platformBillingSource)));
+}
+
 export function classifyPlatformBillLine(line: Record<string, unknown>) {
+  if (!isAlibabaBillingPayload(line)) return classifyBillLine({});
   return classifyBillLine(line.__platformBillingSource === 'DescribeSplitItemBill' && line.ProductCode === 'snapshot' && /^s-[a-z0-9-]+$/i.test(text(line.SplitItemID))
     ? { ...line, InstanceID: text(line.SplitItemID) } : line);
 }
@@ -111,12 +123,14 @@ export function pendingPlatformBillingEvidence(input: {
   billingDate: string;
   proof: PlatformBillingProof;
 }): PlatformBillingEvidence | null {
+  if (!isAlibabaBillingPayload(input.line)) return null;
   const classification = classifyPlatformBillLine(input.line);
   const regionId = billRegionId(input.line);
   const accountConflict = ['OwnerID', 'SplitAccountID'].some(key => input.line[key] != null
     && String(input.line[key]) !== input.cloudAccountUid);
   const correction = ['Refund', 'Adjustment'].includes(text(input.line.Item));
   const owned = input.proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, input.proof)
+    && ledger.cloudProvider === 'alibaba_cloud'
     && ledger.cloudAccountUid === input.cloudAccountUid && input.billingDate >= billingDayText(ledger.billingStartAt));
   if (classification.kind !== 'aggregated') {
     // A late charge for a known released resource still needs investigation; do not silently drop it.

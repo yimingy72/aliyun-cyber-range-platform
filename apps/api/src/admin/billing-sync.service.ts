@@ -11,8 +11,8 @@ import {
   type CreateBillingAnomalyInput,
   type BillingLineItemRecord,
 } from './admin.repository';
-import { BillingBssClient } from './billing-bss-client';
-import { billRegionId, billRegionConflict, classifyPlatformBillLine, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
+import { assertAlibabaBillingContext, BillingBssClient } from './billing-bss-client';
+import { billRegionId, billRegionConflict, classifyPlatformBillLine, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
 import { SystemConfigService } from './system-config.service';
 import { billingDayText, resolveBillingWindow } from './billing-window';
 
@@ -116,7 +116,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const lastCompleteDay = new Date(resolveBillingWindow({}, 1).endAt.getTime() - 86_400_000);
       const endAt = window.endAt < lastCompleteDay ? window.endAt : lastCompleteDay;
       const deferredDates = window.endAt > endAt ? enumerateDates(new Date(Math.max(window.startAt.getTime(), endAt.getTime() + 86_400_000)), window.endAt) : [];
-      const cloudConfig = await this.systemConfigService.getAccountContext();
+      const cloudConfig = { ...await this.systemConfigService.getAccountContext() };
+      assertAlibabaBillingContext(cloudConfig);
       const cloudAccountUid = cloudConfig.accountUid;
       if (!cloudAccountUid || !cloudConfig.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
       const startAt = requestedStartAt;
@@ -138,9 +139,10 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       let anomalyCount = 0;
 
       for (const billingDate of dates) {
-        const syncBatchId = `billing-sync:${cloudAccountUid}:${billingDate}`;
+        const syncBatchId = `billing-sync:alibaba_cloud:${cloudAccountUid}:${billingDate}`;
         const items = await this.billingBssClient.listDailyBillingItems({ billingDate }, cloudConfig);
         for (const line of items) {
+          if (!isAlibabaBillingPayload(line)) throw new Error('BSS returned a bill for a different cloud provider; previous bills were retained');
           readNumber(line, 'PretaxAmount');
           if (!/^[A-Z]{3}$/.test(readString(line, 'Currency'))) throw new Error('BSS returned an invalid currency; previous bills were retained');
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
@@ -148,6 +150,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         }
         const previous: BillingLineItemRecord[] = (await this.adminRepository.listBillingLineItems({ cloudAccountUid, startAt: billingDate, endAt: billingDate }))
           .filter(line => proof.ledgers.some(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, proof)
+            && ledger.cloudProvider === 'alibaba_cloud' && isAlibabaBillingPayload(line.rawPayload)
             && ledger.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType));
         const resolved = await this.resolveSplitItems(items, billingDate, cloudAccountUid, cloudConfig, proof, previous);
         const dayItems = new Map<string, CreateBillingLineItemInput>();
@@ -201,7 +204,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
               ? '该账单覆盖的平台资源费用尚待资源级分账；源账单总额可能包含外部资源，不计入平台费用或平台待归属金额。'
               : evidence.kind === 'source_pending' ? '资源 ID 与平台记录相同，但地域或来源存在冲突；该金额不计入平台费用或平台待归属金额。'
               : '已找到平台创建资源，但账单类型尚未核对一致，待核实后入账。',
-            rawPayload: { ...line, __platformBillingScope: evidence },
+            rawPayload: { ...line, __platformCloudProvider: 'alibaba_cloud', __platformBillingScope: evidence },
           };
           dayAnomalies.set(anomaly.sourceFingerprint, anomaly);
         }
@@ -211,7 +214,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             if (resolved.retainedProducts.has(line.productCode)
               && ledger?.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType) {
               dayItems.set(line.sourceFingerprint, { ...line, billingDate, cloudAccountUid, ownerUserId: ledger.ownerUserId, billingScope: ledger.billingScope,
-                rawPayload: { ...line.rawPayload, __platformBillingSyncDeferred: true } });
+                rawPayload: { ...line.rawPayload, __platformCloudProvider: 'alibaba_cloud', __platformBillingSyncDeferred: true } });
             }
           }
         }
@@ -257,7 +260,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       billingScope: input.ledger.billingScope,
       ownerUserId: input.ledger.ownerUserId,
       matchedLedgerId: input.ledger.id,
-      rawPayload: { ...input.line, ...(!ledgerBillingDateMatches(input.ledger, input.billingDate)
+      rawPayload: { ...input.line, __platformCloudProvider: 'alibaba_cloud', ...(!ledgerBillingDateMatches(input.ledger, input.billingDate)
         ? { __platformPostReleaseCharge: true } : {}) },
     };
   }
@@ -313,7 +316,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
 
   private async repairImageLedgerOrigins(proof: PlatformBillingProof, cloudAccountUid: string) {
     let changed = false;
-    for (const ledger of proof.ledgers.filter(item => item.cloudAccountUid === cloudAccountUid && (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot'))) {
+    for (const ledger of proof.ledgers.filter(item => item.cloudProvider === 'alibaba_cloud' && item.cloudAccountUid === cloudAccountUid && (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot'))) {
       const packed = proof.packedImages.filter(artifact => artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
         && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId)));
       const imported = proof.imageImports.filter(job => job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
@@ -350,6 +353,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     regionId: string | null,
   ) {
     const matches = proof.ledgers.filter(item => isPlatformCreatedLedger(item, proof)
+      && item.cloudProvider === 'alibaba_cloud'
       && item.cloudAccountUid === cloudAccountUid && item.cloudResourceId === cloudResourceId
       && item.cloudResourceType === cloudResourceType && (!regionId || item.regionId === regionId));
     // Without an explicit region a colliding physical ID is ambiguous, not permission to take the first row.

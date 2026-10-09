@@ -12,7 +12,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
-import { billRegionConflict, billRegionId, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof } from './billing-platform-scope';
+import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof } from './billing-platform-scope';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -82,6 +82,7 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
   return items.flatMap(item => {
     const ledger = item.matchedLedgerId ? ledgers.get(item.matchedLedgerId) : null;
     if (!ledger || !isPlatformCreatedLedger(ledger, proof)
+      || ledger.cloudProvider !== 'alibaba_cloud' || !isAlibabaBillingPayload(item.rawPayload)
       || item.cloudResourceId !== ledger.cloudResourceId || item.cloudResourceType !== ledger.cloudResourceType
       || item.cloudAccountUid && item.cloudAccountUid !== ledger.cloudAccountUid
       || item.rawPayload.OwnerID != null && String(item.rawPayload.OwnerID) !== ledger.cloudAccountUid

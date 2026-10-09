@@ -81,7 +81,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
     for (const [index, instance] of [single, range].entries()) {
       await repository.createBillingLedgerResource({ cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: `i-owner-${index}`, cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: instance.ownerUserId, rangeInstanceId: instance.id, singleInstanceBatchId: instance.singleInstanceBatchId, sourceProvisionJobId: jobs[index].id, billingStartAt: new Date('2026-10-01') });
     }
-    const config = { getAccountContext: async () => ({ accountUid: '100001', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }) } as unknown as SystemConfigService;
+    const config = { getAccountContext: async () => ({ provider: 'alibaba_cloud', accountUid: '100001', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }) } as unknown as SystemConfigService;
     const bill = (index: number, currency: string, amount: number) => ({ OwnerID: '100001', ProductCode: 'ecs', InstanceID: `i-owner-${index}`, BillingItem: 'CPU', PretaxAmount: amount, Currency: currency });
     await new BillingSyncService(repository, { listDailyBillingItems: async () => [bill(0, 'CNY', 10), bill(0, 'USD', 2), bill(1, 'CNY', 20)] } as unknown as BillingBssClient, config).syncRange({ startAt: DAY, endAt: DAY });
     const service = new BillingService(repository);

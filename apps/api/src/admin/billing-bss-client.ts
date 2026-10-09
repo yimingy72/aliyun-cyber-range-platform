@@ -39,6 +39,12 @@ function normalizeItems(value: unknown, action = 'DescribeInstanceBill') {
   return value as RawBssItem[];
 }
 
+export function assertAlibabaBillingContext(context: { provider?: string }) {
+  if (context.provider !== 'alibaba_cloud') {
+    throw new Error('当前云厂商尚未接入平台账单同步；原有账单已保留。');
+  }
+}
+
 @Injectable()
 export class BillingBssClient {
   constructor(private readonly systemConfigService: SystemConfigService) {}
@@ -48,7 +54,8 @@ export class BillingBssClient {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(billingDate) || !Number.isFinite(Date.parse(billingDate))
       || new Date(billingDate).toISOString().slice(0, 10) !== billingDate
       || !['snapshot', 'oss'].includes(productCode)) throw new Error('Invalid split bill query');
-    const context = capturedContext ?? await this.systemConfigService.getAccountContext();
+    const context = { ...(capturedContext ?? await this.systemConfigService.getAccountContext()) };
+    assertAlibabaBillingContext(context);
     if (!context.accountUid || !context.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
     const action = 'DescribeSplitItemBill';
     const billingCycle = billingDate.slice(0, 7);
@@ -96,7 +103,8 @@ export class BillingBssClient {
   }
 
   async listDailyBillingItems(input: { billingDate: string }, capturedContext?: SystemCloudAccountContext) {
-    const snapshot = capturedContext ?? await this.systemConfigService.getAccountContext();
+    const snapshot = { ...(capturedContext ?? await this.systemConfigService.getAccountContext()) };
+    assertAlibabaBillingContext(snapshot);
     if (!snapshot.accountUid || !snapshot.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
     const billingCycle = input.billingDate.slice(0, 7);
     let nextToken: string | null = null;
