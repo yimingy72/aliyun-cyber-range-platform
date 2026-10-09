@@ -67,6 +67,12 @@ if [ "${#CI_PROVIDER_MIRROR_ARGS[@]}" = 0 ]; then
   CI_PROVIDER_MIRROR_ARGS=(-v "$REPO_ROOT/.local/provider-fast-wait/mirror:/app/.local/provider-mirror:ro")
 fi
 
+# Exercise the runtime's pinned checksum and unpacking path with the real custom archive.
+docker run --rm --network none "${CI_PROVIDER_MIRROR_ARGS[@]}" \
+  -e OPENTOFU_PROVIDER_MIRROR_ROOT=/app/.local/provider-mirror \
+  -e OPENTOFU_WORKSPACES_ROOT=/tmp/provider-seed-check \
+  "$CI_IMAGE" sh scripts/docker/seed-provider-mirror.sh tofu version -json
+
 docker network create --internal "$CI_NETWORK" >/dev/null
 docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
   --tmpfs /var/lib/postgresql/data \
