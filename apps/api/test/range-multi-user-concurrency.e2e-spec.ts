@@ -67,6 +67,15 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
           InstanceId: id, Status: 'Running', Tags: { Tag: Object.entries(cloudTags.get(id)!).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) },
         }] : []) } }) } as Response;
       }
+      if (query.get('Action') === 'DescribeDisks') {
+        const requested = query.has('DiskIds') ? JSON.parse(query.get('DiskIds')!) as string[] : null;
+        const disks = [...cloudTags].flatMap(([instanceId, tags]) => ['system', 'data'].map(type => ({
+          DiskId: `d-${instanceId.slice(2)}-${type}`, InstanceId: instanceId, Type: type, DeleteWithInstance: true,
+          Tags: { Tag: Object.entries(tags).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) },
+        }))).filter(disk => requested ? requested.includes(disk.DiskId) : disk.InstanceId === query.get('InstanceId'));
+        return { ok: true, json: async () => ({ RequestId: 'fixture-disks', PageSize: 100, PageNumber: 1,
+          TotalCount: disks.length, Disks: { Disk: disks } }) } as Response;
+      }
       return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: 100, PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
     });
     apply = jest.fn(async (options: { workspaceDir: string }) => {
@@ -199,6 +208,8 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     await expect(jobs.getById(a.lastJobId!, bob)).rejects.toMatchObject({ status: 403 });
     expect((await jobs.getById(a.lastJobId!, alice)).topologySnapshot).not.toHaveProperty('runtimeCredentials');
     const allLedgers = await repository.listBillingLedgerResources();
+    expect(allLedgers.filter(row => row.rangeInstanceId === a.id && row.cloudResourceType === 'disk')).toHaveLength(4);
+    expect(allLedgers.filter(row => row.rangeInstanceId === b.id && row.cloudResourceType === 'disk')).toHaveLength(4);
     expect(allLedgers.filter(row => row.rangeInstanceId === a.id).every(row => row.ownerUserId === alice.id)).toBe(true);
     expect(allLedgers.filter(row => row.rangeInstanceId === b.id).every(row => row.ownerUserId === bob.id)).toBe(true);
     const bobState = await fs.readFile(path.join(root, b.id, 'terraform.tfstate'), 'utf8');
