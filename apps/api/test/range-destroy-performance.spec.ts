@@ -34,12 +34,12 @@ describe('range destroy verification performance and completeness', () => {
     const service = worker();
     service.performAliyunRpcRequest = jest.fn(async input => {
       expect(input.parameters.PageSize).toBe('100');
-      const ids = JSON.parse(input.parameters.InstanceIds);
+      const ids = JSON.parse(input.parameters.InstanceIds) as string[];
       return { TotalCount: ids.length, Instances: { Instance: ids.map(InstanceId => ({ InstanceId })) } };
     });
     const ids = Array.from({ length: 205 }, (_, index) => `i-${index}`);
     expect(await service.findExistingInstanceIds([...ids, ids[0]], account, account.defaultRegion)).toEqual(ids);
-    expect(service.performAliyunRpcRequest.mock.calls.map(([input]) => JSON.parse(input.parameters.InstanceIds).length)).toEqual([100, 100, 5]);
+    expect(service.performAliyunRpcRequest.mock.calls.map(([input]: any[]) => JSON.parse(input.parameters.InstanceIds).length)).toEqual([100, 100, 5]);
   });
 
   it.each([

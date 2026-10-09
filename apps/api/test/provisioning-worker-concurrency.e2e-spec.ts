@@ -962,7 +962,10 @@ describe('ProvisioningWorkerService concurrency', () => {
           status: 'pending',
         }),
       );
-      expect(dispatchSpy).toHaveBeenCalledWith(refreshJobs[0].id);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect(refreshJobs[0].availableAt!.getTime()).toBeGreaterThan(Date.now());
+      expect(await repository.listPendingProvisionJobs()).toEqual([]);
+      expect((await repository.listPendingProvisionJobs({ now: refreshJobs[0].availableAt })).map(job => job.id)).toEqual([refreshJobs[0].id]);
     } finally {
       dispatchSpy.mockRestore();
     }

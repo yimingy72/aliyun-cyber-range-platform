@@ -1,4 +1,6 @@
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
+import type { SingleInstanceExecutionItem } from '../src/admin/single-instance-batch-execution.service';
+import type { SingleInstanceOpenTofuBatchLease } from '../src/admin/single-instance-opentofu-execution.service';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
@@ -14,15 +16,15 @@ async function fixture(quantity = 2) {
   for (let index = 0; index < quantity; index++) {
     const instance = await repository.createRangeInstance({ name: `single-${index}`, instanceMode: 'single', status: 'pending_create', ownerUserId: 'owner-a', singleInstanceBatchId: batch.id,
       singleInstanceConfig: { executionBackend: 'opentofu', cloudAccountContextId: 'context-a', cloudAccountUid: 'uid-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', networkProfileId: 'profile-a',
-        baseName: 'single', quantityIndex: index + 1, hostKey: `host-${index}`, platformImageAssetId: 'asset', imageId: 'image', imageDisplayName: 'fixture', cpu: 2, memory: 4, systemDiskSize: 40 } });
+        baseName: 'single', hostName: null, quantityIndex: index + 1, hostKey: `host-${index}`, platformImageAssetId: 'asset', imageId: 'image', imageDisplayName: 'fixture', cpu: 2, memory: 4, systemDiskSize: 40 } });
     const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'owner-a' });
     items.push({ instance: await repository.updateRangeInstance(instance.id, { lastJobId: job.id }), job });
   }
   const native = { executeCreateBatch: jest.fn(), executeDestroyBatch: jest.fn(), refreshSingleInstanceAccessEntry: jest.fn() };
-  const tofu = { executeCreateBatch: jest.fn(async (claimed, lease) => {
+  const tofu = { executeCreateBatch: jest.fn(async (claimed: SingleInstanceExecutionItem[], lease: SingleInstanceOpenTofuBatchLease) => {
     await lease.assertCurrent();
-    for (const item of claimed) await repository.commitSingleInstanceClaim(item.job, { status: 'running', resourceSummary: { mode: 'opentofu', hostIds: { [item.instance.singleInstanceConfig.hostKey]: `i-${item.instance.id}` } }, accessEntry: { hostRole: 'host', publicIp: '192.0.2.1', privateIp: null, ssh: null } }, { status: 'succeeded', finishedAt: new Date() });
-  }), executeDestroyBatch: jest.fn(async (claimed, lease) => {
+    for (const item of claimed) await repository.commitSingleInstanceClaim(item.job, { status: 'running', resourceSummary: { mode: 'opentofu', hostIds: { [item.instance.singleInstanceConfig!.hostKey]: `i-${item.instance.id}` } }, accessEntry: { hostRole: 'host', publicIp: '192.0.2.1', privateIp: null, ssh: null } }, { status: 'succeeded', finishedAt: new Date() });
+  }), executeDestroyBatch: jest.fn(async (claimed: SingleInstanceExecutionItem[], lease: SingleInstanceOpenTofuBatchLease) => {
     await lease.assertCurrent();
     for (const item of claimed) await repository.commitSingleInstanceClaim(item.job, { status: 'destroyed', resourceSummary: null, accessEntry: null }, { status: 'succeeded', finishedAt: new Date() });
   }) };
