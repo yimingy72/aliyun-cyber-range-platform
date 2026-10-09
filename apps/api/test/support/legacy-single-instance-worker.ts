@@ -23,9 +23,11 @@ export async function pumpLegacySingleInstanceWorker(worker: ProvisioningWorkerS
     const started = await scheduling.startEligiblePendingJobs();
     while (scheduling.activeTasks.size) await Promise.all([...scheduling.activeTasks]);
     if (!started && pending.length) {
-      const delay = Math.min(...pending.map(job => (job.availableAt ?? job.createdAt).getTime())) - Date.now();
-      if (delay <= 0) throw new Error('A due legacy fixture was not scheduled');
-      await new Promise(resolve => setTimeout(resolve, delay));
+      const latest = (await repository.listProvisionJobs()).filter(job => job.status === 'pending');
+      if (!latest.length) continue;
+      const delay = Math.min(...latest.map(job => (job.availableAt ?? job.createdAt).getTime())) - Date.now();
+      // Eligibility can cross its deadline after the scheduler captured this round's clock.
+      await new Promise(resolve => setTimeout(resolve, Math.max(1, delay)));
     }
   }
   throw new Error('Legacy fixture exceeded bounded worker scheduling rounds');
