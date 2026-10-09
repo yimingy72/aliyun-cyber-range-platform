@@ -1,0 +1,42 @@
+import { imageRpc } from '../src/admin/aliyun-image-rpc';
+import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
+import { SingleInstanceNetworkService } from '../src/admin/single-instance-network.service';
+import type { RangeInstanceRecord } from '../src/admin/admin.repository';
+
+describe('Unsupported cloud execution fences', () => {
+  const account = { provider: 'tencent_cloud', accountUid: '100001', cloudAccountContextId: 'tc-context', defaultRegion: 'ap-nanjing', defaultZoneId: 'ap-nanjing-1', accessKeyId: 'synthetic-id', accessKeySecret: 'synthetic-secret', accountUidResolved: true, imageImportBucket: '' };
+  let fetch: jest.SpyInstance;
+  beforeEach(() => { fetch = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected cloud request')); });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('blocks unsupported instances before reading any account credentials', async () => {
+    const getAccountContextById = jest.fn();
+    const service = new SingleInstanceBatchExecutionService({} as never, { getAccountContextById } as never);
+    await expect(service.resolveInstanceAccount({ cloudProvider: 'tencent_cloud' } as RangeInstanceRecord)).rejects.toThrow('尚未开放');
+    expect(getAccountContextById).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('blocks an Alibaba instance bound to a Tencent account even when the UID matches', async () => {
+    const getAccountContextById = jest.fn().mockResolvedValue(account);
+    const service = new SingleInstanceBatchExecutionService({} as never, { getAccountContextById } as never);
+    await expect(service.resolveInstanceAccount({ cloudProvider: 'alibaba_cloud', singleInstanceConfig: { cloudAccountContextId: 'tc-context', cloudAccountUid: account.accountUid } } as RangeInstanceRecord)).rejects.toThrow('厂商');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('does not create or persist a shared Alibaba network using Tencent credentials', async () => {
+    const bootstrapDefaultProfile = jest.fn();
+    const getSingleInstanceNetworkProfile = jest.fn();
+    const service = new SingleInstanceNetworkService({ getSingleInstanceNetworkProfile } as never, {} as never,
+      { bootstrapDefaultProfile } as never, { serialize: async (work: () => unknown) => work() } as never);
+    await expect(service.ensureDefaultProfile(account as never)).rejects.toThrow('尚未开放');
+    expect(bootstrapDefaultProfile).not.toHaveBeenCalled();
+    expect(getSingleInstanceNetworkProfile).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['tencent_cloud', 'unknown_cloud'])('never sends %s image credentials to Alibaba', async (provider) => {
+    await expect(imageRpc({ ...account, provider, regionId: account.defaultRegion }, 'CreateImage')).rejects.toThrow('尚未适配');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
