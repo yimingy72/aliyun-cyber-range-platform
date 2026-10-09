@@ -1,0 +1,5 @@
+--- a/alicloud/resource_alicloud_instance.go
++++ b/alicloud/resource_alicloud_instance.go
+@@ -1252 +1252 @@
+-	stateConf := BuildStateConf([]string{"Pending", "Starting", "Stopped"}, []string{"Running"}, d.Timeout(schema.TimeoutCreate), 10*time.Second, ecsService.InstanceStateRefreshFunc(d.Id(), []string{"Stopping"}))
++	stateConf := BuildStateConf([]string{"Pending", "Starting", "Stopped"}, []string{"Running"}, d.Timeout(schema.TimeoutCreate), 2*time.Second, ecsService.InstanceStateRefreshFunc(d.Id(), []string{"Stopping"}))
