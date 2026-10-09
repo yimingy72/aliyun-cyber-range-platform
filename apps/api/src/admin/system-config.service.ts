@@ -513,7 +513,7 @@ export class SystemConfigService {
     return {
       cpu: input.cpu, memory: input.memory, regionId: context.defaultRegion, zoneId: context.defaultZoneId,
       exactAvailable: matches.length > 0, matches,
-      warning: matches.length ? '腾讯云机型库存已核验；当前版本暂未开放腾讯云实例创建。' : `当前腾讯云可用区 ${context.defaultZoneId} 没有可售的 ${input.cpu}C${input.memory}G 按量付费实例规格。`,
+      warning: matches.length ? '腾讯云机型库存已核验；创建前会再次校验所选账号、镜像与规格。' : `当前腾讯云可用区 ${context.defaultZoneId} 没有可售的 ${input.cpu}C${input.memory}G 按量付费实例规格。`,
     };
   }
 
