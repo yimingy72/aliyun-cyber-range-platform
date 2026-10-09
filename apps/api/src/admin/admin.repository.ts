@@ -192,6 +192,7 @@ export type SingleInstanceConfig = {
   networkProfileId?: string;
   resolvedInstanceType?: string;
   nativeCreateJobId?: string;
+  opentofuCreateJobId?: string | null;
   autoReleaseTime?: string | null;
   baseName: string;
   quantityIndex: number;

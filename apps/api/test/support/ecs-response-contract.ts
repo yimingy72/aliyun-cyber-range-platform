@@ -20,6 +20,9 @@ export function withEcsResponseContract(implementation: typeof fetch): typeof fe
     const bodies = await Promise.all(responses.map((value) => value.json()));
     const body = bodies.find((value) => value.Code) ?? { ...bodies[0], Instances: { Instance: bodies.flatMap((value) => value.Instances?.Instance ?? []) } };
     if (!body.Instances) body.Instances = {Instance:[]};
+    body.RequestId ??= 'synthetic-ecs-request';
+    body.PageNumber ??= Number(query.get('PageNumber') ?? 1);
+    body.PageSize ??= Number(query.get('PageSize') ?? 100);
     if (ids.length) {
       body.Instances.Instance = body.Instances.Instance.filter((value:{InstanceId:string}) => ids.includes(value.InstanceId));
       body.TotalCount = body.Instances.Instance.length;

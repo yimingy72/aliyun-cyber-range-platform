@@ -136,7 +136,7 @@ describe('legacy native batches: real ECS response contract, two platform users 
     await f.native.refreshSingleInstanceAccessEntry({ instance, job: claimed });
     expect((await f.repo.getRangeInstanceById(instance!.id))?.status).toBe('destroyed');
   });
-  it('replays a reclaimed create with identical parameters and forbids the old worker from cleanup', async () => {
+  it('recovers a reclaimed create by its frozen identity without replaying the old cloud request', async () => {
     const f = await fixture();
     const a = await f.launch(alice);
     const instance = a.instances[0];
@@ -164,7 +164,7 @@ describe('legacy native batches: real ECS response contract, two platform users 
     f.config.getInstanceTypeAvailabilityInContext.mockResolvedValue({exactAvailable:true,matches:[{instanceTypeId:'ecs.e-c1m1.large'}],warning:null});
     await f.native.executeCreateBatch([{ instance:await f.repo.getRangeInstanceById(instance.id), job: reclaimed }]);
     expect(f.cloud.size).toBe(1);
-    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(2);
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(1);
     expect((await f.repo.getProvisionJobById(job!.id))?.status).toBe('succeeded');
   });
   it('recovers a late tagged ECS after an unknown create response instead of treating the first empty query as cleanup proof',async()=>{
@@ -172,12 +172,119 @@ describe('legacy native batches: real ECS response contract, two platform users 
     const base=f.native.performAliyunRpcRequest;let missing=true;let firstTag=true;
     f.native.performAliyunRpcRequest=async(input:any)=>{
       if(input.action==='RunInstances'&&missing){missing=false;await base(input);throw new Error('Synthetic response lost after cloud creation');}
-      if(input.action==='DescribeInstances'&&input.parameters?.['Tag.1.Value']&&firstTag){firstTag=false;return{Instances:{Instance:[]}};}
+      if(input.action==='DescribeInstances'&&input.parameters?.['Tag.1.Value']&&firstTag){firstTag=false;return{RequestId:'empty',TotalCount:0,PageNumber:1,PageSize:100,Instances:{Instance:[]}};}
       return base(input);
     };
     await f.native.executeCreateBatch([{instance,job}]);
     expect(f.cloud.size).toBe(0);expect(f.calls.some(call=>call.action==='DeleteInstances')).toBe(true);
     expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('create_failed');
+  });
+  it('retains an unknown accepted request when the tagged resource stays invisible throughout cleanup', async () => {
+    const f = await fixture(); const a = await f.launch(alice); const instance = a.instances[0];
+    const job = await f.repo.claimProvisionJob(instance.lastJobId!, new Date());
+    const base = f.native.performAliyunRpcRequest;
+    f.native.performAliyunRpcRequest = async (input: any) => {
+      if (input.action === 'RunInstances') { await base(input); throw new Error('accepted response lost'); }
+      if (input.action === 'DescribeInstances') return { RequestId: 'empty', TotalCount: 0, PageNumber: 1, PageSize: 100, Instances: { Instance: [] } };
+      return base(input);
+    };
+    await f.native.executeCreateBatch([{ instance, job }]);
+    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
+    expect(f.cloud.size).toBe(1);
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(1);
+    expect(f.calls.some(call => call.action === 'DeleteInstances')).toBe(false);
+  });
+
+  it('does not accept NotFound deletion for a returned ID whose creation was never observed', async () => {
+    const f = await fixture(); const a = await f.launch(alice); const instance = a.instances[0];
+    await f.repo.updateRangeInstance(instance.id, { status: 'destroy_failed',
+      singleInstanceConfig: { ...instance.singleInstanceConfig!, executionBackend: 'ecs-native', nativeCreateJobId: instance.lastJobId! },
+      resourceSummary: { mode: 'ecs-native', hostIds: { [instance.singleInstanceConfig!.hostKey]: 'i-accepted-not-yet-visible' } } });
+    await f.repo.updateProvisionJob(instance.lastJobId!, { status: 'failed', finishedAt: new Date() });
+    const base = f.native.performAliyunRpcRequest;
+    f.native.performAliyunRpcRequest = async (input: any) => {
+      if (input.action === 'DeleteInstances') throw new Error('InvalidInstanceId.NotFound');
+      return base(input);
+    };
+    await f.service.destroy(instance.id, alice); await f.drain();
+    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
+    expect((await f.repo.getRangeInstanceById(instance.id))?.resourceSummary?.hostIds).toEqual({ [instance.singleInstanceConfig!.hostKey]: 'i-accepted-not-yet-visible' });
+    expect((await f.repo.listBillingLedgerResources({ rangeInstanceId: instance.id })).every(row => row.releasedAt === null)).toBe(true);
+  });
+
+  it('does not replay a stale native request even when its idempotency token would have expired', async () => {
+    const f = await fixture(); const a = await f.launch(alice); const instance = a.instances[0];
+    await f.repo.updateRangeInstance(instance.id, { singleInstanceConfig: { ...instance.singleInstanceConfig!, executionBackend: 'ecs-native', nativeCreateJobId: instance.lastJobId! } });
+    const current = await f.repo.getRangeInstanceById(instance.id);
+    const job = await f.repo.claimProvisionJob(instance.lastJobId!, new Date());
+    await f.native.executeCreateBatch([{ instance: current, job }]);
+    expect(f.calls.some(call => call.action === 'RunInstances')).toBe(false);
+    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
+  });
+
+  it('blocks deletion when tag search returns an ECS owned by another platform user', async () => {
+    const f = await fixture(); const a = await f.launch(alice); await f.drain();
+    for (const resource of f.cloud.values()) resource.tags.PlatformUserId = 'bob';
+    await f.service.destroyBatch(a.batch.id, alice); await f.drain();
+    expect((await f.repo.listRangeInstances()).every(instance => instance.status === 'destroy_failed')).toBe(true);
+    expect(f.cloud.size).toBe(2); expect(f.calls.some(call => call.action === 'DeleteInstances')).toBe(false);
+  });
+
+  it('records failed-created cloud resources before cleanup and closes their billing only after deletion', async () => {
+    const f = await fixture(alice.id); await f.launch(alice); await f.drain();
+    const failed = (await f.repo.listRangeInstances()).find(instance => instance.status === 'create_failed')!;
+    const rows = await f.repo.listBillingLedgerResources({ rangeInstanceId: failed.id });
+    expect(rows.some(row => row.cloudResourceType === 'ecs')).toBe(true);
+    expect(rows.every(row => row.releasedAt !== null && Number.isFinite(new Date(row.releasedAt).getTime()))).toBe(true);
+  });
+
+  it('keeps a native destruction retryable when the billing release write fails', async () => {
+    const f = await fixture(); const a = await f.launch(alice); await f.drain();
+    const update = f.repo.updateBillingLedgerResource.bind(f.repo);
+    let failRelease = true;
+    f.repo.updateBillingLedgerResource = async (id, patch) => {
+      if (patch.releasedAt && failRelease) { failRelease = false; throw new Error('synthetic billing write failure'); }
+      return update(id, patch);
+    };
+    await f.service.destroy(a.instances[0].id, alice); await f.drain();
+    expect((await f.repo.getRangeInstanceById(a.instances[0].id))?.status).toBe('destroy_failed');
+    await f.service.destroy(a.instances[0].id, alice); await f.drain();
+    expect((await f.repo.getRangeInstanceById(a.instances[0].id))?.status).toBe('destroyed');
+    const rows = await f.repo.listBillingLedgerResources({ rangeInstanceId: a.instances[0].id });
+    expect(rows.every(row => row.releasedAt !== null)).toBe(true);
+  });
+
+  it('stops native deletion retries as soon as another job supersedes the claim', async () => {
+    const f = await fixture(); const a = await f.launch(alice); await f.drain();
+    await f.service.destroy(a.instances[0].id, alice);
+    const instance = (await f.repo.getRangeInstanceById(a.instances[0].id))!;
+    const job = await f.repo.claimProvisionJob(instance.lastJobId!, new Date());
+    const base = f.native.performAliyunRpcRequest; let deletes = 0;
+    f.native.performAliyunRpcRequest = async (input: any) => {
+      if (input.action === 'DeleteInstances') {
+        deletes++;
+        await f.repo.updateRangeInstance(instance.id, { lastJobId: 'newer-job' });
+        throw new Error('IncorrectInstanceStatus.Initializing');
+      }
+      return base(input);
+    };
+    await f.native.executeDestroyBatch([{ instance, job }]);
+    expect(deletes).toBe(1); expect(f.cloud.size).toBe(2);
+    expect((await f.repo.getRangeInstanceById(instance.id))?.lastJobId).toBe('newer-job');
+  });
+
+  it('refuses malformed empty tag responses when a known ID query is also empty', async () => {
+    const f = await fixture(); const a = await f.launch(alice); await f.drain();
+    const base = f.native.performAliyunRpcRequest;
+    f.native.performAliyunRpcRequest = async (input: any) => {
+      if (input.action === 'DescribeInstances') return input.parameters?.['Tag.1.Value']
+        ? { RequestId: 'incomplete', Instances: { Instance: [] } }
+        : { RequestId: 'empty', TotalCount: 0, Instances: { Instance: [] } };
+      return base(input);
+    };
+    await f.service.destroyBatch(a.batch.id, alice); await f.drain();
+    expect((await f.repo.listRangeInstances()).every(instance => instance.status === 'destroy_failed')).toBe(true);
+    expect(f.cloud.size).toBe(2); expect(f.calls.some(call => call.action === 'DeleteInstances')).toBe(false);
   });
   it('blocks new launches into a profile whose destruction has been reserved',async()=>{
     const f=await fixture();await f.repo.markSingleInstanceNetworkDestroying(f.profile.id);

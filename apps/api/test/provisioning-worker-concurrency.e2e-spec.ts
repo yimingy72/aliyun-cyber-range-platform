@@ -631,6 +631,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     const requestedUrls: string[] = [];
     const requestBodies: string[] = [];
     let deleted=false;
+    let createdTags: Array<{ TagKey: string; TagValue: string }> = [];
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(withEcsResponseContract(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -638,6 +639,9 @@ describe('ProvisioningWorkerService concurrency', () => {
       requestBodies.push(body);
 
       if (body.includes('Action=RunInstances')) {
+        const create = new URLSearchParams(body);
+        createdTags = [...create.keys()].filter(key => /^Tag\.\d+\.Key$/.test(key))
+          .map(key => ({ TagKey: create.get(key)!, TagValue: create.get(key.replace('.Key', '.Value'))! }));
         return new Response(JSON.stringify({ Code: 'InternalError' }), { status: 500 });
       }
 
@@ -649,6 +653,7 @@ describe('ProvisioningWorkerService concurrency', () => {
               Instance: [
                 {
                   InstanceId: 'i-single-create-uncertain',
+                  Tags: { Tag: createdTags },
                 },
               ],
             },

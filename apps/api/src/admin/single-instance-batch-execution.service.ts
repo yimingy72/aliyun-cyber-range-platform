@@ -142,7 +142,7 @@ export class SingleInstanceBatchExecutionService {
               await this.markCreateFailure([item], availability.warning ?? 'Requested instance type is not available');
               return;
             }
-            let createRequestStarted = false;
+            let createRequestStarted = previousRequest;
             let knownIds = Object.values(item.instance.resourceSummary?.hostIds ?? {});
             try {
               await this.assertCurrent(item);
@@ -150,6 +150,13 @@ export class SingleInstanceBatchExecutionService {
                 throw new Error('Single instance has already expired');
               const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim();
               if (!previousRequest && !(await this.adminRepository.commitSingleInstanceClaim(item.job,{singleInstanceConfig:{...item.instance.singleInstanceConfig!,resolvedInstanceType:memberType,nativeCreateJobId:item.job.id}}))) throw new LostSingleInstanceClaimError();
+              if (previousRequest && !knownIds.length) {
+                knownIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: accountContext.accessKeyId,
+                  accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, rangeInstanceId: item.instance.id });
+                // The cloud token has a finite lifetime; replaying an old accepted request can create another ECS.
+                if (!knownIds.length) throw new Error('Previous ECS creation outcome is unknown; creation will not be replayed');
+                if (knownIds.length !== 1) throw new Error('Previous ECS creation has multiple physical instances and requires cleanup');
+              }
               if (!knownIds.length) {
                 createRequestStarted = true;
                 const runResponse = await this.performAliyunRpcRequest<AliyunRunInstancesResponse>({
@@ -215,13 +222,17 @@ export class SingleInstanceBatchExecutionService {
         try {
           await this.assertCurrent(item);
           const accountContext = await this.resolveInstanceAccount(item.instance);
-          const instanceIds = [...new Set([...Object.values(item.instance.resourceSummary?.hostIds ?? {}),
-              ...await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: accountContext.accessKeyId,
-                accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, rangeInstanceId: item.instance.id })])];
+          const taggedIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: accountContext.accessKeyId,
+            accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, rangeInstanceId: item.instance.id });
+          const instanceIds = [...new Set([...Object.values(item.instance.resourceSummary?.hostIds ?? {}), ...taggedIds])];
           await this.assertCurrent(item);
-          if (instanceIds.length)
+          if (instanceIds.length) {
+            await this.rememberCleanupResources(item, accountContext, instanceIds);
             await this.deleteInstancesWithRetry({ accessKeyId: accountContext.accessKeyId,
-              accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, instanceIds });
+              accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, instanceIds,
+              requireDeleteAcceptance: !taggedIds.length && await this.hasUnresolvedNativeCreate(item),
+              assertCurrent: () => this.assertCurrent(item) });
+          }
           await this.verifyAbsent(item, accountContext, instanceIds);
           await this.assertCurrent(item);
           await this.markDestroySucceeded([item]);
@@ -364,15 +375,20 @@ export class SingleInstanceBatchExecutionService {
       const byTag = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: item.instance.id });
       if (!byId.length && !byTag.length) {
         consecutiveEmpty += 1;
-        if (consecutiveEmpty >= (knownIds.length ? 2 : DESTROY_RETRY_ATTEMPTS)) return;
+        if (consecutiveEmpty >= (knownIds.length ? 2 : DESTROY_RETRY_ATTEMPTS)) {
+          const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
+          if (!knownIds.length && current?.singleInstanceConfig?.nativeCreateJobId) throw new Error('ECS creation outcome is unknown; empty queries do not prove cleanup');
+          return;
+        }
       } else {
         consecutiveEmpty = 0;
         const lateIds = byTag.filter(id => !knownIds.includes(id));
         if (lateIds.length) {
           await this.assertCurrent(item);
           knownIds.push(...lateIds);
-          if (!(await this.adminRepository.commitSingleInstanceClaim(item.job, {resourceSummary:{...(item.instance.resourceSummary??{}),mode:'ecs-native',hostIds:Object.fromEntries(knownIds.map((id,index)=>[index===0?item.instance.singleInstanceConfig!.hostKey:`cleanup-${index}`,id]))}}))) throw new LostSingleInstanceClaimError();
-          await this.deleteInstancesWithRetry({accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,regionId:account.defaultRegion,instanceIds:lateIds});
+          await this.rememberCleanupResources(item, account, knownIds);
+          await this.deleteInstancesWithRetry({accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,regionId:account.defaultRegion,instanceIds:lateIds,
+            assertCurrent: () => this.assertCurrent(item) });
         }
       }
       if (attempt < DESTROY_RETRY_ATTEMPTS - 1)
@@ -393,6 +409,7 @@ export class SingleInstanceBatchExecutionService {
     regionId: string;
     instanceIds: string[];
     assertCurrent?: () => Promise<void>;
+    requireDeleteAcceptance?: boolean;
   }) {
     let pendingInstanceIds = input.instanceIds.slice();
     let lastError: unknown;
@@ -424,6 +441,7 @@ export class SingleInstanceBatchExecutionService {
             instanceIds: pendingInstanceIds,
           });
           if (!pendingInstanceIds.length) {
+            if (input.requireDeleteAcceptance) throw new Error('ECS creation has not been observed; a NotFound response does not prove cleanup');
             return;
           }
           continue;
@@ -576,10 +594,11 @@ export class SingleInstanceBatchExecutionService {
   }
   private async markCreateFailure(items: SingleInstanceExecutionItem[], message: string, clearRecoveredResourceState = false, cleanupFailed = false) {
     for (const item of items) {
-      let saved = false;
+      if (!(await this.isCurrent(item))) continue;
+      if (clearRecoveredResourceState) await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          saved = await this.adminRepository.commitSingleInstanceClaim(item.job, { status: cleanupFailed ? 'destroy_failed' : 'create_failed', errorSummary: message,
+          await this.adminRepository.commitSingleInstanceClaim(item.job, { status: cleanupFailed ? 'destroy_failed' : 'create_failed', errorSummary: message,
             ...(clearRecoveredResourceState ? { accessEntry: null, resourceSummary: null } : {}) }, { status: 'failed', finishedAt: new Date(), errorSummary: message });
           break;
         }
@@ -588,19 +607,19 @@ export class SingleInstanceBatchExecutionService {
             throw error;
         }
       }
-      if (saved && clearRecoveredResourceState)
-        await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
     }
   }
   private async cleanupFailedSingleInstanceCreate(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, knownIds: string[]) {
     try {
       await this.assertCurrent(item);
-      const ids = [...new Set([...knownIds, ...await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: item.instance.id })])];
+      const taggedIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: item.instance.id });
+      const ids = [...new Set([...knownIds, ...taggedIds])];
       if (ids.length) {
         await this.assertCurrent(item);
-        if (!(await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: { ...(item.instance.resourceSummary ?? {}), mode: 'ecs-native', hostIds: Object.fromEntries(ids.map((id, index) => [index === 0 ? item.instance.singleInstanceConfig!.hostKey : `cleanup-${index}`, id])) } })))
-          throw new LostSingleInstanceClaimError();
-        await this.deleteInstancesWithRetry({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, instanceIds: ids });
+        await this.rememberCleanupResources(item, account, ids);
+        await this.deleteInstancesWithRetry({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, instanceIds: ids,
+          requireDeleteAcceptance: !taggedIds.length,
+          assertCurrent: () => this.assertCurrent(item) });
       }
       await this.verifyAbsent(item, account, ids);
       return null;
@@ -608,6 +627,20 @@ export class SingleInstanceBatchExecutionService {
     catch (error) {
       return error instanceof Error ? error.message : 'Automatic cleanup failed';
     }
+  }
+  private async hasUnresolvedNativeCreate(item: SingleInstanceExecutionItem) {
+    const createJobId = item.instance.singleInstanceConfig?.nativeCreateJobId;
+    return Boolean(createJobId && (await this.adminRepository.getProvisionJobById(createJobId))?.status !== 'succeeded');
+  }
+  private async rememberCleanupResources(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, ids: string[]) {
+    await this.assertCurrent(item);
+    const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
+    const summary = { ...(current?.resourceSummary ?? item.instance.resourceSummary ?? {}), mode: 'ecs-native' as const,
+      hostIds: Object.fromEntries(ids.map((id, index) => [index === 0 ? item.instance.singleInstanceConfig!.hostKey : `cleanup-${index}`, id])) };
+    if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
+    await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
+      regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: current?.singleInstanceConfig?.nativeCreateJobId ?? item.job.id,
+      billingStartAt: item.instance.createdAt });
   }
   private async findSingleInstanceDetailsByRangeInstanceTag(input: {
     accessKeyId: string;
@@ -639,7 +672,14 @@ export class SingleInstanceBatchExecutionService {
     return details;
   }
   private async findSingleInstanceIdsByRangeInstanceTag(input:{accessKeyId:string;accessKeySecret:string;regionId:string;rangeInstanceId:string}) {
-    return (await this.findSingleInstanceDetailsByRangeInstanceTag(input)).map(detail=>detail.instanceId);
+    const instance = await this.adminRepository.getRangeInstanceById(input.rangeInstanceId);
+    if (!instance) throw new Error('Native cloud lookup requires its bound platform instance');
+    const details = await this.findSingleInstanceDetailsByRangeInstanceTag(input, true);
+    if (details.some(detail => detail.tags.CreatedBy !== 'cyber-range-platform'
+      || (detail.tags.PlatformUserId ?? null) !== instance.ownerUserId
+      || detail.tags.PlatformScope !== (instance.ownerUserId ? 'user' : 'platform')
+      || (detail.tags.SingleInstanceBatchId ?? null) !== instance.singleInstanceBatchId)) throw new Error('Native cloud resource ownership cannot be verified');
+    return details.map(detail => detail.instanceId);
   }
 
   private async markDestroyFailure(items: SingleInstanceExecutionItem[], message: string) {
@@ -648,9 +688,9 @@ export class SingleInstanceBatchExecutionService {
   }
   private async markDestroySucceeded(items: SingleInstanceExecutionItem[]) {
     for (const item of items) {
-      const saved = await this.adminRepository.commitSingleInstanceClaim(item.job, { status: 'destroyed', errorSummary: null }, { status: 'succeeded', finishedAt: new Date(), errorSummary: null });
-      if (saved)
-        await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
+      await this.assertCurrent(item);
+      await releaseRangeInstanceBillingLedger(this.adminRepository, item.instance.id, new Date());
+      await this.adminRepository.commitSingleInstanceClaim(item.job, { status: 'destroyed', errorSummary: null }, { status: 'succeeded', finishedAt: new Date(), errorSummary: null });
     }
   }
   private async resolveAccountContext() {
