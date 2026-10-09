@@ -1449,9 +1449,11 @@ export class ProvisioningWorkerService {
       cloudAccountContextId?: string | null;
     },
   ) {
+    const summary = instance.cloudProvider === 'tencent_cloud'
+      ? await this.tencentCleanupLedgerInventory(instance,runtimeConfig as SystemCloudAccountContext) : instance.resourceSummary;
     for (let attempt = 0; attempt < DESTROY_VERIFICATION_ATTEMPTS; attempt += 1) {
       const residualResources = await this.findResidualCloudResources(
-        instance.resourceSummary,
+        summary,
         runtimeConfig,
       );
 
@@ -1468,6 +1470,26 @@ export class ProvisioningWorkerService {
         `Residual cloud resources still exist after destroy: ${residualResources.join(', ')}`,
       );
     }
+  }
+
+  private async tencentCleanupLedgerInventory(instance: RangeInstanceRecord, account: SystemCloudAccountContext): Promise<RangeResourceSummary> {
+    const bound = instance.resourceSummary?.executionContext;
+    if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || !bound || bound.provider && bound.provider !== account.provider
+      || bound.cloudAccountContextId !== account.cloudAccountContextId || bound.cloudAccountUid !== account.accountUid || bound.regionId !== account.defaultRegion || bound.zoneId !== account.defaultZoneId)
+      throw new Error('Tencent cleanup ledger verification requires the original frozen account context');
+    const summary: RangeResourceSummary = { ...instance.resourceSummary!, hostIds: { ...instance.resourceSummary?.hostIds },
+      dataDiskIds: { ...instance.resourceSummary?.dataDiskIds }, eipAllocationIds: { ...instance.resourceSummary?.eipAllocationIds }, natGatewayIds: { ...instance.resourceSummary?.natGatewayIds } };
+    const ledger = await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+    for (const row of ledger.filter(row => !row.releasedAt && !['image','snapshot'].includes(row.cloudResourceType))) {
+      if (row.rangeInstanceId !== instance.id || row.cloudProvider !== account.provider || row.cloudAccountUid !== account.accountUid || row.regionId !== bound.regionId || row.ownerUserId !== instance.ownerUserId)
+        throw new Error('Tencent cleanup ledger contains an unverified owner or source account');
+      const fields = { ecs: 'hostIds', disk: 'dataDiskIds', eip: 'eipAllocationIds', nat_gateway: 'natGatewayIds' } as const;
+      if (row.cloudResourceType === 'snat_entry' || row.cloudResourceType === 'dnat_entry') continue;
+      const field = fields[row.cloudResourceType as keyof typeof fields];
+      if (!field) throw new Error('Tencent cleanup cannot release an unsupported billable resource type');
+      summary[field]![`ledger:${row.id}`] = row.cloudResourceId;
+    }
+    return summary;
   }
 
   private async findTencentResidualResources(summary: RangeResourceSummary, account: SystemCloudAccountContext): Promise<string[]> {
