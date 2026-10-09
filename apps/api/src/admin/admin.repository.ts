@@ -554,6 +554,13 @@ export type SingleInstanceNetworkProfileRecord = {
 
 // Only identifiers and lifecycle evidence needed for billing; no upload credentials or image password.
 export type BillingImageImportResourceRecord = {
+  cloudProvider?: CloudProvider;
+  cloudAccountContextId?: string;
+  managedBucketId?: string | null;
+  ownerUserId?: string;
+  taskId?: string | null;
+  sourceSizeBytes?: string;
+  sourceObjectProof?: unknown;
   cloudWorkspaceId?: string;
   id: string;
   cloudAccountUid: string | null;
@@ -568,6 +575,8 @@ export type BillingImageImportResourceRecord = {
   uploadCompletedAt: Date | null;
   temporaryObjectDeletedAt: Date | null;
 };
+
+export type BillingManagedCosBucketRecord = import('./tencent-cos-proof').CosBucketIdentity;
 
 export type BillingLedgerResourceRecord = {
   cloudWorkspaceId?: string;
@@ -1255,6 +1264,7 @@ export interface AdminRepository {
     input: UpsertSingleInstanceNetworkProfileInput,
   ): Promise<SingleInstanceNetworkProfileRecord>;
   listBillingImageImportResources(): Promise<BillingImageImportResourceRecord[]>;
+  listBillingManagedCosBuckets(): Promise<BillingManagedCosBucketRecord[]>;
   createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;

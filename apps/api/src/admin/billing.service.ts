@@ -12,7 +12,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
-import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence } from './billing-platform-scope';
+import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence, tencentCosBillLifetimeMatches } from './billing-platform-scope';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -103,7 +103,7 @@ function verifiedTencentItem(item: BillingLineItemRecord, ledger: BillingLedgerR
   return isTencentBillingPayload(raw) && raw.OwnerUin === ledger.cloudAccountUid && raw.PayerUin === ledger.cloudAccountUid
     && raw.ResourceId === ledger.cloudResourceId && tencentBillRegionId(raw) === ledger.regionId
     && raw.BillDay === `${toIsoDate(item.billingDate)} 00:00:00` && raw.BillMonth === `${item.billCycle}-01 00:00:00`
-    && classification.kind === 'direct' && classification.cloudResourceType === ledger.cloudResourceType
+    && classification.kind === 'direct' && classification.cloudResourceType === ledger.cloudResourceType && tencentCosBillLifetimeMatches(ledger, raw, toIsoDate(item.billingDate))
     && typeof component?.RealCost === 'string' && /^-?\d+(?:\.\d+)?$/.test(component.RealCost)
     && new Prisma.Decimal(component.RealCost).equals(item.pretaxAmount) && item.currency === 'CNY';
 }

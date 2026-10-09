@@ -1666,6 +1666,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async listBillingImageImportResources() { return []; },
+    async listBillingManagedCosBuckets() { return []; },
     async createBillingLedgerResource(input: CreateBillingLedgerResourceInput) {
       const timestamp = now();
       const record: BillingLedgerResourceRecord = {

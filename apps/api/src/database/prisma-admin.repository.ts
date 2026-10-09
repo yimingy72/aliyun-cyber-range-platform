@@ -2188,10 +2188,15 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async listBillingImageImportResources(): Promise<BillingImageImportResourceRecord[]> {
     return this.prisma.imageImportJob.findMany({
-      select: { id: true, cloudAccountUid: true, regionId: true, imageImportBucket: true,
+      select: { id: true, cloudWorkspaceId: true, cloudProvider: true, cloudAccountContextId: true, managedBucketId: true, ownerUserId: true, taskId: true, sourceSizeBytes: true, sourceObjectProof: true, cloudAccountUid: true, regionId: true, imageImportBucket: true,
         objectKey: true, imageId: true, backingSnapshotIds: true, cloudImageDeletedAt: true, snapshotCleanupCompletedAt: true,
         createdAt: true, uploadCompletedAt: true, temporaryObjectDeletedAt: true },
     });
+  }
+
+  async listBillingManagedCosBuckets(): Promise<import('../admin/admin.repository').BillingManagedCosBucketRecord[]> {
+    return this.prisma.cloudImageImportBucket.findMany({ select: { id: true, cloudWorkspaceId: true, cloudProvider: true, cloudAccountContextId: true, cloudAccountUid: true,
+      appId: true, regionId: true, bucketName: true, creationNonce: true, creatorUserId: true, ownershipMarkerKey: true, status: true, preflightAbsentAt: true, creationStartedAt: true, ownershipProof: true, deletedAt: true } });
   }
 
   async createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord> {

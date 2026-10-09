@@ -1,5 +1,6 @@
-import type { AdminRepository, BillingImageImportResourceRecord, BillingLedgerResourceRecord, PackedImageArtifactRecord, RangeResourceSummary } from './admin.repository';
+import type { AdminRepository, BillingImageImportResourceRecord, BillingManagedCosBucketRecord, BillingLedgerResourceRecord, PackedImageArtifactRecord, RangeResourceSummary } from './admin.repository';
 import { classifyBillLine } from './billing-classifier';
+import { ownedCosBucketProof } from './tencent-cos-proof';
 import { billingDayText } from './billing-window';
 
 const REGION_ID = /^(cn|ap|eu|us|na|me|af|sa)-[a-z0-9-]+$/;
@@ -9,6 +10,7 @@ export type PlatformBillingProof = {
   ledgers: BillingLedgerResourceRecord[];
   imageImports: BillingImageImportResourceRecord[];
   packedImages: PackedImageArtifactRecord[];
+  cosBuckets: BillingManagedCosBucketRecord[];
   createdLedgerIds: Set<string>;
   unverifiedSourceLedgerIds: Set<string>;
 };
@@ -25,9 +27,10 @@ function inventoryIncludes(summary: RangeResourceSummary | null | undefined, led
 }
 
 export async function loadPlatformBillingProof(repository: AdminRepository, options: { ledgers?: BillingLedgerResourceRecord[] } = {}): Promise<PlatformBillingProof> {
-  const [ledgers, imageImports, packedImages, instances, sourceJobs] = await Promise.all([
+  const [ledgers, imageImports, packedImages, instances, sourceJobs, cosBuckets] = await Promise.all([
     options.ledgers ?? repository.listBillingLedgerResources(), repository.listBillingImageImportResources(),
     repository.listPackedImageArtifacts(), repository.listRangeInstances(), repository.listProvisionJobs(),
+    typeof repository.listBillingManagedCosBuckets === 'function' ? repository.listBillingManagedCosBuckets() : [],
   ]);
   const jobs = new Map(sourceJobs.map(job => [job.id, job]));
   const instancesById = new Map(instances.map(instance => [instance.id, instance]));
@@ -37,20 +40,57 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
   for (const ledger of ledgers) {
     const sourceJob = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
     const sourceInstance = instancesById.get(ledger.rangeInstanceId ?? '');
-    const hasSource = Boolean(sourceInstance && (sourceJob?.rangeInstanceId === sourceInstance.id || launchInstanceIds.has(sourceInstance.id)))
+    const hasBucketSource = cosBuckets.some(bucket => bucket.cloudProvider === ledger.cloudProvider && bucket.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound') && bucket.bucketName === ledger.cloudResourceId && bucket.cloudAccountUid === ledger.cloudAccountUid);
+    const hasSource = hasBucketSource || Boolean(sourceInstance && (sourceJob?.rangeInstanceId === sourceInstance.id || launchInstanceIds.has(sourceInstance.id)))
       || packedImages.some(artifact => ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : ledger.cloudResourceType === 'snapshot' && artifact.backingSnapshotIds.includes(ledger.cloudResourceId))
       || imageImports.some(job => ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : ledger.cloudResourceType === 'snapshot' && job.backingSnapshotIds.includes(ledger.cloudResourceId));
     if (hasSource) unverifiedSourceLedgerIds.add(ledger.id);
     if (!['alibaba_cloud', 'tencent_cloud'].includes(ledger.cloudProvider)
       || !ledger.cloudAccountUid || !REGION_ID.test(ledger.regionId) || !ledger.cloudResourceId.trim()
-      || ['oss_bucket', 'snapshot_region', 'unknown'].includes(ledger.cloudResourceType)) continue;
+      || ['snapshot_region', 'unknown'].includes(ledger.cloudResourceType)) continue;
+    if (ledger.cloudResourceType === 'oss_bucket') {
+      const bucket = cosBuckets.find(bucket => bucket.id === ledger.tagsSnapshot.PlatformManagedImportBucketId && bucket.cloudProvider === 'tencent_cloud'
+        && ledger.cloudProvider === 'tencent_cloud' && bucket.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound') && bucket.cloudAccountUid === ledger.cloudAccountUid
+        && bucket.regionId === ledger.regionId && bucket.bucketName === ledger.cloudResourceId && ownedCosBucketProof(bucket));
+      if (bucket && ledger.billingScope === 'platform' && ledger.ownerUserId === null && billingDayText(ledger.billingStartAt) === billingDayText(new Date(String(ownedCosBucketProof(bucket)!.cloudCreationAt)))) createdLedgerIds.add(ledger.id);
+      continue;
+    }
     if (ledger.cloudResourceType === 'image' || ledger.cloudResourceType === 'snapshot') {
-      // Existing import/pack records are Aliyun-only and do not prove Tencent creation.
-      if (ledger.cloudProvider !== 'alibaba_cloud') continue;
-      const packed = packedImages.some(artifact => artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
+      if (ledger.cloudProvider === 'tencent_cloud') {
+        const packed = packedImages.some(artifact => {
+          const source = instancesById.get(artifact.sourceRangeInstanceId);
+          const context = source?.singleInstanceConfig ?? source?.resourceSummary?.executionContext;
+          return artifact.cloudProvider === 'tencent_cloud' && artifact.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound')
+            && artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId && ledger.billingScope === 'user'
+            && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
+            && ledger.tagsSnapshot.PlatformPackedImageArtifactId === artifact.id && source?.cloudProvider === 'tencent_cloud'
+            && source.ownerUserId === artifact.ownerUserId && source.cloudWorkspaceId === artifact.cloudWorkspaceId
+            && context?.cloudAccountContextId === artifact.cloudAccountContextId && context.cloudAccountUid === artifact.cloudAccountUid && context.regionId === artifact.regionId
+            && inventoryIncludes(source.resourceSummary, { ...ledger, cloudResourceId: artifact.sourceInstanceId, cloudResourceType: 'ecs' })
+            && artifact.sourceDiskIds.length > 0 && artifact.sourceDiskIds.every(id => inventoryIncludes(source.resourceSummary, { ...ledger, cloudResourceId: id, cloudResourceType: 'disk' }))
+            && sourceJobs.some(job => job.rangeInstanceId === source.id && job.cloudWorkspaceId === artifact.cloudWorkspaceId && ['create', 'retry', 'update'].includes(job.jobType))
+            && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId));
+        });
+        const imported = imageImports.some(job => {
+          const bucket = cosBuckets.find(bucket => bucket.id === job.managedBucketId && ownedCosBucketProof(bucket));
+          const object = job.sourceObjectProof && typeof job.sourceObjectProof === 'object' && !Array.isArray(job.sourceObjectProof) ? job.sourceObjectProof as Record<string,unknown> : null;
+          return job.cloudProvider === 'tencent_cloud' && job.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound') && job.cloudAccountUid === ledger.cloudAccountUid
+            && job.regionId === ledger.regionId && ledger.billingScope === 'platform' && ledger.ownerUserId === null && job.taskId && job.uploadCompletedAt
+            && ledger.tagsSnapshot.PlatformImageImportJobId === job.id && bucket?.cloudWorkspaceId === job.cloudWorkspaceId && bucket.cloudAccountContextId === job.cloudAccountContextId
+            && bucket.cloudAccountUid === job.cloudAccountUid && bucket.regionId === job.regionId && bucket.bucketName === job.imageImportBucket
+            && object?.provider === 'tencent_cloud' && object.bucketId === bucket.id && object.bucketName === bucket.bucketName && object.objectKey === job.objectKey
+            && object.jobId === job.id && object.ownerUserId === job.ownerUserId && object.cloudAccountContextId === job.cloudAccountContextId
+            && object.cloudAccountUid === job.cloudAccountUid && object.regionId === job.regionId && object.contentLength === Number(job.sourceSizeBytes)
+            && typeof object.etag === 'string' && object.etag && typeof object.verifiedAt === 'string' && Number.isFinite(Date.parse(object.verifiedAt))
+            && (ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : job.backingSnapshotIds.includes(ledger.cloudResourceId));
+        });
+        if (packed || imported) createdLedgerIds.add(ledger.id);
+        continue;
+      }
+      const packed = packedImages.some(artifact => (artifact.cloudProvider ?? 'alibaba_cloud') === 'alibaba_cloud' && artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
         && ledger.billingScope === 'user' && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
         && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId)));
-      const imported = imageImports.some(job => job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
+      const imported = imageImports.some(job => (job.cloudProvider ?? 'alibaba_cloud') === 'alibaba_cloud' && job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
         && ledger.billingScope === 'platform' && ledger.ownerUserId === null
         && (ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : job.backingSnapshotIds.includes(ledger.cloudResourceId)));
       if (packed || imported) createdLedgerIds.add(ledger.id);
@@ -75,7 +115,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       && (instance.singleInstanceBatchId ?? null) === ledger.singleInstanceBatchId) createdLedgerIds.add(ledger.id);
   }
   for (const id of createdLedgerIds) unverifiedSourceLedgerIds.delete(id);
-  return { ledgers, imageImports, packedImages, createdLedgerIds, unverifiedSourceLedgerIds };
+  return { ledgers, imageImports, packedImages, cosBuckets, createdLedgerIds, unverifiedSourceLedgerIds };
 }
 
 // Collection and tags are not creation proof; this set was checked against persisted job/artifact identities.
@@ -199,13 +239,26 @@ export function classifyTencentBillLine(line: Record<string, unknown>): ReturnTy
   const business = text(line.BusinessCode);
   // https://cloud.tencent.com/document/product/555/93162 documents p_cvm/p_cbs/p_eip/p_nat.
   // Product codes and resource shape must both agree; a matching ID or tag alone cannot establish a bill's source.
-  const type = business === 'p_cvm' && /^ins-[a-z0-9-]+$/i.test(id) ? 'ecs'
+  const type = business === 'p_cos' && /^[a-z0-9][a-z0-9-]+-[1-9]\d+$/.test(id) ? 'oss_bucket'
+    : business === 'p_cvm' && /^img-[a-z0-9-]+$/i.test(id) ? 'image'
+    : business === 'p_cvm' && /^ins-[a-z0-9-]+$/i.test(id) ? 'ecs'
     : business === 'p_cbs' && /^disk-[a-z0-9-]+$/i.test(id) ? 'disk'
     : business === 'p_eip' && /^eip-[a-z0-9-]+$/i.test(id) ? 'eip'
     : business === 'p_nat' && /^nat-[a-z0-9-]+$/i.test(id) ? 'nat_gateway'
     : business === 'p_cbs' && /^snap-[a-z0-9-]+$/i.test(id) ? 'snapshot' : null;
   return type && isTencentBillingPayload(line) ? { kind: 'direct', cloudResourceId: id, cloudResourceType: type }
     : { kind: 'unknown', cloudResourceId: id, cloudResourceType: 'unknown', reason: '腾讯云账单资源类型尚未核实。' };
+}
+
+export function tencentCosBillLifetimeMatches(ledger: BillingLedgerResourceRecord, line: Record<string, unknown>, billingDate: string) {
+  if (ledger.cloudResourceType !== 'oss_bucket' || !ledger.releasedAt) return true;
+  if (billingDate <= billingDayText(ledger.releasedAt)) return true;
+  // Bucket names are reusable. A later billing day needs an explicit official usage interval from before deletion.
+  const end = typeof line.FeeEndTime === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(line.FeeEndTime)
+    ? Date.parse(`${line.FeeEndTime.replace(' ', 'T')}+08:00`) : NaN;
+  const begin = typeof line.FeeBeginTime === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(line.FeeBeginTime)
+    ? Date.parse(`${line.FeeBeginTime.replace(' ', 'T')}+08:00`) : NaN;
+  return Number.isFinite(begin) && Number.isFinite(end) && begin >= ledger.billingStartAt.getTime() && end >= begin && end <= ledger.releasedAt.getTime();
 }
 
 export function pendingTencentBillingEvidence(input: {
@@ -219,7 +272,7 @@ export function pendingTencentBillingEvidence(input: {
   if (!owned.length) return null;
   const region = tencentBillRegionId(input.line);
   const classification = classifyTencentBillLine(input.line);
-  const exact = owned.filter(ledger => ledger.regionId === region && ledger.cloudResourceType === classification.cloudResourceType);
+  const exact = owned.filter(ledger => ledger.regionId === region && ledger.cloudResourceType === classification.cloudResourceType && tencentCosBillLifetimeMatches(ledger, input.line, input.billingDate));
   return { kind: classification.kind === 'direct' && exact.length === 1 ? 'resource_pending' : 'source_pending',
     ledgerIds: owned.map(ledger => ledger.id), imageImportJobIds: [] };
 }

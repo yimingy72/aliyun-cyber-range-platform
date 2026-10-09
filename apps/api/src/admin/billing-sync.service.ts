@@ -14,7 +14,7 @@ import {
 import { assertAlibabaBillingContext, BillingBssClient } from './billing-bss-client';
 import { billRegionId, billRegionConflict, classifyPlatformBillLine, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
 import { TencentBillingClient, type TencentBillingContext } from './tencent-billing-client';
-import { classifyTencentBillLine, isTencentBillingPayload, pendingTencentBillingEvidence, tencentBillRegionId } from './billing-platform-scope';
+import { classifyTencentBillLine, isTencentBillingPayload, pendingTencentBillingEvidence, tencentBillRegionId, tencentCosBillLifetimeMatches } from './billing-platform-scope';
 import { SystemConfigService } from './system-config.service';
 import { billingDayText, resolveBillingWindow } from './billing-window';
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
@@ -295,7 +295,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           const candidates = input.proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, input.proof)
             && ledger.cloudProvider === 'tencent_cloud' && ledger.cloudAccountUid === accountUid
             && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === classification.cloudResourceType
-            && ledger.regionId === region && day >= billingDayText(ledger.billingStartAt));
+            && ledger.regionId === region && day >= billingDayText(ledger.billingStartAt) && tencentCosBillLifetimeMatches(ledger, item.rawPayload, day));
           const ledger = classification.kind === 'direct' && candidates.length === 1 ? candidates[0] : null;
           const evidence = ledger ? null : pendingTencentBillingEvidence({ line: item.rawPayload, cloudAccountUid: accountUid, billingDate: day, proof: input.proof });
           // External resources and account/region aggregate rows have no exact platform creation proof.
@@ -412,9 +412,9 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   private async repairImageLedgerOrigins(proof: PlatformBillingProof, cloudAccountUid: string) {
     let changed = false;
     for (const ledger of proof.ledgers.filter(item => item.cloudProvider === 'alibaba_cloud' && item.cloudAccountUid === cloudAccountUid && (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot'))) {
-      const packed = proof.packedImages.filter(artifact => artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
+      const packed = proof.packedImages.filter(artifact => (artifact.cloudProvider ?? 'alibaba_cloud') === 'alibaba_cloud' && artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
         && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId)));
-      const imported = proof.imageImports.filter(job => job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
+      const imported = proof.imageImports.filter(job => (job.cloudProvider ?? 'alibaba_cloud') === 'alibaba_cloud' && job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
         && (ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : job.backingSnapshotIds.includes(ledger.cloudResourceId)));
       if (packed.length + imported.length !== 1) continue;
       const artifact = packed[0];
