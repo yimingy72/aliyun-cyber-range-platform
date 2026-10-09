@@ -12,7 +12,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
-import { billRegionId, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof } from './billing-platform-scope';
+import { billRegionConflict, billRegionId, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof } from './billing-platform-scope';
 
 type BillingWindowInput = Partial<{
   startAt: string | Date;
@@ -85,7 +85,8 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
       || item.cloudResourceId !== ledger.cloudResourceId || item.cloudResourceType !== ledger.cloudResourceType
       || item.cloudAccountUid && item.cloudAccountUid !== ledger.cloudAccountUid
       || item.rawPayload.OwnerID != null && String(item.rawPayload.OwnerID) !== ledger.cloudAccountUid
-      || billRegionId(item.rawPayload) && billRegionId(item.rawPayload) !== ledger.regionId) return [];
+      || billRegionConflict(item.rawPayload) || billRegionId(item.rawPayload) && billRegionId(item.rawPayload) !== ledger.regionId
+      || toIsoDate(item.billingDate) < billingDayText(ledger.billingStartAt)) return [];
     // Historical catalog collection could overwrite attribution; use the verified creation ledger.
     return [{ ...item, cloudAccountUid: ledger.cloudAccountUid, billingScope: ledger.billingScope, ownerUserId: ledger.ownerUserId }];
   });
