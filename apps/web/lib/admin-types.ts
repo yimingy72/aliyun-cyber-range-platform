@@ -409,6 +409,9 @@ export type BillingSummary = {
   endAt: string;
   currency?: string | null;
   currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
+  billingStatus?: 'provisional';
+  unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
+  resourcesWithoutBillCount?: number;
   totalPretaxAmount: number | null;
   platformPretaxAmount: number | null;
   anomalyCount: number;

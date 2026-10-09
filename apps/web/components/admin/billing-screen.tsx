@@ -67,9 +67,10 @@ function getDefaultRange(): BillingRange {
   };
 }
 
-function formatMoney(value: number | null, currency = 'CNY') {
+function formatMoney(value: number | null | undefined, currency = 'CNY') {
   if (value === null) return '按币种查看';
-  const amount = value !== null && Number.isFinite(value) ? value : 0;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '未知';
+  const amount = value;
 
   if (currency === 'CNY') {
     return `¥ ${preciseMoneyFormatter.format(amount)}`;
@@ -664,28 +665,51 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               </Button>
             </>
           }
-          description="查看已出账并完成归属的费用。阿里云账单有延迟，新资源暂未出账不代表费用为零。"
+          description="查看已同步并完成归属的应付费用。账单可能因延迟出账、退款或调账继续变化。"
           title="账单费用"
         />
 
         <dl
           aria-busy={isRefreshingOverview || undefined}
           aria-label="账单概览"
-          className="mt-4 flex flex-wrap items-stretch border-l border-border"
+          className="mt-4 flex flex-wrap items-stretch gap-y-3 border-l border-border"
         >
           <div className="grid min-w-36 gap-1 border-r border-border px-4">
             <dt className="text-xs font-medium text-muted-foreground">已归属费用合计</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.totalPretaxAmount, item.currency)}</span>) : formatMoney(summary.totalPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
+              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.totalPretaxAmount, item.currency)}</span>) : formatMoney(summary.totalPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
+            </dd>
+          </div>
+          <div className="grid min-w-36 gap-1 border-r border-border px-4">
+            <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
+            <dd className="text-base font-semibold tabular-nums text-foreground">
+              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.platformPretaxAmount, item.currency)}</span>) : formatMoney(summary.platformPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
+            </dd>
+          </div>
+          <div className="grid min-w-36 gap-1 border-r border-border px-4">
+            <dt className="text-xs font-medium text-muted-foreground">未分配费用</dt>
+            <dd className="text-base font-semibold tabular-nums text-foreground">
+              {summary?.unallocatedCurrencyTotals
+                ? summary.unallocatedCurrencyTotals.length
+                  ? summary.unallocatedCurrencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>)
+                  : '无未分配记录'
+                : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
             </dd>
           </div>
           <div className="grid min-w-36 gap-1 px-4">
-            <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
+            <dt className="text-xs font-medium text-muted-foreground">尚未匹配账单资源</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
-              {summary ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.platformPretaxAmount, item.currency)}</span>) : formatMoney(summary.platformPretaxAmount, summary.currency ?? 'CNY') : isLoading ? <Skeleton className="h-5 w-20" /> : '¥ 0.00'}
+              {typeof summary?.resourcesWithoutBillCount === 'number' ? `${summary.resourcesWithoutBillCount} 项`
+                : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
             </dd>
           </div>
         </dl>
+
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">
+          待出账不代表免费。未分配费用单列，未计入用户或平台公共费用。
+          {summary && (summary.billingStatus === undefined || summary.unallocatedCurrencyTotals === undefined || summary.resourcesWithoutBillCount === undefined)
+            ? ' 对账信息尚不完整，未知项不能按零计算。' : null}
+        </p>
 
         {summary && summary.anomalyCount > 0 ? (
           <p className="mt-3 text-sm text-muted-foreground">{summary.anomalyCount} 条账单暂未归属，汇总仅包含已归属费用。</p>
@@ -793,6 +817,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               </div>
             </div>
           </div>
+
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">整月对账可选择月初至月末后同步；上月账单建议在次月 3 日 12 点后核对。</p>
 
           <AdminPaginatedList
             className="mt-3"
