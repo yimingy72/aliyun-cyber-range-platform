@@ -88,7 +88,7 @@ services:
       context: ../..
       dockerfile: deploy/current-system/apps/api/Dockerfile
       args:
-        OPENTOFU_IMAGE: ${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.12.3-minimal}
+        OPENTOFU_IMAGE: ${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.13.1-minimal}
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
         PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
@@ -114,6 +114,8 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-cyber_range}?schema=public
       RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-opentofu}
+      PROVISIONING_WORKER_RANGE_CONCURRENCY: ${PROVISIONING_WORKER_RANGE_CONCURRENCY:-2}
+      PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY: ${PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY:-3}
       RANGE_CIDR_POOL: ${RANGE_CIDR_POOL:-10.80.0.0/16,10.81.0.0/16}
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
@@ -159,7 +161,7 @@ services:
       context: ../..
       dockerfile: deploy/current-system/apps/api/Dockerfile
       args:
-        OPENTOFU_IMAGE: ${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.12.3-minimal}
+        OPENTOFU_IMAGE: ${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.13.1-minimal}
         PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
         PNPM_FETCH_RETRIES: ${PNPM_FETCH_RETRIES:-10}
         PNPM_FETCH_RETRY_MIN_TIMEOUT: ${PNPM_FETCH_RETRY_MIN_TIMEOUT:-2000}
@@ -182,6 +184,8 @@ services:
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cyber-range}
       RANGE_PROVISIONER_MODE: ${RANGE_PROVISIONER_MODE:-opentofu}
+      PROVISIONING_WORKER_RANGE_CONCURRENCY: ${PROVISIONING_WORKER_RANGE_CONCURRENCY:-2}
+      PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY: ${PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY:-3}
       OPENTOFU_BINARY: ${OPENTOFU_BINARY:-tofu}
       OPENTOFU_WORKSPACES_ROOT: /var/lib/cyber-range/workspaces
       OPENTOFU_PROVIDER_MIRROR_ROOT: /var/lib/cyber-range/provider-mirror

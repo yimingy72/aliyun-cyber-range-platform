@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 EXAMPLE_DIR="$ROOT_DIR/infra/opentofu/examples/alicloud-enterprise-range"
-TOFU_VERSION="${TOFU_VERSION:-1.12.3}"
+TOFU_VERSION="${TOFU_VERSION:-1.13.1}"
 TOFU_IMAGE="${TOFU_IMAGE:-ghcr.io/opentofu/opentofu:${TOFU_VERSION}-minimal}"
 TOFU_IMAGE_BINARY_PATH="${TOFU_IMAGE_BINARY_PATH:-/usr/local/bin/tofu}"
 ALICLOUD_PROVIDER_ZIP_PATH="${ALICLOUD_PROVIDER_ZIP_PATH:-}"
