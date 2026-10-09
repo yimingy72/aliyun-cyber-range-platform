@@ -16,7 +16,7 @@ export async function runInExecutionCloudWorkspace<T>(service: unknown, id: stri
   }
   return runner.runInWorkspace(id, async () => {
     const scope = getCurrentCloudWorkspaceScope();
-    if (!scope || 'system' in scope || scope.cloudWorkspaceId !== id || scope.isReadOnly || scope.provider !== 'alibaba_cloud'
+    if (!scope || 'system' in scope || scope.cloudWorkspaceId !== id || scope.isReadOnly || !['alibaba_cloud', 'tencent_cloud'].includes(scope.provider)
       || source?.provider && scope.provider !== source.provider
       || source?.accountUid && scope.accountUid !== source.accountUid) {
       throw new Error('Background execution does not match its frozen cloud workspace and account');
@@ -31,5 +31,5 @@ export async function listExecutionCloudWorkspaces(service: unknown): Promise<Ex
     if (process.env.NODE_ENV === 'test') return null;
     throw new Error('Background polling requires verified cloud workspaces');
   }
-  return (await runner.listExecutionCloudWorkspaces()).filter(space => space.provider === 'alibaba_cloud' && Boolean(space.accountUid) && !space.isReadOnly);
+  return (await runner.listExecutionCloudWorkspaces()).filter(space => ['alibaba_cloud', 'tencent_cloud'].includes(space.provider) && Boolean(space.accountUid) && !space.isReadOnly);
 }
