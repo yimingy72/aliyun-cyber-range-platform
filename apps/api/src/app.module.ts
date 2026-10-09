@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -10,6 +11,9 @@ import { TencentCloudCatalogController } from './admin/tencent-cloud-catalog.con
 import { TencentCloudCatalogService } from './admin/tencent-cloud-catalog.service';
 import { CloudAccountContextsController } from './admin/cloud-account-contexts.controller';
 import { CloudAccountContextsService } from './admin/cloud-account-contexts.service';
+import { CloudWorkspacesService } from './admin/cloud-workspaces.service';
+import { CloudWorkspacesController, PlatformSessionController } from './admin/cloud-workspaces.controller';
+import { CloudWorkspaceInterceptor } from './auth/cloud-workspace.interceptor';
 import { ImageImportsController } from './admin/image-imports.controller';
 import { ImageImportsService } from './admin/image-imports.service';
 import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
@@ -84,6 +88,8 @@ function resolveProjectRootDir() {
     ProvisionJobsController,
     SystemConfigController,
     CloudAccountContextsController,
+    CloudWorkspacesController,
+    PlatformSessionController,
     ImageCatalogController,
     TencentCloudCatalogController,
     ImageImportsController,
@@ -98,6 +104,8 @@ function resolveProjectRootDir() {
     ImageCatalogService,
     TencentCloudCatalogService,
     CloudAccountContextsService,
+    CloudWorkspacesService,
+    { provide: APP_INTERCEPTOR, useClass: CloudWorkspaceInterceptor },
     ImageImportsService,
     ImageImportsWorkerService,
     PackedImagesService,

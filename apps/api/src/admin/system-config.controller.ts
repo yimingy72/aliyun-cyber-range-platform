@@ -19,7 +19,7 @@ export class SystemConfigController {
 
   @Get()
   async getSnapshot() {
-    return maskSystemCloudConfig(await this.systemConfigService.getSnapshot());
+    return this.systemConfigService.getDisplaySnapshot();
   }
 
   @Get('instance-type-availability')

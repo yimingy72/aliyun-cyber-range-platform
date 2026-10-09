@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { getCurrentCloudWorkspaceScope, runInCloudWorkspace, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 import { CloudAccountContextsService } from './cloud-account-contexts.service';
 import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-catalog';
@@ -113,6 +114,11 @@ export class SystemConfigService {
   ) {}
 
   async getSnapshot(): Promise<SystemCloudConfig> {
+    const selected = await this.readSelectedContext();
+    if (selected) {
+      if (selected.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的资源执行尚未开放。');
+      return { ...selected, provider: 'alibaba_cloud' };
+    }
     const activeContext = await this.prisma.cloudAccountContext.findFirst({
       where: { isActive: true, status: 'ready' },
       orderBy: { updatedAt: 'desc' },
@@ -161,6 +167,20 @@ export class SystemConfigService {
     if (payload.provider !== undefined && payload.provider !== 'alibaba_cloud') {
       throw new BadRequestException('当前版本仅支持阿里云全局配置；腾讯云账号请通过独立云账号入口保存，暂不能启用为全局账号。');
     }
+    const scope = getCurrentCloudWorkspaceScope();
+    if (scope && !('system' in scope)) {
+      const current = await this.getAccountContext();
+      const next = { provider: 'alibaba_cloud' as const,
+        regionId: payload.defaultRegion !== undefined ? normalizeValue(payload.defaultRegion) : current.defaultRegion,
+        zoneId: payload.defaultZoneId !== undefined ? normalizeValue(payload.defaultZoneId) : current.defaultZoneId,
+        accessKeyId: payload.accessKeyId !== undefined ? normalizeValue(payload.accessKeyId) : current.accessKeyId,
+        accessKeySecret: this.resolveSecretValue(payload.accessKeySecret, current.accessKeySecret),
+        imageImportBucket: payload.imageImportBucket !== undefined ? normalizeValue(payload.imageImportBucket) : current.imageImportBucket,
+        cloudWorkspaceId: scope.cloudWorkspaceId };
+      const saved = await this.cloudAccountContextsService.saveAccountBinding(next);
+      return { provider: 'alibaba_cloud', defaultRegion: saved.regionId, defaultZoneId: saved.zoneId,
+        accessKeyId: next.accessKeyId, accessKeySecret: next.accessKeySecret, imageImportBucket: saved.imageImportBucket };
+    }
     const current = await this.getSnapshot();
     const snapshot: SystemCloudConfig = {
       provider: 'alibaba_cloud',
@@ -182,6 +202,11 @@ export class SystemConfigService {
   }
 
   async getAccountContext(): Promise<SystemCloudAccountContext & { provider: 'alibaba_cloud' }> {
+    const selected = await this.readSelectedContext();
+    if (selected) {
+      if (selected.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的资源执行尚未开放。');
+      return { ...selected, provider: 'alibaba_cloud' };
+    }
     const activeContext = await this.prisma.cloudAccountContext.findFirst({
       where: { isActive: true, status: 'ready' },
       orderBy: { updatedAt: 'desc' },
@@ -292,6 +317,52 @@ export class SystemConfigService {
       defaultRegion: context.regionId, defaultZoneId: context.zoneId,
       accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret,
       imageImportBucket: context.imageImportBucket };
+  }
+
+  async getSelectedAccountContext(): Promise<SystemCloudAccountContext> {
+    return await this.readSelectedContext() ?? this.getAccountContext();
+  }
+
+  async getDisplaySnapshot() {
+    const snapshot = await this.getSelectedAccountContext();
+    return { provider: snapshot.provider, defaultRegion: snapshot.defaultRegion, defaultZoneId: snapshot.defaultZoneId,
+      accessKeyId: snapshot.accessKeyId ? '********' : '', accessKeySecret: snapshot.accessKeySecret ? '********' : '',
+      imageImportBucket: snapshot.imageImportBucket };
+  }
+
+  async runInWorkspace<T>(id: string | null | undefined, work: () => Promise<T>): Promise<T> {
+    if (!id) {
+      if (process.env.NODE_ENV === 'test') return work();
+      throw new BadRequestException('后台任务缺少冻结的云账号工作空间。');
+    }
+    const space = await runInSystemCloudWorkspaceScope(() => this.prisma.cloudWorkspace.findUnique({ where: { id } }));
+    if (!space || !space.accountUid || space.isReadOnly) throw new BadRequestException('后台任务的云账号工作空间未核验，已保留原任务与资源记录。');
+    return runInCloudWorkspace({ cloudWorkspaceId: space.id, provider: space.provider, accountUid: space.accountUid,
+      isReadOnly: space.isReadOnly, actorUserId: 'system:worker' }, work);
+  }
+
+  async listExecutionCloudWorkspaces() {
+    return runInSystemCloudWorkspaceScope(() => this.prisma.cloudWorkspace.findMany({
+      where: { isReadOnly: false, provider: 'alibaba_cloud', accountUid: { not: null }, activeCloudAccountContextId: { not: null } },
+      select: { id: true, provider: true, accountUid: true, isReadOnly: true }, orderBy: { id: 'asc' },
+    }));
+  }
+
+  private async readSelectedContext(): Promise<SystemCloudAccountContext | null> {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope || 'system' in scope) return null;
+    const space = await this.prisma.cloudWorkspace.findUnique({ where: { id: scope.cloudWorkspaceId } });
+    if (!space || space.provider !== scope.provider || space.accountUid !== scope.accountUid) {
+      throw new BadRequestException('当前云账号工作空间已变化，请重新选择。');
+    }
+    if (!space.activeCloudAccountContextId) {
+      if (space.isReadOnly && !space.accountUid) return { provider: space.provider, cloudAccountContextId: null,
+        accountUid: null, accountUidResolved: false, defaultRegion: '', defaultZoneId: '', accessKeyId: '', accessKeySecret: '', imageImportBucket: '' };
+      throw new BadRequestException('当前工作空间未绑定可用的云账号配置。');
+    }
+    const context = await this.getAccountContextById(space.activeCloudAccountContextId);
+    if (context.provider !== space.provider || context.accountUid !== space.accountUid) throw new BadRequestException('云账号配置与当前数据空间不匹配。');
+    return context;
   }
 
   private resolveSecretValue(nextValue: string | null | undefined, currentValue: string) {

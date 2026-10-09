@@ -12,6 +12,9 @@ export type SessionUserProfile = {
   id: string;
   username: string;
   role: UserRole;
+  cloudWorkspaceId?: string | null;
+  isPlatformManager?: boolean;
+  selectedCloudWorkspaceId?: string | null;
 };
 
 type SessionTokenPayload = {

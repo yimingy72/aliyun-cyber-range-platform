@@ -1,8 +1,25 @@
-import { IsIn, IsString, Matches, MaxLength, NotEquals } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches, MaxLength, NotEquals } from 'class-validator';
 
 export class SaveCloudAccountContextDto {
-  @IsIn(['tencent_cloud'])
-  provider!: 'tencent_cloud';
+  @IsIn(['alibaba_cloud', 'tencent_cloud'])
+  provider!: 'alibaba_cloud' | 'tencent_cloud';
+
+  @IsOptional()
+  @IsString()
+  @Matches(/\S/)
+  @MaxLength(192)
+  cloudWorkspaceId?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/\S/)
+  @MaxLength(80)
+  displayName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(63)
+  imageImportBucket?: string;
 
   @IsString()
   @Matches(/\S/)

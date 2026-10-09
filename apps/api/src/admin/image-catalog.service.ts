@@ -130,11 +130,16 @@ export class ImageCatalogService {
     return this.syncScope('custom', 'self');
   }
 
+  private selectedContext() {
+    return typeof this.systemConfigService.getSelectedAccountContext === 'function'
+      ? this.systemConfigService.getSelectedAccountContext() : this.systemConfigService.getAccountContext();
+  }
+
   async listPlatformAssets(
     currentUser: SessionUserProfile,
     view: PlatformImageView = 'platform',
   ): Promise<PlatformImageAssetsPayload> {
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
     const baseFilter = {
       provider: accountContext.provider,
       accountUid: accountContext.accountUid,
@@ -244,7 +249,7 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     if (!this.isSnapshotInScope(snapshot, accountContext)) {
       throw new NotFoundException('Image snapshot not found');
@@ -355,7 +360,7 @@ export class ImageCatalogService {
         || (currentUser.role !== 'admin' && artifact.ownerUserId !== currentUser.id)) throw new ForbiddenException('仅 owner 或管理员可完整回收已验证的平台打包镜像。');
     } else {
       if (currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
-      const account = await this.systemConfigService.getAccountContext();
+      const account = await this.selectedContext();
       if (!this.isSnapshotInScope(snapshot, account)) throw new NotFoundException('Image snapshot not found');
     }
     await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
@@ -381,7 +386,7 @@ export class ImageCatalogService {
     }
     if (currentUser && currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
 
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     if (
       snapshot.provider !== accountContext.provider ||
@@ -449,7 +454,7 @@ export class ImageCatalogService {
   }
 
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     const [snapshots, catalogItems, packedArtifacts] = await Promise.all([
       this.adminRepository.listImageSnapshots({
@@ -505,7 +510,7 @@ export class ImageCatalogService {
     currentUser: SessionUserProfile,
   ): Promise<PlatformImageAssetRecord> {
     const asset = await this.adminRepository.getPlatformImageAssetById(id);
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     if (
       !asset ||
@@ -797,7 +802,8 @@ export class ImageCatalogService {
     scope: CloudImageScope,
     imageOwnerAlias: 'system' | 'self',
   ): Promise<ImageCatalogScopePayload> {
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
+    if (accountContext.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的镜像目录请使用对应只读查询入口。');
     const lastSyncedAt = new Date();
     const snapshots: UpsertImageSnapshotInput[] = [];
 
@@ -869,8 +875,9 @@ export class ImageCatalogService {
 
   private async describeImageById(
     imageId: string,
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+    accountContext: Awaited<ReturnType<SystemConfigService['getSelectedAccountContext']>>,
   ) {
+    if (accountContext.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的镜像收录与修改尚未开放。');
     const response = await this.performAliyunRpcRequest<AliyunDescribeImagesResponse>({
       accessKeyId: accountContext.accessKeyId,
       accessKeySecret: accountContext.accessKeySecret,

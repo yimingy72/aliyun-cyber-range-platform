@@ -29,29 +29,30 @@ export class CloudAccountContextsController {
 
   @Post()
   async save(@Req() request: AuthenticatedPlatformRequest, @Body() payload: SaveCloudAccountContextDto) {
-    if (request.adminUser.role !== 'admin') throw new ForbiddenException('仅管理员可保存云账号。');
+    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可绑定或更新云账号。');
     const metadata = readOperationRequestMetadata(request);
-    const execute = () => this.cloudAccountContextsService.saveTencentCloudContext(payload);
+    const execute = () => this.cloudAccountContextsService.saveAccountBinding(payload);
+    const toolName = 'cloud_account_bind';
     if (request.authContext.source === 'mcp') {
       return this.operationControl.executeConfirmed({
-        context: request.authContext, metadata, toolName: 'tencent_cloud_account_save', arguments: { ...payload },
+        context: request.authContext, metadata, toolName, arguments: { ...payload },
         targetType: 'cloud_account_context',
         resolveConfirmation: async () => ({
-          targetId: null, targetSnapshot: { provider: 'tencent_cloud', regionId: payload.regionId, zoneId: payload.zoneId },
-          summary: { targetName: '腾讯云账号', regionId: payload.regionId, zoneId: payload.zoneId, activatesResourceCreation: false },
+          targetId: payload.cloudWorkspaceId ?? null, targetSnapshot: { provider: payload.provider, regionId: payload.regionId, zoneId: payload.zoneId },
+          summary: { targetName: `${payload.provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'}账号`, regionId: payload.regionId, zoneId: payload.zoneId, switchesWorkspace: false },
         }),
         execute: async () => ({ result: await execute() }),
       });
     }
     const audit = { requestId: metadata.requestId, operationId: metadata.requestId, actorUserId: request.adminUser.id,
-      source: request.authContext.source, oauthClientId: request.authContext.oauthClientId, toolName: 'tencent_cloud_account_save', targetType: 'cloud_account_context', sanitizedInput: { ...payload } };
+      source: request.authContext.source, oauthClientId: request.authContext.oauthClientId, toolName, targetType: 'cloud_account_context', sanitizedInput: { ...payload } };
     await this.operationControl.audit({ ...audit, phase: 'requested' });
     try {
       const result = await execute();
       await this.operationControl.audit({ ...audit, phase: 'succeeded', targetId: result.id });
       return result;
     } catch (error) {
-      await this.operationControl.audit({ ...audit, phase: 'failed', errorCode: 'TENCENT_ACCOUNT_SAVE_FAILED' });
+      await this.operationControl.audit({ ...audit, phase: 'failed', errorCode: 'CLOUD_ACCOUNT_BIND_FAILED' });
       throw error;
     }
   }
