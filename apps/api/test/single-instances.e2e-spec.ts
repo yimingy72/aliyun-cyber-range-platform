@@ -16,6 +16,7 @@ import { SingleInstanceNetworkBootstrapService } from '../src/provisioning/singl
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
+import { markQueuedInstancesAsLegacyNative, pumpLegacySingleInstanceWorker } from './support/legacy-single-instance-worker';
 
 let repositoryForLogin: AdminRepository;
 const futureExpiration = new Date(Date.now() + 48 * 60 * 60 * 1_000).toISOString();
@@ -152,7 +153,7 @@ describe('single instances', () => {
     await app.close();
   });
 
-  it('creates a single-instance record with mode single and generated names for quantity > 1', async () => {
+  it('queues default OpenTofu instances with generated names without executing them in the API', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
       .set('Authorization', `Bearer ${adminToken}`)
@@ -188,6 +189,13 @@ describe('single instances', () => {
       name: 'web-lab-02',
       singleInstanceBatchId: response.body.batch.id,
     });
+    for (const member of response.body.instances) {
+      expect(member.status).toBe('pending_create');
+      expect(member.singleInstanceConfig.executionBackend).toBe('opentofu');
+      expect((await repository.getProvisionJobById(member.lastJobId))?.status).toBe('pending');
+    }
+    expect((app.get(ProvisioningWorkerService) as unknown as { activeTasks: Set<Promise<void>> }).activeTasks.size).toBe(0);
+    expect(fetchMock.mock.calls.some(([, init]) => String(init?.body).includes('Action=RunInstances'))).toBe(false);
     expect(bootstrapServiceStub.bootstrapDefaultProfile).toHaveBeenCalledTimes(1);
 
     const profile = await repository.getSingleInstanceNetworkProfile({cloudAccountUid:'single-test-account',
@@ -371,7 +379,7 @@ describe('single instances', () => {
       .expect(409);
   });
 
-  it('does not submit HostName to aliyun when neither the request nor the image provides one', async () => {
+  it('continues a queued legacy native instance without HostName when neither the request nor image provides one', async () => {
     const runInstancesBodies: string[] = [];
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -429,6 +437,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
+    await markQueuedInstancesAsLegacyNative(repository, response.body.instances.map((member: { id: string }) => member.id));
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(async () => {
       const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
       expect(instance?.status).toBe('running');
@@ -440,7 +451,7 @@ describe('single instances', () => {
     expect(response.body.instances[0].singleInstanceConfig.hostName).toBeNull();
   });
 
-  it('submits billing tags to aliyun when launching a single instance', async () => {
+  it('submits billing tags when the worker resumes a queued legacy native instance', async () => {
     const runInstancesBodies: string[] = [];
     const tagResourceBodies: string[] = [];
     fetchMock.mockImplementation(async (input, init) => {
@@ -490,7 +501,7 @@ describe('single instances', () => {
       return new Response(JSON.stringify({ RequestId: 'ok' }), { status: 200 });
     });
 
-    await request(app.getHttpServer())
+    const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
@@ -507,6 +518,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
+    await markQueuedInstancesAsLegacyNative(repository, response.body.instances.map((member: { id: string }) => member.id));
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     expect(runInstancesBodies).toHaveLength(1);
     expect(runInstancesBodies[0]).toContain('Tag.');
     expect(runInstancesBodies[0]).toContain('CreatedBy');
@@ -521,7 +535,7 @@ describe('single instances', () => {
     expect(tagResourceBodies[0]).toContain('PlatformManaged');
   });
 
-  it('uses the image defaultHostName when launch request leaves hostName empty', async () => {
+  it('uses the image defaultHostName when the worker resumes a queued legacy native instance', async () => {
     await repository.upsertImageSnapshots({
       provider: 'alibaba_cloud',
       accountUid: 'single-test-account',
@@ -613,6 +627,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
+    await markQueuedInstancesAsLegacyNative(repository, response.body.instances.map((member: { id: string }) => member.id));
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(async () => {
       const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
       expect(instance?.status).toBe('running');
@@ -693,6 +710,7 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'running',
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'existing-running',
         quantityIndex: 1,
         hostKey: 'single-ecs-existing-1',
@@ -712,6 +730,7 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'destroyed',
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'existing-destroyed',
         quantityIndex: 1,
         hostKey: 'single-ecs-existing-2',
@@ -879,6 +898,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'web-lab',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -898,6 +918,7 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'running',
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'legacy-single',
         quantityIndex: 1,
         hostKey: 'single-ecs-legacy',
@@ -917,6 +938,7 @@ describe('single instances', () => {
       status: 'create_failed',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'web-lab',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -935,6 +957,7 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'create_failed',
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'legacy-single-failed',
         quantityIndex: 1,
         hostKey: 'single-ecs-legacy-failed',
@@ -1032,6 +1055,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: userBatch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'user-single',
         quantityIndex: 1,
         hostKey: 'single-ecs-user-1',
@@ -1052,6 +1076,7 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'running',
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'admin-single',
         quantityIndex: 1,
         hostKey: 'single-ecs-admin-1',
@@ -1110,7 +1135,7 @@ describe('single instances', () => {
       .expect(403);
   });
 
-  it('bulk-destroys all active child instances in a batch', async () => {
+  it('queues destruction only for active legacy members in a batch', async () => {
     const batch = await repository.createSingleInstanceBatch({
       name: 'destroy-batch',
       platformImageAssetId: 'memory-2',
@@ -1131,6 +1156,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-batch',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -1151,6 +1177,7 @@ describe('single instances', () => {
       status: 'destroyed',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-batch',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -1178,7 +1205,7 @@ describe('single instances', () => {
     );
   });
 
-  it('dispatches launched batch jobs only after every child instance has its pending job recorded', async () => {
+  it('records every OpenTofu batch member and pending job before returning without API dispatch', async () => {
     const worker = app.get(ProvisioningWorkerService);
     const order: string[] = [];
     const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
@@ -1209,17 +1236,23 @@ describe('single instances', () => {
           remark: 'dispatch order',
         })
         .expect(201);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      const instances = await repository.listRangeInstances();
+      expect(instances).toHaveLength(2);
+      for (const instance of instances) {
+        expect(instance.status).toBe('pending_create');
+        expect(instance.singleInstanceConfig?.executionBackend).toBe('opentofu');
+        expect((await repository.getProvisionJobById(instance.lastJobId!))?.status).toBe('pending');
+      }
     } finally {
       updateSpy.mockRestore();
       dispatchSpy.mockRestore();
     }
 
-    const firstDispatchIndex = order.findIndex((entry) => entry.startsWith('dispatch:'));
-    expect(firstDispatchIndex).toBeGreaterThan(-1);
-    expect(order.slice(0, firstDispatchIndex).filter((entry) => entry.startsWith('update:'))).toHaveLength(2);
+    expect(order.filter(entry => entry.startsWith('update:'))).toHaveLength(2);
   });
 
-  it('dispatches batch destroy only after every child instance has been marked pending_destroy', async () => {
+  it('records pending_destroy and jobs for every legacy batch member without API dispatch', async () => {
     const batch = await repository.createSingleInstanceBatch({
       name: 'destroy-order-batch',
       platformImageAssetId: 'memory-2',
@@ -1240,6 +1273,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-order',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -1266,6 +1300,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-order',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -1304,17 +1339,22 @@ describe('single instances', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({})
         .expect(201);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      const instances = await repository.listRangeInstances();
+      expect(instances).toHaveLength(2);
+      for (const instance of instances) {
+        expect(instance.status).toBe('pending_destroy');
+        expect((await repository.getProvisionJobById(instance.lastJobId!))?.status).toBe('pending');
+      }
     } finally {
       updateSpy.mockRestore();
       dispatchSpy.mockRestore();
     }
 
-    const firstDispatchIndex = order.findIndex((entry) => entry.startsWith('dispatch:'));
-    expect(firstDispatchIndex).toBeGreaterThan(-1);
-    expect(order.slice(0, firstDispatchIndex).filter((entry) => entry.startsWith('update:'))).toHaveLength(2);
+    expect(order.filter(entry => entry.startsWith('update:'))).toHaveLength(2);
   });
 
-  it('still dispatches already-created launch jobs when a later batch row fails during setup', async () => {
+  it('marks all aborted launch jobs failed without cloud execution when a later member row fails', async () => {
     const worker = app.get(ProvisioningWorkerService);
     const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
     const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation(() => {});
@@ -1345,14 +1385,24 @@ describe('single instances', () => {
           remark: 'dispatch failure fallback',
         })
         .expect(500);
-      expect(dispatchSpy).toHaveBeenCalledTimes(2);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      const jobs = await repository.listProvisionJobs();
+      expect(jobs).toHaveLength(2);
+      expect(jobs.every(job => job.status === 'failed')).toBe(true);
+      expect((await repository.listRangeInstances()).every(instance => instance.status === 'create_failed')).toBe(true);
+      expect(fetchMock.mock.calls.some(([, init]) => String(init?.body).includes('Action=RunInstances'))).toBe(false);
     } finally {
       updateSpy.mockRestore();
       dispatchSpy.mockRestore();
     }
   });
 
-  it('still dispatches already-created destroy jobs when a later batch row fails during setup', async () => {
+  it('leaves partially recorded legacy destroy jobs queued for worker recovery when intake fails', async () => {
+    fetchMock.mockImplementation(async input => new Response(JSON.stringify(
+      String(input).includes('Action=DescribeInstances')
+        ? { TotalCount: 0, Instances: { Instance: [] } }
+        : { RequestId: 'legacy-delete-fixture' },
+    ), { status: 200 }));
     const batch = await repository.createSingleInstanceBatch({
       name: 'destroy-dispatch-failure-batch',
       platformImageAssetId: 'memory-2',
@@ -1373,6 +1423,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-dispatch-failure',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -1399,6 +1450,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-dispatch-failure',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -1437,14 +1489,20 @@ describe('single instances', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({})
         .expect(500);
-      expect(dispatchSpy).toHaveBeenCalledTimes(2);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect((await repository.listProvisionJobs()).filter(job => job.status === 'pending')).toHaveLength(2);
     } finally {
       updateSpy.mockRestore();
       dispatchSpy.mockRestore();
     }
+    await pumpLegacySingleInstanceWorker(worker, repository);
+    expect((await repository.listRangeInstances()).map(instance => ({ status: instance.status, errorSummary: instance.errorSummary })))
+      .toEqual([{ status: 'destroyed', errorSummary: null }, { status: 'destroyed', errorSummary: null }]);
+    expect((await repository.listProvisionJobs()).map(job => ({ status: job.status, errorSummary: job.errorSummary })))
+      .toEqual([{ status: 'succeeded', errorSummary: null }, { status: 'succeeded', errorSummary: null }]);
   });
 
-  it('executes launched batch create jobs through ECS-native APIs and marks child instances running', async () => {
+  it('resumes explicitly labeled legacy native batch jobs through ECS APIs and marks members running', async () => {
     let runInstancesCallCount = 0;
     const runInstancesBodies: string[] = [];
     const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
@@ -1528,6 +1586,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
+    await markQueuedInstancesAsLegacyNative(repository, response.body.instances.map((member: { id: string }) => member.id));
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(async () => {
       const first = await repository.getRangeInstanceById(response.body.instances[0].id);
       const second = await repository.getRangeInstanceById(response.body.instances[1].id);
@@ -1563,7 +1624,7 @@ describe('single instances', () => {
     );
   });
 
-  it('waits for public ip readiness before persisting the created single-instance access entry', async () => {
+  it('resumes legacy native public-IP refresh jobs until the access entry becomes ready', async () => {
     let describeCalls = 0;
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -1623,6 +1684,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
+    await markQueuedInstancesAsLegacyNative(repository, response.body.instances.map((member: { id: string }) => member.id));
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(
       async () => {
         const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
@@ -1630,13 +1694,11 @@ describe('single instances', () => {
         expect(instance?.status).toBe('running');
         expect(instance?.accessEntry?.publicIp).toBe('47.100.20.10');
       },
-      160,
-      25,
     );
     expect(describeCalls).toBeGreaterThanOrEqual(2);
   });
 
-  it('skips aliyun auto-release when the requested destroy time is too close and falls back to platform expiry', async () => {
+  it('resumes legacy native jobs without aliyun auto-release when expiry is too close', async () => {
     const runInstancesBodies: string[] = [];
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -1695,6 +1757,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
+    await markQueuedInstancesAsLegacyNative(repository, response.body.instances.map((member: { id: string }) => member.id));
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(async () => {
       const instance = await repository.getRangeInstanceById(response.body.instances[0].id);
       expect(instance?.status).toBe('running');
@@ -1705,7 +1770,7 @@ describe('single instances', () => {
     expect(runInstancesBodies[0]).toContain(`ClientToken=${response.body.instances[0].lastJobId}`);
   });
 
-  it('executes batch destroy-all through ECS-native APIs and marks child instances destroyed', async () => {
+  it('executes queued legacy native destroy-all jobs through the worker and marks members destroyed', async () => {
     fetchMock.mockImplementation(async (_input, init) => {
       const body = typeof init?.body === 'string' ? init.body : '';
 
@@ -1742,6 +1807,7 @@ describe('single instances', () => {
         ssh: 'ssh root@47.100.30.10',
       },
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-native',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -1775,6 +1841,7 @@ describe('single instances', () => {
         ssh: 'ssh root@47.100.30.11',
       },
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-native',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -1803,6 +1870,8 @@ describe('single instances', () => {
 
     expect(response.body.jobCount).toBe(2);
 
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(async () => {
       const refreshedFirst = await repository.getRangeInstanceById(first.id);
       const refreshedSecond = await repository.getRangeInstanceById(second.id);
@@ -1814,7 +1883,7 @@ describe('single instances', () => {
     });
   });
 
-  it('treats ecs instances already auto-released in aliyun as a successful destroy', async () => {
+  it('treats legacy native instances already auto-released in aliyun as a successful worker destroy', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -1870,6 +1939,7 @@ describe('single instances', () => {
         ssh: 'ssh root@47.100.40.10',
       },
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'auto-release',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -1896,6 +1966,8 @@ describe('single instances', () => {
       .send({})
       .expect(201);
 
+    await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
     await waitForAsync(async () => {
       const refreshed = await repository.getRangeInstanceById(instance.id);
       expect(refreshed?.status).toBe('destroyed');
@@ -1903,7 +1975,7 @@ describe('single instances', () => {
     });
   });
 
-  it('retries batch destroy-all while aliyun still reports the ecs instances as initializing', async () => {
+  it('retries queued legacy native destruction while aliyun reports instances initializing', async () => {
     const previousRetryInterval = process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS;
     process.env.SINGLE_INSTANCE_DESTROY_RETRY_INTERVAL_MS = '1';
     let deleteCalls = 0;
@@ -1950,6 +2022,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-retry',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
@@ -1977,6 +2050,7 @@ describe('single instances', () => {
       status: 'running',
       singleInstanceBatchId: batch.id,
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'destroy-retry',
         quantityIndex: 2,
         hostKey: 'single-ecs-2',
@@ -2004,6 +2078,8 @@ describe('single instances', () => {
         .send({})
         .expect(201);
 
+      await pumpLegacySingleInstanceWorker(app.get(ProvisioningWorkerService), repository);
+
       await waitForAsync(async () => {
         const refreshedFirst = await repository.getRangeInstanceById(first.id);
         const refreshedSecond = await repository.getRangeInstanceById(second.id);
@@ -2028,6 +2104,7 @@ describe('single instances', () => {
       instanceMode: 'single',
       status: 'running',
       singleInstanceConfig: {
+        executionBackend: 'ecs-native',
         baseName: 'stop-guard',
         quantityIndex: 1,
         hostKey: 'single-ecs-1',
