@@ -2999,12 +2999,6 @@ describe('OpenTofuRangeProvisioner', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          PriceInfo: { Price: { TradePrice: 0.4 } },
-        }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
           AvailableZones: {
             AvailableZone: [
               {
@@ -3030,12 +3024,6 @@ describe('OpenTofuRangeProvisioner', () => {
         ok: true,
         json: async () => ({
           PriceInfo: { Price: { TradePrice: 0.7 } },
-        }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          PriceInfo: { Price: { TradePrice: 0.2 } },
         }),
       } as Response)
       .mockResolvedValueOnce({
@@ -3191,7 +3179,7 @@ describe('OpenTofuRangeProvisioner', () => {
           expect.objectContaining({ key: 'ecs-2', instance_type: 'ecs.c7.large' }),
         ]),
       );
-      expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes('Action=DescribePrice'))).toHaveLength(6);
+      expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes('Action=DescribePrice'))).toHaveLength(4);
     } finally {
       global.fetch = originalFetch;
     }

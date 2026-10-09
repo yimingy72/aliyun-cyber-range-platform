@@ -45,13 +45,15 @@ DOCKERFILE
 if [ -n "${CI_BASE_IMAGE:-}" ]; then
   # Local final verification can reuse a prepared dependency runtime without fetching packages again.
   docker build -t "$CI_IMAGE" -f - . <<DOCKERFILE
+FROM ${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.13.1-minimal} AS tofu
 FROM ${CI_BASE_IMAGE}
+COPY --from=tofu /usr/local/bin/tofu /usr/local/bin/tofu
 WORKDIR /app
 COPY . .
 RUN pnpm install --offline --frozen-lockfile && pnpm --filter @aliyun-cyber-range/database prisma:generate
 DOCKERFILE
 else
-  docker build --build-arg "OPENTOFU_IMAGE=${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.12.3-minimal}" \
+  docker build --build-arg "OPENTOFU_IMAGE=${OPENTOFU_IMAGE:-ghcr.io/opentofu/opentofu:1.13.1-minimal}" \
     --build-arg "PNPM_REGISTRY=${PNPM_REGISTRY:-https://registry.npmjs.org}" \
     -f scripts/ci/Dockerfile -t "$CI_IMAGE" .
 fi

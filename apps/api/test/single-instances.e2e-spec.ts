@@ -513,9 +513,9 @@ describe('single instances', () => {
     expect(runInstancesBodies[0]).toContain('PlatformScope');
     expect(runInstancesBodies[0]).toContain('RangeInstanceId');
     expect(runInstancesBodies[0]).toContain('BillingStartAt');
-    expect(tagResourceBodies).toEqual([
+    await waitForAsync(async () => expect(tagResourceBodies).toEqual([
       expect.stringContaining('ResourceType=disk'),
-    ]);
+    ]));
     expect(tagResourceBodies[0]).toContain('ResourceId.1=d-billing-tags-01');
     expect(tagResourceBodies[0]).toContain('PlatformResourceType');
     expect(tagResourceBodies[0]).toContain('PlatformManaged');

@@ -55,8 +55,11 @@ type SingleInstanceExecutionItem = { instance: RangeInstanceRecord; job: Provisi
 export class ProvisioningWorkerService {
   private readonly logger = new Logger(ProvisioningWorkerService.name);
   private readonly activeSingleBatchIds = new Set<string>();
+  private readonly activeRangeInstanceIds = new Set<string>();
   private readonly activeTasks = new Set<Promise<void>>();
-  private rangeTaskActive = false;
+  private readonly failedTaskRetryAfter = new Map<string, number>();
+  private readonly rangeConcurrency = readWorkerConcurrency('PROVISIONING_WORKER_RANGE_CONCURRENCY', 2);
+  private readonly singleBatchConcurrency = readWorkerConcurrency('PROVISIONING_WORKER_SINGLE_BATCH_CONCURRENCY', 3);
   private readonly singleInstanceBatchExecutionService: SingleInstanceBatchExecutionService;
   private readonly platformResourceReconciliationService: PlatformResourceReconciliationService;
   private nextResourceReconciliationAt = 0;
@@ -80,7 +83,9 @@ export class ProvisioningWorkerService {
   }
 
   dispatch(jobId: string) {
-    void this.dispatchSingleInstanceJob(jobId);
+    void this.dispatchSingleInstanceJob(jobId).catch(() => {
+      this.logger.error('Provision job dispatch failed; pending jobs remain available to the worker.');
+    });
   }
 
   async runLoop(): Promise<void> {
@@ -622,6 +627,7 @@ export class ProvisioningWorkerService {
   }
 
   private async startEligiblePendingJobs() {
+    this.clearExpiredTaskFailures();
     const pendingJobs = (await this.adminRepository.listProvisionJobs()).filter((job) => job.status === 'pending');
 
     if (!pendingJobs.length) {
@@ -633,6 +639,7 @@ export class ProvisioningWorkerService {
     let started = 0;
 
     for (const job of pendingJobs) {
+      if (this.failedTaskRetryAfter.has(job.id)) continue;
       const instance = instancesById.get(job.rangeInstanceId);
 
       if (!instance) {
@@ -640,32 +647,20 @@ export class ProvisioningWorkerService {
       }
 
       if (instance.instanceMode === 'single') {
-        const batchLockId = instance.singleInstanceBatchId ?? instance.id;
-
-        if (this.activeSingleBatchIds.has(batchLockId)) {
-          continue;
-        }
-
-        this.activeSingleBatchIds.add(batchLockId);
-        started += 1;
-        this.trackTask(
-          this.process(job.id).finally(() => {
-            this.activeSingleBatchIds.delete(batchLockId);
-          }),
-        );
+        if (this.startSingleInstanceJob(job, instance.singleInstanceBatchId ?? instance.id)) started += 1;
         continue;
       }
 
-      if (this.rangeTaskActive) {
+      if (this.activeRangeInstanceIds.size >= this.rangeConcurrency || this.activeRangeInstanceIds.has(instance.id)) {
         continue;
       }
 
-      this.rangeTaskActive = true;
+      this.activeRangeInstanceIds.add(instance.id);
       started += 1;
       this.trackTask(
         this.process(job.id).finally(() => {
-          this.rangeTaskActive = false;
-        }),
+          this.activeRangeInstanceIds.delete(instance.id);
+        }), job.id,
       );
     }
 
@@ -717,11 +712,22 @@ export class ProvisioningWorkerService {
     return template.ownerUserId === actor.id || instance.ownerUserId === template.ownerUserId;
   }
 
-  private trackTask(task: Promise<void>) {
-    this.activeTasks.add(task);
-    void task.finally(() => {
-      this.activeTasks.delete(task);
+  private trackTask(task: Promise<void>, jobId: string) {
+    const tracked = task.catch(() => {
+      this.failedTaskRetryAfter.set(jobId, Date.now() + readWorkerPollIntervalMs());
+      this.logger.error(`Provisioning task ${jobId} failed; its job state remains available for recovery.`);
     });
+    this.activeTasks.add(tracked);
+    void tracked.then(() => {
+      this.activeTasks.delete(tracked);
+    });
+  }
+
+  private clearExpiredTaskFailures() {
+    const now = Date.now();
+    for (const [id, retryAfter] of this.failedTaskRetryAfter) {
+      if (retryAfter <= now) this.failedTaskRetryAfter.delete(id);
+    }
   }
 
   private async dispatchSingleInstanceJob(jobId: string) {
@@ -742,16 +748,23 @@ export class ProvisioningWorkerService {
         ? `${instance.id}:refresh_status`
         : instance.singleInstanceBatchId ?? instance.id;
 
-    if (this.activeSingleBatchIds.has(batchLockId)) {
-      return;
+    this.startSingleInstanceJob(job, batchLockId);
+  }
+
+  private startSingleInstanceJob(job: ProvisionJobRecord, batchLockId: string) {
+    this.clearExpiredTaskFailures();
+    if ((this.failedTaskRetryAfter.get(job.id) ?? 0) > Date.now()) return false;
+    if (this.activeSingleBatchIds.size >= this.singleBatchConcurrency || this.activeSingleBatchIds.has(batchLockId)) {
+      return false;
     }
 
     this.activeSingleBatchIds.add(batchLockId);
     this.trackTask(
-      this.process(jobId).finally(() => {
+      this.process(job.id).finally(() => {
         this.activeSingleBatchIds.delete(batchLockId);
-      }),
+      }), job.id,
     );
+    return true;
   }
 
   private async processSingleInstanceJob(input: SingleInstanceJobInput) {
@@ -1670,6 +1683,11 @@ export class ProvisioningWorkerService {
       throw error;
     }
   }
+}
+
+function readWorkerConcurrency(name: string, fallback: number) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 function readWorkerPollIntervalMs() {

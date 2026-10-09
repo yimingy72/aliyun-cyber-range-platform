@@ -1,0 +1,40 @@
+{
+  "version": 4,
+  "terraform_version": "1.12.3",
+  "serial": 1,
+  "lineage": "6336ef90-ef5b-f27a-bf65-925a34cd1d4c",
+  "outputs": {
+    "compatibility": {
+      "value": "upgrade-fixture",
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "terraform_data",
+      "name": "compatibility",
+      "provider": "provider[\"terraform.io/builtin/terraform\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "13eecc60-4025-6ba2-6e97-f773a9fd369c",
+            "input": {
+              "value": "upgrade-fixture",
+              "type": "string"
+            },
+            "output": {
+              "value": "upgrade-fixture",
+              "type": "string"
+            },
+            "triggers_replace": null
+          },
+          "sensitive_attributes": []
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}
+

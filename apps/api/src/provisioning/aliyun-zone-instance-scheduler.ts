@@ -33,6 +33,7 @@ const ALICLOUD_RPC_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_RPC_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_RPC_API_VERSION = '2014-05-26';
 const ALICLOUD_PAGE_SIZE = 100;
+const PRICE_READ_CONCURRENCY = 3;
 
 export async function selectZoneAndHostInstanceTypes(input: {
   regionId: string;
@@ -45,6 +46,16 @@ export async function selectZoneAndHostInstanceTypes(input: {
   hostInstanceTypes: Record<string, string>;
   attemptedZones: AttemptedZone[];
 }> {
+  const priceRequests = new Map<string, Promise<number | null>>();
+  const readPrice = (zoneId: string, instanceTypeId: string) => {
+    const key = `${zoneId}\u0000${instanceTypeId}\u0000${input.systemDiskCategory ?? ''}`;
+    let request = priceRequests.get(key);
+    if (!request) {
+      request = describeInstanceTypePrice({ ...input, zoneId, instanceTypeId });
+      priceRequests.set(key, request);
+    }
+    return request;
+  };
   const instanceTypes = await describeInstanceTypes(input);
   const x86InstanceTypesById = new Map(
     instanceTypes
@@ -58,6 +69,7 @@ export async function selectZoneAndHostInstanceTypes(input: {
     zoneId: input.defaultZoneId,
     x86InstanceTypesById,
     includePrice: defaultZoneRequiresMultiNicPricing,
+    readPrice,
   });
 
   if (defaultZoneEvaluation.canCreateAllHosts) {
@@ -79,6 +91,7 @@ export async function selectZoneAndHostInstanceTypes(input: {
       zoneId,
       x86InstanceTypesById,
       includePrice: true,
+      readPrice,
     });
     attemptedZones.push(toAttemptedZone(evaluation));
     fallbackEvaluations.push(evaluation);
@@ -108,6 +121,7 @@ async function evaluateZone(input: {
   account: { accessKeyId: string; accessKeySecret: string };
   x86InstanceTypesById: Map<string, InstanceTypeMetadata>;
   includePrice: boolean;
+  readPrice: (zoneId: string, instanceTypeId: string) => Promise<number | null>;
 }): Promise<ZoneEvaluation> {
   const saleableInstanceTypeIds = new Set(await describeAvailableInstanceTypeIds(input));
   if (saleableInstanceTypeIds.size === 0) {
@@ -151,11 +165,14 @@ async function evaluateZone(input: {
     let selectedInstanceType: string | null = null;
     let selectedPrice: number | null = null;
 
-    for (const instanceTypeId of candidateInstanceTypes) {
-      const price = await describeInstanceTypePrice({
-        ...input,
-        instanceTypeId,
-      });
+    const prices: Array<number | null> = [];
+    for (let offset = 0; offset < candidateInstanceTypes.length; offset += PRICE_READ_CONCURRENCY) {
+      prices.push(...await Promise.all(candidateInstanceTypes.slice(offset, offset + PRICE_READ_CONCURRENCY)
+        .map((instanceTypeId) => input.readPrice(input.zoneId, instanceTypeId))));
+    }
+
+    for (const [index, instanceTypeId] of candidateInstanceTypes.entries()) {
+      const price = prices[index]!;
 
       if (price === null) {
         continue;

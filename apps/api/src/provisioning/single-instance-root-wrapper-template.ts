@@ -9,6 +9,7 @@ export function buildSingleInstanceRootWrapperFiles(moduleSource: string) {
       '  resource_name_prefix      = var.resource_name_prefix',
       '  instance_name             = var.instance_name',
       '  host_name                 = var.host_name',
+      '  host_key                  = var.host_key',
       '  zone_id                   = var.zone_id',
       '  vpc_cidr                  = var.vpc_cidr',
       '  vswitch_cidr              = var.vswitch_cidr',
