@@ -86,6 +86,51 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
       expect(ownedCosBucketProof((await prisma.cloudImageImportBucket.findFirst())!)).toBeNull(); expect(cloud.deletes).toBe(0);
     });
   });
+  it('invalidates mixed usage found by cleanup and never restores it when foreign objects later disappear', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input); const remote = cloud.buckets.get(bucket.bucketName)!;
+      remote.objects.set('external-file', { owner: 'external', context: 'external', job: 'external', size: 1, etag: 'fixture-etag' });
+      await expect(service.cleanupIfIdle({ bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: '100001', regionId: 'ap-shanghai' })).rejects.toThrow('整桶费用');
+      expect(ownedCosBucketProof((await prisma.cloudImageImportBucket.findFirst())!)).toBeNull();
+      remote.objects.clear();
+      await expect(service.ensureImportBucket(input)).rejects.toThrow('不能重新接管');
+      expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(0);
+    });
+  });
+  it('keeps a transient remote verification failure pending and restores the same creation proof on the next getter', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input);
+      const original = cloud.fetch.getMockImplementation()!;
+      cloud.fetch.mockImplementationOnce(original).mockImplementationOnce(original).mockRejectedValueOnce(new Error('transient verification fixture'));
+      const target = { bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: '100001', regionId: 'ap-shanghai' };
+      await expect(service.getOwnedBucket(target)).rejects.toThrow('NETWORK_OR_TIMEOUT');
+      const pending = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      expect(ownedCosBucketProof(pending)).toBeNull();
+      expect((pending.ownershipProof as Record<string,unknown>).verificationPending).toBe(true);
+      expect(await service.getOwnedBucket(target)).toEqual(bucket);
+      expect(ownedCosBucketProof((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!)).not.toBeNull();
+      expect(cloud.creates).toBe(1);
+      cloud.fetch.mockImplementationOnce(original).mockImplementationOnce(original).mockRejectedValueOnce(new Error('second transient verification fixture'));
+      await expect(service.getOwnedBucket(target)).rejects.toThrow('NETWORK_OR_TIMEOUT');
+      await runInSystemCloudWorkspaceScope(() => service.refreshPendingBuckets());
+      expect((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.status).toBe('deleted');
+      expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(1);
+    });
+  });
+
+  it('releases a proven vanished bucket through the independent worker without recreating or deleting it', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input); cloud.buckets.delete(bucket.bucketName);
+      await expect(service.getOwnedBucket({ bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: '100001', regionId: 'ap-shanghai' })).rejects.toThrow('BUCKET_NOT_FOUND');
+      expect(ownedCosBucketProof((await prisma.cloudImageImportBucket.findFirst())!)).toBeNull();
+      await runInSystemCloudWorkspaceScope(() => service.refreshPendingBuckets());
+      const row = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      expect(row.status).toBe('deleted'); expect(row.activeSlot).toBeNull();
+      expect((await prisma.billingLedgerResource.findFirst())!.releasedAt).toBeInstanceOf(Date);
+      expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(0);
+    });
+  });
+
   it('recovers orphaned unknown creation via explicit system discovery and destroys the now-proven idle bucket', async () => {
     await runInCloudWorkspace(scope, async () => { cloud.unknownCreate(); await expect(service.ensureImportBucket(input)).rejects.toThrow(); });
     await runInSystemCloudWorkspaceScope(() => service.refreshPendingBuckets());

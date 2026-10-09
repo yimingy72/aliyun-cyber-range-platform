@@ -18,7 +18,7 @@ export function ownedCosBucketProof(bucket: CosBucketIdentity): Record<string, u
   const proof = value as Record<string, unknown>;
   const identity = ['cloudWorkspaceId', 'cloudProvider', 'cloudAccountContextId', 'cloudAccountUid', 'appId', 'regionId', 'bucketName', 'creationNonce', 'creatorUserId', 'ownershipMarkerKey'] as const;
   if (proof.kind !== COS_BUCKET_PROOF_KIND || proof.bucketId !== bucket.id || !['available', 'deleting', 'deleted'].includes(bucket.status) || identity.some(key => proof[key] !== bucket[key]) || proof.aclPrivate !== true
-    || proof.policyAbsent !== true || proof.exclusiveUsage !== true || proof.preflightAbsentAt !== bucket.preflightAbsentAt.toISOString()
+    || proof.policyAbsent !== true || proof.exclusiveUsage !== true || proof.verificationPending === true || proof.preflightAbsentAt !== bucket.preflightAbsentAt.toISOString()
     || proof.creationStartedAt !== bucket.creationStartedAt.toISOString() || proof.ownerId !== `qcs::cam::uin/${bucket.cloudAccountUid}:uin/${bucket.cloudAccountUid}`) return null;
   const tags = proof.atomicTags;
   if (!tags || typeof tags !== 'object' || Array.isArray(tags) || Object.entries(expectedCosBucketTags(bucket)).some(([key, value]) => (tags as Record<string,unknown>)[key] !== value)) return null;

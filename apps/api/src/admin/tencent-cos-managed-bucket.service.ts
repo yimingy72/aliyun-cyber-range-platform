@@ -54,7 +54,8 @@ export class TencentCosManagedBucketService {
   }
   private async claim(bucket: CloudImageImportBucket) {
     const token = randomUUID();
-    const claimed = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, OR: [{ leaseToken: null }, { leaseExpiresAt: { lte: new Date() } }] }, data: { leaseToken: token, leaseExpiresAt: new Date(Date.now() + LEASE_MS) } });
+    const claimed = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: bucket.status, activeSlot: bucket.activeSlot,
+      OR: [{ leaseToken: null }, { leaseExpiresAt: { lte: new Date() } }] }, data: { leaseToken: token, leaseExpiresAt: new Date(Date.now() + LEASE_MS) } });
     if (claimed.count !== 1) conflict('COS 导入桶正在处理，请稍后重试。');
     return token;
   }
@@ -94,6 +95,7 @@ export class TencentCosManagedBucketService {
   }
   private async prepare(bucket: CloudImageImportBucket, context: Awaited<ReturnType<TencentCosManagedBucketService['credentials']>>, token: string) {
     if (bucket.status === 'deleted' || bucket.status === 'deleting') conflict('COS 桶正在回收，不能追加导入任务。');
+    if (bucket.status === 'available' && !this.originProof(bucket)) conflict('COS 专属来源已发生冲突，不能重新接管整桶费用。');
     const { credentials } = context;
     if (!bucket.creationStartedAt) {
       const preflight = await requestCos({ contextCredentials: credentials, bucketName: bucket.bucketName, method: 'HEAD' });
@@ -112,15 +114,27 @@ export class TencentCosManagedBucketService {
       }
     }
     const proof = await this.verify(bucket, context);
-    bucket = await this.update(bucket, token, { status: 'available', ownershipProof: json(proof), errorMessage: null });
+    bucket = await this.acceptVerification(bucket, token, proof);
     await requestCos({ contextCredentials: credentials, bucketName: bucket.bucketName, method: 'PUT', query: { cors: '' }, headers: { 'content-type': 'application/xml' },
       body: '<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>PUT</AllowedMethod><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>' });
     await this.ledger(bucket);
     return bucket;
   }
   private async verify(bucket: CloudImageImportBucket, context: Awaited<ReturnType<TencentCosManagedBucketService['credentials']>>) {
+    try { return await this.verifyRemote(bucket, context); }
+    catch (error) {
+      if (this.originProof(bucket)) {
+        const transient = error instanceof TencentCosRequestError;
+        await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: bucket.status, ownershipProof: { equals: json(bucket.ownershipProof) } },
+          data: { errorMessage: 'COS 当前身份或专属使用证明待核实。', ownershipProof: json({ ...bucket.ownershipProof as Record<string, unknown>, verificationPending: transient, ...(transient ? {} : { exclusiveUsage: false }) }) } });
+      }
+      throw error;
+    }
+  }
+  private async verifyRemote(bucket: CloudImageImportBucket, context: Awaited<ReturnType<TencentCosManagedBucketService['credentials']>>) {
     this.assertIdentity(bucket, context.credentials);
     const head = await requestCos({ contextCredentials: context.credentials, bucketName: bucket.bucketName, method: 'HEAD' });
+    if (head.status === 404) throw new TencentCosRequestError('BUCKET_NOT_FOUND', 404);
     if (!head.ok || !bucket.preflightAbsentAt || !bucket.creationStartedAt) conflict('COS 创建来源缺少预创建 404 或当前桶身份。');
     const aclResponse = await requestCos({ contextCredentials: context.credentials, bucketName: bucket.bucketName, method: 'GET', query: { acl: '' } });
     const acl = parseCosXml(await aclResponse.text(), 'AccessControlPolicy');
@@ -154,10 +168,16 @@ export class TencentCosManagedBucketService {
     const proof = { ...preflight, kind: COS_BUCKET_PROOF_KIND, bucketId: bucket.id, cloudWorkspaceId: bucket.cloudWorkspaceId, cloudProvider: 'tencent_cloud', cloudAccountContextId: bucket.cloudAccountContextId,
       cloudAccountUid: bucket.cloudAccountUid, appId: bucket.appId, regionId: bucket.regionId, bucketName: bucket.bucketName, creationNonce: bucket.creationNonce,
       creatorUserId: bucket.creatorUserId, ownershipMarkerKey: bucket.ownershipMarkerKey, preflightAbsentAt: bucket.preflightAbsentAt.toISOString(), creationStartedAt: bucket.creationStartedAt.toISOString(),
-      cloudCreationAt: creationDate, ownerId: owner, aclPrivate: true, policyAbsent: true, exclusiveUsage: true, atomicTags: tags, verifiedAt: new Date().toISOString(),
+      cloudCreationAt: creationDate, ownerId: owner, aclPrivate: true, policyAbsent: true, exclusiveUsage: true, verificationPending: false, atomicTags: tags, verifiedAt: new Date().toISOString(),
       iamRequestId: context.iamRequestId, headRequestId: requestId(head), aclRequestId: requestId(aclResponse), tagRequestId: requestId(tagResponse), serviceRequestId };
     if (!ownedCosBucketProof({ ...bucket, status: 'available', ownershipProof: proof })) conflict('COS 创建证明的时间或身份范围不完整。');
     return proof;
+  }
+  private async acceptVerification(bucket: CloudImageImportBucket, token: string, proof: Record<string,unknown>) {
+    const changed = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, leaseToken: token, leaseExpiresAt: { gt: new Date() }, status: bucket.status,
+      ownershipProof: { equals: json(bucket.ownershipProof) } }, data: { status: bucket.status === 'deleting' ? 'deleting' : 'available', ownershipProof: json(proof), errorMessage: null } });
+    if (changed.count !== 1) conflict('COS 来源证明或租约在核验期间已变化。');
+    return (await this.prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
   }
   private async ledger(bucket: CloudImageImportBucket, releasedAt?: Date) {
     if (!ownedCosBucketProof(bucket)) conflict('COS 计费台账需要准确的平台创建证明。');
@@ -175,14 +195,22 @@ export class TencentCosManagedBucketService {
   async getOwnedBucket(input: BucketRequest): Promise<ManagedCosBucket> {
     this.scope();
     const bucket = await this.prisma.cloudImageImportBucket.findUnique({ where: { id: input.bucketId } });
-    if (!bucket || !['available', 'deleting'].includes(bucket.status) || !ownedCosBucketProof(bucket)
+    if (!bucket || !['available', 'deleting'].includes(bucket.status) || !this.originProof(bucket)
       || bucket.cloudAccountContextId !== input.cloudAccountContextId || bucket.cloudAccountUid !== input.cloudAccountUid || bucket.regionId !== input.regionId) conflict('COS 持久来源证明或冻结身份不一致。');
     const context = await this.credentials(input.cloudAccountContextId);
-    try { await this.verify(bucket, context); } catch (error) {
-      await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: { in: ['available', 'deleting'] } }, data: { errorMessage: 'COS 当前身份或专属使用证明待核实。', ownershipProof: json({ ...bucket.ownershipProof as Record<string, unknown>, exclusiveUsage: false }) } });
-      throw error;
+    const proof = await this.verify(bucket, context);
+    if ((bucket.ownershipProof as Record<string,unknown>).verificationPending === true) {
+      const restored = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: bucket.status, ownershipProof: { equals: json(bucket.ownershipProof) } }, data: { ownershipProof: json(proof), errorMessage: null } });
+      if (restored.count !== 1) conflict('COS 来源证明在核验期间已变化，请重新读取。');
     }
-    return this.view(bucket);
+    const current = await this.prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } });
+    if (!current || !ownedCosBucketProof(current)) conflict('COS 来源证明在核验期间已变化，请重新读取。');
+    return this.view(current);
+  }
+  private originProof(bucket: CloudImageImportBucket) {
+    const proof = bucket.ownershipProof;
+    if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return null;
+    return ownedCosBucketProof({ ...bucket, ownershipProof: { ...proof, verificationPending: false } });
   }
   private async objectBucket(input: CosObjectRequestInput | CosPresignInput) {
     this.scope(); const bucket = await this.prisma.cloudImageImportBucket.findUnique({ where: { bucketName: input.bucketName } });
@@ -314,13 +342,20 @@ export class TencentCosManagedBucketService {
         const source = this.scope();
         if (source.cloudWorkspaceId !== row.cloudWorkspaceId || source.accountUid !== row.cloudAccountUid) conflict('COS 恢复扫描来源与工作空间不一致。');
         if (row.leaseToken && row.leaseExpiresAt && row.leaseExpiresAt > new Date()) return;
-        if (['creating', 'unknown'].includes(row.status)) {
+        if (['creating', 'unknown'].includes(row.status) || (this.originProof(row) && (row.ownershipProof as Record<string,unknown>)?.verificationPending === true)) {
           const context = await this.credentials(row.cloudAccountContextId); this.assertIdentity(row, context.credentials);
           await this.leased(row, async token => {
             const head = await requestCos({ contextCredentials: context.credentials, bucketName: row.bucketName, method: 'HEAD' });
-            if (head.status === 404) return; // Unknown create is never retried, renamed, or re-nonced.
+            if (head.status === 404) {
+              // An already-proven source can be released after confirmed absence; an unknown create is never retried.
+              if (this.originProof(row) && !await this.activeJobs(row)) {
+                const absent = await this.update(row, token, { ownershipProof: json({ ...row.ownershipProof as Record<string,unknown>, verificationPending: false }) });
+                await this.finishDeletion(absent, token); reconciled++;
+              }
+              return;
+            }
             const proof = await this.verify(row, context);
-            const ready = await this.update(row, token, { status: 'available', ownershipProof: json(proof), errorMessage: null });
+            const ready = await this.acceptVerification(row, token, proof);
             await this.ledger(ready); reconciled++;
           });
         }

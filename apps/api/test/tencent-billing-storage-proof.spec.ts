@@ -25,9 +25,9 @@ describe('Tencent platform storage creation proof', () => {
     expect(await new BillingService(repository).getSummary(WINDOW)).toMatchObject({ totalPretaxAmount: 0.400000001, platformPretaxAmount: 0.400000001, anomalyCount: 0, resourcesWithoutBillCount: 0 });
     expect(await repository.listBillingLineItems()).toHaveLength(1); expect(fetch).toHaveBeenCalledTimes(1);
   });
-  it.each(['creationNonce', 'cloudAccountUid', 'cloudAccountContextId', 'appId', 'cloudWorkspaceId', 'exclusiveUsage'])('rejects a missing/conflicting private bucket proof field %s and keeps reconciliation visible', async key => {
+  it.each(['creationNonce', 'cloudAccountUid', 'cloudAccountContextId', 'appId', 'cloudWorkspaceId', 'exclusiveUsage', 'verificationPending'])('rejects a missing/conflicting private bucket proof field %s and keeps reconciliation visible', async key => {
     const { repository, bucket, ledger } = await storage();
-    (bucket.ownershipProof as Record<string,unknown>)[key] = key === 'exclusiveUsage' ? false : 'foreign';
+    (bucket.ownershipProof as Record<string,unknown>)[key] = key === 'exclusiveUsage' ? false : key === 'verificationPending' ? true : 'foreign';
     expect((await loadPlatformBillingProof(repository)).createdLedgerIds.has(ledger.id)).toBe(false);
     jest.spyOn(global, 'fetch').mockImplementation(async () => signedTencentBillingResponse([tencentBill({ BusinessCode: 'p_cos', ResourceId: bucket.bucketName })]));
     await tencentBillingSync(repository).syncRange(WINDOW);
