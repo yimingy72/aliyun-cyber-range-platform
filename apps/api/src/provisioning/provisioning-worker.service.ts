@@ -627,10 +627,7 @@ export class ProvisioningWorkerService {
   }
 
   private async startEligiblePendingJobs() {
-    const now = Date.now();
-    for (const [id, retryAfter] of this.failedTaskRetryAfter) {
-      if (retryAfter <= now) this.failedTaskRetryAfter.delete(id);
-    }
+    this.clearExpiredTaskFailures();
     const pendingJobs = (await this.adminRepository.listProvisionJobs()).filter((job) => job.status === 'pending');
 
     if (!pendingJobs.length) {
@@ -726,6 +723,13 @@ export class ProvisioningWorkerService {
     });
   }
 
+  private clearExpiredTaskFailures() {
+    const now = Date.now();
+    for (const [id, retryAfter] of this.failedTaskRetryAfter) {
+      if (retryAfter <= now) this.failedTaskRetryAfter.delete(id);
+    }
+  }
+
   private async dispatchSingleInstanceJob(jobId: string) {
     const job = await this.adminRepository.getProvisionJobById(jobId);
 
@@ -748,6 +752,7 @@ export class ProvisioningWorkerService {
   }
 
   private startSingleInstanceJob(job: ProvisionJobRecord, batchLockId: string) {
+    this.clearExpiredTaskFailures();
     if ((this.failedTaskRetryAfter.get(job.id) ?? 0) > Date.now()) return false;
     if (this.activeSingleBatchIds.size >= this.singleBatchConcurrency || this.activeSingleBatchIds.has(batchLockId)) {
       return false;

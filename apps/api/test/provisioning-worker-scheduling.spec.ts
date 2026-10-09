@@ -197,6 +197,24 @@ describe('Provisioning worker bounded scheduling', () => {
     release.release(); await Promise.all([...scheduler(worker).activeTasks]);
   });
 
+  it('expires dispatch failure bookkeeping in API processes that do not run the worker loop', async () => {
+    const repository = createMemoryAdminRepository(), jobs = await singles(repository, 2);
+    const worker = new ProvisioningWorkerService(repository, {} as RangeProvisioner, config as any);
+    jest.spyOn(worker, 'process').mockRejectedValue(new Error('fixture failure'));
+    jest.spyOn((worker as any).logger, 'error').mockImplementation(() => {});
+    await scheduler(worker).dispatchSingleInstanceJob(jobs[0].id);
+    await Promise.all([...scheduler(worker).activeTasks]);
+    expect((worker as any).failedTaskRetryAfter.size).toBe(1);
+    const later = Date.now() + 10_000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(later);
+    try {
+      await scheduler(worker).dispatchSingleInstanceJob(jobs[1].id);
+      await Promise.all([...scheduler(worker).activeTasks]);
+      expect((worker as any).failedTaskRetryAfter.size).toBe(1);
+      expect((worker as any).failedTaskRetryAfter.has(jobs[0].id)).toBe(false);
+    } finally { now.mockRestore(); }
+  });
+
   it('benchmarks six slow multi-user range creates at concurrency one and two', async () => {
     const measurements = [];
     for (const concurrency of [1, 2]) {
