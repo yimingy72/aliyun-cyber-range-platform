@@ -62,7 +62,7 @@ type ListMode = 'active' | 'history';
 const activeInstanceColumns = [
   { id: 'name', label: '实例 / 批次', priority: 'primary' },
   { id: 'image', label: '镜像', priority: 'secondary' },
-  { id: 'specification', label: '数量 / 规格', priority: 'secondary' },
+  { id: 'specification', label: '数量 / 规格', priority: 'primary' },
   { id: 'public-ip', label: '公网 IP', priority: 'primary' },
   { id: 'status', label: '状态', priority: 'secondary' },
   { id: 'created-at', label: '创建时间', priority: 'detail' },
@@ -75,7 +75,7 @@ const activeInstanceColumns = [
 const historyInstanceColumns = [
   { id: 'name', label: '实例 / 批次', priority: 'primary' },
   { id: 'image', label: '镜像', priority: 'secondary' },
-  { id: 'summary', label: '数量 / 规格', priority: 'secondary' },
+  { id: 'summary', label: '数量 / 规格', priority: 'primary' },
   { id: 'public-ip', label: '公网 IP', priority: 'primary' },
   { id: 'status', label: '状态', priority: 'secondary' },
   { id: 'started-at', label: '开启时间', priority: 'detail' },
