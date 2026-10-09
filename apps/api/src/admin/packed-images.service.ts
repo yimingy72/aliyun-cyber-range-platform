@@ -45,8 +45,16 @@ export class PackedImagesService {
       const source = await repo.getImageSnapshotById(snapshotId);
       if (artifact.status !== 'available' || !source?.isAvailable || source.imageId !== artifact.imageId) throw new ConflictException('打包镜像尚不可用或已进入清理，不能重新收录。');
       const asset = await repo.collectPlatformImageAsset({ preserveExisting: true, snapshotId, displayName, ownerUserId: artifact.ownerUserId, visibility: 'private' });
-      const updated = await repo.updatePackedImageArtifact(id, { platformImageAssetId: asset.id });
-      await this.upsertLedger(updated, source.imageId, 'image', undefined, repo);
+      await repo.updatePackedImageArtifact(id, { platformImageAssetId: asset.id });
+      // Recollecting a catalog asset does not restart billing or change the resource's creator.
+      for (const ledger of await repo.listBillingLedgerResources()) {
+        if (ledger.cloudAccountUid === artifact.cloudAccountUid && ledger.regionId === artifact.regionId
+          && ledger.ownerUserId === artifact.ownerUserId && ledger.tagsSnapshot.PlatformPackedImageArtifactId === artifact.id
+          && (ledger.cloudResourceType === 'image' && ledger.cloudResourceId === artifact.imageId
+            || ledger.cloudResourceType === 'snapshot' && artifact.backingSnapshotIds.includes(ledger.cloudResourceId))) {
+          await repo.updateBillingLedgerResource(ledger.id, { platformImageAssetId: asset.id });
+        }
+      }
       return asset;
     }));
   }
