@@ -16,7 +16,6 @@ import { attachOwnerUsernamesAsCreatedBy } from './creator-display';
 import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-image.dto';
 import type { DeleteCustomImageDto } from './dto/image-catalog.dto';
 import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/platform-image-tag.dto';
-import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { imageRpc, cloudItems, cloudPage } from './aliyun-image-rpc';
 import { PackedImagesService } from './packed-images.service';
 import { SystemConfigService } from './system-config.service';
@@ -105,16 +104,6 @@ function containsImageReference(
   };
 
   return visit(value);
-}
-
-function extractImageSnapshotIds(image: AliyunImage | null) {
-  const mappings = image?.DiskDeviceMappings?.DiskDeviceMapping;
-  const entries = Array.isArray(mappings) ? mappings : mappings ? [mappings] : [];
-  return [...new Set(entries.map((entry) => entry.SnapshotId?.trim() ?? '').filter(Boolean))];
-}
-
-function buildAliyunArrayParameters(prefix: string, values: string[]) {
-  return Object.fromEntries(values.map((value, index) => [`${prefix}.${index + 1}`, value]));
 }
 
 @Injectable()
@@ -270,7 +259,6 @@ export class ImageCatalogService {
       const asset = await this.packedImages.restoreAsset(packed.id, snapshotId, displayName);
       return this.withCreatorUsername(asset, currentUser);
     }
-    const billingStartAt = new Date();
     const asset = await this.adminRepository.collectPlatformImageAsset({
       preserveExisting: true,
       snapshotId,
@@ -278,24 +266,7 @@ export class ImageCatalogService {
       ownerUserId: null,
       visibility: 'platform',
     });
-    const tagsSnapshot = buildBillingTags({
-      billingScope: 'platform',
-      platformImageAssetId: asset.id,
-      platformResourceType: 'image',
-      billingStartAt,
-    });
-
-    const snapshotIds = await this.tagPlatformImageAndSnapshots(snapshot.imageId, accountContext, tagsSnapshot);
-    await this.syncPlatformImageBillingLedger({
-      imageId: snapshot.imageId,
-      snapshotIds,
-      platformImageAssetId: asset.id,
-      regionId: accountContext.defaultRegion,
-      accountUid: accountContext.accountUid,
-      billingStartAt,
-      tagsSnapshot,
-    });
-
+    // Catalog inclusion is not resource creation and must not claim external image or snapshot costs.
     return this.withCreatorUsername(asset, currentUser);
   }
 
@@ -633,109 +604,6 @@ export class ImageCatalogService {
     }
 
     return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
-  }
-
-  private async tagPlatformImageAndSnapshots(
-    imageId: string,
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
-    tags: Record<string, string>,
-  ) {
-    await this.performAliyunRpcRequest({
-      accessKeyId: accountContext.accessKeyId,
-      accessKeySecret: accountContext.accessKeySecret,
-      regionId: accountContext.defaultRegion,
-      action: 'TagResources',
-      parameters: {
-        ResourceType: 'image',
-        'ResourceId.1': imageId,
-        ...buildAliyunTagParameters(tags),
-      },
-    });
-
-    const image = await this.describeImageById(imageId, accountContext);
-    const snapshotIds = extractImageSnapshotIds(image);
-
-    if (snapshotIds.length > 0) {
-      await this.performAliyunRpcRequest({
-        accessKeyId: accountContext.accessKeyId,
-        accessKeySecret: accountContext.accessKeySecret,
-        regionId: accountContext.defaultRegion,
-        action: 'TagResources',
-        parameters: {
-          ResourceType: 'snapshot',
-          ...buildAliyunArrayParameters('ResourceId', snapshotIds),
-          ...buildAliyunTagParameters({
-            ...tags,
-            PlatformResourceType: 'snapshot',
-          }),
-        },
-      });
-    }
-
-    return snapshotIds;
-  }
-
-  private async syncPlatformImageBillingLedger(input: {
-    imageId: string;
-    snapshotIds: string[];
-    platformImageAssetId: string;
-    regionId: string;
-    accountUid: string | null;
-    billingStartAt: Date;
-    tagsSnapshot: Record<string, string>;
-  }) {
-    const legacySnapshotLedger = await this.adminRepository.findBillingLedgerResource({
-      cloudProvider: 'alibaba_cloud',
-      regionId: input.regionId,
-      cloudResourceId: input.imageId,
-      cloudResourceType: 'snapshot',
-    });
-
-    if (legacySnapshotLedger && !input.snapshotIds.includes(input.imageId)) {
-      await this.adminRepository.updateBillingLedgerResource(legacySnapshotLedger.id, {
-        releasedAt: input.billingStartAt,
-      });
-    }
-
-    const resources: Array<{ cloudResourceId: string; cloudResourceType: 'image' | 'snapshot' }> = [
-      { cloudResourceId: input.imageId, cloudResourceType: 'image' },
-      ...input.snapshotIds.map((cloudResourceId) => ({ cloudResourceId, cloudResourceType: 'snapshot' as const })),
-    ];
-
-    for (const resource of resources) {
-      const existing = await this.adminRepository.findBillingLedgerResource({
-        cloudProvider: 'alibaba_cloud',
-        regionId: input.regionId,
-        cloudResourceId: resource.cloudResourceId,
-        cloudResourceType: resource.cloudResourceType,
-      });
-
-      if (existing) {
-        await this.adminRepository.updateBillingLedgerResource(existing.id, {
-          billingScope: 'platform',
-          ownerUserId: null,
-          rangeInstanceId: null,
-          singleInstanceBatchId: null,
-          platformImageAssetId: input.platformImageAssetId,
-          releasedAt: null,
-          tagsSnapshot: input.tagsSnapshot,
-        });
-        continue;
-      }
-
-      await this.adminRepository.createBillingLedgerResource({
-        cloudProvider: 'alibaba_cloud',
-        cloudAccountUid: input.accountUid,
-        regionId: input.regionId,
-        cloudResourceId: resource.cloudResourceId,
-        cloudResourceType: resource.cloudResourceType,
-        billingScope: 'platform',
-        ownerUserId: null,
-        platformImageAssetId: input.platformImageAssetId,
-        billingStartAt: input.billingStartAt,
-        tagsSnapshot: input.tagsSnapshot,
-      });
-    }
   }
 
   private async withCreatorUsername(asset: PlatformImageAssetRecord, currentUser?: SessionUserProfile) {

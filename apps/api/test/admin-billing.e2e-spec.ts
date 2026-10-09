@@ -8,6 +8,7 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { createProvenBillingLedger } from './support/create-billing-fixture';
 import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
 
 describe('Admin billing', () => {
@@ -37,18 +38,17 @@ describe('Admin billing', () => {
       status: 'active',
     });
 
-    const ledger = await repository.createBillingLedgerResource({
+    const { ledger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
       cloudResourceType: 'ecs',
       billingScope: 'user',
       ownerUserId: 'user-1',
-      rangeInstanceId: 'range-1',
       billingStartAt: new Date('2026-07-16T00:00:00.000Z'),
       tagsSnapshot: { CreatedBy: 'cyber-range-platform' },
     });
-    const platformLedger = await repository.createBillingLedgerResource({
+    const { ledger: platformLedger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'eip-1',
@@ -158,9 +158,11 @@ describe('Admin billing', () => {
         currencyTotals: [{ currency: 'CNY', totalPretaxAmount: 1.75, platformPretaxAmount: 0.5 }],
         totalPretaxAmount: 1.75,
         platformPretaxAmount: 0.5,
-        anomalyCount: 1,
+        anomalyCount: 0,
+        billingScope: 'platform_resources',
+        reconciliationIssues: [],
         billingStatus: 'provisional',
-        unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 0.88 }],
+        unallocatedCurrencyTotals: [],
         resourcesWithoutBillCount: 0,
         resourceTypeTotals: [
           { resourceType: 'ecs', currency: 'CNY', pretaxAmount: 1.25 },
@@ -199,8 +201,8 @@ describe('Admin billing', () => {
 
     expect(userGroupsResponse.body).toEqual({ page: 1, pageSize: 20, total: 1, items: [
       expect.objectContaining({
-        kind: 'unmatched',
-        title: '未关联平台启动的费用',
+        kind: 'range_launch',
+        title: '开启编排实例',
         completedAt: null,
         pretaxAmount: 1.25,
       }),
@@ -213,8 +215,8 @@ describe('Admin billing', () => {
 
     expect(platformGroupsResponse.body).toEqual({ page: 1, pageSize: 20, total: 1, items: [
       expect.objectContaining({
-        kind: 'unmatched',
-        title: '未关联平台启动的费用',
+        kind: 'range_launch',
+        title: '开启编排实例',
         completedAt: null,
         pretaxAmount: 0.5,
       }),
@@ -253,14 +255,7 @@ describe('Admin billing', () => {
       .set('authorization', `Bearer ${adminToken}`)
       .expect(200);
 
-    expect(anomaliesResponse.body).toEqual([
-      expect.objectContaining({
-        cloudResourceId: 'cn-hangzhou',
-        cloudResourceType: 'snapshot_region',
-        pretaxAmount: 0.88,
-        reason: 'missing aggregation rule',
-      }),
-    ]);
+    expect(anomaliesResponse.body).toEqual([]);
 
     await request(app.getHttpServer())
       .post('/admin/billing/sync')

@@ -111,14 +111,20 @@ export const billingSummaryOutputSchema = resultOutputSchema(
     ...billingWindowFields,
     currency: z.string().nullable().optional(),
     currencyTotals: z.array(z.object({ currency: nonEmptyString, totalPretaxAmount: z.number(), platformPretaxAmount: z.number() })).optional(),
-    totalPretaxAmount: z.number().nullable().describe('已同步并已归属的 BSS 应付金额（PretaxAmount），不包含未归属费用。'),
+    billingScope: z.literal('platform_resources').optional().describe('仅统计有平台创建来源证明的资源；缺失表示范围未确认，不能将旧接口的账号级金额视为平台支出。'),
+    reconciliationIssues: z.array(z.object({
+      resourceType: z.enum(['snapshot', 'oss', 'unknown']),
+      resourceCount: z.number().int().nonnegative(),
+      reason: nonEmptyString,
+    })).optional().describe('已知平台快照/OSS仍需细分账单，或unknown表示平台创建链已知但历史账号/归属来源待核验；提示不含账号聚合金额，缺失表示状态未知。'),
+    totalPretaxAmount: z.number().nullable().describe('已同步并已归属的平台创建资源 BSS 应付金额（PretaxAmount），不包含待分配费用。'),
     platformPretaxAmount: z.number().nullable().describe('已归属平台公共资源的 BSS 应付金额。'),
     billingStatus: z.literal('provisional').optional().describe('账单可能因延迟出账、退款和调账变化；缺失表示接口未提供状态。'),
     unallocatedCurrencyTotals: z.array(z.object({ currency: nonEmptyString, pretaxAmount: z.number() })).optional()
-      .describe('已同步但未归属的金额，按币种单列，不分摊给用户或计入平台公共费用；缺失表示未知。'),
+      .describe('已证明属于平台创建资源但尚未分配的精确金额，按币种单列；不包含外部资源或账号混合聚合金额，不计入用户或平台公共费用；缺失表示未知。'),
     resourcesWithoutBillCount: z.number().int().nonnegative().optional()
-      .describe('统计窗口内尚未匹配账单的可能计费资源数，不含单独的 SNAT/DNAT 条目；缺失表示未知，待出账不代表免费。'),
-    anomalyCount: z.number().int().nonnegative().describe('未归属或异常账单条目数。'),
+      .describe('统计窗口内平台创建台账中尚未匹配账单的可能计费资源数，不含单独的 SNAT/DNAT 条目；缺失表示未知，待出账不代表免费。'),
+    anomalyCount: z.number().int().nonnegative().describe('已证明属于平台创建资源但未能完成归属的异常账单条目数。'),
     resourceTypeTotals: z.array(z.object({ resourceType: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),
     dailyTotals: z.array(z.object({ billingDate: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),
   }),
@@ -181,7 +187,7 @@ export const billingAnomalyListOutputSchema = resultOutputSchema(
         billingDate: nonEmptyString.describe('发现异常的账单日期。'),
         cloudResourceId: nonEmptyString.describe('相关云资源 ID。'),
         cloudResourceType: nonEmptyString.describe('相关云资源类型。'),
-        pretaxAmount: z.number().describe('异常条目的税前金额。'),
+        pretaxAmount: z.number().describe('已证明属于平台创建资源的精确异常金额，不含账号混合聚合费用。'),
         currency: nonEmptyString.describe('货币代码。'),
         reason: nonEmptyString.describe('异常归因说明。'),
       })

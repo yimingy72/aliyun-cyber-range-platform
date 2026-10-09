@@ -2,6 +2,7 @@ import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { billingDayText } from '../src/admin/billing-window';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import { createProvenBillingLedger } from './support/create-billing-fixture';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 const billingConfigService = { getAccountContext: jest.fn(async () => ({ accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' })) } as unknown as SystemConfigService;
@@ -10,7 +11,7 @@ describe('BillingSyncService', () => {
   afterEach(() => jest.useRealTimers());
   it('refreshes an exact historical range even when later bills already exist', async () => {
     const repository = createMemoryAdminRepository();
-    const ledger = await repository.createBillingLedgerResource({
+    const { ledger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-incremental-sync-1',
@@ -99,7 +100,7 @@ describe('BillingSyncService', () => {
 
   it('preserves a later billing date while refreshing the requested earlier range', async () => {
     const repository = createMemoryAdminRepository();
-    const ledger = await repository.createBillingLedgerResource({
+    const { ledger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-later-billing-date-1',
@@ -153,7 +154,7 @@ describe('BillingSyncService', () => {
   it('keeps account-level OSS and snapshot aggregates out of platform costs', async () => {
     const repository = createMemoryAdminRepository();
 
-    const ledger = await repository.createBillingLedgerResource({
+    const { ledger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
@@ -207,7 +208,7 @@ describe('BillingSyncService', () => {
     ).resolves.toEqual({
       syncedDays: 1,
       importedLineItems: 1,
-      anomalyCount: 2,
+      anomalyCount: 0,
       deferredCount: 0,
     });
 
@@ -226,33 +227,13 @@ describe('BillingSyncService', () => {
       }),
     ]);
 
-    await expect(
-      repository.listBillingAnomalies({
-        startAt: '2026-07-16',
-        endAt: '2026-07-16',
-      }),
-    ).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          cloudResourceId: 'cn-hangzhou',
-          cloudResourceType: 'snapshot_region',
-          pretaxAmount: 0.88,
-          reason: expect.stringContaining('不计入平台费用'),
-        }),
-        expect.objectContaining({
-          cloudResourceId: 'cn-hangzhou;standard-zrs',
-          cloudResourceType: 'unknown',
-          pretaxAmount: 0.42,
-          reason: expect.stringContaining('不计入平台费用'),
-        }),
-      ]),
-    );
+    expect(await repository.listBillingAnomalies()).toEqual([]);
   });
 
   it('ignores direct bill lines that are outside the platform ledger scope', async () => {
     const repository = createMemoryAdminRepository();
 
-    await repository.createBillingLedgerResource({
+    await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-test-1',
@@ -416,7 +397,7 @@ describe('BillingSyncService', () => {
   it('imports next-day daily bills for resources released the previous day', async () => {
     const repository = createMemoryAdminRepository();
 
-    const ecsLedger = await repository.createBillingLedgerResource({
+    const { ledger: ecsLedger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'i-short-lived-1',
@@ -432,7 +413,7 @@ describe('BillingSyncService', () => {
         BillingStartAt: '2026-07-16',
       },
     });
-    const diskLedger = await repository.createBillingLedgerResource({
+    const { ledger: diskLedger } = await createProvenBillingLedger(repository, {
       cloudAccountUid: '1234567890',
       regionId: 'cn-hangzhou',
       cloudResourceId: 'd-short-lived-1',
@@ -511,7 +492,7 @@ describe('BillingSyncService', () => {
     );
   });
 
-  it('attributes explicitly tagged platform resources and only exact configured OSS bucket bills', async () => {
+  it('does not infer platform creation from tags or a configured shared OSS bucket', async () => {
     const repository = createMemoryAdminRepository();
     const systemConfigService = {
       getAccountContext: jest.fn().mockResolvedValue({ accountUid: '1234567890', accountUidResolved: true,
@@ -562,61 +543,13 @@ describe('BillingSyncService', () => {
       systemConfigService,
     );
 
-    await expect(
-      service.syncRange({
-        startAt: '2026-07-16',
-        endAt: '2026-07-16',
-      }),
-    ).resolves.toEqual({
-      syncedDays: 1,
-      importedLineItems: 3,
-      anomalyCount: 1,
-      deferredCount: 0,
-    });
-
-    await expect(
-      repository.listBillingLineItems({
-        startAt: '2026-07-16',
-        endAt: '2026-07-16',
-      }),
-    ).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          cloudResourceId: 'eip-platform-1',
-          cloudResourceType: 'eip',
-          billingScope: 'platform',
-          matchedLedgerId: expect.any(String),
-        }),
-        expect.objectContaining({
-          cloudResourceId: 's-platform-1',
-          cloudResourceType: 'snapshot',
-          billingScope: 'platform',
-          matchedLedgerId: expect.any(String),
-        }),
-        expect.objectContaining({
-          cloudResourceId: 'wzxy-shootingrange',
-          cloudResourceType: 'oss_bucket',
-          billingScope: 'platform',
-          matchedLedgerId: expect.any(String),
-        }),
-      ]),
-    );
-
-    await expect(
-      repository.listBillingAnomalies({
-        startAt: '2026-07-16',
-        endAt: '2026-07-16',
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        cloudResourceId: 'cn-hangzhou;standard',
-        pretaxAmount: 9.99,
-        reason: expect.stringContaining('wzxy-shootingrange'),
-      }),
-    ]);
+    await expect(service.syncRange({ startAt: '2026-07-16', endAt: '2026-07-16' })).resolves.toMatchObject({ importedLineItems: 0, anomalyCount: 0 });
+    expect(await repository.listBillingLineItems()).toEqual([]);
+    expect(await repository.listBillingAnomalies()).toEqual([]);
+    expect(await repository.listBillingLedgerResources()).toEqual([]);
   });
 
-  it('backfills platform image ledgers before matching direct image bills', async () => {
+  it('does not manufacture creation ledgers for merely collected platform catalog images', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-16T16:10:00.000Z'));
     const repository = createMemoryAdminRepository();
     await repository.upsertImageSnapshots({
@@ -667,43 +600,8 @@ describe('BillingSyncService', () => {
       billingConfigService,
     );
 
-    await expect(
-      service.syncRange({
-        startAt: billingDate,
-        endAt: billingDate,
-      }),
-    ).resolves.toEqual({
-      syncedDays: 1,
-      importedLineItems: 1,
-      anomalyCount: 0,
-      deferredCount: 0,
-    });
-
-    await expect(
-      repository.listBillingLineItems({
-        startAt: billingDate,
-        endAt: billingDate,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        cloudResourceId: 'm-platform-image',
-        cloudResourceType: 'image',
-        billingScope: 'platform',
-        matchedLedgerId: expect.any(String),
-      }),
-    ]);
-
-    await expect(
-      repository.findBillingLedgerResource({
-        regionId: 'cn-hangzhou',
-        cloudResourceId: 'm-platform-image',
-        cloudResourceType: 'image',
-      }),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        billingScope: 'platform',
-        platformImageAssetId: asset.id,
-      }),
-    );
+    await expect(service.syncRange({ startAt: billingDate, endAt: billingDate })).resolves.toMatchObject({ importedLineItems: 0, anomalyCount: 0 });
+    expect(await repository.listBillingLineItems()).toEqual([]);
+    expect(await repository.listBillingLedgerResources()).toEqual([]);
   });
 });

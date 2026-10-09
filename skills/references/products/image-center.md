@@ -30,6 +30,7 @@
 - “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须同时写入资产 `id`（`platformImageAssetId`）和其云镜像 `imageId`。
 - 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
 - “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。
+- 收录只建立平台目录，不代表该云镜像或快照由平台创建，不写入平台创建标签、不接管其费用。平台打包/导入已有的费用账本保留原来源、owner 和回收时间，重新收录只更新目录关联。
 - `enable`/`disable` 控制能否用于后续创建；`publish`/`unpublish` 控制其他用户能否看见。两者不可混用，且都不销毁已有资源。
 - 收录、发布和取消发布仅管理员可执行。发布或取消发布前，必须检查资产返回的 `canChangeVisibility`。只有 owner-backed 资产可切换可见性；从公共或自定义云镜像目录收录的资产可能已固定为 `platform` 且 `canChangeVisibility: false`，此时不得调用发布/取消发布工具或重试，应如实说明平台限制。
 - `platform_image_remove` 仅移出平台目录，保留云镜像、快照和仍计费的台账；删除前确认未被已发布拓扑引用。

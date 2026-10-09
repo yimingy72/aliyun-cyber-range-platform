@@ -53,7 +53,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_summary_get',
     title: '查询账单费用汇总',
-    description: '对应账单费用页的概览。返回已同步并完成归属的应付费用，多币种总金额为null并读取currencyTotals。unallocatedCurrencyTotals单列未分配金额，禁止计入用户或平台公共费用；resourcesWithoutBillCount是尚未匹配账单的可能计费资源数，待出账不代表免费。billingStatus=provisional表示已同步金额仍可能补账或调整；旧接口缺失这些字段表示未知，不能当作零。',
+    description: '对应账单费用页的概览。billingScope=platform_resources表示仅统计有平台创建来源证明的资源。返回已归属费用，多币种总金额为null并读取currencyTotals。unallocatedCurrencyTotals仅含已证明属于平台但待分配的精确金额，禁止加入外部或账号混合聚合费用；resourcesWithoutBillCount仅统计平台创建资源尚未匹配账单的数量。reconciliationIssues指出已知平台快照/OSS资源的待核对项，unknown表示平台创建链已知但历史账号/归属来源待核验，均不含账号聚合金额。待出账不代表免费，billingStatus=provisional表示金额可能补账或调整；旧接口缺失scope或对账字段表示范围/覆盖未知，不能当作零或平台支出。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingSummaryInputSchema,
@@ -141,7 +141,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_anomaly_list',
     title: '查询账单异常',
-    description: '对应账单费用页的异常列表。返回未能归属到用户或平台资源台账的账单条目及原因。',
+    description: '返回已证明属于平台创建资源但未能完成分配的精确异常账单及原因，不返回外部资源或账号混合聚合金额。待细分或来源待核验的平台资源参见billing_summary_get的reconciliationIssues。',
     requiredScopes: ['billing:read'],
     readOnlyHint: true,
     inputSchema: billingAnomaliesInputSchema,

@@ -99,6 +99,26 @@ describe('Owned packed-image lifecycle', () => {
     expect(await service.cleanup(sourceId, owner)).toMatchObject({ removed: true });
   });
 
+  it('recollects only the catalog link without changing existing billing ownership, source or release evidence', async () => {
+    await ready();
+    const releasedAt = new Date('2026-09-01');
+    for (const ledger of await repository.listBillingLedgerResources()) {
+      await repository.updateBillingLedgerResource(ledger.id, { releasedAt, sourceProvisionJobId: 'original-job' });
+    }
+    await repository.deletePlatformImageAsset(assetId);
+    const before = structuredClone(await repository.listBillingLedgerResources());
+    const createLedger = jest.spyOn(repository, 'createBillingLedgerResource');
+    const requests = calls.length;
+
+    const asset = await service.restoreAsset(artifactId, sourceId, 'recollected');
+
+    expect(asset.ownerUserId).toBe(owner.id);
+    expect(calls).toHaveLength(requests);
+    expect(createLedger).not.toHaveBeenCalled();
+    const after = await repository.listBillingLedgerResources();
+    expect(after.map(ledger => ({ ...ledger, updatedAt: undefined }))).toEqual(before.map(ledger => ({ ...ledger, platformImageAssetId: asset.id, updatedAt: undefined })));
+  });
+
   it('fully reclaims only the exact owned image and snapshots with Force=false, preserving its audit record', async () => {
     await ready();
     const result: any = await service.cleanup(sourceId, owner);

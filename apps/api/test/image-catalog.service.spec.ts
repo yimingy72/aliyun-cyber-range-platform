@@ -111,58 +111,37 @@ describe('ImageCatalogService import operation guard', () => {
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).not.toHaveBeenCalled();
   });
 
-  it('tags collected platform images and creates platform billing ledgers', async () => {
+  it('collects an external cloud image without claiming its resources or fees', async () => {
     const { service, adminRepositoryMock, snapshot } = createService();
     snapshot.status = 'Available'; snapshot.isAvailable = true;
     adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
-    global.fetch = jest.fn().mockImplementation(async (input) => {
-      const url = String(input);
-
-      if (url.includes('Action=DescribeImages')) {
-        return {
-          ok: true,
-          json: async () => ({
-            TotalCount: 1,
-            Images: {
-              Image: {
-                ImageId: 'm-importing-image',
-                Status: 'Available',
-                DiskDeviceMappings: {
-                  DiskDeviceMapping: [{ SnapshotId: 's-importing-image-01' }],
-                },
-              },
-            },
-          }),
-        };
-      }
-
-      return {
-        ok: true,
-        json: async () => ({}),
-      };
-    });
+    global.fetch = jest.fn();
 
     await service.collectPlatformAsset('snapshot-1', 'Platform Ubuntu', ADMIN);
 
-    const requestUrl = String((global.fetch as jest.Mock).mock.calls[0]?.[0]);
-    expect(requestUrl).toContain('Action=TagResources');
-    expect(requestUrl).toContain('ResourceType=image');
-    expect(requestUrl).toContain('ResourceId.1=m-importing-image');
-    expect(requestUrl).toContain('Tag.1.Key=CreatedBy');
-    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cloudResourceId: 'm-importing-image',
-        cloudResourceType: 'image',
-        billingScope: 'platform',
-      }),
-    );
-    expect(adminRepositoryMock.createBillingLedgerResource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cloudResourceId: 's-importing-image-01',
-        cloudResourceType: 'snapshot',
-        billingScope: 'platform',
-      }),
-    );
+    expect(adminRepositoryMock.collectPlatformImageAsset).toHaveBeenCalledWith({
+      preserveExisting: true, snapshotId: 'snapshot-1', displayName: 'Platform Ubuntu', ownerUserId: null, visibility: 'platform',
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.createBillingLedgerResource).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.updateBillingLedgerResource).not.toHaveBeenCalled();
+  });
+
+  it('keeps existing import billing ownership and release evidence when recollecting', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    snapshot.status = 'Available'; snapshot.isAvailable = true;
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+    adminRepositoryMock.findBillingLedgerResource.mockResolvedValue({
+      id: 'ledger-import', cloudAccountUid: snapshot.accountUid, ownerUserId: OWNER.id,
+      releasedAt: new Date('2026-09-01'), tagsSnapshot: { PlatformImageImportJobId: 'original-import' },
+    });
+    global.fetch = jest.fn();
+
+    await service.collectPlatformAsset('snapshot-1', 'Recollected Ubuntu', ADMIN);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.createBillingLedgerResource).not.toHaveBeenCalled();
+    expect(adminRepositoryMock.updateBillingLedgerResource).not.toHaveBeenCalled();
   });
 
   it('returns server-side image capabilities for an ordinary owner', async () => {

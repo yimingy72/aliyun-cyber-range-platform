@@ -16,13 +16,16 @@ describe('billing currency and export contracts', () => {
     expect(result).toMatchObject({ rowCount: 2, csv });
   });
 
-  it('preserves provisional and unallocated coverage without combining it with matched totals', () => {
+  it('preserves platform scope and reconciliation issues without combining unallocated costs with matched totals', () => {
     const result = { startAt: '2026-10-01', endAt: '2026-10-01', totalPretaxAmount: 10, platformPretaxAmount: 2,
+      billingScope: 'platform_resources', reconciliationIssues: [{ resourceType: 'snapshot', resourceCount: 1, reason: 'Awaiting split bill' }, { resourceType: 'unknown', resourceCount: 2, reason: 'Original account missing' }],
       anomalyCount: 2, resourceTypeTotals: [], dailyTotals: [], billingStatus: 'provisional', resourcesWithoutBillCount: 5,
       unallocatedCurrencyTotals: [{ currency: 'CNY', pretaxAmount: 3 }, { currency: 'USD', pretaxAmount: -1 }] };
     expect(billingSummaryOutputSchema.parse({ result })).toEqual({ result });
     expect(billingSummaryOutputSchema.safeParse({ result: { ...result, resourcesWithoutBillCount: -1 } }).success).toBe(false);
-    const { billingStatus: _status, unallocatedCurrencyTotals: _amounts, resourcesWithoutBillCount: _count, ...legacy } = result;
+    expect(billingSummaryOutputSchema.safeParse({ result: { ...result, reconciliationIssues: [{ resourceType: 'oss', resourceCount: -1, reason: 'Invalid count' }] } }).success).toBe(false);
+    expect(billingSummaryOutputSchema.safeParse({ result: { ...result, billingScope: 'cloud_account' } }).success).toBe(false);
+    const { billingScope: _scope, reconciliationIssues: _issues, billingStatus: _status, unallocatedCurrencyTotals: _amounts, resourcesWithoutBillCount: _count, ...legacy } = result;
     expect(billingSummaryOutputSchema.parse({ result: legacy })).toEqual({ result: legacy });
   });
 });

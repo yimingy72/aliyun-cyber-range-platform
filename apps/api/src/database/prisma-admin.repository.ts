@@ -5,6 +5,7 @@ import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import {
   AdminRepository,
   BillingAnomalyRecord,
+  BillingImageImportResourceRecord,
   BillingLedgerResourceRecord,
   BillingLineItemRecord,
   CloudProvider,
@@ -2163,6 +2164,14 @@ export class PrismaAdminRepository implements AdminRepository {
         securityGroupName: input.securityGroupName,
       },
     }) as Promise<import('../admin/admin.repository').SingleInstanceNetworkProfileRecord>;
+  }
+
+  async listBillingImageImportResources(): Promise<BillingImageImportResourceRecord[]> {
+    return this.prisma.imageImportJob.findMany({
+      select: { id: true, cloudAccountUid: true, regionId: true, imageImportBucket: true,
+        objectKey: true, imageId: true, backingSnapshotIds: true, cloudImageDeletedAt: true, snapshotCleanupCompletedAt: true,
+        createdAt: true, uploadCompletedAt: true, temporaryObjectDeletedAt: true },
+    });
   }
 
   async createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord> {

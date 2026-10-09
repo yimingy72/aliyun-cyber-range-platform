@@ -1,3 +1,4 @@
+import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import { createHash } from 'node:crypto';
 
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
@@ -8,10 +9,10 @@ import {
   type BillingLedgerResourceRecord,
   type CreateBillingLineItemInput,
   type CreateBillingAnomalyInput,
+  type BillingLineItemRecord,
 } from './admin.repository';
 import { BillingBssClient } from './billing-bss-client';
-import { classifyBillLine } from './billing-classifier';
-import { buildBillingTags, parsePlatformBillingTags } from './billing-tagging';
+import { billRegionId, billRegionConflict, classifyPlatformBillLine, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
 import { SystemConfigService } from './system-config.service';
 import { billingDayText, resolveBillingWindow } from './billing-window';
 
@@ -19,10 +20,6 @@ type RawBillLine = Record<string, unknown>;
 
 function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10);
-}
-
-function parseDate(value: string | Date) {
-  return value instanceof Date ? new Date(value) : new Date(value);
 }
 
 function enumerateDates(startAt: Date, endAt: Date) {
@@ -35,29 +32,6 @@ function enumerateDates(startAt: Date, endAt: Date) {
   }
 
   return dates;
-}
-
-const RELEASE_BILLING_GRACE_DAYS = 1;
-
-function isLedgerActiveForBillingDate(ledger: BillingLedgerResourceRecord, billingDate: string, correction = false) {
-  const billingDateText = billingDate;
-  const startAtText = billingDayText(ledger.billingStartAt);
-
-  if (billingDateText < startAtText) {
-    return false;
-  }
-
-  if (ledger.releasedAt && !correction) {
-    const releaseDeadline = new Date(`${billingDayText(ledger.releasedAt)}T00:00:00.000Z`);
-    releaseDeadline.setUTCDate(releaseDeadline.getUTCDate() + RELEASE_BILLING_GRACE_DAYS);
-
-    // ponytail: keep a one-day grace window because Aliyun daily bills for short-lived resources can settle on the next calendar day.
-    if (billingDateText > toIsoDate(releaseDeadline)) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 function readString(line: RawBillLine, key: string) {
@@ -77,11 +51,6 @@ function stableJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableJson);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
   return value;
-}
-
-function explicitRegionId(line: RawBillLine, tags: Record<string, string> = {}) {
-  const values = [readString(line, 'RegionId'), readString(line, 'Region'), tags.PlatformRegionId ?? ''];
-  return values.map(value => value.trim()).find(value => /^(cn|ap|eu|us|me|af|sa)-[a-z0-9-]+$/.test(value)) ?? null;
 }
 
 @Injectable()
@@ -163,7 +132,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       }
 
       const dates = enumerateDates(startAt, endAt);
-      const ledgerResources = await this.adminRepository.listBillingLedgerResources();
+      let proof = await loadPlatformBillingProof(this.adminRepository);
+      if (await this.repairImageLedgerOrigins(proof, cloudAccountUid)) proof = await loadPlatformBillingProof(this.adminRepository);
       let importedLineItems = 0;
       let anomalyCount = 0;
 
@@ -176,31 +146,28 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
           if (line.BillingDate !== undefined && readString(line, 'BillingDate') !== billingDate) throw new Error('BSS returned a bill for a different billing date; previous bills were retained');
         }
-        await this.reconcilePlatformImageBillingLedgers(ledgerResources, cloudAccountUid);
+        const previous: BillingLineItemRecord[] = (await this.adminRepository.listBillingLineItems({ cloudAccountUid, startAt: billingDate, endAt: billingDate }))
+          .filter(line => proof.ledgers.some(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, proof)
+            && ledger.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType));
+        const resolved = await this.resolveSplitItems(items, billingDate, cloudAccountUid, cloudConfig, proof, previous);
         const dayItems = new Map<string, CreateBillingLineItemInput>();
         const dayAnomalies = new Map<string, CreateBillingAnomalyInput>();
 
-        for (const line of items) {
-          const classification = classifyBillLine(line);
+        for (const line of resolved.items) {
+          const classification = classifyPlatformBillLine(line);
+          // A deferred product is one coherent previous revision, never a mixture of old splits and new direct charges.
+          if (resolved.retainedProducts.has(readString(line, 'ProductCode')) && classification.kind === 'direct') continue;
 
-          if (classification.kind === 'direct') {
+          if (classification.kind === 'direct' && !billRegionConflict(line)) {
             const matchedLedger =
               this.findActiveLedgerResource(
-                ledgerResources,
+                proof,
                 classification.cloudResourceId,
                 classification.cloudResourceType,
                 billingDate,
                 cloudAccountUid,
-                ['Refund', 'Adjustment'].includes(readString(line, 'Item')),
-                explicitRegionId(line),
-              ) ??
-              (await this.findTaggedLedgerResource({
-                line,
-                classification,
-                billingDate,
-                cloudAccountUid,
-                ledgerResources,
-              }));
+                billRegionId(line),
+              );
 
             if (matchedLedger) {
               const matched = this.buildMatchedBillLine({
@@ -217,36 +184,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             }
           }
 
-          const ossBucket = this.resolveConfiguredOssBucket(line, cloudConfig.imageImportBucket);
-
-          if (ossBucket) {
-            const matchedLedger = await this.ensureOssBucketLedger({
-              bucket: ossBucket,
-              billingDate,
-              regionId: cloudConfig.defaultRegion,
-              cloudAccountUid,
-              ledgerResources,
-            });
-
-            const matched = this.buildMatchedBillLine({
-              cloudAccountUid,
-              syncBatchId,
-              billingDate,
-              line,
-              ledger: matchedLedger,
-              cloudResourceId: ossBucket,
-              cloudResourceType: 'oss_bucket',
-            });
-            dayItems.set(matched.sourceFingerprint, matched);
-            continue;
-          }
-
-          if (
-            classification.kind !== 'aggregated' &&
-            !parsePlatformBillingTags(line.Tag) && !this.isPlatformScopedAnomaly(ledgerResources.filter(item => item.cloudAccountUid === cloudAccountUid || item.cloudAccountUid === null), classification, billingDate)
-          ) {
-            continue;
-          }
+          const evidence = pendingPlatformBillingEvidence({ line, cloudAccountUid, billingDate, proof });
+          if (!evidence) continue;
 
           const anomaly: CreateBillingAnomalyInput = {
             cloudAccountUid,
@@ -258,10 +197,23 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
             cloudResourceType: classification.cloudResourceType,
             pretaxAmount: readNumber(line, 'PretaxAmount'),
             currency: readString(line, 'Currency') || 'CNY',
-            reason: this.resolveAnomalyReason(classification, cloudConfig.imageImportBucket),
-            rawPayload: line,
+            reason: evidence.kind === 'aggregate_pending'
+              ? '该账单覆盖的平台资源费用尚待资源级分账；源账单总额可能包含外部资源，不计入平台费用或平台待归属金额。'
+              : evidence.kind === 'source_pending' ? '资源 ID 与平台记录相同，但地域或来源存在冲突；该金额不计入平台费用或平台待归属金额。'
+              : '已找到平台创建资源，但账单类型尚未核对一致，待核实后入账。',
+            rawPayload: { ...line, __platformBillingScope: evidence },
           };
           dayAnomalies.set(anomaly.sourceFingerprint, anomaly);
+        }
+        if (resolved.retainedProducts.size) {
+          for (const line of previous) {
+            const ledger = proof.ledgers.find(item => item.id === line.matchedLedgerId && isPlatformCreatedLedger(item, proof));
+            if (resolved.retainedProducts.has(line.productCode)
+              && ledger?.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType) {
+              dayItems.set(line.sourceFingerprint, { ...line, billingDate, cloudAccountUid, ownerUserId: ledger.ownerUserId, billingScope: ledger.billingScope,
+                rawPayload: { ...line.rawPayload, __platformBillingSyncDeferred: true } });
+            }
+          }
         }
         await this.adminRepository.replaceBillingDay({ cloudAccountUid, billingDate, lineItems: [...dayItems.values()], anomalies: [...dayAnomalies.values()] });
         importedLineItems += dayItems.size;
@@ -305,199 +257,83 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       billingScope: input.ledger.billingScope,
       ownerUserId: input.ledger.ownerUserId,
       matchedLedgerId: input.ledger.id,
-      rawPayload: input.line,
+      rawPayload: { ...input.line, ...(!ledgerBillingDateMatches(input.ledger, input.billingDate)
+        ? { __platformPostReleaseCharge: true } : {}) },
     };
   }
 
-  private async findTaggedLedgerResource(input: {
-    line: RawBillLine;
-    classification: ReturnType<typeof classifyBillLine>;
-    billingDate: string;
-    cloudAccountUid: string;
-    ledgerResources: BillingLedgerResourceRecord[];
-  }) {
-    if (input.classification.kind !== 'direct') {
-      return null;
-    }
-
-    const tagged = parsePlatformBillingTags(input.line.Tag);
-
-    if (!tagged || !input.classification.cloudResourceId
-      || tagged.tags.CloudAccountUid && tagged.tags.CloudAccountUid !== input.cloudAccountUid) {
-      return null;
-    }
-
-    const existing = this.findLedgerResource(
-      input.ledgerResources,
-      input.classification.cloudResourceId,
-      input.classification.cloudResourceType,
-      input.cloudAccountUid,
-    );
-
-    if (existing) {
-      const regionId = explicitRegionId(input.line, tagged.tags);
-      if (regionId && existing.regionId !== regionId) return null;
-      return isLedgerActiveForBillingDate(existing, input.billingDate, ['Refund', 'Adjustment'].includes(readString(input.line, 'Item'))) ? existing : null;
-    }
-
-    const regionId = explicitRegionId(input.line, tagged.tags);
-    if (!regionId || (tagged.billingScope === 'user' && !tagged.ownerUserId)) return null;
-    // The legacy unique key omits account UID. An unproven collision must not abort all other bills for this day.
-    if (input.ledgerResources.some(item => item.regionId === regionId && item.cloudResourceId === input.classification.cloudResourceId
-      && item.cloudResourceType === input.classification.cloudResourceType && item.cloudAccountUid !== input.cloudAccountUid)) return null;
-    if (tagged.billingScope === 'user') {
-      if (!(await this.adminRepository.getPlatformUserById(tagged.ownerUserId!))) return null;
-      if (tagged.rangeInstanceId) {
-        const instance = await this.adminRepository.getRangeInstanceById(tagged.rangeInstanceId);
-        if (!instance || instance.ownerUserId !== tagged.ownerUserId
-          || instance.singleInstanceConfig?.cloudAccountUid && instance.singleInstanceConfig.cloudAccountUid !== input.cloudAccountUid
-          || (tagged.singleInstanceBatchId && instance.singleInstanceBatchId !== tagged.singleInstanceBatchId)) return null;
-      }
-    }
-    const ledger = await this.createScopedLedger({
-      cloudProvider: 'alibaba_cloud',
-      cloudAccountUid: input.cloudAccountUid,
-      regionId,
-      cloudResourceId: input.classification.cloudResourceId,
-      cloudResourceType: input.classification.cloudResourceType,
-      billingScope: tagged.billingScope,
-      ownerUserId: tagged.ownerUserId,
-      rangeInstanceId: tagged.rangeInstanceId,
-      singleInstanceBatchId: tagged.singleInstanceBatchId,
-      platformImageAssetId: tagged.platformImageAssetId,
-      billingStartAt: parseDate(tagged.billingStartAt ?? input.billingDate),
-      tagsSnapshot: tagged.tags,
-    });
-    input.ledgerResources.push(ledger);
-
-    return ledger;
-  }
-
-  private async reconcilePlatformImageBillingLedgers(ledgerResources: BillingLedgerResourceRecord[], cloudAccountUid: string) {
-    const assets = await this.adminRepository.listPlatformImageAssets({ accountUid: cloudAccountUid });
-
-    for (const asset of assets) {
-      if (asset.ownerUserId || !asset.imageId.trim()) {
+  private async resolveSplitItems(items: RawBillLine[], billingDate: string, cloudAccountUid: string,
+    context: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, proof: PlatformBillingProof, previous: BillingLineItemRecord[]) {
+    let resolved = items;
+    const retainedProducts = new Set<string>();
+    for (const productCode of ['snapshot', 'oss'] as const) {
+      const original = items.filter(line => readString(line, 'ProductCode') === productCode);
+      const previousProduct = previous.filter(line => line.productCode === productCode);
+      if (!original.length && previousProduct.length) {
+        retainedProducts.add(productCode);
         continue;
       }
-
-      const tagsSnapshot = buildBillingTags({
-        billingScope: 'platform',
-        platformImageAssetId: asset.id,
-        billingStartAt: asset.createdAt,
-      });
-
-      for (const cloudResourceType of ['image'] as const) {
-        const existing = ledgerResources.find(
-          (item) =>
-            (item.cloudAccountUid === asset.accountUid || item.cloudAccountUid === null) &&
-            item.regionId === asset.regionId &&
-            item.cloudResourceId === asset.imageId &&
-            item.cloudResourceType === cloudResourceType,
-        );
-
-        if (existing) {
-          if (
-            existing.cloudAccountUid === cloudAccountUid &&
-            existing.billingScope === 'platform' &&
-            existing.ownerUserId === null &&
-            existing.platformImageAssetId === asset.id &&
-            existing.releasedAt === null
-          ) {
-            continue;
-          }
-
-          const updated = await this.adminRepository.updateBillingLedgerResource(existing.id, {
-            cloudAccountUid,
-            billingScope: 'platform',
-            ownerUserId: null,
-            rangeInstanceId: null,
-            singleInstanceBatchId: null,
-            platformImageAssetId: asset.id,
-            releasedAt: null,
-            tagsSnapshot,
-          });
-          const index = ledgerResources.findIndex((item) => item.id === updated.id);
-
-          if (index >= 0) {
-            ledgerResources[index] = updated;
-          }
-          continue;
+      if (!original.some(line => classifyPlatformBillLine(line).kind === 'aggregated'
+        && pendingPlatformBillingEvidence({ line, cloudAccountUid, billingDate, proof }))
+        && !previousProduct.some(line => line.rawPayload.__platformBillingSource === 'DescribeSplitItemBill')) continue;
+      try {
+        const split = await this.billingBssClient.listDailySplitBillingItems({ billingDate, productCode }, context);
+        // Mixed direct and aggregate source bills require an exact group join; keep their evidence until one is available.
+        if (original.some(line => classifyPlatformBillLine(line).kind !== 'aggregated') || !this.splitTotalsMatch(original, split)) {
+          throw new Error('Resource split bills do not reconcile with their source bill');
         }
-
-        const created = await this.createScopedLedger({
-          cloudProvider: asset.provider,
-          cloudAccountUid: asset.accountUid,
-          regionId: asset.regionId,
-          cloudResourceId: asset.imageId,
-          cloudResourceType,
-          billingScope: 'platform',
-          ownerUserId: null,
-          platformImageAssetId: asset.id,
-          billingStartAt: asset.createdAt,
-          tagsSnapshot,
-        });
-        ledgerResources.push(created);
+        resolved = [...resolved.filter(line => readString(line, 'ProductCode') !== productCode),
+          ...split.map(line => ({ ...line, __platformBillingSource: 'DescribeSplitItemBill' }))];
+      } catch {
+        // Split billing can be disabled or settle later; preserve proven earlier allocations and expose coverage work.
+        if (previousProduct.length) retainedProducts.add(productCode);
       }
     }
+    return { items: resolved, retainedProducts };
   }
 
-  private resolveConfiguredOssBucket(line: RawBillLine, configuredBucket: string) {
-    const bucket = configuredBucket.trim();
-
-    if (!bucket || readString(line, 'ProductCode').trim().toLowerCase() !== 'oss') {
-      return null;
-    }
-
-    const matchesBucket = (value: string) => value === bucket || value.startsWith(`${bucket};`);
-    const identifiers = ['InstanceID', 'InstanceName', 'NickName', 'ResourceId', 'ResourceName'];
-
-    return identifiers.some((key) => matchesBucket(readString(line, key))) ? bucket : null;
-  }
-
-  private async ensureOssBucketLedger(input: {
-    bucket: string;
-    billingDate: string;
-    regionId: string;
-    cloudAccountUid: string;
-    ledgerResources: BillingLedgerResourceRecord[];
-  }) {
-    const existing = this.findLedgerResource(input.ledgerResources, input.bucket, 'oss_bucket', input.cloudAccountUid);
-    const tagsSnapshot = buildBillingTags({
-      billingScope: 'platform',
-      billingStartAt: input.billingDate,
-    });
-
-    if (existing) {
-      const ledger = await this.adminRepository.updateBillingLedgerResource(existing.id, {
-        billingScope: 'platform',
-        ownerUserId: null,
-        releasedAt: null,
-        tagsSnapshot,
-      });
-      const index = input.ledgerResources.findIndex((item) => item.id === ledger.id);
-
-      if (index >= 0) {
-        input.ledgerResources[index] = ledger;
+  private splitTotalsMatch(original: RawBillLine[], split: RawBillLine[]) {
+    if (!split.length) return false;
+    const group = (lines: RawBillLine[]) => {
+      const totals = new Map<string, Prisma.Decimal>();
+      for (const line of lines) {
+        const currency = readString(line, 'Currency');
+        if (!/^[A-Z]{3}$/.test(currency)) return null;
+        const key = JSON.stringify([readString(line, 'ProductCode'), currency, billRegionId(line), readString(line, 'InstanceID'), readString(line, 'CommodityCode'),
+          readString(line, 'BillingItemCode') || readString(line, 'BillingItem'), readString(line, 'Item')]);
+        totals.set(key, (totals.get(key) ?? new Prisma.Decimal(0)).plus(readNumber(line, 'PretaxAmount')));
       }
+      return totals;
+    };
+    const sourceTotals = group(original);
+    const splitTotals = group(split);
+    return Boolean(sourceTotals && splitTotals && sourceTotals.size === splitTotals.size
+      && [...sourceTotals].every(([key, value]) => splitTotals.has(key) && value.toDecimalPlaces(9).equals(splitTotals.get(key)!.toDecimalPlaces(9))));
+  }
 
-      return ledger;
+  private async repairImageLedgerOrigins(proof: PlatformBillingProof, cloudAccountUid: string) {
+    let changed = false;
+    for (const ledger of proof.ledgers.filter(item => item.cloudAccountUid === cloudAccountUid && (item.cloudResourceType === 'image' || item.cloudResourceType === 'snapshot'))) {
+      const packed = proof.packedImages.filter(artifact => artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId
+        && (ledger.cloudResourceType === 'image' ? artifact.imageId === ledger.cloudResourceId : artifact.backingSnapshotIds.includes(ledger.cloudResourceId)));
+      const imported = proof.imageImports.filter(job => job.cloudAccountUid === ledger.cloudAccountUid && job.regionId === ledger.regionId
+        && (ledger.cloudResourceType === 'image' ? job.imageId === ledger.cloudResourceId : job.backingSnapshotIds.includes(ledger.cloudResourceId)));
+      if (packed.length + imported.length !== 1) continue;
+      const artifact = packed[0];
+      const job = imported[0];
+      const scope = artifact ? 'user' as const : 'platform' as const;
+      const ownerUserId = artifact?.ownerUserId ?? null;
+      const rangeInstanceId = artifact?.sourceRangeInstanceId ?? null;
+      const startAt = artifact?.createdAt ?? job.uploadCompletedAt ?? job.createdAt;
+      const tagsSnapshot = { ...ledger.tagsSnapshot, ...(artifact ? { PlatformPackedImageArtifactId: artifact.id } : { PlatformImageImportJobId: job.id }) };
+      if (ledger.billingScope === scope && ledger.ownerUserId === ownerUserId && ledger.rangeInstanceId === rangeInstanceId
+        && ledger.billingStartAt.getTime() === startAt.getTime() && JSON.stringify(tagsSnapshot) === JSON.stringify(ledger.tagsSnapshot)) continue;
+      // Legacy catalog collection overwrote origins; restore only from an exact persisted creation artifact.
+      await this.adminRepository.updateBillingLedgerResource(ledger.id, { billingScope: scope, ownerUserId, rangeInstanceId,
+        billingStartAt: startAt, tagsSnapshot });
+      changed = true;
     }
-
-    const ledger = await this.createScopedLedger({
-      cloudProvider: 'alibaba_cloud',
-      cloudAccountUid: input.cloudAccountUid,
-      regionId: input.regionId,
-      cloudResourceId: input.bucket,
-      cloudResourceType: 'oss_bucket',
-      billingScope: 'platform',
-      ownerUserId: null,
-      billingStartAt: parseDate(input.billingDate),
-      tagsSnapshot,
-    });
-    input.ledgerResources.push(ledger);
-
-    return ledger;
+    return changed;
   }
 
   private buildSourceFingerprint(syncBatchId: string, line: RawBillLine) {
@@ -505,83 +341,19 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     return `${syncBatchId}:${createHash('sha256').update(JSON.stringify(stableJson(line))).digest('hex')}`;
   }
 
-  private async createScopedLedger(input: Parameters<AdminRepository['createBillingLedgerResource']>[0]) {
-    try {
-      return await this.adminRepository.createBillingLedgerResource(input);
-    } catch (error) {
-      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'P2002')) throw error;
-      const existing = (await this.adminRepository.listBillingLedgerResources()).find(item => item.cloudAccountUid === input.cloudAccountUid && item.regionId === input.regionId && item.cloudResourceId === input.cloudResourceId && item.cloudResourceType === input.cloudResourceType);
-      if (!existing) throw error;
-      return existing;
-    }
-  }
-
-  private isPlatformScopedAnomaly(
-    ledgerResources: BillingLedgerResourceRecord[],
-    classification: ReturnType<typeof classifyBillLine>,
-    billingDate: string,
-  ) {
-    if (!classification.cloudResourceId) {
-      return false;
-    }
-
-    return ledgerResources.some(
-      (item) =>
-        item.cloudResourceId === classification.cloudResourceId && billingDate >= billingDayText(item.billingStartAt),
-    );
-  }
-
-  private resolveAnomalyReason(
-    classification: ReturnType<typeof classifyBillLine>,
-    configuredOssBucket: string,
-  ) {
-    if (classification.kind === 'aggregated') {
-      if (classification.cloudResourceType === 'snapshot_region') {
-        return '该账单是地域级快照链容量，BSS 未提供具体快照资源 ID 或平台标记，因此不计入平台费用。';
-      }
-
-      const bucket = configuredOssBucket.trim();
-
-      if (bucket) {
-        return `该 OSS 账单未提供已配置平台 Bucket“${bucket}”的精确标识，因此不计入平台费用。`;
-      }
-
-      return '该 OSS 账单未提供平台 Bucket 的精确标识，因此不计入平台费用。';
-    }
-
-    if (classification.kind === 'unknown') {
-      return classification.reason;
-    }
-
-    return `已识别到平台账单，但台账或可核实的地域/用户归属缺失：${classification.cloudResourceType}:${classification.cloudResourceId}`;
-  }
-
-  private findLedgerResource(
-    ledgerResources: BillingLedgerResourceRecord[],
-    cloudResourceId: string,
-    cloudResourceType: BillingLedgerResourceRecord['cloudResourceType'],
-    cloudAccountUid: string,
-  ) {
-    return ledgerResources.find(
-      (item) => item.cloudAccountUid === cloudAccountUid && item.cloudResourceId === cloudResourceId && item.cloudResourceType === cloudResourceType,
-    );
-  }
-
   private findActiveLedgerResource(
-    ledgerResources: BillingLedgerResourceRecord[],
+    proof: PlatformBillingProof,
     cloudResourceId: string,
     cloudResourceType: BillingLedgerResourceRecord['cloudResourceType'],
     billingDate: string,
     cloudAccountUid: string,
-    correction: boolean,
     regionId: string | null,
   ) {
-    const matchedLedger = this.findLedgerResource(ledgerResources, cloudResourceId, cloudResourceType, cloudAccountUid);
-
-    if (!matchedLedger || regionId && matchedLedger.regionId !== regionId) {
-      return null;
-    }
-
-    return isLedgerActiveForBillingDate(matchedLedger, billingDate, correction) ? matchedLedger : null;
+    const matches = proof.ledgers.filter(item => isPlatformCreatedLedger(item, proof)
+      && item.cloudAccountUid === cloudAccountUid && item.cloudResourceId === cloudResourceId
+      && item.cloudResourceType === cloudResourceType && (!regionId || item.regionId === regionId));
+    // Without an explicit region a colliding physical ID is ambiguous, not permission to take the first row.
+    if (matches.length !== 1) return null;
+    return billingDate >= billingDayText(matches[0].billingStartAt) ? matches[0] : null;
   }
 }
