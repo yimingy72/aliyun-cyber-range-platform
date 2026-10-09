@@ -59,7 +59,7 @@ describe('single-instance OpenTofu batch execution', () => {
     const lease = { batchId: 'batch-a', signal: controller.signal, assertCurrent: jest.fn(async () => {}) };
     let workspace = '';
     let lastPlan: any;
-    let onApply: (() => Promise<void>) | undefined;
+    let onApply: ((options: any) => Promise<void>) | undefined;
     let customPlan: (() => any) | undefined;
     let applyCalls = 0;
     const stateMembers = new Map<string, any>();
@@ -80,9 +80,9 @@ describe('single-instance OpenTofu batch execution', () => {
       init: jest.fn(async (options: any) => { workspace = options.workspaceDir; return result(); }),
       plan: jest.fn(async (options: any) => { lastPlan = options; return result(); }),
       showPlan: jest.fn(async () => customPlan ? customPlan() : { format_version: '1.2', resource_changes: lastPlan.targets.map((address: string) => ({ address, type: 'alicloud_instance', change: { actions: [lastPlan.destroy ? 'delete' : 'create'] } })) }),
-      apply: jest.fn(async () => {
+      apply: jest.fn(async (options: any) => {
         applyCalls++;
-        if (onApply) await onApply();
+        if (onApply) await onApply(options);
         else for (const address of lastPlan.targets) {
           const id = JSON.parse(address.slice(address.indexOf('[') + 1, -1));
           if (lastPlan.destroy) { cloud.delete(stateMembers.get(id)?.attributes.id); stateMembers.delete(id); await saveState(); }
@@ -101,18 +101,155 @@ describe('single-instance OpenTofu batch execution', () => {
       jobs.set(job.id, job); instance.lastJobId = job.id; instance.status = 'destroying'; return { instance, job };
     }
     return { service, repository, native, runner, lease, controller, instances, items, jobs, ledger, cloud, stateMembers, account, createMember, saveState, queueDestroy,
-      get workspace() { return workspace; }, set onApply(value: (() => Promise<void>) | undefined) { onApply = value; }, set customPlan(value: (() => any) | undefined) { customPlan = value; }, get lastPlan() { return lastPlan; } };
+      get workspace() { return workspace; }, set onApply(value: ((options: any) => Promise<void>) | undefined) { onApply = value; }, set customPlan(value: (() => any) | undefined) { customPlan = value; }, get lastPlan() { return lastPlan; } };
   }
+
+  function progressEvent(id: string) {
+    return { address: `module.single_batch.alicloud_instance.members[${JSON.stringify(id)}]`, resourceType: 'alicloud_instance', action: 'create', resourceId: `i-${id}` };
+  }
+  async function waitFor(check: () => boolean) {
+    for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
+    throw new Error('progress did not become observable');
+  }
+
+  it('publishes 50 verified members in one cloud read before apply returns without finalizing their jobs or reading partial state', async () => {
+    const test = fixture(50);
+    test.onApply = async options => {
+      for (const instance of test.instances) await test.createMember(instance.id);
+      for (const instance of test.instances) options.onResourceApplied(progressEvent(instance.id));
+      const state = await fs.readFile(path.join(test.workspace, 'terraform.tfstate'));
+      await fs.writeFile(path.join(test.workspace, 'terraform.tfstate'), '{partial-write');
+      await waitFor(() => test.instances.every(instance => instance.status === 'running'));
+      expect(test.native.readOpenTofuInstances).toHaveBeenCalledTimes(1);
+      expect(test.native.readOpenTofuInstances.mock.calls[0][1]).toHaveLength(50);
+      expect([...test.jobs.values()].every(job => job.status === 'running')).toBe(true);
+      expect(test.ledger).toHaveLength(0);
+      expect(test.instances.every(instance => !instance.resourceSummary?.systemDiskIds)).toBe(true);
+      expect(test.instances.every(instance => instance.accessEntry?.publicIp === '203.0.113.1')).toBe(true);
+      await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
+      await fs.writeFile(path.join(test.workspace, 'terraform.tfstate'), state);
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect([...test.jobs.values()].every(job => job.status === 'succeeded')).toBe(true);
+    expect(test.ledger).toHaveLength(100);
+  });
+
+  it.each(['owner', 'account', 'job', 'batch', 'ip', 'status', 'foreign-event', 'duplicate-event'])('does not publish unverified progress for %s', async mismatch => {
+    const test = fixture(1);
+    test.onApply = async options => {
+      await test.createMember('member-1');
+      const detail = test.cloud.get('i-member-1');
+      const original = structuredClone(detail);
+      if (mismatch === 'owner') detail.tags.PlatformUserId = 'bob';
+      if (mismatch === 'account') detail.tags.CloudAccountUid = 'other';
+      if (mismatch === 'job') detail.tags.PlatformCreateJobId = 'different-job';
+      if (mismatch === 'batch') detail.tags.SingleInstanceBatchId = 'other';
+      if (mismatch === 'ip') detail.publicIp = null;
+      if (mismatch === 'status') detail.status = 'Pending';
+      options.onResourceApplied(progressEvent(mismatch === 'foreign-event' ? 'unknown-member' : 'member-1'));
+      if (mismatch === 'duplicate-event') options.onResourceApplied({ ...progressEvent('member-1'), resourceId: 'i-other' });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(test.instances[0].status).toBe('creating');
+      expect(test.instances[0].resourceSummary).toBeNull();
+      expect(test.jobs.get('job-1')?.status).toBe('running');
+      expect(test.ledger).toHaveLength(0);
+      test.cloud.set('i-member-1', original);
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('running');
+  });
+
+  it('keeps legacy retries without a frozen operation creating until final state verification', async () => {
+    const test = fixture(1); test.items[0].job.jobType = 'retry';
+    test.onApply = async options => {
+      await test.createMember('member-1'); options.onResourceApplied(progressEvent('member-1'));
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(test.instances[0].status).toBe('creating');
+      expect(test.native.readOpenTofuInstances).not.toHaveBeenCalled();
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('running'); expect(test.jobs.get('job-1')?.status).toBe('succeeded');
+  });
+
+  it('keeps progress observer errors private and lets final state verification decide success', async () => {
+    const test = fixture(1);
+    test.native.readOpenTofuInstances.mockRejectedValueOnce(new Error('test-secret-key test-Passw0rd-1!'));
+    test.onApply = async options => {
+      await test.createMember('member-1'); options.onResourceApplied(progressEvent('member-1'));
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(test.instances[0].status).toBe('creating');
+      expect(test.instances[0].errorSummary).toBeUndefined();
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('running'); expect(test.instances[0].errorSummary).toBeNull();
+  });
+
+  it.each(['abort', 'superseded', 'lease'])('fences in-flight progress writes after %s', async kind => {
+    const test = fixture(1);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    test.native.readOpenTofuInstances.mockImplementationOnce(async () => { await gate; return [...test.cloud.values()]; });
+    test.onApply = async options => {
+      await test.createMember('member-1'); options.onResourceApplied(progressEvent('member-1'));
+      await waitFor(() => test.native.readOpenTofuInstances.mock.calls.length === 1);
+      if (kind === 'abort') test.controller.abort();
+      if (kind === 'superseded') test.instances[0].lastJobId = 'replacement-job';
+      if (kind === 'lease') test.lease.assertCurrent.mockRejectedValue(new Error('lease gone'));
+      release();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(test.repository.commitSingleInstanceClaim).not.toHaveBeenCalled();
+      expect(test.instances[0].status).toBe('creating');
+    };
+    if (kind === 'superseded') await test.service.executeCreateBatch(test.items, test.lease);
+    else await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
+    expect(test.repository.commitSingleInstanceClaim).not.toHaveBeenCalled();
+  });
+
+  it('retains verified IDs and recovery markers without billing success when state persistence fails after early readiness', async () => {
+    const test = fixture(1);
+    test.onApply = async options => {
+      await test.createMember('member-1'); options.onResourceApplied(progressEvent('member-1'));
+      await waitFor(() => test.instances[0].status === 'running');
+      await fs.rename(path.join(test.workspace, 'terraform.tfstate'), path.join(test.workspace, 'errored.tfstate'));
+      throw new Error('state persistence failed');
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.instances[0].resourceSummary?.hostIds).toEqual({ 'host-1': 'i-member-1' });
+    expect(test.jobs.get('job-1')?.status).toBe('failed');
+    expect(test.ledger).toHaveLength(0);
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+    expect(test.cloud.size).toBe(1);
+    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
+    await expect(fs.stat(path.join(test.workspace, 'errored.tfstate'))).resolves.toBeDefined();
+  });
+
+  it('preserves an early-ready member after a later member apply failure', async () => {
+    const test = fixture();
+    test.onApply = async options => {
+      await test.createMember('member-1'); options.onResourceApplied(progressEvent('member-1'));
+      await waitFor(() => test.instances[0].status === 'running');
+      expect(test.jobs.get('job-1')?.status).toBe('running');
+      test.onApply = undefined;
+      throw new Error('second member failed');
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances.map(instance => instance.status)).toEqual(['running', 'create_failed']);
+    expect([...test.cloud.keys()]).toEqual(['i-member-1']);
+    expect(test.jobs.get('job-1')?.status).toBe('succeeded');
+    expect(test.ledger).toHaveLength(2);
+  });
 
   it('creates all claimed members with one init/plan/apply and freezes only actual cloud IPs', async () => {
     const test = fixture();
     await test.service.executeCreateBatch(test.items, test.lease);
-    expect(test.runner.init).toHaveBeenCalledTimes(1); expect(test.runner.plan).toHaveBeenCalledTimes(1); expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    expect(test.runner.init).toHaveBeenCalledTimes(1); expect(test.runner.init.mock.calls[0][0].upgrade).toBe(true); expect(test.runner.plan).toHaveBeenCalledTimes(1); expect(test.runner.apply).toHaveBeenCalledTimes(1);
     expect(test.native.executeCreateBatch).not.toHaveBeenCalled(); expect(test.instances.map(instance => instance.status)).toEqual(['running', 'running']);
     expect(test.ledger).toHaveLength(4); expect(test.ledger.every(row => row.cloudAccountUid === 'uid-a' && row.ownerUserId === 'alice' && row.singleInstanceBatchId === 'batch-a')).toBe(true);
     expect((test.instances[0].runtimeTopologyGraph?.nodes as any[])[0].data.privateIp).toBe('172.16.1.20');
     expect(test.runner.init.mock.calls[0][0].env.ALICLOUD_SECRET_KEY).toBe('test-secret-key');
     await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(path.join(test.workspace, 'versions.tf'), 'utf8')).toContain('version = \"= 1.282.0-range.1\"');
     // Parse the actual generated root wrapper, not just the static child module.
     const execute = promisify(execFile);
     await execute(process.env.OPENTOFU_BINARY ?? 'tofu', ['fmt', '-write=false', test.workspace]);
