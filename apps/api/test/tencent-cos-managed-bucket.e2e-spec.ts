@@ -137,4 +137,31 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
     const row = await runInCloudWorkspace(scope, () => prisma.cloudImageImportBucket.findFirst());
     expect(row?.status).toBe('deleted'); expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(1);
   });
+  it.each(['PUT404', 'GET404', 'wrong-method', 'missing-metadata-headers', 'missing-origin'])('returns no browser upload session when CORS verification fails: %s', async failure => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input);
+      const remote = cloud.buckets.get(bucket.bucketName)!;
+      if (failure === 'PUT404') remote.corsPutStatus = 404;
+      else if (failure === 'GET404') remote.corsReadStatus = 404;
+      else remote.corsRead = `<CORSConfiguration><CORSRule><AllowedOrigin>${failure === 'missing-origin' ? 'https://external.invalid' : '*'}</AllowedOrigin><AllowedMethod>${failure === 'wrong-method' ? 'POST' : 'PUT'}</AllowedMethod><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod>${failure === 'missing-metadata-headers' ? '' : '<AllowedHeader>*</AllowedHeader>'}<ExposeHeader>ETag</ExposeHeader></CORSRule></CORSConfiguration>`;
+      const callback = jest.fn(async () => ({ upload: 'must-not-return' }));
+      await expect(service.withImportBucket(input, callback)).rejects.toThrow();
+      expect(callback).not.toHaveBeenCalled();
+      expect((await prisma.billingLedgerResource.findFirst())!.releasedAt).toBeNull();
+      expect(cloud.creates).toBe(1);
+    });
+  });
+  it('persists the owned bucket fee identity even if the first CORS write fails', async () => {
+    const fetch = cloud.fetch.getMockImplementation()!;
+    cloud.fetch.mockImplementation(async (url, init) => new URL(String(url)).searchParams.has('cors') && init?.method === 'PUT'
+      ? new Response('', { status: 404, headers: { 'x-cos-request-id': 'fixture-cors-failed' } }) : fetch(url, init));
+    await runInCloudWorkspace(scope, async () => {
+      const callback = jest.fn(); await expect(service.withImportBucket(input, callback)).rejects.toThrow('HTTP_404');
+      const bucket = (await prisma.cloudImageImportBucket.findFirst())!;
+      expect(ownedCosBucketProof(bucket)).not.toBeNull();
+      expect((await prisma.billingLedgerResource.findFirst())!.cloudResourceId).toBe(bucket.bucketName);
+      expect(callback).not.toHaveBeenCalled();
+    });
+  });
+
 });

@@ -115,9 +115,22 @@ export class TencentCosManagedBucketService {
     }
     const proof = await this.verify(bucket, context);
     bucket = await this.acceptVerification(bucket, token, proof);
-    await requestCos({ contextCredentials: credentials, bucketName: bucket.bucketName, method: 'PUT', query: { cors: '' }, headers: { 'content-type': 'application/xml' },
-      body: '<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>PUT</AllowedMethod><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>' });
+    // The new bucket can incur fees before browser access is ready; keep its proven billing identity on a CORS failure.
     await this.ledger(bucket);
+    await this.update(bucket, token, { leaseExpiresAt: new Date(Date.now() + LEASE_MS) });
+    const configured = await requestCos({ contextCredentials: credentials, bucketName: bucket.bucketName, method: 'PUT', query: { cors: '' }, headers: { 'content-type': 'application/xml' },
+      body: '<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>PUT</AllowedMethod><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>' });
+    if (!configured.ok) conflict('COS 浏览器上传跨域配置尚未确认，未返回上传地址。');
+    const corsResponse = await requestCos({ contextCredentials: credentials, bucketName: bucket.bucketName, method: 'GET', query: { cors: '' } });
+    if (!corsResponse.ok) conflict('COS 浏览器上传跨域配置读回失败，未返回上传地址。');
+    const cors = parseCosXml(await corsResponse.text(), 'CORSConfiguration');
+    const verified = xmlChildren(cors, 'CORSRule').some(rule => {
+      const values = (name: string) => xmlChildren(rule, name).map(node => node.text.trim());
+      const methods = values('AllowedMethod');
+      return values('AllowedOrigin').includes('*') && ['PUT', 'GET', 'HEAD'].every(method => methods.includes(method))
+        && values('AllowedHeader').includes('*') && values('ExposeHeader').some(header => header.toLowerCase() === 'etag');
+    });
+    if (!verified) conflict('COS 浏览器上传跨域配置未匹配需要的方法与签名头，未返回上传地址。');
     return bucket;
   }
   private async verify(bucket: CloudImageImportBucket, context: Awaited<ReturnType<TencentCosManagedBucketService['credentials']>>) {

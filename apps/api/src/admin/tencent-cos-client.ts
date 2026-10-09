@@ -112,7 +112,7 @@ export async function requestCos(input: { contextCredentials: CosContextCredenti
   if (!response.headers.get('x-cos-request-id') || !/^[A-Za-z0-9+/=_-]{1,200}$/.test(response.headers.get('x-cos-request-id')!)) {
     throw new TencentCosRequestError('INVALID_RESPONSE', response.status);
   }
-  if (!response.ok && response.status !== 404) throw new TencentCosRequestError(`HTTP_${response.status}`, response.status);
+  if (!response.ok && (response.status !== 404 || !['GET', 'HEAD', 'DELETE'].includes(input.method))) throw new TencentCosRequestError(`HTTP_${response.status}`, response.status);
   return response;
 }
 export function requestCosObject(input: CosObjectRequestInput) {
