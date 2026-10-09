@@ -132,11 +132,11 @@ export function compileTemplateTopology(
     topologySpec,
     scenarioTemplateSpec,
     compiledProvisionSpec: compileScenarioTemplateSpec(scenarioTemplateSpec),
-    compiledSpec: compileTopologyGraph(graph.nodes, topologySpec),
+    compiledSpec: compileTopologyGraph(graph.nodes, topologySpec, metadata.cloudProvider),
   };
 }
 
-export function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopologySpec) {
+export function compileTopologyGraph(nodes: TemplateNode[], topologySpec: CompiledTopologySpec, cloudProvider: ScenarioTemplateMetadata['cloudProvider'] = 'alibaba_cloud') {
   const graphNodes: GraphNode[] = nodes.map((node) => {
     if (node.kind !== 'router' && node.kind !== 'switch' && node.kind !== 'ecs') {
       throw new Error(`Unsupported template node kind: ${String((node as { kind?: unknown }).kind)}`);
@@ -151,10 +151,10 @@ export function compileTopologyGraph(nodes: TemplateNode[], topologySpec: Compil
       ...graphNodes.map((node) => ({
         id: node.id,
         type: node.kind === 'ecs' ? 'host' : node.kind,
-        provider: 'alibaba_cloud',
+        provider: cloudProvider,
         config: compileNodeConfig(node, graphNodes, topologySpec.publicEntry.hostKey),
       })),
-      ...buildDerivedNatResources(graphNodes),
+      ...buildDerivedNatResources(graphNodes, cloudProvider),
     ],
     topology: {
       vpcCidr: topologySpec.vpcCidr,
@@ -234,7 +234,7 @@ function resolveHostPlacement(node: EcsTemplateNode, graphNodes: GraphNode[]) {
   };
 }
 
-function buildDerivedNatResources(nodes: GraphNode[]) {
+function buildDerivedNatResources(nodes: GraphNode[], cloudProvider: ScenarioTemplateMetadata['cloudProvider']) {
   const natEnabledSwitches = nodes.filter(
     (node): node is SwitchTemplateNode =>
       node.kind === 'switch' && (Boolean(node.nat?.snatEnabled) || (node.nat?.dnatMappings?.length ?? 0) > 0),
@@ -252,14 +252,14 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
         {
           id: natGatewayKey,
           type: 'nat_gateway',
-          provider: 'alibaba_cloud',
+          provider: cloudProvider,
           config: { label: '共享 NAT', zoneKey: sharedNatSwitch.zoneKey, snatEnabled },
         },
         ...(snatEnabled
           ? [{
               id: snatEipKey,
               type: 'eip',
-              provider: 'alibaba_cloud',
+              provider: cloudProvider,
               config: { label: '共享 SNAT EIP', bindTargetType: 'nat_gateway', bindTargetKey: natGatewayKey, bandwidthMbps: 30 },
             }]
           : []),
@@ -267,7 +267,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
           ? [{
               id: dnatEipKey,
               type: 'eip',
-              provider: 'alibaba_cloud',
+              provider: cloudProvider,
               config: { label: '共享 DNAT EIP', bindTargetType: 'nat_gateway', bindTargetKey: natGatewayKey, bandwidthMbps: 30 },
             }]
           : []),
@@ -280,7 +280,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
         ? [{
             id: `${node.id}-snat-1`,
             type: 'snat_entry',
-            provider: 'alibaba_cloud',
+            provider: cloudProvider,
             config: { label: `${node.label} SNAT`, natGatewayKey, sourceZoneKey: node.zoneKey, eipKey: snatEipKey },
           }]
         : [],
@@ -290,7 +290,7 @@ function buildDerivedNatResources(nodes: GraphNode[]) {
         ? (node.nat?.dnatMappings ?? []).map((mapping, index) => ({
             id: `${mapping.targetHostId}-dnat-${index + 1}`,
             type: 'dnat_entry',
-            provider: 'alibaba_cloud',
+            provider: cloudProvider,
             config: {
               label: mapping.key,
               natGatewayKey,
@@ -363,6 +363,9 @@ export function applyTemplateChangeset(topologyGraph: ScenarioGraphDraft, change
 }
 
 export function metadataFromTemplate(template: Record<string, unknown>): TemplateAuthoringMetadata {
+  if (template.cloudProvider !== undefined && template.cloudProvider !== 'alibaba_cloud' && template.cloudProvider !== 'tencent_cloud') {
+    throw new Error('Unsupported template cloud provider');
+  }
   const required = ['name', 'slug', 'version', 'modulePathOrRef'] as const;
   for (const key of required) {
     if (typeof template[key] !== 'string' || !template[key].trim()) {
@@ -381,7 +384,7 @@ export function metadataFromTemplate(template: Record<string, unknown>): Templat
     slug: String(template.slug),
     version: String(template.version),
     modulePathOrRef: String(template.modulePathOrRef),
-    cloudProvider: template.cloudProvider === 'alibaba_cloud' ? 'alibaba_cloud' : 'alibaba_cloud',
+    cloudProvider: template.cloudProvider === 'tencent_cloud' ? 'tencent_cloud' : 'alibaba_cloud',
     iacType: template.iacType === 'terraform' ? 'terraform' : 'opentofu',
     ...(typeof template.description === 'string' ? { description: template.description } : {}),
     ...(typeof topologySpec?.vpcCidr === 'string' ? { primaryVpcCidr: topologySpec.vpcCidr } : {}),
