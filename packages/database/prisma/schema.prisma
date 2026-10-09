@@ -139,6 +139,43 @@ enum CloudResourceDriftSeverity {
   critical
 }
 
+model CloudWorkspace {
+  id                         String        @id @default(cuid())
+  provider                   CloudProvider
+  accountUid                 String?
+  displayName                String
+  isReadOnly                 Boolean       @default(false)
+  activeCloudAccountContextId String?
+  createdAt                  DateTime      @default(now())
+  updatedAt                  DateTime      @updatedAt
+
+  @@unique([provider, accountUid])
+  cloudAccountContextRows CloudAccountContext[]
+  operationConfirmationRows OperationConfirmation[]
+  idempotentOperationRows IdempotentOperation[]
+  operationAuditEventRows OperationAuditEvent[]
+  cloudImageSnapshotRows CloudImageSnapshot[]
+  imageImportJobRows ImageImportJob[]
+  packedImageArtifactRows PackedImageArtifact[]
+  imageCatalogItemRows ImageCatalogItem[]
+  platformImageAssetRows PlatformImageAsset[]
+  platformImageTagRows PlatformImageTag[]
+  platformImageAssetTagRows PlatformImageAssetTag[]
+  rangeTemplateRows RangeTemplate[]
+  rangeTemplateVersionRows RangeTemplateVersion[]
+  singleInstanceBatchRows SingleInstanceBatch[]
+  rangeInstanceRows RangeInstance[]
+  singleInstanceNetworkProfileRows SingleInstanceNetworkProfile[]
+  provisionJobRows ProvisionJob[]
+  provisionJobStepLogRows ProvisionJobStepLog[]
+  cloudResourceDriftRows CloudResourceDrift[]
+  billingLedgerResourceRows BillingLedgerResource[]
+  billingLineItemRows BillingLineItem[]
+  billingAnomalyRows BillingAnomaly[]
+  platformUserRows PlatformUser[]
+
+}
+
 model SystemCloudConfig {
   id              String   @id
   provider        String
@@ -151,6 +188,7 @@ model SystemCloudConfig {
 }
 
 model CloudAccountContext {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                String                    @id @default(cuid())
   displayName       String
   provider          CloudProvider             @default(alibaba_cloud)
@@ -172,11 +210,18 @@ model CloudAccountContext {
   @@unique([provider, accountUid, regionId])
   @@index([status, provider])
   @@index([isActive])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model PlatformUser {
+  cloudWorkspaceId          String?
+  loginUsername             String                @unique
+  isPlatformManager         Boolean               @default(false)
+  selectedCloudWorkspaceId  String?
   id                        String                @id
-  username                  String                @unique
+  username                  String
   passwordHash              String
   oidcIssuer                String?
   oidcSubject               String?
@@ -192,9 +237,14 @@ model PlatformUser {
   imageImportJobs           ImageImportJob[]
 
   @@unique([oidcIssuer, oidcSubject])
+  @@unique([cloudWorkspaceId, username])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace? @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model OperationConfirmation {
+  cloudWorkspaceId String @default("legacy-unbound")
   id             String   @id @default(cuid())
   actorUserId    String
   oauthClientId  String
@@ -208,9 +258,13 @@ model OperationConfirmation {
 
   @@index([actorUserId, createdAt])
   @@index([expiresAt])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model IdempotentOperation {
+  cloudWorkspaceId String @default("legacy-unbound")
   id             String                    @id @default(cuid())
   actorUserId    String
   toolName       String
@@ -223,11 +277,15 @@ model IdempotentOperation {
   createdAt      DateTime                  @default(now())
   updatedAt      DateTime                  @updatedAt
 
-  @@unique([actorUserId, toolName, idempotencyKey])
+  @@unique([cloudWorkspaceId, actorUserId, toolName, idempotencyKey])
   @@index([status, updatedAt])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model OperationAuditEvent {
+  cloudWorkspaceId String @default("legacy-unbound")
   id             String              @id @default(cuid())
   operationId    String
   requestId      String
@@ -250,9 +308,13 @@ model OperationAuditEvent {
   @@index([targetType, targetId, createdAt])
   @@index([jobId, phase, createdAt, id])
   @@index([createdAt, id])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model CloudImageSnapshot {
+  cloudWorkspaceId String @default("legacy-unbound")
   id              String        @id @default(cuid())
   provider        CloudProvider @default(alibaba_cloud)
   accountUid      String?
@@ -272,12 +334,16 @@ model CloudImageSnapshot {
   catalogItems    ImageCatalogItem[]
   platformAssets  PlatformImageAsset[]
 
-  @@unique([provider, accountScopeKey, regionId, scope, imageId])
+  @@unique([cloudWorkspaceId, provider, accountScopeKey, regionId, scope, imageId])
   @@index([provider, regionId, scope])
   @@index([accountUid])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model ImageImportJob {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                    String               @id @default(cuid())
   cloudAccountContextId String
   cloudAccountUid       String?
@@ -297,13 +363,13 @@ model ImageImportJob {
   sourceFileName        String
   sourceContentType     String
   sourceSizeBytes       String
-  objectKey             String               @unique
+  objectKey             String
   uploadExpiresAt       DateTime
   uploadCompletedAt     DateTime?
   submissionRejected    Boolean              @default(false)
   lastPolledAt          DateTime?
   status                ImageImportJobStatus @default(awaiting_upload)
-  imageId               String?              @unique
+  imageId               String?
   taskId                String?
   sourceSnapshotId      String?
   platformImageAssetId  String?
@@ -324,9 +390,15 @@ model ImageImportJob {
   @@index([ownerUserId, createdAt])
   @@index([status, lastPolledAt, createdAt])
   @@index([status, temporaryObjectDeletedAt, updatedAt])
+  @@index([cloudWorkspaceId])
+  @@unique([cloudWorkspaceId, imageId])
+  @@unique([cloudWorkspaceId, objectKey])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model PackedImageArtifact {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                       String   @id @default(cuid())
   cloudAccountContextId    String
   cloudAccountUid          String
@@ -336,7 +408,7 @@ model PackedImageArtifact {
   sourceHostKey            String
   sourceInstanceId         String
   sourceDiskIds            Json
-  imageId                  String?  @unique
+  imageId                  String?
   sourceSnapshotId         String?
   platformImageAssetId     String?
   status                   String   @default("pending")
@@ -354,9 +426,14 @@ model PackedImageArtifact {
   @@index([cloudAccountUid, regionId, status])
   @@index([ownerUserId, createdAt])
   @@index([sourceSnapshotId])
+  @@index([cloudWorkspaceId])
+  @@unique([cloudWorkspaceId, imageId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model ImageCatalogItem {
+  cloudWorkspaceId String @default("legacy-unbound")
   id               String        @id @default(cuid())
   displayName      String
   imageId          String
@@ -371,13 +448,17 @@ model ImageCatalogItem {
   updatedAt        DateTime      @updatedAt
   sourceSnapshot   CloudImageSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
 
-  @@unique([provider, accountScopeKey, regionId, scope, imageId])
+  @@unique([cloudWorkspaceId, provider, accountScopeKey, regionId, scope, imageId])
   @@index([provider, regionId, scope])
   @@index([accountUid])
   @@index([sourceSnapshotId])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model PlatformImageAsset {
+  cloudWorkspaceId String @default("legacy-unbound")
   id               String              @id @default(cuid())
   provider         CloudProvider       @default(alibaba_cloud)
   accountUid       String?
@@ -399,17 +480,21 @@ model PlatformImageAsset {
   ownerUser        PlatformUser?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   tags             PlatformImageAssetTag[]
 
-  @@unique([provider, accountScopeKey, regionId, imageId])
+  @@unique([cloudWorkspaceId, provider, accountScopeKey, regionId, imageId])
   @@index([provider, accountScopeKey, regionId])
   @@index([sourceSnapshotId])
   @@index([ownerUserId])
   @@index([visibility, enabled])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model PlatformImageTag {
+  cloudWorkspaceId String @default("legacy-unbound")
   id              String                  @id @default(cuid())
   name            String
-  normalizedName  String                  @unique
+  normalizedName  String
   createdByUserId String?
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
@@ -417,9 +502,14 @@ model PlatformImageTag {
   imageAssets     PlatformImageAssetTag[]
 
   @@index([createdByUserId])
+  @@index([cloudWorkspaceId])
+  @@unique([cloudWorkspaceId, normalizedName])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model PlatformImageAssetTag {
+  cloudWorkspaceId String @default("legacy-unbound")
   platformImageAssetId String
   tagId                String
   createdAt            DateTime           @default(now())
@@ -428,9 +518,13 @@ model PlatformImageAssetTag {
 
   @@id([platformImageAssetId, tagId])
   @@index([tagId, platformImageAssetId])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model RangeTemplate {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                       String          @id @default(cuid())
   name                     String
   createdBy                String          @default("admin")
@@ -461,12 +555,16 @@ model RangeTemplate {
   currentPublishedVersion  RangeTemplateVersion? @relation("RangeTemplateCurrentPublishedVersion", fields: [currentPublishedVersionId], references: [id], onDelete: SetNull)
   ownerUser                PlatformUser?   @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
-  @@unique([slug, version])
+  @@unique([cloudWorkspaceId, slug, version])
   @@index([ownerUserId])
   @@index([visibility, updatedAt])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model RangeTemplateVersion {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                   String                     @id @default(cuid())
   templateId           String
   version              String
@@ -488,9 +586,13 @@ model RangeTemplateVersion {
 
   @@index([templateId])
   @@index([status])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model SingleInstanceBatch {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                   String          @id @default(cuid())
   name                 String
   platformImageAssetId String
@@ -511,9 +613,13 @@ model SingleInstanceBatch {
 
   @@index([createdAt])
   @@index([ownerUserId, createdAt])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model RangeInstance {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                           String              @id @default(cuid())
   name                         String
   createdBy                    String?             @default("admin")
@@ -561,9 +667,13 @@ model RangeInstance {
   @@index([instanceMode, status])
   @@index([status, expiresAt])
   @@index([ownerUserId, createdAt])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model SingleInstanceNetworkProfile {
+  cloudWorkspaceId String @default("legacy-unbound")
   createdByUserId    String?
   cleanupRunId       String?
   cleanupRegisteredByUserId String?
@@ -586,10 +696,14 @@ model SingleInstanceNetworkProfile {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  @@unique([provider, cloudAccountUid, regionId, zoneId])
+  @@unique([cloudWorkspaceId, provider, cloudAccountUid, regionId, zoneId])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model ProvisionJob {
+  cloudWorkspaceId String @default("legacy-unbound")
   id              String               @id @default(cuid())
   rangeInstanceId String
   jobType         ProvisionJobType
@@ -610,9 +724,13 @@ model ProvisionJob {
   @@index([rangeInstanceId])
   @@index([status])
   @@index([status, availableAt, createdAt, id])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model ProvisionJobStepLog {
+  cloudWorkspaceId String @default("legacy-unbound")
   id            String                 @id @default(cuid())
   jobId         String
   stepName      String
@@ -628,9 +746,13 @@ model ProvisionJobStepLog {
 
   @@index([jobId])
   @@index([status])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model CloudResourceDrift {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                String                     @id @default(cuid())
   cloudProvider     CloudProvider              @default(alibaba_cloud)
   regionId          String
@@ -646,12 +768,16 @@ model CloudResourceDrift {
   createdAt         DateTime                   @default(now())
   updatedAt         DateTime                   @updatedAt
 
-  @@unique([cloudProvider, regionId, cloudResourceType, cloudResourceId])
+  @@unique([cloudWorkspaceId, cloudProvider, regionId, cloudResourceType, cloudResourceId])
   @@index([severity, resolvedAt, lastSeenAt])
   @@index([rangeInstanceId])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model BillingLedgerResource {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                  String                    @id @default(cuid())
   cloudProvider       CloudProvider             @default(alibaba_cloud)
   cloudAccountUid     String?
@@ -670,18 +796,22 @@ model BillingLedgerResource {
   createdAt           DateTime                 @default(now())
   updatedAt           DateTime                 @updatedAt
 
-  @@unique([cloudProvider, regionId, cloudResourceId, cloudResourceType])
+  @@unique([cloudWorkspaceId, cloudProvider, regionId, cloudResourceId, cloudResourceType])
   @@index([ownerUserId, billingScope, billingStartAt])
   @@index([rangeInstanceId])
   @@index([singleInstanceBatchId])
   @@index([platformImageAssetId])
+  @@index([cloudWorkspaceId])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model BillingLineItem {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                String                    @id @default(cuid())
   cloudAccountUid   String?
   syncBatchId       String
-  sourceFingerprint String                    @unique
+  sourceFingerprint String
   billCycle         String
   billingDate       DateTime
   productCode       String
@@ -703,13 +833,18 @@ model BillingLineItem {
   @@index([ownerUserId, billingDate])
   @@index([matchedLedgerId])
   @@index([cloudResourceId, cloudResourceType])
+  @@index([cloudWorkspaceId])
+  @@unique([cloudWorkspaceId, sourceFingerprint])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
 
 model BillingAnomaly {
+  cloudWorkspaceId String @default("legacy-unbound")
   id                String                    @id @default(cuid())
   cloudAccountUid   String?
   syncBatchId       String
-  sourceFingerprint String                    @unique
+  sourceFingerprint String
   billCycle         String
   billingDate       DateTime
   cloudResourceId   String
@@ -724,4 +859,8 @@ model BillingAnomaly {
   @@index([billingDate])
   @@index([cloudAccountUid, billingDate])
   @@index([cloudResourceId, cloudResourceType])
+  @@index([cloudWorkspaceId])
+  @@unique([cloudWorkspaceId, sourceFingerprint])
+  cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
 }
