@@ -20,12 +20,13 @@ import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/p
 import { imageRpc, cloudItems, cloudPage } from './aliyun-image-rpc';
 import { PackedImagesService } from './packed-images.service';
 import { SystemConfigService } from './system-config.service';
+import { deleteTencentImage, describeTencentImages } from './tencent-image-rpc';
 
 type ImageCatalogScopePayload = {
   snapshots: Array<
     Pick<
       CloudImageSnapshotRecord,
-      'id' | 'provider' | 'scope' | 'imageId' | 'sourceImageName' | 'platform' | 'status' | 'isAvailable'
+      'id' | 'provider' | 'scope' | 'imageId' | 'sourceImageName' | 'platform' | 'architecture' | 'minimumSystemDiskSize' | 'status' | 'isAvailable'
     > & { ownedSnapshotCleanup?: { snapshotCount: number; status: 'ready' | 'deleting' } }
   >;
   catalogItems: Array<
@@ -174,6 +175,8 @@ export class ImageCatalogService {
           canChangeVisibility: assetView.canChangeVisibility ?? false,
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
+          architecture: snapshot?.architecture ?? null,
+          minimumSystemDiskSize: snapshot?.minimumSystemDiskSize ?? null,
         };
       }),
     };
@@ -355,7 +358,7 @@ export class ImageCatalogService {
 
   async prepareCustomDelete(snapshotId: string, currentUser: SessionUserProfile, deleteOwnedSnapshots: boolean) {
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
-    if (!snapshot || snapshot.scope !== 'custom' || snapshot.provider !== 'alibaba_cloud') throw new NotFoundException('Image snapshot not found');
+    if (!snapshot || snapshot.scope !== 'custom') throw new NotFoundException('Image snapshot not found');
     if (deleteOwnedSnapshots) {
       const [artifact] = await this.adminRepository.listPackedImageArtifacts({ sourceSnapshotId: snapshotId });
       if (!artifact || artifact.cloudAccountUid !== snapshot.accountUid || artifact.regionId !== snapshot.regionId || artifact.imageId !== snapshot.imageId
@@ -402,6 +405,9 @@ export class ImageCatalogService {
     await this.assertImageSnapshotNotImporting(snapshot);
 
     if (await this.describeImageById(snapshot.imageId, accountContext)) {
+      if (accountContext.provider === 'tencent_cloud') {
+        await deleteTencentImage(this.tencentCredentials(accountContext), snapshot.imageId);
+      } else {
       await this.performAliyunRpcRequest({
         accessKeyId: accountContext.accessKeyId,
         accessKeySecret: accountContext.accessKeySecret,
@@ -412,6 +418,7 @@ export class ImageCatalogService {
           Force: 'false',
         },
       });
+      }
       await this.adminRepository.upsertImageSnapshots({
         provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, scope: 'custom',
         snapshots: [{ imageId: snapshot.imageId, sourceImageName: snapshot.sourceImageName,
@@ -486,6 +493,8 @@ export class ImageCatalogService {
         imageId: snapshot.imageId,
         sourceImageName: snapshot.sourceImageName,
         platform: snapshot.platform,
+        architecture: snapshot.architecture,
+        minimumSystemDiskSize: snapshot.minimumSystemDiskSize,
         status: snapshot.status,
         isAvailable: snapshot.isAvailable,
         ...(cleanupBySnapshot.get(snapshot.id)?.imageId === snapshot.imageId ? {
@@ -804,7 +813,14 @@ export class ImageCatalogService {
     imageOwnerAlias: 'system' | 'self',
   ): Promise<ImageCatalogScopePayload> {
     const accountContext = await this.selectedContext();
-    if (accountContext.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的镜像目录请使用对应只读查询入口。');
+    if (accountContext.provider === 'tencent_cloud') {
+      const images = await describeTencentImages(this.tencentCredentials(accountContext), { scope });
+      await this.adminRepository.reconcileImageSnapshots({ provider: accountContext.provider, accountUid: accountContext.accountUid,
+        regionId: accountContext.defaultRegion, scope, snapshots: images.map(image => ({ imageId: image.ImageId,
+          sourceImageName: image.ImageName, osType: image.OSType, platform: image.Platform, architecture: image.Architecture,
+          minimumSystemDiskSize: image.ImageSize, status: image.Status, isAvailable: image.Status === 'Available', lastSyncedAt: new Date() })) });
+      return this.listScope(scope);
+    }
     const lastSyncedAt = new Date();
     const snapshots: UpsertImageSnapshotInput[] = [];
 
@@ -878,7 +894,9 @@ export class ImageCatalogService {
     imageId: string,
     accountContext: Awaited<ReturnType<SystemConfigService['getSelectedAccountContext']>>,
   ) {
-    if (accountContext.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的镜像收录与修改尚未开放。');
+    if (accountContext.provider === 'tencent_cloud') {
+      return (await describeTencentImages(this.tencentCredentials(accountContext), { ImageId: imageId }))[0] ?? null;
+    }
     const response = await this.performAliyunRpcRequest<AliyunDescribeImagesResponse>({
       accessKeyId: accountContext.accessKeyId,
       accessKeySecret: accountContext.accessKeySecret,
@@ -895,6 +913,14 @@ export class ImageCatalogService {
     const items = this.normalizeImages(response);
     if (cloudPage(response, 1, 100, items.length) !== items.length || items.length > 1 || items.some(item => item.ImageId !== imageId || !item.Status)) throw new Error('Invalid exact image query');
     return items[0] ?? null;
+  }
+
+  private tencentCredentials(account: Awaited<ReturnType<SystemConfigService['getSelectedAccountContext']>>) {
+    if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || !account.accountUid || !account.cloudAccountContextId) {
+      throw new BadRequestException('腾讯云镜像操作缺少已验证账号配置。');
+    }
+    return { provider: account.provider, id: account.cloudAccountContextId, accountUid: account.accountUid,
+      regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret };
   }
 
   private async performAliyunRpcRequest<ResponsePayload>(input: {
