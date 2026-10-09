@@ -423,16 +423,28 @@ export class ImageCatalogService {
     await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
     await this.assertImageSnapshotNotImporting(snapshot);
 
-    if (await this.describeImageById(snapshot.imageId, accountContext)) await this.performAliyunRpcRequest({
-      accessKeyId: accountContext.accessKeyId,
-      accessKeySecret: accountContext.accessKeySecret,
-      regionId: accountContext.defaultRegion,
-      action: 'DeleteImage',
-      parameters: {
-        ImageId: snapshot.imageId,
-        Force: 'false',
-      },
-    });
+    if (await this.describeImageById(snapshot.imageId, accountContext)) {
+      await this.performAliyunRpcRequest({
+        accessKeyId: accountContext.accessKeyId,
+        accessKeySecret: accountContext.accessKeySecret,
+        regionId: accountContext.defaultRegion,
+        action: 'DeleteImage',
+        parameters: {
+          ImageId: snapshot.imageId,
+          Force: 'false',
+        },
+      });
+      await this.adminRepository.upsertImageSnapshots({
+        provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, scope: 'custom',
+        snapshots: [{ imageId: snapshot.imageId, sourceImageName: snapshot.sourceImageName,
+          osType: snapshot.osType, platform: snapshot.platform, architecture: snapshot.architecture,
+          status: 'Deleting', isAvailable: false, lastSyncedAt: new Date() }],
+      });
+      const assets = await this.adminRepository.listPlatformImageAssets({
+        provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, imageId: snapshot.imageId,
+      });
+      await Promise.all(assets.map(asset => this.adminRepository.setPlatformImageAssetEnabled(asset.id, false)));
+    }
     if (await this.describeImageById(snapshot.imageId, accountContext)) throw new ConflictException('云镜像删除尚未确认，请用相同目标重试。');
 
     // ponytail: O(n) ledger scan is fine for now; add a dedicated repository query once image billing volume grows.
