@@ -113,6 +113,8 @@ export function pendingPlatformBillingEvidence(input: {
 }): PlatformBillingEvidence | null {
   const classification = classifyPlatformBillLine(input.line);
   const regionId = billRegionId(input.line);
+  const accountConflict = ['OwnerID', 'SplitAccountID'].some(key => input.line[key] != null
+    && String(input.line[key]) !== input.cloudAccountUid);
   const correction = ['Refund', 'Adjustment'].includes(text(input.line.Item));
   const owned = input.proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, input.proof)
     && ledger.cloudAccountUid === input.cloudAccountUid && input.billingDate >= billingDayText(ledger.billingStartAt));
@@ -121,12 +123,12 @@ export function pendingPlatformBillingEvidence(input: {
     const exact = owned.filter(ledger => ledger.cloudResourceId === classification.cloudResourceId);
     if (!exact.length) return null;
     const scoped = exact.filter(ledger => !regionId || ledger.regionId === regionId);
-    return { kind: billRegionConflict(input.line) || scoped.length !== 1 ? 'source_pending' : 'resource_pending',
+    return { kind: accountConflict || billRegionConflict(input.line) || scoped.length !== 1 ? 'source_pending' : 'resource_pending',
       ledgerIds: (scoped.length ? scoped : exact).map(ledger => ledger.id), imageImportJobIds: [] };
   }
   const candidates = owned.filter(ledger => ledger.regionId === regionId && ledgerBillingDateMatches(ledger, input.billingDate, correction));
   // An unknown aggregation region is not evidence that any platform resource participated.
-  if (!regionId || billRegionConflict(input.line)) return null;
+  if (accountConflict || !regionId || billRegionConflict(input.line)) return null;
   if (classification.cloudResourceType === 'snapshot_region') {
     const splitId = text(input.line.SplitItemID);
     const snapshotIds = /^i-/.test(splitId) ? new Set(input.proof.packedImages.filter(artifact => artifact.cloudAccountUid === input.cloudAccountUid && artifact.regionId === regionId && artifact.sourceInstanceId === splitId).flatMap(artifact => artifact.backingSnapshotIds)) : null;
