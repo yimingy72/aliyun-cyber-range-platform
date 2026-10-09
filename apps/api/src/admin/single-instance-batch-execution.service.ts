@@ -309,7 +309,9 @@ export class SingleInstanceBatchExecutionService {
     const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
     summary = { ...current?.resourceSummary, ...summary,
       dataDiskIds: { ...current?.resourceSummary?.dataDiskIds, ...summary.dataDiskIds } };
+    await assertLease();
     if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
+    await assertLease();
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
       regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: item.job.id, billingStartAt: item.instance.createdAt });
     const expectedTags: Record<string, string> = { CreatedBy: 'cyber-range-platform', RangeInstanceId: item.instance.id,
@@ -333,9 +335,12 @@ export class SingleInstanceBatchExecutionService {
     }
     await assertLease();
     await this.assertCurrent(item);
+    await assertLease();
     if (!await this.adminRepository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) throw new LostSingleInstanceClaimError();
+    await assertLease();
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
       regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: item.job.id, billingStartAt: item.instance.createdAt });
+    await assertLease();
     for (const disks of inventories) assertDiskInventorySafe(disks, destroying);
     return summary;
   }

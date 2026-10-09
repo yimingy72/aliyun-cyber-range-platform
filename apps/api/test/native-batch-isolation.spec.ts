@@ -70,7 +70,7 @@ async function fixture(failDiskForOwner?: string) {
     }
     return { RequestId: 'ok' };
   };
-  const network = new SingleInstanceNetworkService(repo, config, { destroyDefaultProfile: jest.fn(async () => { }) } as any, new CidrPoolService(), native);
+  const network = new SingleInstanceNetworkService(repo, config, { destroyDefaultProfile: jest.fn(async (_profile, _account, verified) => { await verified(); }) } as any, new CidrPoolService(), native);
   const launchNetwork: any = { ensureDefaultProfile: async () => profile, allocateVswitch: network.allocateVswitch.bind(network) };
   const worker: any = new ProvisioningWorkerService(repo, { create: async () => { }, destroy: async () => { } } as any, config, native, { reconcile: async () => { } } as any);
   worker.dispatch = jest.fn();

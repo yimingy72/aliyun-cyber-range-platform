@@ -7,6 +7,7 @@ import { buildAliyunTagParameters } from '../admin/billing-tagging';
 import { syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SystemConfigService } from '../admin/system-config.service';
+import { readRecordedDisks } from '../admin/instance-disk-inventory';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -37,9 +38,6 @@ type AliyunDescribeInstancesResponse = {
 
 type AliyunInstance = {
   InstanceId?: string;
-  BlockDeviceMappings?: {
-    BlockDeviceMapping?: Array<{ DiskId?: string }> | { DiskId?: string };
-  };
   Tags?: {
     Tag?: Array<{ TagKey?: string; TagValue?: string }> | { TagKey?: string; TagValue?: string };
   };
@@ -94,6 +92,25 @@ export class AliyunEcsResourceClient {
     ]);
 
     return [...new Map([...managed, ...legacy].map((instance) => [instance.instanceId, instance])).values()];
+  }
+
+  async verifyRecordedDisks(credentials: AliyunEcsCredentials, instance: RangeInstanceRecord, cloudInstanceId: string) {
+    const ids = recordedHostDiskIds(instance, cloudInstanceId);
+    if (!ids.length || !Object.values(instance.resourceSummary?.diskInventoryHostIds ?? {}).includes(cloudInstanceId)) return false;
+    const expected = { CreatedBy:'cyber-range-platform',RangeInstanceId:instance.id,PlatformScope:instance.ownerUserId?'user':'platform',
+      CloudAccountUid:credentials.accountUid,CloudAccountContextId:credentials.cloudAccountContextId,
+      ...(instance.ownerUserId ? {PlatformUserId:instance.ownerUserId} : {}) };
+    const disks = await readRecordedDisks((action, parameters) => this.performRequest({credentials,action,parameters}), ids);
+    if (disks.length !== ids.length) return false;
+    return disks.every(disk => {
+      const rows = disk.Tags?.Tag ?? [];
+      if (!Array.isArray(rows) || rows.some(tag => !tag || typeof tag.TagKey !== 'string' || typeof tag.TagValue !== 'string')
+        || new Set(rows.map(tag=>tag.TagKey)).size !== rows.length) return false;
+      const tags = Object.fromEntries(rows.map(tag=>[tag.TagKey,tag.TagValue]));
+      return disk.InstanceId === cloudInstanceId && ['system','data'].includes(disk.Type)
+        && !(instance.ownerUserId === null && tags.PlatformUserId)
+        && Object.entries(expected).every(([key,value])=>tags[key] === undefined || tags[key] === value);
+    });
   }
 
   async tagResources(input: {
@@ -227,7 +244,8 @@ export class PlatformResourceReconciliationService {
       }
 
       if (platformInstance.instanceMode === 'single' && platformInstance.singleInstanceConfig?.executionBackend === 'opentofu') {
-        const result = await this.reconcileCompletedOpenTofuMember(credentials, platformInstance.id, cloudInstance, now, cloudReadStartedAt);
+        const disksVerified = await this.verifySavedDisks(credentials, platformInstance, cloudInstance.instanceId);
+        const result = await this.reconcileCompletedOpenTofuMember(credentials, platformInstance.id, cloudInstance, now, cloudReadStartedAt, disksVerified);
         recovered += result.recovered;
         drifts += result.drifts;
         continue;
@@ -251,9 +269,9 @@ export class PlatformResourceReconciliationService {
         && tags.PlatformScope === (current.ownerUserId ? 'user' : 'platform') && tags.PlatformResourceType === 'ecs'
         && (current.instanceMode !== 'single' || tags.SingleInstanceBatchId === current.singleInstanceBatchId);
       const idsMatch = hostKey && current.resourceSummary?.hostIds?.[hostKey] === cloudInstance.instanceId
-        && cloudInstance.diskIds.every(id => Object.values(current.resourceSummary?.systemDiskIds ?? {}).includes(id));
+        && owned && await this.verifySavedDisks(credentials, current, cloudInstance.instanceId);
       const ledgers = owned && idsMatch ? await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: current.id }) : [];
-      const tracked = [cloudInstance.instanceId, ...cloudInstance.diskIds].every(id => ledgers.some(ledger =>
+      const tracked = [cloudInstance.instanceId, ...recordedHostDiskIds(current, cloudInstance.instanceId)].every(id => ledgers.some(ledger =>
         ledger.cloudResourceId === id && ledger.cloudAccountUid === boundUid && ledger.regionId === credentials.regionId
         && ledger.ownerUserId === current.ownerUserId && !ledger.releasedAt));
       if (!owned || !idsMatch || !tracked || current.status !== 'running' || lastJob.status !== 'succeeded') {
@@ -269,7 +287,7 @@ export class PlatformResourceReconciliationService {
   }
 
   private async reconcileCompletedOpenTofuMember(credentials: AliyunEcsCredentials, instanceId: string,
-    cloudInstance: AliyunEcsInstanceResource, now: Date, cloudReadStartedAt: Date) {
+    cloudInstance: AliyunEcsInstanceResource, now: Date, cloudReadStartedAt: Date, disksVerified: boolean) {
     // Intake takes this same lock. Recheck after the cloud read so a newly queued destroy cannot be overwritten.
     return this.adminRepository.withSingleInstanceControlLock(async () => {
       const instance = await this.adminRepository.getRangeInstanceById(instanceId);
@@ -280,9 +298,9 @@ export class PlatformResourceReconciliationService {
         || !instance.lastJobId || instance.updatedAt > cloudReadStartedAt) return skipped;
       const job = await this.adminRepository.getProvisionJobById(instance.lastJobId);
       if (!job || job.rangeInstanceId !== instance.id || !['succeeded', 'failed'].includes(job.status)) return skipped;
-      const unverifiedOwnership = async () => {
+      const unverifiedOwnership = async (reason = 'Tagged ECS ownership does not match the frozen platform account, user, batch, host or creation job; no user bill was assigned.') => {
         await this.recordDrift({ cloudInstance, rangeInstanceId: instance.id, regionId: credentials.regionId, observedAt: now,
-          reason: 'Tagged ECS ownership does not match the frozen platform account, user, batch, host or creation job; no user bill was assigned.' });
+          reason });
         return { recovered: 0, drifts: 1 };
       };
       if (!credentials.accountUidResolved || !credentials.accountUid || !credentials.cloudAccountContextId
@@ -301,23 +319,16 @@ export class PlatformResourceReconciliationService {
         await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance,
           regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
           resourceSummary: { mode: 'opentofu', hostIds: { [config.hostKey]: cloudInstance.instanceId },
-            systemDiskIds: Object.fromEntries(cloudInstance.diskIds.map((id, index) => [`observed-disk-${index}`, id])) },
+            ...(instance.resourceSummary?.systemDiskIds ? { systemDiskIds: instance.resourceSummary.systemDiskIds } : {}),
+            ...(instance.resourceSummary?.dataDiskIds ? { dataDiskIds: instance.resourceSummary.dataDiskIds } : {}) },
           billingStartAt: instance.createdAt, sourceProvisionJobId: sourceJob.id });
         await this.recordDrift({ cloudInstance, rangeInstanceId: instance.id, regionId: credentials.regionId, observedAt: now,
           reason: `Platform instance is ${instance.status} but its owned ECS still exists; billing remains open until cloud deletion is verified.` });
         return { recovered: 0, drifts: 1 };
       }
-      const hostKey = config.hostKey;
-      const currentSummary = instance.resourceSummary;
-      const existingHostId = currentSummary?.hostIds?.[hostKey];
-      const existingDiskId = currentSummary?.systemDiskIds?.[hostKey];
-      if (existingHostId && existingHostId !== cloudInstance.instanceId
-        || existingDiskId && !cloudInstance.diskIds.includes(existingDiskId)
-        || !existingDiskId && cloudInstance.diskIds.length !== 1) return unverifiedOwnership();
-      const needsSummaryRecovery = !existingHostId || !existingDiskId || currentSummary?.mode !== 'opentofu';
-      if (needsSummaryRecovery) await this.restoreResourceSummary(instance, hostKey, { ...cloudInstance, diskIds: [existingDiskId ?? cloudInstance.diskIds[0]] });
-      const reconciled = needsSummaryRecovery ? await this.adminRepository.getRangeInstanceById(instance.id) : instance;
-      if (!reconciled) return skipped;
+      if (instance.resourceSummary?.hostIds?.[config.hostKey] !== cloudInstance.instanceId || !disksVerified)
+        return unverifiedOwnership('Persisted disk inventory is missing, incomplete or conflicts with cloud evidence; no unrecorded attached disk was adopted.');
+      const reconciled = instance;
       // OpenTofu owns volume_tags; this path performs no cloud mutations while holding the intake lock.
       await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: reconciled,
         regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
@@ -325,36 +336,19 @@ export class PlatformResourceReconciliationService {
         sourceProvisionJobId: ['create', 'retry'].includes(job.jobType) ? job.id : null });
       await this.adminRepository.resolveCloudResourceDrift({ regionId: credentials.regionId, cloudResourceType: 'ecs',
         cloudResourceId: cloudInstance.instanceId, resolvedAt: now });
-      return { recovered: needsSummaryRecovery ? 1 : 0, drifts: 0 };
+      return { recovered: 0, drifts: 0 };
     });
   }
 
-  private async restoreResourceSummary(
-    instance: RangeInstanceRecord,
-    hostKey: string,
-    cloudInstance: AliyunEcsInstanceResource,
-  ) {
-    const currentSummary = instance.resourceSummary;
-    await this.adminRepository.updateRangeInstance(instance.id, {
-      resourceSummary: {
-        ...(currentSummary ?? {}),
-        mode: instance.singleInstanceConfig?.executionBackend === 'opentofu' ? 'opentofu'
-          : currentSummary?.mode ?? (instance.instanceMode === 'single' ? 'ecs-native' : 'opentofu'),
-        hostIds: {
-          ...(currentSummary?.hostIds ?? {}),
-          [hostKey]: cloudInstance.instanceId,
-        },
-        ...(cloudInstance.diskIds[0]
-          ? {
-              systemDiskIds: {
-                ...(currentSummary?.systemDiskIds ?? {}),
-                [hostKey]: cloudInstance.diskIds[0],
-              },
-            }
-          : {}),
-      },
-      errorSummary: null,
-    });
+  private async verifySavedDisks(credentials: AliyunEcsCredentials, instance: RangeInstanceRecord, cloudInstanceId: string) {
+    const source = instance.instanceMode === 'single' ? instance.singleInstanceConfig : instance.resourceSummary?.executionContext;
+    if (!credentials.accountUidResolved || !credentials.accountUid || !credentials.cloudAccountContextId
+      || source?.cloudAccountUid !== credentials.accountUid || source?.cloudAccountContextId !== credentials.cloudAccountContextId
+      || source.regionId !== credentials.regionId || !instance.lastJobId) return false;
+    const job = await this.adminRepository.getProvisionJobById(instance.lastJobId);
+    if (!job || !['succeeded','failed'].includes(job.status)) return false;
+    try { return await this.aliyunEcsResourceClient.verifyRecordedDisks(credentials,instance,cloudInstanceId); }
+    catch { return false; }
   }
 
   private async recordDrift(input: {
@@ -391,18 +385,18 @@ function normalizeInstances(response: AliyunDescribeInstancesResponse): AliyunEc
     return [
       {
         instanceId,
-        diskIds: normalizeDiskIds(instance.BlockDeviceMappings?.BlockDeviceMapping),
+        diskIds: [],
         tags: normalizeTags(instance.Tags?.Tag),
       },
     ];
   });
 }
 
-function normalizeDiskIds(
-  value: Array<{ DiskId?: string }> | { DiskId?: string } | null | undefined,
-) {
-  const mappings = Array.isArray(value) ? value : value ? [value] : [];
-  return mappings.map((mapping) => mapping.DiskId?.trim() ?? '').filter(Boolean);
+function recordedHostDiskIds(instance: RangeInstanceRecord, cloudInstanceId: string) {
+  const summary = instance.resourceSummary;
+  const hosts = new Set(Object.entries(summary?.hostIds ?? {}).filter(([,id])=>id===cloudInstanceId).map(([key])=>key));
+  return [...new Set([...Object.entries(summary?.systemDiskIds ?? {}).filter(([key])=>hosts.has(key)).map(([,id])=>id),
+    ...Object.values(summary?.dataDiskIds ?? {}).filter(id=>summary?.diskOwnershipProofs?.[id]?.instanceId===cloudInstanceId)])];
 }
 
 function normalizeTags(

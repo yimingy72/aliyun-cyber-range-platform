@@ -1,7 +1,7 @@
 import type { RangeResourceSummary } from './admin.repository';
 
 export type DiskRpc = (action: string, parameters: Record<string, string>) => Promise<unknown>;
-type Disk = { DiskId: string; InstanceId?: string; Type: 'system' | 'data'; DeleteWithInstance?: boolean;
+export type InventoryDisk = { DiskId: string; InstanceId?: string; Type: 'system' | 'data'; DeleteWithInstance?: boolean;
   Tags?: { Tag?: Array<{ TagKey: string; TagValue: string }> };
 };
 export type AttachedDiskInventory = { complete: boolean; systemDiskIds: string[]; dataDiskIds: string[]; unverifiedDisks: Array<{ id: string; deleteWithInstance: boolean | null }>; proofs: NonNullable<RangeResourceSummary['diskOwnershipProofs']> };
@@ -18,12 +18,12 @@ async function query(rpc: DiskRpc, action: string, parameters: Record<string, st
 }
 
 async function readDiskPages(rpc: DiskRpc, parameters: Record<string, string>) {
-  const disks: Disk[] = [];
+  const disks: InventoryDisk[] = [];
   let expectedTotal: number | undefined;
   for (let page = 1; page <= 100; page++) {
     const body = await query(rpc, 'DescribeDisks', { ...parameters, PageNumber: String(page), PageSize: '100' }) as any;
     const rows = body?.Disks?.Disk;
-    if (body?.Code || typeof body?.RequestId !== 'string' || !body.RequestId || !Array.isArray(rows) || !Number.isSafeInteger(body.TotalCount) || body.TotalCount < 0
+    if (body?.Code || typeof body?.RequestId !== 'string' || !body.RequestId.trim() || !Array.isArray(rows) || !Number.isSafeInteger(body.TotalCount) || body.TotalCount < 0
       || Number(body.PageNumber) !== page || !Number.isInteger(Number(body.PageSize)) || Number(body.PageSize) < 1 || Number(body.PageSize) > 100
       || body.NextToken || expectedTotal !== undefined && expectedTotal !== body.TotalCount
       || rows.some(row => !row || typeof row.DiskId !== 'string' || !/^d-[A-Za-z0-9-]+$/.test(row.DiskId))
@@ -82,15 +82,19 @@ export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceI
   return result;
 }
 
-export async function findExistingInventoryDiskIds(rpc: DiskRpc, ids: string[]) {
-  const unique = [...new Set(ids)], existing: string[] = [];
+export async function readRecordedDisks(rpc: DiskRpc, ids: string[]) {
+  const unique = [...new Set(ids)], existing: InventoryDisk[] = [];
   for (let offset = 0; offset < unique.length; offset += 100) {
     const requested = unique.slice(offset, offset + 100);
     const disks = await readDiskPages(rpc, { DiskIds: JSON.stringify(requested) });
     if (disks.some(disk => !requested.includes(disk.DiskId))) throw new Error('Disk verification returned an unrequested identity');
-    existing.push(...disks.map(disk => disk.DiskId));
+    existing.push(...disks);
   }
   return existing;
+}
+
+export async function findExistingInventoryDiskIds(rpc: DiskRpc, ids: string[]) {
+  return (await readRecordedDisks(rpc, ids)).map(disk => disk.DiskId);
 }
 
 export function inventoryDiskIds(summary: RangeResourceSummary | null | undefined) {
