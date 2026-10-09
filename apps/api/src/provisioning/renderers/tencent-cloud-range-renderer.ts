@@ -48,10 +48,11 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     const protocol = rule.protocol.toUpperCase();
     const all = ['-1/-1','1/65535'].includes(rule.portRange);
     if (!['TCP','UDP','ICMP','ALL'].includes(protocol) || ['ALL','ICMP'].includes(protocol) && !all || !/^\d+\/\d+$/.test(rule.portRange) && !all) throw new Error('Tencent security policies contain an unsupported protocol/port range');
-    const port = all ? 'all' : rule.portRange.replace('/', '-');
-    if ('zoneKey' in rule && /[#\r\n]/.test(rule.name)) throw new Error('Tencent ACL descriptions cannot contain rule delimiters');
+    const isAcl = 'zoneKey' in rule;
+    const port = all ? (isAcl ? 'ALL' : 'all') : rule.portRange.replace('/', '-');
+    if (isAcl && /[#\r\n]/.test(rule.name)) throw new Error('Tencent ACL descriptions cannot contain rule delimiters');
     return { key: rule.key, ...('targetHostKey' in rule ? { host_key: rule.targetHostKey, device_index: rule.targetDeviceIndex ?? null } : { zone_key: rule.zoneKey }),
-      direction: rule.direction, action: ['allow','accept'].includes(rule.policy) ? 'ACCEPT' : 'DROP', protocol, port, cidr_block: rule.sourceCidr, priority: rule.priority, description: rule.name.slice(0,60) };
+      direction: rule.direction, action: ['allow','accept'].includes(rule.policy) ? 'ACCEPT' : 'DROP', protocol, port, cidr_block: rule.sourceCidr, priority: rule.priority, description: isAcl ? rule.name.slice(0,60).toUpperCase() : rule.name.slice(0,60) };
   });
   const terminateAt = new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const hosts = plan.hostDefinitions.map(host => {

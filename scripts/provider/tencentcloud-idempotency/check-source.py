@@ -7,4 +7,6 @@ assert 'request.ActionTimer = &cvm.ActionTimer{TimerAction: helper.String("Termi
 assert 'request.ClientToken = &clientToken' in eip and 'clientToken := rangeInstanceClientToken(d)' in eip
 assert 'tags["PlatformManaged"] == "true" && tags["CloudProvider"] == "tencent_cloud"' in nat
 assert 'return resource.NonRetryableError(e)' in nat[nat.index('CreateNatGateway(request)'):nat.index('natGatewayId :=')]
+atomic_nat_tags = nat[nat.index('if v := helper.GetTags(d, "tags")'):nat.index('var response *vpc.CreateNatGatewayResponse')]
+assert 'request.Tags = append(request.Tags, &tag)' in atomic_nat_tags
 print('Verified persisted CVM/EIP tokens, atomic expiry and guarded NAT creation.')

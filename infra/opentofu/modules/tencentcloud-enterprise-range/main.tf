@@ -161,7 +161,7 @@ resource "tencentcloud_nat_gateway" "shared" {
   bandwidth           = 5000
   max_concurrent      = 2000000
   assigned_eip_set    = [for key, eip in local.eips : tencentcloud_eip.range[key].public_ip if eip.nat_key == each.key]
-  tags                = var.tags
+  tags                = merge(var.tags, { CreationIntentId = each.value.creation_intent_id, PlatformResourceType = "nat_gateway" })
 }
 resource "tencentcloud_route_table" "zones" {
   for_each = local.zones

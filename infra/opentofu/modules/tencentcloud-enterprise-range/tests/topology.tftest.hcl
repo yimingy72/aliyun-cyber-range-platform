@@ -43,6 +43,18 @@ run "preserves_network_and_nic_policy_semantics" {
     error_message = "SNAT, DNAT and ACL policies must be explicit."
   }
 }
+run "keeps_atomic_nat_and_eip_recovery_identity" {
+  command = plan
+  assert {
+    condition     = tencentcloud_nat_gateway.shared["shared"].tags["CreationIntentId"] == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" && tencentcloud_nat_gateway.shared["shared"].tags["PlatformResourceType"] == "nat_gateway" && tencentcloud_nat_gateway.shared["shared"].tags["PlatformCreateJobId"] == "job-fixture"
+    error_message = "NAT creation must atomically receive its exact recovery nonce and original source job."
+  }
+  assert {
+    condition     = tencentcloud_eip.range["snat"].client_token != tencentcloud_eip.range["dnat"].client_token && tencentcloud_eip.range["snat"].tags["CreationIntentId"] == tencentcloud_eip.range["snat"].client_token
+    error_message = "Each EIP must have a distinct persisted allocation intent and matching atomic tags."
+  }
+}
+
 run "exports_disks_and_complete_resource_inventory" {
   command = apply
   assert {

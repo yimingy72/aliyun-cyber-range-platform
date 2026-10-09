@@ -26,6 +26,15 @@ it('retains frozen range identity, deterministic intent, NIC rules and atomic ex
   expect(renderTencentRangeVariables(changed).hosts[0].creation_intent_id).not.toBe(vars.hosts[0].creation_intent_id);
 });
 it.each([1,2,4,6,8,12,14,64])('uses documented ENI capacity for %d vCPUs', cpu => expect(tencentNicCapacity(cpu).nics).toBeGreaterThanOrEqual(2));
+it.each(['all', 'icmp', 'tcp'])('renders provider-compatible ACL all ports and stable descriptions for %s', protocol => {
+  const request = input();
+  const rule = { key: 'all-out', name: 'allow all egress', direction: 'egress' as const, policy: 'accept' as const, protocol, portRange: '-1/-1', sourceCidr: '0.0.0.0/0', priority: 10 };
+  request.plan.aclDefinitions = [{ ...rule, direction: 'outbound', zoneKey: 'dmz' }];
+  request.plan.securityGroupRules = [{ ...rule, targetHostKey: 'entry' }];
+  const vars = renderTencentRangeVariables(request);
+  expect(vars.acls[0]).toMatchObject({ port: 'ALL', protocol: protocol.toUpperCase(), description: 'ALLOW ALL EGRESS' });
+  expect(vars.security_group_rules[0]).toMatchObject({ port: 'all', protocol: protocol.toUpperCase(), description: 'allow all egress' });
+});
 it('rejects excessive NICs, unknown quota, mixed bootstrap and missing expiry before rendering', () => {
   const request = input(); request.plan.hostNetworkInterfaces[0].interfaces = Array.from({ length: 5 },(_,index) => ({ deviceIndex: index, zoneKey: 'dmz', privateIp: `10.0.1.${10+index}` }));
   expect(() => renderTencentRangeVariables(request)).toThrow('capacity');
