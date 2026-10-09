@@ -104,7 +104,11 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.timer = setInterval(() => {
-      void this.syncRecentDays(7).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
+      // Month-end settlement can revise bills older than the default seven-day manual window.
+      const today = resolveBillingWindow({}, 1).endAt;
+      const previousMonthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+      const days = Math.round((today.getTime() - previousMonthStart.getTime()) / 86_400_000);
+      void this.syncRecentDays(days).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
     }, intervalMs);
     this.timer.unref();
   }
