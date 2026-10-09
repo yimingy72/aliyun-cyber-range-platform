@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
@@ -122,13 +124,24 @@ export class ProvisioningWorkerService {
   }
 
   async recoverInterruptedJobs(now: Date): Promise<number> {
-    return this.adminRepository.requeueInterruptedProvisionJobs(
+    return runInSystemCloudWorkspaceScope(() => this.adminRepository.requeueInterruptedProvisionJobs(
       new Date(now.getTime() - readInterruptedJobStaleAfterMs()),
-    );
+    ));
   }
 
   async reconcilePlatformResources(now: Date) {
-    return this.platformResourceReconciliationService.reconcile(now);
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    if (!spaces) return this.platformResourceReconciliationService.reconcile(now);
+    const results = [];
+    let failed = false;
+    for (const space of spaces) {
+      try {
+        results.push(await runInExecutionCloudWorkspace(this.systemConfigService, space.id,
+          () => this.platformResourceReconciliationService.reconcile(now), { provider: space.provider, accountUid: space.accountUid }));
+      } catch { failed = true; }
+    }
+    if (failed) throw new Error('Cloud reconciliation failed for a workspace; other source workspaces were still processed');
+    return results;
   }
 
   private async reconcilePlatformResourcesIfDue(now: Date) {
@@ -151,48 +164,79 @@ export class ProvisioningWorkerService {
   }
 
   async processExpiredInstances(now: Date) {
-    const instances = await this.adminRepository.listExpiredRangeInstances(now);
+    const instances = await runInSystemCloudWorkspaceScope(() => this.adminRepository.listExpiredRangeInstances(now));
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    const allowed = spaces ? new Set(spaces.map(space => space.id)) : null;
 
-    for (const instance of instances) {
-      if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
-        await this.adminRepository.withSingleInstanceControlLock(async () => {
-          const current=await this.adminRepository.getRangeInstanceById(instance.id);
-          if(!current || !['running','creating'].includes(current.status)) return;
-          const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
-          if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
-          if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
-          const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
-          await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
-        });
-        continue;
+    for (const listed of instances) {
+      if (allowed && (!listed.cloudWorkspaceId || !allowed.has(listed.cloudWorkspaceId))) continue;
+      try {
+        const instance = await runInSystemCloudWorkspaceScope(() => this.adminRepository.getRangeInstanceById(listed.id));
+        if (!instance || instance.cloudWorkspaceId !== listed.cloudWorkspaceId) continue;
+        await runInExecutionCloudWorkspace(this.systemConfigService, instance.cloudWorkspaceId,
+          () => this.processExpiredInstance(instance, now), this.executionSource(instance));
+      } catch {
+        this.logger.error(`Expired instance ${listed.id} cleanup scheduling failed; its source record remains available for retry.`);
       }
-      if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
-        continue;
-      }
-
-      if (instance.instanceMode === 'range') {
-        await this.adminRepository.queueRangeInstanceJob({
-          rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'system:auto-expire',
-          expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
-        });
-        continue;
-      }
-      const job = await this.adminRepository.createProvisionJob({
-        rangeInstanceId: instance.id,
-        jobType: 'destroy',
-        triggeredBy: 'system:auto-expire',
-      });
-
-      await this.adminRepository.updateRangeInstance(instance.id, {
-        status: 'pending_destroy',
-        lastJobId: job.id,
-      });
     }
   }
 
+  private async processExpiredInstance(instance: RangeInstanceRecord, now: Date) {
+    if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
+      await this.adminRepository.withSingleInstanceControlLock(async () => {
+        const current=await this.adminRepository.getRangeInstanceById(instance.id);
+        if(!current || !['running','creating'].includes(current.status)) return;
+        const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
+        if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
+        if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
+        const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
+        await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
+      });
+      return;
+    }
+    if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
+      return;
+    }
+
+    if (instance.instanceMode === 'range') {
+      await this.adminRepository.queueRangeInstanceJob({
+        rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'system:auto-expire',
+        expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
+      });
+      return;
+    }
+    const job = await this.adminRepository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'destroy',
+      triggeredBy: 'system:auto-expire',
+    });
+
+    await this.adminRepository.updateRangeInstance(instance.id, {
+      status: 'pending_destroy',
+      lastJobId: job.id,
+    });
+  }
+
   async process(jobId: string) {
+    const source = await runInSystemCloudWorkspaceScope(async () => {
+      const job = await this.adminRepository.getProvisionJobById(jobId);
+      const instance = job ? await this.adminRepository.getRangeInstanceById(job.rangeInstanceId) : null;
+      return { job, instance };
+    });
+    if (!source.job) return;
+    if (source.instance && source.job.cloudWorkspaceId !== source.instance.cloudWorkspaceId) {
+      throw new Error('Provision job and target instance belong to different cloud workspaces');
+    }
+    return runInExecutionCloudWorkspace(this.systemConfigService, source.job.cloudWorkspaceId,
+      () => this.processInWorkspace(jobId), source.instance ? this.executionSource(source.instance) : undefined);
+  }
+
+  private async processInWorkspace(jobId: string) {
     const pendingJob = await this.adminRepository.getProvisionJobById(jobId);
     const instance = pendingJob ? await this.adminRepository.getRangeInstanceById(pendingJob.rangeInstanceId) : null;
+    if (instance && pendingJob?.cloudWorkspaceId !== instance.cloudWorkspaceId) {
+      throw new Error('Provision job and target instance belong to different cloud workspaces');
+    }
     if (instance?.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu'
       && pendingJob?.jobType !== 'refresh_status') {
       const batchId = instance.singleInstanceBatchId;
@@ -213,6 +257,7 @@ export class ProvisioningWorkerService {
       ? await this.adminRepository.claimRangeProvisionJob(jobId, claimedAt)
       : await this.adminRepository.claimProvisionJob(jobId, claimedAt);
     if (!job) return;
+    if (instance && job.cloudWorkspaceId !== instance.cloudWorkspaceId) throw new Error('Claimed job changed its source cloud workspace');
     const controller = new AbortController();
     const heartbeat = this.startProvisionJobHeartbeat([job], controller);
     try {
@@ -710,7 +755,13 @@ export class ProvisioningWorkerService {
   }
 
   private async startEligiblePendingJobs() {
+    return runInSystemCloudWorkspaceScope(() => this.pollEligiblePendingJobs());
+  }
+
+  private async pollEligiblePendingJobs() {
     this.clearExpiredTaskFailures();
+    const spaces = await listExecutionCloudWorkspaces(this.systemConfigService);
+    const allowed = spaces ? new Set(spaces.map(space => space.id)) : null;
     let started = 0;
     let after: { createdAt: Date; id: string } | undefined;
     const now = new Date();
@@ -720,9 +771,10 @@ export class ProvisioningWorkerService {
       const instances = await this.adminRepository.listProvisioningInstancesByIds([...new Set(pendingJobs.map(job => job.rangeInstanceId))]);
       const instancesById = new Map(instances.map(instance => [instance.id, instance]));
       for (const job of pendingJobs) {
+        if (allowed && (!job.cloudWorkspaceId || !allowed.has(job.cloudWorkspaceId))) continue;
         if (this.failedTaskRetryAfter.has(job.id)) continue;
         const instance = instancesById.get(job.rangeInstanceId);
-        if (!instance) continue;
+        if (!instance || instance.cloudWorkspaceId !== job.cloudWorkspaceId) continue;
         if (instance.instanceMode === 'single') {
           if (this.startSingleInstanceJob(job, instance.singleInstanceBatchId ?? instance.id)) started += 1;
           continue;
@@ -774,9 +826,9 @@ export class ProvisioningWorkerService {
         ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
       if (context.provider !== 'alibaba_cloud') throw new Error('Range source cloud provider does not match the provisioner');
       if (!context.accountUidResolved || context.accountUid !== bound.cloudAccountUid || context.cloudAccountContextId !== bound.cloudAccountContextId
-        || context.defaultRegion !== bound.regionId || context.defaultZoneId !== bound.zoneId)
+        || context.defaultRegion !== bound.regionId || !bound.zoneId)
         throw new Error('Range execution account no longer matches its frozen cloud identity');
-      return { ...context, provider: 'alibaba_cloud' as const };
+      return { ...context, provider: 'alibaba_cloud' as const, defaultZoneId: bound.zoneId };
     }
     if (await this.rangeHasApplyEvidence(instance, job) || ['destroy','update'].includes(this.resolveEffectiveJobType(job, instance)))
       throw new Error('Range has no verified source account binding; manual resource recovery is required');
@@ -941,15 +993,21 @@ export class ProvisioningWorkerService {
   }
 
   private async dispatchSingleInstanceJob(jobId: string) {
+    return runInSystemCloudWorkspaceScope(() => this.dispatchPendingSingleInstanceJob(jobId));
+  }
+
+  private async dispatchPendingSingleInstanceJob(jobId: string) {
     const job = await this.adminRepository.getProvisionJobById(jobId);
 
     if (!job || job.status !== 'pending') {
       return;
     }
+    const spaces = await listExecutionCloudWorkspaces(this.systemConfigService);
+    if (spaces && !spaces.some(space => space.id === job.cloudWorkspaceId)) return;
 
     const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
 
-    if (!instance || instance.instanceMode !== 'single') {
+    if (!instance || instance.instanceMode !== 'single' || instance.cloudWorkspaceId !== job.cloudWorkspaceId) {
       return;
     }
 
@@ -1097,6 +1155,7 @@ export class ProvisioningWorkerService {
     const candidateInstances = group.instances.filter((instance) => (instance.status === targetStatus
       || input.instance.singleInstanceConfig?.executionBackend === 'opentofu' && input.effectiveJobType === 'create' && ['creating', 'running'].includes(instance.status))
       && instance.ownerUserId === input.instance.ownerUserId
+      && instance.cloudWorkspaceId === input.instance.cloudWorkspaceId
       && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId,instance.singleInstanceConfig?.executionBackend])
         === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId,input.instance.singleInstanceConfig?.executionBackend]));
     const jobsById = new Map(
@@ -1114,7 +1173,7 @@ export class ProvisioningWorkerService {
     const groupedItems = candidateInstances.flatMap((instance) => {
       const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
 
-      if (!job || job.rangeInstanceId !== instance.id || job.status !== 'pending'
+      if (!job || job.cloudWorkspaceId !== instance.cloudWorkspaceId || job.rangeInstanceId !== instance.id || job.status !== 'pending'
         || this.resolveEffectiveJobType(job, instance) !== input.effectiveJobType) {
         return [];
       }
@@ -1160,6 +1219,11 @@ export class ProvisioningWorkerService {
     }
 
     return job.jobType;
+  }
+
+  private executionSource(instance: RangeInstanceRecord) {
+    return { provider: instance.cloudProvider,
+      accountUid: instance.singleInstanceConfig?.cloudAccountUid ?? instance.resourceSummary?.executionContext?.cloudAccountUid };
   }
 
   private getCompiledTopologySpec(

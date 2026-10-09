@@ -15,6 +15,8 @@ import { assertAlibabaBillingContext, BillingBssClient } from './billing-bss-cli
 import { billRegionId, billRegionConflict, classifyPlatformBillLine, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
 import { SystemConfigService } from './system-config.service';
 import { billingDayText, resolveBillingWindow } from './billing-window';
+import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 
 type RawBillLine = Record<string, unknown>;
 
@@ -57,7 +59,8 @@ function stableJson(value: unknown): unknown {
 export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BillingSyncService.name);
   private timer: NodeJS.Timeout | null = null;
-  private isRunning = false;
+  private readonly runningWorkspaces = new Set<string>();
+  private scheduledRunning = false;
 
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
@@ -77,7 +80,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const today = resolveBillingWindow({}, 1).endAt;
       const previousMonthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
       const days = Math.round((today.getTime() - previousMonthStart.getTime()) / 86_400_000);
-      void this.syncRecentDays(days).catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
+      void runInSystemCloudWorkspaceScope(() => this.syncScheduledWorkspaces(days))
+        .catch(() => this.logger.error('账单定时同步失败，失败账期的数据已保留，稍后重试。'));
     }, intervalMs);
     this.timer.unref();
   }
@@ -97,8 +101,26 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     return this.syncRange({ startAt, endAt });
   }
 
+  private async syncScheduledWorkspaces(days: number) {
+    if (this.scheduledRunning) return;
+    this.scheduledRunning = true;
+    try {
+      const spaces = await listExecutionCloudWorkspaces(this.systemConfigService);
+      if (!spaces) return this.syncRecentDays(days);
+      let failed = false;
+      for (const space of spaces) {
+        try {
+          await runInExecutionCloudWorkspace(this.systemConfigService, space.id,
+            () => this.syncRecentDays(days), { provider: space.provider, accountUid: space.accountUid });
+        } catch { failed = true; }
+      }
+      if (failed) throw new Error('A cloud workspace billing refresh failed; other workspaces were still processed');
+    } finally { this.scheduledRunning = false; }
+  }
+
   async syncRange(input: { startAt: string | Date; endAt: string | Date }) {
-    if (this.isRunning) {
+    const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-test';
+    if (this.runningWorkspaces.has(cloudWorkspaceId)) {
       return {
         syncedDays: 0,
         importedLineItems: 0,
@@ -108,7 +130,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    this.isRunning = true;
+    this.runningWorkspaces.add(cloudWorkspaceId);
 
     try {
       const window = resolveBillingWindow(input);
@@ -118,6 +140,10 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       const deferredDates = window.endAt > endAt ? enumerateDates(new Date(Math.max(window.startAt.getTime(), endAt.getTime() + 86_400_000)), window.endAt) : [];
       const cloudConfig = { ...await this.systemConfigService.getAccountContext() };
       assertAlibabaBillingContext(cloudConfig);
+      const scope = getCurrentCloudWorkspaceScope();
+      if (scope && !('system' in scope) && (scope.provider !== 'alibaba_cloud' || scope.accountUid !== cloudConfig.accountUid)) {
+        throw new Error('Billing synchronization account does not match its cloud workspace');
+      }
       const cloudAccountUid = cloudConfig.accountUid;
       if (!cloudAccountUid || !cloudConfig.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
       const startAt = requestedStartAt;
@@ -231,7 +257,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         ...(deferredDates.length ? { deferredDates } : {}),
       };
     } finally {
-      this.isRunning = false;
+      this.runningWorkspaces.delete(cloudWorkspaceId);
     }
   }
 

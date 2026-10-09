@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { ImageImportsService } from './image-imports.service';
+import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 const IMAGE_IMPORT_POLL_INTERVAL_MS = 5_000;
 
@@ -13,7 +14,7 @@ export class ImageImportsWorkerService {
   async runLoop(): Promise<void> {
     while (true) {
       try {
-        await this.imageImportsService.refreshPendingImports();
+        await runInSystemCloudWorkspaceScope(() => this.imageImportsService.refreshPendingImports());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.error(`镜像导入任务轮询失败：${message}`);

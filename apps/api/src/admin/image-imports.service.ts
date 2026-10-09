@@ -1,6 +1,9 @@
 import { createHmac, randomUUID } from 'node:crypto';
 
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
+import { SystemConfigService } from './system-config.service';
 
 import { ADMIN_REPOSITORY, type AdminRepository, type CloudImageSnapshotRecord } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -16,6 +19,7 @@ const DEFAULT_IMAGE_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 const DEFAULT_IMAGE_IMPORT_MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
 type ImageImportJobRow = {
+  cloudWorkspaceId?: string;
   id: string;
   cloudAccountContextId: string;
   cloudAccountUid: string | null;
@@ -67,6 +71,7 @@ export class ImageImportsService {
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly prisma: PrismaService,
     private readonly cloudAccountContextsService: CloudAccountContextsService,
+    @Optional() private readonly systemConfigService?: SystemConfigService,
   ) {}
 
   async createUpload(input: CreateImageImportDto, currentUser: SessionUserProfile) {
@@ -293,10 +298,26 @@ export class ImageImportsService {
   }
 
   async refreshPendingImports() {
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    const workspaceFilter = spaces ? { cloudWorkspaceId: { in: spaces.map(space => space.id) } } : {};
+    const [jobs, expiredUploads, terminalJobs] = await runInSystemCloudWorkspaceScope(() => this.listPendingImports(workspaceFilter));
+    const polling = await Promise.allSettled(jobs.map(job => runInExecutionCloudWorkspace(this.systemConfigService, job.cloudWorkspaceId,
+      () => this.refreshImport(job.id), { provider: 'alibaba_cloud', accountUid: job.cloudAccountUid })));
+    const expired = await Promise.allSettled(expiredUploads.map(job => runInExecutionCloudWorkspace(this.systemConfigService, job.cloudWorkspaceId,
+      () => this.withClaim(job.id, fresh => this.cancelExpiredUpload(fresh)), { provider: 'alibaba_cloud', accountUid: job.cloudAccountUid })));
+    const terminal = await Promise.allSettled(terminalJobs.map(job => runInExecutionCloudWorkspace(this.systemConfigService, job.cloudWorkspaceId,
+      () => this.withClaim(job.id, fresh => this.cleanupTerminalArtifacts(fresh)), { provider: 'alibaba_cloud', accountUid: job.cloudAccountUid })));
+    if ([...polling, ...expired, ...terminal].some(result => result.status === 'rejected')) {
+      throw new Error('Image import polling failed for a source workspace; other pending jobs were still processed');
+    }
+    return jobs.length + expiredUploads.length + terminalJobs.length;
+  }
+
+  private async listPendingImports(workspaceFilter: { cloudWorkspaceId?: { in: string[] } }) {
     const [jobs, expiredUploads, terminalJobs] = await Promise.all([
       this.prisma.imageImportJob.findMany({
-        where: { OR: [{ status: 'importing' }, { status: 'failed', imageId: null, submissionRejected: false }] },
-        select: { id: true },
+        where: { ...workspaceFilter, OR: [{ status: 'importing' }, { status: 'failed', imageId: null, submissionRejected: false }] },
+        select: { id: true, cloudWorkspaceId: true, cloudAccountUid: true },
         take: 20,
         orderBy: [
           { lastPolledAt: { sort: 'asc', nulls: 'first' } },
@@ -305,6 +326,7 @@ export class ImageImportsService {
       }),
       this.prisma.imageImportJob.findMany({
         where: {
+          ...workspaceFilter,
           OR: [{ status: 'awaiting_upload' }, { status: 'failed', submissionRejected: true }],
           imageId: null,
           uploadExpiresAt: { lt: new Date() },
@@ -314,6 +336,7 @@ export class ImageImportsService {
       }),
       this.prisma.imageImportJob.findMany({
         where: {
+          ...workspaceFilter,
           OR: [
             {
               temporaryObjectDeletedAt: null,
@@ -333,10 +356,7 @@ export class ImageImportsService {
         orderBy: { updatedAt: 'asc' },
       }),
     ]);
-    await Promise.all(jobs.map((job) => this.refreshImport(job.id)));
-    await Promise.all(expiredUploads.map(job => this.withClaim(job.id, fresh => this.cancelExpiredUpload(fresh))));
-    await Promise.all(terminalJobs.map(job => this.withClaim(job.id, fresh => this.cleanupTerminalArtifacts(fresh))));
-    return jobs.length + expiredUploads.length + terminalJobs.length;
+    return [jobs, expiredUploads, terminalJobs] as const;
   }
 
   private async getAccessibleJob(id: string, currentUser: SessionUserProfile): Promise<ImageImportJobRow> {

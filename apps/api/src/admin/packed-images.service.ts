@@ -1,4 +1,7 @@
-import { Inject, Injectable, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, ConflictException, ForbiddenException, NotFoundException, Optional } from '@nestjs/common';
+import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
+import { SystemConfigService } from './system-config.service';
 import { ADMIN_REPOSITORY, type AdminRepository, type PackedImageArtifactRecord, type UpdatePackedImageArtifactInput } from './admin.repository';
 import { CloudAccountContextsService, type CloudAccountContextCredentials } from './cloud-account-contexts.service';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
@@ -13,7 +16,8 @@ type LeasedContext = CloudAccountContextCredentials & { artifactLease?: { id: st
 
 @Injectable()
 export class PackedImagesService {
-  constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository, private readonly contexts: CloudAccountContextsService) {}
+  constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository, private readonly contexts: CloudAccountContextsService,
+    @Optional() private readonly systemConfigService?: SystemConfigService) {}
 
   async begin(input: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; ownerUserId: string; sourceRangeInstanceId: string; sourceHostKey: string; sourceInstanceId: string }, context: CloudAccountContextCredentials) {
     this.assertContext(input, context);
@@ -65,8 +69,19 @@ export class PackedImagesService {
   }
 
   async refreshPending() {
-    const rows = (await this.repository.listPackedImageArtifacts()).filter(item => ACTIVE.includes(item.status)).sort((a, b) => (a.lastPolledAt?.getTime() ?? 0) - (b.lastPolledAt?.getTime() ?? 0)).slice(0, 20);
-    for (const row of rows) await this.refresh(row.id);
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    const allowed = spaces ? new Set(spaces.map(space => space.id)) : null;
+    const rows = (await runInSystemCloudWorkspaceScope(() => this.repository.listPackedImageArtifacts()))
+      .filter(item => ACTIVE.includes(item.status) && (!allowed || item.cloudWorkspaceId && allowed.has(item.cloudWorkspaceId)))
+      .sort((a, b) => (a.lastPolledAt?.getTime() ?? 0) - (b.lastPolledAt?.getTime() ?? 0)).slice(0, 20);
+    let failed = false;
+    for (const row of rows) {
+      try {
+        await runInExecutionCloudWorkspace(this.systemConfigService, row.cloudWorkspaceId,
+          () => this.refresh(row.id), { provider: 'alibaba_cloud', accountUid: row.cloudAccountUid });
+      } catch { failed = true; }
+    }
+    if (failed) throw new Error('Packed image polling failed for a source workspace; other pending artifacts were still processed');
   }
 
   async refresh(id: string) {
