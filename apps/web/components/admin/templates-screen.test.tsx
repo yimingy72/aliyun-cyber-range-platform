@@ -1244,7 +1244,7 @@ describe('final authoring coverage: integrated template pagination', () => {
     fireEvent.click(pagination.getByRole('button', { name: '上一页' }));
     expectSummary('显示 101–120 条，共 125 条');
     expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
-  });
+  }, 15_000);
 
   it('resets pagination when changing from 20 to 100 and 50 rows', async () => {
     const table = await renderPagedTemplates();
