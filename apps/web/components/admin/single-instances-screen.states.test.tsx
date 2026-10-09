@@ -194,7 +194,8 @@ describe('SingleInstancesScreen list states', () => {
     const cellFor = (header: string) => batchCells[headers.indexOf(header)]?.textContent?.trim();
 
     expect(batchCells).toHaveLength(headers.length);
-    expect(cellFor('公网 IP')).toBe('批次实例');
+    expect(cellFor('数量 / 规格')).toBe('1 台');
+    expect(cellFor('公网 IP')).toBe('47.1.2.3');
     expect(cellFor('状态')).toBe('1 已关闭');
     expect(cellFor('开启时间')).toContain('2026-07-28');
     expect(cellFor('结束时间')).toContain('2026-07-28');
