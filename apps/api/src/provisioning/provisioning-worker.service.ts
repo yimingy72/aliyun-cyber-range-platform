@@ -697,6 +697,7 @@ export class ProvisioningWorkerService {
     const cleanupInput: RangeProvisionDestroyInput = {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
       allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
+      ...this.rangeRecoveryAssertions(job, instance, signal),
       requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
       billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, PlatformScope: instance.ownerUserId ? 'user' : 'platform', ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}) } : undefined,
     };
@@ -1023,21 +1024,12 @@ export class ProvisioningWorkerService {
     }
     let recoverySourceJobId: string | undefined;
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
+      const assertions = this.rangeRecoveryAssertions(job, instance, input.signal);
       // A failed first apply can have owned resources in its fenced state before
       // the initial output was persisted. Recovery must include those inspected
       // identities, while retaining the original account and ledger fences.
       await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory({ ...current, resourceSummary: summary },context as SystemCloudAccountContext),
-        assertRecoverySourceJob: async sourceJobId => {
-          const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
-          if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
-            || (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
-            || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt
-            || sourceJob.jobType === 'update' && sourceJob.topologySnapshot?.operation !== 'update')
-            throw new Error('Tencent recovery has no original submitted platform job in its frozen workspace');
-        } },async () => {
-        input.signal?.throwIfAborted();
-        if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
-      },async (recovered,sourceJobId) => {
+        ...assertions },assertions.assertRecoveryClaim!,async (recovered,sourceJobId) => {
         const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
         if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt) throw new Error('Tencent recovery has no original submitted platform job');
         recoverySourceJobId = sourceJobId;
@@ -1054,6 +1046,24 @@ export class ProvisioningWorkerService {
       resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid,
       sourceProvisionJobId: recoverySourceJobId ?? job.id, billingStartAt: instance.createdAt });
     return persisted;
+  }
+
+  private rangeRecoveryAssertions(job: ProvisionJobRecord, instance: RangeInstanceRecord, signal?: AbortSignal):
+    Pick<RangeProvisionDestroyInput, 'assertRecoveryClaim' | 'assertRecoverySourceJob'> {
+    return {
+      assertRecoveryClaim: async () => {
+        signal?.throwIfAborted();
+        if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
+      },
+      assertRecoverySourceJob: async sourceJobId => {
+        const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
+        if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
+          || (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
+          || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt
+          || sourceJob.jobType === 'update' && sourceJob.topologySnapshot?.operation !== 'update')
+          throw new Error('Tencent recovery has no original submitted platform job in its frozen workspace');
+      },
+    };
   }
 
   private async captureRangeDisks(job: ProvisionJobRecord, instance: RangeInstanceRecord, summary: RangeResourceSummary,
@@ -2170,15 +2180,16 @@ export class ProvisioningWorkerService {
     reportStep: RangeProvisionStepReporter;
   }) {
     try {
+      const cleanupInput = { ...input.cleanupInput, ...this.rangeRecoveryAssertions(input.job, input.instance, input.cleanupInput.signal) };
       const current = await this.adminRepository.getRangeInstanceById(input.instance.id) ?? input.instance;
-      const evidence = await this.captureRangeResources(input.job, current, input.cleanupInput, {
-        ...input.cleanupInput.runtimeConfig!, accountUid: input.cloudContext?.accountUid ?? null,
+      const evidence = await this.captureRangeResources(input.job, current, cleanupInput, {
+        ...cleanupInput.runtimeConfig!, accountUid: input.cloudContext?.accountUid ?? null,
       });
       await this.runWorkerStep(input.reportStep, 'cleanup_failed_create_resources', async () => {
         if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
-        await this.rangeProvisioner.destroy({ ...input.cleanupInput, reportStep: undefined, knownResourceSummary: evidence.resourceSummary ?? undefined,
-          verifyUnresolvedApplyAbsence: intent => this.verifyAlibabaUnknownApplyAbsent(evidence, input.job, input.cleanupInput.runtimeConfig!, intent, input.cleanupInput.signal) });
-        await this.verifyDestroyCompletion(evidence, input.cleanupInput.runtimeConfig!);
+        await this.rangeProvisioner.destroy({ ...cleanupInput, reportStep: undefined, knownResourceSummary: evidence.resourceSummary ?? undefined,
+          verifyUnresolvedApplyAbsence: intent => this.verifyAlibabaUnknownApplyAbsent(evidence, input.job, cleanupInput.runtimeConfig!, intent, cleanupInput.signal) });
+        await this.verifyDestroyCompletion(evidence, cleanupInput.runtimeConfig!);
       });
       if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
       await releaseRangeInstanceBillingLedger(this.adminRepository, input.instance.id, new Date());
