@@ -123,6 +123,30 @@ function readBlobAsBytes(blob: Blob) {
 }
 
 describe('SingleInstancesScreen', () => {
+  it('keeps a successful launch accepted when the following list refresh fails', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true,
+      regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', warning: null,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    launchSingleInstancesMock.mockImplementation(async () => {
+      fetchSingleInstancesMock.mockRejectedValue(new Error('503 read failure'));
+      return { batch: { id: 'accepted-batch' }, instances: [] };
+    });
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'accepted-once' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu (m-123)' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    expect(await screen.findByText('创建任务已受理，实例列表刷新失败。请刷新列表，不要重复创建。')).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
+    expect(screen.queryByText('创建实例失败，请稍后重试。')).toBeNull();
+    expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     workspaceState.value = null;
     fetchSingleInstancesMock.mockReset();

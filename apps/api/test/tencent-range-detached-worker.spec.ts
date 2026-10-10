@@ -65,7 +65,11 @@ it('completes a detached Tencent range, destroys in its frozen account and retai
   await repository.updateRangeInstance(original.id, { status: 'pending_destroy', lastJobId: destroyJob.id });
   await worker.process(destroyJob.id);
   expect((await repository.getProvisionJobById(destroyJob.id))?.status).toBe('succeeded');
-  expect(await repository.getRangeInstanceById(original.id)).toMatchObject({ status: 'destroyed', resourceSummary: null });
+  const destroyed = await repository.getRangeInstanceById(original.id);
+  expect(destroyed?.status).toBe('destroyed');
+  expect(destroyed?.resourceSummary).toEqual({ mode: 'opentofu', creationAttempted: false,
+    executionContext: { provider: account.provider, cloudAccountContextId: account.cloudAccountContextId,
+      cloudAccountUid: account.accountUid, regionId: account.defaultRegion, zoneId: account.defaultZoneId } });
   const released = await repository.listBillingLedgerResources({ rangeInstanceId: original.id });
   expect(released.map(row => row.id)).toEqual(createdRows.map(row => row.id));
   expect(released.every(row => row.releasedAt)).toBe(true);

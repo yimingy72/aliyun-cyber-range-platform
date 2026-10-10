@@ -809,8 +809,8 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async listExpiredRangeInstances(timestamp: Date) {
       return cloneList(rangeInstances.filter(value => value.expiresAt && value.expiresAt <= timestamp
-        && (value.instanceMode === 'single' && ['running', 'creating'].includes(value.status)
-          || value.instanceMode === 'range' && value.status === 'running'))
+        && (value.instanceMode === 'single' && ['running', 'creating', 'destroy_failed'].includes(value.status)
+          || value.instanceMode === 'range' && ['running', 'destroy_failed'].includes(value.status)))
         .sort((a, b) => a.expiresAt!.getTime() - b.expiresAt!.getTime() || a.id.localeCompare(b.id)).map(schedulingInstance));
     },
     async archiveDestroyedRangeInstancesForDeletedTemplate(template) {

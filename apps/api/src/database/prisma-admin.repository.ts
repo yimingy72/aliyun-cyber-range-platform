@@ -1038,7 +1038,8 @@ export class PrismaAdminRepository implements AdminRepository {
   async listExpiredRangeInstances(now: Date): Promise<RangeInstanceSchedulingRecord[]> {
     return this.prisma.rangeInstance.findMany({ where: {
       expiresAt: { lte: now },
-      OR: [{ instanceMode: 'single', status: { in: ['running', 'creating'] } }, { instanceMode: 'range', status: 'running' }],
+      OR: [{ instanceMode: 'single', status: { in: ['running', 'creating', 'destroy_failed'] } },
+        { instanceMode: 'range', status: { in: ['running', 'destroy_failed'] } }],
     }, select: schedulingInstanceSelect, orderBy: [{ expiresAt: 'asc' }, { id: 'asc' }] });
   }
 

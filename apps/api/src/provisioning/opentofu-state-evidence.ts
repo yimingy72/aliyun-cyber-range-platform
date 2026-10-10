@@ -131,6 +131,9 @@ export async function assertDestroyComplete(dir: string, previous: WorkspaceStat
     throw new Error('OpenTofu destroy did not leave a verified empty state; recovery is required');
   if (unresolvedApply) throw new Error('OpenTofu tracked resources were cleaned, but the previous apply outcome is unknown; cloud resource recovery is required');
   await fs.rm(path.join(dir, APPLY_PENDING_FILE), { force: true });
+  // Only a verified empty state with no unresolved apply ends this generation.
+  // The worker still requires cloud absence verification before allowing create.
+  await fs.rm(path.join(dir, APPLY_COMPLETE_FILE), { force: true });
 }
 
 export async function readPendingApplyEvidence(dir: string) {

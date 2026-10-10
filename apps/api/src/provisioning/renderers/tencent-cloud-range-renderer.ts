@@ -73,7 +73,7 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     const password = input.hostPasswords[host.key];
     assertTencentInstanceLogin(password,host.hostName ?? '',input.hostWindows?.[host.key]);
     const frozen = { image_id: input.hostImageIds[host.key], instance_type: input.hostInstanceTypes[host.key].instanceType, private_ip: primary.private_ip, zone_key: primary.zone_key, system_disk_type: diskType, system_disk_size: input.hostSystemDiskSizes?.[host.key] ?? input.systemDiskSize ?? 40, terminate_at: terminateAt };
-    const intent = createHash('sha256').update(JSON.stringify(['tencent_cloud',account.cloudAccountContextId,account.accountUid,account.defaultRegion,account.defaultZoneId,input.rangeInstanceId,host.key,frozen])).digest('hex').slice(0,32);
+    const intent = createHash('sha256').update(JSON.stringify(['tencent_cloud',account.cloudAccountContextId,account.accountUid,account.defaultRegion,account.defaultZoneId,input.rangeInstanceId,input.tags.PlatformCreateJobId,host.key,frozen])).digest('hex').slice(0,32);
     return { key: host.key, name: Array.from(host.name).slice(0,60).join(''), host_name: host.hostName ?? '', ...frozen, creation_intent_id: intent, user_data: userData };
   });
   return { resource_name_prefix: plan.resourceNamePrefix.slice(0,35), range_instance_id: input.rangeInstanceId, region: account.defaultRegion, zone_id: account.defaultZoneId,

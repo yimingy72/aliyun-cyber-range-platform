@@ -26,6 +26,7 @@ type ManagedCosBuckets = { withImportBucket<T>(input: { cloudAccountContextId: s
 
 
 const IMAGE_IMPORT_UPLOAD_TTL_MS = 30 * 60 * 1000;
+const IMAGE_IMPORT_UPLOAD_DRAIN_MS = 5 * 60 * 1000;
 const DEFAULT_IMAGE_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 const DEFAULT_IMAGE_IMPORT_MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
@@ -339,6 +340,7 @@ export class ImageImportsService {
           OR: [
             {
               temporaryObjectDeletedAt: null,
+              uploadExpiresAt: { lt: new Date(Date.now() - IMAGE_IMPORT_UPLOAD_DRAIN_MS) },
               OR: [
                 { status: { in: ['available', 'cancelled'] } },
                 { status: 'failed', imageId: { not: null } },
@@ -882,6 +884,10 @@ export class ImageImportsService {
     if (job.temporaryObjectDeletedAt) {
       return job;
     }
+
+    // PUT grants remain reusable after a DELETE. Keep the job pollable until the
+    // grant expires, with a drain window for requests accepted near expiration.
+    if (job.uploadExpiresAt.getTime() + IMAGE_IMPORT_UPLOAD_DRAIN_MS >= Date.now()) return job;
 
     const deleted = await this.deleteOssObject(context, job.objectKey);
 

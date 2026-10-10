@@ -138,7 +138,16 @@ export class OperationControlService {
       const result = await input.execute();
       const jobId = typeof result.jobId === 'string' ? result.jobId : null;
       if (jobId) {
+        await this.repository.updateIdempotentOperation(operation.id, { result });
         await this.audit({ ...auditBase, operationId: operation.operationId, phase: 'dispatched', jobId });
+        // Close the dispatch/completion race: the worker may have finished before
+        // its audit association became visible. Later completions use its finalizer.
+        const job = await this.repository.getProvisionJobById(jobId);
+        if (job && (job.status === 'succeeded' || job.status === 'failed')) {
+          const errorCode = job.status === 'failed' ? 'PROVISIONING_FAILED' : null;
+          await this.repository.updateIdempotentOperation(operation.id, { status: job.status, result, errorCode });
+          await this.audit({ ...auditBase, operationId: operation.operationId, phase: job.status, jobId, errorCode });
+        }
       } else {
         await this.repository.updateIdempotentOperation(operation.id, { status: 'succeeded', result, errorCode: null });
         await this.audit({ ...auditBase, operationId: operation.operationId, phase: 'succeeded' });

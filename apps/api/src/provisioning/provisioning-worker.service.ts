@@ -233,6 +233,10 @@ export class ProvisioningWorkerService {
   }
 
   private async processExpiredInstance(instance: RangeInstanceRecord, now: Date) {
+    if (instance.status === 'destroy_failed' && instance.expiresAt && instance.expiresAt <= now) {
+      await this.retryExpiredDestroy(instance, now);
+      return;
+    }
     if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
       await this.adminRepository.withSingleInstanceControlLock(async () => {
         const current=await this.adminRepository.getRangeInstanceById(instance.id);
@@ -266,6 +270,44 @@ export class ProvisioningWorkerService {
       status: 'pending_destroy',
       lastJobId: job.id,
     });
+  }
+
+  private async retryExpiredDestroy(instance: RangeInstanceRecord, now: Date) {
+    const previous = instance.lastJobId ? await this.adminRepository.getProvisionJobById(instance.lastJobId) : null;
+    const binding = instance.instanceMode === 'single' ? instance.singleInstanceConfig : instance.resourceSummary?.executionContext;
+    const error = previous?.errorSummary ?? '';
+    // Only bounded, known transient failures of an automatic destroy may retry.
+    // Unknown ownership/state, manual recovery and user-requested failures stay visible.
+    const transient = /timeout|timed out|temporar|throttl|RequestLimit|InternalError|ECONN|ETIMEDOUT|status 50[0-9]|NETWORK_OR_TIMEOUT/i.test(error)
+      && !/unverified|ownership|identity|binding|recovery|required state|unknown|unauthor|forbidden|credential/i.test(error);
+    if (!previous || previous.rangeInstanceId !== instance.id || previous.status !== 'failed'
+      || previous.jobType !== 'destroy' || previous.triggeredBy !== 'system:auto-expire'
+      || !previous.finishedAt || previous.retryCount >= 3 || !transient
+      || !binding?.cloudAccountContextId || !binding.cloudAccountUid || !binding.regionId) {
+      const key = `expiry-warning:${instance.id}`;
+      if ((this.failedTaskRetryAfter.get(key) ?? 0) <= now.getTime()) {
+        this.logger.error(`Expired instance ${instance.id} still needs verified cleanup; automatic retry is not safe or its retry budget is exhausted.`);
+        this.failedTaskRetryAfter.set(key, now.getTime() + 5 * 60_000);
+      }
+      return;
+    }
+    const retryAt = previous.finishedAt.getTime() + 60_000 * 2 ** previous.retryCount;
+    if (now.getTime() < retryAt) return;
+    const queue = async () => {
+      const current = await this.adminRepository.getRangeInstanceById(instance.id);
+      if (!current || current.status !== 'destroy_failed' || current.lastJobId !== previous.id) return;
+      if (current.instanceMode === 'range') {
+        await this.adminRepository.queueRangeInstanceJob({ rangeInstanceId: current.id, jobType: 'destroy',
+          triggeredBy: 'system:auto-expire', retryCount: previous.retryCount + 1,
+          expectedStatus: 'destroy_failed', expectedOwnerUserId: current.ownerUserId, nextStatus: 'pending_destroy' });
+      } else {
+        const job = await this.adminRepository.createProvisionJob({ rangeInstanceId: current.id, jobType: 'destroy',
+          triggeredBy: 'system:auto-expire', retryCount: previous.retryCount + 1 });
+        await this.adminRepository.updateRangeInstance(current.id, { status: 'pending_destroy', lastJobId: job.id });
+      }
+    };
+    if (instance.instanceMode === 'single') await this.adminRepository.withSingleInstanceControlLock(queue);
+    else await queue();
   }
 
   async process(jobId: string) {
@@ -595,9 +637,10 @@ export class ProvisioningWorkerService {
       const current = await this.adminRepository.getRangeInstanceById(instance.id);
       if (instance.instanceMode === 'single' && (instance.singleInstanceConfig?.executionBackend === 'opentofu'
         || current?.singleInstanceConfig?.nativeCreateJobId || current?.singleInstanceConfig?.opentofuCreateJobId)) {
-        await this.adminRepository.commitSingleInstanceClaim(job, {
+        const committed = await this.adminRepository.commitSingleInstanceClaim(job, {
           status: 'destroy_failed', errorSummary: 'Instance execution was interrupted after cloud creation may have started; recovery is required before retry',
         }, { status: 'failed', finishedAt: new Date(), errorSummary: 'Instance execution requires state recovery' });
+        if (committed) await this.finalizeDispatchedOperation(job, 'failed', 'PROVISIONING_FAILED');
         return;
       }
       if (instance.instanceMode === 'range' && job.jobType === 'update' && rangeApplyStarted && current?.resourceSummary?.executionContext) {
@@ -662,7 +705,9 @@ export class ProvisioningWorkerService {
     await this.runWorkerStep(reportStep, 'verify_destroy', async () => { await this.verifyDestroyCompletion(evidence, accountContext); });
     if (!(await this.ownsProvisionJobClaim(job))) return;
     await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
-    await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null, resourceSummary: null, errorSummary: null });
+    await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null,
+      resourceSummary: instance.resourceSummary?.executionContext ? { mode: 'opentofu', creationAttempted: false,
+        executionContext: instance.resourceSummary.executionContext } : null, errorSummary: null });
     if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
       status: 'succeeded', finishedAt: new Date(), errorSummary: null,
     }))) return;
@@ -875,8 +920,15 @@ export class ProvisioningWorkerService {
     if (instance.resourceSummary?.mode === 'dry-run') return false;
     if (instance.resourceSummary?.creationAttempted || this.rangeSummaryHasIds(instance.resourceSummary)) return true;
     const jobs = (await this.adminRepository.listProvisionJobs()).filter(value => value.rangeInstanceId === instance.id);
+    const logsByJob = new Map(await Promise.all(jobs.map(async previous =>
+      [previous.id, await this.adminRepository.listProvisionJobStepLogs(previous.id)] as const)));
+    const destroyedThrough = Math.max(0, ...jobs.filter(previous => previous.status === 'succeeded'
+      && ['destroy', 'retry'].includes(previous.jobType) && previous.finishedAt
+      && logsByJob.get(previous.id)!.some(log => log.stepName === 'verify_destroy' && log.status === 'succeeded'))
+      .map(previous => previous.finishedAt!.getTime()));
     for (const previous of jobs) {
-      const logs = await this.adminRepository.listProvisionJobStepLogs(previous.id);
+      if (previous.finishedAt && previous.finishedAt.getTime() <= destroyedThrough) continue;
+      const logs = logsByJob.get(previous.id)!;
       const cleanup = logs.find(log => { const proof = readFailedCreateCleanupProof(log.message);
         return log.stepName === FAILED_CREATE_CLEANUP_PROOF_STEP && log.status === 'succeeded'
           && proof?.rangeInstanceId === instance.id && proof.provisionJobId === previous.id
@@ -1136,6 +1188,13 @@ export class ProvisioningWorkerService {
       await this.executeClaimedSingleInstanceJob(input, items);
     } finally {
       clearInterval(heartbeat);
+      for (const item of items) {
+        const completed = await this.adminRepository.getProvisionJobById(item.job.id);
+        if (completed && (completed.status === 'succeeded' || completed.status === 'failed')) {
+          await this.finalizeDispatchedOperation(completed, completed.status,
+            completed.status === 'failed' ? 'PROVISIONING_FAILED' : null);
+        }
+      }
     }
   }
 
@@ -2068,11 +2127,12 @@ export class ProvisioningWorkerService {
     }
 
     const operation = await this.adminRepository.getIdempotentOperationByOperationId(event.operationId);
+    if (operation && operation.status === status) return;
     if (operation) {
       await this.adminRepository.updateIdempotentOperation(operation.id, {
         status,
         errorCode,
-        ...(status === 'succeeded' ? { result: { jobId: job.id, rangeInstanceId: job.rangeInstanceId } } : {}),
+        result: { ...operation.result, jobId: job.id, rangeInstanceId: job.rangeInstanceId },
       });
     }
 
