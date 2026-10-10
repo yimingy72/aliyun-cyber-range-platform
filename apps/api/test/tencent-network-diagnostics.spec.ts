@@ -68,6 +68,32 @@ it.each(['missing', 'null', 'empty'])('accepts a tagless automatic primary NIC w
   expect(result.networkInterfaces[0]).toMatchObject({ type: 'Primary', instanceId: 'ins-owned', deviceIndex: 0, vswitchId: 'subnet-entry', vpcId: 'vpc-owned' });
   expect(s.calls.findIndex(call => call.action === 'DescribeSubnets')).toBeLessThan(s.calls.findIndex(call => call.action === 'DescribeNetworkInterfaces'));
 });
+it.each(['missing', 'null', 'empty'])('accepts %s optional attachment owner only after frozen caller, owned CVM and exact subnet proofs', async owner => {
+  const s = fixture();
+  s.changes.set('DescribeNetworkInterfaces', value => {
+    for (const row of value.NetworkInterfaceSet) {
+      delete row.Zone;
+      if (owner === 'missing') delete row.Attachment.InstanceAccountId; else row.Attachment.InstanceAccountId = owner === 'null' ? null : '';
+      if (row.Primary) delete row.TagSet;
+    }
+    return value;
+  });
+  const result = await s.service.get(range as never, user);
+  expect(result.networkInterfaces).toHaveLength(2);
+  expect(result.networkInterfaces[0]).toMatchObject({ type:'Primary',instanceId:'ins-owned',deviceIndex:0,vswitchId:'subnet-entry' });
+  expect(s.calls.map(call => call.action).slice(0,4)).toEqual(['GetCallerIdentity','DescribeVpcs','DescribeInstances','DescribeSubnets']);
+});
+it.each(['caller','cvm-owner','subnet-owner','foreign-host','device-index'])('rejects missing attachment owner when %s authoritative proof fails', async proof => {
+  const s = fixture();
+  s.changes.set('DescribeNetworkInterfaces', value => { for (const row of value.NetworkInterfaceSet) delete row.Attachment.InstanceAccountId;
+    if (proof === 'foreign-host') value.NetworkInterfaceSet[0].Attachment.InstanceId = 'ins-foreign';
+    if (proof === 'device-index') value.NetworkInterfaceSet[0].Attachment.DeviceIndex = '0';
+    return value; });
+  if (proof === 'caller') s.changes.set('GetCallerIdentity', value => ({...value,AccountId:'foreign'}));
+  if (proof === 'cvm-owner') s.changes.set('DescribeInstances', value => { value.InstanceSet[0].Tags = []; return value; });
+  if (proof === 'subnet-owner') s.changes.set('DescribeSubnets', value => { value.SubnetSet[0].TagSet = []; return value; });
+  await expect(s.service.get(range as never,user)).rejects.toThrow('diagnostics');
+});
 it.each(['subnet-zone','eni-zone','account','host','subnet','private-ip','device-type','secondary-owner'])('rejects %s mismatches despite a valid automatic primary NIC', async mismatch => {
   const s = fixture();
   if (mismatch === 'subnet-zone') s.changes.set('DescribeSubnets', value => { value.SubnetSet[0].Zone = 'ap-shanghai-3'; return value; });

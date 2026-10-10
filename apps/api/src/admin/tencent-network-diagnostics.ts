@@ -100,7 +100,8 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
   const enis = await known('DescribeNetworkInterfaces', 'NetworkInterfaceSet', 'NetworkInterfaceIds', 'NetworkInterfaceId', attachedIds);
   const networkInterfaces = enis.map(row => {
     const phase = 'DescribeNetworkInterfaces', attachment = object(row.Attachment, phase), primary = bool(row.Primary, phase);
-    same(row.VpcId, vpcId, phase,'eni_vpc'); same(attachment.InstanceAccountId, frozen.cloudAccountUid, phase,'attachment_owner_uid');
+    same(row.VpcId, vpcId, phase,'eni_vpc');
+    if (attachment.InstanceAccountId !== undefined && attachment.InstanceAccountId !== null && attachment.InstanceAccountId !== '') same(attachment.InstanceAccountId, frozen.cloudAccountUid, phase,'attachment_owner_uid');
     if (row.Zone !== undefined && row.Zone !== null && row.Zone !== '') same(row.Zone, frozen.zoneId, phase,'eni_zone');
     const instanceId = within(attachment.InstanceId, hostIds, phase), vswitchId = within(row.SubnetId, subnetIds, phase);
     const subnet = subnets.find(value => value.SubnetId === vswitchId)!;
