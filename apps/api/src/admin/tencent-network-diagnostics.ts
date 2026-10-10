@@ -184,15 +184,27 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
   }
   const acls = await known('DescribeNetworkAcls', 'NetworkAclSet', 'NetworkAclIds', 'NetworkAclId', aclIds);
   const networkAcls = acls.map(row => {
-    const phase = 'DescribeNetworkAcls'; same(row.VpcId, vpcId, phase); ownership(row, phase);
-    if (row.NetworkAclType !== 'TRIPLE') fail(phase, 'unsupported ACL tuple type');
-    const associations = list(row.SubnetSet, phase).map(subnet => { same(subnet.VpcId, vpcId, phase); return within(subnet.SubnetId, subnetIds, phase); });
-    exact(associations, subnets.filter(subnet => subnet.NetworkAclId === row.NetworkAclId).map(subnet => subnet.SubnetId), phase);
-    const rules = (value: unknown) => list(value, phase).map((entry, index) => {
-      const action = text(entry.Action, phase).toUpperCase(); if (!['ACCEPT','DROP'].includes(action)) fail(phase, 'invalid ACL action');
-      return { name: null, entryType: 'TRIPLE', evaluationOrder: entry.Priority == null ? null : numeric(entry.Priority, phase), responsePosition: index + 1, policy: action, protocol: text(entry.Protocol, phase), portRange: entry.Port ? text(entry.Port, phase) : 'all', cidr: cidr(entry.CidrBlock, phase), ipv6Cidr: cidr(entry.Ipv6CidrBlock, phase) };
+    const phase = 'DescribeNetworkAcls'; ownership(row, phase);
+    const hasVpc = row.VpcId !== undefined && row.VpcId !== null && row.VpcId !== '';
+    if (hasVpc) same(row.VpcId, vpcId, `${phase}.VpcId`);
+    if (row.NetworkAclType !== 'TRIPLE') fail(`${phase}.NetworkAclType`, 'unsupported ACL tuple type');
+    const associations = list(row.SubnetSet, `${phase}.SubnetSet`).map(subnet => {
+      const id = within(subnet.SubnetId, subnetIds, `${phase}.SubnetSet.SubnetId`);
+      // ACL association structs can omit VpcId; use the independently proven full subnet.
+      const proven = subnets.find(candidate => candidate.SubnetId === id)!;
+      same(proven.VpcId, vpcId, `${phase}.SubnetSet.verifiedVpcId`);
+      same(proven.NetworkAclId, row.NetworkAclId, `${phase}.SubnetSet.verifiedNetworkAclId`);
+      if (subnet.VpcId !== undefined && subnet.VpcId !== null && subnet.VpcId !== '') same(subnet.VpcId, vpcId, `${phase}.SubnetSet.VpcId`);
+      return id;
     });
-    return { networkAclId: row.NetworkAclId as string, status: 'Observed', vswitchIds: associations, inboundRules: rules(row.IngressEntries), outboundRules: rules(row.EgressEntries) };
+    exact(associations, subnets.filter(subnet => subnet.NetworkAclId === row.NetworkAclId).map(subnet => subnet.SubnetId), `${phase}.SubnetSet`);
+    if (!hasVpc && !associations.length) fail(`${phase}.VpcId`, 'missing VPC identity has no independently verified subnet association');
+    const rules = (value: unknown, direction: string) => list(value, `${phase}.${direction}`).map((entry, index) => {
+      const path = `${phase}.${direction}`;
+      const action = text(entry.Action, `${path}.Action`).toUpperCase(); if (!['ACCEPT','DROP'].includes(action)) fail(`${path}.Action`, 'invalid ACL action');
+      return { name: null, entryType: 'TRIPLE', evaluationOrder: entry.Priority == null ? null : numeric(entry.Priority, `${path}.Priority`), responsePosition: index + 1, policy: action, protocol: text(entry.Protocol, `${path}.Protocol`), portRange: entry.Port ? text(entry.Port, `${path}.Port`) : 'all', cidr: cidr(entry.CidrBlock, `${path}.CidrBlock`), ipv6Cidr: cidr(entry.Ipv6CidrBlock, `${path}.Ipv6CidrBlock`) };
+    });
+    return { networkAclId: row.NetworkAclId as string, status: 'Observed', vswitchIds: associations, inboundRules: rules(row.IngressEntries,'IngressEntries'), outboundRules: rules(row.EgressEntries,'EgressEntries') };
   });
   const addresses = await known('DescribeAddresses', 'AddressSet', 'AddressIds', 'AddressId', eipIds);
   for (const row of addresses) { ownership(row, 'DescribeAddresses'); if (row.InstanceId) within(row.InstanceId, [...hostIds, ...natIds], 'DescribeAddresses'); if (row.NetworkInterfaceId) within(row.NetworkInterfaceId, attachedIds, 'DescribeAddresses'); }

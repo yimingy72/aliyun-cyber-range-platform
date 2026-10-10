@@ -239,3 +239,36 @@ it('accepts empty SDK template structs and refuses to infer missing ACL priority
   const result = await s.service.get(range as never, user);
   expect(result.networkAcls[0].inboundRules[0]).toMatchObject({ evaluationOrder: null, responsePosition: 1 });
 });
+it.each(['association-vpc','acl-vpc','both-vpc'])('accepts partial ACL %s only through separately verified native subnet binding',async missing=>{
+  const s=fixture();s.changes.set('DescribeNetworkAcls',value=>{
+    const acl=value.NetworkAclSet[0];
+    if(missing!=='acl-vpc')acl.SubnetSet=[{SubnetId:'subnet-inner',SubnetName:'Inner'}];
+    if(missing!=='association-vpc')delete acl.VpcId;
+    return value;
+  });
+  const result=await s.service.get(range as never,user);
+  expect(result.networkAcls[0]).toMatchObject({networkAclId:'acl-inner',vswitchIds:['subnet-inner']});
+  expect(s.calls.some(call=>call.action==='DescribeSubnets'&&call.body.SubnetIds.includes('subnet-inner'))).toBe(true);
+});
+it.each(['foreign-acl-vpc','foreign-association-vpc','foreign-native-subnet-vpc','different-native-acl','unknown-subnet','duplicate-subnet','missing-associations','missing-vpc-without-associations'])('keeps ACL scope proof failed for %s',async fault=>{
+  const s=fixture();s.changes.set('DescribeNetworkAcls',value=>{
+    const acl=value.NetworkAclSet[0];
+    if(fault==='foreign-acl-vpc')acl.VpcId='vpc-foreign';
+    if(fault==='foreign-association-vpc')acl.SubnetSet[0].VpcId='vpc-foreign';
+    if(fault==='unknown-subnet')acl.SubnetSet=[{SubnetId:'subnet-foreign'}];
+    if(fault==='duplicate-subnet')acl.SubnetSet.push({...acl.SubnetSet[0]});
+    if(fault==='missing-associations')delete acl.SubnetSet;
+    if(fault==='missing-vpc-without-associations'){delete acl.VpcId;acl.SubnetSet=[];}
+    return value;
+  });
+  if(fault==='foreign-native-subnet-vpc')s.changes.set('DescribeSubnets',value=>{value.SubnetSet[1].VpcId='vpc-foreign';return value;});
+  if(fault==='different-native-acl'||fault==='missing-vpc-without-associations')s.changes.set('DescribeSubnets',value=>{value.SubnetSet[1].NetworkAclId='';return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow(/DescribeNetworkAcls|DescribeSubnets/);
+});
+it('represents explicit empty ACL arrays but never defaults missing rule collections to empty',async()=>{
+  const s=fixture();s.changes.set('DescribeNetworkAcls',value=>{value.NetworkAclSet[0].IngressEntries=[];value.NetworkAclSet[0].EgressEntries=[];return value;});
+  const result=await s.service.get(range as never,user);
+  expect(result.networkAcls[0]).toMatchObject({inboundRules:[],outboundRules:[]});
+  s.changes.set('DescribeNetworkAcls',value=>{delete value.NetworkAclSet[0].IngressEntries;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow('DescribeNetworkAcls.IngressEntries');
+});
