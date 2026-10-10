@@ -242,7 +242,8 @@ export class CloudAccountContextsService {
       return await this.prisma.$transaction(async tx => {
         // Identity and bucket network checks happened above. Serialize only the
         // final credentials write with removal; a stale edit cannot resurrect it.
-        await tx.$executeRaw`LOCK TABLE "CloudWorkspace", "CloudAccountContext" IN SHARE ROW EXCLUSIVE MODE NOWAIT`;
+        await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+        await tx.$executeRaw`LOCK TABLE "CloudWorkspace", "CloudAccountContext" IN SHARE ROW EXCLUSIVE MODE`;
         const workspace = await tx.cloudWorkspace.findUniqueOrThrow({ where: { id: data.cloudWorkspaceId } });
         if (workspace.isReadOnly || workspace.provider !== data.provider || workspace.accountUid !== data.accountUid
           || (workspace.archivedAt?.getTime() ?? null) !== (observedArchivedAt?.getTime() ?? null)
