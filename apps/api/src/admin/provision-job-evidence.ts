@@ -34,7 +34,9 @@ function resourceIds(value: unknown, provider: unknown, depth = 0): Record<strin
   for (const field of maps) if (value[field] != null) {
     if (!object(value[field]) || Object.keys(value[field]).length > 1000) throw new Error('Invalid resource map');
     const entries = Object.entries(value[field]);
-    if (entries.some(([key, id]) => !resourceKey(key) || !resourceIdentity(id, field, provider))) throw new Error('Invalid resource identity');
+    if (entries.some(([key, id]) => !resourceKey(key)
+      && !(provider === 'tencent_cloud' && ['snatEntryIds', 'dnatEntryIds'].includes(field) && key === id && resourceIdentity(key, field, provider))
+      || !resourceIdentity(id, field, provider))) throw new Error('Invalid resource identity');
     result[field] = Object.fromEntries(entries);
   }
   if (value.retiredResources != null) result.retiredResources = resourceIds(value.retiredResources, provider, depth + 1);
