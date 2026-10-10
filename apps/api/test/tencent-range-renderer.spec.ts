@@ -24,6 +24,8 @@ it('retains frozen range identity, deterministic intent, NIC rules and atomic ex
   expect(JSON.stringify(vars.hosts)).not.toContain('FixturePassword');
   const changed = { ...request, hostImageIds: { entry: 'img-other' } };
   expect(renderTencentRangeVariables(changed).hosts[0].creation_intent_id).not.toBe(vars.hosts[0].creation_intent_id);
+  expect(renderTencentRangeVariables({ ...request, tags: { ...request.tags, PlatformCreateJobId: 'new-generation' } }).hosts[0].creation_intent_id)
+    .not.toBe(vars.hosts[0].creation_intent_id);
 });
 it.each([1,2,4,6,8,12,14,64])('uses documented ENI capacity for %d vCPUs', cpu => expect(tencentNicCapacity(cpu).nics).toBeGreaterThanOrEqual(2));
 it.each(['tcp', 'udp', 'TcP'])('renders a single numeric %s port without a same-endpoint interval for SG and ACL', protocol => {

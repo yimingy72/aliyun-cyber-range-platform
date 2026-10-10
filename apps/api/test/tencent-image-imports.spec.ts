@@ -67,6 +67,7 @@ describe('Tencent import frozen sources and safe recovery',()=>{
   });
   it('enables only the available image and marks the object removed only after a fresh HEAD 404',async()=>{
     const f=fixture();await f.service.createUpload(input,user);await f.service.completeUpload('job-owned',user);f.setImageState('NORMAL');
+    f.getJob().uploadExpiresAt = new Date(0);
     expect(await f.service.refreshImport('job-owned')).toMatchObject({status:'available',temporaryObjectDeletedAt:expect.any(Date)});
     expect(f.cos.requestObject.mock.calls.slice(-2).map(([input])=>input.method)).toEqual(['DELETE','HEAD']);
     expect(f.cos.cleanupIfIdle).toHaveBeenCalled();

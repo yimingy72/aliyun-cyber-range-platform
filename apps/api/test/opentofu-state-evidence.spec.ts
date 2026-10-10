@@ -11,6 +11,18 @@ describe('persisted apply evidence', () => {
   afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
   const write = (dir: string, state: unknown) => fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify(state));
 
+  it('ends completed apply evidence after verified destruction and permits a new generation', async () => {
+    await recordApplyPlan(dir, fixturePlan);
+    await write(dir, fixtureState);
+    await completeApply(dir);
+    const prior = (await readWorkspaceState(dir, true))!;
+    await write(dir, { ...fixtureState, serial: prior.serial + 1, resources: [] });
+    await assertDestroyComplete(dir, prior, false);
+    await expect(assertWorkspaceCanApply(dir)).resolves.toMatchObject({ instances: [] });
+    await expect(recordApplyPlan(dir, fixturePlan, 'new-create-job')).resolves.toBeUndefined();
+    expect(await fs.readFile(path.join(dir, APPLY_PENDING_FILE), 'utf8')).toContain('new-create-job');
+  });
+
   it.each(['no-state', 'empty', 'partial', 'tainted', 'deposed'])('blocks retry after an unknown apply with %s state', async scenario => {
     await recordApplyPlan(dir, { planned_values: { root_module: { resources: [
       ...fixturePlan.planned_values.root_module.resources, { mode: 'managed', address: 'terraform_data.second' },
