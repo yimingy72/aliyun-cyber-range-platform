@@ -65,10 +65,24 @@ describe('SingleInstancesService', () => {
       ownerUserId: fixture.actor.id, sourceRangeInstanceId: instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-source', sourceDiskIds: ['disk-source'] });
     (fixture.config as any).getAccountContextById = jest.fn().mockResolvedValue({ provider: 'tencent_cloud', cloudAccountContextId: 'context-packed', accountUid: '123456', accountUidResolved: true,
       defaultRegion: 'ap-shanghai', accessKeyId: 'synthetic-id', accessKeySecret: 'synthetic-secret' });
-    const inventory = jest.spyOn(tencentResources, 'describeTencentResourceInventory').mockResolvedValue([]);
+    const inventory = jest.spyOn(tencentResources, 'describeTencentResourceInventory').mockImplementation(async (_account, _kind, query) => {
+      query.onEvidence?.({ provider: 'tencent_cloud', accountUid: '123456', cloudAccountContextId: 'context-packed', regionId: 'ap-shanghai',
+        action: 'DescribeSnapshots', requestIds: ['fixture-source-snapshot-read'], observedAt: '2026-10-10T01:02:20Z' });
+      return [];
+    });
     try {
       expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ artifactId: artifact.id, status: 'absent', scope: 'original_source_disks', ownership: 'unconfirmed', snapshotIds: [] }] });
-      expect(inventory).toHaveBeenCalledWith(expect.objectContaining({ cloudAccountContextId: 'context-packed' }), 'snapshot', { diskIds: ['disk-source'] });
+      expect(inventory).toHaveBeenCalledWith(expect.objectContaining({ cloudAccountContextId: 'context-packed' }), 'snapshot', { diskIds: ['disk-source'], onEvidence: expect.any(Function) });
+      expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ sourceDisks: [{ sourceDiskId: 'disk-source', status: 'absent', candidateSnapshots: [],
+        evidence: [{ requestIds: ['fixture-source-snapshot-read'], action: 'DescribeSnapshots' }] }] }] });
+      inventory.mockImplementationOnce(async (_account, _kind, query) => {
+        query.onEvidence?.({ provider: 'tencent_cloud', accountUid: '123456', cloudAccountContextId: 'context-packed', regionId: 'ap-shanghai',
+          action: 'DescribeSnapshots', requestIds: ['fixture-candidate-read'], observedAt: '2026-10-10T01:02:20Z' });
+        return [{ id: 'snap-candidate', createdAt: '2026-10-10 09:02:20' }] as never;
+      });
+      expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ status: 'observed', ownership: 'unconfirmed', sourceDisks: [{ candidateSnapshots: [{ snapshotId: 'snap-candidate', createdAt: '2026-10-10 09:02:20' }] }] }] });
+      inventory.mockResolvedValueOnce([]);
+      expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ status: 'unverified' }] });
       inventory.mockRejectedValueOnce(new Error('private raw request failure'));
       expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ status: 'unverified', cloudErrorCode: 'UNKNOWN' }] });
       expect((await fixture.repository.getPackedImageArtifact(artifact.id))?.status).toBe('pending');
