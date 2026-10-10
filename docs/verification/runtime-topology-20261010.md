@@ -31,3 +31,9 @@ worker 在实际 apply 前核对原生资源 ID、状态所有权和实际 plan�
 - 验证未创建、修改或销毁真实云资源；线上更新行为及真实账单到达仍需后续受控云测。
 
 PR：<https://github.com/yimingy72/aliyun-cyber-range-platform/pull/15>。master 基线未变，开发分支为 `codex/runtime-topology`。
+
+## 启动后的旧来源限制
+
+启动核对发现一个旧阿里云账号的区域上下文 `cmrueuuf80000mo2kz8ixd07v` 在 `DescribeInstances` 返回 HTTP 404。该阿里云请求路径与原 master 相同，其他账号空间继续处理，容器未重启；本次运行编排编辑代码不进入该启动核对分支。现有证据不能进一步判断旧地区/端点或账号配置的具体原因，此来源的自动资源核对尚未完成。
+
+补充严格白名单的日志分类，仅记录固定操作、HTTP 状态及受控错误类别，不记录原消息、URL、请求体、堆栈或凭据。该日志补丁的 Docker 构建及日志/调度/腾讯更新核对 45 项回归通过，并已更新本地 API/worker；它不改变请求、权限、周期或资源操作。
