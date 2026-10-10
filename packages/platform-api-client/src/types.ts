@@ -216,6 +216,14 @@ export type CloudWorkspaceView = {
   contexts: CloudAccountContext[];
   capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean };
 };
+export type CloudAccountRemovalResult = {
+  id: string;
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  accountUid: string;
+  displayName: string;
+  deletedAt: string;
+  retainedData: true;
+};
 export type TencentCloudRegionsInput = {
   regionIds: string[];
   accessKeyId: string;
@@ -427,6 +435,7 @@ export type PlatformApiClientLike = {
   listCloudWorkspaces(): Promise<CloudWorkspaceView[]>;
   getCurrentCloudWorkspace(): Promise<CloudWorkspaceView | null>;
   switchCloudWorkspace(id: string): Promise<CloudWorkspaceView>;
+  deleteCloudWorkspace(id: string, operation?: OperationRequest): Promise<CloudAccountRemovalResult>;
   discoverTencentCloudRegions(payload: TencentCloudRegionsInput): Promise<TencentCloudRegionsPayload>;
   listTencentCloudImages(input: TencentCloudImagesInput): Promise<TencentCloudImagesPayload>;
   getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;

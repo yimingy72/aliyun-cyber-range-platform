@@ -238,6 +238,7 @@ function createClientStub(): ClientStub {
     listCloudWorkspaces: vi.fn().mockResolvedValue([]),
     getCurrentCloudWorkspace: vi.fn().mockResolvedValue({ id: 'fixture-ali-workspace', provider: 'alibaba_cloud', accountUid: '100001', isReadOnly: false, activeCloudAccountContextId: 'fixture-context', contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: '100001', status: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } }),
     switchCloudWorkspace: vi.fn(),
+    deleteCloudWorkspace: vi.fn(),
     saveCloudAccountBinding: vi.fn(),
     saveTencentCloudAccount: vi.fn(),
     discoverTencentCloudRegions: vi.fn(),
@@ -1375,7 +1376,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(86);
+    expect(tools).toHaveLength(87);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

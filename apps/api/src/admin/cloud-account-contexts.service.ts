@@ -75,6 +75,8 @@ export class CloudAccountContextsService {
     if (!context) {
       throw new NotFoundException('Cloud account context not found');
     }
+    const boundSpace = context.cloudWorkspaceId ? await this.prisma.cloudWorkspace.findUnique({ where: { id: context.cloudWorkspaceId } }) : null;
+    if (boundSpace?.archivedAt) throw new BadRequestException('该云账号绑定已删除，请重新绑定相同账号以恢复数据。');
 
     const scope = getCurrentCloudWorkspaceScope();
     if (scope && !('system' in scope) && (context.cloudWorkspaceId !== scope.cloudWorkspaceId
@@ -182,12 +184,7 @@ export class CloudAccountContextsService {
       isActive: false, status: 'ready' as const, imageImportBucket: '',
       bucketStatus: 'unconfigured', lastError: null, lastVerifiedAt: new Date(),
     };
-    const context = await this.prisma.cloudAccountContext.upsert({
-      where: { provider_accountUid_regionId: { provider: 'tencent_cloud', accountUid, regionId: normalized.regionId } },
-      create: data, update: data,
-    });
-    await this.setWorkspaceDefaultContext(cloudWorkspace.id, context.id, input.cloudWorkspaceId !== undefined);
-    return this.toView(context);
+    return this.commitVerifiedBinding(data, input, cloudWorkspace.archivedAt ?? null);
   }
 
   async saveAccountBinding(input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
@@ -213,19 +210,14 @@ export class CloudAccountContextsService {
         provider: 'alibaba_cloud' as const, accountUid, cloudWorkspaceId: space.id,
         displayName: `阿里云 ${accountUid} · ${values.regionId}`, imageImportBucket, status: 'ready' as const,
         ...bucketVerification };
-      const context = await this.prisma.cloudAccountContext.upsert({
-        where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid, regionId: values.regionId } },
-        update: data, create: { ...data, isActive: false },
-      });
-      await this.setWorkspaceDefaultContext(space.id, context.id, input.cloudWorkspaceId !== undefined);
-      return this.toView(context);
+      return this.commitVerifiedBinding({ ...data, isActive: false }, input, space.archivedAt ?? null);
     });
   }
 
   private async resolveBindingWorkspace(provider: 'alibaba_cloud' | 'tencent_cloud', accountUid: string, input: SaveCloudAccountContextDto) {
     if (input.cloudWorkspaceId) {
       const target = await this.prisma.cloudWorkspace.findUnique({ where: { id: input.cloudWorkspaceId } });
-      if (!target || target.isReadOnly || target.provider !== provider || target.accountUid !== accountUid) {
+      if (!target || target.archivedAt || target.isReadOnly || target.provider !== provider || target.accountUid !== accountUid) {
         throw new ConflictException('输入的云凭据不属于正在编辑的账号，原工作空间和配置未更改。');
       }
     }
@@ -233,20 +225,47 @@ export class CloudAccountContextsService {
       return await this.prisma.cloudWorkspace.upsert({
         where: { provider_accountUid: { provider, accountUid } },
         create: { provider, accountUid, displayName: input.displayName?.trim() || `${provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'} ${accountUid}` },
-        update: input.displayName ? { displayName: input.displayName.trim() } : {},
+        update: {},
       });
     } catch (error) {
       if ((error as { code?: string }).code !== 'P2002') throw error;
       const existing = await this.prisma.cloudWorkspace.findUnique({ where: { provider_accountUid: { provider, accountUid } } });
       if (!existing || existing.isReadOnly || input.cloudWorkspaceId && input.cloudWorkspaceId !== existing.id) throw error;
-      return input.displayName ? this.prisma.cloudWorkspace.update({ where: { id: existing.id }, data: { displayName: input.displayName.trim() } }) : existing;
+      return existing;
     }
   }
 
-  private async setWorkspaceDefaultContext(cloudWorkspaceId: string, contextId: string, editing: boolean) {
-    const workspace = await this.prisma.cloudWorkspace.findUniqueOrThrow({ where: { id: cloudWorkspaceId } });
-    if (!workspace.activeCloudAccountContextId || editing) {
-      await this.prisma.cloudWorkspace.update({ where: { id: cloudWorkspaceId }, data: { activeCloudAccountContextId: contextId } });
+  private async commitVerifiedBinding(data: Prisma.CloudAccountContextUncheckedCreateInput & {
+    cloudWorkspaceId: string; provider: 'alibaba_cloud' | 'tencent_cloud'; accountUid: string; regionId: string;
+  }, input: SaveCloudAccountContextDto, observedArchivedAt: Date | null): Promise<CloudAccountContextView> {
+    try {
+      return await this.prisma.$transaction(async tx => {
+        // Identity and bucket network checks happened above. Serialize only the
+        // final credentials write with removal; a stale edit cannot resurrect it.
+        await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+        await tx.$executeRaw`LOCK TABLE "CloudWorkspace", "CloudAccountContext" IN SHARE ROW EXCLUSIVE MODE`;
+        const workspace = await tx.cloudWorkspace.findUniqueOrThrow({ where: { id: data.cloudWorkspaceId } });
+        if (workspace.isReadOnly || workspace.provider !== data.provider || workspace.accountUid !== data.accountUid
+          || (workspace.archivedAt?.getTime() ?? null) !== (observedArchivedAt?.getTime() ?? null)
+          || input.cloudWorkspaceId && (workspace.archivedAt || input.cloudWorkspaceId !== workspace.id)) {
+          throw new ConflictException('正在编辑的账号绑定已删除或变化，请刷新后重新绑定。');
+        }
+        const key = { provider: data.provider, accountUid: data.accountUid, regionId: data.regionId };
+        const existing = await tx.cloudAccountContext.findUnique({ where: { provider_accountUid_regionId: key } });
+        if (data.provider === 'alibaba_cloud') await this.assertImageImportBucketCanChange(existing, data.imageImportBucket, tx);
+        const { isActive: _legacyFlag, ...update } = data;
+        const context = await tx.cloudAccountContext.upsert({ where: { provider_accountUid_regionId: key }, create: data, update });
+        await tx.cloudWorkspace.update({ where: { id: workspace.id }, data: {
+          ...(input.displayName ? { displayName: input.displayName.trim() } : {}),
+          archivedAt: null,
+          ...(!workspace.activeCloudAccountContextId || workspace.archivedAt || input.cloudWorkspaceId ? { activeCloudAccountContextId: context.id } : {}),
+        } });
+        return this.toView(context);
+      }, { timeout: 10_000 });
+    } catch (error) {
+      const value = error as { code?: string; meta?: { code?: string } };
+      if (['55P03', '40P01'].includes(value.meta?.code ?? '') || value.code === 'P2034') throw new ConflictException('账号绑定正在变化，请等待操作结束后重新保存。');
+      throw error;
     }
   }
 

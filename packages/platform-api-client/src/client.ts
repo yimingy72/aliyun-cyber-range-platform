@@ -13,6 +13,7 @@ import type {
   SaveTencentCloudAccountInput,
   SaveCloudAccountInput,
   CloudWorkspaceView,
+  CloudAccountRemovalResult,
   TencentCloudRegionsInput,
   TencentCloudRegionsPayload,
   TencentCloudImagesInput,
@@ -375,6 +376,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
   getCurrentCloudWorkspace() { return this.request<CloudWorkspaceView | null>('/admin/cloud-workspaces/current'); }
   switchCloudWorkspace(id: string) {
     return this.request<CloudWorkspaceView>(`/admin/cloud-workspaces/${encodeURIComponent(id)}/switch`, { method: 'POST', body: '{}' });
+  }
+  deleteCloudWorkspace(id: string, operation?: OperationRequest) {
+    return this.request<CloudAccountRemovalResult>(`/admin/cloud-workspaces/${encodeURIComponent(id)}`, { method: 'DELETE', operation });
   }
 
   discoverTencentCloudRegions(payload: TencentCloudRegionsInput) {

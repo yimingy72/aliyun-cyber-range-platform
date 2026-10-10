@@ -63,6 +63,20 @@ export const settingsTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'cloud_account_remove', title: '删除云账号绑定',
+    description: '仅平台超管可删除非当前账号绑定。清除已保存凭据，保留数据与账单历史；重新绑定同厂商同主账号可恢复。未回收资源、失败实例及清理任务会阻止删除。不会调用云端资源删除。',
+    requiredScopes: ['settings:write'], adminOnly: true, annotations: { destructiveHint: true, idempotentHint: true },
+    inputSchema: operationSchema.extend({ cloudWorkspaceId: z.string().trim().min(1).max(192) }).strict(),
+    outputSchema: resultOutputSchema(z.object({ id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), accountUid: z.string(),
+      displayName: z.string(), deletedAt: z.string(), retainedData: z.literal(true) })),
+    async call(context, args) {
+      const result = await context.client.deleteCloudWorkspace(args.cloudWorkspaceId as string,
+        operation({ idempotencyKey: args.idempotencyKey as string | undefined, confirmationId: args.confirmationId as string | undefined }));
+      return z.object({ id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), accountUid: z.string(), displayName: z.string(),
+        deletedAt: z.string(), retainedData: z.literal(true) }).parse(result);
+    },
+  },
+  {
     name: 'cloud_account_context_list', title: '查询云账号',
     description: '查询已验证的云账号、厂商和地域，不返回凭据。includeInactive=true可查看尚未启用创建的腾讯云账号。',
     requiredScopes: ['settings:read'], adminOnly: true, readOnlyHint: true,

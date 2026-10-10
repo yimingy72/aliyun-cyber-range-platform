@@ -103,4 +103,17 @@ isolated('Cloud workspace HTTP selection and authorization (isolated PostgreSQL)
     await request(app.getHttpServer()).post('/admin/users').set('authorization', authorization('manager')).set('x-cloud-workspace-id', 'legacy-unbound').send({ username: 'new-user', password: 'synthetic-password', role: 'user' }).expect(403);
     await request(app.getHttpServer()).post('/admin/cloud-workspaces/space-a/switch').set('authorization', authorization('manager')).set('x-cloud-workspace-id', 'legacy-unbound').send({}).expect(201);
   });
+  it('restricts binding deletion to managers and preserves business history', async () => {
+    await request(app.getHttpServer()).delete('/admin/cloud-workspaces/space-b').set('authorization', authorization('bob')).expect(403);
+    await request(app.getHttpServer()).delete('/admin/cloud-workspaces/space-a').set('authorization', authorization('manager')).expect(409);
+    const removed = await request(app.getHttpServer()).delete('/admin/cloud-workspaces/space-b').set('authorization', authorization('manager')).expect(200);
+    expect(removed.body).toMatchObject({ id: 'space-b', retainedData: true });
+    expect(JSON.stringify(removed.body)).not.toContain('synthetic-tencent');
+    const listed = await request(app.getHttpServer()).get('/admin/cloud-workspaces').set('authorization', authorization('manager')).expect(200);
+    expect(listed.body.map((space: { id: string }) => space.id)).not.toContain('space-b');
+    await request(app.getHttpServer()).post('/admin/cloud-workspaces/space-b/switch').set('authorization', authorization('manager')).send({}).expect(409);
+    expect(await runInSystemCloudWorkspaceScope(() => prisma.rangeTemplate.count({ where: { cloudWorkspaceId: 'space-b' } }))).toBe(1);
+    const audit = await runInSystemCloudWorkspaceScope(() => prisma.operationAuditEvent.findMany({ where: { toolName: 'cloud_account_remove', targetId: 'space-b', phase: 'succeeded' } }));
+    expect(audit).toHaveLength(1);
+  });
 });

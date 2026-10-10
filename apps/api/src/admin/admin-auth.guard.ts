@@ -88,6 +88,7 @@ export class AdminAuthGuard implements CanActivate {
       request.authContext.cloudWorkspaceId = request.cloudWorkspaceScope.cloudWorkspaceId;
       const method = (request.method ?? 'GET').toUpperCase();
       const registryWrite = /^\/admin\/cloud-workspaces\/[^/]+\/switch$/.test(path)
+        || /^\/admin\/cloud-workspaces\/[^/]+$/.test(path) && method === 'DELETE'
         || path === '/admin/cloud-contexts' || path === '/admin/tencent-cloud/regions/query';
       if (request.cloudWorkspaceScope.isReadOnly && !['GET', 'HEAD', 'OPTIONS'].includes(method) && !registryWrite) {
         throw new ForbiddenException('历史待核验空间为只读，请选择已绑定的云账号。');

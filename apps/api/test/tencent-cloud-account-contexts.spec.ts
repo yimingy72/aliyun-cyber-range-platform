@@ -10,9 +10,11 @@ function fixture() {
       findUnique: jest.fn(async () => workspace), findUniqueOrThrow: jest.fn(async () => workspace),
       upsert: jest.fn(async ({ create, update }) => { workspace = workspace ? { ...workspace, ...update } : { id: 'tencent-workspace', isReadOnly: false, activeCloudAccountContextId: null, ...create }; return workspace; }),
       update: jest.fn(async ({ data }) => { workspace = { ...workspace, ...data }; return workspace; }),
+      updateMany: jest.fn(async ({ data }) => { workspace = { ...workspace, ...data }; return { count: 1 }; }),
     },
     cloudAccountContext: {
       findUnique: jest.fn(async () => context),
+      findUniqueOrThrow: jest.fn(async () => context),
       findMany: jest.fn(async () => context ? [context] : []),
       upsert: jest.fn(async ({ create, update }) => {
         context = context ? { ...context, ...update } : { id: 'tencent-context', createdAt: new Date(), updatedAt: new Date(), ...create };
@@ -20,8 +22,9 @@ function fixture() {
       }),
       updateMany: jest.fn(), update: jest.fn(),
     },
-    systemCloudConfig: { upsert: jest.fn() }, $transaction: jest.fn(),
+    systemCloudConfig: { upsert: jest.fn() }, $executeRaw: jest.fn(), $transaction: jest.fn(),
   };
+  db.$transaction.mockImplementation(async callback => callback(db));
   return { db, service: new CloudAccountContextsService(db as never) };
 }
 describe('Tencent cloud account persistence and isolation', () => {
@@ -43,7 +46,7 @@ describe('Tencent cloud account persistence and isolation', () => {
     const saved = await service.saveTencentCloudContext(input);
     expect(saved).toMatchObject({ provider: 'tencent_cloud', accountUid: '100001', isActive: false, imageImportBucket: '', bucketStatus: 'unconfigured', status: 'ready' });
     expect(saved.cloudWorkspaceId).toBe('tencent-workspace');
-    expect(db.cloudWorkspace.update).toHaveBeenCalledWith({ where: { id: 'tencent-workspace' }, data: { activeCloudAccountContextId: saved.id } });
+    expect(db.cloudWorkspace.update).toHaveBeenCalledWith({ where: { id: 'tencent-workspace' }, data: { activeCloudAccountContextId: saved.id, archivedAt: null } });
     expect(saved).not.toHaveProperty('accessKeyId'); expect(saved).not.toHaveProperty('accessKeySecret');
     expect(db.cloudAccountContext.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { provider_accountUid_regionId: { provider: 'tencent_cloud', accountUid: '100001', regionId: input.regionId } },
@@ -55,7 +58,7 @@ describe('Tencent cloud account persistence and isolation', () => {
     await expect(service.getCredentials(saved.id, { requireReady: true })).resolves.toMatchObject({ provider: 'tencent_cloud', accountUid: '100001', accessKeySecret: input.accessKeySecret });
     await expect(service.getCredentials(saved.id, { requireActive: true })).rejects.toThrow('已启用');
     await expect(service.getCredentials(saved.id, { requireImageImportBucket: true })).rejects.toThrow('专属 COS 来源由上传入口核验');
-    await expect(service.activate(saved.id)).rejects.toThrow('仅支持将阿里云'); expect(db.$transaction).not.toHaveBeenCalled();
+    await expect(service.activate(saved.id)).rejects.toThrow('仅支持将阿里云'); expect(db.$transaction).toHaveBeenCalledTimes(1);
   });
   it('upserts a verified identity rather than a subaccount identity while retaining inactive status', async () => {
     const { db, service } = fixture(); validCloud(); await service.saveTencentCloudContext(input);

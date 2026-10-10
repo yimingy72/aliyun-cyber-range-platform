@@ -36,4 +36,18 @@ describe('cloud workspace MCP contract', () => {
     expect(await registry.callTool('cloud_account_bind', ['settings:write'], { ...payload, idempotencyKey: 'same-key', confirmationId: challenge.confirmationId }, 'admin')).toMatchObject({ structuredContent: { result: account } });
     expect(fetch.mock.calls[1]![1]).toMatchObject({ headers: { Authorization: 'Bearer actor-a', 'x-cloud-workspace-id': 'space-a', 'x-idempotency-key': 'same-key', 'x-confirmation-id': 'confirmation-a' }, body: JSON.stringify(payload) });
   });
+  it('requires manager tooling and exact deletion target, strips credentials, and forwards confirmation metadata', async () => {
+    const deleted = { id: 'space-b', provider: 'tencent_cloud', accountUid: '222', displayName: 'Account B', deletedAt: '2026-10-10T12:00:00.000Z', retainedData: true,
+      accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret', nested: { token: 'private-token' } };
+    const remove = vi.fn(async () => deleted);
+    const registry = createToolRegistry({ deleteCloudWorkspace: remove } as never);
+    await expect(registry.callTool('cloud_account_remove', ['settings:write'], { cloudWorkspaceId: 'space-b' }, 'user')).rejects.toThrow('Forbidden tool');
+    await expect(registry.callTool('cloud_account_remove', ['settings:read'], { cloudWorkspaceId: 'space-b' }, 'admin')).rejects.toThrow('Forbidden tool');
+    await expect(registry.callTool('cloud_account_remove', ['settings:write'], { cloudWorkspaceId: 'space-b', destroysResources: true }, 'admin')).rejects.toThrow('Invalid input');
+    const result = await registry.callTool('cloud_account_remove', ['settings:write'], { cloudWorkspaceId: 'space-b', idempotencyKey: 'remove-once', confirmationId: 'confirmation-b' }, 'admin');
+    expect(remove).toHaveBeenCalledWith('space-b', { idempotencyKey: 'remove-once', confirmationId: 'confirmation-b' });
+    expect(result).toMatchObject({ structuredContent: { result: { id: 'space-b', retainedData: true } } });
+    expect(JSON.stringify(result)).not.toContain('fixture-secret'); expect(JSON.stringify(result)).not.toContain('private-token');
+    expect(registry.listTools(['settings:write'], 'admin').find(tool => tool.name === 'cloud_account_remove')!.annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
+  });
 });

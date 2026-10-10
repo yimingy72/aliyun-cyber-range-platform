@@ -365,14 +365,14 @@ export class SystemConfigService {
       throw new BadRequestException('后台任务缺少冻结的云账号工作空间。');
     }
     const space = await runInSystemCloudWorkspaceScope(() => this.prisma.cloudWorkspace.findUnique({ where: { id } }));
-    if (!space || !space.accountUid || space.isReadOnly) throw new BadRequestException('后台任务的云账号工作空间未核验，已保留原任务与资源记录。');
+    if (!space || space.archivedAt || !space.accountUid || space.isReadOnly) throw new BadRequestException('后台任务的云账号工作空间未核验或绑定已删除，已保留原任务与资源记录。');
     return runInCloudWorkspace({ cloudWorkspaceId: space.id, provider: space.provider, accountUid: space.accountUid,
       isReadOnly: space.isReadOnly, actorUserId: 'system:worker' }, work);
   }
 
   async listExecutionCloudWorkspaces() {
     return runInSystemCloudWorkspaceScope(() => this.prisma.cloudWorkspace.findMany({
-      where: { isReadOnly: false, provider: { in: ['alibaba_cloud', 'tencent_cloud'] }, accountUid: { not: null }, activeCloudAccountContextId: { not: null } },
+      where: { archivedAt: null, isReadOnly: false, provider: { in: ['alibaba_cloud', 'tencent_cloud'] }, accountUid: { not: null }, activeCloudAccountContextId: { not: null } },
       select: { id: true, provider: true, accountUid: true, isReadOnly: true }, orderBy: { id: 'asc' },
     }));
   }
@@ -397,7 +397,7 @@ export class SystemConfigService {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope) return null;
     const space = await this.prisma.cloudWorkspace.findUnique({ where: { id: scope.cloudWorkspaceId } });
-    if (!space || space.provider !== scope.provider || space.accountUid !== scope.accountUid) {
+    if (!space || space.archivedAt || space.provider !== scope.provider || space.accountUid !== scope.accountUid) {
       throw new BadRequestException('当前云账号工作空间已变化，请重新选择。');
     }
     const selectedContextId = scope.cloudAccountContextId ?? space.activeCloudAccountContextId;

@@ -5,7 +5,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 # 云上综合靶场平台全产品 Skill
 
-通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 86 个 MCP 工具。
+通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 87 个 MCP 工具。
 
 > ⚠️ **运行时 MCP `tools/list`、工具的 `inputSchema`、`outputSchema`、`annotations` 和当前 scope 是唯一事实源。** 运行时 schema 与静态参考冲突时，以 schema 为准。
 
@@ -96,7 +96,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 | 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、DNS 核验/重新下发、打包镜像、销毁、获取访问凭据 |
 | 用户管理 | 创建用户、角色/状态变更、重置密码 |
 | 账单费用 | 同步账单、导出费用 CSV |
-| 基础配置 | 绑定/更新云账号、更新云配置 |
+| 基础配置 | 绑定/更新/删除云账号绑定、更新云配置 |
 
 调用前先用只读工具核对目标、状态、可见性和权限；参数、目标、范围或到期时间变化时重新展示摘要并获得新确认。
 

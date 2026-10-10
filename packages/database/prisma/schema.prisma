@@ -146,6 +146,7 @@ model CloudWorkspace {
   displayName                String
   isReadOnly                 Boolean       @default(false)
   activeCloudAccountContextId String?
+  archivedAt                 DateTime?
   createdAt                  DateTime      @default(now())
   updatedAt                  DateTime      @updatedAt
 
