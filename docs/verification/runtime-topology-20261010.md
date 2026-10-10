@@ -19,3 +19,15 @@ worker 在实际 apply 前核对原生资源 ID、状态所有权和实际 plan�
 验证均通过 Docker 完成，隔离数据库使用测试身份和测试数据。阿里云、腾讯云模块及渲染器进行离线 OpenTofu 校验；实际计划拦截、部分失败库存/费用留痕、预览令牌消费、用户与云空间隔离、私有模板复制和前端确认流程进行自动化回归。
 
 本轮未创建或修改真实云资源，离线测试不等同两家云厂商实际应用成功。实际云 API 差异、异步收敛和真实账单到达时间需后续受控实测确认。
+
+## 最终 Docker 结果
+
+- `scripts/ci/verify-docker.sh` 在整合后的代码上成功退出（0）。
+- API：171 个测试套件、2263 项通过；3 项专用隔离 Keycloak 契约测试未启用，本次未修改认证流程。
+- Web：66 个测试文件、638 项通过。MCP：18 个测试文件、143 项通过。SDK：36 项通过。IaC runner：28 项通过。
+- 腾讯云模块断网验证：network 4、single batch 6、enterprise range 10 项通过；实际离线 plan 断言旧 VM/EIP/NAT 不替换，旧 EIP client token 与 NAT/EIP 名称不变。
+- 阿里云相关模块 validate 和测试通过；生产 API/Web/MCP 构建通过，云账号空间迁移 smoke 通过。
+- 已更新本地 `for-api`、`for-provisioner-worker`、`for-web`、`for-mcp` 镜像并重建容器。API/MCP 健康，四个容器均无重启；通过现有浏览器登录态加载腾讯云编排历史及详情。
+- 验证未创建、修改或销毁真实云资源；线上更新行为及真实账单到达仍需后续受控云测。
+
+PR：<https://github.com/yimingy72/aliyun-cyber-range-platform/pull/15>。master 基线未变，开发分支为 `codex/runtime-topology`。
