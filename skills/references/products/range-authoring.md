@@ -159,7 +159,7 @@ connections:
 5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。其端口范围也遵循 `1/65535 -> -1/-1` 的规则。
 6. 设计中必须有且仅有一个公网入口 ECS：该 ECS 必须设置 `exposePublic: true`，并且必须是至少一条 DNAT 的目标。它是共享 DNAT EIP 的唯一外部访问落点，不直接绑定公网 IP；没有公网入口时模板不能保存。
 7. 不输出 `customPassword`，除非用户明确要求设置该 ECS 的初始密码。
-8. 自定义 DNS 仅作用于显式选中的 NIC，转换时将设计中的 NIC `key` 原样映射到图 NIC `id` 和 `dns.nicIds`；删除已选 NIC 必须报告错误，不能自动选其它网卡。Windows 初始化在用户脚本之前设置 DNS，IP 和网关仍使用原网络配置。后续客体核验失败不会自动重建云实例。
+8. 自定义 DNS 仅作用于显式选中的 NIC，转换时将设计中的 NIC `key` 原样映射到图 NIC `id` 和 `dns.nicIds`；删除已选 NIC 必须报告错误，不能自动选其它网卡。Windows 初始化在用户脚本之前设置 DNS，IP 和网关仍使用原网络配置。若还有用户启动脚本，使用 PowerShell 内容并以 `[powershell]` 开头（也接受完整 `<powershell>...</powershell>` 包装）；不能混入 shell、bat 或 cloud-config。腾讯云要求支持 Cloudbase-init 的 Windows Server 2012 R2 及以上镜像。后续客体核验失败不会自动重建云实例。
 
 ## 转换 Skill 输出与校验
 
