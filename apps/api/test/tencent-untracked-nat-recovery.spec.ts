@@ -110,6 +110,16 @@ it('closes an already cleaned unknown apply only after both complete native scan
   await expect(fs.stat(path.join(test.dir,'.range-apply-started'))).rejects.toMatchObject({code:'ENOENT'});
 });
 
+it.each(['missing','foreign'])('does not substitute the current frozen identity for %s retired recovery evidence', async reason => {
+  const test = await absentFixture();
+  (test.input.knownResourceSummary as any).retiredResources = { mode:'opentofu',eipAllocationIds:{retired:'eip-retired'},
+    ...(reason === 'foreign' ? {executionContext:{...test.input.knownResourceSummary.executionContext,cloudAccountContextId:'other-context'}} : {}) };
+  await expect(test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist)).rejects.toThrow('conflicting frozen identities');
+  await expect(fs.stat(path.join(test.dir,'.tencent-apply-absence-proved.json'))).rejects.toMatchObject({code:'ENOENT'});
+  await expect(fs.stat(path.join(test.dir,'.range-apply-started'))).resolves.toBeDefined();
+  expect(test.runner.apply).not.toHaveBeenCalled(); expect(test.runner.importResource).not.toHaveBeenCalled(); expect(test.persist).not.toHaveBeenCalled();
+});
+
 it.each(['none','known-acl','known-route','owned-tags','original-vpc','duplicate','changed-total','truncated','api-error'])('uses complete account network inventory after VPC deletion: %s', async reason => {
   const test=await absentFixture();
   const requests=jest.spyOn(rpc,'requestTencentCloud').mockImplementation(async input => {

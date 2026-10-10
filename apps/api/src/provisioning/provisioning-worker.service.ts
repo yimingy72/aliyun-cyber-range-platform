@@ -1518,6 +1518,7 @@ export class ProvisioningWorkerService {
   private async findTencentResidualResources(summary: RangeResourceSummary, account: SystemCloudAccountContext): Promise<string[]> {
     const bound = summary.executionContext;
     if (!bound || bound.provider && bound.provider !== 'tencent_cloud' || account.provider !== 'tencent_cloud' || !account.accountUidResolved || bound.cloudAccountUid !== account.accountUid || bound.cloudAccountContextId !== account.cloudAccountContextId || bound.regionId !== account.defaultRegion) throw new Error('Tencent cleanup requires the exact frozen execution identity');
+    if (summary.retiredResources && !summary.retiredResources.executionContext) throw new Error('Tencent retired cleanup requires its original frozen execution identity');
     const ids: Array<['ecs'|'disk'|'vpc'|'vswitch'|'security_group'|'network_acl'|'eni'|'nat'|'eip',string[]]> = [
       ['ecs',Object.values(summary.hostIds ?? {})], ['disk',inventoryDiskIds(summary)], ['vpc',summary.vpcId ? [summary.vpcId] : []],
       ['vswitch',Object.values(summary.subnetIds ?? {})], ['security_group',Object.values(summary.securityGroupIds ?? {})], ['network_acl',Object.values(summary.networkAclIds ?? {})],
@@ -1528,7 +1529,7 @@ export class ProvisioningWorkerService {
     const failed = results.find((value): value is PromiseRejectedResult => value.status === 'rejected');
     if (failed) throw failed.reason;
     const residual = results.flatMap(value => value.status === 'fulfilled' ? value.value : []);
-    if (summary.retiredResources) residual.push(...await this.findTencentResidualResources({ ...summary.retiredResources, executionContext: summary.retiredResources.executionContext ?? bound, retiredResources: null },account));
+    if (summary.retiredResources) residual.push(...await this.findTencentResidualResources({ ...summary.retiredResources, retiredResources: null },account));
     return residual;
   }
 

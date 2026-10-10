@@ -609,7 +609,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const stateKinds = { ecs:'tencentcloud_instance',vpc:'tencentcloud_vpc',vswitch:'tencentcloud_subnet',security_group:'tencentcloud_security_group',network_acl:'tencentcloud_vpc_acl',eni:'tencentcloud_eni',nat:'tencentcloud_nat_gateway',eip:'tencentcloud_eip' };
     const ids = (kind: keyof typeof fields): string[] => {
       const collect = (summary: RangeResourceSummary): string[] => {
-        if (summary.executionContext && ['provider','cloudAccountUid','cloudAccountContextId','regionId','zoneId'].some(key => (summary.executionContext as any)[key] !== (bound as any)[key]))
+        if (!summary.executionContext || ['provider','cloudAccountUid','cloudAccountContextId','regionId','zoneId'].some(key => (summary.executionContext as any)[key] !== (bound as any)[key]))
           throw new Error('Tencent absence recovery inventory has conflicting frozen identities');
         const value = summary[fields[kind]];
         return [...(typeof value === 'string' ? [value] : Object.values(value ?? {})),

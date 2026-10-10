@@ -92,4 +92,6 @@ it('keeps the original execution identity for retired Tencent IDs and never gues
   queries.mockClear();
   await expect(worker.findResidualCloudResources(unbound, account)).rejects.toThrow('frozen execution identity');
   expect(queries).not.toHaveBeenCalled();
+  await expect(worker.findResidualCloudResources({ mode: 'opentofu', executionContext: context, retiredResources: unbound }, account)).rejects.toThrow('original frozen execution identity');
+  expect(queries).not.toHaveBeenCalled();
 });
