@@ -60,7 +60,7 @@ describe('syncTopologySpecFromNodes', () => {
     );
   });
 
-  it('does not infer a public entry from legacy host flags when DNAT has no unique target', () => {
+  it('keeps a private management host without inferring public exposure from legacy flags', () => {
     const skeleton = createEnterpriseRangeSkeleton();
     const topologySpec = syncTopologySpecFromNodes({
       nodes: skeleton.map((node) =>
@@ -77,8 +77,8 @@ describe('syncTopologySpecFromNodes', () => {
     });
 
     expect(topologySpec.publicEntry).toEqual({
-      hostKey: '',
-      protocols: [],
+      hostKey: 'ecs-core-1',
+      protocols: [{ protocol: 'ssh', port: 22 }, { protocol: 'http', port: 80 }],
     });
     expect(topologySpec.hosts).toEqual([
       expect.objectContaining({
@@ -139,6 +139,7 @@ describe('syncTopologySpecFromNodes', () => {
         name: 'Core',
         purpose: 'business-zone',
         cidr: '10.0.0.0/24',
+        isPublicEntry: true,
       },
     ]);
     expect(topologySpec.hosts).toEqual([
@@ -270,6 +271,7 @@ describe('syncTopologySpecFromNodes', () => {
           label: '核心交换机',
           zoneKey: 'core',
           cidr: '10.0.0.0/24',
+        isPublicEntry: true,
           purpose: 'business-zone',
           description: '',
           aclRules: [],
@@ -327,4 +329,17 @@ describe('syncTopologySpecFromNodes', () => {
       }),
     ]);
   });
+});
+
+it('keeps all DNAT targets public while selecting only the first for the legacy access summary', () => {
+  const nodes = createEnterpriseRangeSkeleton();
+  const host = nodes.find((node) => node.kind === 'ecs')!;
+  if (host.kind !== 'ecs') throw new Error('missing host');
+  nodes.push({ ...structuredClone(host), id: 'other', label: 'Other', privateIp: '10.0.0.20' });
+  const switchNode = nodes.find((node) => node.kind === 'switch')!;
+  if (switchNode.kind !== 'switch') throw new Error('missing switch');
+  switchNode.nat!.dnatMappings.push({ key: 'other-http', targetHostId: 'other', externalPort: 8080, internalPort: 80, protocol: 'tcp' });
+  const result = syncTopologySpecFromNodes({ nodes });
+  expect(result.publicEntry.hostKey).toBe('ecs-core-1');
+  expect(result.hosts.map((node) => node.exposePublic)).toEqual([true, true]);
 });

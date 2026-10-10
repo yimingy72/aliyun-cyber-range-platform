@@ -1,9 +1,9 @@
 output "public_entry" {
   value = {
     host_role  = var.entry_host_key
-    public_ip  = tencentcloud_eip.range[local.entry_eip_key].public_ip
+    public_ip  = local.entry_eip_key != null ? tencentcloud_eip.range[local.entry_eip_key].public_ip : null
     private_ip = tencentcloud_instance.hosts[var.entry_host_key].private_ip
-    ssh        = "ssh root@${tencentcloud_eip.range[local.entry_eip_key].public_ip}"
+    ssh        = local.entry_eip_key != null ? "ssh root@${tencentcloud_eip.range[local.entry_eip_key].public_ip}" : null
   }
 }
 output "resource_summary" {

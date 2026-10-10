@@ -98,6 +98,7 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
       (host.dnat?.enabled ? host.dnat.mappings ?? [] : []).map((mapping) => ({
         key: `dnat-${host.key}-${mapping.protocol}-${mapping.externalPort}`,
         hostKey: host.key,
+        ...(mapping.backendPrivateIp ? { backendPrivateIp: mapping.backendPrivateIp, backendZoneKey: mapping.backendZoneKey } : {}),
         natGatewayKey: host.dnat?.natGatewayKey ?? '',
         eipKey: host.dnat?.eipKey ?? '',
         protocol: mapping.protocol,

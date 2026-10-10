@@ -97,6 +97,8 @@ type CompiledDnatEntryResource = CompiledResource & {
     natGatewayKey?: string;
     eipKey?: string;
     backendHostKey?: string;
+    backendPrivateIp?: string;
+    backendZoneKey?: string;
     externalPort?: number;
     internalPort?: number;
     protocol?: string;
@@ -186,6 +188,8 @@ export type EnterpriseProvisionPlan = {
     natGatewayKey: string;
     eipKey: string;
     backendHostKey: string;
+    backendPrivateIp?: string;
+    backendZoneKey?: string;
     externalPort: number;
     internalPort: number;
     protocol: string;
@@ -306,7 +310,7 @@ export function buildEnterpriseProvisionPlan(input: {
       name: zone.name,
       cidr: zone.cidr,
       purpose: zone.purpose,
-      isPublicEntry: zone.key === publicEntry.zoneKey,
+      isPublicEntry: zone.isPublicEntry ?? zone.key === publicEntry.zoneKey,
     })),
     hostDefinitions: topologySpec.hosts.map((host) => ({
       key: host.key,
@@ -315,7 +319,7 @@ export function buildEnterpriseProvisionPlan(input: {
       zoneKey: host.zoneKey,
       privateIp: host.privateIp,
       role: host.role,
-      exposePublic: host.key === topologySpec.publicEntry.hostKey || Boolean(host.exposePublic),
+      exposePublic: host.exposePublic ?? host.key === topologySpec.publicEntry.hostKey,
       ...(hostDns.has(host.key) ? { dns: hostDns.get(host.key)! } : {}),
     })),
     natGateways,
@@ -370,7 +374,7 @@ function buildTopologySpecFromCompiledSpec(
     name: resource.config.label ?? resource.id,
     purpose: resource.config.purpose ?? resource.config.zoneKey ?? resource.id,
     cidr: requireValue(resource.config.cidr, `compiledSpec.resources[${resource.id}].config.cidr`),
-    ...(resource.config.zoneKey === publicEntryHost.config.zoneKey ? { isPublicEntry: true } : {}),
+    isPublicEntry: hostResources.some((host) => host.config.zoneKey === resource.config.zoneKey && host.config.exposePublic === true),
   }));
 
   const hosts: RangeTemplateHost[] = hostResources.map((resource) => ({
@@ -432,7 +436,7 @@ function buildTopologySpecFromCompiledProvisionSpec(
         name: zone.name,
         purpose: typeof zone.purpose === 'string' ? zone.purpose : zone.key,
         cidr: zone.cidr,
-        ...(zone.isPublicEntry === true ? { isPublicEntry: true } : {}),
+        ...(typeof zone.isPublicEntry === 'boolean' ? { isPublicEntry: zone.isPublicEntry } : {}),
       }];
     }),
     hosts: hosts.flatMap((hostValue) => {
@@ -457,7 +461,7 @@ function buildTopologySpecFromCompiledProvisionSpec(
         zoneKey: host.zoneKey,
         role: host.role,
         privateIp: host.primaryPrivateIp,
-        ...(host.exposePublic === true ? { exposePublic: true } : {}),
+        ...(typeof host.exposePublic === 'boolean' ? { exposePublic: host.exposePublic } : {}),
         ...(host.dns !== undefined ? { dns: host.dns as HostDnsConfig } : {}),
       }];
     }),
@@ -834,6 +838,7 @@ function buildDnatEntriesFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpe
       resource.config.backendHostKey,
       `compiledSpec.resources[${resource.id}].config.backendHostKey`,
     ),
+    ...(resource.config.backendPrivateIp ? { backendPrivateIp: resource.config.backendPrivateIp, backendZoneKey: resource.config.backendZoneKey } : {}),
     externalPort:
       typeof resource.config.externalPort === 'number' && Number.isFinite(resource.config.externalPort)
         ? resource.config.externalPort
@@ -869,6 +874,8 @@ function buildDnatEntriesFromCompiledProvisionSpec(compiledProvisionSpec: Compil
         `compiledProvisionSpec.dnatEntries[${record.key}].eipKey`,
       ),
       backendHostKey: record.hostKey,
+      ...(typeof record.backendPrivateIp === 'string' ? { backendPrivateIp: record.backendPrivateIp } : {}),
+      ...(typeof record.backendZoneKey === 'string' ? { backendZoneKey: record.backendZoneKey } : {}),
       externalPort: typeof record.externalPort === 'number' ? record.externalPort : 0,
       internalPort: typeof record.internalPort === 'number' ? record.internalPort : 0,
       protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',

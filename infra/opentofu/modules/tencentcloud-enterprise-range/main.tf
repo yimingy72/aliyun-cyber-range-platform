@@ -196,9 +196,18 @@ resource "tencentcloud_dnat" "entry" {
   nat_id       = tencentcloud_nat_gateway.shared[each.value.nat_key].id
   elastic_ip   = tencentcloud_eip.range[each.value.eip_key].public_ip
   elastic_port = tostring(each.value.external_port)
-  private_ip   = tencentcloud_instance.hosts[each.value.host_key].private_ip
+  private_ip   = coalesce(each.value.private_ip, tencentcloud_instance.hosts[each.value.host_key].private_ip)
   private_port = tostring(each.value.internal_port)
   protocol     = each.value.protocol
   description  = each.key
-  depends_on   = [tencentcloud_route_table_entry.internet, tencentcloud_route_table_association.zones]
+  depends_on   = [tencentcloud_route_table_entry.internet, tencentcloud_route_table_association.zones, tencentcloud_eni_attachment.secondary]
+}
+
+check "dnat_owned_nic_targets" {
+  assert {
+    condition = alltrue([for entry in var.dnat_entries : entry.private_ip == null || contains(
+      [for nic in var.network_interfaces : nic.private_ip if nic.host_key == entry.host_key], entry.private_ip
+    )])
+    error_message = "DNAT private_ip must be a primary address of the referenced host's declared NICs."
+  }
 }

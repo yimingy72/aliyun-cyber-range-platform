@@ -175,9 +175,10 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
   );
   const switchById = new Map(switchNodes.map((node) => [node.id, node]));
   const entryResolution = resolveUniqueDnatEntryHost(input.topologyGraph.nodes);
-  const entryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : undefined;
+  const dnatHostIds = new Set(entryResolution.kind === 'single' ? [entryResolution.targetHostId] : entryResolution.kind === 'multiple' ? entryResolution.targetHostIds : []);
+  // Keep a management host for legacy access summaries without implying a public mapping.
+  const entryHostId = [...dnatHostIds][0] ?? hostNodes[0]?.id;
   const entryHost = hostNodes.find((node) => node.id === entryHostId) ?? null;
-  const entryHostPlacement = entryHost ? readHostPrimaryPlacement(entryHost, switchById, switchNodes) : null;
 
   const derivedNatSwitches = switchNodes.filter((node) => {
     const candidate = readRecord(node);
@@ -338,8 +339,8 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
       name: node.label,
       cidr: node.cidr,
       purpose: node.purpose,
-      isPublicEntry: node.zoneKey === entryHostPlacement?.zoneKey,
-      routeRole: node.zoneKey === entryHostPlacement?.zoneKey ? 'entry' : 'internal',
+      isPublicEntry: (node.nat?.dnatMappings?.length ?? 0) > 0,
+      routeRole: (node.nat?.dnatMappings?.length ?? 0) > 0 ? 'entry' : 'internal',
       snat: readRecord(node)?.nat
         ? {
             enabled: Boolean((readRecord(node)?.nat as SwitchNatDraft | null)?.snatEnabled),
@@ -401,6 +402,8 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
             name: mapping.key ?? mapping.description ?? `${node.id}-dnat-${index + 1}`,
             natGatewayKey: sharedNatGatewayKey,
             eipKey: sharedDnatEipKey,
+            backendPrivateIp: node.nics?.find((nic) => nic.switchId === switchNode.id)?.privateIp,
+            backendZoneKey: switchNode.zoneKey,
             externalPort: typeof mapping.externalPort === 'number' ? mapping.externalPort : 0,
             internalPort: typeof mapping.internalPort === 'number' ? mapping.internalPort : 0,
             protocol: readTransportProtocol(mapping.protocol),
@@ -415,6 +418,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
               eipKey: syntheticDnatMappings[0]?.eipKey,
               mappings: syntheticDnatMappings.map<ScenarioTemplateDnatMapping>((mapping) => ({
                 name: mapping.name,
+                ...(mapping.backendPrivateIp ? { backendPrivateIp: mapping.backendPrivateIp, backendZoneKey: mapping.backendZoneKey } : {}),
                 externalPort: mapping.externalPort,
                 internalPort: mapping.internalPort,
                 protocol: mapping.protocol,
@@ -440,7 +444,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
         role: node.role,
         zoneKey: primaryPlacement.zoneKey,
         primaryPrivateIp: primaryPlacement.privateIp,
-        exposePublic: node.id === entryHostId,
+        exposePublic: dnatHostIds.has(node.id),
         image: node.image || node.imageId || node.imageName,
         platformImageAssetId: node.platformImageAssetId,
         imageId: node.imageId,

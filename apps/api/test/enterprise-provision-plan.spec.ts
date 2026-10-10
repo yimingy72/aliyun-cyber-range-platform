@@ -880,3 +880,18 @@ describe('buildEnterpriseProvisionPlan', () => {
     ]);
   });
 });
+
+it('preserves explicit private exposure and exact DNAT NIC target from the compiled snapshot', () => {
+  const blueprint = {
+    topology: { vpcCidr: '10.0.0.0/16', entryHostKey: 'host' },
+    networkZones: [{ key: 'private', name: 'Private', cidr: '10.0.1.0/24', purpose: 'private', isPublicEntry: false }],
+    hosts: [{ key: 'host', name: 'Host', zoneKey: 'private', role: 'host', primaryPrivateIp: '10.0.1.10', exposePublic: false, networkInterfaces: [{ deviceIndex: 0, zoneKey: 'private', privateIp: '10.0.1.10' }] }],
+    natGateways: [], eips: [], snatEntries: [], dnatEntries: [], securityGroupRules: [], securityGroupRulesConfigured: true,
+    aclRules: [], bootstrapScripts: [], runtimeSelections: { imagePolicies: {}, instanceTypePolicies: {} },
+  };
+  const plan = buildEnterpriseProvisionPlan({ rangeInstanceId: 'fixture', templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range', allocatedCidr: null, compiledProvisionSpec: blueprint });
+  expect(plan.hostDefinitions[0].exposePublic).toBe(false);
+  expect(plan.networkZones[0].isPublicEntry).toBe(false);
+  const mapped = { ...blueprint, dnatEntries: [{ key: 'http', hostKey: 'host', natGatewayKey: 'nat', eipKey: 'eip', protocol: 'tcp', externalPort: 80, internalPort: 80, backendPrivateIp: '10.0.1.10', backendZoneKey: 'private' }] };
+  expect(buildEnterpriseProvisionPlan({ rangeInstanceId: 'fixture', templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range', allocatedCidr: null, compiledProvisionSpec: mapped }).dnatEntries[0]).toMatchObject({ backendPrivateIp: '10.0.1.10', backendZoneKey: 'private' });
+});

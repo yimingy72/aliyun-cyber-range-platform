@@ -17,7 +17,7 @@ export function tencentNicCapacity(cpu: number) {
 export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPlan; rangeInstanceId: string; account: ResolvedProvisioningRuntimeConfig;
   hostInstanceTypes: Record<string, { instanceType: string; cpu: number }>; hostImageIds: Record<string, string>; hostPasswords: Record<string, string>; tags: Record<string, string>; expiresAt: string;
   hostWindows?: Record<string,boolean>;
-  systemDiskType?: string; systemDiskSize?: number }) {
+  systemDiskType?: string; systemDiskSize?: number; hostSystemDiskSizes?: Record<string, number> }) {
   const { plan, account } = input;
   if (account.provider !== 'tencent_cloud' || !account.accountUid || !account.cloudAccountContextId || !account.defaultZoneId.startsWith(`${account.defaultRegion}-`))
     throw new Error('Tencent range requires a verified frozen cloud identity');
@@ -33,7 +33,7 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     throw new Error('Tencent range supports one shared NAT and its explicitly bound EIPs');
   if (plan.snatEntries.some(entry => !networkKeys.has(entry.sourceZoneKey) || !natKeys.has(entry.natGatewayKey) || !eipKeys.has(entry.eipKey)) || plan.dnatEntries.some(entry => !hostKeys.has(entry.backendHostKey) || !natKeys.has(entry.natGatewayKey) || !eipKeys.has(entry.eipKey) || !['tcp','udp'].includes(entry.protocol.toLowerCase()))) throw new Error('Tencent NAT rules contain an unsupported target or protocol');
   const snatZones = new Set(plan.snatEntries.map(entry => entry.sourceZoneKey));
-  if (plan.dnatEntries.some(entry => !snatZones.has(plan.hostDefinitions.find(host => host.key === entry.backendHostKey)!.zoneKey))) throw new Error('Tencent DNAT entry network must explicitly enable SNAT; the provider cannot enforce strict SNAT mode');
+  if (plan.dnatEntries.some(entry => !snatZones.has(entry.backendZoneKey ?? plan.hostDefinitions.find(host => host.key === entry.backendHostKey)!.zoneKey))) throw new Error('Tencent DNAT entry network must explicitly enable SNAT; the provider cannot enforce strict SNAT mode');
   const interfaces = plan.hostDefinitions.flatMap(host => {
     const nics = plan.hostNetworkInterfaces.find(item => item.hostKey === host.key)?.interfaces ?? [{ deviceIndex: 0, zoneKey: host.zoneKey, privateIp: host.privateIp }];
     const selection = input.hostInstanceTypes[host.key];
@@ -45,6 +45,9 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
       return { key: `${host.key}-${nic.deviceIndex}`, host_key: host.key, device_index: nic.deviceIndex, zone_key: nic.zoneKey, private_ip: nic.privateIp, secondary_ips: nic.secondaryIps ?? [] };
     });
   });
+  for (const entry of plan.dnatEntries) {
+    if (entry.backendPrivateIp && !interfaces.some((nic) => nic.host_key === entry.backendHostKey && nic.private_ip === entry.backendPrivateIp && (!entry.backendZoneKey || nic.zone_key === entry.backendZoneKey))) throw new Error('DNAT must target an owned host NIC in the mapped zone');
+  }
   const rules = (values: EnterpriseProvisionPlan['securityGroupRules'] | EnterpriseProvisionPlan['aclDefinitions']) => values.map(rule => {
     const protocol = rule.protocol.toUpperCase();
     const all = ['-1/-1','1/65535'].includes(rule.portRange);
@@ -69,7 +72,7 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     const primary = interfaces.find(nic => nic.host_key === host.key && nic.device_index === 0)!;
     const password = input.hostPasswords[host.key];
     assertTencentInstanceLogin(password,host.hostName ?? '',input.hostWindows?.[host.key]);
-    const frozen = { image_id: input.hostImageIds[host.key], instance_type: input.hostInstanceTypes[host.key].instanceType, private_ip: primary.private_ip, zone_key: primary.zone_key, system_disk_type: diskType, system_disk_size: input.systemDiskSize ?? 40, terminate_at: terminateAt };
+    const frozen = { image_id: input.hostImageIds[host.key], instance_type: input.hostInstanceTypes[host.key].instanceType, private_ip: primary.private_ip, zone_key: primary.zone_key, system_disk_type: diskType, system_disk_size: input.hostSystemDiskSizes?.[host.key] ?? input.systemDiskSize ?? 40, terminate_at: terminateAt };
     const intent = createHash('sha256').update(JSON.stringify(['tencent_cloud',account.cloudAccountContextId,account.accountUid,account.defaultRegion,account.defaultZoneId,input.rangeInstanceId,host.key,frozen])).digest('hex').slice(0,32);
     return { key: host.key, name: Array.from(host.name).slice(0,60).join(''), host_name: host.hostName ?? '', ...frozen, creation_intent_id: intent, user_data: userData };
   });
@@ -80,6 +83,6 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     nat_gateways: plan.natGateways.map(nat => ({ key: nat.key, name: nat.name, zone_key: nat.zoneKey, creation_intent_id: createHash('sha256').update(JSON.stringify(['nat',account.cloudAccountContextId,account.accountUid,input.rangeInstanceId,input.tags.PlatformCreateJobId,nat.key])).digest('hex').slice(0,32) })),
     eips: plan.eipDefinitions.map(eip => ({ key: eip.key, name: eip.name, nat_key: eip.bindTargetKey, bandwidth: eip.bandwidthMbps, creation_intent_id: createHash('sha256').update(JSON.stringify(['eip',account.cloudAccountContextId,account.accountUid,input.rangeInstanceId,input.tags.PlatformCreateJobId,eip.key,eip.bandwidthMbps])).digest('hex').slice(0,32) })),
     snat_entries: plan.snatEntries.map(entry => ({ key: entry.key, nat_key: entry.natGatewayKey, zone_key: entry.sourceZoneKey, eip_key: entry.eipKey })),
-    dnat_entries: plan.dnatEntries.map(entry => ({ key: entry.key, nat_key: entry.natGatewayKey, eip_key: entry.eipKey, host_key: entry.backendHostKey, external_port: entry.externalPort, internal_port: entry.internalPort, protocol: entry.protocol.toUpperCase() })),
+    dnat_entries: plan.dnatEntries.map(entry => ({ key: entry.key, nat_key: entry.natGatewayKey, eip_key: entry.eipKey, host_key: entry.backendHostKey, ...(entry.backendPrivateIp ? { private_ip: entry.backendPrivateIp } : {}), external_port: entry.externalPort, internal_port: entry.internalPort, protocol: entry.protocol.toUpperCase() })),
     tags: { ...input.tags, CloudProvider: 'tencent_cloud', CloudAccountUid: account.accountUid, CloudAccountContextId: account.cloudAccountContextId, RangeInstanceId: input.rangeInstanceId, CreatedBy: 'cyber-range-platform', PlatformManaged: 'true' } };
 }

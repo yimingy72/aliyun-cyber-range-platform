@@ -33,7 +33,7 @@ variable "acls" { type = list(object({ key = string, zone_key = string, directio
 variable "nat_gateways" { type = list(object({ key = string, name = string, zone_key = string, creation_intent_id = string })) }
 variable "eips" { type = list(object({ key = string, name = string, nat_key = string, bandwidth = number, creation_intent_id = string })) }
 variable "snat_entries" { type = list(object({ key = string, nat_key = string, zone_key = string, eip_key = string })) }
-variable "dnat_entries" { type = list(object({ key = string, nat_key = string, eip_key = string, host_key = string, external_port = number, internal_port = number, protocol = string })) }
+variable "dnat_entries" { type = list(object({ key = string, nat_key = string, eip_key = string, host_key = string, private_ip = optional(string), external_port = number, internal_port = number, protocol = string })) }
 variable "tags" {
   type = map(string)
   validation {

@@ -112,3 +112,33 @@ it('requires explicit system-only snapshot usage for private images', async () =
   jest.spyOn(rpc, 'requestTencentCloud').mockResolvedValue({ TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageType: 'PRIVATE_IMAGE', ImageState: 'NORMAL', Architecture: 'x86_64', ImageSize: 40, SnapshotSet: [{ DiskUsage: 'SYSTEM_DISK' }] }] } as any);
   expect(await assertTencentImagesAvailable(account, ['img-fixture'])).toEqual({ 'img-fixture': { minimumSystemDiskSize: 40, architecture: 'x86_64' } });
 });
+
+it('renders exact secondary NIC DNAT and per-host system disk overrides', () => {
+  const request = input();
+  request.plan.dnatEntries[0] = { ...request.plan.dnatEntries[0], backendPrivateIp: '10.0.1.20', backendZoneKey: 'dmz' };
+  const vars = renderTencentRangeVariables({ ...request, systemDiskSize: 50, hostSystemDiskSizes: { entry: 80 } });
+  expect(vars.hosts[0].system_disk_size).toBe(80);
+  expect(vars.dnat_entries[0]).toMatchObject({ host_key: 'entry', private_ip: '10.0.1.20' });
+});
+it('permits pure private topology without manufacturing a public entry or NAT resource', () => {
+  const request = input();
+  request.plan.natGateways = []; request.plan.eipDefinitions = []; request.plan.snatEntries = []; request.plan.dnatEntries = [];
+  const vars = renderTencentRangeVariables(request);
+  expect(vars.entry_host_key).toBe('entry');
+  expect(vars.nat_gateways).toEqual([]); expect(vars.eips).toEqual([]); expect(vars.dnat_entries).toEqual([]);
+});
+it('checks SNAT on the mapped NIC zone rather than the primary NIC zone', () => {
+  const request = input();
+  request.plan.networkZones.push({ key: 'secondary', name: 'Secondary', cidr: '172.16.1.0/24', purpose: 'internal', isPublicEntry: true });
+  request.plan.hostNetworkInterfaces[0].interfaces[1] = { deviceIndex: 1, zoneKey: 'secondary', privateIp: '172.16.1.20' };
+  request.plan.dnatEntries[0] = { ...request.plan.dnatEntries[0], backendPrivateIp: '172.16.1.20', backendZoneKey: 'secondary' };
+  expect(() => renderTencentRangeVariables(request)).toThrow('explicitly enable SNAT');
+  request.plan.snatEntries[0].sourceZoneKey = 'secondary';
+  expect(renderTencentRangeVariables(request).dnat_entries[0].private_ip).toBe('172.16.1.20');
+});
+
+it('rejects DNAT addresses that do not belong to the selected host NIC', () => {
+  const request = input();
+  request.plan.dnatEntries[0].backendPrivateIp = '10.0.1.99';
+  expect(() => renderTencentRangeVariables(request)).toThrow('owned host NIC');
+});

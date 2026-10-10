@@ -95,6 +95,8 @@ export type CompiledSnatEntry = {
 };
 
 export type CompiledDnatEntry = {
+  backendPrivateIp?: string;
+  backendZoneKey?: string;
   key: string;
   hostKey: string;
   natGatewayKey: string;

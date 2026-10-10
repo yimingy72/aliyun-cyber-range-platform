@@ -37,7 +37,7 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
         securityGroupRules: [{ key: 'sg-entry-ssh', name: 'Entry SSH', targetHostKey: 'dmz-entry', direction: 'ingress', policy: 'accept', protocol: 'tcp', portRange: '22/22', sourceCidr: '0.0.0.0/0', priority: 1 }],
         aclDefinitions: [{ key: 'acl-office', name: 'Office ACL', zoneKey: 'office', direction: 'inbound', policy: 'accept', protocol: 'tcp', portRange: '3389/3389', sourceCidr: '10.0.0.0/8', priority: 10 }],
         snatEntries: [{ key: 'snat-office', name: 'Office SNAT', natGatewayKey: 'nat-office', sourceZoneKey: 'office', eipKey: 'eip-entry' }],
-        dnatEntries: [{ key: 'dnat-web', name: 'Web DNAT', natGatewayKey: 'nat-office', eipKey: 'eip-entry', backendHostKey: 'server-app', externalPort: 8080, internalPort: 80, protocol: 'tcp' }],
+        dnatEntries: [{ key: 'dnat-web', name: 'Web DNAT', natGatewayKey: 'nat-office', eipKey: 'eip-entry', backendHostKey: 'server-app', backendPrivateIp: '10.90.20.30', backendZoneKey: 'office', externalPort: 8080, internalPort: 80, protocol: 'tcp' }],
         hostNetworkInterfaces: [
           {
             hostKey: 'server-app',
@@ -102,11 +102,13 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
       internetMaxBandwidthOut: 50,
       systemDiskCategory: 'cloud_essd',
       systemDiskSize: 40,
+      hostSystemDiskSizes: { 'dmz-entry': 50, 'server-app': 80 },
       tags: {
         range_instance_id: 'range-instance-1',
       },
     });
 
+    expect(variables.dnat_entries[0]).toMatchObject({ backend_host_key: 'server-app', backend_private_ip: '10.90.20.30' });
     expect(variables).not.toHaveProperty('selected_zone_id');
     expect(variables).not.toHaveProperty('attempted_zones');
     expect(variables).toEqual(
@@ -130,8 +132,8 @@ describe('AlibabaCloudOpenTofuRenderer', () => {
           }),
         ],
         hosts: expect.arrayContaining([
-          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.e-c1m1.large', host_name: 'dmz-host-01' }),
-          expect.objectContaining({ key: 'server-app', instance_type: 'ecs.c7.large', host_name: 'server-app-01' }),
+          expect.objectContaining({ key: 'dmz-entry', instance_type: 'ecs.e-c1m1.large', host_name: 'dmz-host-01', system_disk_size: 50 }),
+          expect.objectContaining({ key: 'server-app', instance_type: 'ecs.c7.large', host_name: 'server-app-01', system_disk_size: 80 }),
           expect.not.objectContaining({ key: 'office-client', host_name: expect.anything() }),
         ]),
         bootstrap_scripts: [

@@ -172,6 +172,7 @@ variable "hosts" {
     expose_public = bool
     instance_type = optional(string)
     image_id      = optional(string)
+    system_disk_size = optional(number)
   }))
   description = "Structured host definitions forwarded to the enterprise range module."
   default     = []
@@ -268,6 +269,7 @@ variable "dnat_entries" {
     nat_gateway_key  = string
     eip_key          = string
     backend_host_key = string
+    backend_private_ip = optional(string)
     external_port    = number
     internal_port    = number
     protocol         = string

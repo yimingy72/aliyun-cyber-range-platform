@@ -13,7 +13,6 @@ import type {
   SwitchTemplateNode,
   TemplateNode,
 } from './scenario-graph';
-import { resolveUniqueDnatEntryHost } from './scenario-graph';
 import type { ScenarioTemplateMetadata } from './scenario-template-spec';
 import { validateAliyunEcsPassword } from './password-policy';
 import { validateHostDnsConfig } from './host-dns';
@@ -96,7 +95,7 @@ export function compileTemplateTopology(
   scenarioTemplateSpec.topology.secondaryVpcCidrs = secondaryVpcCidrs;
   const entryHost = scenarioTemplateSpec.hosts.find((host) => host.key === scenarioTemplateSpec.topology.entryHostKey);
   if (!entryHost) {
-    throw new Error('拓扑缺少公网入口 ECS 节点');
+    throw new Error('拓扑缺少 ECS 节点');
   }
 
   const topologySpec = {
@@ -123,8 +122,8 @@ export function compileTemplateTopology(
       protocols: metadata.publicEntryProtocols ?? DEFAULT_PUBLIC_ENTRY_PROTOCOLS,
     },
     executionPolicies: {
-      allowSshIngress: true,
-      allowHttpIngress: true,
+      allowSshIngress: scenarioTemplateSpec.hosts.some((host) => host.exposePublic),
+      allowHttpIngress: scenarioTemplateSpec.hosts.some((host) => host.exposePublic),
       enableSnatOnDemand: scenarioTemplateSpec.networkZones.some((zone) => zone.snat?.enabled),
     },
   };
@@ -154,7 +153,7 @@ export function compileTopologyGraph(nodes: TemplateNode[], topologySpec: Compil
         id: node.id,
         type: node.kind === 'ecs' ? 'host' : node.kind,
         provider: cloudProvider,
-        config: compileNodeConfig(node, graphNodes, topologySpec.publicEntry.hostKey),
+        config: compileNodeConfig(node, graphNodes),
       })),
       ...buildDerivedNatResources(graphNodes, cloudProvider),
     ],
@@ -170,7 +169,6 @@ export function compileTopologyGraph(nodes: TemplateNode[], topologySpec: Compil
 function compileNodeConfig(
   node: GraphNode,
   graphNodes: GraphNode[],
-  publicEntryHostKey: string,
 ): Record<string, unknown> {
   switch (node.kind) {
     case 'ecs': {
@@ -181,7 +179,7 @@ function compileNodeConfig(
         zoneKey: placement.zoneKey,
         role: node.role,
         privateIp: placement.privateIp,
-        exposePublic: node.id === publicEntryHostKey,
+        exposePublic: graphNodes.some((candidate) => candidate.kind === 'switch' && candidate.nat?.dnatMappings?.some((mapping) => mapping.targetHostId === node.id)),
         image: node.image,
         platformImageAssetId: node.platformImageAssetId,
         instanceName: node.instanceName,
@@ -299,6 +297,8 @@ function buildDerivedNatResources(nodes: GraphNode[], cloudProvider: ScenarioTem
               natGatewayKey,
               eipKey: dnatEipKey,
               backendHostKey: mapping.targetHostId,
+              backendPrivateIp: nodes.find((host): host is EcsNode => host.id === mapping.targetHostId && host.kind === 'ecs')?.nics?.find((nic) => nic.switchId === node.id)?.privateIp,
+              backendZoneKey: node.zoneKey,
               externalPort: mapping.externalPort,
               internalPort: mapping.internalPort,
               protocol: mapping.protocol,
@@ -585,14 +585,6 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         throw new Error(`交换机 CIDR 不能重叠：${switches[index]!.id} 与 ${switches[comparisonIndex]!.id}`);
       }
     }
-  }
-
-  const entryResolution = resolveUniqueDnatEntryHost(graph.nodes);
-  if (entryResolution.kind === 'missing') {
-    throw new Error('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
-  }
-  if (entryResolution.kind === 'multiple') {
-    throw new Error('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
   }
 
   const dnatExternalPorts = new Map<string, string>();

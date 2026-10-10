@@ -30,7 +30,8 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
   const hostNodes = input.nodes.filter((node): node is Extract<TemplateNode, { kind: 'ecs' }> => node.kind === 'ecs');
   const switchById = new Map(switchNodes.map((node) => [node.id, node]));
   const entryResolution = resolveUniqueDnatEntryHost(input.nodes);
-  const entryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : '';
+  const dnatHostIds = new Set(entryResolution.kind === 'single' ? [entryResolution.targetHostId] : entryResolution.kind === 'multiple' ? entryResolution.targetHostIds : []);
+  const entryHostId = [...dnatHostIds][0] ?? hostNodes[0]?.id ?? '';
   const entryHost = hostNodes.find((node) => node.id === entryHostId);
 
   return {
@@ -40,7 +41,7 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
       name: formatZoneName(node.zoneKey),
       purpose: node.purpose,
       cidr: node.cidr,
-      ...(node.zoneKey === 'dmz' ? { isPublicEntry: true } : {}),
+      isPublicEntry: (node.nat?.dnatMappings?.length ?? 0) > 0,
     })),
     hosts: hostNodes.map((node) => {
       const primaryNic = node.nics?.[0];
@@ -54,7 +55,7 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
         zoneKey: resolvedSwitch?.zoneKey ?? primaryNic?.zoneKey ?? node.zoneKey,
         role: node.role,
         privateIp: primaryNic?.privateIp ?? node.privateIp,
-        exposePublic: node.id === entryHost?.id,
+        exposePublic: dnatHostIds.has(node.id),
         ...(node.dns ? { dns: node.dns } : {}),
       };
     }),
@@ -67,6 +68,6 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
           ]
         : [],
     },
-    executionPolicies: buildExecutionPolicies(input.nodes, entryHost?.id ?? ''),
+    executionPolicies: buildExecutionPolicies(input.nodes, [...dnatHostIds][0] ?? ''),
   };
 }
