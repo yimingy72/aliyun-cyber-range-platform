@@ -1,5 +1,6 @@
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
-import { Injectable } from '@nestjs/common';
+import type { RangeDnsVerification } from '../admin/range-dns-types';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
@@ -1097,6 +1098,24 @@ export class PrismaAdminRepository implements AdminRepository {
 
   async updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord> {
     return this.prisma.rangeInstance.update({ where: { id }, data: this.rangeInstanceUpdateData(input) }) as Promise<RangeInstanceRecord>;
+  }
+
+  async updateRangeInstanceDnsState(id: string, hostKey: string, nativeId: string, expectedClaim: string | null, entry: RangeDnsVerification): Promise<boolean> {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope || 'system' in scope) throw new ForbiddenException('Cloud workspace scope is required');
+    if (scope.isReadOnly) throw new ForbiddenException('Historical cloud workspace is read-only');
+    if (!hostKey || !nativeId || entry.instanceId !== nativeId || !entry.claimId) return false;
+    const changed = await this.prisma.$executeRaw`
+      UPDATE "RangeInstance"
+      SET "resourceSummary" = jsonb_set(
+        "resourceSummary" || jsonb_build_object('dnsVerification', COALESCE("resourceSummary"->'dnsVerification', '{}'::jsonb)),
+        ARRAY['dnsVerification', ${hostKey}]::text[], ${JSON.stringify(entry)}::jsonb, true), "updatedAt" = NOW()
+      WHERE id = ${id} AND "cloudWorkspaceId" = ${scope.cloudWorkspaceId} AND status = 'running'
+        AND "resourceSummary"->'hostIds'->>${hostKey} = ${nativeId}
+        AND ("resourceSummary"->'dnsVerification' IS NULL OR jsonb_typeof("resourceSummary"->'dnsVerification') = 'object')
+        AND ((${expectedClaim}::text IS NULL AND "resourceSummary"#>ARRAY['dnsVerification', ${hostKey}]::text[] IS NULL)
+          OR (${expectedClaim}::text IS NOT NULL AND "resourceSummary"#>>ARRAY['dnsVerification', ${hostKey}, 'claimId']::text[] = ${expectedClaim}))`;
+    return changed === 1;
   }
 
   private rangeInstanceUpdateData(input: UpdateRangeInstanceInput) {
