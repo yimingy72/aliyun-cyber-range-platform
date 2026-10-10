@@ -31,6 +31,7 @@ import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatc
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
   AliyunEcsResourceClient,
+  AliyunResourceRequestError,
   PlatformResourceReconciliationService,
 } from './platform-resource-reconciliation.service';
 import {
@@ -176,11 +177,14 @@ export class ProvisioningWorkerService {
     // The TC3 client already strips credentials and vendor messages from its typed code.
     let code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
       ? error.code : 'UNCLASSIFIED_RECONCILIATION_ERROR';
-    let request: { service?: string; action?: string; httpStatus?: number } = error instanceof TencentCloudRequestError
+    let request: { service?: string; action?: string; httpStatus?: number; regionId?: string } = error instanceof TencentCloudRequestError
       ? { ...(error.service ? { service: error.service } : {}), ...(error.action ? { action: error.action } : {}) } : {};
     const http = space.provider === 'alibaba_cloud' && error instanceof Error
       ? /^Aliyun (DescribeInstances|DescribeDisks|TagResources) request failed with status ([1-5][0-9]{2})$/.exec(error.message) : null;
-    if (http && http[0] === (error as Error).message) {
+    if (space.provider === 'alibaba_cloud' && error instanceof AliyunResourceRequestError) {
+      code = error.code;
+      request = { service: 'ecs', action: error.action, httpStatus: error.httpStatus, ...(error.regionId ? { regionId: error.regionId } : {}) };
+    } else if (http && http[0] === (error as Error).message) {
       code = `ALIYUN_HTTP_${http[2]}`;
       request = { action: http[1], httpStatus: Number(http[2]) };
     } else if (error instanceof Error) {

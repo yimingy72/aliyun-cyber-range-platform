@@ -15,6 +15,24 @@ const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_PAGE_SIZE = 100;
 
+const safeAliyunErrorCodes = new Set(['InvalidAccessKeyId.NotFound', 'InvalidAccessKeyId', 'InvalidAccessKeySecret',
+  'SignatureDoesNotMatch', 'SignatureNonceUsed', 'SignatureExpired', 'Forbidden', 'Forbidden.RAM', 'Forbidden.SubUser',
+  'Forbidden.RiskControl', 'Throttling', 'Throttling.User', 'Throttling.Api', 'InvalidRegionId', 'InvalidRegionId.NotFound',
+  'InvalidAction.NotFound', 'InvalidVersion', 'MissingParameter', 'InvalidParameter', 'InternalError', 'ServiceUnavailable']);
+export class AliyunResourceRequestError extends Error {
+  readonly code: string;
+  readonly action: string;
+  readonly regionId: string | undefined;
+  constructor(action: string, readonly httpStatus: number, regionId: string, body: unknown) {
+    super(`Aliyun resource query failed with status ${httpStatus}`);
+    this.name = 'AliyunResourceRequestError';
+    this.action = ['DescribeInstances', 'DescribeDisks', 'TagResources'].includes(action) ? action : 'EcsRequest';
+    this.regionId = /^(cn|ap|eu|us|me|na|sa)-[a-z0-9-]{1,48}$/.test(regionId) ? regionId : undefined;
+    const code = body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>).Code : null;
+    this.code = typeof code === 'string' && safeAliyunErrorCodes.has(code) ? code : `ALIYUN_HTTP_${httpStatus}`;
+  }
+}
+
 export type AliyunEcsCredentials = {
   provider?: 'alibaba_cloud' | 'tencent_cloud';
   accessKeyId: string;
@@ -189,7 +207,7 @@ export class AliyunEcsResourceClient {
     const response = await fetch(`https://ecs.${input.credentials.regionId}.aliyuncs.com/?${query}`);
 
     if (!response.ok) {
-      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}`);
+      throw new AliyunResourceRequestError(input.action, response.status, input.credentials.regionId, await response.json().catch(() => null));
     }
 
     return (await response.json()) as ResponsePayload;
