@@ -20,9 +20,9 @@
 | 销毁单台 | `single_instance_destroy` | `singleInstanceId` | 操作元数据 | `instances:destroy` |
 | 销毁整批 | `single_instance_batch_destroy` | `batchId` | 操作元数据 | `instances:destroy` |
 | 重试失败任务 | `single_instance_retry` | `singleInstanceId` | 操作元数据 | `instances:control` |
-| 重启 | `single_instance_reboot` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control` |
-| 打开 VNC | `single_instance_open_vnc` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description` | `instances:control`、`instances:credentials:read` |
-| 打包镜像 | `single_instance_pack_image` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control` |
+| 重启 | `single_instance_reboot` | `singleInstanceId` | 操作元数据 | `instances:control` |
+| 打开 VNC | `single_instance_open_vnc` | `singleInstanceId` | — | `instances:read`、`instances:credentials:read` |
+| 打包镜像 | `single_instance_pack_image` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control`、`images:write` |
 | 导出凭据 CSV | `single_instance_batch_export_csv` | `batchId` | `view: active\|history` | `instances:read`、`instances:credentials:read` |
 
 ## 操作规则
@@ -32,7 +32,7 @@
 - 创建前先从 `platform_image_list` 选择可见且启用的 `platformImageAssetId`，再用完全相同的 CPU/内存调用 `single_instance_spec_check`。仅 `exactAvailable: true` 可创建。
 - `expiresAt` 必填，必须是带时区的 ISO-8601 未来时间；不得猜测默认到期时间。`quantity` 为 1–99；省略 `systemDiskSize` 时服务端默认 40 GiB。
 - 当前候选规格仅为 2c2g、2c4g、4c8g、8c16g。规格校验不预留库存，CPU 或内存变化后必须重新校验。
-- 经确认调用 `single_instance_batch_launch` 后，用实例详情或 `provision_job_get` 跟踪终态。
+- 在已有授权内完成平台确认并调用 `single_instance_batch_launch` 后，用实例详情或 `provision_job_get` 跟踪终态。
 - 单实例创建请求失败后，平台会按该实例的 `RangeInstanceId` 云标签查询并回收可能已经落地的 ECS；共享 VPC、交换机和安全组不会被删除。未创建资源或自动回收成功的记录会归档为 `create_failed` 并进入实例历史；自动回收失败则保留为 `destroy_failed`，继续显示在实例列表中，直到完成回收。
 - `retry` 仅处理创建或销毁失败；`reboot` 仅针对运行中的单台实例。销毁前确认单台 `singleInstanceId` 或整批 `batchId`。
 - `single_instance_pack_image` 会创建私有镜像资产；`open_vnc`、访问凭据和 CSV 按敏感输出规则处理。

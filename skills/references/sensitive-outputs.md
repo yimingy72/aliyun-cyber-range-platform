@@ -11,8 +11,8 @@
 - `single_instance_batch_export_csv`
 - 返回或接收默认密码时的 `single_instance_pack_image`、`range_instance_node_pack_image`
 - `admin_user_create` 和 `admin_user_reset_password`
-- `cloud_config_update`
-- `range_template_get`、`range_template_topology_detect_and_save` 和模板写操作不会回显 `customPassword`；`range_instance_get` 也会移除运行凭据。不要把这些字段当作可读取的访问数据。
+- `cloud_config_update`、`cloud_account_bind`、`tencent_cloud_account_save`、`tencent_cloud_region_list`
+- `range_template_get`、`range_template_topology_detect_and_save` 和模板写操作不会回显 `customPassword`；`range_instance_get` 也会移除运行凭据。返回的任何访问串仍须按秘密处理，不因来自只读工具而可传播。不要把这些字段当作可读取的访问数据。
 
 ## 规则
 
