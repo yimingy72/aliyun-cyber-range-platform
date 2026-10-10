@@ -1672,7 +1672,14 @@ export class ProvisioningWorkerService {
     }
 
     if (!payload || payload.Code || typeof payload.RequestId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId)
-      || payload.VpcId !== vpcId || payload.RegionId !== regionId) throw new Error('Cloud VPC destroy verification returned an unexpected resource identity');
+      || payload.VpcId !== vpcId || (payload.RegionId !== undefined && payload.RegionId !== regionId)) {
+      // RegionId is optional in success receipts. The frozen regional endpoint
+      // and signed RegionId request still bind the query to the original region.
+      // Keep malformed receipts failed, exposing only bounded identity fields.
+      const safe = (value: unknown) => value === undefined ? 'missing'
+        : value === '' ? 'empty' : typeof value === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(value) ? value : 'invalid';
+      throw new Error(`Cloud VPC destroy verification returned an unexpected resource identity (expectedVpcId=${safe(vpcId)}, VpcId=${safe(payload?.VpcId)}, RegionId=${safe(payload?.RegionId)}, RequestId=${safe(payload?.RequestId)})`);
+    }
     return true;
   }
 

@@ -56,9 +56,20 @@ it('requires recorded exact inventory and rejects missing-context or malformed I
   await expect(worker.findResidualCloudResources({ ...summary, vpcId: 'invalid' }, account)).rejects.toThrow();
 });
 
-it.each([{ VpcId: 'vpc-other' }, { RegionId: 'cn-shanghai' }, { RequestId: '' }, { RequestId: 'raw\nprivate' }])('rejects conflicting success receipt %j', async extra => {
+it.each([{ VpcId: 'vpc-other' }, { VpcId: undefined }, { VpcId: '' }, { RegionId: 'cn-shanghai' }, { RegionId: null }, { RequestId: '' }, { RequestId: 'raw\nprivate' }])('rejects conflicting success receipt %j', async extra => {
   const { worker } = fixture(() => ({ status: 200, body: { RequestId: 'request-owned', VpcId: summary.vpcId, RegionId: account.defaultRegion, ...extra } }));
   await expect(worker.findResidualCloudResources(summary, account)).rejects.toThrow('unexpected resource identity');
+});
+
+it('accepts a documented exact VPC success receipt without optional RegionId and keeps the VPC residual', async () => {
+  const { worker } = fixture(() => ({ status: 200, body: { RequestId: 'request-owned', VpcId: summary.vpcId } }));
+  await expect(worker.findResidualCloudResources({ ...summary, subnetIds: {} }, account)).resolves.toEqual(['vpc:vpc-owned']);
+});
+
+it('limits malformed success diagnostics to safe identity fields without copying cloud content', async () => {
+  const { worker } = fixture(() => ({ status: 200, body: { RequestId: 'raw\nprivate token', VpcId: '', Message: 'private token', RegionId: 'raw\nprivate' } }));
+  await expect(worker.findResidualCloudResources(summary, account)).rejects.toThrow('VpcId=empty, RegionId=invalid, RequestId=invalid');
+  await expect(worker.findResidualCloudResources(summary, account)).rejects.not.toThrow('private');
 });
 
 it('still reports an existing exact VPC and refuses malformed empty-list evidence for switches', async () => {
