@@ -584,7 +584,8 @@ export class ProvisioningWorkerService {
           const context = await this.resolveRangeAccountContext(current, job);
           await this.captureRangeResources(job, current, { rangeInstanceId: current.id,
             templateModulePath: current.templateModulePathSnapshot ?? '', allocatedCidr: current.allocatedCidr,
-            runtimeConfig: context, requirePersistedState: true, signal }, context);
+            // A cancelled apply must not suppress the inventory of its already allocated resources.
+            runtimeConfig: context, requirePersistedState: true }, context);
         } catch (captureError) {
           this.logger.error(`Range update inventory needs recovery: ${captureError instanceof Error ? captureError.message : 'unknown error'}`);
         }

@@ -218,6 +218,29 @@ describe('range worker durable cost safety', () => {
     expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroy_failed', resourceSummary: { creationAttempted: true, executionContext: binding } });
   });
 
+  it('captures partial update resources after apply cancellation without recreating or destroying the environment', async () => {
+    const f = await fixture('destroy'), controller = new AbortController();
+    const instance = await f.repository.updateRangeInstance(f.instance.id, {status:'running',expiresAt:new Date(Date.now()+900000),resourceSummary:{...f.instance.resourceSummary!,dataDiskIds:{}}});
+    await f.repository.updateProvisionJob(f.job.id,{status:'cancelled'});
+    const snapshot = {draftRevision:1,templateModulePath:'fixture/range',topologyGraph:{nodes:[...(instance.runtimeTopologyGraph!.nodes as any[]),{id:'added',kind:'ecs',privateIp:'10.0.1.20'}],edges:[]},
+      topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[],hosts:[],publicEntry:{}},scenarioTemplateSpec:{metadata:{},topology:{},networkZones:[],hosts:[]},
+      compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]},compiledSpec:{resources:[],topology:{}}};
+    const update = await f.repository.createProvisionJob({rangeInstanceId:instance.id,jobType:'update',triggeredBy:'alice',topologySnapshot:{...snapshot,changeApproval:buildRangeChangeApproval(instance,snapshot)}});
+    await f.repository.updateRangeInstance(instance.id,{lastJobId:update.id});
+    const claimed = await f.repository.claimProvisionJob(update.id,new Date());
+    f.provisioner.inspectResources.mockResolvedValue({...resources,hostIds:{entry:'i-owned',added:'i-added'},systemDiskIds:{entry:'d-owned',added:'d-added'}});
+    const query = f.query.getMockImplementation()!;
+    f.query.mockImplementation(async (input:any) => input.action==='DescribeDisks' && input.parameters.InstanceId==='i-added' ? {RequestId:'added-disk',TotalCount:1,PageNumber:1,PageSize:100,Disks:{Disk:[{DiskId:'d-added',InstanceId:'i-added',Type:'system',DeleteWithInstance:true}]}} : query(input));
+    f.provisioner.create.mockImplementation(async input => {await input.onApplyStart!(); controller.abort(new Error('Controlled apply cancellation')); input.signal!.throwIfAborted(); return output;});
+    await (f.worker as any).processClaimedJob(claimed,undefined,controller.signal);
+    expect(f.provisioner.create).toHaveBeenCalledTimes(1); expect(f.provisioner.destroy).not.toHaveBeenCalled();
+    expect(await f.repository.getProvisionJobById(update.id)).toMatchObject({status:'failed',errorSummary:'Controlled apply cancellation'});
+    expect(await f.repository.getRangeInstanceById(instance.id)).toMatchObject({status:'destroy_failed',resourceSummary:{hostIds:{entry:'i-owned',added:'i-added'},systemDiskIds:{entry:'d-owned',added:'d-added'}}});
+    expect(await f.repository.getProvisionJobById(update.id)).toMatchObject({status:'failed'});
+    const ledger=await f.repository.listBillingLedgerResources({rangeInstanceId:instance.id});
+    expect(ledger).toEqual(expect.arrayContaining([expect.objectContaining({cloudResourceId:'i-added',releasedAt:null}),expect.objectContaining({cloudResourceId:'d-added',releasedAt:null})]));
+  });
+
   it('soft-aborts the running CLI after claim loss and never lets the stale worker clean or overwrite the newer claim', async () => {
     jest.useFakeTimers();
     try {
