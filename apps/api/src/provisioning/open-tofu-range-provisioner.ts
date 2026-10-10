@@ -1371,12 +1371,22 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
       systemDiskSize: 50,
       hostSystemDiskSizes: Object.fromEntries(plan.hostDefinitions.map(host => [host.key, deployedKeys.has(host.key) ? options.priorVariables!.hosts.find((old: any) => old.key === host.key)?.system_disk_size : Math.max(50, imageMetadata[images[host.key]]?.minimumSystemDiskSize ?? 50)])) });
-    const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
+    const oldState = options.priorState ?? await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
     for (const entry of [...rendered.eips,...rendered.nat_gateways]) {
-      const kind = 'nat_key' in entry ? 'tencentcloud_eip' : 'tencentcloud_nat_gateway';
+      const isEip = 'nat_key' in entry;
+      const kind = isEip ? 'tencentcloud_eip' : 'tencentcloud_nat_gateway';
       const prior = oldState?.instances.find(resource => resource.type === kind && resourceInstanceKey(resource.address) === entry.key);
-      const priorIntent = (prior?.attributes.tags as Record<string,string> | undefined)?.CreationIntentId;
-      if (priorIntent) entry.creation_intent_id = priorIntent;
+      if (!prior) continue;
+      const original = options.priorVariables?.[isEip ? 'eips' : 'nat_gateways']?.filter((value: any) => value.key === entry.key);
+      const priorIntent = original?.[0]?.creation_intent_id;
+      const recordedId = input.knownResourceSummary?.[isEip ? 'eipAllocationIds' : 'natGatewayIds']?.[entry.key];
+      if (original?.length !== 1 || typeof priorIntent !== 'string' || !/^[a-f0-9]{32}$/.test(priorIntent)
+        || prior.module !== 'module.range' || prior.address !== `module.range.${kind}.${isEip ? 'range' : 'shared'}[${JSON.stringify(entry.key)}]`
+        || prior.attributes.id !== recordedId || (prior.attributes.tags as Record<string,string> | undefined)?.CreationIntentId !== priorIntent
+        || isEip && prior.attributes.client_token !== priorIntent
+        || prior.attributes.name !== `${options.priorVariables!.resource_name_prefix}-${priorIntent.slice(0,16)}`)
+        throw new Error('Existing Tencent NAT or EIP creation intent conflicts with frozen variables, state or platform inventory; cloud changes were not submitted');
+      entry.creation_intent_id = priorIntent;
     }
     return rendered;
 

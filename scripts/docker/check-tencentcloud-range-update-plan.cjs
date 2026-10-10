@@ -10,9 +10,14 @@ assert.deepEqual(nats[0].change.replace_paths ?? [], []);
 assert.equal(nats[0].change.before.id, nats[0].change.after.id);
 assert.equal(nats[0].change.after.subnet_id, '');
 assert.equal(nats[0].change.after.zone, 'ap-shanghai-3');
+assert.equal(nats[0].change.before.name, nats[0].change.after.name, 'NAT creation-intent name must stay frozen');
 const entry = plan.resource_changes.find(row => row.type === 'tencentcloud_dnat');
 assert.equal(entry?.change.after.elastic_port, '18081');
 for (const row of plan.resource_changes.filter(row => ['tencentcloud_instance', 'tencentcloud_eip', 'tencentcloud_nat_gateway'].includes(row.type))) {
   assert(!row.change.actions.some(action => ['create', 'delete'].includes(action)), `${row.type} must not be recreated by a DNAT port change`);
+  if (row.type === 'tencentcloud_eip') {
+    assert.equal(row.change.before.client_token, row.change.after.client_token, 'Existing EIP allocation intent must remain frozen');
+    assert.equal(row.change.before.name, row.change.after.name, 'Existing EIP name must remain frozen');
+  }
 }
 console.log('Tencent port-only update plan verified: existing NAT, EIPs and CVM retained.');
