@@ -10,6 +10,8 @@ import { imageRpc, cloudItems, cloudTags, cloudTotal, cloudPage } from './aliyun
 import { describeTencentImages, describeTencentSnapshot, tagTencentImageResources, deleteTencentImage, deleteTencentSnapshot, tencentImageRequest, type TencentSnapshot } from './tencent-image-rpc';
 import { describeTencentResourceInventory, describeTencentInstances, assertTencentOwnedInstance } from './tencent-cloud-resources';
 import { randomUUID } from 'node:crypto';
+import { TencentCloudRequestError } from './tencent-cloud-client';
+import { PackedImageCloudError, safePackedCloudCode } from './packed-image-diagnostic';
 
 type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; ImageName?: string; Status: string; Progress?: string; Tags?: unknown; DiskDeviceMappings?: { DiskDeviceMapping?: Array<{ SnapshotId?: string }> } };
 type Snapshot = { SnapshotId: string; SourceDiskId?: string; SourceSnapshotId?: string; RegionId?: string; CreationTime?: string; Usage?: string; Tags?: unknown };
@@ -62,15 +64,24 @@ export class PackedImagesService {
     if (!await this.repository.renewPackedImageArtifactClaim(artifact.id, artifact.submissionToken, new Date(Date.now() + 300_000))) throw new ConflictException('打包提交租约失效。');
     const fresh = await this.repository.getPackedImageArtifact(artifact.id);
     if (!fresh || fresh.status !== 'pending' || fresh.imageId) throw new ConflictException('原打包已提交或结果未知，禁止再次创建。');
-    const disks = await describeTencentResourceInventory({ ...context, accountUidResolved: true, cloudAccountContextId: context.id,
-      defaultRegion: context.regionId, defaultZoneId: context.zoneId }, 'disk', { instanceId: artifact.sourceInstanceId });
-    if (disks.length !== artifact.sourceDiskIds.length || disks.some(disk => !artifact.sourceDiskIds.includes(disk.id) || disk.shared)) throw new ConflictException('打包提交前源盘发生变化。');
-    await this.updateClaimed(artifact.id, artifact.submissionToken, { status: 'creating' });
-    return tencentImageRequest<{ ImageId?: string }>(context, 'cvm', 'CreateImage', { InstanceId: artifact.sourceInstanceId,
-      ImageName: input.name, ...(input.description ? { ImageDescription: input.description } : {}), ForcePoweroff: false,
-      DataDiskIds: disks.filter(disk => disk.diskUsage === 'DATA_DISK').map(disk => disk.id),
-      TagSpecification: [{ ResourceType: 'image', Tags: Object.entries({ ...this.tags(artifact), CloudProvider: 'tencent_cloud',
-        CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).map(([Key, Value]) => ({ Key, Value })) }] });
+    let phase: 'source_disk_inventory' | 'create_image' = 'source_disk_inventory';
+    try {
+      const disks = await describeTencentResourceInventory({ ...context, accountUidResolved: true, cloudAccountContextId: context.id,
+        defaultRegion: context.regionId, defaultZoneId: context.zoneId }, 'disk', { instanceId: artifact.sourceInstanceId });
+      if (disks.length !== artifact.sourceDiskIds.length || disks.some(disk => !artifact.sourceDiskIds.includes(disk.id) || disk.shared)) throw new ConflictException('打包提交前源盘发生变化。');
+      await this.updateClaimed(artifact.id, artifact.submissionToken, { status: 'creating' });
+      phase = 'create_image';
+      // CreateImage documents this field as a string, unlike the instance power-control APIs.
+      // https://cloud.tencent.com/document/api/213/16726
+      return await tencentImageRequest<{ ImageId?: string }>(context, 'cvm', 'CreateImage', { InstanceId: artifact.sourceInstanceId,
+        ImageName: input.name, ...(input.description ? { ImageDescription: input.description } : {}), ForcePoweroff: 'false',
+        DataDiskIds: disks.filter(disk => disk.diskUsage === 'DATA_DISK').map(disk => disk.id),
+        TagSpecification: [{ ResourceType: 'image', Tags: Object.entries({ ...this.tags(artifact), CloudProvider: 'tencent_cloud',
+          CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).map(([Key, Value]) => ({ Key, Value })) }] });
+    } catch (error) {
+      if (error instanceof TencentCloudRequestError) throw new PackedImageCloudError(phase, safePackedCloudCode(error, [context.accessKeyId, context.accessKeySecret]));
+      throw error;
+    }
   }
 
   endSubmission(id: string, token: string) { return this.repository.releasePackedImageArtifactClaim(id, token); }

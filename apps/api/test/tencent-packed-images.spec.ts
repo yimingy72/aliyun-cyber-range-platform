@@ -1,4 +1,5 @@
 import { PackedImagesService } from '../src/admin/packed-images.service';
+import { TencentCloudRequestError } from '../src/admin/tencent-cloud-client';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { requestTencentCloud } from '../src/admin/tencent-cloud-client';
 import type { CloudAccountContextCredentials } from '../src/admin/cloud-account-contexts.service';
@@ -21,13 +22,21 @@ describe('Tencent packing submission fences', () => {
   }
   it('submits all data disks with atomic tags and no implicit power-off', async () => {
     const f = await fixture(); await f.service.submitTencentImage(f.artifact, context, { name: 'fixture' });
-    expect(rpc.mock.calls.find(([call]) => call.action === 'CreateImage')![0].parameters).toMatchObject({ InstanceId: 'ins-owned', DataDiskIds: ['disk-data'], ForcePoweroff: false,
+    expect(rpc.mock.calls.find(([call]) => call.action === 'CreateImage')![0].parameters).toMatchObject({ InstanceId: 'ins-owned', DataDiskIds: ['disk-data'], ForcePoweroff: 'false',
       TagSpecification: [{ ResourceType: 'image', Tags: expect.arrayContaining([{ Key: 'PlatformPackedImageArtifactId', Value: f.artifact.id }, { Key: 'CloudAccountContextId', Value: context.id }]) }] });
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('禁止再次');
   });
   it('keeps unknown submission evidence and never issues a second CreateImage', async () => {
     const f = await fixture(); rpc.mockImplementation(async call => call.action === 'DescribeDisks' ? response('DiskSet', [{ DiskId: 'disk-system', DiskUsage: 'SYSTEM_DISK', InstanceId: 'ins-owned', Tags: [] }, { DiskId: 'disk-data', DiskUsage: 'DATA_DISK', InstanceId: 'ins-owned', Tags: [] }]) : Promise.reject(new Error('unknown-submit')));
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('unknown-submit');
+    expect((await f.repository.getPackedImageArtifact(f.artifact.id))?.status).toBe('creating');
+    await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('禁止再次');
+    expect(rpc.mock.calls.filter(([call]) => call.action === 'CreateImage')).toHaveLength(1);
+  });
+  it('preserves an official safe rejection code and CreateImage phase without retrying or marking unknown creation absent', async () => {
+    const f = await fixture(); const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation(async call => call.action === 'CreateImage' ? Promise.reject(new TencentCloudRequestError('InvalidParameterValue')) : original(call));
+    await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toMatchObject({ phase: 'create_image', cloudErrorCode: 'InvalidParameterValue' });
     expect((await f.repository.getPackedImageArtifact(f.artifact.id))?.status).toBe('creating');
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('禁止再次');
     expect(rpc.mock.calls.filter(([call]) => call.action === 'CreateImage')).toHaveLength(1);

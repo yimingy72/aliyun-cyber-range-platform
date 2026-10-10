@@ -17,6 +17,7 @@ import { describeTencentInstances, assertTencentOwnedInstance } from './tencent-
 import { requestTencentCloud } from './tencent-cloud-client';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
+import { encodePackedImageDiagnostic, packedImageDiagnostic, type PackedImagePhase } from './packed-image-diagnostic';
 
 const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
@@ -168,6 +169,7 @@ export class RangeInstanceNodeActionsService {
     const artifact = await this.packedImages.begin({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
       id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
     });
+    let packPhase: PackedImagePhase = 'create_image';
     try {
       const createImageResponse = accountContext.provider === 'tencent_cloud'
         ? await this.packedImages.submitTencentImage(artifact, { id: accountContext.cloudAccountContextId, provider: 'tencent_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready' }, { name: displayName, description })
@@ -198,13 +200,16 @@ export class RangeInstanceNodeActionsService {
           },
         });
 
+      packPhase = 'create_response';
       const imageId = createImageResponse.ImageId?.trim();
 
       if (!imageId) {
         throw new Error('Aliyun CreateImage response is missing ImageId');
       }
 
+      packPhase = 'persist_image';
       await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { imageId, status: 'creating' });
+      packPhase = 'persist_asset';
       const { platformImageAsset, snapshot } = await this.adminRepository.withPackedImageArtifactClaim(artifact.id, artifact.submissionToken, async claimed => {
         const syncedAt = new Date();
         await claimed.upsertImageSnapshots({
@@ -262,9 +267,10 @@ export class RangeInstanceNodeActionsService {
         imageReady: snapshot.isAvailable,
         platformImageAsset,
       };
-    } catch {
-      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: '打包提交结果未完整确认，来源材料已保留，worker 会按唯一标签核验。' });
-      throw new BadGatewayException({ message: '打包结果未完整确认，请按来源记录核验；不要重复提交或删除恢复材料。', packedImageArtifactId: artifact.id });
+    } catch (error) {
+      const diagnostic = packedImageDiagnostic(error, packPhase, [accountContext.accessKeyId, accountContext.accessKeySecret]);
+      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: encodePackedImageDiagnostic(diagnostic) });
+      throw new BadGatewayException({ message: '打包结果未完整确认，请按来源记录核验；不要重复提交或删除恢复材料。', packedImageArtifactId: artifact.id, ...diagnostic });
     } finally {
       await this.packedImages.endSubmission(artifact.id, artifact.submissionToken);
     }
