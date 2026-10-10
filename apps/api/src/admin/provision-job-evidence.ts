@@ -1,4 +1,5 @@
 import type { BillingLedgerResourceRecord, ProvisionJobRecord, ProvisionJobStepLogRecord } from './admin.repository';
+import { isIPv4 } from 'node:net';
 
 const descriptions: Record<string, string> = {
   prepare: 'Prepare the recorded operation', tofu_init: 'Initialize OpenTofu', tofu_apply: 'Apply the recorded topology',
@@ -6,12 +7,24 @@ const descriptions: Record<string, string> = {
   persist_access_entry: 'Persist cloud resources and billing sources', range_resource_inventory: 'Persist resource identities',
   cleanup_failed_create_resources: 'Clean up partial creation',
 };
-const identity = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/.test(value);
+const identity = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/.test(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const maps = ['routeTableIds', 'subnetIds', 'networkAclIds', 'securityGroupIds', 'hostIds', 'systemDiskIds', 'dataDiskIds',
   'unverifiedDiskIds', 'diskInventoryHostIds', 'secondaryNetworkInterfaceIds', 'natGatewayIds', 'snatEntryIds', 'dnatEntryIds', 'eipAllocationIds'];
+const resourceKey = (value: string) => identity(value) || value.length <= 1024
+  && /^(?:observed:)?module\.range\.(?:alicloud|tencentcloud)_[a-z_]+\.[A-Za-z0-9_]+(?:\[(?:"[A-Za-z0-9][A-Za-z0-9:_-]{0,255}"|\d+)\])?(?:#[1-9]\d*)?$/.test(value);
 
-function resourceIds(value: unknown, depth = 0): Record<string, unknown> {
+function resourceIdentity(value: unknown, field: string, provider: unknown) {
+  if (identity(value)) return true;
+  if (provider !== 'tencent_cloud' || typeof value !== 'string' || value.length > 256) return false;
+  // Tencent NAT relation IDs are provider-generated composites, not plain cloud IDs.
+  if (field === 'snatEntryIds') return /^nat-[a-z0-9]+#subnet-[a-z0-9]+$/.test(value);
+  if (field !== 'dnatEntryIds') return false;
+  const match = value.match(/^(TCP|UDP):\/\/vpc-[a-z0-9]+:nat-[a-z0-9]+@([0-9.]+):([1-9]\d{0,4})$/);
+  return Boolean(match && isIPv4(match[2]) && Number(match[3]) <= 65535);
+}
+
+function resourceIds(value: unknown, provider: unknown, depth = 0): Record<string, unknown> {
   if (!object(value) || depth > 1) throw new Error('Invalid inventory');
   const result: Record<string, unknown> = {};
   for (const field of ['vpcId', 'eipAllocationId']) if (value[field] != null) {
@@ -21,10 +34,10 @@ function resourceIds(value: unknown, depth = 0): Record<string, unknown> {
   for (const field of maps) if (value[field] != null) {
     if (!object(value[field]) || Object.keys(value[field]).length > 1000) throw new Error('Invalid resource map');
     const entries = Object.entries(value[field]);
-    if (entries.some(([key, id]) => !identity(key) || !identity(id))) throw new Error('Invalid resource identity');
+    if (entries.some(([key, id]) => !resourceKey(key) || !resourceIdentity(id, field, provider))) throw new Error('Invalid resource identity');
     result[field] = Object.fromEntries(entries);
   }
-  if (value.retiredResources != null) result.retiredResources = resourceIds(value.retiredResources, depth + 1);
+  if (value.retiredResources != null) result.retiredResources = resourceIds(value.retiredResources, provider, depth + 1);
   return result;
 }
 
@@ -36,7 +49,7 @@ function inventory(step: ProvisionJobStepLogRecord, rangeInstanceId: string) {
   if (!['alibaba_cloud', 'tencent_cloud'].includes(String(context.provider))
     || ['cloudAccountContextId', 'cloudAccountUid', 'regionId', 'zoneId'].some(key => !identity(context[key]))) throw new Error('Invalid frozen context');
   return { recordedAt: step.createdAt, executionContext: Object.fromEntries(['provider', 'cloudAccountContextId', 'cloudAccountUid', 'regionId', 'zoneId'].map(key => [key, context[key]])),
-    resources: resourceIds(value.resources) };
+    resources: resourceIds(value.resources, context.provider) };
 }
 
 // Deliberately project identities and fixed phase descriptions; raw logs and provider output may contain secrets.
