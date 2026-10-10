@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearAdminSession, writeAdminSession } from './admin-auth-storage';
 import { setCloudWorkspaceSelection, workspaceStorageKey } from './cloud-workspace-selection';
-import { completeImageImport, fetchCloudWorkspaces, fetchPlatformImages, saveCloudAccount, switchCloudWorkspace } from './admin-api';
+import { completeImageImport, deleteCloudAccount, fetchCloudWorkspaces, fetchPlatformImages, saveCloudAccount, switchCloudWorkspace } from './admin-api';
 
 describe('workspace-scoped Web API and local drafts', () => {
   beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); clearAdminSession(); writeAdminSession({ token: 'token', profile: { id: 'root', username: 'admin', role: 'admin' } }); setCloudWorkspaceSelection('root', 'ali'); });
@@ -26,5 +26,13 @@ describe('workspace-scoped Web API and local drafts', () => {
     expect(JSON.parse(request.mock.calls[0]![1].body).cloudWorkspaceId).toBe('ali');
     await switchCloudWorkspace('https://fixture.invalid', 'token', 'ali');
     expect(request.mock.calls[1]![0]).toBe('https://fixture.invalid/admin/cloud-workspaces/ali/switch');
+  });
+  it('deletes the explicit account binding without changing the current request scope', async () => {
+    const request = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ id: 'other/account', retainedData: true })));
+    vi.stubGlobal('fetch', request);
+    await deleteCloudAccount('https://fixture.invalid', 'token', 'other/account');
+    expect(request.mock.calls[0]![0]).toBe('https://fixture.invalid/admin/cloud-workspaces/other%2Faccount');
+    expect(request.mock.calls[0]![1].method).toBe('DELETE');
+    expect(request.mock.calls[0]![1].headers['x-cloud-workspace-id']).toBe('ali');
   });
 });

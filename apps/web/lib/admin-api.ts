@@ -42,7 +42,7 @@ import type {
   UpdateAdminUserStatusInput,
 } from './admin-types';
 import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from './admin-types';
-import type { CloudWorkspaceView, SaveCloudAccountInput } from './admin-types';
+import type { CloudWorkspaceView, DeleteCloudAccountResult, SaveCloudAccountInput } from './admin-types';
 import { readCloudWorkspaceSelection } from './cloud-workspace-selection';
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
@@ -83,6 +83,12 @@ export async function switchCloudWorkspace(apiBaseUrl: string, token: string, wo
 
 export async function saveCloudAccount(apiBaseUrl: string, token: string, input: SaveCloudAccountInput) {
   return readJson<CloudAccountContext>(await fetch(`${apiBaseUrl}/admin/cloud-contexts`, { method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify(input) }));
+}
+
+export async function deleteCloudAccount(apiBaseUrl: string, token: string, workspaceId: string) {
+  return readJson<DeleteCloudAccountResult>(await fetch(`${apiBaseUrl}/admin/cloud-workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: 'DELETE', headers: createAdminHeaders(token),
+  }));
 }
 
 async function readJson<T>(response: Response): Promise<T> {

@@ -634,6 +634,15 @@ export type SaveCloudAccountInput = {
   displayName?: string;
 };
 
+export type DeleteCloudAccountResult = {
+  id: string;
+  provider: CloudWorkspaceView['provider'];
+  accountUid: string;
+  displayName: string;
+  deletedAt: string;
+  retainedData: true;
+};
+
 export type ImageImportJob = {
   id: string;
   cloudAccountContextId: string;
