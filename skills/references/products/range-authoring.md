@@ -13,7 +13,7 @@
 | 查看模板列表 | `range_template_list` | — | `view: platform\|mine`，默认 `platform` | `templates:read` |
 | 查看模板详情 | `range_template_get` | `templateId` | — | `templates:read` |
 | 新建模板 | `range_template_create` | `name`、完整 `topologyGraph` | `description`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
-| 编辑信息 | `range_template_update` | `templateId`、`updates` | 更新对象内须提供名称或描述中的至少一项；操作元数据 | `templates:write` |
+| 编辑信息 | `range_template_update` | `templateId`、`expectedRevision`、`updates` | 更新对象内须提供名称或描述中的至少一项；操作元数据 | `templates:write` |
 | 复制模板 | `range_template_clone` | `templateId` | 操作元数据 | `templates:write` |
 | 检测并保存 | `range_template_topology_detect_and_save` | `templateId`、`expectedRevision`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `templates:write` |
 | 发布到平台 | `range_template_publish` | `templateId` | 操作元数据 | `templates:publish` |
@@ -206,7 +206,8 @@ connections:
 ## 模板操作
 
 1. 首次创建：由转换流程 输出完整图，调用 `range_template_create`。
-2. 编辑拓扑：从最新模板详情与完整修改结果生成图，调用 `range_template_topology_detect_and_save`，将读取的 `revision` 传为 `expectedRevision`（至少 1）。版本冲突后重新读取并整理变更，不把旧图直接配上新版本号覆盖。
+2. 修改名称或描述也必须传入读取的 `revision` 为 `expectedRevision`；版本冲突先刷新，不覆盖其它编辑。
+3. 编辑拓扑：从最新模板详情与完整修改结果生成图，调用 `range_template_topology_detect_and_save`，将读取的 `revision` 传为 `expectedRevision`（至少 1）。版本冲突后重新读取并整理变更，不把旧图直接配上新版本号覆盖。
 3. 用户明确要求开放给其他用户时，确认模板 ID 和影响范围后调用 `range_template_publish`。
 4. 用户明确要求让模板停止对其他用户可见时，调用 `range_template_return_to_private`；它不删除模板及已保存拓扑。
 

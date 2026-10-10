@@ -15,6 +15,7 @@ import { CloudAccountContextsService } from './admin/cloud-account-contexts.serv
 import { CloudWorkspacesService } from './admin/cloud-workspaces.service';
 import { CloudWorkspacesController, PlatformSessionController } from './admin/cloud-workspaces.controller';
 import { CloudWorkspaceInterceptor } from './auth/cloud-workspace.interceptor';
+import { McpResponseInterceptor } from './auth/mcp-response.interceptor';
 import { ImageImportsController } from './admin/image-imports.controller';
 import { ImageImportsService } from './admin/image-imports.service';
 import { TencentCosManagedBucketService, TENCENT_COS_BUCKETS } from './admin/tencent-cos-managed-bucket.service';
@@ -109,6 +110,7 @@ function resolveProjectRootDir() {
     CloudAccountContextsService,
     CloudWorkspacesService,
     { provide: APP_INTERCEPTOR, useClass: CloudWorkspaceInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: McpResponseInterceptor },
     ImageImportsService,
     TencentCosManagedBucketService,
     { provide: TENCENT_COS_BUCKETS, useExisting: TencentCosManagedBucketService },

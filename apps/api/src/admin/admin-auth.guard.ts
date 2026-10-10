@@ -6,6 +6,7 @@ import { OidcPrincipalResolver } from './oidc-principal-resolver';
 import type { RequestAuthContext } from '../auth/request-auth-context';
 import type { CloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { CloudWorkspacesService } from './cloud-workspaces.service';
+import { assertDelegatedApiScopes, hasDelegatedScopes, resolveDelegatedScopes } from '../auth/delegated-api-scopes';
 
 type GuardRequest = {
   headers: Record<string, string | undefined>;
@@ -15,6 +16,7 @@ type GuardRequest = {
   adminUser?: SessionUserProfile;
   authContext?: RequestAuthContext;
   cloudWorkspaceScope?: CloudWorkspaceScope;
+  rawHeaders?: string[];
 };
 
 @Injectable()
@@ -34,6 +36,14 @@ export class AdminAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<GuardRequest>();
+    const counts = new Map<string, number>();
+    for (let index = 0; index < (request.rawHeaders?.length ?? 0); index += 2) {
+      const name = request.rawHeaders![index].toLowerCase();
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    if (['authorization', 'x-cloud-workspace-id', 'x-idempotency-key', 'idempotency-key', 'x-confirmation-id', 'x-operation-confirmation-id']
+      .some(name => (counts.get(name) ?? 0) > 1 || request.headers[name] !== undefined && typeof request.headers[name] !== 'string'))
+      throw new UnauthorizedException('Ambiguous authentication or operation headers');
     const authorizationHeader = request.headers.authorization ?? '';
     const token = this.readBearerToken(authorizationHeader);
 
@@ -82,6 +92,12 @@ export class AdminAuthGuard implements CanActivate {
     }
 
     const path = (request.originalUrl ?? request.url ?? '').split('?')[0];
+    const tokenScopes = (claims as typeof claims & { scopes?: string[] }).scopes;
+    if (request.authContext.source === 'mcp' || hasDelegatedScopes(tokenScopes)) {
+      const scopes = resolveDelegatedScopes(user.role, tokenScopes);
+      assertDelegatedApiScopes(request.method ?? 'GET', path, scopes);
+      request.authContext.delegatedScopes = [...scopes];
+    }
     if (this.cloudWorkspaces && path !== '/admin/session' && (process.env.NODE_ENV !== 'test' || process.env.CLOUD_WORKSPACE_ENFORCE_TEST_SCOPE === '1')) {
       const metadataRoute = path === '/admin/cloud-workspaces' || /^\/admin\/cloud-workspaces\/[^/]+\/switch$/.test(path);
       request.cloudWorkspaceScope = await this.cloudWorkspaces.resolve(profile, metadataRoute ? undefined : request.headers['x-cloud-workspace-id']);
@@ -110,8 +126,8 @@ export class AdminAuthGuard implements CanActivate {
   }
 
   private isAuthenticatedUserRoute(pathname: string, method: string) {
-    if (pathname === '/admin/session' || pathname.startsWith('/admin/cloud-workspaces')) return true;
-    if (AdminAuthGuard.AUTHENTICATED_USER_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    if (pathname === '/admin/session' || pathname === '/admin/cloud-workspaces' || pathname.startsWith('/admin/cloud-workspaces/')) return true;
+    if (AdminAuthGuard.AUTHENTICATED_USER_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) {
       return true;
     }
 
@@ -123,7 +139,7 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
-    if (pathname.startsWith('/admin/image-imports')) {
+    if (pathname === '/admin/image-imports' || pathname.startsWith('/admin/image-imports/')) {
       return true;
     }
     if (/^\/admin\/image-catalog\/custom\/[^/]+$/.test(pathname) && method === 'DELETE') return true;
@@ -152,13 +168,7 @@ export class AdminAuthGuard implements CanActivate {
   }
 
   private readBearerToken(authorizationHeader: string) {
-    const [scheme, token] = authorizationHeader.split(' ');
-
-    if (scheme !== 'Bearer' || !token) {
-      return null;
-    }
-
-    return token;
+    return /^Bearer\s+([^\s,]+)$/i.exec(authorizationHeader)?.[1] ?? null;
   }
 
   private looksLikeJwt(token: string) {
