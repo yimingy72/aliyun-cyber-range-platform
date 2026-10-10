@@ -1,3 +1,4 @@
+import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootstrap-policy';
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
@@ -657,6 +658,7 @@ export class ProvisioningWorkerService {
     if (!(await this.ownsProvisionJobClaim(input.job))) {
       return;
     }
+    assertExistingHostBootstrapUnchanged(input.instance, topologySnapshot.topologyGraph);
     if (topologySnapshot.operation) await this.assertRangeSnapshotImages(input.instance, topologySnapshot);
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
     const beforeResources = beforeUpdate?.resourceSummary

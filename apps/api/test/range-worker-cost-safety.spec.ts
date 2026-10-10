@@ -141,6 +141,19 @@ describe('range worker durable cost safety', () => {
     expect(await f.repository.listBillingLedgerResources()).toEqual(expect.arrayContaining([expect.objectContaining({cloudResourceId:'d-image-data',cloudResourceType:'disk',ownerUserId:'alice',releasedAt:null})]));
   });
 
+  it('rejects queued DNS/bootstrap changes before an OpenTofu update can replace a running host', async () => {
+    const f = await fixture('destroy');
+    const host = { id: 'entry', kind: 'ecs', initScript: '', nics: [{id: 'nic', privateIp: '10.0.1.10'}], dns: {servers: ['10.0.1.1'], nicIds: ['nic']} };
+    const instance = await f.repository.updateRangeInstance(f.instance.id, { status: 'running', runtimeTopologyGraph: {nodes: [host]} });
+    const claimed = await f.repository.claimProvisionJob(f.job.id,new Date());
+    const snapshot = { draftRevision:1, templateModulePath:'fixture/range', topologyGraph:{nodes:[{...host,dns:{servers:['10.0.1.2'],nicIds:['nic']}}],edges:[]},
+      topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[],hosts:[],publicEntry:{}}, scenarioTemplateSpec:{metadata:{},topology:{},networkZones:[],hosts:[]},
+      compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]}, compiledSpec:{resources:[],topology:{}} };
+    await expect((f.worker as any).processRangeInstanceUpdateJob({ instance, job:{...claimed,topologySnapshot:snapshot}, runtimeConfig:account,accountContext:account,reportStep:async()=>{},onApplyStart:()=>{} })).rejects.toThrow('不能');
+    expect(f.provisioner.create).not.toHaveBeenCalled();
+    expect(f.provisioner.destroy).not.toHaveBeenCalled();
+  });
+
   it('checks external disk deletion safety before an update can remove a topology node', async () => {
     const f = await fixture('destroy'); const base = f.query.getMockImplementation()!;
     f.query.mockImplementation(async (input:any) => {
