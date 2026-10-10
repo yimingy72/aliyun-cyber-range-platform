@@ -652,8 +652,8 @@ export type RangeInstanceChangePreview = {
   expiresAt: string;
   sourceDigest: string;
   addedNetworks?: Array<{ nodeId: string; name: string; zoneKey: string; cidr: string }>;
-  addedHosts: Array<{ id: string; nodeId: string; name: string; expiresAt: string }>;
-  deletedHosts: Array<{ id: string; nodeId: string; name: string; instanceId: string; systemDiskId?: string; dataDiskIds: string[]; networkInterfaceIds: string[]; diskIds: string[] }>;
+  addedHosts: Array<{ id: string; nodeId: string; name: string; expiresAt: string | null }>;
+  deletedHosts: Array<{ id: string; nodeId: string; name: string; instanceId: string | null; systemDiskId: string | null; dataDiskIds: string[]; networkInterfaceIds: string[]; diskIds: string[] }>;
   ruleChanges: Array<{ nodeId: string; name: string; nodeKind: string }>;
   resourceChanges: Array<{ resourceType: string; key: string; action: 'create' | 'delete'; resourceId?: string }>;
   allowDnatRemoval: boolean;
