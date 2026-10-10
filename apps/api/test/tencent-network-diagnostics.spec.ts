@@ -33,7 +33,9 @@ function fixture() {
       case 'DescribeInstances': return list('InstanceSet', [{ InstanceId: 'ins-owned', InstanceState: 'RUNNING', InstanceType: 'S5.MEDIUM4', Placement: { Zone: account.defaultZoneId }, PrivateIpAddresses: ['10.0.1.10'], SecurityGroupIds: ['sg-entry'], VirtualPrivateCloud: { VpcId: 'vpc-owned', SubnetId: 'subnet-entry' }, Tags: tagSet({ PlatformHostKey: 'entry', PlatformResourceType: 'ecs' }) }]);
       case 'DescribeNetworkInterfaces': return list('NetworkInterfaceSet', enis);
       case 'DescribeSubnets': return list('SubnetSet', subnets);
-      case 'DescribeRouteTables': return list('RouteTableSet', [{ RouteTableId: 'rtb-owned', VpcId: 'vpc-owned', Main: false, AssociationSet: subnets.map(row => ({ SubnetId: row.SubnetId, RouteTableId: 'rtb-owned' })), TagSet: tagSet() }]);
+      case 'DescribeRouteTables': return list('RouteTableSet', [{ RouteTableId: 'rtb-owned', VpcId: 'vpc-owned', Main: false,
+        RouteSet: [{RouteTableId:'rtb-owned',RouteItemId:'rti-default',DestinationCidrBlock:'0.0.0.0/0',GatewayType:'NAT',GatewayId:'nat-owned',Enabled:true}],
+        AssociationSet: subnets.map(row => ({ SubnetId: row.SubnetId, RouteTableId: 'rtb-owned' })), TagSet: tagSet() }]);
       case 'DescribeRoutes': return list('RouteSet', [{ RouteTableId: 'rtb-owned', RouteItemId: 'rti-default', DestinationCidrBlock: '0.0.0.0/0', GatewayType: 'NAT', GatewayId: 'nat-owned', Enabled: true }]);
       case 'DescribeSecurityGroups': return list('SecurityGroupSet', ['sg-entry','sg-inner'].map(SecurityGroupId => ({ SecurityGroupId, TagSet: tagSet() })));
       case 'DescribeSecurityGroupPolicies': return { SecurityGroupPolicySet: { Version: '3', Ingress: [{ PolicyIndex: 0, Protocol: 'TCP', Port: '22', CidrBlock: '0.0.0.0/0', Action: 'ACCEPT' }], Egress: [{ PolicyIndex: 0, Protocol: 'ALL', Port: 'all', CidrBlock: '0.0.0.0/0', Action: 'DROP' }] } };
@@ -191,6 +193,29 @@ it('does not leak malformed cloud text in its field diagnostics',async()=>{
   const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType='PRIVATE-DO-NOT-EMIT\n';return value;});
   try { await s.service.get(range as never,user);throw new Error('expected failure'); }
   catch(error){expect(String(error)).toContain('DescribeRoutes.GatewayType: malformed field;present=true;type=string');expect(String(error)).not.toContain('PRIVATE-DO-NOT-EMIT');}
+});
+it('uses a uniquely matching independent owned-table string enum for numeric GatewayType without guessing a global map',async()=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType=913;return value;});
+  const result=await s.service.get(range as never,user);
+  expect(result.routeTables[0].routeEntries[0].nextHops[0]).toMatchObject({nextHopType:'NAT',providerNumericType:913,nextHopId:'nat-owned'});
+  expect(s.calls.filter(call=>call.action==='DescribeRouteTables')[0].body.RouteTableIds).toEqual(['rtb-owned']);
+});
+it.each(['RouteItemId','RouteTableId','DestinationCidrBlock','DestinationIpv6CidrBlock','GatewayId','Enabled','duplicate','missing','both-numeric','unknown-enum'])('rejects numeric gateway when independent native proof differs: %s',async fault=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType=913;return value;});
+  s.changes.set('DescribeRouteTables',value=>{
+    const table=value.RouteTableSet[0];const row=table.RouteSet[0];
+    if(fault==='duplicate')table.RouteSet.push({...row});
+    else if(fault==='missing')delete table.RouteSet;
+    else if(fault==='both-numeric')row.GatewayType=913;
+    else if(fault==='unknown-enum')row.GatewayType='UNKNOWN_ENUM';
+    else row[fault]=fault==='Enabled'?false:fault==='DestinationCidrBlock'?'10.0.99.0/24':fault==='DestinationIpv6CidrBlock'?'fd00::/64':'foreign';
+    return value;
+  });
+  await expect(s.service.get(range as never,user)).rejects.toThrow(/GatewayType|DescribeRouteTables.RouteSet/);
+});
+it.each([-1,1.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,'UNKNOWN_ENUM'])('rejects unsupported gateway input %s without a text cast',async invalid=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType=invalid;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow('DescribeRoutes.GatewayType');
 });
 it.each(['duplicate','changing','empty','missing'])('rejects %s route pages without returning a successful partial diagnosis', async fault => {
   const s = fixture(); s.changes.set('DescribeRoutes', (value, body) => {

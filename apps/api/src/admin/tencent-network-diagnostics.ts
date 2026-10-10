@@ -17,7 +17,22 @@ type FrozenCheck = 'frozen_scope' | 'subnet_zone' | 'eni_vpc' | 'attachment_owne
 function flags(value: unknown) { return `present=${value !== undefined && value !== null && value !== ''};type=${Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value}`; }
 function numeric(value: unknown, phase: string, check: FrozenCheck = 'frozen_scope'): number { if (!Number.isSafeInteger(value) || Number(value) < 0) fail(phase, `malformed numeric field;check=${check};${flags(value)};integer=false`); return Number(value); }
 // Normalize both representations before pagination deduplication and projection.
-function routeIdentity(value: unknown): string { return typeof value === 'number' ? String(numeric(value, 'DescribeRoutes.RouteItemId')) : text(value, 'DescribeRoutes.RouteItemId'); }
+function routeIdentity(value: unknown, phase = 'DescribeRoutes.RouteItemId'): string { return typeof value === 'number' ? String(numeric(value, phase)) : text(value, phase); }
+const ROUTE_GATEWAY_TYPES = new Set(['LOCAL','CVM','VPN','DIRECTCONNECT','PEERCONNECTION','HAVIP','NAT','NORMAL_CVM','EIP','CCN','LOCAL_GATEWAY','INTRANAT','USER_CCN','GWLB_ENDPOINT','SSLVPN','PVGW']);
+function gatewayType(value: unknown, phase: string): string { const type = text(value,phase); if (!ROUTE_GATEWAY_TYPES.has(type)) fail(phase,'unsupported gateway enum'); return type; }
+function verifiedGatewayType(route: Row, table: Row): string {
+  if (typeof route.GatewayType !== 'number') return gatewayType(route.GatewayType,'DescribeRoutes.GatewayType');
+  numeric(route.GatewayType,'DescribeRoutes.GatewayType');
+  // No published numeric enum exists: require the other owned-table API to identify this exact route.
+  const matching = list(table.RouteSet,'DescribeRouteTables.RouteSet').filter(candidate =>
+    candidate.RouteTableId === table.RouteTableId && candidate.RouteTableId === route.RouteTableId
+    && routeIdentity(candidate.RouteItemId,'DescribeRouteTables.RouteSet.RouteItemId') === routeIdentity(route.RouteItemId)
+    && cidr(candidate.DestinationCidrBlock,'DescribeRouteTables.RouteSet.DestinationCidrBlock') === cidr(route.DestinationCidrBlock,'DescribeRoutes.DestinationCidrBlock')
+    && cidr(candidate.DestinationIpv6CidrBlock,'DescribeRouteTables.RouteSet.DestinationIpv6CidrBlock') === cidr(route.DestinationIpv6CidrBlock,'DescribeRoutes.DestinationIpv6CidrBlock')
+    && candidate.GatewayId === route.GatewayId && bool(candidate.Enabled,'DescribeRouteTables.RouteSet.Enabled') === bool(route.Enabled,'DescribeRoutes.Enabled'));
+  if (matching.length !== 1) fail('DescribeRoutes.GatewayType','numeric enum has no unique independently matching owned-table route');
+  return gatewayType(matching[0].GatewayType,'DescribeRouteTables.RouteSet.GatewayType');
+}
 function bool(value: unknown, phase: string): boolean { if (typeof value !== 'boolean') fail(phase, 'missing boolean field'); return value; }
 function same(actual: unknown, expected: unknown, phase: string, check: FrozenCheck = 'frozen_scope') { if (actual !== expected) fail(phase, `frozen scope or attachment mismatch;check=${check};${flags(actual)};matches=false`); }
 function within(id: unknown, expected: string[], phase: string): string { const result = text(id, phase); if (!expected.includes(result)) fail(phase, 'resource outside persisted scope'); return result; }
@@ -139,9 +154,9 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
     exact(associations, subnets.filter(subnet => subnet.RouteTableId === row.RouteTableId).map(subnet => subnet.SubnetId), phase);
     const routes = await pages('DescribeRoutes', 'RouteSet', { Filters: [{ Name: 'route-table-id', Values: [row.RouteTableId] }, { Name: 'vpc-id', Values: [vpcId] }] }, route => routeIdentity(route.RouteItemId));
     routeTables.push({ routeTableId: row.RouteTableId as string, vpcId, type: bool(row.Main, phase) ? 'System' : 'Custom', vswitchIds: associations, routeEntries: routes.map(route => {
-      same(route.RouteTableId, row.RouteTableId, 'DescribeRoutes.RouteTableId'); const enabled = bool(route.Enabled, 'DescribeRoutes.Enabled'), type = text(route.GatewayType, 'DescribeRoutes.GatewayType');
+      same(route.RouteTableId, row.RouteTableId, 'DescribeRoutes.RouteTableId'); const enabled = bool(route.Enabled, 'DescribeRoutes.Enabled'), type = verifiedGatewayType(route,row);
       const gatewayId = typeof route.GatewayId === 'string' && route.GatewayId ? text(route.GatewayId, 'DescribeRoutes.GatewayId') : null;
-      return { routeEntryId: routeIdentity(route.RouteItemId), destinationCidrBlock: cidr(route.DestinationCidrBlock, 'DescribeRoutes.DestinationCidrBlock'), destinationIpv6CidrBlock: cidr(route.DestinationIpv6CidrBlock, 'DescribeRoutes.DestinationIpv6CidrBlock'), status: enabled ? 'Available' : 'Disabled', enabled, nextHops: [{ nextHopType: type, nextHopId: gatewayId, knownTarget: gatewayId !== null && [...natIds, ...hostIds, ...instances.map(host => host.privateIp)].includes(gatewayId) }] };
+      return { routeEntryId: routeIdentity(route.RouteItemId), destinationCidrBlock: cidr(route.DestinationCidrBlock, 'DescribeRoutes.DestinationCidrBlock'), destinationIpv6CidrBlock: cidr(route.DestinationIpv6CidrBlock, 'DescribeRoutes.DestinationIpv6CidrBlock'), status: enabled ? 'Available' : 'Disabled', enabled, nextHops: [{ nextHopType: type, ...(typeof route.GatewayType === 'number' ? {providerNumericType:route.GatewayType} : {}), nextHopId: gatewayId, knownTarget: gatewayId !== null && [...natIds, ...hostIds, ...instances.map(host => host.privateIp)].includes(gatewayId) }] };
     }) });
   }
   const groups = await known('DescribeSecurityGroups', 'SecurityGroupSet', 'SecurityGroupIds', 'SecurityGroupId', sgIds, true);
