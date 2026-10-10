@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { rangePackedImageArtifactSummaries } from './packed-image-diagnostic';
+import { readPackedImageSourceSnapshots } from './packed-image-source-observation';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { assertTencentOwnedInstance, describeTencentInstances } from './tencent-cloud-resources';
 
@@ -112,11 +114,14 @@ export class RangeInstancesService {
       ? { nodeStatuses: Object.fromEntries(networkDiagnostics.instances.map((host) => [host.nodeId, host.status])), nodeBillingTags: null }
       : await this.resolveNodeFacts(hydrated);
     const sourceTemplateRevision = await this.resolveSourceTemplateRevision(hydrated);
+    const packedImageArtifacts = await rangePackedImageArtifactSummaries(instance, this.adminRepository);
+    const packSourceSnapshots = currentUser ? await readPackedImageSourceSnapshots(packedImageArtifacts, this.systemConfigService) : [];
 
     return {
       ...hydrated,
       ...nodeFacts,
       sourceTemplateRevision,
+      packedImageArtifacts, packSourceSnapshots,
       ...(networkDiagnostics ? { networkDiagnostics } : {}),
       runtimeTopologySpec: (await this.adminRepository.listProvisionJobs()).find(job => job.rangeInstanceId === id
         && job.status === 'succeeded' && job.topologySnapshot && job.jobType !== 'destroy')?.topologySnapshot?.topologySpec ?? null,

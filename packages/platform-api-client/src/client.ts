@@ -248,6 +248,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}${query}`);
   }
 
+  validateRangeInstanceNodePackImage(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>) {
+    return this.request<Record<string, unknown>>(`/admin/ranges/${encodeURIComponent(rangeInstanceId)}/nodes/${encodeURIComponent(nodeId)}/pack-image-validation`, {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+  }
+
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {
     return this.request<RangeAccessPayload>(`/admin/ranges/${encodeURIComponent(id)}/access`);
   }

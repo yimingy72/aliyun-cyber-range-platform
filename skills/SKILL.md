@@ -5,7 +5,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 # 云上综合靶场平台全产品 Skill
 
-通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 83 个 MCP 工具。
+通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 84 个 MCP 工具。
 
 > ⚠️ **运行时 MCP `tools/list`、工具的 `inputSchema`、`outputSchema`、`annotations` 和当前 scope 是唯一事实源。** 运行时 schema 与静态参考冲突时，以 schema 为准。
 

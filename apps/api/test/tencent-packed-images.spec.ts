@@ -44,6 +44,30 @@ describe('Tencent packing submission fences', () => {
     expect(rpc.mock.calls.filter(([call])=>call.action==='CreateImage')).toHaveLength(0);
     expect((await f.repository.getPackedImageArtifact(f.artifact.id))?.status).toBe('pending');
   });
+  it('validates the identical full CreateImage request with DryRun=true without adding any artifact or fee resource', async () => {
+    const f = await fixture([], true); await f.repository.updatePackedImageArtifact(f.artifact.id, { status: 'failed' });
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation(async call => call.action === 'CreateImage' ? Promise.reject(new TencentCloudRequestError('DryRunOperation', 'dry-run-receipt')) : original(call));
+    const create = jest.spyOn(f.repository, 'createPackedImageArtifact');
+    await expect(f.service.dryRunTencentImage(f.artifact, context, { name: 'TC-R2-PACK-20261010', description: 'Explicit description' }))
+      .resolves.toMatchObject({ status: 'validated', dryRun: true, cloudRequestId: 'dry-run-receipt' });
+    const parameters = rpc.mock.calls.find(([call])=>call.action==='CreateImage')![0].parameters;
+    expect(parameters).toMatchObject({ DryRun: true, ImageName: 'TC-R2-PACK-20261010', ImageDescription: 'Explicit description', ForcePoweroff: 'false',
+      TagSpecification: [{ ResourceType: 'image', Tags: expect.arrayContaining([{Key:'CloudAccountContextId',Value:context.id}]) }] });
+    expect(parameters).not.toHaveProperty('DataDiskIds');
+    expect(create).not.toHaveBeenCalled(); expect(await f.repository.listBillingLedgerResources()).toEqual([]);
+    expect((await f.repository.getPackedImageArtifact(f.artifact.id))!.status).toBe('failed');
+  });
+  it('refuses original UNKNOWN source validation and never falls back to a real submit on dry-run rejection', async () => {
+    const f = await fixture();
+    await expect(f.service.dryRunTencentImage(f.artifact, context, {name:'valid'})).rejects.toThrow('原源实例');
+    expect(rpc.mock.calls.filter(([call])=>call.action==='CreateImage')).toHaveLength(0);
+    await f.repository.updatePackedImageArtifact(f.artifact.id, {status:'failed'}); const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation(async call => call.action==='CreateImage' ? Promise.reject(new TencentCloudRequestError('InvalidParameterValue', 'dry-run-rejected', {parameterName:'TagSpecification',hint:'invalid_value'})) : original(call));
+    await expect(f.service.dryRunTencentImage(f.artifact, context, {name:'valid'})).resolves.toMatchObject({status:'rejected',dryRun:true,cloudParameterName:'TagSpecification',cloudErrorHint:'invalid_value'});
+    expect(rpc.mock.calls.filter(([call])=>call.action==='CreateImage')).toHaveLength(1);
+    expect(rpc.mock.calls.find(([call])=>call.action==='CreateImage')![0].parameters.DryRun).toBe(true);
+  });
   it('keeps unknown submission evidence and never issues a second CreateImage', async () => {
     const f = await fixture(); rpc.mockImplementation(async call => call.action === 'DescribeDisks' ? response('DiskSet', [{ DiskId: 'disk-system', DiskUsage: 'SYSTEM_DISK', InstanceId: 'ins-owned', Tags: [] }, { DiskId: 'disk-data', DiskUsage: 'DATA_DISK', InstanceId: 'ins-owned', Tags: [] }]) : Promise.reject(new Error('unknown-submit')));
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('unknown-submit');

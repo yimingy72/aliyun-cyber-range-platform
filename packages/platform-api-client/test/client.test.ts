@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('PlatformApiClient', () => {
+  it('uses a distinct dry-run validation endpoint and preserves bounded diagnostics', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/ranges/range%2F1/nodes/node%2F1/pack-image-validation');
+      expect(init?.method).toBe('POST'); expect(JSON.parse(init?.body as string)).toEqual({ displayName: 'Exact image', description: 'Exact description' });
+      expect(init?.headers).not.toHaveProperty('x-confirmation-id');
+      return new Response(JSON.stringify({status:'validated',dryRun:true,cloudRequestId:'dry-run-receipt'}),{status:200});
+    });
+    const client = new PlatformApiClient({baseUrl:'https://platform.example',token:'mock',fetch:fetchMock as typeof fetch});
+    await expect(client.validateRangeInstanceNodePackImage('range/1','node/1',{displayName:'Exact image',description:'Exact description'})).resolves.toMatchObject({dryRun:true,status:'validated'});
+  });
   it('maps existing global tag and asset association APIs, passes confirmation headers and unwraps writes', async () => {
     const calls: Array<{ input: string; init?: RequestInit }> = [];
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {

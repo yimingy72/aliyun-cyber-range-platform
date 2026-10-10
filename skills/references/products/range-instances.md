@@ -25,6 +25,7 @@
 | ECS 重启 | `range_instance_node_reboot` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
 | ECS VNC | `range_instance_node_open_vnc` | `rangeInstanceId`、`nodeId` | — | `ranges:read`、`instances:credentials:read` |
 | ECS 打包镜像 | `range_instance_node_pack_image` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control`、`images:write` |
+| 腾讯镜像参数只读核验 | `range_instance_node_pack_image_validate` | `rangeInstanceId`、`nodeId`、`displayName` | `description` | `ranges:read`、`images:read` |
 | 关闭/销毁 | `range_instance_destroy` | `rangeInstanceId` | 操作元数据 | `ranges:destroy` |
 
 ## 实例拓扑转换 Skill
@@ -69,6 +70,8 @@
 - 开机、关机、重启必须提供准确 `rangeInstanceId` 与 ECS `nodeId`，并取得用户确认。
 - `range_instance_get_access` 和 `range_instance_node_open_vnc` 仅在用户明确要求访问时调用，输出遵守入口的敏感规则。
 - 打包镜像可提供 `displayName`、`defaultHostName`、`defaultPassword`、`description`。密码仅在用户明确指定时传入，响应按敏感数据处理。
+- 腾讯云正式打包前可用 `range_instance_node_pack_image_validate` 调用官方 `CreateImage` 的 `DryRun=true`，完整核验相同名称、描述、来源标签、原数据盘和电源参数；不创建镜像、快照或平台打包记录。只允许当前 running 且无活动作业的同来源节点，原来源已有 UNKNOWN/进行中打包时拒绝。`validated` 仅表示参数核验成功，正式创建仍须确认；`rejected`/`unverified` 不触发自动创建。
+- `range_instance_get` 的 `packedImageArtifacts` 只返回同 owner、工作空间、冻结账号和原 source job 库存证明的打包摘要；源实例销毁后保留历史来源。`packSourceSnapshots` 按每个原源盘只读查询全部分页并返回官方 RequestId 和厂商原始 CreateTime；结果 `ownership=unconfirmed` 不能作为接管、重提交或全部费用已回收的证明。UNKNOWN 记录保持隔离，候选为空不擅自终结原提交。
 
 ### 失败与回收
 

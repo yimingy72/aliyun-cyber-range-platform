@@ -215,6 +215,13 @@ export class RangesController {
     return this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser);
   }
 
+  @Post(':id/nodes/:nodeId/pack-image-validation')
+  validateNodePackImage(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Param('nodeId') nodeId: string, @Body() body: Record<string, unknown>) {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['displayName', 'description'].includes(key)) || typeof body.displayName !== 'string' || !body.displayName.trim())
+      throw new BadRequestException('参数核验只接受明确镜像名称和可选描述。');
+    return this.rangeInstanceNodeActionsService.run(id, nodeId, 'pack-image', this.sanitizeNodeActionPayload(body), request.adminUser, undefined, 'dry-run');
+  }
+
   private confirmedMcpAction<TResult extends Record<string, unknown>>(
     request: AuthenticatedAdminRequest,
     toolName: string,

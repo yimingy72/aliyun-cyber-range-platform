@@ -39,6 +39,7 @@ export class RangeInstanceNodeActionsService {
     payload: Record<string, string>,
     currentUser?: AuthenticatedUser,
     boundAccountContext?: SystemCloudAccountContext,
+    packMode?: 'dry-run',
   ) {
     const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
 
@@ -50,6 +51,8 @@ export class RangeInstanceNodeActionsService {
       throw new ForbiddenException('Range instance access denied');
     }
     if (!['alibaba_cloud', 'tencent_cloud'].includes(instance.cloudProvider)) throw new ConflictException('该云厂商的节点控制与镜像打包尚未开放。');
+    if (packMode && (action !== 'pack-image' || instance.instanceMode !== 'range' || instance.cloudProvider !== 'tencent_cloud' || !currentUser))
+      throw new ConflictException('参数核验只允许已认证 owner/admin 的腾讯云编排节点。');
 
     if (!isNodeActionName(action)) {
       throw new NotFoundException('Unsupported node action');
@@ -161,6 +164,15 @@ export class RangeInstanceNodeActionsService {
     }
 
     const displayName = payload.displayName?.trim() || `${nodeId}-snapshot`;
+    if (packMode === 'dry-run') {
+      const ownerUserId = instance.ownerUserId ?? instance.createdBy;
+      if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('参数核验需要明确 owner 和已验证原云账号。');
+      return this.packedImages.dryRunTencentImage({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion,
+        ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
+        id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion,
+        zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
+      }, { name: displayName, description: payload.description?.trim() || null });
+    }
     const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
     const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
     const description = payload.description?.trim() || null;

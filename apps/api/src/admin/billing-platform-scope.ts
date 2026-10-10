@@ -37,7 +37,7 @@ function tencentContextMatches(value: unknown, ledger: BillingLedgerResourceReco
       && config.regionId === context.regionId && config.zoneId === context.zoneId);
 }
 
-function tencentInventoryMatches(ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord, logs: ProvisionJobStepLogRecord[], contextId?: string) {
+export function tencentInventoryMatches(ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord, logs: ProvisionJobStepLogRecord[], contextId?: string) {
   if (tencentContextMatches(instance.resourceSummary?.executionContext, ledger, instance, contextId) && inventoryIncludes(instance.resourceSummary, ledger)) return true;
   return logs.some(log => {
     if (log.jobId !== ledger.sourceProvisionJobId || log.status !== 'succeeded' || log.stepName !== 'platform_billing_creation_inventory' || !log.message

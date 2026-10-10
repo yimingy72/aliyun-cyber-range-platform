@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import { PlatformApiClient, PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 import {
   resolveUniqueDnatEntryHost,
   type ScenarioGraphDraft,
@@ -38,6 +38,34 @@ const authoringGraph: ScenarioGraphDraft = {
 };
 
 describe('resolveUniqueDnatEntryHost', () => {
+  it('preserves destroyed range pack artifacts and empty original-disk receipts through the actual SDK and MCP path', async () => {
+    const fetchMock=vi.fn(async(input:string,init?:RequestInit)=>{
+      expect(input).toBe('https://platform.example/admin/ranges/range%2Fsource'); expect(init?.method).toBe('GET');
+      return new Response(JSON.stringify({id:'range/source',status:'destroyed',resourceSummary:null,runtimeCredentials:{entry:{password:'private-password'}},
+        packedImageArtifacts:[{id:'artifact-source',status:'creating',phase:'create_image',cloudErrorCode:'InvalidParameterValue',cloudParameterName:'TagSpecification',cloudErrorHint:'invalid_value'}],
+        packSourceSnapshots:[{artifactId:'artifact-source',status:'absent',ownership:'unconfirmed',sourceDisks:[{sourceDiskId:'disk-source',status:'absent',candidateSnapshots:[],
+          evidence:[{provider:'tencent_cloud',action:'DescribeSnapshots',requestIds:['original-disk-receipt']}]}]}]}));
+    });
+    const registry=createToolRegistry(new PlatformApiClient({baseUrl:'https://platform.example',token:'synthetic-token',fetch:fetchMock as typeof fetch}));
+    const result=await registry.callTool('range_instance_get',['ranges:read'],{rangeInstanceId:'range/source'});
+    expect(result).toMatchObject({structuredContent:{result:{packedImageArtifacts:[{id:'artifact-source',cloudParameterName:'TagSpecification'}],
+      packSourceSnapshots:[{artifactId:'artifact-source',sourceDisks:[{evidence:[{requestIds:['original-disk-receipt']}]}]}]}}});
+    expect(JSON.stringify(result)).not.toContain('private-password'); expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('exposes distinct read-only Tencent pack validation without creating a real pack request', async () => {
+    const client = createClientStub();
+    client.validateRangeInstanceNodePackImage = vi.fn().mockResolvedValue({status:'rejected',dryRun:true,cloudParameterName:'TagSpecification',cloudErrorHint:'invalid_value',cloudRequestId:'dry-run-receipt'});
+    const registry = createToolRegistry(client);
+    const scopes = ['ranges:read','images:read'];
+    const tool = registry.listTools(scopes).find(tool=>tool.name==='range_instance_node_pack_image_validate')!;
+    expect(tool.annotations?.readOnlyHint).toBe(true);
+    await expect(registry.callTool(tool.name,scopes,{rangeInstanceId:'range-1',nodeId:'host',displayName:'Exact image',description:'Exact description'}))
+      .resolves.toMatchObject({structuredContent:{result:{dryRun:true,cloudParameterName:'TagSpecification'}}});
+    expect(client.validateRangeInstanceNodePackImage).toHaveBeenCalledWith('range-1','host',{displayName:'Exact image',description:'Exact description'});
+    expect(client.runRangeInstanceNodeAction).not.toHaveBeenCalled();
+    await expect(registry.callTool(tool.name,['ranges:read'],{rangeInstanceId:'range-1',nodeId:'host',displayName:'Exact image'})).rejects.toThrow('Forbidden tool');
+    await expect(registry.callTool(tool.name,scopes,{rangeInstanceId:'range-1',nodeId:'host',displayName:'Exact image',DryRun:false})).rejects.toThrow('Invalid input');
+  });
   it('forwards owned-image cleanup consent and confirmation while preserving the verified cloud result', async () => {
     const client = createClientStub();
     vi.mocked(client.removeCustomImageSnapshot).mockResolvedValue({ removed: true, status: 'deleted', snapshotId: 'source-new', snapshotIds: ['s-new'], deletedSnapshotIds: ['s-new'] });
@@ -1326,7 +1354,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(83);
+    expect(tools).toHaveLength(84);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

@@ -18,6 +18,8 @@ type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; I
 type Snapshot = { SnapshotId: string; SourceDiskId?: string; SourceSnapshotId?: string; RegionId?: string; CreationTime?: string; Usage?: string; Tags?: unknown };
 const ACTIVE = ['pending', 'creating', 'deleting'];
 type LeasedContext = CloudAccountContextCredentials & { artifactLease?: { id: string; token: string } };
+type TencentPackSource = { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; ownerUserId: string; sourceRangeInstanceId: string; sourceHostKey: string; sourceInstanceId: string };
+type TencentPackRequestSource = TencentPackSource & { id: string; createdAt: Date; platformImageAssetId: string | null };
 
 @Injectable()
 export class PackedImagesService {
@@ -70,13 +72,48 @@ export class PackedImagesService {
     const known = new Set([...Object.values(instance.resourceSummary.systemDiskIds ?? {}), ...Object.values(instance.resourceSummary.dataDiskIds ?? {})]);
     if (!resources.length || resources.some(disk => !known.has(disk.id) || disk.shared || !['SYSTEM_DISK', 'DATA_DISK'].includes(disk.diskUsage ?? ''))
       || !resources.some(disk => disk.diskUsage === 'SYSTEM_DISK')) throw new ConflictException('腾讯云源磁盘清单有未证明或共享磁盘，拒绝打包。');
-    return { TotalCount: resources.length, Disks: { Disk: resources.map(disk => ({ DiskId: disk.id })) } };
+    return { TotalCount: resources.length, Disks: { Disk: resources.map(disk => ({ DiskId: disk.id, DiskUsage: disk.diskUsage })) } };
+  }
+  async dryRunTencentImage(source: TencentPackSource, context: CloudAccountContextCredentials, input: { name: string; description?: string | null }) {
+    this.assertContext(source, context);
+    if (context.provider !== 'tencent_cloud') throw new ConflictException('此参数核验仅支持腾讯云官方 CreateImage DryRun。');
+    this.assertTencentPackMetadata(input);
+    if ((await this.repository.listPackedImageArtifacts()).some(row => row.cloudProvider === 'tencent_cloud' && ACTIVE.includes(row.status)
+      && row.cloudAccountUid === source.cloudAccountUid && row.regionId === source.regionId && row.sourceInstanceId === source.sourceInstanceId))
+      throw new ConflictException('原源实例已有未知或进行中的打包，不能借参数核验重提该来源。');
+    const body = await this.tencentSourceDisks(source, context);
+    const disks = cloudItems<{ DiskId: string; DiskUsage: string }>(body, 'Disks', 'Disk');
+    const parameters = this.tencentCreateImageParameters({ ...source, id: randomUUID(), createdAt: new Date(), platformImageAssetId: null }, input,
+      disks.map(disk => ({ id: disk.DiskId, diskUsage: disk.DiskUsage })));
+    try {
+      const result = await tencentImageRequest<{ ImageId?: string | null; RequestId: string }>(context, 'cvm', 'CreateImage', { ...parameters, DryRun: true });
+      if (result.ImageId || typeof result.RequestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(result.RequestId)
+        || [context.accessKeyId, context.accessKeySecret].some(secret => result.RequestId.includes(secret)))
+        return { status: 'unverified', dryRun: true, phase: 'create_image', cloudErrorCode: 'UNEXPECTED_DRY_RUN_RESPONSE' };
+      return { status: 'validated', dryRun: true, phase: 'create_image', cloudRequestId: result.RequestId };
+    } catch (error) {
+      const diagnostic = packedImageDiagnostic(error, 'create_image', [context.accessKeyId, context.accessKeySecret]);
+      if (error instanceof TencentCloudRequestError && error.code === 'DryRunOperation' && diagnostic.cloudRequestId)
+        return { status: 'validated', dryRun: true, ...diagnostic };
+      return { status: diagnostic.cloudRequestId ? 'rejected' : 'unverified', dryRun: true, ...diagnostic };
+    }
+  }
+  private assertTencentPackMetadata(input: { name: string; description?: string | null }) {
+    if (!input.name || [...input.name].length > 60 || input.description && [...input.description].length > 256)
+      throw new ConflictException('腾讯云镜像名称须为 1–60 字符，描述最多 256 字符；未提交创建。');
+  }
+  private tencentCreateImageParameters(artifact: TencentPackRequestSource, input: { name: string; description?: string | null }, disks: Array<{ id: string; diskUsage?: string | null }>) {
+    return { InstanceId: artifact.sourceInstanceId, ImageName: input.name, ...(input.description ? { ImageDescription: input.description } : {}),
+      // Optional data disks are omitted for a system-only source, matching the official CreateImage example.
+      // https://cloud.tencent.com/document/api/213/16726
+      ForcePoweroff: 'false', ...(disks.some(disk => disk.diskUsage === 'DATA_DISK') ? { DataDiskIds: disks.filter(disk => disk.diskUsage === 'DATA_DISK').map(disk => disk.id) } : {}),
+      TagSpecification: [{ ResourceType: 'image', Tags: Object.entries({ ...this.tags(artifact), CloudProvider: 'tencent_cloud',
+        CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).map(([Key, Value]) => ({ Key, Value })) }] };
   }
   async submitTencentImage(artifact: PackedImageArtifactRecord & { submissionToken: string }, context: CloudAccountContextCredentials, input: { name: string; description?: string | null }) {
     this.assertContext(artifact, context);
     if (context.provider !== 'tencent_cloud') throw new ConflictException('腾讯云镜像提交需要已绑定腾讯云账号。');
-    if (!input.name || [...input.name].length > 60 || input.description && [...input.description].length > 256)
-      throw new ConflictException('腾讯云镜像名称须为 1–60 字符，描述最多 256 字符；未提交创建。');
+    this.assertTencentPackMetadata(input);
     if (!await this.repository.renewPackedImageArtifactClaim(artifact.id, artifact.submissionToken, new Date(Date.now() + 300_000))) throw new ConflictException('打包提交租约失效。');
     const fresh = await this.repository.getPackedImageArtifact(artifact.id);
     if (!fresh || fresh.status !== 'pending' || fresh.imageId) throw new ConflictException('原打包已提交或结果未知，禁止再次创建。');
@@ -88,13 +125,7 @@ export class PackedImagesService {
       if (disks.length !== artifact.sourceDiskIds.length || disks.some(disk => !artifact.sourceDiskIds.includes(disk.id) || disk.shared)) throw new ConflictException('打包提交前源盘发生变化。');
       await this.updateClaimed(artifact.id, artifact.submissionToken, { status: 'creating' });
       phase = 'create_image';
-      // CreateImage documents this field as a string, unlike the instance power-control APIs.
-      // https://cloud.tencent.com/document/api/213/16726
-      return await tencentImageRequest<{ ImageId?: string }>(context, 'cvm', 'CreateImage', { InstanceId: artifact.sourceInstanceId,
-        ImageName: input.name, ...(input.description ? { ImageDescription: input.description } : {}), ForcePoweroff: 'false',
-        ...(disks.some(disk => disk.diskUsage === 'DATA_DISK') ? { DataDiskIds: disks.filter(disk => disk.diskUsage === 'DATA_DISK').map(disk => disk.id) } : {}),
-        TagSpecification: [{ ResourceType: 'image', Tags: Object.entries({ ...this.tags(artifact), CloudProvider: 'tencent_cloud',
-          CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).map(([Key, Value]) => ({ Key, Value })) }] });
+      return await tencentImageRequest<{ ImageId?: string }>(context, 'cvm', 'CreateImage', this.tencentCreateImageParameters(artifact, input, disks));
     } catch (error) {
       if (error instanceof TencentCloudRequestError) throw new PackedImageCloudError(phase, safePackedCloudCode(error, [context.accessKeyId, context.accessKeySecret]), packedImageDiagnostic(error, phase, [context.accessKeyId, context.accessKeySecret]));
       throw error;
@@ -352,7 +383,7 @@ export class PackedImagesService {
     });
   }
 
-  private tags(artifact: PackedImageArtifactRecord) {
+  private tags(artifact: Pick<PackedImageArtifactRecord, 'id' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'platformImageAssetId' | 'createdAt'>) {
     return buildBillingTags({ billingScope: 'user', ownerUserId: artifact.ownerUserId, rangeInstanceId: artifact.sourceRangeInstanceId, platformImageAssetId: artifact.platformImageAssetId, platformHostKey: artifact.sourceHostKey, platformPackedImageArtifactId: artifact.id, billingStartAt: artifact.createdAt });
   }
 

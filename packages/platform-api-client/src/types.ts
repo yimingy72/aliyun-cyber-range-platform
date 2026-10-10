@@ -366,6 +366,7 @@ export type PlatformApiClientLike = {
   retryImageImport(id: string): Promise<ImageImportJob>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
   getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
+  validateRangeInstanceNodePackImage?(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>): Promise<Record<string, unknown>>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
   applyRangeInstanceDraft(

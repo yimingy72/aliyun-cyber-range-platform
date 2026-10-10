@@ -25,8 +25,8 @@ import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 import { readTencentSingleRecordedResourceStatus } from './single-instance-recorded-resource-status';
-import { packedImageArtifactSummaries, safePackedCloudCode } from './packed-image-diagnostic';
-import { describeTencentResourceInventory, type TencentResourceEvidence } from './tencent-cloud-resources';
+import { packedImageArtifactSummaries } from './packed-image-diagnostic';
+import { readPackedImageSourceSnapshots } from './packed-image-source-observation';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
@@ -110,39 +110,7 @@ export class SingleInstancesService {
     const [detail] = await attachCreatedByUsernames(this.adminRepository, [toSingleInstanceListItem(instance)]);
     const packedImageArtifacts = packedImageArtifactSummaries(instance, await this.adminRepository.listPackedImageArtifacts({ cloudAccountUid: instance.singleInstanceConfig?.cloudAccountUid ?? undefined,
       regionId: instance.singleInstanceConfig?.regionId }));
-    const packSourceSnapshots = [];
-    for (const artifact of packedImageArtifacts.filter(item => item.cloudProvider === 'tencent_cloud' && ['pending','creating','deleting'].includes(item.status))) {
-      let account: SystemCloudAccountContext | undefined;
-      const sourceDisks: Array<{ sourceDiskId: string; status: string; candidateSnapshots: Array<{ snapshotId: string; createdAt: string | null }>;
-        evidence: TencentResourceEvidence[]; cloudErrorCode?: string }> = [];
-      try {
-        account = await this.systemConfigService.getAccountContextById(artifact.cloudAccountContextId);
-        if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || account.cloudAccountContextId !== artifact.cloudAccountContextId
-          || account.accountUid !== artifact.cloudAccountUid || account.defaultRegion !== artifact.regionId || !artifact.sourceDiskIds.length)
-          throw new Error('Packed source snapshot inventory is not bound to its original account and disks');
-        for (const sourceDiskId of artifact.sourceDiskIds) {
-          const evidence: TencentResourceEvidence[] = [];
-          try {
-            const snapshots = await describeTencentResourceInventory(account, 'snapshot', { diskIds: [sourceDiskId], onEvidence: value => evidence.push(value) });
-            if (!evidence.length || evidence.some(value => value.provider !== 'tencent_cloud' || value.accountUid !== artifact.cloudAccountUid
-              || value.cloudAccountContextId !== artifact.cloudAccountContextId || value.regionId !== artifact.regionId || value.action !== 'DescribeSnapshots' || !value.requestIds.length))
-              throw new Error('Original disk snapshot read lacks its completed official request evidence');
-            sourceDisks.push({ sourceDiskId, status: snapshots.length ? 'observed' : 'absent', candidateSnapshots: snapshots.map(snapshot => ({ snapshotId: snapshot.id, createdAt: snapshot.createdAt ?? null })), evidence });
-          } catch (error) {
-            sourceDisks.push({ sourceDiskId, status: 'unverified', candidateSnapshots: [], evidence,
-              cloudErrorCode: safePackedCloudCode(error, [account.accessKeyId, account.accessKeySecret]) });
-          }
-        }
-        const snapshotIds = [...new Set(sourceDisks.flatMap(disk => disk.candidateSnapshots.map(snapshot => snapshot.snapshotId)))];
-        const status = sourceDisks.some(disk => disk.status === 'unverified') ? 'unverified' : snapshotIds.length ? 'observed' : 'absent';
-        packSourceSnapshots.push({ artifactId: artifact.id, status, snapshotIds, sourceDisks,
-          ...(status === 'unverified' ? { cloudErrorCode: sourceDisks.find(disk => disk.status === 'unverified')?.cloudErrorCode ?? 'UNKNOWN' } : {}),
-          scope: 'original_source_disks', ownership: 'unconfirmed', checkedAt: new Date().toISOString() });
-      } catch (error) {
-        packSourceSnapshots.push({ artifactId: artifact.id, status: 'unverified', snapshotIds: [], sourceDisks, scope: 'original_source_disks', ownership: 'unconfirmed',
-          cloudErrorCode: safePackedCloudCode(error, account ? [account.accessKeyId, account.accessKeySecret] : []), checkedAt: new Date().toISOString() });
-      }
-    }
+    const packSourceSnapshots = await readPackedImageSourceSnapshots(packedImageArtifacts, this.systemConfigService);
     return { ...detail, packedImageArtifacts, packSourceSnapshots };
   }
 
