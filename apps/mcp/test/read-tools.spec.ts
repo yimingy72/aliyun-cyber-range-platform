@@ -217,6 +217,7 @@ function createClientStub(): ClientStub {
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
     saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    previewRangeInstanceDraft: vi.fn(),
     saveRangeInstanceAsTemplate: vi.fn(),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
@@ -519,45 +520,14 @@ describe('tool registry', () => {
     );
   });
 
-  it('applies the draft revision returned by save instead of the revision read before compilation', async () => {
-    const client = createClientStub();
-    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'range-1',
-      name: 'Web DMZ 练习环境',
-      draftRevision: 7,
-      runtimeScenarioTemplateSpec: {
-        metadata: {
-          name: 'Web DMZ',
-          slug: 'web-dmz',
-          version: '1.0.0',
-          cloudProvider: 'alibaba_cloud',
-          iacType: 'opentofu',
-        },
-        topology: {
-          vpcCidr: '10.0.0.0/16',
-        },
-      },
-    });
-    (client.saveRangeInstanceDraft as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'range-1',
-      draftRevision: 8,
-    });
-    const registry = createToolRegistry(client);
-
-    await registry.callTool('range_instance_topology_apply', ['ranges:write', 'ranges:control'], {
-      rangeInstanceId: 'range-1',
-      topologyGraph: authoringGraph,
-    });
-
-    expect(client.applyRangeInstanceDraft).toHaveBeenCalledWith(
-      'range-1',
-      8,
-      { idempotencyKey: undefined, confirmationId: undefined },
-    );
+  it('applies only the exact previewed saved revision without implicitly saving a graph', async () => {
+    const client = createClientStub(); const registry = createToolRegistry(client);
+    await registry.callTool('range_instance_topology_apply', ['ranges:write', 'ranges:control'], { rangeInstanceId: 'range-1', expectedDraftRevision: 8, previewToken: 'preview-8' });
+    expect(client.applyRangeInstanceDraft).toHaveBeenCalledWith('range-1', 8, 'preview-8', { idempotencyKey: undefined, confirmationId: undefined });
+    expect(client.saveRangeInstanceDraft).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['range_instance_topology_apply', ['ranges:write', 'ranges:control'], 'applyRangeInstanceDraft'],
     ['range_instance_sync_template', ['ranges:write', 'templates:write'], 'syncRangeInstanceTemplate'],
   ] as const)('replays %s confirmation without saving a new draft revision', async (toolName, scopes, method) => {
     const client = createClientStub();
@@ -1377,7 +1347,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(88);
+    expect(tools).toHaveLength(89);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

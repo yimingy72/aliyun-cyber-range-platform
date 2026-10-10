@@ -111,6 +111,8 @@ export const rangeLaunchInputSchema = operationSchema.extend({
 });
 export const rangeDestroyInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
 export const rangeRetryInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
+export const rangeTopologyPreviewInputSchema = z.object({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1) }).strict();
+export const rangeTopologyApplyInputSchema = operationSchema.extend({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1), previewToken: identifier.max(192) }).strict();
 export const rangeSaveAsTemplateInputSchema = z.object({
   rangeInstanceId: identifier,
   name: z.string().trim().min(1).max(128),

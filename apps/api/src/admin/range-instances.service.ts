@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { getCurrentCloudWorkspaceScope, requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
+import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
+import { buildRangeChangeApproval, expectedRangeChangeSummary, rangeDraftSourceDigest } from './range-draft-change-policy';
 import { SaveRangeInstanceAsTemplateDto } from './dto/range-instance-template-copy.dto';
 import { assertExistingHostBootstrapUnchanged } from './range-host-bootstrap-policy';
 export { assertExistingHostBootstrapUnchanged } from './range-host-bootstrap-policy';
@@ -29,7 +30,7 @@ import {
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
-import { ApplyRangeInstanceDraftDto, LaunchRangeInstanceDto } from './dto/range-instance.dto';
+import { ApplyRangeInstanceDraftDto, PreviewRangeInstanceDraftDto, LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
@@ -354,7 +355,7 @@ export class RangeInstancesService {
 
     const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(input.draftTopologySpec));
     const compiled = validateRangeInstanceDraftPayload(input, metadata);
-    await this.rangeTemplatesService.assertTemplateEcsImageSelections({ ...compiled, topologySpec: compiled.topologySpec as RangeTemplateTopologySpec }, currentUser);
+    await this.assertNewDraftHostImages(instance, compiled.topologyGraph, currentUser);
     const viewport = this.readDraftViewport(input.draftTopologyGraph);
     const updated = await this.adminRepository.saveRangeInstanceDraft(id, input.expectedDraftRevision, {
       draftTopologyGraph: this.normalizeJsonRecord({
@@ -409,6 +410,41 @@ export class RangeInstancesService {
     }
 
     return this.withCreatorUsername(hydrated);
+  }
+
+  async previewDraft(id: string, input: PreviewRangeInstanceDraftDto, currentUser: AuthenticatedUser) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+    if (!instance) throw new NotFoundException('Range instance not found');
+    this.assertInstanceOwnerOrAdmin(instance, currentUser);
+    if (instance.instanceMode !== 'range' || instance.status !== 'running' || instance.draftRevision !== input.expectedDraftRevision
+      || !instance.draftTopologyGraph || !instance.draftTopologySpec || !instance.draftScenarioTemplateSpec || !instance.draftCompiledProvisionSpec)
+      throw new ConflictException('请先保存当前变更；实例状态或草稿版本已变化。');
+    const pending = (await this.adminRepository.listProvisionJobs()).some(job => job.rangeInstanceId === instance.id && ['pending', 'running'].includes(job.status));
+    if (pending) throw new ConflictException('实例存在未完成任务，请等待完成后重新预览。');
+    const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(instance.draftTopologySpec));
+    const compiled = validateRangeInstanceDraftPayload({ draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
+      draftTopologySpec: this.normalizeJsonRecord(instance.draftTopologySpec), draftScenarioTemplateSpec: this.normalizeJsonRecord(instance.draftScenarioTemplateSpec),
+      draftCompiledProvisionSpec: this.normalizeJsonRecord(instance.draftCompiledProvisionSpec) }, metadata);
+    const snapshot: ProvisionJobTopologySnapshot = { operation: 'update', draftRevision: input.expectedDraftRevision,
+      topologyGraph: { ...compiled.topologyGraph, ...(this.readDraftViewport(instance.draftTopologyGraph) ? { viewport: this.readDraftViewport(instance.draftTopologyGraph) } : {}) },
+      topologySpec: compiled.topologySpec, scenarioTemplateSpec: compiled.scenarioTemplateSpec, compiledProvisionSpec: compiled.compiledProvisionSpec,
+      compiledSpec: compiled.compiledSpec, templateModulePath: await this.resolveApplyTemplateModulePath(instance) };
+    const approval = buildRangeChangeApproval(instance, snapshot);
+    await this.assertNewDraftHostImages(instance, snapshot.topologyGraph, currentUser);
+    const workspaceId = getCurrentCloudWorkspaceId() ?? instance.cloudWorkspaceId ?? 'legacy-unbound';
+    const sourceDigest = rangeDraftSourceDigest(instance, currentUser.id, workspaceId);
+    const expiresAt = new Date(Date.now() + 5 * 60_000);
+    const preview = await this.adminRepository.createOperationConfirmation({ cloudWorkspaceId: workspaceId, actorUserId: currentUser.id,
+      oauthClientId: 'range-preview', toolName: 'range_instance_topology_preview', argumentsHash: sourceDigest,
+      targetSnapshot: { rangeInstanceId: instance.id, sourceDigest, changeApproval: approval }, idempotencyKey: randomUUID(), expiresAt });
+    return { ...expectedRangeChangeSummary(instance, snapshot, approval), previewToken: preview.id, expiresAt: expiresAt.toISOString(), sourceDigest };
+  }
+
+  private async assertNewDraftHostImages(instance: RangeInstanceRecord, graph: Record<string, unknown>, currentUser?: AuthenticatedUser) {
+    const current = new Set((Array.isArray(instance.runtimeTopologyGraph?.nodes) ? instance.runtimeTopologyGraph.nodes : [])
+      .filter((node: any) => node.kind === 'ecs').map((node: any) => node.id));
+    const added = (Array.isArray(graph.nodes) ? graph.nodes : []).filter((node: any) => node.kind === 'ecs' && !current.has(node.id));
+    await this.rangeTemplatesService.assertTopologyGraphEcsImageSelections({ nodes: added }, currentUser);
   }
 
   async applyDraft(
@@ -466,7 +502,7 @@ export class RangeInstancesService {
     );
     const imageUser = typeof currentUserOrTriggeredBy === 'object' ? currentUserOrTriggeredBy
       : instance.ownerUserId ? await this.adminRepository.getPlatformUserById(instance.ownerUserId) : undefined;
-    await this.rangeTemplatesService.assertTemplateEcsImageSelections({ ...compiled, topologySpec: compiled.topologySpec as RangeTemplateTopologySpec }, imageUser ?? undefined);
+    await this.assertNewDraftHostImages(instance, compiled.topologyGraph, imageUser ?? undefined);
     const runtimeCredentials = await this.resolveRuntimeCredentials(compiled.scenarioTemplateSpec, instance.runtimeCredentials);
     const viewport = this.readDraftViewport(draftTopologyGraph);
     const templateModulePath = await this.resolveApplyTemplateModulePath(instance);
@@ -483,12 +519,21 @@ export class RangeInstancesService {
       compiledSpec: compiled.compiledSpec,
       templateModulePath,
     };
+    const changeApproval = buildRangeChangeApproval(instance, topologySnapshot);
+    topologySnapshot.changeApproval = changeApproval;
+    const workspaceId = getCurrentCloudWorkspaceId() ?? instance.cloudWorkspaceId ?? 'legacy-unbound';
+    const expectedSourceDigest = rangeDraftSourceDigest(instance, actorId, workspaceId);
+    const preview = input.previewToken ? await this.adminRepository.getOperationConfirmationById(input.previewToken) : null;
+    if (!preview || preview.cloudWorkspaceId !== workspaceId || preview.actorUserId !== actorId || preview.toolName !== 'range_instance_topology_preview'
+      || preview.argumentsHash !== expectedSourceDigest || preview.consumedAt || preview.expiresAt.getTime() <= Date.now())
+      throw new ConflictException('预览已失效或配置已变化，请重新预览后确认应用。');
     let job;
 
     try {
       job = await this.adminRepository.applyRangeInstanceDraft({
         rangeInstanceId: id,
         expectedDraftRevision: input.expectedDraftRevision,
+        previewToken: input.previewToken, expectedSourceDigest,
         triggeredBy: actorId,
         topologySnapshot,
       });
@@ -1080,6 +1125,10 @@ export class RangeInstancesService {
         continue;
       }
 
+      if (previous?.[host.key]) {
+        runtimeCredentials[host.key] = { ...previous[host.key] };
+        continue;
+      }
       const record = host as Record<string, unknown>;
       const asset = typeof record.platformImageAssetId === 'string'
         ? await this.adminRepository.getPlatformImageAssetById(record.platformImageAssetId) : null;

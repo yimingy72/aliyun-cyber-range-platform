@@ -43,6 +43,7 @@ function createClientStub(): ClientStub {
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
     saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    previewRangeInstanceDraft: vi.fn(),
     saveRangeInstanceAsTemplate: vi.fn(),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),

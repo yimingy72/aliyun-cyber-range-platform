@@ -18,6 +18,7 @@ describe('PrismaAdminRepository', () => {
       rangeInstanceId: 'range-1',
       expectedDraftRevision: 1,
       triggeredBy: 'admin',
+      previewToken: 'preview', expectedSourceDigest: 'digest',
       topologySnapshot: {
         draftRevision: 1,
         topologyGraph: { nodes: [], edges: [] },

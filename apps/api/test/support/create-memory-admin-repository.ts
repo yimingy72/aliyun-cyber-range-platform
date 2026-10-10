@@ -1,3 +1,4 @@
+import { rangeDraftSourceDigest } from '../../src/admin/range-draft-change-policy';
 import type { RangeDnsVerification } from '../../src/admin/range-dns-types';
 import {
   AdminRepository,
@@ -1026,6 +1027,11 @@ export function createMemoryAdminRepository(): AdminRepository {
         return null;
       }
 
+      if (rangeDraftSourceDigest(instance, input.triggeredBy, instance.cloudWorkspaceId ?? 'legacy-unbound') !== input.expectedSourceDigest) return null;
+      const preview = operationConfirmations.find(value => value.id === input.previewToken);
+      if (!preview || preview.cloudWorkspaceId !== instance.cloudWorkspaceId || preview.actorUserId !== input.triggeredBy || preview.toolName !== 'range_instance_topology_preview'
+        || preview.argumentsHash !== input.expectedSourceDigest || preview.consumedAt || preview.expiresAt.getTime() <= Date.now()) return null;
+      preview.consumedAt = now();
       const job: ProvisionJobRecord = {
         id: nextId(),
         rangeInstanceId: input.rangeInstanceId,

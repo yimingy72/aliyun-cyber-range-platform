@@ -1,4 +1,5 @@
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { rangeDraftSourceDigest } from '../admin/range-draft-change-policy';
 import type { RangeDnsVerification } from '../admin/range-dns-types';
 import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
@@ -1335,6 +1336,14 @@ export class PrismaAdminRepository implements AdminRepository {
           return null;
         }
 
+        const workspaceId = instance.cloudWorkspaceId;
+        if (rangeDraftSourceDigest(instance as unknown as RangeInstanceRecord, input.triggeredBy, workspaceId) !== input.expectedSourceDigest) throw new RangeInstanceDraftRevisionConflictError();
+        const preview = await transaction.operationConfirmation.findUnique({ where: { id: input.previewToken } });
+        const now = new Date();
+        if (!preview || preview.cloudWorkspaceId !== workspaceId || preview.actorUserId !== input.triggeredBy || preview.toolName !== 'range_instance_topology_preview'
+          || preview.argumentsHash !== input.expectedSourceDigest || preview.consumedAt || preview.expiresAt <= now) throw new RangeInstanceDraftRevisionConflictError();
+        const consumed = await transaction.operationConfirmation.updateMany({ where: { id: preview.id, consumedAt: null, expiresAt: { gt: now } }, data: { consumedAt: now } });
+        if (consumed.count !== 1) throw new RangeInstanceDraftRevisionConflictError();
         const job = await transaction.provisionJob.create({
           data: {
             rangeInstanceId: input.rangeInstanceId,

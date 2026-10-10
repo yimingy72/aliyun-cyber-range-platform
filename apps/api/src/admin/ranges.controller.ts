@@ -7,6 +7,7 @@ import { SaveRangeInstanceAsTemplateDto } from './dto/range-instance-template-co
 import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
 import {
   ApplyRangeInstanceDraftDto,
+  PreviewRangeInstanceDraftDto,
   CreateRangeInstanceDto,
   LaunchRangeInstanceDto,
   TriggerProvisionJobDto,
@@ -130,6 +131,11 @@ export class RangesController {
     return this.rangeInstancesService.triggerRetry(id, request.adminUser);
   }
 
+  @Post(':id/preview')
+  previewDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: PreviewRangeInstanceDraftDto) {
+    return this.rangeInstancesService.previewDraft(id, body, request.adminUser);
+  }
+
   @Post(':id/apply')
   applyDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: ApplyRangeInstanceDraftDto) {
     if (request.authContext.source === 'mcp') {
@@ -137,8 +143,8 @@ export class RangesController {
         request,
         'range_instance_topology_apply',
         id,
-        { rangeInstanceId: id, expectedDraftRevision: body.expectedDraftRevision },
-        false,
+        { rangeInstanceId: id, expectedDraftRevision: body.expectedDraftRevision, previewToken: body.previewToken },
+        true,
         async () => {
           const job = await this.rangeInstancesService.applyDraft(id, body, request.adminUser);
           return { rangeInstanceId: id, jobId: job.id };

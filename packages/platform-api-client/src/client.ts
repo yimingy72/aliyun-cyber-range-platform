@@ -21,6 +21,7 @@ import type {
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
   SaveRangeInstanceAsTemplateInput,
+  RangeInstanceChangePreview,
   SaveRangeInstanceAsTemplateResult,
   CreateAdminUserInput,
   GetRangeInstanceOptions,
@@ -275,10 +276,14 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  applyRangeInstanceDraft(id: string, expectedDraftRevision: number, operation?: OperationRequest) {
+  previewRangeInstanceDraft(id: string, expectedDraftRevision: number) {
+    return this.request<RangeInstanceChangePreview>(`/admin/ranges/${encodeURIComponent(id)}/preview`, { method: 'POST', body: JSON.stringify({ expectedDraftRevision }) });
+  }
+
+  applyRangeInstanceDraft(id: string, expectedDraftRevision: number, previewToken: string, operation?: OperationRequest) {
     return this.request<Record<string, unknown>>(`/admin/ranges/${encodeURIComponent(id)}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ expectedDraftRevision }),
+      body: JSON.stringify({ expectedDraftRevision, previewToken }),
       operation,
     });
   }

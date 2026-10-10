@@ -13,6 +13,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { RANGE_PROVISIONER, type RangeProvisioner } from '../src/provisioning/provisioning.types';
+import { RangeInstancesService } from '../src/admin/range-instances.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
@@ -197,6 +198,7 @@ describe('Range instance apply API', () => {
 
     const instance = await repository.createRangeInstance({
       name: 'apply-range',
+      expiresAt: '2099-01-01T00:00:00Z',
       createdBy: 'admin',
       templateId: template.id,
       sourceTemplateVersionId: template.currentDraftVersionId,
@@ -229,6 +231,7 @@ describe('Range instance apply API', () => {
   });
 
   async function createSyncFixture(input: {
+    preserveHostConfiguration?: boolean;
     instanceStatus?: 'running' | 'destroyed';
     instanceOwnerId?: string;
     templateOwnerId?: string;
@@ -281,7 +284,7 @@ describe('Range instance apply API', () => {
       slug: `sync-template-${suffix}`,
     };
     const sourceCompiled = compileTemplateTopology(structuredClone(graph), metadata);
-    entryHost.memory = 4;
+    if (!input.preserveHostConfiguration) entryHost.memory = 4;
     const compiled = compileTemplateTopology(graph, metadata);
     let template = await repository.createRangeTemplate({
       name: metadata.name,
@@ -328,6 +331,10 @@ describe('Range instance apply API', () => {
     return { compiled, instance, template };
   }
 
+  async function previewToken(id: string, expectedDraftRevision: number) {
+    return (await app.get(RangeInstancesService).previewDraft(id, { expectedDraftRevision }, { id: 'admin', role: 'admin' })).previewToken;
+  }
+
   it('creates an update job from the exact saved draft revision and freezes every topology artifact', async () => {
     const saved = await request(app.getHttpServer())
       .patch(`/admin/ranges/${instanceId}/draft`)
@@ -353,7 +360,7 @@ describe('Range instance apply API', () => {
     const response = await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ expectedDraftRevision: 1 })
+      .send({ expectedDraftRevision: 1, previewToken: await previewToken(instanceId, 1) })
       .expect(201);
 
     expect(response.body).toEqual(
@@ -374,18 +381,18 @@ describe('Range instance apply API', () => {
   });
 
   it('rejects a duplicate apply while the same draft revision already has a pending update job', async () => {
-    const fixture = await createSyncFixture();
+    const fixture = await createSyncFixture({ preserveHostConfiguration: true });
 
     const first = await request(app.getHttpServer())
       .post(`/admin/ranges/${fixture.instance.id}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ expectedDraftRevision: 1 })
+      .send({ expectedDraftRevision: 1, previewToken: await previewToken(fixture.instance.id, 1) })
       .expect(201);
 
     await request(app.getHttpServer())
       .post(`/admin/ranges/${fixture.instance.id}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ expectedDraftRevision: 1 })
+      .send({ expectedDraftRevision: 1, previewToken: 'invalid-preview' })
       .expect(409);
 
     const updateJobs = (await repository.listProvisionJobs()).filter(
@@ -415,7 +422,7 @@ describe('Range instance apply API', () => {
     await request(app.getHttpServer())
       .post(`/admin/ranges/${instanceId}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ expectedDraftRevision: 1 })
+      .send({ expectedDraftRevision: 1, previewToken: 'invalid-preview' })
       .expect(409);
 
     await expect(repository.listProvisionJobs()).resolves.toHaveLength(before.length);
@@ -445,7 +452,7 @@ describe('Range instance apply API', () => {
     await request(app.getHttpServer())
       .post(`/admin/ranges/${stopped.id}/apply`)
       .set('authorization', 'Bearer dev-admin-token')
-      .send({ expectedDraftRevision: 1 })
+      .send({ expectedDraftRevision: 1, previewToken: 'invalid-preview' })
       .expect(409);
   });
 

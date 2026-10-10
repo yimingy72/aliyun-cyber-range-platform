@@ -20,6 +20,8 @@ import {
   rangeRetryInputSchema,
   rangeTopologyChangeInputSchema,
   rangeSaveAsTemplateInputSchema,
+  rangeTopologyPreviewInputSchema,
+  rangeTopologyApplyInputSchema,
 } from './input-schemas';
 import {
   actionOutputSchema,
@@ -119,22 +121,26 @@ export const rangeTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'range_instance_topology_preview',
+    title: '预览编排实例变更',
+    description: '预览准确已保存草稿的预期主机增删、网络规则和 NAT/EIP 变化；这是平台配置差异摘要，不是实际 OpenTofu plan。生成五分钟有效的当前用户/账号空间预览令牌，随后确认应用。不会调用云 API 或创建云资源。',
+    requiredScopes: ['ranges:read'], readOnlyHint: true,
+    inputSchema: rangeTopologyPreviewInputSchema, outputSchema: resourceOutputSchema,
+    call(context, args) {
+      const input = args as { rangeInstanceId: string; expectedDraftRevision: number };
+      return context.client.previewRangeInstanceDraft(input.rangeInstanceId, input.expectedDraftRevision);
+    },
+  },
+  {
     name: 'range_instance_topology_apply',
-    title: '应用编排实例变更',
-    description: '对应编排实例详情页“应用变更”。先编译并保存完整 topologyGraph，再提交更新作业把变更应用到运行中的综合靶场；会修改云资源，调用前必须取得用户确认。',
+    title: '应用已预览的编排实例变更',
+    description: '应用准确已保存、已预览且确认的草稿；必须传原草稿版本和 previewToken，不接收新拓扑图。令牌失效或当前资源/配置变化时停止并重新预览。云更新失败不自动重新创建。',
     requiredScopes: ['ranges:write', 'ranges:control'],
-    annotations: { destructiveHint: false, idempotentHint: false },
-    inputSchema: rangeTopologyChangeInputSchema,
-    outputSchema: actionOutputSchema,
-    async call(context, args) {
-      const input = args as RangeTopologyChangeInput;
-      const { saved } = await saveRangeInstanceTopology(context, input);
-      const expectedDraftRevision = readAppliedDraftRevision(saved.draftRevision);
-      return context.client.applyRangeInstanceDraft(
-        input.rangeInstanceId,
-        expectedDraftRevision,
-        operation(input),
-      );
+    annotations: { destructiveHint: true, idempotentHint: false },
+    inputSchema: rangeTopologyApplyInputSchema, outputSchema: actionOutputSchema,
+    call(context, args) {
+      const input = args as { rangeInstanceId: string; expectedDraftRevision: number; previewToken: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.applyRangeInstanceDraft(input.rangeInstanceId, input.expectedDraftRevision, input.previewToken, operation(input));
     },
   },
   {

@@ -327,6 +327,7 @@ export type ProvisionJobTopologySnapshot = {
   templateModulePath: string;
   runtimeCredentials?: RangeRuntimeCredentials | null;
   operation?: 'create' | 'update' | 'destroy';
+  changeApproval?: import('./range-draft-change-policy').RangeChangeApproval;
 };
 
 export type ProvisionJobRecord = {
@@ -1063,6 +1064,8 @@ export type ApplyRangeInstanceDraftInput = {
   rangeInstanceId: string;
   expectedDraftRevision: number;
   triggeredBy: string;
+  previewToken: string;
+  expectedSourceDigest: string;
   topologySnapshot: ProvisionJobTopologySnapshot;
 };
 
