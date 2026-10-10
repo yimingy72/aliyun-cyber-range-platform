@@ -98,6 +98,20 @@ run "exports_disks_and_complete_resource_inventory" {
     error_message = "Inventory must retain actual disk IDs and every NIC policy resource."
   }
 }
+run "updates_security_policy_without_changing_private_cvm_identity" {
+  command = plan
+  variables {
+    security_group_rules = [{ key = "deny-http", host_key = "entry", device_index = 0, direction = "ingress", action = "DROP", protocol = "TCP", port = "80", cidr_block = "10.0.0.0/16", priority = 1, description = "Deny HTTP" }]
+  }
+  assert {
+    condition     = tencentcloud_instance.hosts["entry"].id == "ins-fixture" && tencentcloud_instance.hosts["entry"].system_disk_id == "disk-fixture" && !tencentcloud_instance.hosts["entry"].allocate_public_ip && tencentcloud_instance.hosts["entry"].internet_max_bandwidth_out == 0
+    error_message = "A network policy edit must preserve the private CVM, its system disk and lack of direct public bandwidth."
+  }
+  assert {
+    condition     = tencentcloud_security_group_rule_set.nics["entry-0"].ingress[0].action == "DROP" && tencentcloud_security_group_rule_set.nics["entry-0"].ingress[0].port == "80"
+    error_message = "Preserving private CVM billing metadata must not suppress the requested security policy update."
+  }
+}
 run "keeps_regional_nat_after_dnat_port_only_update" {
   command = plan
   variables {

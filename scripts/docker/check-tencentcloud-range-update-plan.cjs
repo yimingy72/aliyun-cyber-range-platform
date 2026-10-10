@@ -21,3 +21,13 @@ for (const row of plan.resource_changes.filter(row => ['tencentcloud_instance', 
   }
 }
 console.log('Tencent port-only update plan verified: existing NAT, EIPs and CVM retained.');
+const policyPlan = rows.find(row => row.type === 'test_plan' && row['@testrun'] === 'updates_security_policy_without_changing_private_cvm_identity')?.test_plan;
+assert(policyPlan && !policyPlan.errored, 'Security policy update requires a complete prior-state OpenTofu plan');
+const vm = policyPlan.resource_changes.find(row => row.type === 'tencentcloud_instance');
+assert.deepEqual(vm.change.actions, ['no-op'], 'Changing security rules must not mutate, replace or reset the existing private CVM');
+assert.equal(vm.change.before.id, vm.change.after.id);
+assert.equal(vm.change.before.system_disk_id, vm.change.after.system_disk_id);
+assert.equal(vm.change.before.password, vm.change.after.password);
+assert.equal(vm.change.before.user_data_raw, vm.change.after.user_data_raw);
+assert(policyPlan.resource_changes.some(row => row.type === 'tencentcloud_security_group_rule_set' && row.change.actions.includes('update')));
+console.log('Tencent security policy update plan verified: existing private CVM and its credentials retained.');
