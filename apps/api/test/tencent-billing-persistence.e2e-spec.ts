@@ -11,7 +11,7 @@ const url = process.env.TENCENT_BILLING_TEST_DATABASE_URL;
 if (url && (new URL(url).hostname !== 'billing-test-postgres' || new URL(url).pathname !== '/billing_test')) throw new Error('Tencent billing requires its isolated billing_test PostgreSQL');
 const describeDb = url ? describe : describe.skip;
 const a = { cloudWorkspaceId: 'tencent-billing-pg-a', provider: 'alibaba_cloud' as const, accountUid: '100001' };
-const b = { cloudWorkspaceId: 'tencent-billing-pg-b', provider: 'tencent_cloud' as const, accountUid: '100001' };
+const b = { cloudWorkspaceId: 'tencent-billing-pg-b', provider: 'tencent_cloud' as const, accountUid: '100001', isPlatformManager: true };
 const c = { cloudWorkspaceId: 'tencent-billing-pg-c', provider: 'tencent_cloud' as const, accountUid: '200002' };
 
 describeDb('Tencent billing atomic persistence in isolated PostgreSQL', () => {
@@ -71,6 +71,36 @@ describeDb('Tencent billing atomic persistence in isolated PostgreSQL', () => {
       expect(await new BillingService(repository).getUserSummary('tencent-billing-owner', WINDOW)).toMatchObject({ pretaxAmount: 0.300000002, currency: 'CNY' });
       const stored = await prisma.billingLineItem.findMany();
       expect(stored.map(row => row.pretaxAmount.toFixed())).toEqual(expect.arrayContaining(['0.100000001', '0.200000002', '-0.000000001']));
+    });
+  });
+
+  it('allows an ordinary owner to read exact fees and source issues without exposing them to another same-workspace actor', async () => {
+    await runInCloudWorkspace(b, async () => {
+      for (const id of ['tencent-owner-a', 'tencent-owner-b']) await repository.createPlatformUser({ id, username: id, loginUsername: id,
+        passwordHash: 'fixture-only', role: 'user' });
+      const source = await createTencentBillingProof(repository, { ownerUserId: 'tencent-owner-a' });
+      await repository.createBillingLedgerResource({ cloudProvider: 'tencent_cloud', cloudAccountUid: b.accountUid, regionId: 'ap-shanghai',
+        cloudResourceId: 'nat-unconfirmed-owner-a', cloudResourceType: 'nat_gateway', billingScope: 'user', ownerUserId: 'tencent-owner-a',
+        rangeInstanceId: source.instance.id, sourceProvisionJobId: source.job.id, billingStartAt: new Date('2026-09-01') });
+      fetchMock.mockImplementation(async () => signedTencentBillingResponse([tencentBill()]));
+      await tencentBillingSync(repository).syncRange(WINDOW);
+      const service = new BillingService(repository);
+      const own = { ...b, isPlatformManager: false, actorUserId: 'tencent-owner-a' };
+      const other = { ...b, isPlatformManager: false, actorUserId: 'tencent-owner-b' };
+      await runInCloudWorkspace(own, async () => {
+        expect(await service.getUserSummary('tencent-owner-a', WINDOW)).toMatchObject({ pretaxAmount: 0.300000003, currency: 'CNY' });
+        const summary = await service.getSummary(WINDOW);
+        expect(summary.totalPretaxAmount).toBe(0.300000003);
+        expect(summary.reconciliationIssues).toMatchObject([{ resourceType: 'unknown', resourceCount: 1,
+          resources: [{ cloudResourceId: 'nat-unconfirmed-owner-a', ownerUserId: 'tencent-owner-a', sourceProvisionJobId: source.job.id }] }]);
+      });
+      await runInCloudWorkspace(other, async () => {
+        expect(await service.getUserSummary('tencent-owner-a', WINDOW)).toMatchObject({ pretaxAmount: 0, itemCount: 0 });
+        const summary = await service.getSummary(WINDOW);
+        expect(summary).toMatchObject({ totalPretaxAmount: 0, resourcesWithoutBillCount: 0, reconciliationIssues: [], dailyTotals: [], resourceTypeTotals: [] });
+        expect(JSON.stringify(summary)).not.toContain('nat-unconfirmed-owner-a');
+        expect(JSON.stringify(summary)).not.toContain(source.job.id);
+      });
     });
   });
 
