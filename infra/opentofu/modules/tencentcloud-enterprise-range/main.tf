@@ -152,11 +152,10 @@ resource "tencentcloud_eip" "range" {
   tags                       = merge(var.tags, { CreationIntentId = each.value.creation_intent_id, PlatformResourceType = "eip" })
 }
 resource "tencentcloud_nat_gateway" "shared" {
-  for_each            = local.nats
-  name                = "${var.resource_name_prefix}-${substr(each.value.creation_intent_id, 0, 16)}"
-  vpc_id              = tencentcloud_vpc.range.id
-  subnet_id           = tencentcloud_subnet.zones[each.value.zone_key].id
-  zone                = var.zone_id
+  for_each = local.nats
+  name     = "${var.resource_name_prefix}-${substr(each.value.creation_intent_id, 0, 16)}"
+  vpc_id   = tencentcloud_vpc.range.id
+  # Standard public NAT is regional; preserve provider-computed placement instead of forcing subnet replacement.
   nat_product_version = 2
   bandwidth           = 5000
   max_concurrent      = 2000000

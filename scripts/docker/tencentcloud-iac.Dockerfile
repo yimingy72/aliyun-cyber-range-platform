@@ -6,4 +6,5 @@ COPY infra/opentofu/modules/tencentcloud-single-instance-network /source/tencent
 COPY infra/opentofu/modules/tencentcloud-single-instance-batch /source/tencentcloud-single-instance-batch
 COPY infra/opentofu/modules/tencentcloud-enterprise-range /source/tencentcloud-enterprise-range
 COPY scripts/docker/check-tencentcloud-provider-schema.cjs /source/check-tencentcloud-provider-schema.cjs
+COPY scripts/docker/check-tencentcloud-range-update-plan.cjs /source/check-tencentcloud-range-update-plan.cjs
 ENTRYPOINT ["/bin/sh"]

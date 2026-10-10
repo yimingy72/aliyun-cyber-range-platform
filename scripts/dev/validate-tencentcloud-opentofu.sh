@@ -40,6 +40,8 @@ docker run --rm --network none --platform linux/amd64 --entrypoint /bin/sh \
     tofu -chdir="/validation/$module" validate -no-color
     tofu -chdir="/validation/$module" test -no-color
   done
+  tofu -chdir=/validation/tencentcloud-enterprise-range test -verbose -json > /validation/tencent-range-update-tests.jsonl
+  node /source/check-tencentcloud-range-update-plan.cjs /validation/tencent-range-update-tests.jsonl
   tofu -chdir=/validation/tencentcloud-single-instance-batch providers schema -json > /validation/provider-schema.json
   node /source/check-tencentcloud-provider-schema.cjs /validation/provider-schema.json
   '

@@ -2,6 +2,7 @@ mock_provider "tencentcloud" {
   mock_resource "tencentcloud_vpc" { defaults = { id = "vpc-fixture", default_route_table_id = "rtb-fixture" } }
   mock_resource "tencentcloud_instance" { defaults = { id = "ins-fixture", system_disk_id = "disk-fixture", instance_status = "RUNNING" } }
   mock_resource "tencentcloud_eip" { defaults = { id = "eip-fixture", public_ip = "203.0.113.10" } }
+  mock_resource "tencentcloud_nat_gateway" { defaults = { id = "nat-fixture", subnet_id = "", zone = "ap-shanghai-3", stock_public_ip_addresses_bandwidth_out = 30 } }
   mock_data "tencentcloud_enis" { defaults = { enis = [{ id = "eni-primary", primary = true, cdc_id = "", create_time = "", description = "", instance_id = "ins-fixture", ipv4s = [], ipv6s = [], mac = "", name = "primary", security_groups = [], state = "AVAILABLE", subnet_id = "subnet-fixture", tags = {}, vpc_id = "vpc-fixture" }] } }
 }
 variables {
@@ -95,6 +96,21 @@ run "exports_disks_and_complete_resource_inventory" {
   assert {
     condition     = output.resource_summary.system_disk_ids["entry"] == "disk-fixture" && output.public_entry.public_ip == "203.0.113.10" && length(output.resource_summary.security_group_ids) == 2
     error_message = "Inventory must retain actual disk IDs and every NIC policy resource."
+  }
+}
+run "keeps_regional_nat_after_dnat_port_only_update" {
+  command = plan
+  variables {
+    dnat_entries = [{ key = "http", nat_key = "shared", eip_key = "dnat", host_key = "entry", external_port = 18081, internal_port = 80, protocol = "TCP" }]
+    tags         = { CloudProvider = "tencent_cloud", CloudAccountContextId = "ctx-fixture", CloudAccountUid = "100000000001", RangeInstanceId = "range-fixture", PlatformCreateJobId = "job-update", CreatedBy = "cyber-range-platform", PlatformScope = "user", PlatformUserId = "owner-fixture" }
+  }
+  assert {
+    condition     = tencentcloud_nat_gateway.shared["shared"].id == "nat-fixture" && tencentcloud_nat_gateway.shared["shared"].subnet_id == "" && tencentcloud_nat_gateway.shared["shared"].zone == "ap-shanghai-3" && tencentcloud_nat_gateway.shared["shared"].stock_public_ip_addresses_bandwidth_out == 30
+    error_message = "A port-only update must keep the original standard NAT and its real computed regional placement."
+  }
+  assert {
+    condition     = tencentcloud_instance.hosts["entry"].id == "ins-fixture" && tencentcloud_instance.hosts["entry"].availability_zone == "ap-shanghai-2" && tencentcloud_dnat.entry["http"].elastic_port == "18081" && tencentcloud_nat_gateway.shared["shared"].tags["CreationIntentId"] == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    error_message = "Only the entry port and mutable job tags may change; frozen CVM zone and NAT recovery intent must stay."
   }
 }
 run "rejects_cross_region_zone" {
