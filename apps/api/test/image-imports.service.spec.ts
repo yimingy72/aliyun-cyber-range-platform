@@ -202,6 +202,7 @@ describe('Image import resource ownership and recovery', () => {
   });
   it('retains the originally frozen OSS bucket when configuration later changes', async () => {
     await submitted(); image.Status = 'Available'; credentials.mockResolvedValue({ ...CONTEXT, imageImportBucket: 'replacement-bucket' });
+    job.uploadExpiresAt = new Date(0);
     await service.refreshImport(job.id);
     expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('https://cyber-range-image-test.oss-cn-hangzhou.aliyuncs.com/'), expect.objectContaining({ method: 'DELETE' }));
   });

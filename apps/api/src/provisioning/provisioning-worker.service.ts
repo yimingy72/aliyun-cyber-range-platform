@@ -604,9 +604,10 @@ export class ProvisioningWorkerService {
       const current = await this.adminRepository.getRangeInstanceById(instance.id);
       if (instance.instanceMode === 'single' && (instance.singleInstanceConfig?.executionBackend === 'opentofu'
         || current?.singleInstanceConfig?.nativeCreateJobId || current?.singleInstanceConfig?.opentofuCreateJobId)) {
-        await this.adminRepository.commitSingleInstanceClaim(job, {
+        const committed = await this.adminRepository.commitSingleInstanceClaim(job, {
           status: 'destroy_failed', errorSummary: 'Instance execution was interrupted after cloud creation may have started; recovery is required before retry',
         }, { status: 'failed', finishedAt: new Date(), errorSummary: 'Instance execution requires state recovery' });
+        if (committed) await this.finalizeDispatchedOperation(job, 'failed', 'PROVISIONING_FAILED');
         return;
       }
       if (instance.instanceMode === 'range' && job.jobType === 'update' && rangeApplyStarted && current?.resourceSummary?.executionContext) {

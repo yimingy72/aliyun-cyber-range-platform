@@ -5,7 +5,6 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 
 const scope = { cloudWorkspaceId: 'workspace-a', provider: 'alibaba_cloud' as const, accountUid: '123456' };
 const binding = { cloudAccountContextId: 'context-a', cloudAccountUid: scope.accountUid, regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' };
-const reportStep = async () => {};
 
 async function expiredFixture(mode: 'range' | 'single', error = 'Cloud request timed out', retries = 0) {
   const repository = createMemoryAdminRepository();
@@ -67,10 +66,10 @@ describe('reviewed lifecycle regressions', () => {
     await expect((worker as any).rangeHasApplyEvidence(instance, next)).resolves.toBe(true);
   });
 
-  it('finalizes a single-instance operation when its execution service completes the job', async () => runInCloudWorkspace(scope, async () => {
+  it.each([false, true])('finalizes a single-instance operation including interrupted execution (%s)', async interrupted => runInCloudWorkspace(scope, async () => {
     const repository = createMemoryAdminRepository();
     const instance = await repository.createRangeInstance({ name: 'single', instanceMode: 'single', status: 'pending_destroy',
-      singleInstanceConfig: { hostKey: 'entry' } as never });
+      singleInstanceConfig: { hostKey: 'entry', nativeCreateJobId: 'original-create' } as never });
     const pending = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'owner' });
     await repository.updateRangeInstance(instance.id, { lastJobId: pending.id });
     const job = (await repository.claimProvisionJob(pending.id, new Date()))!;
@@ -81,11 +80,12 @@ describe('reviewed lifecycle regressions', () => {
       requestId: 'request-a', actorUserId: 'owner', source: 'mcp', oauthClientId: 'mcp-gateway', toolName: 'single_instance_destroy',
       phase: 'dispatched', targetType: 'single_instance', targetId: instance.id, jobId: job.id });
     const executor = { executeDestroyBatch: jest.fn(async () => {
+      if (interrupted) throw new Error('execution interrupted');
       await repository.commitSingleInstanceClaim(job, { status: 'destroyed' }, { status: 'succeeded', finishedAt: new Date() });
     }) };
     const worker = new ProvisioningWorkerService(repository, {} as never, {} as never, executor as never);
-    await (worker as any).processSingleInstanceJob({ job, instance: await repository.getRangeInstanceById(instance.id), effectiveJobType: 'destroy', reportStep });
-    expect(await repository.getIdempotentOperationByOperationId(operation.operationId)).toMatchObject({ status: 'succeeded',
+    await (worker as any).processClaimedJob(job);
+    expect(await repository.getIdempotentOperationByOperationId(operation.operationId)).toMatchObject({ status: interrupted ? 'failed' : 'succeeded',
       result: { jobId: job.id, singleInstanceId: instance.id } });
   }));
 
