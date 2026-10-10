@@ -306,7 +306,7 @@ describe('PlatformApiClient', () => {
   });
 
   it.each([404, 403, 401])('maps only single detail 404 to null and never retries broad lists for status %s', async status => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ message: 'fixture rejection' }), { status }));
+    const fetchMock = vi.fn(async (_request: unknown) => new Response(JSON.stringify({ message: 'fixture rejection' }), { status }));
     const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'fixture-token', fetch: fetchMock as typeof fetch });
     if (status === 404) await expect(client.getSingleInstance('id/with-space')).resolves.toBeNull();
     else await expect(client.getSingleInstance('id/with-space')).rejects.toMatchObject({ status });
