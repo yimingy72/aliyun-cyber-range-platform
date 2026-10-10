@@ -643,6 +643,26 @@ export type DeleteCloudAccountResult = {
   retainedData: true;
 };
 
+export type RangeInstanceChangePreview = {
+  id: string;
+  rangeInstanceId: string;
+  kind: 'expected-topology-diff';
+  expectedDraftRevision: number;
+  previewToken: string;
+  expiresAt: string;
+  sourceDigest: string;
+  addedHosts: Array<{ id: string; nodeId: string; name: string; expiresAt: string }>;
+  deletedHosts: Array<{ id: string; nodeId: string; name: string; instanceId: string; systemDiskId?: string; dataDiskIds: string[]; networkInterfaceIds: string[]; diskIds: string[] }>;
+  ruleChanges: Array<{ nodeId: string; name: string; nodeKind: string }>;
+  resourceChanges: Array<{ resourceType: string; key: string; action: 'create' | 'delete'; resourceId?: string }>;
+  allowDnatRemoval: boolean;
+  allowSnatRemoval: boolean;
+};
+
+export type RangeInstanceTemplateCopy = {
+  id: string; templateId: string; name: string; visibility: 'private'; rangeInstanceId: string; sourceDraftRevision: number;
+};
+
 export type ImageImportJob = {
   id: string;
   cloudAccountContextId: string;

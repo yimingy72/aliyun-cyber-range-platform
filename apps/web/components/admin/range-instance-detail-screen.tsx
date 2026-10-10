@@ -17,7 +17,8 @@ import {
   fetchRangeInstanceDetail,
   runRangeInstanceNodeAction,
   saveRangeInstanceDraft,
-  syncRangeInstanceTemplate,
+  previewRangeInstanceDraft,
+  saveRangeInstanceAsTemplate,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
@@ -28,6 +29,7 @@ import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
   RangeInstanceDetail,
+  RangeInstanceChangePreview,
 } from '../../lib/admin-types';
 import { resolvePreferredInstanceTypes } from '../../lib/instance-type-catalog';
 import {
@@ -47,7 +49,8 @@ import { AsyncContentState } from './shared/async-content-state';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
-import { ConfirmActionDialog } from './shared/confirm-action-dialog';
+import { RangeChangePreviewDialog } from './range-change-preview-dialog';
+import { Input } from '@/components/ui/input';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
 import { readTopologyViewport, writeTopologyViewport } from './template-editor/topology-flow-adapter';
 import {
@@ -886,7 +889,7 @@ export function RangeInstanceDetailScreen({
   const screenCache = useAdminScreenCache();
   const isPageActive = useAdminRouteIsActive(`/admin/ranges/${rangeId}`);
   const resourceKey = `range-instance-detail:${rangeId}:${session.profile?.id ?? 'current-session'}:${session.profile?.role ?? ''}`;
-  const identityKey = `${apiBaseUrl}\u0000${session.profile?.id ?? 'current-session'}\u0000${session.profile?.role ?? ''}\u0000${rangeId}`;
+  const identityKey = `${apiBaseUrl}\u0000${session.profile?.id ?? 'current-session'}\u0000${session.profile?.role ?? ''}\u0000${rangeId}\u0000${workspace?.id ?? readCloudWorkspaceSelection() ?? ''}`;
   const scopeKey = `${identityKey}\u0000${session.token}`;
   const scopeRef = useRef(scopeKey);
   scopeRef.current = scopeKey;
@@ -909,6 +912,10 @@ export function RangeInstanceDetailScreen({
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSyncingTemplate, setIsSyncingTemplate] = useState(false);
   const [isTemplateSyncDialogOpen, setIsTemplateSyncDialogOpen] = useState(false);
+  const [templateCopyName, setTemplateCopyName] = useState('');
+  const [templateCopyDescription, setTemplateCopyDescription] = useState('');
+  const [changePreview, setChangePreview] = useState<RangeInstanceChangePreview | null>(null);
+  const copyRequestRef = useRef<{ scope: string; graph: string; name: string; description: string; revision: number; key: string } | null>(null);
   const [platformImageAssets, setPlatformImageAssets] = useState<PlatformImageAsset[]>([]);
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [pendingNodeAction, setPendingNodeAction] = useState<{
@@ -923,6 +930,7 @@ export function RangeInstanceDetailScreen({
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
+  useEffect(() => { setChangePreview(null); setIsTemplateSyncDialogOpen(false); copyRequestRef.current = null; }, [identityKey]);
 
   useEffect(() => {
     if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
@@ -947,6 +955,7 @@ export function RangeInstanceDetailScreen({
     historyRef.current = createTopologyHistory(snapshot);
     persistedSnapshotRef.current = JSON.stringify(snapshot);
     setHistoryState(historyRef.current);
+    setChangePreview(null);
     setDraftGraph(writeTopologyViewport({
       schemaVersion: parsed.schemaVersion,
       nodes: snapshot.nodes,
@@ -1068,7 +1077,7 @@ export function RangeInstanceDetailScreen({
           screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
           screenCache?.invalidate(apiBaseUrl, token, resourceKey);
           setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
-          setErrorMessage(job.status === 'succeeded' ? null : job.errorSummary || '实例配置变更未完成，请检查任务后重试。');
+          setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
           return;
         }
         setSuccessMessage('实例配置变更正在应用。');
@@ -1098,16 +1107,7 @@ export function RangeInstanceDetailScreen({
     );
   }, [detail, draftGraph]);
 
-  const directoryNodes = useMemo(() => {
-    if (!draftGraph || typeof draftGraph !== 'object') {
-      return readWorkbenchNodesFromGraph(
-        (detail?.runtimeTopologyGraph as Record<string, unknown> | null) ?? null,
-        detail,
-      );
-    }
-
-    return readWorkbenchNodesFromGraph(draftGraph, detail);
-  }, [detail, draftGraph]);
+  const directoryNodes = useMemo(() => readWorkbenchNodesFromGraph(detail?.runtimeTopologyGraph ?? null, detail), [detail]);
   const displayedDirectoryNodes = useMemo(
     () =>
       directoryNodes.map((node) => ({
@@ -1118,6 +1118,11 @@ export function RangeInstanceDetailScreen({
   );
 
   const topologyNodes = topologyDraft?.nodes ?? [];
+  const deployedTopology = readTopologyGraphDraft(detail?.runtimeTopologyGraph ?? null);
+  const deployedNodes = deployedTopology?.nodes ?? [];
+  const deployedNodeIds = deployedNodes.map(node => node.id);
+  const pendingAddedHosts = topologyNodes.filter(node => node.kind === 'ecs' && !deployedNodeIds.includes(node.id));
+  const pendingDeletedHosts = deployedNodes.filter(node => node.kind === 'ecs' && !topologyNodes.some(draft => draft.id === node.id));
   const topologyEdges = useMemo<TemplateEdge[]>(() => topologyDraft?.edges ?? [], [topologyDraft]);
   const topologyViewport = readTopologyViewport(topologyDraft?.viewport);
   const selectedTopologyNode = useMemo(
@@ -1129,6 +1134,7 @@ export function RangeInstanceDetailScreen({
   );
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
   const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
+  const canEditTopology = canOperateInstance && !isSavingDraft && !isSyncingTemplate && !trackedUpdateJobId;
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1298,7 +1304,7 @@ export function RangeInstanceDetailScreen({
       let verifiedNodes = topologyDraft.nodes;
       if ((metadata.cloudProvider ?? detail.cloudProvider ?? workspace?.provider) === 'tencent_cloud') {
         verifiedNodes = await Promise.all(topologyDraft.nodes.map(async node => {
-          if (node.kind !== 'ecs') return node;
+          if (node.kind !== 'ecs' || deployedNodeIds.includes(node.id)) return node;
           const image = platformImageAssets.find(asset => asset.id === node.platformImageAssetId && asset.imageId === node.imageId);
           if (!image) throw new Error(`${node.label} 请选择当前工作空间的可用镜像。`);
           const imageError = tencentImageError(image);
@@ -1343,7 +1349,9 @@ export function RangeInstanceDetailScreen({
       if (scopeRef.current !== scopeKey) return null;
 
       const nextDetail = {
+        ...detail,
         ...updated,
+        draftTopologyGraph: updated.draftTopologyGraph ?? payload.topologyGraph,
         sourceTemplateRevision: updated.sourceTemplateRevision ?? detail.sourceTemplateRevision ?? null,
       };
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
@@ -1369,49 +1377,40 @@ export function RangeInstanceDetailScreen({
   }
 
   async function handleApplyDraft() {
-    if (!session.token || !detail || trackedUpdateJobId || !canApplyInstance) {
-      return;
-    }
-
-    setIsSavingDraft(true);
-    setErrorMessage(null);
-    setSuccessMessage(null);
-
+    if (!session.token || !detail || isSavingDraft || isSyncingTemplate || trackedUpdateJobId || !canApplyInstance) return;
+    setIsSavingDraft(true); setErrorMessage(null); setSuccessMessage(null);
     try {
       const saved = await persistDraftChanges();
-
-      if (!saved) {
-        return;
-      }
-
-      const expectedDraftRevision = saved.draftRevision;
-
-      if (
-        typeof expectedDraftRevision !== 'number' ||
-        !Number.isInteger(expectedDraftRevision) ||
-        expectedDraftRevision < 1
-      ) {
-        throw new Error('Saved range instance draft revision is unavailable');
-      }
-
-      const job = await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, expectedDraftRevision);
+      if (!saved || !saved.draftRevision) return;
+      const preview = await previewRangeInstanceDraft(apiBaseUrl, session.token, detail.id, saved.draftRevision);
       if (scopeRef.current !== scopeKey) return;
-      setTrackedUpdateJobId(job.id);
+      if (preview.rangeInstanceId !== detail.id || preview.expectedDraftRevision !== saved.draftRevision || !preview.previewToken || preview.kind !== 'expected-topology-diff') throw new Error('变更预览返回不一致，请重新预览。');
+      setChangePreview(preview);
+    } catch (error) {
+      if (scopeRef.current !== scopeKey) return;
+      if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
+      else setErrorMessage(error instanceof Error ? error.message : '变更预览失败，请重试。');
+    } finally { if (scopeRef.current === scopeKey) setIsSavingDraft(false); }
+  }
+
+  async function handleConfirmApply() {
+    const preview = changePreview;
+    if (!session.token || !detail || !preview || isSavingDraft || trackedUpdateJobId) return;
+    if (!Number.isFinite(Date.parse(preview.expiresAt)) || Date.parse(preview.expiresAt) <= Date.now()) { setChangePreview(null); setErrorMessage('变更预览已过期，请重新预览。'); return; }
+    setIsSavingDraft(true); setErrorMessage(null);
+    try {
+      const job = await applyRangeInstanceDraft(apiBaseUrl, session.token, detail.id, preview.expectedDraftRevision, preview.previewToken);
+      if (scopeRef.current !== scopeKey) return;
+      if (!job.id) throw new Error('应用结果不完整，请刷新查看任务状态。');
+      setTrackedUpdateJobId(job.id); setChangePreview(null);
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
-      setSuccessMessage('实例配置变更已提交应用。');
-    } catch (error: unknown) {
+      setSuccessMessage('实例配置变更已提交，任务完成后更新运行拓扑。');
+    } catch (error) {
       if (scopeRef.current !== scopeKey) return;
-      if (isUnauthorizedAdminError(error)) {
-        session.logout();
-        router.replace('/admin/login');
-        return;
-      }
-
-      setErrorMessage('应用变更失败，请稍后重试。');
-    } finally {
-      if (scopeRef.current === scopeKey) setIsSavingDraft(false);
-    }
+      if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
+      else { setChangePreview(null); setErrorMessage(error instanceof Error ? error.message : '提交结果未确认，请刷新查看任务状态后再操作。'); void reloadDetailSnapshot().catch(() => undefined); }
+    } finally { if (scopeRef.current === scopeKey) setIsSavingDraft(false); }
   }
 
   async function handleSaveDraft() {
@@ -1437,57 +1436,29 @@ export function RangeInstanceDetailScreen({
   }
 
   async function handleConfirmSyncTemplate() {
-    if (!session.token || !detail) {
-      return;
-    }
-
-    setIsSyncingTemplate(true);
-    setErrorMessage(null);
-    setSuccessMessage(null);
-
+    if (!session.token || !detail || isSyncingTemplate || !templateCopyName.trim()) return;
+    setIsSyncingTemplate(true); setErrorMessage(null); setSuccessMessage(null);
+    const name = templateCopyName.trim(), description = templateCopyDescription.trim();
     try {
-      const saved = await persistDraftChanges();
-
-      if (!saved) {
-        return;
+      const graph = JSON.stringify(topologyDraft);
+      let request = copyRequestRef.current;
+      if (!request || request.scope !== identityKey || request.graph !== graph || request.name !== name || request.description !== description) {
+        const saved = await persistDraftChanges();
+        if (!saved?.draftRevision) return;
+        request = { scope: identityKey, graph: JSON.stringify(readTopologyGraphDraft(saved.draftTopologyGraph ?? saved.runtimeTopologyGraph)), name, description, revision: saved.draftRevision, key: crypto.randomUUID() };
+        copyRequestRef.current = request;
       }
-
-      if (
-        typeof saved.draftRevision !== 'number' ||
-        !Number.isInteger(saved.draftRevision) ||
-        saved.draftRevision < 1 ||
-        typeof saved.sourceTemplateRevision !== 'number' ||
-        !Number.isInteger(saved.sourceTemplateRevision) ||
-        saved.sourceTemplateRevision < 1
-      ) {
-        throw new Error('实例或模板版本已变化，请刷新后重新保存草稿。');
-      }
-
-      await syncRangeInstanceTemplate(
-        apiBaseUrl,
-        session.token,
-        detail.id,
-        saved.draftRevision,
-        saved.sourceTemplateRevision,
-      );
+      const result = await saveRangeInstanceAsTemplate(apiBaseUrl, session.token, detail.id, { name, description, expectedDraftRevision: request.revision }, request.key);
       if (scopeRef.current !== scopeKey) return;
-      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
-      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
+      if (!result.templateId || result.rangeInstanceId !== detail.id || result.sourceDraftRevision !== request.revision || result.visibility !== 'private') throw new Error('另存返回不一致，请使用原请求重试。');
       screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
-      setSuccessMessage('当前实例拓扑已更新到模板草稿。');
-      setIsTemplateSyncDialogOpen(false);
-    } catch (error: unknown) {
+      setSuccessMessage(`已另存为私有拓扑“${result.name}”，原拓扑保持不变。`);
+      copyRequestRef.current = null; setIsTemplateSyncDialogOpen(false);
+    } catch (error) {
       if (scopeRef.current !== scopeKey) return;
-      if (isUnauthorizedAdminError(error)) {
-        session.logout();
-        router.replace('/admin/login');
-        return;
-      }
-
-      setErrorMessage(error instanceof Error ? error.message : '更新编排拓扑失败，请稍后重试。');
-    } finally {
-      if (scopeRef.current === scopeKey) setIsSyncingTemplate(false);
-    }
+      if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
+      else setErrorMessage(error instanceof Error ? error.message : '另存结果未确认，请保持名称和配置不变后重试。');
+    } finally { if (scopeRef.current === scopeKey) setIsSyncingTemplate(false); }
   }
 
   function openPackImageDialog(nodeId: string) {
@@ -1669,7 +1640,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function commitTopologySnapshot(snapshot: TopologySnapshot, message: string) {
-    if (!canOperateInstance) {
+    if (!canEditTopology) {
       return;
     }
 
@@ -1681,6 +1652,7 @@ export function RangeInstanceDetailScreen({
     const nextHistory = pushTopologySnapshot(baseHistory, snapshot);
     historyRef.current = nextHistory;
     setHistoryState(nextHistory);
+    setChangePreview(null);
     setDraftGraph(writeTopologyViewport({
       schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
       nodes: nextHistory.present.nodes,
@@ -1691,18 +1663,20 @@ export function RangeInstanceDetailScreen({
   }
 
   function restoreTopologyHistory(nextHistory: TopologyHistory, message: string) {
-    if (!canOperateInstance || nextHistory === historyRef.current) {
+    if (!canEditTopology || nextHistory === historyRef.current) {
       return;
     }
 
     historyRef.current = nextHistory;
     setHistoryState(nextHistory);
+    setChangePreview(null);
     setDraftGraph(writeTopologyViewport({
       schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
       nodes: nextHistory.present.nodes,
       edges: nextHistory.present.edges,
     }, nextHistory.present.viewport));
     setSelection({ nodeIds: [], edgeIds: [] });
+    setChangePreview(null);
     setSuccessMessage(message);
     setErrorMessage(null);
   }
@@ -1725,7 +1699,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleAddTopologyNode(kind: 'router' | 'switch' | 'ecs', position?: { x: number; y: number }) {
-    if (!canOperateInstance) {
+    if (!canEditTopology) {
       return;
     }
 
@@ -1736,7 +1710,7 @@ export function RangeInstanceDetailScreen({
 
     let kindOrdinal = topologyNodes.filter((node) => node.kind === kind).length + 1;
     while (topologyNodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindOrdinal))) kindOrdinal += 1;
-    const nextNodeId = nextAvailableGraphId(kind, topologyNodes.map((node) => node.id));
+    const nextNodeId = nextAvailableGraphId(kind, [...new Set([...topologyNodes, ...deployedNodes].map(node => node.id))]);
     let switchCidr = '';
     if (kind === 'switch') {
       try {
@@ -1778,7 +1752,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleConnectTopologyNodes(connection: { source: string; target: string }) {
-    if (!canOperateInstance) {
+    if (!canEditTopology) {
       return;
     }
 
@@ -1815,6 +1789,7 @@ export function RangeInstanceDetailScreen({
       return;
     }
 
+    if (canonicalTarget.kind === 'ecs' && deployedNodeIds.includes(canonicalTarget.id)) { setErrorMessage('已有主机的网卡与交换机关联不可迁移，请只为新主机建立连接。'); return; }
     const nextNodes =
       canonicalSource.kind === 'switch' && canonicalTarget.kind === 'ecs'
         ? topologyNodes.map((node) =>
@@ -1839,7 +1814,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleDeleteTopologySelection() {
-    if (!canOperateInstance) {
+    if (!canEditTopology) {
       return;
     }
 
@@ -1850,11 +1825,17 @@ export function RangeInstanceDetailScreen({
       (edge) => edgeIds.has(edge.id) || nodeIds.has(edge.fromNodeId) || nodeIds.has(edge.toNodeId),
     );
 
+    if (deletedNodes.some(node => node.kind === 'ecs') && !topologyNodes.some(node => node.kind === 'ecs' && !nodeIds.has(node.id))) {
+      setErrorMessage('编排至少需要保留一台主机；回收全部资源请使用编排实例列表的销毁操作。');
+      return;
+    }
+
     if (deletedNodes.length === 0 && deletedEdges.length === 0) {
       setErrorMessage('请先选择节点或连线，再执行删除。');
       return;
     }
 
+    if (deletedNodes.some(node => node.kind !== 'ecs' && deployedNodeIds.includes(node.id)) || deletedEdges.some(edge => deployedNodeIds.includes(edge.toNodeId) && !nodeIds.has(edge.toNodeId))) { setErrorMessage('已部署网络及已有主机的网卡连接不可删除；可删除主机或尚未部署的节点。'); return; }
     let nextNodes = topologyNodes.filter((node) => !nodeIds.has(node.id));
     deletedNodes.forEach((node) => {
       nextNodes = cleanupNodeReferencesAfterDeletion(nextNodes, node);
@@ -1872,7 +1853,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleUpdateTopologyNode(nodeId: string, nextNode: TemplateNode) {
-    if (!canOperateInstance) {
+    if (!canEditTopology) {
       return;
     }
 
@@ -1881,7 +1862,7 @@ export function RangeInstanceDetailScreen({
         return node;
       }
 
-      if (node.kind !== 'ecs' || nextNode.kind !== 'ecs') {
+      if (node.kind !== 'ecs' || nextNode.kind !== 'ecs' || deployedNodeIds.includes(node.id)) {
         return nextNode;
       }
 
@@ -1902,7 +1883,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handlePositionsCommit(positions: Array<{ id: string; position: { x: number; y: number } }>) {
-    if (!canOperateInstance) {
+    if (!canEditTopology) {
       return;
     }
 
@@ -1919,7 +1900,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleViewportCommit(viewport: TopologyViewport) {
-    if (!canOperateInstance || !readTopologyViewport(viewport)) {
+    if (!canEditTopology || !readTopologyViewport(viewport)) {
       return;
     }
 
@@ -1936,6 +1917,7 @@ export function RangeInstanceDetailScreen({
       },
     };
     setHistoryState(historyRef.current);
+    setChangePreview(null);
     setDraftGraph(writeTopologyViewport({
       schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
       nodes: topologyNodes,
@@ -1944,7 +1926,7 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleLayoutAll() {
-    if (!canOperateInstance || topologyNodes.length === 0) {
+    if (!canEditTopology || topologyNodes.length === 0) {
       return;
     }
 
@@ -1959,13 +1941,13 @@ export function RangeInstanceDetailScreen({
   }
 
   function handleUndo() {
-    if (historyRef.current) {
+    if (canEditTopology && historyRef.current) {
       restoreTopologyHistory(undoTopology(historyRef.current), '已撤销上一步拓扑操作。');
     }
   }
 
   function handleRedo() {
-    if (historyRef.current) {
+    if (canEditTopology && historyRef.current) {
       restoreTopologyHistory(redoTopology(historyRef.current), '已重做上一步拓扑操作。');
     }
   }
@@ -2040,6 +2022,7 @@ export function RangeInstanceDetailScreen({
 
               {activeTab === 'topology' && canOperateInstance ? (
                 <div className="range-instance-workbench-actions">
+                  <Button disabled={!canEditTopology} onClick={() => handleAddTopologyNode('ecs')} size="sm" type="button" variant="outline">添加主机</Button>
                   <Button
                     disabled={isSavingDraft || isSyncingTemplate}
                     onClick={() => void handleSaveDraft()}
@@ -2057,20 +2040,21 @@ export function RangeInstanceDetailScreen({
                     type="button"
                     variant="outline"
                   >
-                      {isSavingDraft ? '处理中...' : '应用变更'}
+                      {isSavingDraft ? '处理中...' : '预览变更'}
                   </Button>
                   <Button
                     disabled={isSavingDraft || isSyncingTemplate}
-                    onClick={() => setIsTemplateSyncDialogOpen(true)}
+                    onClick={() => { setTemplateCopyName(templateCopyName || `${detail.name ?? '编排'}-副本`); setIsTemplateSyncDialogOpen(true); }}
                     size="sm"
                     type="button"
                   >
-                      {isSyncingTemplate ? '处理中...' : '更新编排拓扑'}
+                      {isSyncingTemplate ? '处理中...' : '另存为新拓扑'}
                   </Button>
                 </div>
               ) : null}
             </div>
 
+            {activeTab === 'topology' && (pendingAddedHosts.length > 0 || pendingDeletedHosts.length > 0) ? <div className="mb-3 flex flex-wrap gap-3 text-sm" role="status"><span>待创建主机 {pendingAddedHosts.length}</span><span className={pendingDeletedHosts.length ? 'text-destructive' : ''}>待回收主机 {pendingDeletedHosts.length}</span><span className="text-muted-foreground">草稿尚未应用</span></div> : null}
             <div
               className={
                 activeTab === 'directory'
@@ -2095,7 +2079,8 @@ export function RangeInstanceDetailScreen({
                 </div>
               ) : (
                 <RangeInstanceTopologyWorkspace
-                  editable={canOperateInstance}
+                  editable={canEditTopology}
+                  deployedNodeIds={deployedNodeIds}
                   nodes={topologyNodes}
                   edges={topologyEdges}
                   linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
@@ -2123,15 +2108,11 @@ export function RangeInstanceDetailScreen({
           : <RangeInstanceDetailBodySkeleton />}
       </section>
 
-      <ConfirmActionDialog
-        confirmLabel="确认更新模板草稿"
-        description="将当前实例已保存的拓扑草稿覆盖到来源模板的当前草稿版本。此操作不会自动发布模板，也不会影响其他已运行实例。"
-        onConfirm={() => void handleConfirmSyncTemplate()}
-        onOpenChange={setIsTemplateSyncDialogOpen}
-        open={isTemplateSyncDialogOpen}
-        pending={isSyncingTemplate}
-        title="更新编排拓扑"
-      />
+      <RangeChangePreviewDialog preview={changePreview} pending={isSavingDraft} onClose={() => setChangePreview(null)} onConfirm={() => void handleConfirmApply()} />
+      <AdminDialog open={isTemplateSyncDialogOpen} title="另存为新拓扑" description="保存当前草稿为新的私有编排拓扑，原拓扑和运行资源保持不变。" pending={isSyncingTemplate}
+        onOpenChange={setIsTemplateSyncDialogOpen} footer={<><Button disabled={isSyncingTemplate} variant="outline" onClick={() => setIsTemplateSyncDialogOpen(false)}>取消</Button><Button disabled={isSyncingTemplate || !templateCopyName.trim()} onClick={() => void handleConfirmSyncTemplate()}>{isSyncingTemplate ? '正在保存…' : '保存新拓扑'}</Button></>}>
+        <div className="grid gap-4"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isSyncingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isSyncingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>
+      </AdminDialog>
 
       {packImageDialog && detail ? (
         <AdminDialog
