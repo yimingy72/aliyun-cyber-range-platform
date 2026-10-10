@@ -162,6 +162,9 @@ export type RangeNodeDnsVerification = {
   method: 'readback' | 'ad_srv';
   expected: Array<{ nicId: string; privateIp: string; servers: string[] }>;
   actual: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  observedInterfaces?: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  untouchedInterfaces?: Array<{ nicId: string; privateIp: string; baselineServers: string[]; actualServers: string[] }>;
+  preservationStatus?: 'not_requested' | 'verified' | 'changed' | 'unverified';
   resolutionStatus: 'not_requested' | 'verified' | 'failed';
   errorCode?: string;
   checkedAt?: string;

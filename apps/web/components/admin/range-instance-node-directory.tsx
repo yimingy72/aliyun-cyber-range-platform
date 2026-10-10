@@ -18,6 +18,9 @@ export type RangeNodeDnsVerification = {
   method: 'readback' | 'ad_srv';
   expected: Array<{ nicId: string; privateIp: string; servers: string[] }>;
   actual: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  observedInterfaces?: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  untouchedInterfaces?: Array<{ nicId: string; privateIp: string; baselineServers: string[]; actualServers: string[] }>;
+  preservationStatus?: 'not_requested' | 'verified' | 'changed' | 'unverified';
   resolutionStatus: 'not_requested' | 'verified' | 'failed';
   errorCode?: string;
   checkedAt?: string;
@@ -79,6 +82,7 @@ function DnsVerificationStatus({ node }: { node: RangeInstanceWorkbenchNode }) {
         {verification?.expected.length ? verification.expected.map((nic) => <span key={nic.nicId}>预期 · {nic.privateIp}：{nic.servers.join('、')}</span>)
           : <span>预期 DNS：{node.dns.servers.join('、')}</span>}
         {verification?.actual.map((nic) => <span key={nic.nicId}>实际 · {nic.privateIp}：{nic.servers.length ? nic.servers.join('、') : '暂无'}</span>)}
+        {verification?.preservationStatus === 'verified' ? <span>未选网卡 DNS 与设置前一致。</span> : verification?.preservationStatus === 'changed' ? <span>未选网卡 DNS 已变化，请检查初始化配置。</span> : verification?.preservationStatus === 'unverified' ? <span>未选网卡 DNS 保留状态尚未核验。</span> : null}
         {node.dns.domain ? <span>域 {node.dns.domain}：{verification?.resolutionStatus === 'verified' ? 'SRV 记录验证通过' : verification?.resolutionStatus === 'failed' ? 'SRV 记录验证失败' : 'SRV 记录待验证'}</span> : null}
         {verification?.status === 'failed' ? <span>请检查网卡、DNS 服务与初始化状态。失败不会自动重建实例。</span> : null}
         {!verification || verification.status === 'unverified' ? <span>尚未确认主机内的实际 DNS，运行中不代表 DNS 已生效。</span> : null}

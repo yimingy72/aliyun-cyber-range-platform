@@ -52,4 +52,11 @@ describe('range node DNS verification', () => {
     render(<RangeInstanceNodeDirectory nodes={[{ ...host, dns: undefined }]} allowActions={false} />);
     expect(screen.queryByText(/DNS 未验证/)).toBeNull();
   });
+  it('reports unselected NIC changes independently of verified selected DNS', async () => {
+    render(<RangeInstanceNodeDirectory nodes={[{...host,dnsVerification:{...verification,preservationStatus:'changed'}}]} allowActions={false} />);
+    fireEvent.focus(screen.getByText('DNS 已生效'));
+    await waitFor(() => expect(screen.getAllByText(/未选网卡 DNS 已变化/).length).toBeGreaterThan(0));
+    expect(screen.getByText('运行中')).toBeTruthy();
+  });
+
 });
