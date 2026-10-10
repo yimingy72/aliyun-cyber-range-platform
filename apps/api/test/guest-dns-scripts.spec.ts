@@ -10,7 +10,8 @@ describe('Windows host DNS startup and independent verification scripts', () => 
     expect(content.startsWith(provider === 'alicloud' ? '[powershell]\n' : '<powershell>\n')).toBe(true);
     expect(content.match(provider === 'alicloud' ? /\[powershell\]/g : /<powershell>/g)).toHaveLength(1);
     expect(content).toContain("nicId='nic-secondary';privateIp='10.0.2.20'");
-    expect(content).not.toContain("nicId='nic-primary'");
+    expect(content).toContain("nicId='nic-primary';privateIp='10.0.1.20'");
+    expect(content.indexOf('Write-DnsBaseline $dnsResult.observedInterfaces')).toBeLessThan(content.indexOf('Set-DnsClientServerAddress -InterfaceIndex $adapter.index'));
     expect(content).toContain('Set-DnsClientServerAddress -InterfaceIndex $adapter.index');
     expect(content).toContain('SetDNSServerSearchOrder');
     expect(content).not.toContain('Set-NetIPAddress');
@@ -31,6 +32,8 @@ describe('Windows host DNS startup and independent verification scripts', () => 
     expect(content).not.toContain('Set-DnsClientServerAddress -InterfaceIndex');
     expect(content).not.toContain('.SetDNSServerSearchOrder(');
     expect(content).not.toContain('dns-result.json');
+    expect(content).toContain('$dnsResult.baseline = Read-DnsBaseline');
+    expect(content).toContain('observedInterfaces=@()');
   });
   it('reports readback only without an AD domain', () => expect(buildWindowsDnsVerificationScript({ ...base, dns: { ...base.dns, domain: undefined } })).toContain("method='readback'"));
   it.each([

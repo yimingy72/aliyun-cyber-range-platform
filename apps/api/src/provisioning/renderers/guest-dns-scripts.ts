@@ -1,4 +1,5 @@
 import { isIPv4 } from 'node:net';
+import { createHash } from 'node:crypto';
 import { isHostDnsIpv4, type HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 export type WindowsHostDnsConfig = HostDnsConfig;
@@ -6,8 +7,13 @@ export type WindowsDnsTarget = { nicId: string; privateIp: string };
 type DnsScriptInput = { dns: WindowsHostDnsConfig; interfaces: WindowsDnsTarget[]; verificationNonce?: string };
 export const WINDOWS_DNS_RESULT_PREFIX = 'CYBER_RANGE_DNS_RESULT:';
 
+export function windowsDnsPolicyHash(input: DnsScriptInput) {
+  return createHash('sha256').update(JSON.stringify({ dns: input.dns, interfaces: [...input.interfaces].sort((a, b) => a.nicId.localeCompare(b.nicId)) })).digest('hex');
+}
+
 function selectedTargets(input: DnsScriptInput) {
   const { dns, interfaces } = input;
+  if (!interfaces.length || interfaces.length > 16 || interfaces.some(nic => typeof nic.nicId !== 'string' || !nic.nicId.length || nic.nicId.length > 128 || /[\x00-\x1f\x7f]/.test(nic.nicId) || !isIPv4(nic.privateIp)) || new Set(interfaces.map(nic => nic.nicId)).size !== interfaces.length || new Set(interfaces.map(nic => nic.privateIp)).size !== interfaces.length) throw new Error('Host DNS observation requires distinct explicit NIC IDs and private IPv4 addresses');
   if (input.verificationNonce !== undefined && !/^[a-z0-9-]{1,64}$/i.test(input.verificationNonce)) throw new Error('DNS verification nonce must be an opaque ASCII identifier');
   if (!dns.servers.length || dns.servers.length > 4 || new Set(dns.servers).size !== dns.servers.length || dns.servers.some(ip => !isHostDnsIpv4(ip))) throw new Error('Host DNS needs one to four distinct unicast IPv4 servers');
   if (!dns.nicIds.length || dns.nicIds.length > 16 || new Set(dns.nicIds).size !== dns.nicIds.length) throw new Error('Host DNS needs distinct target NIC IDs');
@@ -29,6 +35,8 @@ function dnsScript(input: DnsScriptInput, configure: boolean) {
   // PS 2.0 has no ConvertTo-Json; the small serializer also keeps the protocol identical on 2008 R2.
   return `$ErrorActionPreference = 'Stop'
 $dnsTargets = @(${targets.map(target => `@{nicId=${psString(target.nicId)};privateIp=${psString(target.privateIp)}}`).join(',')})
+$dnsAllTargets = @(${input.interfaces.map(target => `@{nicId=${psString(target.nicId)};privateIp=${psString(target.privateIp)}}`).join(',')})
+$dnsPolicyHash = '${windowsDnsPolicyHash(input)}'
 $dnsExpected = ${psArray(input.dns.servers)}
 $dnsDomain = ${psString(configure ? '' : input.dns.domain ?? '')}
 function Convert-DnsJson($v) {
@@ -61,6 +69,22 @@ function Read-DnsServers($adapter) {
   if ($adapter.modern) { return @((Get-DnsClientServerAddress -InterfaceIndex $adapter.index -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses) }
   $current = @(Get-WmiObject Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop | Where-Object { $_.InterfaceIndex -eq $adapter.index })
   if ($current.Count -ne 1) { throw 'NIC_NOT_READY' }; return @($current[0].DNSServerSearchOrder)
+}
+function Write-DnsBaseline($interfaces) {
+  $folder = New-Item -ItemType Directory -Path 'C:\\ProgramData\\cyber-range' -Force
+  $path = Join-Path $folder.FullName 'dns-baseline.json'
+  [IO.File]::WriteAllText($path,(Convert-DnsJson @{schemaVersion=1;policyHash=$dnsPolicyHash;interfaces=@($interfaces)}),(New-Object Text.UTF8Encoding($false)))
+}
+function Read-DnsBaseline {
+  try {
+    $file = Get-Item -LiteralPath 'C:\\ProgramData\\cyber-range\\dns-baseline.json' -ErrorAction Stop
+    if ($file.Length -gt 32768) { return $null }
+    $content = [IO.File]::ReadAllText($file.FullName)
+    if (Get-Command ConvertFrom-Json -ErrorAction SilentlyContinue) { $source = ConvertFrom-Json -InputObject $content -ErrorAction Stop }
+    else { Add-Type -AssemblyName System.Web.Extensions; $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer; $source = $serializer.DeserializeObject($content) }
+    $rows = @(); foreach ($row in $source.interfaces) { $rows += @{nicId=$row.nicId;privateIp=$row.privateIp;interfaceIndex=$row.interfaceIndex;actualServers=@($row.actualServers)} }
+    return @{schemaVersion=$source.schemaVersion;policyHash=$source.policyHash;interfaces=$rows}
+  } catch { return $null }
 }
 function Read-DnsUInt16($bytes, $offset) {
   if ($offset -lt 0 -or $offset + 1 -ge $bytes.Length) { throw 'DNS_INVALID_RESPONSE' }
@@ -115,21 +139,36 @@ function Test-DnsSrv($server, $domain) {
     if ($count -lt 1) { throw 'DNS_SRV_NOT_FOUND' }; return $count
   } finally { $udp.Close() }
 }
-$dnsResult = @{schemaVersion=1;status='failed';method='${!configure && input.dns.domain ? 'ad_srv' : 'readback'}';interfaces=@();probes=@()${input.verificationNonce ? `;verificationNonce=${psString(input.verificationNonce)}` : ''}}
+$dnsResult = @{schemaVersion=1;status='failed';method='${!configure && input.dns.domain ? 'ad_srv' : 'readback'}';interfaces=@();observedInterfaces=@();probes=@()${input.verificationNonce ? `;verificationNonce=${psString(input.verificationNonce)}` : ''}}
 try {
   $dnsNicDeadline = [DateTime]::UtcNow.AddSeconds(${configure ? 120 : 10})
   $dnsSeenIndexes = @{}
-  foreach ($target in $dnsTargets) {
+  $dnsAdapters = @{}
+  foreach ($target in $dnsAllTargets) {
     $adapter = $null
     do { $adapter = Find-DnsAdapter $target.privateIp; if ($null -eq $adapter) { Start-Sleep -Seconds 2 } } while ($null -eq $adapter -and [DateTime]::UtcNow -lt $dnsNicDeadline)
     if ($null -eq $adapter) { throw 'NIC_NOT_READY' }
     if ($adapter.index -lt 1 -or $dnsSeenIndexes.ContainsKey($adapter.index)) { throw 'NIC_AMBIGUOUS' }; $dnsSeenIndexes[$adapter.index] = $true
-${configure ? `    if ($adapter.modern) { Set-DnsClientServerAddress -InterfaceIndex $adapter.index -ServerAddresses $dnsExpected -ErrorAction Stop }
-    else { $set = $adapter.config.SetDNSServerSearchOrder([string[]]$dnsExpected); if ($set.ReturnValue -ne 0) { throw 'DNS_SET_FAILED' } }
-` : ''}    $actual = @(Read-DnsServers $adapter); $matched = ($actual.Count -eq $dnsExpected.Count -and ($actual -join ',') -eq ($dnsExpected -join ','))
-    $dnsResult.interfaces += @{nicId=$target.nicId;privateIp=$target.privateIp;interfaceIndex=$adapter.index;expectedServers=@($dnsExpected);actualServers=@($actual);matched=$matched}
-    if (-not $matched) { throw 'DNS_READBACK_MISMATCH' }
+    $dnsAdapters[$target.nicId] = $adapter
+    $dnsResult.observedInterfaces += @{nicId=$target.nicId;privateIp=$target.privateIp;interfaceIndex=$adapter.index;actualServers=@(Read-DnsServers $adapter)}
   }
+${configure ? `  Write-DnsBaseline $dnsResult.observedInterfaces
+  foreach ($target in $dnsTargets) {
+    $adapter = $dnsAdapters[$target.nicId]
+    if ($adapter.modern) { Set-DnsClientServerAddress -InterfaceIndex $adapter.index -ServerAddresses $dnsExpected -ErrorAction Stop }
+    else { $set = $adapter.config.SetDNSServerSearchOrder([string[]]$dnsExpected); if ($set.ReturnValue -ne 0) { throw 'DNS_SET_FAILED' } }
+  }
+  $dnsResult.observedInterfaces = @()
+  foreach ($target in $dnsAllTargets) { $adapter = $dnsAdapters[$target.nicId]; $dnsResult.observedInterfaces += @{nicId=$target.nicId;privateIp=$target.privateIp;interfaceIndex=$adapter.index;actualServers=@(Read-DnsServers $adapter)} }
+` : `  $dnsResult.baseline = Read-DnsBaseline
+`}  $dnsReadbackMatched = $true
+  foreach ($target in $dnsTargets) {
+    $adapter = $dnsAdapters[$target.nicId]
+    $actual = @($dnsResult.observedInterfaces | Where-Object { $_.nicId -eq $target.nicId } | ForEach-Object { $_.actualServers }); $matched = ($actual.Count -eq $dnsExpected.Count -and ($actual -join ',') -eq ($dnsExpected -join ','))
+    $dnsResult.interfaces += @{nicId=$target.nicId;privateIp=$target.privateIp;interfaceIndex=$adapter.index;expectedServers=@($dnsExpected);actualServers=@($actual);matched=$matched}
+    if (-not $matched) { $dnsReadbackMatched = $false }
+  }
+  if (-not $dnsReadbackMatched) { throw 'DNS_READBACK_MISMATCH' }
   if ($dnsDomain -ne '') {
     foreach ($server in $dnsExpected) {
       try { $count = Test-DnsSrv $server $dnsDomain; $dnsResult.probes += @{server=$server;status='verified';recordCount=$count} }

@@ -14,9 +14,9 @@ function Get-Command {
 function Get-NetIPAddress {
   param([string]$AddressFamily,[object]$ErrorAction)
   $ips = @('10.0.1.20','10.0.2.20')
-  if ($script:mode -eq 'ambiguous') { $ips = @('10.0.2.20','10.0.2.20') }
-  if ($script:mode -eq 'alias-same-index') { $ips = @('10.0.2.20','10.0.2.21') }
-  for ($i=0; $i -lt $ips.Count; $i++) { [PSCustomObject]@{IPAddress=$ips[$i];InterfaceIndex=$(if ($script:mode -eq 'alias-same-index') { 12 } else { $i+11 })} }
+  if ($script:mode -eq 'ambiguous') { $ips = @('10.0.1.20','10.0.2.20','10.0.2.20') }
+  if ($script:mode -eq 'alias-same-index') { $ips = @('10.0.1.20','10.0.2.20','10.0.2.21') }
+  for ($i=0; $i -lt $ips.Count; $i++) { [PSCustomObject]@{IPAddress=$ips[$i];InterfaceIndex=$(if ($script:mode -eq 'alias-same-index' -and $i -gt 0) { 12 } else { $i+11 })} }
 }
 function Get-DnsClientServerAddress {
   param([int]$InterfaceIndex,[string]$AddressFamily,[object]$ErrorAction)
@@ -29,17 +29,20 @@ function Set-DnsClientServerAddress {
 }
 function Get-WmiObject {
   param([string]$Class,[string]$Filter,[object]$ErrorAction)
-  $nic = [PSCustomObject]@{IPAddress=@('10.0.2.20');InterfaceIndex=42;DNSServerSearchOrder=@($script:servers[42])}
-  $nic | Add-Member -MemberType ScriptMethod -Name SetDNSServerSearchOrder -Value {
-    param([string[]]$value)
-    $script:configured += 42; $script:servers[42] = @($value)
-    [PSCustomObject]@{ReturnValue=0}
+  foreach ($index in @(41,42)) {
+    $nic = [PSCustomObject]@{IPAddress=@($(if ($index -eq 41) { '10.0.1.20' } else { '10.0.2.20' }));InterfaceIndex=$index;DNSServerSearchOrder=@($script:servers[$index])}
+    $nic | Add-Member -MemberType ScriptMethod -Name SetDNSServerSearchOrder -Value {
+      param([string[]]$value)
+      $script:configured += $this.InterfaceIndex; $script:servers[$this.InterfaceIndex] = @($value)
+      [PSCustomObject]@{ReturnValue=0}
+    }
+    $nic
   }
-  $nic
 }
 function Invoke-Case([string]$Mode,[string]$File,[string]$ExpectedStatus,[string]$ExpectedError = '') {
-  $script:mode = $Mode; $script:servers = @{11=@('8.8.8.8');12=@('10.0.1.10');42=@('8.8.8.8')}; $script:configured = @()
+  $script:mode = $Mode; $script:servers = @{11=@('8.8.8.8');12=@('10.0.1.10');41=@('8.8.8.8');42=@('8.8.8.8')}; $script:configured = @()
   if ($Mode -eq 'readback-mismatch') { $script:servers[12]=@('8.8.8.8') }
+  if ($Mode -eq 'preservation-changed') { $script:servers[11]=@('9.9.9.9') }
   if ($Mode -like 'ad-*') { $script:servers[12]=@('127.0.0.1') }
   $output = @(& { try { . (Join-Path $FixturePath $File) } catch { } })
   $lines = @($output | Where-Object { $_ -is [string] -and $_.StartsWith('CYBER_RANGE_DNS_RESULT:') })
@@ -51,16 +54,28 @@ function Invoke-Case([string]$Mode,[string]$File,[string]$ExpectedStatus,[string
   if ($File -eq 'verify.ps1' -and $script:configured.Count) { throw 'Readonly verification changed DNS' }
   if ($Mode -eq 'modern' -and $File -eq 'start.ps1' -and ($script:configured.Count -ne 1 -or $script:configured[0] -ne 12)) { throw 'Primary NIC was configured accidentally' }
   if ($ExpectedStatus -eq 'verified' -and $report.interfaces[0].nicId -ne 'nic-secondary') { throw 'Wrong target NIC' }
+  $expectedUntouched = $(if ($Mode -eq 'preservation-changed') { '9.9.9.9' } else { '8.8.8.8' })
+  if ($ExpectedStatus -eq 'verified' -and ($report.observedInterfaces.Count -ne 2 -or $report.observedInterfaces[0].actualServers[0] -ne $expectedUntouched)) { throw 'Missing fresh unselected NIC DNS observation' }
+  if ($Mode -eq 'preservation-changed' -and $report.baseline.interfaces[0].actualServers[0] -ne '8.8.8.8') { throw 'Saved baseline was used as fresh actual DNS' }
+  if ($Mode -eq 'baseline-missing' -and $null -ne $report.baseline) { throw 'Invalid baseline was trusted' }
+  if ($ExpectedStatus -eq 'verified' -and $File -eq 'start.ps1') {
+    $baseline = Get-Content -LiteralPath 'C:\ProgramData\cyber-range\dns-baseline.json' -Raw | ConvertFrom-Json
+    if ($baseline.schemaVersion -ne 1 -or $baseline.interfaces.Count -ne 2 -or $baseline.interfaces[0].actualServers[0] -ne '8.8.8.8') { throw 'Missing pre-set baseline for all NICs' }
+  }
   "PASS $Mode $File $ExpectedStatus"
 }
 Invoke-Case modern start.ps1 verified
 Invoke-Case legacy start.ps1 verified
 Invoke-Case modern verify.ps1 verified
+Invoke-Case preservation-changed verify.ps1 verified
+Set-Content -LiteralPath 'C:\ProgramData\cyber-range\dns-baseline.json' -Value '{malformed json'
+Invoke-Case baseline-missing verify.ps1 verified
 Invoke-Case readback-mismatch verify.ps1 failed DNS_READBACK_MISMATCH
 Invoke-Case ambiguous start.ps1 failed NIC_AMBIGUOUS
 Invoke-Case set-failed start.ps1 failed DNS_CONFIGURATION_FAILED
 $aliasScript = Get-Content (Join-Path $FixturePath 'verify.ps1') -Raw
 $aliasScript = $aliasScript.Replace("$" + "dnsTargets = @(@{nicId='nic-secondary';privateIp='10.0.2.20'})", "$" + "dnsTargets = @(@{nicId='nic-secondary';privateIp='10.0.2.20'},@{nicId='nic-other';privateIp='10.0.2.21'})")
+$aliasScript = $aliasScript.Replace("$" + "dnsAllTargets = @(@{nicId='nic-primary';privateIp='10.0.1.20'},@{nicId='nic-secondary';privateIp='10.0.2.20'})", "$" + "dnsAllTargets = @(@{nicId='nic-primary';privateIp='10.0.1.20'},@{nicId='nic-secondary';privateIp='10.0.2.20'},@{nicId='nic-other';privateIp='10.0.2.21'})")
 Set-Content -Path (Join-Path $FixturePath 'verify-alias.ps1') -Value $aliasScript
 Invoke-Case alias-same-index verify-alias.ps1 failed NIC_AMBIGUOUS
 $server = Start-Job -ScriptBlock {

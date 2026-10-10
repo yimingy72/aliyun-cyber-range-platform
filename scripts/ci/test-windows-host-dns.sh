@@ -10,7 +10,7 @@ docker run --rm --network none --entrypoint node \
 const fs=require("fs"), ts=require("/app/apps/api/node_modules/typescript");
 const js=ts.transpileModule(fs.readFileSync("/app/apps/api/src/provisioning/renderers/guest-dns-scripts.ts","utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const m={exports:{}};const scriptRequire=require("node:module").createRequire("/app/apps/api/src/provisioning/renderers/guest-dns-scripts.ts");new Function("require","module","exports",js)(scriptRequire,m,m.exports);
-const input={dns:{servers:["10.0.1.10"],nicIds:["nic-secondary"]},interfaces:[{nicId:"nic-secondary",privateIp:"10.0.2.20"}],verificationNonce:"nonce-docker"};
+const input={dns:{servers:["10.0.1.10"],nicIds:["nic-secondary"]},interfaces:[{nicId:"nic-primary",privateIp:"10.0.1.20"},{nicId:"nic-secondary",privateIp:"10.0.2.20"}],verificationNonce:"nonce-docker"};
 fs.writeFileSync("/fixtures/verify.ps1",m.exports.buildWindowsDnsVerificationScript(input));
 fs.writeFileSync("/fixtures/verify-ad.ps1",m.exports.buildWindowsDnsVerificationScript({...input,dns:{...input.dns,servers:["127.0.0.1"],domain:"lab.example"}}));
 fs.writeFileSync("/fixtures/start.ps1",m.exports.buildWindowsDnsUserData({...input,provider:"alicloud",scripts:[{type:"powershell",content:"Write-Output USER_INITIALIZATION"}]}).replace(/^\[powershell\]\n/,""));

@@ -1,12 +1,12 @@
 import { isIPv4 } from 'node:net';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { validateHostDnsConfig } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import { ADMIN_REPOSITORY, type AdminRepository, type RangeInstanceRecord } from './admin.repository';
 import { runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 import { SystemConfigService } from './system-config.service';
 import { DnsGuestCommandClient } from './dns-guest-command-client';
-import { buildWindowsDnsVerificationScript } from '../provisioning/renderers/guest-dns-scripts';
+import { buildWindowsDnsVerificationScript, windowsDnsPolicyHash, type WindowsDnsTarget } from '../provisioning/renderers/guest-dns-scripts';
 import { publicDnsVerification, type RangeDnsVerification, type DnsInterfaceView } from './range-dns-types';
 
 type Actor = { id: string; role: string };
@@ -18,18 +18,18 @@ export function deployedDnsPolicy(instance: RangeInstanceRecord, hostKey: string
   const host = nodes.map(record).find(node => node.id === hostKey && node.kind === 'ecs');
   if (!host?.dns) throw new ConflictException('该主机没有已部署的自定义 DNS。');
   const nics = Array.isArray(host.nics) ? host.nics.map(record) : [];
+  if (!nics.length || nics.length > 16 || nics.some(nic => typeof nic.id !== 'string' || !nic.id.length) || new Set(nics.map(nic => nic.id)).size !== nics.length || new Set(nics.map(nic => nic.privateIp)).size !== nics.length) throw new ConflictException('DNS 核验需要完整且唯一的已部署网卡身份。');
   const dns = validateHostDnsConfig(host.dns, nics.map(nic => nic.id), `hosts.${hostKey}.dns`);
-  const interfaces = dns.nicIds.map(nicId => {
-    const nic = nics.find(item => item.id === nicId);
+  const interfaces = nics.map(nic => {
     if (!nic || typeof nic.privateIp !== 'string' || !isIPv4(nic.privateIp)) throw new ConflictException('DNS 作用网卡缺少已部署的固定私网 IP。');
-    return { nicId, privateIp: nic.privateIp };
+    return { nicId: nic.id as string, privateIp: nic.privateIp };
   });
-  const expected = interfaces.map(nic => ({ ...nic, servers: dns.servers }));
-  return { dns, interfaces, expected, policyHash: createHash('sha256').update(JSON.stringify({ dns, interfaces })).digest('hex') };
+  const expected = dns.nicIds.map(nicId => ({ ...interfaces.find(nic => nic.nicId === nicId)!, servers: dns.servers }));
+  return { dns, interfaces, expected, policyHash: windowsDnsPolicyHash({ dns, interfaces }) };
 }
 
 // The result must match this invocation and every deployed NIC. Never trust the guest's boolean/status alone.
-export function parseDnsReadback(output: string, nonce: string, expected: DnsInterfaceView[], domain?: string) {
+export function parseDnsReadback(output: string, nonce: string, expected: DnsInterfaceView[], domain?: string, interfaces: WindowsDnsTarget[] = expected, policyHash?: string) {
   const lines = output.split(/\r?\n/).filter(line => line.startsWith('CYBER_RANGE_DNS_RESULT:'));
   if (lines.length !== 1) throw new Error('DNS_REPORT_INVALID');
   let result: Record<string, any>;
@@ -38,11 +38,19 @@ export function parseDnsReadback(output: string, nonce: string, expected: DnsInt
     || !['verified', 'failed'].includes(result.status) || !Array.isArray(result.interfaces) || result.interfaces.length !== expected.length)
     throw new Error('DNS_REPORT_MISMATCH');
   const indices = new Set<number>();
+  const validServers = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 16 && new Set(value).size === value.length && value.every(ip => typeof ip === 'string' && isIPv4(ip));
+  const observedRows = result.observedInterfaces;
+  if (!Array.isArray(observedRows) || observedRows.length !== interfaces.length) throw new Error('DNS_REPORT_MISMATCH');
+  const observedInterfaces = interfaces.map(target => {
+    const rows = observedRows.filter((row: any) => row?.nicId === target.nicId && row.privateIp === target.privateIp);
+    if (rows.length !== 1 || !Number.isSafeInteger(rows[0].interfaceIndex) || rows[0].interfaceIndex < 1 || indices.has(rows[0].interfaceIndex) || !validServers(rows[0].actualServers)) throw new Error('DNS_REPORT_MISMATCH');
+    indices.add(rows[0].interfaceIndex);
+    return { ...target, servers: rows[0].actualServers as string[] };
+  });
   const actual = expected.map(target => {
     const rows = result.interfaces.filter((row: any) => row?.nicId === target.nicId && row.privateIp === target.privateIp);
-    if (rows.length !== 1 || !Number.isSafeInteger(rows[0].interfaceIndex) || rows[0].interfaceIndex < 1 || indices.has(rows[0].interfaceIndex) || !equal(rows[0].expectedServers, target.servers) || !Array.isArray(rows[0].actualServers)
-      || rows[0].actualServers.some((ip: unknown) => typeof ip !== 'string' || !isIPv4(ip))) throw new Error('DNS_REPORT_MISMATCH');
-    indices.add(rows[0].interfaceIndex);
+    const observed = observedRows.find((row: any) => row?.nicId === target.nicId && row.privateIp === target.privateIp);
+    if (rows.length !== 1 || rows[0].interfaceIndex !== observed?.interfaceIndex || !equal(rows[0].expectedServers, target.servers) || !validServers(rows[0].actualServers) || !equal(rows[0].actualServers, observed.actualServers)) throw new Error('DNS_REPORT_MISMATCH');
     return { nicId: target.nicId, privateIp: target.privateIp, servers: rows[0].actualServers as string[] };
   });
   const matched = actual.every((row, index) => equal(row.servers, expected[index].servers));
@@ -52,7 +60,18 @@ export function parseDnsReadback(output: string, nonce: string, expected: DnsInt
     return probes.length === 1 && probes[0].status === 'verified' && Number.isSafeInteger(probes[0].recordCount) && probes[0].recordCount > 0;
   });
   const verified = matched && resolved && result.status === 'verified';
+  const untouched = interfaces.filter(nic => !expected.some(selected => selected.nicId === nic.nicId));
+  const baseline = record(result.baseline), baselineRows = baseline.interfaces;
+  const baselineIndices = new Set<number>();
+  const baselineValid = baseline.schemaVersion === 1 && typeof policyHash === 'string' && baseline.policyHash === policyHash && Array.isArray(baselineRows) && baselineRows.length === interfaces.length && interfaces.every(nic => {
+    const rows = baselineRows.filter((row: any) => row?.nicId === nic.nicId && row.privateIp === nic.privateIp);
+    if (rows.length !== 1 || !Number.isSafeInteger(rows[0].interfaceIndex) || rows[0].interfaceIndex < 1 || baselineIndices.has(rows[0].interfaceIndex) || !validServers(rows[0].actualServers)) return false;
+    baselineIndices.add(rows[0].interfaceIndex); return true;
+  });
+  const untouchedInterfaces = baselineValid ? untouched.map(nic => ({ ...nic, baselineServers: baselineRows.find((row: any) => row.nicId === nic.nicId).actualServers as string[], actualServers: observedInterfaces.find(row => row.nicId === nic.nicId)!.servers })) : [];
+  const preservationStatus = !untouched.length ? 'not_requested' as const : !baselineValid ? 'unverified' as const : untouchedInterfaces.every(row => equal(row.baselineServers, row.actualServers)) ? 'verified' as const : 'changed' as const;
   return { actual, status: verified ? 'verified' as const : 'failed' as const,
+    observedInterfaces, untouchedInterfaces, preservationStatus,
     resolutionStatus: domain ? (resolved ? 'verified' as const : 'failed' as const) : 'not_requested' as const,
     ...(!verified ? { errorCode: !matched ? 'DNS_READBACK_MISMATCH' : !resolved ? 'DNS_AD_SRV_FAILED' : 'DNS_GUEST_CHECK_FAILED' } : {}) };
 }
@@ -98,7 +117,7 @@ export class RangeDnsVerificationService {
     const claimId = randomUUID();
     const deadline = Date.now() + 120_000;
     let state: RangeDnsVerification = { status: 'checking', method: policy.dns.domain ? 'ad_srv' : 'readback', expected: policy.expected,
-      actual: [], resolutionStatus: 'not_requested', instanceId, policyHash: policy.policyHash, claimId,
+      actual: [], observedInterfaces: [], untouchedInterfaces: [], preservationStatus: 'unverified', resolutionStatus: 'not_requested', instanceId, policyHash: policy.policyHash, claimId,
       expiresAt: new Date(Date.now() + 180_000).toISOString() };
     if (!await this.repository.updateRangeInstanceDnsState(id, hostKey, instanceId, previous?.claimId ?? null, state)) throw new ConflictException('实例已变化，请刷新后核验。');
     try {
@@ -121,9 +140,9 @@ export class RangeDnsVerificationService {
       }
       if (!result || result.status === 'pending') throw new Error('DNS_COMMAND_TIMEOUT');
       if (result.status !== 'success' || result.exitCode !== 0) {
-        if (result.output) { try { state = { ...state, ...parseDnsReadback(result.output, claimId, policy.expected, policy.dns.domain), status: 'failed' }; } catch { /* retain safe fixed failure */ } }
+        if (result.output) { try { state = { ...state, ...parseDnsReadback(result.output, claimId, policy.expected, policy.dns.domain, policy.interfaces, policy.policyHash), status: 'failed' }; } catch { /* retain safe fixed failure */ } }
         state = { ...state, status: 'failed', errorCode: state.errorCode ?? 'DNS_COMMAND_FAILED' };
-      } else state = { ...state, ...parseDnsReadback(result.output ?? '', claimId, policy.expected, policy.dns.domain) };
+      } else state = { ...state, ...parseDnsReadback(result.output ?? '', claimId, policy.expected, policy.dns.domain, policy.interfaces, policy.policyHash) };
     } catch (error) {
       const code = error instanceof Error && /^DNS_[A-Z_]+$/.test(error.message) ? error.message : 'DNS_AGENT_UNAVAILABLE';
       state = { ...state, status: 'unverified', errorCode: code };
