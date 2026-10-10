@@ -118,10 +118,12 @@ function Test-DnsSrv($server, $domain) {
 $dnsResult = @{schemaVersion=1;status='failed';method='${!configure && input.dns.domain ? 'ad_srv' : 'readback'}';interfaces=@();probes=@()${input.verificationNonce ? `;verificationNonce=${psString(input.verificationNonce)}` : ''}}
 try {
   $dnsNicDeadline = [DateTime]::UtcNow.AddSeconds(${configure ? 120 : 10})
+  $dnsSeenIndexes = @{}
   foreach ($target in $dnsTargets) {
     $adapter = $null
     do { $adapter = Find-DnsAdapter $target.privateIp; if ($null -eq $adapter) { Start-Sleep -Seconds 2 } } while ($null -eq $adapter -and [DateTime]::UtcNow -lt $dnsNicDeadline)
     if ($null -eq $adapter) { throw 'NIC_NOT_READY' }
+    if ($adapter.index -lt 1 -or $dnsSeenIndexes.ContainsKey($adapter.index)) { throw 'NIC_AMBIGUOUS' }; $dnsSeenIndexes[$adapter.index] = $true
 ${configure ? `    if ($adapter.modern) { Set-DnsClientServerAddress -InterfaceIndex $adapter.index -ServerAddresses $dnsExpected -ErrorAction Stop }
     else { $set = $adapter.config.SetDNSServerSearchOrder([string[]]$dnsExpected); if ($set.ReturnValue -ne 0) { throw 'DNS_SET_FAILED' } }
 ` : ''}    $actual = @(Read-DnsServers $adapter); $matched = ($actual.Count -eq $dnsExpected.Count -and ($actual -join ',') -eq ($dnsExpected -join ','))

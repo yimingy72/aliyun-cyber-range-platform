@@ -15,7 +15,8 @@ function Get-NetIPAddress {
   param([string]$AddressFamily,[object]$ErrorAction)
   $ips = @('10.0.1.20','10.0.2.20')
   if ($script:mode -eq 'ambiguous') { $ips = @('10.0.2.20','10.0.2.20') }
-  for ($i=0; $i -lt $ips.Count; $i++) { [PSCustomObject]@{IPAddress=$ips[$i];InterfaceIndex=($i+11)} }
+  if ($script:mode -eq 'alias-same-index') { $ips = @('10.0.2.20','10.0.2.21') }
+  for ($i=0; $i -lt $ips.Count; $i++) { [PSCustomObject]@{IPAddress=$ips[$i];InterfaceIndex=$(if ($script:mode -eq 'alias-same-index') { 12 } else { $i+11 })} }
 }
 function Get-DnsClientServerAddress {
   param([int]$InterfaceIndex,[string]$AddressFamily,[object]$ErrorAction)
@@ -58,6 +59,10 @@ Invoke-Case modern verify.ps1 verified
 Invoke-Case readback-mismatch verify.ps1 failed DNS_READBACK_MISMATCH
 Invoke-Case ambiguous start.ps1 failed NIC_AMBIGUOUS
 Invoke-Case set-failed start.ps1 failed DNS_CONFIGURATION_FAILED
+$aliasScript = Get-Content (Join-Path $FixturePath 'verify.ps1') -Raw
+$aliasScript = $aliasScript.Replace("$" + "dnsTargets = @(@{nicId='nic-secondary';privateIp='10.0.2.20'})", "$" + "dnsTargets = @(@{nicId='nic-secondary';privateIp='10.0.2.20'},@{nicId='nic-other';privateIp='10.0.2.21'})")
+Set-Content -Path (Join-Path $FixturePath 'verify-alias.ps1') -Value $aliasScript
+Invoke-Case alias-same-index verify-alias.ps1 failed NIC_AMBIGUOUS
 $server = Start-Job -ScriptBlock {
   $udp = [Net.Sockets.UdpClient]::new(53)
   $udp.Client.ReceiveTimeout = 10000
