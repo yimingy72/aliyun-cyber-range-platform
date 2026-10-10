@@ -12,7 +12,8 @@ export const rangeChangeDigest = (value: unknown) => createHash('sha256').update
 const nodes = (graph: Record<string, unknown> | null | undefined) => (Array.isArray(graph?.nodes) ? graph!.nodes : []) as Record<string, any>[];
 const pick = (value: Record<string, any>, keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, value[key] ?? null]));
 function inventory(summary: RangeResourceSummary | null | undefined): Record<string, unknown> {
- return { ...pick(summary ?? {}, ['mode', 'vpcId', 'eipAllocationId', 'executionContext', ...mapKeys]), retiredResources: summary?.retiredResources ? inventory(summary.retiredResources) : null };
+ return { ...pick(summary ?? {}, ['mode', 'vpcId', 'eipAllocationId', 'executionContext']),
+  ...Object.fromEntries(mapKeys.map(key => [key, summary?.[key] ?? {}])), retiredResources: summary?.retiredResources ? inventory(summary.retiredResources) : null };
 }
 export function rangeRuntimeIdentityDigest(instance: RangeInstanceRecord) {
  return rangeChangeDigest({ id: instance.id, cloudWorkspaceId: instance.cloudWorkspaceId, cloudProvider: instance.cloudProvider,

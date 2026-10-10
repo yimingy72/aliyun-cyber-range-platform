@@ -101,6 +101,15 @@ describe('runtime immutable identity policy', () => {
   expect(rangeRuntimeIdentityDigest({ ...f.instance, lastJobId: 'new-update-job', status: 'running', draftRevision: 100, resourceSummary: { ...f.instance.resourceSummary!, dnsVerification: {} } })).toBe(original);
   expect(rangeDraftSourceDigest(f.instance, actor.id, scope.cloudWorkspaceId)).not.toBe(rangeDraftSourceDigest({ ...f.instance, lastJobId: 'changed' }, actor.id, scope.cloudWorkspaceId));
  });
+ it('treats missing, null and empty ID maps alike while detecting newly observed native IDs', async () => {
+  const f = await fixture(); const summary = { ...f.instance.resourceSummary! };
+  delete summary.dataDiskIds;
+  const before = { ...f.instance, resourceSummary: summary };
+  const original = rangeRuntimeIdentityDigest(before);
+  expect(rangeRuntimeIdentityDigest({ ...before, resourceSummary: { ...summary, dataDiskIds: {} } })).toBe(original);
+  expect(rangeRuntimeIdentityDigest({ ...before, resourceSummary: { ...summary, dataDiskIds: null } })).toBe(original);
+  expect(rangeRuntimeIdentityDigest({ ...before, resourceSummary: { ...summary, dataDiskIds: { 'entry:disk-added': 'disk-added' } } })).not.toBe(original);
+ });
  it('describes explicit added/deleted hosts and removal of DNAT/SNAT as expected candidates', async () => {
   const f = await fixture(); const graph = structuredClone(f.instance.runtimeTopologyGraph!) as any;
   const host = graph.nodes.find((node: any) => node.kind === 'ecs'); host.id = 'new-host'; host.nics = [{ ...host.nics[0], id: 'new-nic', privateIp: '10.0.1.20' }]; host.privateIp = '10.0.1.20';
