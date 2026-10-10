@@ -110,6 +110,7 @@ describe('settings cloud workspaces', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: '删除账号' }));
     const dialog = await screen.findByRole('dialog', { name: '删除云账号' });
     expect(within(dialog).getByText(/南京训练账号.*历史数据保留/)).toBeTruthy();
+    expect(within(dialog).getByText(/腾讯云账号.*UID 222/)).toBeTruthy();
     expect(within(dialog).getByText(/账单同步将停止，未出账费用需重新绑定/)).toBeTruthy();
     expect(remove).not.toHaveBeenCalled();
     list.mockResolvedValue([ali]);
