@@ -588,6 +588,7 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
   }
 
   const dnatExternalPorts = new Map<string, string>();
+  const dnatAlibabaBackends = new Map<string, string>();
   for (const switchNode of switches) {
     for (const mapping of switchNode.nat?.dnatMappings ?? []) {
       const targetHost = hostById.get(mapping.targetHostId);
@@ -606,8 +607,15 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         throw new Error(`DNAT 公网协议和端口重复：${externalPortKey}（${existingMappingKey}、${mapping.key}）`);
       }
       dnatExternalPorts.set(externalPortKey, mapping.key);
-      if (!(targetHost.nics ?? []).some((nic) => nic.switchId === switchNode.id)) {
+      const targetNic = (targetHost.nics ?? []).find((nic) => nic.switchId === switchNode.id);
+      if (!targetNic) {
         throw new Error(`DNAT 目标 ECS 未连接到交换机：${mapping.key}`);
+      }
+      if (metadata.cloudProvider === 'alibaba_cloud') {
+        const backend = `${mapping.protocol}:${targetNic.privateIp}:${mapping.internalPort}`;
+        const prior = dnatAlibabaBackends.get(backend);
+        if (prior) throw new Error(`阿里云 DNAT 后端协议、IP 和端口重复：${backend}（${prior}、${mapping.key}）`);
+        dnatAlibabaBackends.set(backend, mapping.key);
       }
     }
   }

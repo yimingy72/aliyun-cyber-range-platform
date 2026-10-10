@@ -21,6 +21,18 @@ function render(payload:any): any {return new AlibabaCloudOpenTofuRenderer().ren
 function repository(): any {return {getPlatformImageAssetById:async()=>({id:'asset-audit',imageId:'m-audit',enabled:true,visibility:'platform'}),createRangeTemplate:async(input:any)=>({id:'template-audit',revision:1,...input}),getPlatformUserById:async()=>null};}
 
 describe('template runtime semantics',()=>{
+  it('rejects duplicate Alibaba backend ports before creating cloud resources',()=>{
+    const value=graph(); value.nodes[1].nat.dnatMappings.push({key:'same-backend',targetHostId:'h',protocol:'tcp',externalPort:38080,internalPort:80});
+    expect(()=>compileTemplateTopology(value,metadata)).toThrow('阿里云 DNAT 后端协议、IP 和端口重复');
+    expect(()=>compileTemplateTopology(value,{...metadata,cloudProvider:'tencent_cloud'})).not.toThrow();
+  });
+  it('keeps distinct Alibaba protocols and mapped NIC backend addresses valid',()=>{
+    const value=graph(); value.nodes[2].nat.dnatMappings=[{key:'other-nic',targetHostId:'h',protocol:'tcp',externalPort:38080,internalPort:80}];
+    expect(()=>compileTemplateTopology(value,metadata)).not.toThrow();
+    const payload:any=compileTemplateTopology(graph(),metadata); const duplicate={...payload.compiledProvisionSpec.dnatEntries[0],key:'second',externalPort:38080};
+    payload.compiledProvisionSpec.dnatEntries.push(duplicate);
+    expect(()=>render(payload)).toThrow('backend protocol, IP and internal port must be unique');
+  });
   it('keeps Tencent identity on every host and derived network resource',()=>{
     const payload:any=compileTemplateTopology(graph(),{...metadata,cloudProvider:'tencent_cloud',modulePathOrRef:'infra/opentofu/modules/tencentcloud-enterprise-range'});
     expect(payload.scenarioTemplateSpec.metadata.cloudProvider).toBe('tencent_cloud');
