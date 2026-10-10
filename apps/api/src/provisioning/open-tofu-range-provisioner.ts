@@ -519,8 +519,31 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         varsFilePath: workspace.varsFilePath,
       });
 
-      const absenceProof = input.runtimeConfig?.provider === 'tencent_cloud'
+      let absenceProof = input.runtimeConfig?.provider === 'tencent_cloud'
         ? await this.readTencentAbsenceProof(workspace.workspaceDir,input,priorState) : false;
+      if (unresolvedApply && input.runtimeConfig?.provider === 'alibaba_cloud' && input.verifyUnresolvedApplyAbsence) {
+        const empty = await readWorkspaceState(workspace.workspaceDir, true);
+        if (!empty || empty.lineage !== priorState.lineage || empty.serial < priorState.serial || empty.instances.length)
+          throw new Error('Alibaba absence recovery requires a verified empty state in its original lineage');
+        const pending = await readPendingApplyEvidence(workspace.workspaceDir);
+        const variables = JSON.parse(await fs.readFile(workspace.varsFilePath, 'utf8'));
+        const tags = variables.tags;
+        if (input.instanceMode === 'single' || input.templateModulePath !== 'infra/opentofu/modules/alicloud-enterprise-range'
+          || !pending?.sourceProvisionJobId || !pending.submittedAt || !Number.isFinite(Date.parse(pending.submittedAt))
+          || variables.resource_name_prefix !== input.rangeInstanceId || variables.zone_id !== input.runtimeConfig.defaultZoneId
+          || !tags || tags.CloudProvider !== 'alibaba_cloud' || tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformManaged !== 'true'
+          || tags.RangeInstanceId !== input.rangeInstanceId || tags.CloudAccountUid !== input.runtimeConfig.accountUid
+          || tags.CloudAccountContextId !== input.runtimeConfig.cloudAccountContextId || tags.PlatformCreateJobId !== pending.sourceProvisionJobId
+          || ['PlatformScope','PlatformUserId'].some(key => input.billingTags?.[key] !== undefined && tags[key] !== input.billingTags[key])
+          || !Array.isArray(variables.hosts) || !variables.hosts.length || variables.hosts.some((host: any) => typeof host?.key !== 'string' || !host.key)
+          || !Array.isArray(variables.eips) || variables.eips.some((eip: any) => typeof eip?.name !== 'string' || !eip.name))
+          throw new Error('Alibaba absence recovery intent differs from its original frozen submission');
+        await input.verifyUnresolvedApplyAbsence({ sourceProvisionJobId: pending.sourceProvisionJobId, submittedAt: pending.submittedAt,
+          hostKeys: variables.hosts.map((host: any) => host.key), eipNames: variables.eips.map((eip: any) => eip.name.replaceAll(' ', '-').slice(0,128)) });
+        if (JSON.stringify(await readPendingApplyEvidence(workspace.workspaceDir)) !== JSON.stringify(pending))
+          throw new Error('Alibaba pending apply generation changed during absence recovery');
+        absenceProof = true;
+      }
       await assertDestroyComplete(workspace.workspaceDir, priorState, unresolvedApply && !absenceProof);
       await fs.rm(path.join(workspace.workspaceDir,'.tencent-apply-absence-proved.json'),{force:true});
       return {
