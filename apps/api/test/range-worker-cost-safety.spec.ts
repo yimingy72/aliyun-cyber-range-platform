@@ -9,7 +9,7 @@ const account = { provider: 'alibaba_cloud' as const, accessKeyId: 'fixture-sour
 const binding = { cloudAccountContextId: account.cloudAccountContextId, cloudAccountUid: account.accountUid, regionId: account.defaultRegion, zoneId: account.defaultZoneId };
 const resources: RangeResourceSummary = { mode: 'opentofu', hostIds: { entry: 'i-owned' }, systemDiskIds: { entry: 'd-owned' }, eipAllocationIds: { entry: 'eip-owned' } };
 const output = { accessEntry: { hostRole: 'entry', publicIp: '192.0.2.1', privateIp: '10.0.1.10', ssh: null }, resourceSummary: resources };
-async function fixture(kind: 'create' | 'destroy' = 'create') {
+async function fixture(kind: 'create' | 'destroy' = 'create', dnsVerification?: any) {
   const repository = createMemoryAdminRepository();
   const template = await repository.createRangeTemplate({ name: 'Cost guard fixture', slug: 'cost-guard', version: 'v1', modulePathOrRef: 'fixture/range', topologySpec: {
     vpcCidr: '10.0.0.0/16', networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'entry', cidr: '10.0.1.0/24' }],
@@ -27,7 +27,7 @@ async function fixture(kind: 'create' | 'destroy' = 'create') {
     inspectResources: jest.fn(async (_input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null> => resources),
     destroy: jest.fn(async (_input: RangeProvisionDestroyInput) => { cloudPresent = false; }),
   };
-  const worker = new ProvisioningWorkerService(repository, provisioner, system as any);
+  const worker = new ProvisioningWorkerService(repository, provisioner, system as any, undefined, undefined, undefined, dnsVerification);
   const query = jest.spyOn(worker as any, 'performAliyunRpcRequest').mockImplementation(async (input: any) => {
     const collections: Record<string, [string,string]> = { DescribeInstances: ['Instances','Instance'], DescribeDisks: ['Disks','Disk'], DescribeEipAddresses: ['EipAddresses','EipAddress'] };
     if (input.action === 'DescribeDisks' && input.parameters.InstanceId && cloudPresent) return {
@@ -40,6 +40,18 @@ async function fixture(kind: 'create' | 'destroy' = 'create') {
 }
 
 describe('range worker durable cost safety', () => {
+  it('guest verification failure cannot destroy or recreate successful cloud resources', async () => {
+    const dns = { scheduleAll: jest.fn().mockImplementation(() => { throw new Error('DNS verification unavailable'); }) };
+    const f = await fixture('create', dns);
+    await f.worker.process(f.job.id);
+    expect(dns.scheduleAll).toHaveBeenCalledWith(f.instance.id, f.job.id, f.instance.cloudWorkspaceId);
+    expect(f.provisioner.create).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.destroy).not.toHaveBeenCalled();
+    expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'running', resourceSummary: { hostIds: resources.hostIds } });
+    expect(await f.repository.getProvisionJobById(f.job.id)).toMatchObject({ status: 'succeeded' });
+    expect((await f.repository.listBillingLedgerResources()).every(row => !row.releasedAt)).toBe(true);
+  });
+
   it('uses one verified account for execution and billing and persists apply intent before cloud mutations', async () => {
     const f = await fixture();
     f.provisioner.create.mockImplementationOnce(async input => {

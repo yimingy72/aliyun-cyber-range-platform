@@ -1,3 +1,4 @@
+import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
@@ -85,6 +86,7 @@ export class ProvisioningWorkerService {
     singleInstanceBatchExecutionService?: SingleInstanceBatchExecutionService,
     platformResourceReconciliationService?: PlatformResourceReconciliationService,
     @Optional() singleInstanceOpenTofuExecutionService?: SingleInstanceOpenTofuExecutionService,
+    @Optional() private readonly dnsVerification?: RangeDnsVerificationService,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
@@ -388,6 +390,7 @@ export class ProvisioningWorkerService {
           status: 'succeeded', finishedAt: new Date(), errorSummary: null,
         }))) return;
         await this.finalizeDispatchedOperation(job, 'succeeded');
+        this.scheduleGuestDnsVerification(instance, job);
         this.nextResourceReconciliationAt = 0;
         return;
       }
@@ -554,6 +557,7 @@ export class ProvisioningWorkerService {
         status: 'succeeded', finishedAt: new Date(), errorSummary: null,
       }))) return;
       await this.finalizeDispatchedOperation(job, 'succeeded');
+      this.scheduleGuestDnsVerification(instance, job);
       this.nextResourceReconciliationAt = 0;
     } catch (error) {
       if (!(await this.ownsProvisionJobClaim(job))) {
@@ -2006,6 +2010,13 @@ export class ProvisioningWorkerService {
         ...payload,
       });
     };
+  }
+
+  private scheduleGuestDnsVerification(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
+    if (instance.instanceMode !== 'range' || !this.dnsVerification) return;
+    try { this.dnsVerification.scheduleAll(instance.id, job.id, instance.cloudWorkspaceId); } catch {
+      this.logger.warn('Guest DNS verification unavailable; cloud resources remain running without recreation.');
+    }
   }
 
   private async runWorkerStep(

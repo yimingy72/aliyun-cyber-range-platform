@@ -45,6 +45,8 @@ type PlatformImageAssetsPayload = {
   items: Array<
     PlatformImageAssetView & {
       createdBy: string;
+      osType?: string | null;
+      platform?: string | null;
       sourceSnapshotStatus: string | null;
       sourceSnapshotAvailable: boolean | null;
       canManage: boolean;
@@ -173,6 +175,8 @@ export class ImageCatalogService {
           createdBy: assetView.createdBy ?? 'admin',
           canManage: assetView.canManage ?? false,
           canChangeVisibility: assetView.canChangeVisibility ?? false,
+          osType: snapshot?.osType ?? null,
+          platform: snapshot?.platform ?? null,
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
           architecture: snapshot?.architecture ?? null,

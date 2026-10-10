@@ -174,7 +174,8 @@ export class RangesController {
     @Param('action') action: string,
     @Body() body: Record<string, unknown>,
   ) {
-    const payload = {
+    if (action === 'verify-dns' && body && Object.keys(body).length) throw new BadRequestException('DNS 核验不接受自定义参数。');
+    const payload = action === 'verify-dns' ? {} : {
       ...this.sanitizeNodeActionPayload(body),
       ownerUserId: request.adminUser.id,
     };
@@ -200,7 +201,7 @@ export class RangesController {
     if (request.authContext.source === 'mcp') {
       return this.confirmedMcpAction(
         request,
-        `range_instance_node_${action}`,
+        action === 'verify-dns' ? 'range_instance_node_verify_dns' : `range_instance_node_${action}`,
         id,
         { rangeInstanceId: id, nodeId, action, ...payload },
         action === 'stop',

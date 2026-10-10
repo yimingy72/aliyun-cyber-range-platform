@@ -17,7 +17,7 @@ export type RangeDnsVerification = {
 
 export function publicDnsVerification(entries: Record<string, RangeDnsVerification> | undefined) {
   return entries && Object.fromEntries(Object.entries(entries).map(([key, value]) => [key, {
-    status: value.status, method: value.method, expected: value.expected, actual: value.actual,
-    resolutionStatus: value.resolutionStatus, errorCode: value.errorCode, checkedAt: value.checkedAt,
+    status: value.status === 'checking' && new Date(value.expiresAt).getTime() <= Date.now() ? 'unverified' : value.status, method: value.method, expected: value.expected, actual: value.actual,
+    resolutionStatus: value.resolutionStatus, errorCode: value.status === 'checking' && new Date(value.expiresAt).getTime() <= Date.now() ? 'DNS_COMMAND_INTERRUPTED' : value.errorCode, checkedAt: value.checkedAt,
   }]));
 }

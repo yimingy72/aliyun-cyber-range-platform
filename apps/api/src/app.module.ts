@@ -1,3 +1,4 @@
+import { RangeDnsVerificationService } from './admin/range-dns-verification.service';
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { existsSync } from 'node:fs';
@@ -125,6 +126,7 @@ function resolveProjectRootDir() {
     RangeInstancesService,
     RangeNetworkDiagnosticsService,
     RangeInstanceNodeActionsService,
+    RangeDnsVerificationService,
     SingleInstanceBatchExecutionService,
     {
       provide: SingleInstanceOpenTofuExecutionService,
