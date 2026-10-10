@@ -54,6 +54,7 @@ it('selects only exact saleable CPU/RAM in the frozen zone and validates image c
 it.each([
   { ImageSize: 50, Architecture: 'x86_64', SnapshotSet: [] },
   { ImageSize: 20, Architecture: 'x86_64', SnapshotSet: null },
+  { ImageSize: 20, Architecture: 'x86_64' },
   { ImageSize: 80, Architecture: 'x86_64', SnapshotSet: [{ DiskUsage: 'SYSTEM_DISK' }] },
 ])('uses official image size and snapshot fields for system-only images (%j)', async metadata => {
   jest.spyOn(rpc,'requestTencentCloud').mockResolvedValue({ TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PUBLIC_IMAGE', ...metadata }] } as any);
@@ -74,8 +75,7 @@ it('rejects DNAT entry networks with SNAT disabled instead of silently enabling 
 });
 it.each([
   [{ ImageType: 'PRIVATE_IMAGE', SnapshotSet: null }, 'SnapshotSet:private-null'],
-  [{ SnapshotSet: undefined }, 'SnapshotSet:missing'],
-  [{ ImageType: 'PRIVATE_IMAGE', SnapshotSet: undefined }, 'SnapshotSet:missing'],
+  [{ ImageType: 'PRIVATE_IMAGE' }, 'SnapshotSet:missing'],
   [{ SnapshotSet: { private: 'never-include-this-value' } }, 'SnapshotSet:shape'],
   [{ SnapshotSet: [null] }, 'SnapshotSet:entry-shape'],
   [{ SnapshotSet: [{}] }, 'SnapshotSet:unknown-disk-usage'],

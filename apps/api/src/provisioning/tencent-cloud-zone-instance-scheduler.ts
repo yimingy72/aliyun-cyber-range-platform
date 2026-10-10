@@ -33,8 +33,8 @@ export async function assertTencentImagesAvailable(account: ResolvedProvisioning
       if (!['PUBLIC_IMAGE','PRIVATE_IMAGE'].includes(image.ImageType ?? '')) reject('ImageType:unsupported');
       if (image.Architecture !== 'x86_64') reject('Architecture:unsupported');
       if (!Number.isSafeInteger(image.ImageSize) || Number(image.ImageSize) < 1) reject('ImageSize:missing-or-invalid');
-      // Official PUBLIC_IMAGE metadata may explicitly return null; private backing disks must remain inspectable.
-      if (image.ImageType === 'PUBLIC_IMAGE' && image.SnapshotSet === null) continue;
+      // Official PUBLIC_IMAGE metadata may omit nullable snapshots; private backing disks must remain inspectable.
+      if (image.ImageType === 'PUBLIC_IMAGE' && (image.SnapshotSet === null || image.SnapshotSet === undefined)) continue;
       const snapshots = Array.isArray(image.SnapshotSet) ? image.SnapshotSet : reject(image.SnapshotSet === undefined ? 'SnapshotSet:missing' : image.SnapshotSet === null ? 'SnapshotSet:private-null' : 'SnapshotSet:shape');
       for (const snapshot of snapshots) {
         if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) reject('SnapshotSet:entry-shape');
