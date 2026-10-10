@@ -66,6 +66,7 @@ export function createHttpApp(config: McpConfig, dependencies: HttpAppDependenci
         new PlatformApiClient({
           baseUrl: config.platformApiBaseUrl,
           token: await resolvePlatformApiToken(config, auth),
+          cloudWorkspaceId: typeof req.headers['x-cloud-workspace-id'] === 'string' ? req.headers['x-cloud-workspace-id'] : undefined,
         });
 
       server = createSdkServer(client, auth.scopes, pickRole(auth));

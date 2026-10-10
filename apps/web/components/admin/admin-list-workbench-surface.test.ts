@@ -20,10 +20,9 @@ describe('admin list workbench surface migration', () => {
     }
   });
 
-  it('uses the shared surface for cloud settings without changing the form panel contract', () => {
+  it('uses the shared surface for cloud account settings', () => {
     const source = readFileSync(resolve(process.cwd(), 'components/admin/settings/settings-screen.tsx'), 'utf8');
 
     expect(source).toContain('admin-workbench-surface');
-    expect(source).toContain('<CloudConfigPanel');
   });
 });

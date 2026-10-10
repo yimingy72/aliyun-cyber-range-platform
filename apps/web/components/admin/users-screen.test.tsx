@@ -64,6 +64,17 @@ const adminUsersPayload = [
 ];
 
 describe('UsersScreen', () => {
+  it('shows and copies the distinct login identity for a workspace user', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({ token: 'fixture-token', profile: { id: 'admin', username: 'admin', role: 'admin' }, isAdmin: true, isReady: true, login: vi.fn(), logout: logoutMock, idToken: null, refreshToken: null });
+    fetchAdminUsersMock.mockResolvedValue([{ ...adminUsersPayload[1]!, loginUsername: 'workspace-login-operator' }]);
+    render(<UsersScreen />);
+    await screen.findByText('登录账号：workspace-login-operator');
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '复制登录账号' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('workspace-login-operator'));
+  });
   beforeEach(() => {
     fetchAdminUsersMock.mockReset();
     createAdminUserMock.mockReset();

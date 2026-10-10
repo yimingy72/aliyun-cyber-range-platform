@@ -25,6 +25,9 @@ describe('AdminAuthGuard OIDC path', () => {
         username: 'alice',
         role: 'user',
         status: 'active',
+        cloudWorkspaceId: 'oidc-fixture-space',
+        isPlatformManager: false,
+        selectedCloudWorkspaceId: null,
       }),
     };
     const guard = new AdminAuthGuard(verifier as never, resolver as never);
@@ -41,6 +44,9 @@ describe('AdminAuthGuard OIDC path', () => {
       id: 'alice',
       username: 'alice',
       role: 'user',
+      cloudWorkspaceId: 'oidc-fixture-space',
+      isPlatformManager: false,
+      selectedCloudWorkspaceId: null,
     });
   });
 });

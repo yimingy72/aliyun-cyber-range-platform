@@ -2,7 +2,7 @@ export type ScenarioTemplateMetadata = {
   name: string;
   slug: string;
   version: string;
-  cloudProvider: 'alibaba_cloud';
+  cloudProvider: 'alibaba_cloud' | 'tencent_cloud';
   iacType: 'opentofu' | 'terraform';
   description?: string;
   tags?: string[];

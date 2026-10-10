@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
-import { BadGatewayException, ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadGatewayException, ConflictException, ForbiddenException, Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import type { RangeInstanceRecord } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import { SystemConfigService } from './system-config.service';
+import { readTencentRangeNetworkDiagnostics } from './tencent-network-diagnostics';
 
 type Row = Record<string, any>;
 type Context = { regionId: string; accountUid: string; accessKeyId: string; accessKeySecret: string };
@@ -40,12 +42,25 @@ function uid(value: unknown, phase: string): string { if (typeof value === 'numb
 
 @Injectable()
 export class RangeNetworkDiagnosticsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly systemConfigService?: SystemConfigService) {}
 
   async get(instance: RangeInstanceRecord, user: Pick<SessionUserProfile, 'id' | 'role'>) {
     if (!user || (user.role !== 'admin' && instance.ownerUserId !== user.id)) throw new ForbiddenException('Range instance access denied');
     const summary = instance.resourceSummary;
     if (instance.instanceMode !== 'range' || !summary || summary.mode !== 'opentofu') throw new ConflictException('Network diagnostics require a provisioned OpenTofu range');
+    if (instance.cloudProvider === 'tencent_cloud') {
+      const frozen = summary.executionContext;
+      if (!this.systemConfigService || !frozen || frozen.provider !== 'tencent_cloud') fail('context', 'missing frozen Tencent execution context');
+      const hostIds = mapIds(summary.hostIds, 'scope', true);
+      const ledgers = await this.prisma.billingLedgerResource.findMany({ where: { rangeInstanceId: instance.id, cloudProvider: 'tencent_cloud', cloudResourceType: 'ecs', releasedAt: null } });
+      exactIds(ledgers, 'cloudResourceId', hostIds, 'ledger');
+      if (ledgers.some(row => row.ownerUserId !== instance.ownerUserId || row.rangeInstanceId !== instance.id
+        || row.cloudAccountUid !== frozen.cloudAccountUid || row.regionId !== frozen.regionId)) fail('ledger', 'inconsistent frozen owner/account/region');
+      const account = await this.systemConfigService.getExecutionAccountContext({ cloudAccountContextId: frozen.cloudAccountContextId });
+      try { return await readTencentRangeNetworkDiagnostics(instance, account); }
+      catch (error) { if (error instanceof BadGatewayException) throw error; fail('Tencent read', 'cloud request unavailable or invalid'); }
+    }
+    if (summary.executionContext?.provider === 'tencent_cloud') fail('context', 'instance provider differs from frozen context');
     const vpcId = string(summary.vpcId, 'scope');
     const hostIds = mapIds(summary.hostIds, 'scope', true);
     const switchIds = mapIds(summary.subnetIds, 'scope', true);

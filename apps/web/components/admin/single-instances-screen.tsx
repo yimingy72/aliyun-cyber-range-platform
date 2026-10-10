@@ -16,6 +16,8 @@ import {
   triggerSingleInstanceAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
+import { cloudProviderLabel, useCloudWorkspace } from './cloud-workspace-provider';
 import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
@@ -471,7 +473,7 @@ function findPlatformImageAsset(query: string, images: PlatformImageAsset[]) {
   );
 }
 
-function buildDefaultDialogState(platformImages: PlatformImageAsset[]): CreateDialogState {
+function buildDefaultDialogState(platformImages: PlatformImageAsset[], provider: 'alibaba_cloud' | 'tencent_cloud' = 'alibaba_cloud'): CreateDialogState {
   const defaultImage = platformImages.find((item) => item.enabled) ?? platformImages[0] ?? null;
 
   return {
@@ -480,7 +482,7 @@ function buildDefaultDialogState(platformImages: PlatformImageAsset[]): CreateDi
     platformImageQuery: defaultImage ? buildPlatformImageOptionLabel(defaultImage) : '',
     cpu: '2',
     memory: '2',
-    systemDiskSize: '40',
+    systemDiskSize: String(Math.max(provider === 'tencent_cloud' ? 50 : 40, minimumSystemDiskSize(provider, defaultImage))),
     expiresAt: '',
     password: '',
     quantity: '1',
@@ -517,6 +519,8 @@ export function SingleInstancesScreen({
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
+  const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const isPageActive = useAdminRouteIsActive('/admin/instances');
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
@@ -550,7 +554,7 @@ export function SingleInstancesScreen({
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
   const [copiedPasswordInstanceId, setCopiedPasswordInstanceId] = useState<string | null>(null);
-  const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([]));
+  const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([], workspace?.provider ?? 'alibaba_cloud'));
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogState | null>(null);
@@ -713,7 +717,7 @@ export function SingleInstancesScreen({
       setCreateForm((current) =>
         current.platformImageQuery
           ? current
-          : buildDefaultDialogState(cachedImages.data.items.filter((item) => item.enabled)),
+          : buildDefaultDialogState(cachedImages.data.items.filter((item) => item.enabled), workspace?.provider ?? 'alibaba_cloud'),
       );
 
       return () => {
@@ -735,7 +739,7 @@ export function SingleInstancesScreen({
         setPlatformImages(nextImages.items);
         setHasLoadedPlatformImages(true);
         setCreateForm((current) =>
-          current.platformImageQuery ? current : buildDefaultDialogState(nextImages.items.filter((item) => item.enabled)),
+          current.platformImageQuery ? current : buildDefaultDialogState(nextImages.items.filter((item) => item.enabled), workspace?.provider ?? 'alibaba_cloud'),
         );
       })
       .catch((error: unknown) => {
@@ -883,8 +887,9 @@ export function SingleInstancesScreen({
 
     consumedPrefillRef.current = platformImageAssetId;
     setCreateForm({
-      ...buildDefaultDialogState(enabledPlatformImages),
+      ...buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'),
       hostName: selectedImage.defaultHostName?.trim() || '',
+      systemDiskSize: String(Math.max(workspace?.provider === 'tencent_cloud' ? 50 : 40, minimumSystemDiskSize(workspace?.provider ?? 'alibaba_cloud', selectedImage))),
       platformImageQuery: buildPlatformImageOptionLabel(selectedImage),
     });
     setCreateFormError(null);
@@ -911,11 +916,13 @@ export function SingleInstancesScreen({
     setCreateForm((current) => ({
       ...current,
       [field]: value,
+      ...(field === 'platformImageQuery' && workspace?.provider === 'tencent_cloud'
+        ? { systemDiskSize: String(Math.max(Number(current.systemDiskSize) || 50, minimumSystemDiskSize(workspace.provider, findPlatformImageAsset(String(value), enabledPlatformImages)))) } : {}),
     }));
   }
 
   function openCreateDialog() {
-    setCreateForm(buildDefaultDialogState(enabledPlatformImages));
+    setCreateForm(buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'));
     setCreateFormError(null);
     setIsCreateOpen(true);
   }
@@ -1014,7 +1021,7 @@ export function SingleInstancesScreen({
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!session.token) {
+    if (!session.token || !canProvision) {
       return;
     }
 
@@ -1034,6 +1041,19 @@ export function SingleInstancesScreen({
       !instanceTypeAvailability.exactAvailable
     ) {
       setCreateFormError('当前规格未通过可售校验，请调整 CPU / 内存或稍后重试。');
+      return;
+    }
+
+    if (workspace?.provider === 'tencent_cloud') {
+      try { verifiedTencentInstanceTypes(instanceTypeAvailability, cpu, memory); }
+      catch (error) { setCreateFormError(error instanceof Error ? error.message : '腾讯云规格校验失败。'); return; }
+    }
+    const provider = workspace?.provider ?? 'alibaba_cloud';
+    const expiryError = provider === 'tencent_cloud' ? cloudExpiryError(createForm.expiresAt, provider) : null;
+    const imageError = provider === 'tencent_cloud' ? tencentImageError(selectedPlatformImage) : null;
+    const diskSize = Number(createForm.systemDiskSize);
+    if (expiryError || imageError || provider === 'tencent_cloud' && (!Number.isInteger(diskSize) || diskSize < minimumSystemDiskSize(provider, selectedPlatformImage))) {
+      setCreateFormError(expiryError ?? imageError ?? `系统盘至少需要 ${minimumSystemDiskSize(provider, selectedPlatformImage)} G。`);
       return;
     }
 
@@ -1380,6 +1400,7 @@ export function SingleInstancesScreen({
   }
 
   function renderInstanceActions(instance: RangeInstance, actions: MenuAction[]) {
+    if (workspace?.isReadOnly) return null;
     const inlineActions = actions.filter(isPrimaryInlineAction);
     const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
     const isActionPending = pendingActionInstanceId === instance.id;
@@ -1537,6 +1558,7 @@ export function SingleInstancesScreen({
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" />
+        {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
           {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
@@ -1545,7 +1567,7 @@ export function SingleInstancesScreen({
             <AdminListToolbar
               activeView={listMode}
               action={
-                <Button disabled={!enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+                <Button disabled={!canProvision || !enabledPlatformImages.length} onClick={openCreateDialog} type="button">
                   <Plus aria-hidden="true" data-icon="inline-start" />
                   创建实例
                 </Button>
@@ -1782,7 +1804,7 @@ export function SingleInstancesScreen({
                 type="button"
                 className="template-workbench-primary-action"
                 onClick={openCreateDialog}
-                disabled={!enabledPlatformImages.length}
+                disabled={!canProvision || !enabledPlatformImages.length}
               >
                 创建实例
               </button>
@@ -2165,7 +2187,7 @@ export function SingleInstancesScreen({
               <Button disabled={isSubmitting} type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
                 取消
               </Button>
-              <Button disabled={isSubmitting || !enabledPlatformImages.length} form="single-instance-create-form" type="submit">
+              <Button disabled={!canProvision || isSubmitting || !enabledPlatformImages.length} form="single-instance-create-form" type="submit">
                 确认创建
               </Button>
             </>
@@ -2240,7 +2262,7 @@ export function SingleInstancesScreen({
                       id="single-instance-disk"
                       aria-label="磁盘大小"
                       type="number"
-                      min="20"
+                      min={minimumSystemDiskSize(workspace?.provider ?? 'alibaba_cloud', findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages))}
                       value={createForm.systemDiskSize}
                       onChange={(event) => updateCreateForm('systemDiskSize', event.target.value)}
                     />
@@ -2279,6 +2301,7 @@ export function SingleInstancesScreen({
                       onChange={(event) => updateCreateForm('expiresAt', event.target.value)}
                       required
                     />
+                    {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
                   </div>
                 </div>
 

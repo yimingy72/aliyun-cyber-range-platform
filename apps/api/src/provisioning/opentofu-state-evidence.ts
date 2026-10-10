@@ -7,7 +7,7 @@ const RECOVERY_REQUIRED = 'OpenTofu state recovery is required before proceeding
 
 type StateInstance = { address: string; type: string; module?: string; attributes: Record<string, unknown>; tainted: boolean };
 export type WorkspaceState = { lineage: string; serial: number; instances: StateInstance[] };
-type ApplyEvidence = { version: 1; addresses: string[]; createAddresses: string[]; priorLineage: string | null; priorIds: Record<string, string> };
+export type ApplyEvidence = { submittedAt?: string; sourceProvisionJobId?: string; version: 1; addresses: string[]; createAddresses: string[]; priorLineage: string | null; priorIds: Record<string, string> };
 
 export async function fileExists(file: string) {
   try { await fs.stat(file); return true; } catch (error) {
@@ -88,7 +88,7 @@ export async function assertWorkspaceCanApply(dir: string, requireState = false)
   return state;
 }
 
-export async function recordApplyPlan(dir: string, plan: unknown) {
+export async function recordApplyPlan(dir: string, plan: unknown, sourceProvisionJobId?: string) {
   const value = plan as any;
   const addresses: string[] = [];
   const collect = (module: any) => {
@@ -113,7 +113,7 @@ export async function recordApplyPlan(dir: string, plan: unknown) {
   }
   const state = await assertWorkspaceCanApply(dir);
   const priorIds = Object.fromEntries((state?.instances ?? []).filter(instance => createAddresses.includes(instance.address)).map(instance => [instance.address, instance.attributes.id as string]));
-  const evidence: ApplyEvidence = { version: 1, addresses, createAddresses, priorLineage: state?.lineage ?? null, priorIds };
+  const evidence: ApplyEvidence = { submittedAt: new Date().toISOString(), ...(sourceProvisionJobId ? { sourceProvisionJobId } : {}), version: 1, addresses, createAddresses, priorLineage: state?.lineage ?? null, priorIds };
   await fs.writeFile(path.join(dir, APPLY_PENDING_FILE), JSON.stringify(evidence), { mode: 0o600 });
 }
 
@@ -131,4 +131,10 @@ export async function assertDestroyComplete(dir: string, previous: WorkspaceStat
     throw new Error('OpenTofu destroy did not leave a verified empty state; recovery is required');
   if (unresolvedApply) throw new Error('OpenTofu tracked resources were cleaned, but the previous apply outcome is unknown; cloud resource recovery is required');
   await fs.rm(path.join(dir, APPLY_PENDING_FILE), { force: true });
+}
+
+export async function readPendingApplyEvidence(dir: string) {
+  const value = await readEvidence(dir);
+  if (value === 'unknown') throw new Error('OpenTofu pending creation evidence is malformed');
+  return value;
 }

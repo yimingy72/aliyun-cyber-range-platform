@@ -21,7 +21,7 @@ describeDb('billing ledger batch workload in isolated PostgreSQL', () => {
   beforeEach(async () => {
     await prisma.billingLedgerResource.deleteMany();
     for (const owner of ['alice', 'bob']) await prisma.platformUser.upsert({
-      where: { id: owner }, update: {}, create: { id: owner, username: `billing-fixture-${owner}`, passwordHash: 'fixture-only', role: 'user' },
+      where: { id: owner }, update: {}, create: { id: owner, username: `billing-fixture-${owner}`, loginUsername: `billing-fixture-${owner}`, cloudWorkspaceId: 'legacy-unbound', passwordHash: 'fixture-only', role: 'user' },
     });
   });
 

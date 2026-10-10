@@ -9,6 +9,14 @@ import type {
   BillingUserSummary,
   BillingWindowInput,
   CloudConfigSnapshot,
+  CloudAccountContext,
+  SaveTencentCloudAccountInput,
+  SaveCloudAccountInput,
+  CloudWorkspaceView,
+  TencentCloudRegionsInput,
+  TencentCloudRegionsPayload,
+  TencentCloudImagesInput,
+  TencentCloudImagesPayload,
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
   CreateAdminUserInput,
@@ -61,11 +69,16 @@ export class PlatformApiClient implements PlatformApiClientLike {
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly cloudWorkspaceId: string | undefined;
 
   constructor(options: PlatformApiClientOptions) {
+    if (options.cloudWorkspaceId !== undefined && (!options.cloudWorkspaceId.trim() || options.cloudWorkspaceId.length > 192)) {
+      throw new Error('Invalid cloud workspace selection');
+    }
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.token = options.token;
     this.fetchImpl = options.fetch ?? fetch;
+    this.cloudWorkspaceId = options.cloudWorkspaceId?.trim();
   }
 
   listRangeTemplates(view: RangeTemplateView = 'platform') {
@@ -235,6 +248,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}${query}`);
   }
 
+  validateRangeInstanceNodePackImage(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>) {
+    return this.request<Record<string, unknown>>(`/admin/ranges/${encodeURIComponent(rangeInstanceId)}/nodes/${encodeURIComponent(nodeId)}/pack-image-validation`, {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+  }
+
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {
     return this.request<RangeAccessPayload>(`/admin/ranges/${encodeURIComponent(id)}/access`);
   }
@@ -304,16 +323,8 @@ export class PlatformApiClient implements PlatformApiClientLike {
   }
 
   async getSingleInstance(id: string) {
-    const lists = await Promise.all([this.listSingleInstances('active'), this.listSingleInstances('history')]);
-    for (const list of lists) {
-      const found = [...list.standaloneInstances, ...list.batches.flatMap((entry) => entry.instances)].find((item) => item.id === id);
-
-      if (found) {
-        return found;
-      }
-    }
-
-    return null;
+    try { return await this.request<RangeInstance>(`/admin/instances/${encodeURIComponent(id)}`); }
+    catch (error) { if (error instanceof PlatformApiError && error.status === 404) return null; throw error; }
   }
 
   getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus> {
@@ -343,6 +354,39 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   fetchCloudConfig() {
     return this.request<CloudConfigSnapshot>('/admin/system-config');
+  }
+
+  listCloudAccountContexts(includeInactive = false) {
+    return this.request<CloudAccountContext[]>(`/admin/cloud-contexts${includeInactive ? '?includeInactive=true' : ''}`);
+  }
+
+  saveTencentCloudAccount(payload: SaveTencentCloudAccountInput, operation?: OperationRequest) {
+    return this.request<CloudAccountContext>('/admin/cloud-contexts', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  saveCloudAccountBinding(payload: SaveCloudAccountInput, operation?: OperationRequest) {
+    return this.request<CloudAccountContext>('/admin/cloud-contexts', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  listCloudWorkspaces() { return this.request<CloudWorkspaceView[]>('/admin/cloud-workspaces'); }
+  getCurrentCloudWorkspace() { return this.request<CloudWorkspaceView | null>('/admin/cloud-workspaces/current'); }
+  switchCloudWorkspace(id: string) {
+    return this.request<CloudWorkspaceView>(`/admin/cloud-workspaces/${encodeURIComponent(id)}/switch`, { method: 'POST', body: '{}' });
+  }
+
+  discoverTencentCloudRegions(payload: TencentCloudRegionsInput) {
+    return this.request<TencentCloudRegionsPayload>('/admin/tencent-cloud/regions/query', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  listTencentCloudImages(input: TencentCloudImagesInput) {
+    const params = new URLSearchParams({ scope: input.scope });
+    if (input.offset !== undefined) params.set('offset', String(input.offset));
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    return this.request<TencentCloudImagesPayload>(`/admin/tencent-cloud/contexts/${encodeURIComponent(input.cloudAccountContextId)}/images?${params}`);
+  }
+
+  getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number) {
+    return this.request<InstanceTypeAvailabilitySnapshot>(`/admin/cloud-contexts/${encodeURIComponent(id)}/instance-type-availability?${new URLSearchParams({ cpu: String(cpu), memory: String(memory) })}`);
   }
 
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest) {
@@ -617,6 +661,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   private buildHeaders(operation?: OperationRequest) {
     return {
       Authorization: `Bearer ${this.token}`,
+      ...(this.cloudWorkspaceId ? { 'x-cloud-workspace-id': this.cloudWorkspaceId } : {}),
       'Content-Type': 'application/json',
       ...(operation?.idempotencyKey ? { 'x-idempotency-key': operation.idempotencyKey } : {}),
       ...(operation?.confirmationId ? { 'x-confirmation-id': operation.confirmationId } : {}),

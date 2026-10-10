@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -6,16 +7,23 @@ import { ADMIN_REPOSITORY } from './admin/admin.repository';
 import { AdminAuthGuard } from './admin/admin-auth.guard';
 import { ImageCatalogController } from './admin/image-catalog.controller';
 import { ImageCatalogService } from './admin/image-catalog.service';
+import { TencentCloudCatalogController } from './admin/tencent-cloud-catalog.controller';
+import { TencentCloudCatalogService } from './admin/tencent-cloud-catalog.service';
 import { CloudAccountContextsController } from './admin/cloud-account-contexts.controller';
 import { CloudAccountContextsService } from './admin/cloud-account-contexts.service';
+import { CloudWorkspacesService } from './admin/cloud-workspaces.service';
+import { CloudWorkspacesController, PlatformSessionController } from './admin/cloud-workspaces.controller';
+import { CloudWorkspaceInterceptor } from './auth/cloud-workspace.interceptor';
 import { ImageImportsController } from './admin/image-imports.controller';
 import { ImageImportsService } from './admin/image-imports.service';
+import { TencentCosManagedBucketService, TENCENT_COS_BUCKETS } from './admin/tencent-cos-managed-bucket.service';
 import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
 import { PackedImagesService } from './admin/packed-images.service';
 import { PackedImagesWorkerService } from './admin/packed-images-worker.service';
 import { BillingBssClient } from './admin/billing-bss-client';
 import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
+import { TencentBillingClient } from './admin/tencent-billing-client';
 import { BillingSyncService } from './admin/billing-sync.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { PlatformImageTagsController } from './admin/platform-image-tags.controller';
@@ -82,7 +90,10 @@ function resolveProjectRootDir() {
     ProvisionJobsController,
     SystemConfigController,
     CloudAccountContextsController,
+    CloudWorkspacesController,
+    PlatformSessionController,
     ImageCatalogController,
+    TencentCloudCatalogController,
     ImageImportsController,
     BillingController,
     PlatformImagesController,
@@ -93,13 +104,19 @@ function resolveProjectRootDir() {
     AdminAuthGuard,
     BillingBssClient,
     ImageCatalogService,
+    TencentCloudCatalogService,
     CloudAccountContextsService,
+    CloudWorkspacesService,
+    { provide: APP_INTERCEPTOR, useClass: CloudWorkspaceInterceptor },
     ImageImportsService,
+    TencentCosManagedBucketService,
+    { provide: TENCENT_COS_BUCKETS, useExisting: TencentCosManagedBucketService },
     ImageImportsWorkerService,
     PackedImagesService,
     PackedImagesWorkerService,
     BillingService,
     BillingSyncService,
+    TencentBillingClient,
     AdminUsersService,
     KeycloakAdminService,
     OidcJwtVerifier,

@@ -1,6 +1,7 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import {
@@ -9,6 +10,7 @@ import {
   parseAdminOidcSessionPayload,
 } from '../../lib/admin-oidc';
 import { writeAdminSession } from '../../lib/admin-auth-storage';
+import { Button } from '../ui/button';
 
 type AdminOidcCallbackScreenProps = {
   oidcIssuer: string;
@@ -50,6 +52,7 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
         code,
         codeVerifier: pendingLogin.codeVerifier,
       });
+      if (!isMounted) return;
       const session = tokenResponse ? parseAdminOidcSessionPayload(tokenResponse) : null;
 
       if (!session || !writeAdminSession(session)) {
@@ -62,7 +65,9 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
       router.replace('/admin/scenarios');
     }
 
-    void finishLogin();
+    void finishLogin().catch(() => {
+      if (isMounted) setErrorMessage('管理员登录失败，请稍后重试。');
+    });
 
     return () => {
       isMounted = false;
@@ -81,7 +86,10 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
         </div>
 
         <div className="admin-form admin-login-form">
-          <p className="form-error">{errorMessage}</p>
+          <p className="form-error" role="alert">{errorMessage}</p>
+          <Button asChild size="lg">
+            <Link href="/admin/login">重新登录</Link>
+          </Button>
         </div>
       </section>
     </main>

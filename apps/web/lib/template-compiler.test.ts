@@ -7,6 +7,13 @@ import { createEnterpriseRangeSkeleton } from './template-topology-skeleton';
 import { syncTopologySpecFromNodes } from './template-topology-sync';
 
 describe('compileTopologyGraph', () => {
+  it('preserves Tencent on graph and derived NAT/EIP resources', () => {
+    const nodes = createEnterpriseRangeSkeleton();
+    const compiled = compileTopologyGraph({ nodes, topologySpec: syncTopologySpecFromNodes({ nodes }), cloudProvider: 'tencent_cloud' });
+    expect(compiled.resources.every(resource => resource.provider === 'tencent_cloud')).toBe(true);
+    expect(compiled.resources.some(resource => resource.type === 'nat_gateway')).toBe(true);
+  });
+
   it('derives the compiled topology entry host from DNAT instead of a stale topologySpec', () => {
     const nodes = createEnterpriseRangeSkeleton();
     const topologySpec = syncTopologySpecFromNodes({ nodes });

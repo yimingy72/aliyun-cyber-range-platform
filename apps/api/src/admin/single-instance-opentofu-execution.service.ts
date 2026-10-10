@@ -4,9 +4,13 @@ import path from 'node:path';
 import { OpenTofuRunner, type OpenTofuCommandResult, type OpenTofuWorkspaceCommandOptions, type OpenTofuPlanOptions, type OpenTofuApplyOptions } from '@aliyun-cyber-range/iac-runner';
 import type { AdminRepository, RangeInstanceRecord, SingleInstanceBatchWithInstancesRecord, SingleInstanceConfig, RangeResourceSummary } from './admin.repository';
 import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type SingleInstanceExecutionItem, type NormalizedInstanceDetail, patchRuntimeScenarioTemplate, patchRuntimeCompiledProvisionSpec } from './single-instance-batch-execution.service';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { buildBillingTags } from './billing-tagging';
 import { syncRangeInstanceBillingLedger, releaseRangeInstanceBillingLedger } from './billing-ledger-sync';
+import { assertTencentImagesAvailable } from '../provisioning/tencent-cloud-zone-instance-scheduler';
+import { describeTencentResourceInventory } from './tencent-cloud-resources';
+import { buildTencentSingleCreationIntent } from '../provisioning/tencent-cloud-identity';
+import { TencentCloudOpenTofuRenderer, TENCENTCLOUD_PROVIDER_VERSION } from '../provisioning/renderers/tencent-cloud-opentofu-renderer';
 import * as mirrors from '../provisioning/provider-mirror-publication';
 
 export type SingleInstanceOpenTofuBatchLease = { batchId: string; assertCurrent(): Promise<void>; signal: AbortSignal };
@@ -22,17 +26,25 @@ type BatchRunner = {
 };
 export type SingleInstanceOpenTofuExecutionOptions = { projectRootDir?: string; workspacesRootDir?: string; env?: NodeJS.ProcessEnv; runner?: BatchRunner };
 type Config = SingleInstanceConfig & { executionBackend?: string };
-type Identity = { batchId: string; ownerId: string | null; contextId: string; accountUid: string; region: string; zone: string; profileId: string; securityGroupId: string };
+type Identity = { provider?: 'tencent_cloud'; vpcId?: string; batchId: string; ownerId: string | null; contextId: string; accountUid: string; region: string; zone: string; profileId: string; securityGroupId: string };
 type Definition = { instance_name: string; host_name: string; instance_type: string; image_id: string; vswitch_id: string;
-  system_disk_category: string; system_disk_size: number; internet_max_bandwidth_out: number; auto_release_time: string; tags: Record<string, string> };
+  system_disk_category: string; client_token?: string; system_disk_size: number; internet_max_bandwidth_out: number; auto_release_time: string; tags: Record<string, string> };
 type CatalogMember = { definition: Definition; password: string; hostKey: string; sourceJobId: string };
-type PendingOperation = { kind: 'create' | 'destroy'; ids: string[]; jobIds: string[]; recoveryIds?: string[]; createIds?: string[]; knownIds?: Record<string, string[]> };
+type PendingOperation = { submittedAt?: string; kind: 'create' | 'destroy'; ids: string[]; jobIds: string[]; recoveryIds?: string[]; createIds?: string[]; knownIds?: Record<string, string[]> };
 type Manifest = { schemaVersion: 1; identity: Identity; members: Record<string, CatalogMember>; pending?: PendingOperation };
 type StateMember = { id: string; diskId: string; privateIp: string | null; publicIp: string | null; status: string; tainted: boolean; tags: Record<string, string> };
 type Plan = { format_version: string; resource_changes?: Array<{ address: string; type: string; mode?: string; change: { actions: string[] } }> };
 type Context = { lease: SingleInstanceOpenTofuBatchLease; items: SingleInstanceExecutionItem[]; batch: SingleInstanceBatchWithInstancesRecord;
-  account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]> };
+  account: SystemCloudAccountContext; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]> };
 const MODULE_PATH = 'infra/opentofu/modules/alicloud-single-instance-batch';
+function modulePath(context: Context) { return context.manifest.identity.provider === 'tencent_cloud' ? 'infra/opentofu/modules/tencentcloud-single-instance-batch' : MODULE_PATH; }
+function batchResourceSummary(context: Context): RangeResourceSummary {
+  const identity = context.manifest.identity;
+  return { mode: 'opentofu', modulePath: modulePath(context), workspaceDir: context.workspace,
+    ...(identity.provider === 'tencent_cloud' ? { executionContext: { provider: identity.provider, cloudAccountContextId: identity.contextId, cloudAccountUid: identity.accountUid, regionId: identity.region, zoneId: identity.zone } } : {}) };
+}
+function resourceType(context: Context) { return context.manifest.identity.provider === 'tencent_cloud' ? 'tencentcloud_instance' : 'alicloud_instance'; }
+function validCloudId(context: Context, id: string) { return (context.manifest.identity.provider === 'tencent_cloud' ? /^ins-[a-z0-9]+$/ : /^i-[A-Za-z0-9-]{1,125}$/).test(id); }
 const MANIFEST_FILE = 'single-batch-manifest.json';
 const APPLY_MARKER = '.single-batch-apply-started';
 const CURRENT_STATUSES = new Set(['pending_create', 'creating', 'running']);
@@ -62,7 +74,12 @@ export class SingleInstanceOpenTofuExecutionService {
       const valid = [] as SingleInstanceExecutionItem[];
       for (const item of items) if (await this.itemCurrent(item)) valid.push(item);
       if (!valid.length) return;
+      if (context.manifest.identity.provider === 'tencent_cloud' && valid.some(item => !item.instance.singleInstanceConfig?.autoReleaseTime || new Date(item.instance.singleInstanceConfig.autoReleaseTime).getTime() - Date.now() <= 5 * 60_000)) throw new Error('Tencent scheduled termination must be more than five minutes after creation');
       if (valid.some(item => isExpired(item.instance))) throw new Error('Single-instance launch expired before OpenTofu creation');
+      if (context.account.provider === 'tencent_cloud') {
+        const metadata = await this.command(context, () => assertTencentImagesAvailable(context!.account,valid.map(item => item.instance.singleInstanceConfig!.imageId)));
+        if (valid.some(item => item.instance.singleInstanceConfig!.systemDiskSize < metadata[item.instance.singleInstanceConfig!.imageId].minimumSystemDiskSize)) throw new Error('Frozen Tencent system disk is smaller than the current image minimum');
+      }
       if (context.manifest.pending || await exists(path.join(context.workspace, APPLY_MARKER))) {
         await this.recoverPartialCreate(context, valid, 'Interrupted OpenTofu operation requires recovery before creation');
         return;
@@ -79,6 +96,10 @@ export class SingleInstanceOpenTofuExecutionService {
         const member = context.manifest.members[item.instance.id];
         member.sourceJobId = item.job.id;
         member.definition.tags.PlatformCreateJobId = item.job.id;
+        if (context.manifest.identity.provider === 'tencent_cloud') {
+          member.definition.client_token = buildTencentSingleCreationIntent(item.instance, item.job.id);
+          member.definition.tags.CreationIntentId = member.definition.client_token;
+        }
       }
       await this.writeInputs(context);
       const prepared = context;
@@ -151,13 +172,14 @@ export class SingleInstanceOpenTofuExecutionService {
     const cfg = first.singleInstanceConfig as Config;
     if (!account.accountUid || !account.cloudAccountContextId || !account.accountUidResolved || !cfg.networkProfileId) throw new Error('OpenTofu launch must have a verified frozen account and network profile');
     const profile = await this.repository.getSingleInstanceNetworkProfileById(cfg.networkProfileId);
-    if (!profile || profile.status !== 'ready' || profile.cloudAccountUid !== account.accountUid || profile.regionId !== account.defaultRegion
+    if (!['alibaba_cloud', 'tencent_cloud'].includes(account.provider) || first.cloudProvider !== account.provider) throw new Error('OpenTofu batch cloud provider differs from frozen account');
+    if (!profile || profile.provider !== account.provider || profile.status !== 'ready' || profile.cloudAccountUid !== account.accountUid || profile.regionId !== account.defaultRegion
       || profile.zoneId !== cfg.zoneId || profile.cloudAccountContextId !== account.cloudAccountContextId) throw new Error('OpenTofu network does not match frozen launch identity');
-    const identity: Identity = { batchId: lease.batchId, ownerId: batch.batch.ownerUserId, contextId: account.cloudAccountContextId,
+    const identity: Identity = { ...(account.provider === 'tencent_cloud' ? { provider: 'tencent_cloud' as const, vpcId: profile.vpcId } : {}), batchId: lease.batchId, ownerId: batch.batch.ownerUserId, contextId: account.cloudAccountContextId,
       accountUid: account.accountUid, region: account.defaultRegion, zone: profile.zoneId, profileId: profile.id, securityGroupId: profile.securityGroupId };
     for (const member of batch.instances) {
       const config = member.singleInstanceConfig as Config | null;
-      if (!config || backend(member) !== 'opentofu' || member.ownerUserId !== identity.ownerId || config.cloudAccountContextId !== identity.contextId
+      if (member.cloudProvider !== account.provider || !config || backend(member) !== 'opentofu' || member.ownerUserId !== identity.ownerId || config.cloudAccountContextId !== identity.contextId
         || config.cloudAccountUid !== identity.accountUid || config.regionId !== identity.region || config.zoneId !== identity.zone || config.networkProfileId !== profile.id
         || !config.assignedVswitchId || !profile.vswitchIds.includes(config.assignedVswitchId)) throw new Error('Batch contains a member outside its immutable owner/account/network scope');
     }
@@ -186,11 +208,11 @@ export class SingleInstanceOpenTofuExecutionService {
     const marker = await readJson<PendingOperation>(path.join(workspace, APPLY_MARKER));
     for (const pending of [manifest.pending, marker]) {
       if (!pending) continue;
-      if (!['create', 'destroy'].includes(pending.kind) || !Array.isArray(pending.ids) || !Array.isArray(pending.jobIds)
+      if (pending.submittedAt !== undefined && (typeof pending.submittedAt !== 'string' || !Number.isFinite(Date.parse(pending.submittedAt))) || !['create', 'destroy'].includes(pending.kind) || !Array.isArray(pending.ids) || !Array.isArray(pending.jobIds)
         || pending.ids.some(id => typeof id !== 'string' || !manifest!.members[id])
         || pending.createIds !== undefined && (!Array.isArray(pending.createIds) || pending.createIds.some(id => typeof id !== 'string' || !manifest!.members[id]))
         || pending.knownIds !== undefined && (!pending.knownIds || typeof pending.knownIds !== 'object' || Array.isArray(pending.knownIds)
-          || Object.entries(pending.knownIds).some(([id, values]) => !manifest!.members[id] || !Array.isArray(values) || values.some(value => typeof value !== 'string' || !/^i-[A-Za-z0-9-]{1,125}$/.test(value))))
+          || Object.entries(pending.knownIds).some(([id, values]) => !manifest!.members[id] || !Array.isArray(values) || values.some(value => typeof value !== 'string' || !(identity.provider === 'tencent_cloud' ? /^ins-[a-z0-9]+$/ : /^i-[A-Za-z0-9-]{1,125}$/).test(value))))
         || pending.recoveryIds !== undefined && (!Array.isArray(pending.recoveryIds) || pending.recoveryIds.some(id => typeof id !== 'string' || !manifest!.members[id]))) {
         throw new Error('OpenTofu recovery marker is malformed');
       }
@@ -219,9 +241,9 @@ export class SingleInstanceOpenTofuExecutionService {
     await this.assertLease(lease);
     await fs.mkdir(workspace, { recursive: true, mode: 0o700 });
     await this.atomicJson(context, MANIFEST_FILE, manifest);
-    const providerEnv = this.env.RANGE_PROVISIONER_MODE === 'dry-run' ? {} : await mirrors.prepareOpenTofuProviderEnv({ providerZipPath: this.env.ALICLOUD_PROVIDER_ZIP_PATH,
-      workspacesRootDir: this.workspaceRoot, unpackedMirrorRootDir: this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT });
-    context.env = { PATH: this.env.PATH, ...providerEnv, ALICLOUD_ACCESS_KEY: account.accessKeyId, ALICLOUD_SECRET_KEY: account.accessKeySecret, ALICLOUD_REGION: identity.region };
+    const providerEnv = this.env.RANGE_PROVISIONER_MODE === 'dry-run' ? {} : await mirrors.prepareOpenTofuProviderEnv({ provider: account.provider, providerZipPath: account.provider === 'tencent_cloud' ? this.env.TENCENTCLOUD_PROVIDER_ZIP_PATH : this.env.ALICLOUD_PROVIDER_ZIP_PATH,
+      workspacesRootDir: this.workspaceRoot, unpackedMirrorRootDir: account.provider === 'tencent_cloud' ? this.env.TENCENTCLOUD_PROVIDER_UNPACKED_MIRROR_ROOT : this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT });
+    context.env = { PATH: this.env.PATH, ...providerEnv, ...(account.provider === 'tencent_cloud' ? { TENCENTCLOUD_SECRET_ID: account.accessKeyId, TENCENTCLOUD_SECRET_KEY: account.accessKeySecret, TENCENTCLOUD_REGION: identity.region } : { ALICLOUD_ACCESS_KEY: account.accessKeyId, ALICLOUD_SECRET_KEY: account.accessKeySecret, ALICLOUD_REGION: identity.region }) };
     return context;
   }
 
@@ -230,13 +252,15 @@ export class SingleInstanceOpenTofuExecutionService {
     const password = item.instance.runtimeCredentials?.[config.hostKey]?.password;
     if (!password || !config.resolvedInstanceType) throw new Error('Frozen password and exact instance type are required');
     const sourceJobId = config.opentofuCreateJobId ?? item.job.id;
-    return { password, hostKey: config.hostKey, sourceJobId, definition: { instance_name: instanceName(item.instance.name),
+    return { password, hostKey: config.hostKey, sourceJobId, definition: { instance_name: identity.provider === 'tencent_cloud' ? Array.from(instanceName(item.instance.name)).slice(0, 60).join('') : instanceName(item.instance.name),
       host_name: config.hostName ?? '', instance_type: config.resolvedInstanceType, image_id: config.imageId, vswitch_id: config.assignedVswitchId!,
-      system_disk_category: this.env.OPENTOFU_SYSTEM_DISK_CATEGORY ?? 'cloud_essd', system_disk_size: config.systemDiskSize,
+      system_disk_category: identity.provider === 'tencent_cloud' ? this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE ?? 'CLOUD_PREMIUM' : this.env.OPENTOFU_SYSTEM_DISK_CATEGORY ?? 'cloud_essd', system_disk_size: config.systemDiskSize,
       internet_max_bandwidth_out: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT ?? 10), auto_release_time: config.autoReleaseTime ?? '',
       tags: { ...buildBillingTags({ billingScope: item.instance.ownerUserId ? 'user' : 'platform', ownerUserId: item.instance.ownerUserId,
         rangeInstanceId: item.instance.id, singleInstanceBatchId: identity.batchId, platformResourceType: 'ecs', platformHostKey: config.hostKey, billingStartAt: item.instance.createdAt }),
-        CloudAccountUid: identity.accountUid, CloudAccountContextId: identity.contextId, ExecutionBackend: 'opentofu', PlatformCreateJobId: sourceJobId } } };
+        CloudAccountUid: identity.accountUid, CloudAccountContextId: identity.contextId, ExecutionBackend: 'opentofu', PlatformCreateJobId: sourceJobId,
+        ...(identity.provider === 'tencent_cloud' ? { CloudProvider: 'tencent_cloud', OwnerUserId: item.instance.ownerUserId ?? 'platform', PlatformResourceType: 'ecs', CreationIntentId: buildTencentSingleCreationIntent(item.instance, sourceJobId) } : {}) },
+      ...(identity.provider === 'tencent_cloud' ? { client_token: buildTencentSingleCreationIntent(item.instance, sourceJobId) } : {}) } };
   }
   private validateFrozenDefinition(instance: RangeInstanceRecord, member: CatalogMember) {
     const config = instance.singleInstanceConfig!;
@@ -244,6 +268,7 @@ export class SingleInstanceOpenTofuExecutionService {
     if (!definition || member.hostKey !== config.hostKey || member.password !== instance.runtimeCredentials?.[config.hostKey]?.password
       || definition.host_name !== (config.hostName ?? '') || definition.image_id !== config.imageId
       || definition.instance_type !== config.resolvedInstanceType || definition.vswitch_id !== config.assignedVswitchId
+      || instance.cloudProvider === 'tencent_cloud' && (definition.client_token !== buildTencentSingleCreationIntent(instance, member.sourceJobId) || definition.tags.CreationIntentId !== definition.client_token)
       || definition.system_disk_size !== config.systemDiskSize || definition.auto_release_time !== (config.autoReleaseTime ?? '')) {
       throw new Error('A member immutable launch definition changed after its workspace was frozen');
     }
@@ -256,6 +281,7 @@ export class SingleInstanceOpenTofuExecutionService {
     const ids = new Set(live.instances.filter(member => CURRENT_STATUSES.has(member.status)).map(member => member.id));
     for (const member of live.instances) {
       if (member.singleInstanceBatchId !== context.lease.batchId || member.ownerUserId !== context.manifest.identity.ownerId
+        || member.cloudProvider !== context.account.provider
         || member.singleInstanceConfig?.cloudAccountContextId !== context.manifest.identity.contextId
         || member.singleInstanceConfig?.cloudAccountUid !== context.manifest.identity.accountUid
         || member.singleInstanceConfig?.regionId !== context.manifest.identity.region || backend(member) !== 'opentofu'
@@ -265,6 +291,22 @@ export class SingleInstanceOpenTofuExecutionService {
       if (context.manifest.members[member.id]) this.validateFrozenDefinition(member, context.manifest.members[member.id]);
     }
     const members = Object.fromEntries(Object.entries(context.manifest.members).filter(([id]) => ids.has(id)));
+    if (context.manifest.identity.provider === 'tencent_cloud') {
+      const identity = context.manifest.identity;
+      const variables = new TencentCloudOpenTofuRenderer().render({ batchId: identity.batchId, cloudAccountUid: identity.accountUid,
+        cloudAccountContextId: identity.contextId, region: identity.region, zoneId: identity.zone, vpcId: identity.vpcId!, securityGroupId: identity.securityGroupId,
+        members: Object.entries(members).map(([id, member]) => ({ rangeInstanceId: id, ownerUserId: identity.ownerId ?? 'platform', creationIntentId: member.definition.client_token!, terminateAt: member.definition.auto_release_time,
+          instanceName: member.definition.instance_name, hostName: member.definition.host_name, instanceType: member.definition.instance_type,
+          imageId: member.definition.image_id, subnetId: member.definition.vswitch_id, systemDiskType: member.definition.system_disk_category as 'CLOUD_PREMIUM',
+          systemDiskSize: member.definition.system_disk_size, internetMaxBandwidthOut: member.definition.internet_max_bandwidth_out, password: member.password,
+          tags: member.definition.tags, windows: context.batch.instances.find(instance => instance.id === id)?.runtimeCredentials?.[member.hostKey]?.username === 'Administrator' })) });
+      await this.atomicText(context, 'main.tf', `provider "tencentcloud" { region = var.region }\nmodule "single_batch" {\n  source = ${JSON.stringify(path.join(this.projectRoot, modulePath(context)))}\n  batch_id = var.batch_id\n  cloud_account_uid = var.cloud_account_uid\n  region = var.region\n  zone_id = var.zone_id\n  vpc_id = var.vpc_id\n  members = var.members\n  member_passwords = var.member_passwords\n  security_group_id = var.security_group_id\n}\noutput "members" { value = module.single_batch.members }\n`);
+      await this.atomicText(context, 'variables.tf', 'variable "region" { type = string }\nvariable "batch_id" { type = string }\nvariable "cloud_account_uid" { type = string }\nvariable "zone_id" { type = string }\nvariable "vpc_id" { type = string }\nvariable "members" { type = any }\nvariable "security_group_id" { type = string }\nvariable "member_passwords" {\n type = map(string)\n sensitive = true\n}\n');
+      await this.atomicText(context, 'versions.tf', `terraform {\n required_providers {\n  tencentcloud = { source = "tencentcloudstack/tencentcloud", version = "= ${TENCENTCLOUD_PROVIDER_VERSION}" }\n }\n}\n`);
+      await this.atomicJson(context, 'terraform.tfvars.json', variables);
+      return;
+    }
+
     const wrapper = `provider "alicloud" { region = var.region_id }\nmodule "single_batch" {\n  source = ${JSON.stringify(path.join(this.projectRoot, MODULE_PATH))}\n  members = var.members\n  member_passwords = var.member_passwords\n  security_group_id = var.security_group_id\n}\noutput "members" { value = module.single_batch.members }\n`;
     const variables = 'variable "region_id" { type = string }\nvariable "members" { type = any }\nvariable "security_group_id" { type = string }\nvariable "member_passwords" {\n  type = map(string)\n  sensitive = true\n}\n';
     await this.atomicText(context, 'main.tf', wrapper);
@@ -278,7 +320,7 @@ export class SingleInstanceOpenTofuExecutionService {
     await this.assertLease(context.lease);
     if (!this.runner.showPlan) throw new Error('OpenTofu plan JSON inspection runtime is required');
     const planFilePath = path.join(context.workspace, 'single-batch.tfplan');
-    const targets = ids.map(id => `module.single_batch.alicloud_instance.members[${JSON.stringify(id)}]`);
+    const targets = ids.map(id => `module.single_batch.${resourceType(context)}.members[${JSON.stringify(id)}]`);
     await this.command(context, () => this.runner.plan({ ...this.commandOptions(context), varsFilePath: path.join(context.workspace, 'terraform.tfvars.json'), planFilePath, targets, destroy }));
     const plan = await this.command(context, () => this.runner.showPlan!<Plan>({ ...this.commandOptions(context), planFilePath }));
     if (!plan || typeof plan.format_version !== 'string' || !plan.format_version
@@ -287,14 +329,15 @@ export class SingleInstanceOpenTofuExecutionService {
       if (!change?.change || !Array.isArray(change.change.actions) || !change.change.actions.length
         || change.change.actions.some(action => !['no-op', 'read', 'create', 'update', 'delete'].includes(action))) throw new Error('OpenTofu plan actions are malformed');
       if (change.change.actions.every(action => action === 'no-op' || action === 'read')) continue;
-      if (change.type !== 'alicloud_instance' || !targets.includes(change.address)
+      if (change.type !== resourceType(context) || !targets.includes(change.address)
         || destroy && change.change.actions.some(action => action !== 'delete')) throw new Error('OpenTofu plan would change an unrequested batch resource');
       if (!destroy && change.change.actions.includes('delete')) throw new Error('Creation cannot replace a pre-existing batch member');
     }
     if (!destroy && context.items.some(item => ids.includes(item.instance.id) && isExpired(item.instance))) {
       throw new Error('Single-instance launch expired while OpenTofu prepared the creation plan');
     }
-    context.manifest.pending = { kind: destroy ? 'destroy' : 'create', ids, jobIds: context.items.map(item => item.job.id),
+    if (!destroy && context.manifest.identity.provider === 'tencent_cloud' && ids.some(id => new Date(context.manifest.members[id].definition.auto_release_time).getTime() - Date.now() <= 5 * 60_000)) throw new Error('Tencent scheduled termination became too close while planning');
+    context.manifest.pending = { submittedAt: context.manifest.pending?.submittedAt ?? new Date().toISOString(), kind: destroy ? 'destroy' : 'create', ids, jobIds: context.items.map(item => item.job.id),
       createIds: [...new Set([...pendingCreateIds(context.manifest.pending), ...(destroy ? [] : ids)])],
       knownIds: Object.fromEntries(context.knownIds),
       recoveryIds: [...new Set([...(context.manifest.pending?.recoveryIds ?? []), ...(context.manifest.pending?.ids ?? []), ...ids])] };
@@ -302,10 +345,11 @@ export class SingleInstanceOpenTofuExecutionService {
     await this.atomicJson(context, APPLY_MARKER, context.manifest.pending);
     if (!destroy) for (const item of context.items.filter(item => ids.includes(item.instance.id))) {
       await this.assertLease(context.lease);
-      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: { ...item.instance.singleInstanceConfig!,
-        opentofuCreateJobId: context.manifest.members[item.instance.id].sourceJobId } })) {
+      const config = { ...item.instance.singleInstanceConfig!, opentofuCreateJobId: context.manifest.members[item.instance.id].sourceJobId };
+      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: config })) {
         throw new SingleInstanceOpenTofuLeaseLostError('Creation claim was lost before applying its cloud request');
       }
+      item.instance.singleInstanceConfig = config;
     }
     const progress = destroy ? null : this.observeCreateProgress(context, ids);
     try {
@@ -317,7 +361,7 @@ export class SingleInstanceOpenTofuExecutionService {
   private observeCreateProgress(context: Context, ids: string[]) {
     const items = new Map(context.items.filter(item => ids.includes(item.instance.id)
       && (item.job.jobType !== 'retry' || item.job.topologySnapshot?.operation === 'create'))
-      .map(item => [`module.single_batch.alicloud_instance.members[${JSON.stringify(item.instance.id)}]`, item]));
+      .map(item => [`module.single_batch.${resourceType(context)}.members[${JSON.stringify(item.instance.id)}]`, item]));
     const pending = new Map<string, { item: SingleInstanceExecutionItem; cloudId: string }>();
     const seen = new Map<string, string>();
     let stopped = false;
@@ -358,7 +402,7 @@ export class SingleInstanceOpenTofuExecutionService {
         if (stopped || context.lease.signal.aborted || isExpired(item.instance)) return;
         // Keep the verified physical ID for crash recovery; this is not a durable-state or billing commit.
         const saved = await this.repository.commitSingleInstanceClaim(item.job, { status: 'running',
-          resourceSummary: { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace, hostIds: { [hostKey]: cloudId },
+          resourceSummary: { ...batchResourceSummary(context), workspaceDir: context.workspace, hostIds: { [hostKey]: cloudId },
             resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId },
           runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
           runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
@@ -373,8 +417,8 @@ export class SingleInstanceOpenTofuExecutionService {
     return {
       onResourceApplied: (event: ResourceAppliedEvent) => {
         const item = items.get(event.address);
-        if (stopped || context.lease.signal.aborted || !item || event.resourceType !== 'alicloud_instance'
-          || !['create', 'update'].includes(event.action) || !/^i-[A-Za-z0-9-]{1,125}$/.test(event.resourceId)) return;
+        if (stopped || context.lease.signal.aborted || !item || event.resourceType !== resourceType(context)
+          || !['create', 'update'].includes(event.action) || !validCloudId(context, event.resourceId)) return;
         if (seen.has(item.instance.id)) {
           if (seen.get(item.instance.id) !== event.resourceId) stopObserving();
           return;
@@ -398,7 +442,7 @@ export class SingleInstanceOpenTofuExecutionService {
       const detail = cloud.find(value => value.instanceId === state.id);
       if (!detail || !matchesCloud(detail, item.instance) || partial && detail.status !== 'Running') continue;
       const hostKey = item.instance.singleInstanceConfig!.hostKey;
-      let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
+      let summary: RangeResourceSummary = { ...batchResourceSummary(context), workspaceDir: context.workspace,
         hostIds: { [hostKey]: state.id }, systemDiskIds: { [hostKey]: state.diskId },
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
       summary = await this.native.captureInstanceDisks(item, context.account, summary, false, () => this.assertLease(context.lease));
@@ -452,7 +496,7 @@ export class SingleInstanceOpenTofuExecutionService {
       if (!state || !await this.itemCurrent(item)) continue;
       await this.assertLease(context.lease);
       const hostKey = item.instance.singleInstanceConfig!.hostKey;
-      let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH,
+      let summary: RangeResourceSummary = { ...batchResourceSummary(context),
         workspaceDir: context.workspace, hostIds: { [hostKey]: state.id }, systemDiskIds: state.diskId ? { [hostKey]: state.diskId } : null,
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
       summary = await this.native.captureInstanceDisks(item, context.account, summary, destroying, () => this.assertLease(context.lease));
@@ -469,6 +513,7 @@ export class SingleInstanceOpenTofuExecutionService {
       const details = [...new Map([...tagged, ...known].map(detail => [detail.instanceId, detail])).values()];
       if (details.some(detail => !matchesCloud(detail, item.instance))) throw new Error('Untracked cloud resource has an unproven owner or batch');
       if (details.length) {
+        if (context.account.provider === 'tencent_cloud' && (!pendingCreateIds(context.manifest.pending).includes(item.instance.id) && !context.knownIds.get(item.instance.id)?.length || !item.instance.singleInstanceConfig?.opentofuCreateJobId)) throw new Error('Tencent untracked resources require durable submitted creation evidence');
         context.knownIds.set(item.instance.id, [...new Set([...(context.knownIds.get(item.instance.id) ?? []), ...details.map(detail => detail.instanceId)])]);
         if (context.manifest.pending) {
           context.manifest.pending.knownIds = Object.fromEntries(context.knownIds);
@@ -477,8 +522,9 @@ export class SingleInstanceOpenTofuExecutionService {
         }
         const hostKey = item.instance.singleInstanceConfig!.hostKey;
         await this.assertLease(context.lease);
-        let summary: RangeResourceSummary = { mode: 'opentofu', modulePath: MODULE_PATH, workspaceDir: context.workspace,
+        let summary: RangeResourceSummary = { ...batchResourceSummary(context), workspaceDir: context.workspace,
           hostIds: Object.fromEntries(details.map((detail, index) => [index ? `${hostKey}-recovery-${index}` : hostKey, detail.instanceId])) };
+        if (context.account.provider === 'tencent_cloud') summary.systemDiskIds = await this.recoverTencentSystemDisks(context,item,details,hostKey);
         summary = await this.native.captureInstanceDisks(item, context.account, summary, true, () => this.assertLease(context.lease));
         if (await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary })) await this.syncLedger(context, item, summary);
         await this.native.deleteOwnedUntrackedOpenTofuInstances(item, details.map(detail => detail.instanceId), () => this.assertLease(context.lease));
@@ -489,6 +535,25 @@ export class SingleInstanceOpenTofuExecutionService {
       else await this.markFailures([item], message, false, true);
     }
   }
+  private async recoverTencentSystemDisks(context: Context, item: SingleInstanceExecutionItem, details: NormalizedInstanceDetail[], hostKey: string) {
+    const ids = details.map(detail => detail.systemDiskId).filter((id): id is string => Boolean(id));
+    if (ids.length !== details.length || new Set(ids).size !== ids.length) throw new Error('Tencent recovery lacks exact system-disk identities');
+    const persisted = new Set(Object.values(item.instance.resourceSummary?.systemDiskIds ?? {}));
+    if (!ids.every(id => persisted.has(id))) {
+      const submittedAt = Date.parse(context.manifest.pending?.submittedAt ?? '');
+      if (!Number.isFinite(submittedAt)) throw new Error('Tencent recovery lacks the original submitted time');
+      const disks = await this.command(context, () => describeTencentResourceInventory(context.account,'disk',{ ids }));
+      if (disks.length !== ids.length) throw new Error('Tencent recovery system-disk response is incomplete');
+      for (const disk of disks) {
+        const createdAt = Date.parse(disk.createdAt ?? '');
+        const attached = details.some(detail => detail.instanceId === disk.instanceId && detail.systemDiskId === disk.id);
+        const boundedTime = disk.createdAt && /[zZ]$|[+-]\d{2}:?\d{2}$/.test(disk.createdAt) && Number.isFinite(createdAt) && createdAt >= submittedAt-5*60_000 && createdAt <= Date.now()+60_000;
+        if (disk.shared || disk.diskUsage !== 'SYSTEM_DISK' || !attached || !boundedTime) throw new Error('Tencent recovery system disks have no matching source-job creation window and attachment');
+      }
+    }
+    return Object.fromEntries(details.map((detail,index) => [index ? `${hostKey}-recovery-${index}` : hostKey,detail.systemDiskId!]));
+  }
+
   private async assertAbsent(context: Context, item: SingleInstanceExecutionItem) {
     // An accepted create can remain invisible after a lost response. Empty lists cannot close that uncertainty.
     if (pendingCreateIds(context.manifest.pending).includes(item.instance.id) && !context.knownIds.get(item.instance.id)?.length) {
@@ -545,13 +610,15 @@ export class SingleInstanceOpenTofuExecutionService {
     if (!state) return members;
     if (state.version !== 4 || !state.lineage || !Array.isArray(state.resources)) throw new Error('OpenTofu batch state identity is malformed');
     for (const resource of state.resources) {
-      if (resource.mode !== 'managed' || resource.type !== 'alicloud_instance' || resource.name !== 'members' || resource.module !== 'module.single_batch' || !Array.isArray(resource.instances)) throw new Error('OpenTofu state contains resources outside this ECS batch');
+      if (resource.mode !== 'managed' || resource.type !== resourceType(context) || resource.name !== 'members' || resource.module !== 'module.single_batch' || !Array.isArray(resource.instances)) throw new Error('OpenTofu state contains resources outside this ECS batch');
       for (const entry of resource.instances) {
         const frozen = context.manifest.members[entry.index_key];
         const attrs = entry.attributes;
         const tags = attrs?.tags as Record<string, string> | undefined;
-        if (!frozen || typeof attrs?.id !== 'string' || !attrs.id || !tags || tags.CloudAccountUid !== context.manifest.identity.accountUid
+        if (!frozen || typeof attrs?.id !== 'string' || !validCloudId(context,attrs.id) || !tags || tags.CloudAccountUid !== context.manifest.identity.accountUid
           || tags.CloudAccountContextId !== context.manifest.identity.contextId || tags.ExecutionBackend !== 'opentofu'
+          || context.manifest.identity.provider === 'tencent_cloud' && (attrs.client_token !== frozen.definition.client_token || tags.CreationIntentId !== frozen.definition.client_token || tags.CloudProvider !== 'tencent_cloud')
+          || tags.PlatformCreateJobId !== frozen.sourceJobId
           || tags.RangeInstanceId !== entry.index_key || tags.SingleInstanceBatchId !== context.lease.batchId
           || tags.PlatformScope !== (context.manifest.identity.ownerId ? 'user' : 'platform')
           || (tags.PlatformUserId ?? null) !== context.manifest.identity.ownerId || tags.CreatedBy !== 'cyber-range-platform') throw new Error('OpenTofu member state ownership cannot be verified');
@@ -559,7 +626,7 @@ export class SingleInstanceOpenTofuExecutionService {
         members.set(entry.index_key, { id: attrs.id, diskId: typeof attrs.system_disk_id === 'string' ? attrs.system_disk_id : '',
           privateIp: typeof attrs.private_ip === 'string' && attrs.private_ip ? attrs.private_ip : null,
           publicIp: typeof attrs.public_ip === 'string' && attrs.public_ip ? attrs.public_ip : null,
-          status: String(attrs.status ?? ''), tainted: entry.status === 'tainted' || Boolean(entry.deposed), tags });
+          status: String(attrs.instance_status ?? attrs.status ?? ''), tainted: entry.status === 'tainted' || Boolean(entry.deposed), tags });
       }
     }
     if (new Set([...members.values()].map(member => member.id)).size !== members.size) throw new Error('OpenTofu batch has duplicate cloud IDs');
@@ -620,6 +687,7 @@ function matchesCloud(detail: NormalizedInstanceDetail, instance: RangeInstanceR
   return detail.tags.RangeInstanceId === instance.id && detail.tags.SingleInstanceBatchId === instance.singleInstanceBatchId
     && detail.tags.CloudAccountUid === instance.singleInstanceConfig?.cloudAccountUid
     && detail.tags.CloudAccountContextId === instance.singleInstanceConfig?.cloudAccountContextId && detail.tags.ExecutionBackend === 'opentofu'
+    && (instance.cloudProvider !== 'tencent_cloud' || Boolean(instance.singleInstanceConfig?.opentofuCreateJobId) && detail.tags.PlatformCreateJobId === instance.singleInstanceConfig.opentofuCreateJobId && detail.tags.CreationIntentId === buildTencentSingleCreationIntent(instance,instance.singleInstanceConfig.opentofuCreateJobId) && detail.tags.CloudProvider === 'tencent_cloud')
     && detail.tags.CreatedBy === 'cyber-range-platform' && (detail.tags.PlatformUserId ?? null) === instance.ownerUserId
     && detail.tags.PlatformScope === (instance.ownerUserId ? 'user' : 'platform');
 }

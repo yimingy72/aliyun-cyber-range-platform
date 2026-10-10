@@ -1,4 +1,4 @@
-import { compileTemplateTopology } from '@aliyun-cyber-range/scenario-runtime/compiled';
+import { compileTemplateTopology, metadataFromTemplate } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { buildEnterpriseProvisionPlan } from '../src/provisioning/enterprise-provision-plan';
 import { AlibabaCloudOpenTofuRenderer } from '../src/provisioning/renderers/alibaba-cloud-opentofu-renderer';
@@ -21,6 +21,25 @@ function render(payload:any): any {return new AlibabaCloudOpenTofuRenderer().ren
 function repository(): any {return {getPlatformImageAssetById:async()=>({id:'asset-audit',imageId:'m-audit',enabled:true,visibility:'platform'}),createRangeTemplate:async(input:any)=>({id:'template-audit',revision:1,...input}),getPlatformUserById:async()=>null};}
 
 describe('template runtime semantics',()=>{
+  it('keeps Tencent identity on every host and derived network resource',()=>{
+    const payload:any=compileTemplateTopology(graph(),{...metadata,cloudProvider:'tencent_cloud',modulePathOrRef:'infra/opentofu/modules/tencentcloud-enterprise-range'});
+    expect(payload.scenarioTemplateSpec.metadata.cloudProvider).toBe('tencent_cloud');
+    expect(payload.compiledProvisionSpec.identity.cloudProvider).toBe('tencent_cloud');
+    expect(payload.compiledSpec.resources.every((resource:any)=>resource.provider==='tencent_cloud')).toBe(true);
+    expect(payload.compiledSpec.resources.some((resource:any)=>resource.type==='nat_gateway')).toBe(true);
+    expect(payload.compiledProvisionSpec.dnatEntries).toHaveLength(1);
+    expect(payload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies[0].preferredInstanceTypes).toBeUndefined();
+    expect(payload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies[0].mode).toBe('auto');
+  });
+  it('restores Tencent metadata without silently compiling it as Alibaba',()=>{
+    expect(metadataFromTemplate({...metadata,cloudProvider:'tencent_cloud'}).cloudProvider).toBe('tencent_cloud');
+    expect(()=>metadataFromTemplate({...metadata,cloudProvider:'unsupported'})).toThrow('Unsupported');
+  });
+  it('rejects Tencent DNAT-only entry instead of silently enabling its default SNAT',()=>{
+    const value=graph(); value.nodes[1].nat.snatEnabled=false;
+    expect(()=>compileTemplateTopology(value,{...metadata,cloudProvider:'tencent_cloud'})).toThrow('必须显式开启 SNAT');
+    expect(()=>compileTemplateTopology(value,metadata)).not.toThrow();
+  });
   it('preserves primary and secondary NIC auxiliary IPs through rendering',()=>{
     const payload:any=compileTemplateTopology(graph(),metadata); const vars=render(payload);
     expect(payload.topologyGraph.nodes.find((n:any)=>n.id==='h').nics[0].secondaryIps).toEqual(['10.0.1.11']);

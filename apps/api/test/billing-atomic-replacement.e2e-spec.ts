@@ -62,7 +62,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
 
   it('replaces legacy rows only after their existing ledger proves the account', async () => {
     const ledger = await repository.createBillingLedgerResource({ cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: 'i-known', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date(DAY) });
-    await repository.upsertBillingLineItems([{ ...record('legacy', 'proved-history', 10), cloudAccountUid: null, matchedLedgerId: ledger.id }, { ...record('legacy', 'unproved-history', 5), cloudAccountUid: null }]);
+    await repository.upsertBillingLineItems([{ ...record('legacy', 'proved-history', 10), cloudAccountUid: null, cloudResourceId: ledger.cloudResourceId, matchedLedgerId: ledger.id }, { ...record('legacy', 'unproved-history', 5), cloudAccountUid: null }]);
     await repository.replaceBillingDay({ cloudAccountUid: '100001', billingDate: DAY, lineItems: [record('100001', 'fresh', 20)], anomalies: [] });
     expect((await repository.listBillingLineItems({ cloudAccountUid: '100001' }))[0].pretaxAmount).toBe(20);
     const unknown = await repository.listBillingLineItems({ cloudAccountUid: null });
@@ -72,7 +72,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
 
   it('keeps separate platform users, batch/range/source-job ownership and mixed currencies correct', async () => {
     for (const [id, username] of [['owner-a', 'alice'], ['owner-b', 'bob']] as const) {
-      await prisma.platformUser.create({ data: { id, username, passwordHash: 'fixture-not-a-credential', role: 'user' } });
+      await prisma.platformUser.create({ data: { id, username, loginUsername: username, cloudWorkspaceId: 'legacy-unbound', passwordHash: 'fixture-not-a-credential', role: 'user' } });
     }
     const batch = await prisma.singleInstanceBatch.create({ data: { name: 'fixture-batch', ownerUserId: 'owner-a', platformImageAssetId: 'fixture-image', imageId: 'fixture-cloud-image', imageDisplayName: 'fixture', cpu: 1, memory: 1, systemDiskSize: 40, quantity: 1 } });
     const single = await prisma.rangeInstance.create({ data: { name: 'alice-single', ownerUserId: 'owner-a', instanceMode: 'single', singleInstanceBatchId: batch.id, status: 'running' } });
@@ -81,7 +81,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
     for (const [index, instance] of [single, range].entries()) {
       await repository.createBillingLedgerResource({ cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: `i-owner-${index}`, cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: instance.ownerUserId, rangeInstanceId: instance.id, singleInstanceBatchId: instance.singleInstanceBatchId, sourceProvisionJobId: jobs[index].id, billingStartAt: new Date('2026-10-01') });
     }
-    const config = { getAccountContext: async () => ({ accountUid: '100001', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }) } as unknown as SystemConfigService;
+    const config = { getAccountContext: async () => ({ provider: 'alibaba_cloud', accountUid: '100001', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }) } as unknown as SystemConfigService;
     const bill = (index: number, currency: string, amount: number) => ({ OwnerID: '100001', ProductCode: 'ecs', InstanceID: `i-owner-${index}`, BillingItem: 'CPU', PretaxAmount: amount, Currency: currency });
     await new BillingSyncService(repository, { listDailyBillingItems: async () => [bill(0, 'CNY', 10), bill(0, 'USD', 2), bill(1, 'CNY', 20)] } as unknown as BillingBssClient, config).syncRange({ startAt: DAY, endAt: DAY });
     const service = new BillingService(repository);

@@ -13,8 +13,11 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { PackedImagesService } from './packed-images.service';
 import { imageRpc } from './aliyun-image-rpc';
+import { describeTencentInstances, assertTencentOwnedInstance } from './tencent-cloud-resources';
+import { requestTencentCloud } from './tencent-cloud-client';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
+import { encodePackedImageDiagnostic, packedImageDiagnostic, type PackedImagePhase } from './packed-image-diagnostic';
 
 const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
@@ -36,6 +39,7 @@ export class RangeInstanceNodeActionsService {
     payload: Record<string, string>,
     currentUser?: AuthenticatedUser,
     boundAccountContext?: SystemCloudAccountContext,
+    packMode?: 'dry-run',
   ) {
     const instance = await this.adminRepository.getRangeInstanceById(rangeInstanceId);
 
@@ -46,6 +50,9 @@ export class RangeInstanceNodeActionsService {
     if (currentUser && currentUser.role !== 'admin' && instance.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('Range instance access denied');
     }
+    if (!['alibaba_cloud', 'tencent_cloud'].includes(instance.cloudProvider)) throw new ConflictException('该云厂商的节点控制与镜像打包尚未开放。');
+    if (packMode && (action !== 'pack-image' || instance.instanceMode !== 'range' || instance.cloudProvider !== 'tencent_cloud' || !currentUser))
+      throw new ConflictException('参数核验只允许已认证 owner/admin 的腾讯云编排节点。');
 
     if (!isNodeActionName(action)) {
       throw new NotFoundException('Unsupported node action');
@@ -73,7 +80,18 @@ export class RangeInstanceNodeActionsService {
 
     const hostInstanceId = this.resolveHostInstanceId(instance, nodeId);
     const hostNode = this.resolveHostTopologyNode(instance, nodeId);
-    const accountContext = boundAccountContext ?? await this.systemConfigService.getAccountContext();
+    const source = instance.instanceMode === 'single' ? instance.singleInstanceConfig : instance.resourceSummary?.executionContext;
+    if (instance.cloudProvider === 'tencent_cloud' && (!source?.cloudAccountContextId || !source.cloudAccountUid || !source.regionId))
+      throw new ConflictException('腾讯云节点操作需要已冻结并核验的原云账号。');
+    const accountContext = boundAccountContext ?? (source?.cloudAccountContextId
+      ? await this.systemConfigService.getAccountContextById(source.cloudAccountContextId)
+      : await this.systemConfigService.getAccountContext());
+    if (accountContext.provider !== instance.cloudProvider) throw new ConflictException('云账号厂商与当前节点执行器不符。');
+    if (source?.cloudAccountContextId && (source.cloudAccountContextId !== accountContext.cloudAccountContextId
+      || source.cloudAccountUid !== accountContext.accountUid || source.regionId !== accountContext.defaultRegion || !accountContext.accountUidResolved))
+      throw new ConflictException('实例云账号与创建时绑定不符。');
+    if (accountContext.provider === 'tencent_cloud' && action !== 'pack-image') return this.runTencentNodeAction(instance, nodeId, hostInstanceId, action, accountContext);
+
 
     if (action === 'start') {
       const response = await this.performAliyunRpcRequest({
@@ -146,16 +164,28 @@ export class RangeInstanceNodeActionsService {
     }
 
     const displayName = payload.displayName?.trim() || `${nodeId}-snapshot`;
+    if (packMode === 'dry-run') {
+      const ownerUserId = instance.ownerUserId ?? instance.createdBy;
+      if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('参数核验需要明确 owner 和已验证原云账号。');
+      return this.packedImages.dryRunTencentImage({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion,
+        ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
+        id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion,
+        zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
+      }, { name: displayName, description: payload.description?.trim() || null });
+    }
     const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
     const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
     const description = payload.description?.trim() || null;
     const ownerUserId = instance.ownerUserId ?? instance.createdBy;
     if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('打包需要明确 owner 和已验证云账号。');
     const artifact = await this.packedImages.begin({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
-      id: accountContext.cloudAccountContextId, provider: 'alibaba_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
+      id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
     });
+    let packPhase: PackedImagePhase = 'create_image';
     try {
-      const createImageResponse = await this.performAliyunRpcRequest<{
+      const createImageResponse = accountContext.provider === 'tencent_cloud'
+        ? await this.packedImages.submitTencentImage(artifact, { id: accountContext.cloudAccountContextId, provider: 'tencent_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready' }, { name: displayName, description })
+        : await this.performAliyunRpcRequest<{
         ImageId?: string;
       }>({
         accessKeyId: accountContext.accessKeyId,
@@ -182,17 +212,20 @@ export class RangeInstanceNodeActionsService {
           },
         });
 
+      packPhase = 'create_response';
       const imageId = createImageResponse.ImageId?.trim();
 
       if (!imageId) {
         throw new Error('Aliyun CreateImage response is missing ImageId');
       }
 
+      packPhase = 'persist_image';
       await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { imageId, status: 'creating' });
+      packPhase = 'persist_asset';
       const { platformImageAsset, snapshot } = await this.adminRepository.withPackedImageArtifactClaim(artifact.id, artifact.submissionToken, async claimed => {
         const syncedAt = new Date();
         await claimed.upsertImageSnapshots({
-          provider: 'alibaba_cloud',
+          provider: accountContext.provider,
           accountUid: accountContext.accountUid,
           regionId: accountContext.defaultRegion,
           scope: 'custom',
@@ -208,7 +241,7 @@ export class RangeInstanceNodeActionsService {
       });
 
       const snapshot = (await claimed.listImageSnapshots({
-        provider: 'alibaba_cloud',
+        provider: accountContext.provider,
         accountUid: accountContext.accountUid,
         regionId: accountContext.defaultRegion,
         scope: 'custom',
@@ -246,12 +279,37 @@ export class RangeInstanceNodeActionsService {
         imageReady: snapshot.isAvailable,
         platformImageAsset,
       };
-    } catch {
-      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: '打包提交结果未完整确认，来源材料已保留，worker 会按唯一标签核验。' });
-      throw new BadGatewayException({ message: '打包结果未完整确认，请按来源记录核验；不要重复提交或删除恢复材料。', packedImageArtifactId: artifact.id });
+    } catch (error) {
+      const diagnostic = packedImageDiagnostic(error, packPhase, [accountContext.accessKeyId, accountContext.accessKeySecret]);
+      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: encodePackedImageDiagnostic(diagnostic) });
+      throw new BadGatewayException({ message: '打包结果未完整确认，请按来源记录核验；不要重复提交或删除恢复材料。', packedImageArtifactId: artifact.id, ...diagnostic });
     } finally {
       await this.packedImages.endSubmission(artifact.id, artifact.submissionToken);
     }
+  }
+
+  private async runTencentNodeAction(instance: RangeInstanceRecord, nodeId: string, instanceId: string, action: NodeActionName, account: SystemCloudAccountContext) {
+    if (action === 'pack-image') throw new ConflictException('腾讯云镜像打包需由已绑定来源的镜像服务执行。');
+    const [detail] = await describeTencentInstances(account, { instanceIds: [instanceId] });
+    if (!detail) throw new NotFoundException('Tencent CVM node was not found');
+    assertTencentOwnedInstance(instance, account, detail, nodeId);
+    if (action === 'start' && detail.status !== 'Stopped' || ['stop', 'reboot'].includes(action) && detail.status !== 'Running')
+      throw new ConflictException('腾讯云节点当前状态不允许此操作。');
+    const cloudAction = { start: 'StartInstances', stop: 'StopInstances', reboot: 'RebootInstances', 'open-vnc': 'DescribeInstanceVncUrl' }[action];
+    const response = await requestTencentCloud<{ RequestId: string; InstanceVncUrl?: string }>({ service: 'cvm', version: '2017-03-12', action: cloudAction,
+      regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret,
+      parameters: action === 'open-vnc' ? { InstanceId: instanceId } : { InstanceIds: [instanceId],
+        ...(action === 'stop' || action === 'reboot' ? { StopType: 'SOFT' } : {}), ...(action === 'stop' ? { StoppedMode: 'KEEP_CHARGING' } : {}) } });
+    if (action !== 'open-vnc') return { status: 'accepted', action, response: { RequestId: response.RequestId } };
+    const raw = response.InstanceVncUrl?.trim();
+    if (!raw) throw new BadGatewayException('腾讯云 VNC 响应缺少访问地址。');
+    let decoded: string, url: URL;
+    try { decoded = raw.includes('%') ? decodeURIComponent(raw) : raw; url = new URL(decoded); }
+    catch { throw new BadGatewayException('腾讯云 VNC 地址响应格式不完整。'); }
+    if (url.protocol !== 'wss:' || !/(^|\.)qcloud\.com$/i.test(url.hostname) || url.username || url.password)
+      throw new BadGatewayException('腾讯云 VNC 地址响应不受支持。');
+    return { status: 'accepted', action, vncUrl: raw,
+      webTerminalUrl: `https://img.qcloud.com/qcloud/app/active_vnc/index.html?InstanceVncUrl=${encodeURIComponent(decoded)}` };
   }
 
   async runSingleInstanceAction(
@@ -280,6 +338,8 @@ export class RangeInstanceNodeActionsService {
 
     if(instance.status !== 'running') throw new ConflictException('Single instance action requires running status');
     const config=instance.singleInstanceConfig;
+    if (instance.cloudProvider === 'tencent_cloud' && (!config?.cloudAccountContextId || !config.cloudAccountUid || !config.regionId))
+      throw new ConflictException('腾讯云节点操作需要已冻结并核验的原云账号。');
     const account=config?.cloudAccountContextId?await this.systemConfigService.getAccountContextById(config.cloudAccountContextId):await this.systemConfigService.getAccountContext();
     if((config?.cloudAccountUid && config.cloudAccountUid!==account.accountUid)||(config?.regionId && config.regionId!==account.defaultRegion)) throw new ConflictException('Instance cloud context does not match its launch identity');
     return this.run(rangeInstanceId, hostKey, action, payload, currentUser, account);

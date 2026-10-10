@@ -3,9 +3,11 @@ import { ConflictException } from '@nestjs/common';
 import { PlatformImagesController } from '../src/admin/platform-images.controller';
 import { OperationControlService } from '../src/operations/operation-control.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
+const workspace = { cloudWorkspaceId: 'image-fixture-space', provider: 'alibaba_cloud' as const, accountUid: '100001' };
 
 describe('PlatformImagesController', () => {
-  it('uses a new request-scoped idempotency key for a new MCP image removal', async () => {
+  it('uses a new request-scoped idempotency key for a new MCP image removal', async () => runInCloudWorkspace(workspace, async () => {
     const imageCatalogService = {
       removePlatformAsset: jest.fn().mockResolvedValue(undefined),
     };
@@ -17,10 +19,10 @@ describe('PlatformImagesController', () => {
     async function confirmedRemoval() {
       const request = {
         headers: {},
-        adminUser: { id: 'admin-1', username: 'admin', role: 'admin' },
+        adminUser: { id: 'admin-1', username: 'admin', role: 'admin', cloudWorkspaceId: workspace.cloudWorkspaceId, isPlatformManager: false, selectedCloudWorkspaceId: null },
         authContext: {
           source: 'mcp',
-          user: { id: 'admin-1', username: 'admin', role: 'admin' },
+          user: { id: 'admin-1', username: 'admin', role: 'admin', cloudWorkspaceId: workspace.cloudWorkspaceId, isPlatformManager: false, selectedCloudWorkspaceId: null },
           oauthClientId: 'mcp-client',
         },
       };
@@ -39,5 +41,5 @@ describe('PlatformImagesController', () => {
     const second = await confirmedRemoval() as { operationId: string };
     expect(first.operationId).not.toBe(second.operationId);
     expect(imageCatalogService.removePlatformAsset).toHaveBeenCalledTimes(2);
-  });
+  }));
 });

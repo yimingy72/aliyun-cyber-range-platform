@@ -1,9 +1,11 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 
 import { SessionUserProfile } from './admin-user-auth';
 import { OidcJwtVerifier } from './oidc-jwt-verifier';
 import { OidcPrincipalResolver } from './oidc-principal-resolver';
 import type { RequestAuthContext } from '../auth/request-auth-context';
+import type { CloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { CloudWorkspacesService } from './cloud-workspaces.service';
 
 type GuardRequest = {
   headers: Record<string, string | undefined>;
@@ -12,6 +14,7 @@ type GuardRequest = {
   method?: string;
   adminUser?: SessionUserProfile;
   authContext?: RequestAuthContext;
+  cloudWorkspaceScope?: CloudWorkspaceScope;
 };
 
 @Injectable()
@@ -26,6 +29,7 @@ export class AdminAuthGuard implements CanActivate {
   constructor(
     private readonly oidcJwtVerifier?: OidcJwtVerifier,
     private readonly oidcPrincipalResolver?: OidcPrincipalResolver,
+    @Optional() private readonly cloudWorkspaces?: CloudWorkspacesService,
   ) {}
 
   async canActivate(context: ExecutionContext) {
@@ -62,6 +66,9 @@ export class AdminAuthGuard implements CanActivate {
       id: user.id,
       username: user.username,
       role: user.role,
+      cloudWorkspaceId: user.cloudWorkspaceId ?? null,
+      isPlatformManager: user.isPlatformManager === true,
+      selectedCloudWorkspaceId: user.selectedCloudWorkspaceId ?? null,
     };
     request.adminUser = profile;
     request.authContext = {
@@ -72,6 +79,19 @@ export class AdminAuthGuard implements CanActivate {
 
     if (this.requiresAdmin(request) && user.role !== 'admin') {
       throw new ForbiddenException('Admin access required');
+    }
+
+    const path = (request.originalUrl ?? request.url ?? '').split('?')[0];
+    if (this.cloudWorkspaces && path !== '/admin/session' && (process.env.NODE_ENV !== 'test' || process.env.CLOUD_WORKSPACE_ENFORCE_TEST_SCOPE === '1')) {
+      const metadataRoute = path === '/admin/cloud-workspaces' || /^\/admin\/cloud-workspaces\/[^/]+\/switch$/.test(path);
+      request.cloudWorkspaceScope = await this.cloudWorkspaces.resolve(profile, metadataRoute ? undefined : request.headers['x-cloud-workspace-id']);
+      request.authContext.cloudWorkspaceId = request.cloudWorkspaceScope.cloudWorkspaceId;
+      const method = (request.method ?? 'GET').toUpperCase();
+      const registryWrite = /^\/admin\/cloud-workspaces\/[^/]+\/switch$/.test(path)
+        || path === '/admin/cloud-contexts' || path === '/admin/tencent-cloud/regions/query';
+      if (request.cloudWorkspaceScope.isReadOnly && !['GET', 'HEAD', 'OPTIONS'].includes(method) && !registryWrite) {
+        throw new ForbiddenException('历史待核验空间为只读，请选择已绑定的云账号。');
+      }
     }
 
     return true;
@@ -89,6 +109,7 @@ export class AdminAuthGuard implements CanActivate {
   }
 
   private isAuthenticatedUserRoute(pathname: string, method: string) {
+    if (pathname === '/admin/session' || pathname.startsWith('/admin/cloud-workspaces')) return true;
     if (AdminAuthGuard.AUTHENTICATED_USER_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
       return true;
     }

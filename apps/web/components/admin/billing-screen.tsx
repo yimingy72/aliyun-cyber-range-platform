@@ -16,6 +16,7 @@ import {
   triggerBillingSync,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type { AdminUser, BillingLaunchGroup, BillingSummary, BillingUserSummary, PaginatedResult } from '../../lib/admin-types';
 import { Button } from '../ui/button';
@@ -143,6 +144,7 @@ function downloadCsv(contents: string, fileName: string) {
 export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingScreenProps) {
   const router = useRouter();
   const { isAdmin, isReady, logout, token } = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
   const isPageActive = useAdminRouteIsActive('/admin/billing');
   const screenCache = useAdminScreenCache();
   const [range, setRange] = useState<BillingRange>(getDefaultRange);
@@ -660,7 +662,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button disabled={isSyncing} onClick={() => void handleSync()} type="button">
+              <Button disabled={isSyncing || Boolean(workspace && !workspace.capabilities.billingSync)} title={workspace && !workspace.capabilities.billingSync ? '当前云账号尚未开放账单同步。' : undefined} onClick={() => void handleSync()} type="button">
                 <RefreshCw aria-hidden="true" className={isSyncing ? 'animate-spin' : undefined} />
                 {isSyncing ? '正在同步...' : '立即同步'}
               </Button>

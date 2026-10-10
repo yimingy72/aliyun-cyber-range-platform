@@ -1,6 +1,6 @@
 export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 
-export type CloudProvider = 'alibaba_cloud';
+export type CloudProvider = 'alibaba_cloud' | 'tencent_cloud';
 export type IacType = 'opentofu' | 'terraform';
 export type UserRole = 'admin' | 'user';
 export type UserStatus = 'active' | 'disabled';
@@ -119,6 +119,7 @@ export type RangeTemplateCompiledSpec = {
 };
 
 export type RangeTemplateVersionRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   templateId: string;
   version: string;
@@ -154,12 +155,13 @@ export type RangeResourceTopologySummary = {
 export type RangeResourceSummary = {
   retiredResources?: RangeResourceSummary | null;
   creationAttempted?: boolean;
-  executionContext?: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string };
+  executionContext?: { provider?: CloudProvider; cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string };
   mode: 'dry-run' | 'opentofu' | 'ecs-native';
   modulePath?: string;
   workspaceDir?: string;
   outputFilePath?: string;
   vpcId?: string | null;
+  routeTableIds?: Record<string, string> | null;
   subnetIds?: Record<string, string> | null;
   networkAclIds?: Record<string, string> | null;
   securityGroupIds?: Record<string, string> | null;
@@ -216,6 +218,7 @@ export type SingleInstanceConfig = {
 };
 
 export type SingleInstanceBatchRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   name: string;
   platformImageAssetId: string;
@@ -234,11 +237,13 @@ export type SingleInstanceBatchRecord = {
 };
 
 export type SingleInstanceBatchWithInstancesRecord = {
+  cloudWorkspaceId?: string;
   batch: SingleInstanceBatchRecord;
   instances: RangeInstanceRecord[];
 };
 
 export type RangeTemplateRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   name: string;
   createdBy: string;
@@ -269,6 +274,7 @@ export type RangeTemplateRecord = {
 };
 
 export type RangeInstanceRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   name: string;
   createdBy: string | null;
@@ -319,6 +325,7 @@ export type ProvisionJobTopologySnapshot = {
 };
 
 export type ProvisionJobRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   rangeInstanceId: string;
   jobType: ProvisionJobType;
@@ -335,6 +342,7 @@ export type ProvisionJobRecord = {
 };
 
 export type ProvisionJobStepLogRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   jobId: string;
   stepName: string;
@@ -349,6 +357,10 @@ export type ProvisionJobStepLogRecord = {
 };
 
 export type PlatformUserRecord = {
+  cloudWorkspaceId?: string | null;
+  loginUsername?: string;
+  isPlatformManager?: boolean;
+  selectedCloudWorkspaceId?: string | null;
   id: string;
   username: string;
   passwordHash: string;
@@ -361,6 +373,7 @@ export type PlatformUserRecord = {
 };
 
 export type OperationConfirmationRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   actorUserId: string;
   oauthClientId: string;
@@ -374,6 +387,7 @@ export type OperationConfirmationRecord = {
 };
 
 export type IdempotentOperationRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   actorUserId: string;
   toolName: string;
@@ -388,6 +402,7 @@ export type IdempotentOperationRecord = {
 };
 
 export type OperationAuditEventInput = {
+  cloudWorkspaceId?: string;
   operationId: string;
   requestId: string;
   actorUserId: string;
@@ -404,6 +419,7 @@ export type OperationAuditEventInput = {
 };
 
 export type OperationAuditEventRecord = Required<Pick<OperationAuditEventInput, 'operationId' | 'requestId' | 'actorUserId' | 'source' | 'toolName' | 'phase'>> & {
+  cloudWorkspaceId?: string;
   id: string;
   oauthClientId: string | null;
   targetType: string | null;
@@ -416,6 +432,8 @@ export type OperationAuditEventRecord = Required<Pick<OperationAuditEventInput, 
 };
 
 export type CloudImageSnapshotRecord = {
+  minimumSystemDiskSize?: number | null;
+  cloudWorkspaceId?: string;
   id: string;
   provider: CloudProvider;
   accountUid: string | null;
@@ -434,6 +452,8 @@ export type CloudImageSnapshotRecord = {
 };
 
 export type PackedImageArtifactRecord = {
+  cloudProvider?: CloudProvider;
+  cloudWorkspaceId?: string;
   id: string;
   cloudAccountContextId: string;
   cloudAccountUid: string;
@@ -443,6 +463,7 @@ export type PackedImageArtifactRecord = {
   sourceHostKey: string;
   sourceInstanceId: string;
   sourceDiskIds: string[];
+  sourceSnapshotBaseline: Record<string, unknown> | null;
   imageId: string | null;
   sourceSnapshotId: string | null;
   platformImageAssetId: string | null;
@@ -457,11 +478,12 @@ export type PackedImageArtifactRecord = {
   updatedAt: Date;
 };
 export type CreatePackedImageArtifactInput = Pick<PackedImageArtifactRecord,
-  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'>;
+  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'> & { cloudProvider?: CloudProvider; id?: string; sourceSnapshotBaseline?: Record<string, unknown> };
 export type UpdatePackedImageArtifactInput = Partial<Pick<PackedImageArtifactRecord,
   'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'status' | 'backingSnapshotIds' | 'deletedSnapshotIds' | 'cloudImageDeletedAt' | 'completedAt' | 'lastPolledAt' | 'errorMessage'>>;
 
 export type ImageCatalogItemRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   displayName: string;
   imageId: string;
@@ -476,6 +498,7 @@ export type ImageCatalogItemRecord = {
 };
 
 export type PlatformImageAssetRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   provider: CloudProvider;
   accountUid: string | null;
@@ -497,6 +520,7 @@ export type PlatformImageAssetRecord = {
 };
 
 export type PlatformImageTagRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   name: string;
   normalizedName: string;
@@ -506,6 +530,7 @@ export type PlatformImageTagRecord = {
 };
 
 export type SingleInstanceNetworkProfileRecord = {
+  cloudWorkspaceId?: string;
   createdByUserId?:string|null;
   cleanupRunId?:string|null;
   cleanupRegisteredByUserId?:string|null;
@@ -531,6 +556,14 @@ export type SingleInstanceNetworkProfileRecord = {
 
 // Only identifiers and lifecycle evidence needed for billing; no upload credentials or image password.
 export type BillingImageImportResourceRecord = {
+  cloudProvider?: CloudProvider;
+  cloudAccountContextId?: string;
+  managedBucketId?: string | null;
+  ownerUserId?: string;
+  taskId?: string | null;
+  sourceSizeBytes?: string;
+  sourceObjectProof?: unknown;
+  cloudWorkspaceId?: string;
   id: string;
   cloudAccountUid: string | null;
   regionId: string | null;
@@ -545,7 +578,10 @@ export type BillingImageImportResourceRecord = {
   temporaryObjectDeletedAt: Date | null;
 };
 
+export type BillingManagedCosBucketRecord = import('./tencent-cos-proof').CosBucketIdentity;
+
 export type BillingLedgerResourceRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   cloudProvider: CloudProvider;
   cloudAccountUid: string | null;
@@ -566,6 +602,8 @@ export type BillingLedgerResourceRecord = {
 };
 
 export type BillingLineItemRecord = {
+  cloudProvider?: CloudProvider;
+  cloudWorkspaceId?: string;
   id: string;
   cloudAccountUid?: string | null;
   syncBatchId: string;
@@ -588,6 +626,8 @@ export type BillingLineItemRecord = {
 };
 
 export type BillingAnomalyRecord = {
+  cloudProvider?: CloudProvider;
+  cloudWorkspaceId?: string;
   id: string;
   cloudAccountUid?: string | null;
   syncBatchId: string;
@@ -605,6 +645,7 @@ export type BillingAnomalyRecord = {
 };
 
 export type CloudResourceDriftRecord = {
+  cloudWorkspaceId?: string;
   id: string;
   cloudProvider: CloudProvider;
   regionId: string;
@@ -622,6 +663,7 @@ export type CloudResourceDriftRecord = {
 };
 
 export type UpsertCloudResourceDriftInput = {
+  cloudWorkspaceId?: string;
   cloudProvider?: CloudProvider;
   regionId: string;
   cloudResourceType: string;
@@ -634,6 +676,7 @@ export type UpsertCloudResourceDriftInput = {
 };
 
 export type UpsertSingleInstanceNetworkProfileInput = {
+  cloudWorkspaceId?: string;
   createdByUserId?:string|null;
   status?: string;
   cloudAccountUid?: string;
@@ -652,6 +695,7 @@ export type UpsertSingleInstanceNetworkProfileInput = {
 };
 
 export type CreateBillingLedgerResourceInput = {
+  cloudWorkspaceId?: string;
   cloudProvider?: CloudProvider;
   cloudAccountUid?: string | null;
   regionId: string;
@@ -669,6 +713,7 @@ export type CreateBillingLedgerResourceInput = {
 };
 
 export type FindBillingLedgerResourceInput = {
+  cloudWorkspaceId?: string;
   cloudProvider?: CloudProvider;
   regionId: string;
   cloudResourceId: string;
@@ -689,6 +734,8 @@ export type UpdateBillingLedgerResourceInput = Partial<{
 }>;
 
 export type CreateBillingLineItemInput = {
+  cloudProvider?: CloudProvider;
+  cloudWorkspaceId?: string;
   cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
@@ -708,6 +755,7 @@ export type CreateBillingLineItemInput = {
 };
 
 export type ListBillingLineItemsFilter = Partial<{
+  cloudProvider: CloudProvider;
   cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
@@ -717,6 +765,8 @@ export type ListBillingLineItemsFilter = Partial<{
 }>;
 
 export type CreateBillingAnomalyInput = {
+  cloudProvider?: CloudProvider;
+  cloudWorkspaceId?: string;
   cloudAccountUid?: string | null;
   syncBatchId: string;
   sourceFingerprint: string;
@@ -731,6 +781,7 @@ export type CreateBillingAnomalyInput = {
 };
 
 export type ListBillingAnomaliesFilter = Partial<{
+  cloudProvider: CloudProvider;
   cloudAccountUid: string | null;
   startAt: string | Date;
   endAt: string | Date;
@@ -745,6 +796,8 @@ export type ListImageSnapshotsFilter = Partial<{
 }>;
 
 export type UpsertImageSnapshotInput = {
+  minimumSystemDiskSize?: number | null;
+  cloudWorkspaceId?: string;
   imageId: string;
   sourceImageName: string;
   osType?: string | null;
@@ -756,6 +809,7 @@ export type UpsertImageSnapshotInput = {
 };
 
 export type UpsertImageSnapshotsInput = {
+  cloudWorkspaceId?: string;
   provider: CloudProvider;
   accountUid: string | null;
   regionId: string;
@@ -774,6 +828,7 @@ export type ListImageCatalogItemsFilter = Partial<{
 }>;
 
 export type CollectImageCatalogItemInput = {
+  cloudWorkspaceId?: string;
   displayName: string;
   imageId: string;
   provider: CloudProvider;
@@ -798,6 +853,7 @@ export type ListPlatformImageAssetsFilter = Partial<{
 }>;
 
 export type CollectPlatformImageAssetInput = {
+  cloudWorkspaceId?: string;
   preserveExisting?: boolean;
   snapshotId: string;
   displayName: string;
@@ -809,12 +865,17 @@ export type CollectPlatformImageAssetInput = {
 };
 
 export type CreatePlatformImageTagInput = {
+  cloudWorkspaceId?: string;
   name: string;
   normalizedName: string;
   createdByUserId: string;
 };
 
 export type CreatePlatformUserInput = {
+  cloudWorkspaceId?: string | null;
+  loginUsername?: string;
+  isPlatformManager?: boolean;
+  selectedCloudWorkspaceId?: string | null;
   id: string;
   username: string;
   passwordHash: string;
@@ -825,6 +886,10 @@ export type CreatePlatformUserInput = {
 };
 
 export type UpdatePlatformUserInput = Partial<{
+  cloudWorkspaceId: string | null;
+  loginUsername: string;
+  isPlatformManager: boolean;
+  selectedCloudWorkspaceId: string | null;
   username: string;
   passwordHash: string;
   oidcIssuer: string | null;
@@ -838,6 +903,7 @@ export type CreateIdempotentOperationInput = Omit<IdempotentOperationRecord, 'id
 export type UpdateIdempotentOperationInput = Partial<Pick<IdempotentOperationRecord, 'status' | 'result' | 'errorCode'>>;
 
 export type CreateRangeTemplateInput = {
+  cloudWorkspaceId?: string;
   name: string;
   createdBy?: string;
   ownerUserId?: string | null;
@@ -859,6 +925,7 @@ export type CreateRangeTemplateInput = {
 };
 
 export type SaveRangeTemplateTopologyInput = {
+  cloudWorkspaceId?: string;
   expectedRevision: number;
   topologySpec: RangeTemplateTopologySpec;
   topologyGraph: Record<string, unknown>;
@@ -868,6 +935,7 @@ export type SaveRangeTemplateTopologyInput = {
 };
 
 export type UpdateRangeTemplateMetadataInput = {
+  cloudWorkspaceId?: string;
   expectedRevision: number;
   name?: string;
   description?: string | null;
@@ -881,6 +949,7 @@ export class TemplateRevisionConflictError extends Error {
 }
 
 export type CreateSingleInstanceBatchInput = {
+  cloudWorkspaceId?: string;
   name: string;
   platformImageAssetId: string;
   imageId: string;
@@ -896,6 +965,8 @@ export type CreateSingleInstanceBatchInput = {
 };
 
 export type CreateRangeInstanceInput = {
+  cloudWorkspaceId?: string;
+  cloudProvider?: CloudProvider;
   name: string;
   createdBy?: string;
   ownerUserId?: string | null;
@@ -972,6 +1043,7 @@ export type SaveRangeInstanceDraftInput = Pick<
 };
 
 export type CreateProvisionJobInput = {
+  cloudWorkspaceId?: string;
   rangeInstanceId: string;
   jobType: ProvisionJobType;
   triggeredBy: string;
@@ -982,6 +1054,7 @@ export type CreateProvisionJobInput = {
 };
 
 export type ApplyRangeInstanceDraftInput = {
+  cloudWorkspaceId?: string;
   rangeInstanceId: string;
   expectedDraftRevision: number;
   triggeredBy: string;
@@ -996,6 +1069,7 @@ export type QueueRangeInstanceJobInput = CreateProvisionJobInput & {
 };
 
 export type SyncRangeInstanceDraftToTemplateInput = {
+  cloudWorkspaceId?: string;
   rangeInstanceId: string;
   expectedDraftRevision: number;
   expectedTemplateRevision: number;
@@ -1036,6 +1110,7 @@ export type UpdateProvisionJobInput = Partial<{
 }>;
 
 export type CreateProvisionJobStepLogInput = {
+  cloudWorkspaceId?: string;
   jobId: string;
   stepName: string;
   status?: ProvisionJobStepStatus;
@@ -1055,9 +1130,10 @@ export type UpdateProvisionJobStepLogInput = Partial<{
   finishedAt: Date | null;
 }>;
 
-export type ProvisionJobSchedulingRecord = Pick<ProvisionJobRecord, 'id' | 'rangeInstanceId' | 'jobType' | 'status' | 'createdAt'>;
-export type RangeInstanceSchedulingRecord = Pick<RangeInstanceRecord, 'id' | 'instanceMode' | 'singleInstanceBatchId' | 'status' | 'lastJobId' | 'ownerUserId' | 'expiresAt'>;
+export type ProvisionJobSchedulingRecord = Pick<ProvisionJobRecord, 'cloudWorkspaceId' | 'id' | 'rangeInstanceId' | 'jobType' | 'status' | 'createdAt'>;
+export type RangeInstanceSchedulingRecord = Pick<RangeInstanceRecord, 'cloudWorkspaceId' | 'id' | 'instanceMode' | 'singleInstanceBatchId' | 'status' | 'lastJobId' | 'ownerUserId' | 'expiresAt'>;
 export type ListPendingProvisionJobsInput = {
+  cloudWorkspaceId?: string;
   limit?: number;
   now?: Date;
   after?: { createdAt: Date; id: string };
@@ -1190,12 +1266,14 @@ export interface AdminRepository {
     input: UpsertSingleInstanceNetworkProfileInput,
   ): Promise<SingleInstanceNetworkProfileRecord>;
   listBillingImageImportResources(): Promise<BillingImageImportResourceRecord[]>;
+  listBillingManagedCosBuckets(): Promise<BillingManagedCosBucketRecord[]>;
   createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   listBillingLedgerResources(filter?: { rangeInstanceId?: string }): Promise<BillingLedgerResourceRecord[]>;
   getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;
   replaceBillingDay(input: {
+    cloudProvider?: CloudProvider;
     cloudAccountUid: string;
     billingDate: string;
     lineItems: CreateBillingLineItemInput[];

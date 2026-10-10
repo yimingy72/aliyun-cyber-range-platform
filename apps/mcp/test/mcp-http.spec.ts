@@ -60,6 +60,15 @@ function createClientStub(): ClientStub {
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),
     fetchCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud' }),
     saveCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou' }),
+    listCloudAccountContexts: vi.fn().mockResolvedValue([]),
+    listCloudWorkspaces: vi.fn().mockResolvedValue([]),
+    getCurrentCloudWorkspace: vi.fn().mockResolvedValue({ id: 'fixture-ali-workspace', provider: 'alibaba_cloud', accountUid: '100001', isReadOnly: false, activeCloudAccountContextId: 'fixture-context', contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: '100001', status: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } }),
+    switchCloudWorkspace: vi.fn(),
+    saveCloudAccountBinding: vi.fn(),
+    saveTencentCloudAccount: vi.fn(),
+    discoverTencentCloudRegions: vi.fn(),
+    listTencentCloudImages: vi.fn(),
+    getCloudAccountInstanceTypeAvailability: vi.fn(),
     listAdminUsers: vi.fn().mockResolvedValue([{ id: 'user-1', username: 'alice' }]),
     createAdminUser: vi.fn().mockResolvedValue({ id: 'user-2', username: 'bob' }),
     updateAdminUserRole: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', role: 'admin' }),
@@ -102,6 +111,7 @@ describe('mcp http e2e', () => {
   let server: ReturnType<typeof createHttpApp> | null = null;
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     if (!server) {
       return;
     }
@@ -117,6 +127,32 @@ describe('mcp http e2e', () => {
       });
     });
     server = null;
+  });
+
+  it('forwards each authenticated request workspace through the real HTTP gateway without retaining another client scope', async () => {
+    const originalFetch = globalThis.fetch;
+    const downstream = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith('https://workspace-fixture.invalid')) return originalFetch(input, init);
+      const scope = (init!.headers as Record<string, string>)['x-cloud-workspace-id'];
+      return new Response(JSON.stringify({ items: [{ id: `image-${scope}`, displayName: `镜像 ${scope}` }] }));
+    });
+    vi.stubGlobal('fetch', downstream);
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://workspace-fixture.invalid', platformApiToken: 'fixture-downstream-token' }, {
+      authenticateRequest: async () => ({ token: 'fixture-inbound-token', clientId: 'fixture', scopes: ['images:read'], extra: { role: 'user' } }),
+    });
+    await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Expected bound HTTP server');
+    for (const scope of ['space-a', 'space-b', 'space-a']) {
+      const client = new Client({ name: scope, version: '1.0.0' });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer fixture-inbound-token', 'x-cloud-workspace-id': scope } } }));
+        expect(await client.callTool({ name: 'platform_image_list', arguments: {} })).toMatchObject({ structuredContent: { result: [{ id: `image-${scope}` }] } });
+      } finally { await client.close(); }
+    }
+    const apiCalls = downstream.mock.calls.filter(([input]) => String(input).startsWith('https://workspace-fixture.invalid'));
+    expect(apiCalls.map(([, init]) => (init!.headers as Record<string, string>)['x-cloud-workspace-id'])).toEqual(['space-a', 'space-b', 'space-a']);
+    expect(apiCalls.every(([, init]) => (init!.headers as Record<string, string>).Authorization === 'Bearer fixture-downstream-token')).toBe(true);
   });
 
   it('passes the authenticated user role into image tool discovery and rejects hidden admin tools', async () => {

@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('PlatformApiClient', () => {
+  it('uses a distinct dry-run validation endpoint and preserves bounded diagnostics', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/ranges/range%2F1/nodes/node%2F1/pack-image-validation');
+      expect(init?.method).toBe('POST'); expect(JSON.parse(init?.body as string)).toEqual({ displayName: 'Exact image', description: 'Exact description' });
+      expect(init?.headers).not.toHaveProperty('x-confirmation-id');
+      return new Response(JSON.stringify({status:'validated',dryRun:true,cloudRequestId:'dry-run-receipt'}),{status:200});
+    });
+    const client = new PlatformApiClient({baseUrl:'https://platform.example',token:'mock',fetch:fetchMock as typeof fetch});
+    await expect(client.validateRangeInstanceNodePackImage('range/1','node/1',{displayName:'Exact image',description:'Exact description'})).resolves.toMatchObject({dryRun:true,status:'validated'});
+  });
   it('maps existing global tag and asset association APIs, passes confirmation headers and unwraps writes', async () => {
     const calls: Array<{ input: string; init?: RequestInit }> = [];
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
@@ -267,10 +277,10 @@ describe('PlatformApiClient', () => {
     ).resolves.toEqual({ id: 'template-1', revision: 14 });
   });
 
-  it('finds single instance by flattening lists', async () => {
+  it('reads exact single instance detail instead of losing its safe diagnostics in list projections', async () => {
     const fetchMock = vi.fn(async (input: string) => {
-      if (input.endsWith('/admin/instances?view=active')) {
-        return new Response(JSON.stringify({ batches: [], standaloneInstances: [] }), { status: 200 });
+      if (input.endsWith('/admin/instances/ins-1')) {
+        return new Response(JSON.stringify({ id: 'ins-1', accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' } }), { status: 200 });
       }
 
       if (input.endsWith('/admin/instances/ins-1/access')) {
@@ -287,13 +297,7 @@ describe('PlatformApiClient', () => {
         );
       }
 
-      return new Response(
-        JSON.stringify({
-          batches: [{ batch: { id: 'batch-1' }, instances: [{ id: 'ins-1', accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' } }] }],
-          standaloneInstances: [],
-        }),
-        { status: 200 },
-      );
+      throw new Error('Unexpected broad single instance list lookup');
     });
     const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'token-1', fetch: fetchMock as typeof fetch });
 
@@ -309,6 +313,15 @@ describe('PlatformApiClient', () => {
       accessEntry: { publicIp: '47.1.2.3', privateIp: '10.0.0.8', ssh: 'ssh root@47.1.2.3' },
       runtimeCredentials: null,
     });
+  });
+
+  it.each([404, 403, 401])('maps only single detail 404 to null and never retries broad lists for status %s', async status => {
+    const fetchMock = vi.fn(async (_request: unknown) => new Response(JSON.stringify({ message: 'fixture rejection' }), { status }));
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    if (status === 404) await expect(client.getSingleInstance('id/with-space')).resolves.toBeNull();
+    else await expect(client.getSingleInstance('id/with-space')).rejects.toMatchObject({ status });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://platform.example/admin/instances/id%2Fwith-space');
   });
 
   it('throws PlatformApiError on failed response', async () => {

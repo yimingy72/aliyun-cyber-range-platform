@@ -6,10 +6,13 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { OperationControlService } from '../src/operations/operation-control.service';
 import type { AuthenticatedPlatformRequest } from '../src/auth/request-auth-context';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
+const workspace = { cloudWorkspaceId: 'tag-fixture-space', provider: 'alibaba_cloud' as const, accountUid: '100001' };
+const userMetadata = { cloudWorkspaceId: workspace.cloudWorkspaceId, isPlatformManager: false, selectedCloudWorkspaceId: null };
 
-const admin = { id: 'tag-admin', username: 'tag-admin', role: 'admin' as const };
-const owner = { id: 'tag-owner', username: 'tag-owner', role: 'user' as const };
-const other = { id: 'tag-other', username: 'tag-other', role: 'user' as const };
+const admin = { ...userMetadata, id: 'tag-admin', username: 'tag-admin', role: 'admin' as const };
+const owner = { ...userMetadata, id: 'tag-owner', username: 'tag-owner', role: 'user' as const };
+const other = { ...userMetadata, id: 'tag-other', username: 'tag-other', role: 'user' as const };
 const req = (user: { id: string; username: string; role: 'admin' | 'user' } = owner): AuthenticatedPlatformRequest => ({ headers: {}, adminUser: user, authContext: { user, source: 'mcp', oauthClientId: 'mcp-gateway' } });
 async function required(action: () => unknown) {
   try { await action(); throw new Error('Expected confirmation'); }
@@ -27,7 +30,7 @@ describe('Image tag MCP confirmation and owner protection', () => {
   let definitions: PlatformImageTagsController;
   let assets: PlatformImagesController;
   let assetId: string;
-  beforeEach(async () => {
+  beforeEach(async () => runInCloudWorkspace(workspace, async () => {
     repository = createMemoryAdminRepository();
     for (const user of [admin, owner, other]) await repository.createPlatformUser({ ...user, passwordHash: 'mock' });
     service = new ImageCatalogService(repository, { getAccountContext: async () => ({ provider: 'alibaba_cloud', accountUid: '100001', defaultRegion: 'cn-hangzhou' }) } as unknown as SystemConfigService);
@@ -36,8 +39,8 @@ describe('Image tag MCP confirmation and owner protection', () => {
     await repository.upsertImageSnapshots({ provider: 'alibaba_cloud', accountUid: '100001', regionId: 'cn-hangzhou', scope: 'custom', snapshots: [{ imageId: 'm-owned', sourceImageName: 'owned', status: 'Available', isAvailable: true, lastSyncedAt: new Date() }] });
     const source = (await repository.listImageSnapshots({ imageId: 'm-owned' }))[0];
     assetId = (await repository.collectPlatformImageAsset({ snapshotId: source.id, displayName: 'owned-private', ownerUserId: owner.id, visibility: 'private', defaultPassword: 'hidden-test-secret' })).id;
-  });
-  it('does not create a global definition before confirmation and replays the confirmed write once', async () => {
+  }));
+  it('does not create a global definition before confirmation and replays the confirmed write once', async () => runInCloudWorkspace(workspace, async () => {
     const request = req(admin);
     const info = await required(() => definitions.create(request, { name: 'Web' }));
     expect(await repository.listPlatformImageTags()).toEqual([]);
@@ -47,8 +50,8 @@ describe('Image tag MCP confirmation and owner protection', () => {
     expect(await repository.listPlatformImageTags()).toHaveLength(1);
     await expect(definitions.create(req(other), { name: 'Other' })).rejects.toThrow('Admin access');
     await expect(definitions.create(req(admin), { name: 'ＷＥＢ' })).rejects.toThrow('已存在');
-  });
-  it('confirms complete association replacements and clearing without deleting global definitions or exposing passwords', async () => {
+  }));
+  it('confirms complete association replacements and clearing without deleting global definitions or exposing passwords', async () => runInCloudWorkspace(workspace, async () => {
     const tag = await service.createPlatformImageTag({ name: 'Web' }, admin);
     const request = req(owner), input = { tagIds: [tag.id] };
     const update = jest.spyOn(repository, 'replacePlatformImageAssetTags');
@@ -63,8 +66,8 @@ describe('Image tag MCP confirmation and owner protection', () => {
     await assets.setTags(confirmed(request, clearInfo), assetId, { tagIds: [] });
     expect((await repository.getPlatformImageAssetById(assetId))!.tags).toEqual([]);
     expect(await repository.listPlatformImageTags()).toHaveLength(1);
-  });
-  it('rejects another private owner, unknown tags and changed or cross-user confirmation inputs', async () => {
+  }));
+  it('rejects another private owner, unknown tags and changed or cross-user confirmation inputs', async () => runInCloudWorkspace(workspace, async () => {
     const tag = await service.createPlatformImageTag({ name: 'Web' }, admin);
     await expect(assets.setTags(req(other), assetId, { tagIds: [tag.id] })).rejects.toBeInstanceOf(NotFoundException);
     await expect(assets.setTags(req(owner), assetId, { tagIds: ['unknown'] })).rejects.toThrow('不存在');
@@ -72,5 +75,5 @@ describe('Image tag MCP confirmation and owner protection', () => {
     await expect(assets.setTags(confirmed(req(owner), info), assetId, { tagIds: [] })).rejects.toThrow('does not match');
     await expect(assets.setTags(confirmed(req(other), info), assetId, { tagIds: [tag.id] })).rejects.toThrow('does not match');
     expect((await repository.getPlatformImageAssetById(assetId))!.tags).toEqual([]);
-  });
+  }));
 });

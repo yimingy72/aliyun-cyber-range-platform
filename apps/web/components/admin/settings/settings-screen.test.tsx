@@ -1,239 +1,89 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CloudWorkspaceView } from '@/lib/admin-types';
 
-const {
-  fetchCloudConfigMock,
-  saveCloudConfigMock,
-  replaceMock,
-  routerMock,
-} = vi.hoisted(() => {
-  const replaceMock = vi.fn();
-
-  return {
-    fetchCloudConfigMock: vi.fn(),
-    saveCloudConfigMock: vi.fn(),
-    replaceMock,
-    routerMock: {
-      replace: replaceMock,
-    },
-  };
-});
-
-vi.mock('next/navigation', () => ({
-  useRouter: () => routerMock,
-}));
-
-vi.mock('../../../lib/admin-api', async () => {
-  const actual = await vi.importActual<typeof import('../../../lib/admin-api')>('../../../lib/admin-api');
-
-  return {
-    ...actual,
-    fetchCloudConfig: fetchCloudConfigMock,
-    saveCloudConfig: saveCloudConfigMock,
-  };
-});
-
-import { AdminApiError } from '../../../lib/admin-api';
-import { AdminScreenCacheProvider } from '../../../lib/admin-screen-cache';
-import * as adminSessionModule from '../use-admin-session';
+const { list, save, select, replace, logout, state } = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), select: vi.fn(), replace: vi.fn(), logout: vi.fn(), state: { manager: true, sessionManager: true } }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
+vi.mock('@/lib/admin-api', async () => ({ ...await vi.importActual<typeof import('@/lib/admin-api')>('@/lib/admin-api'), fetchCloudWorkspaces: list, saveCloudAccount: save }));
+vi.mock('../use-admin-session', () => ({ useAdminSession: () => ({ token: 'fixture-token', profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.sessionManager }, isAdmin: true, isReady: true, logout }) }));
+vi.mock('../cloud-workspace-provider', () => ({ cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云', useCloudWorkspace: () => ({ workspace: ali, profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.manager }, isReady: true, isSwitching: false, refreshCurrent: async () => undefined, switchTo: select }) }));
 import { SettingsScreen } from './settings-screen';
-
-const cloudConfigPayload = {
-  provider: 'alibaba_cloud' as const,
-  defaultRegion: 'cn-hangzhou',
-  defaultZoneId: 'cn-hangzhou-h',
-  accessKeyId: 'LTAI-test-ak',
-  accessKeySecret: 'test-secret',
-  imageImportBucket: '',
-};
-
-function mockAdminSession() {
-  vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
-    token: 'dev-admin-token',
-    profile: { id: 'admin', username: 'admin', role: 'admin' },
-    isAdmin: true,
-    isReady: true,
-    login: vi.fn(),
-    logout: vi.fn(),
-  });
+import { AdminApiError } from '@/lib/admin-api';
+const ali: CloudWorkspaceView = { id: 'ali', provider: 'alibaba_cloud', accountUid: '111', displayName: '杭州训练账号', isReadOnly: false, activeCloudAccountContextId: 'ctx-ali', contexts: [{ id: 'ctx-ali', cloudWorkspaceId: 'ali', provider: 'alibaba_cloud', accountUid: '111', displayName: '杭州', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', isActive: true, status: 'ready', imageImportBucket: 'owned-bucket', bucketStatus: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } };
+const tencent: CloudWorkspaceView = { ...ali, id: 'tencent', provider: 'tencent_cloud', accountUid: '222', displayName: '南京训练账号', activeCloudAccountContextId: 'ctx-tencent', contexts: [{ ...ali.contexts[0]!, id: 'ctx-tencent', cloudWorkspaceId: 'tencent', provider: 'tencent_cloud', accountUid: '222', regionId: 'ap-nanjing', zoneId: 'ap-nanjing-1', imageImportBucket: '' }] };
+function openTencent() { fireEvent.mouseDown(screen.getByRole('tab', { name: '腾讯云' }), { button: 0, ctrlKey: false }); }
+function fillTencent() {
+  fireEvent.click(screen.getByRole('button', { name: '绑定腾讯云账号' }));
+  for (const [label, value] of [['默认地域', 'ap-nanjing'], ['默认可用区', 'ap-nanjing-1'], ['SecretId', 'fixture-secret-id'], ['SecretKey', 'fixture-secret-key']]) fireEvent.change(screen.getByLabelText(label!), { target: { value } });
 }
-
-describe('SettingsScreen', () => {
-  beforeEach(() => {
-    replaceMock.mockReset();
-    fetchCloudConfigMock.mockReset();
-    saveCloudConfigMock.mockReset();
+describe('settings cloud workspaces', () => {
+  beforeEach(() => { vi.clearAllMocks(); state.manager = true; state.sessionManager = true; list.mockResolvedValue([ali, tencent]); save.mockResolvedValue(tencent.contexts[0]); select.mockResolvedValue(undefined); });
+  afterEach(cleanup);
+  it('filters providers without switching data and keeps image queries out of settings', async () => {
+    render(<SettingsScreen apiBaseUrl="https://fixture.invalid" />);
+    await screen.findByText('111');
+    expect(screen.queryByText('222')).toBeNull();
+    openTencent();
+    expect(await screen.findByText('222')).toBeTruthy();
+    expect(screen.queryByText('111')).toBeNull();
+    expect(select).not.toHaveBeenCalled();
+    expect(screen.queryByRole('table', { name: '腾讯云镜像目录' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '切换到此账号' }));
+    await waitFor(() => expect(select).toHaveBeenCalledWith('tencent'));
   });
-
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
+  it('saves account binding without switching, exposing or retaining credentials', async () => {
+    render(<SettingsScreen apiBaseUrl="https://fixture.invalid" />); await screen.findByText('111'); openTencent(); fillTencent();
+    fireEvent.submit(screen.getByRole('form', { name: '云账号绑定表单' }));
+    await screen.findByText('云账号已验证并保存。点击“切换到此账号”后查看对应平台数据。');
+    expect(save).toHaveBeenCalledWith('https://fixture.invalid', 'fixture-token', expect.objectContaining({ provider: 'tencent_cloud', accessKeyId: 'fixture-secret-id', accessKeySecret: 'fixture-secret-key' }));
+    expect(select).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '绑定腾讯云账号' }));
+    expect((screen.getByLabelText('SecretKey') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('SecretId') as HTMLInputElement).value).toBe('');
   });
-
-  it('uses cloud configuration as the only image-import storage setup entry point', async () => {
-    mockAdminSession();
-    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    await screen.findByDisplayValue('cn-hangzhou');
-
-    expect(screen.getByRole('heading', { name: '云配置' })).toBeTruthy();
-    expect(screen.getByText('保存时将校验当前阿里云账号。镜像导入仅使用管理员提供的现有 OSS Bucket；平台不会创建 Bucket 或修改其权限、CORS。')).toBeTruthy();
-    expect(screen.getByLabelText('自定义 OSS 存储桶名')).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '阿里云账号与镜像存储' })).toBeNull();
-    expect(screen.queryByLabelText('账号名称')).toBeNull();
-    expect(screen.queryByLabelText('导入 Bucket')).toBeNull();
+  it('edits a named account with an explicit workspace and fresh credentials', async () => {
+    save.mockResolvedValue(ali.contexts[0]);
+    render(<SettingsScreen apiBaseUrl="https://fixture.invalid" />); await screen.findByText('111');
+    fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));
+    expect((screen.getByLabelText('AccessKey Secret') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('AccessKey ID') as HTMLInputElement).value).toBe('');
+    fireEvent.change(screen.getByLabelText('AccessKey ID'), { target: { value: 'fixture-id' } });
+    fireEvent.change(screen.getByLabelText('AccessKey Secret'), { target: { value: 'fixture-key' } });
+    fireEvent.submit(screen.getByRole('form', { name: '云账号绑定表单' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith('https://fixture.invalid', 'fixture-token', expect.objectContaining({ cloudWorkspaceId: 'ali', provider: 'alibaba_cloud' })));
   });
-
-  it('saves cloud configuration without claiming that an optional Bucket is ready', async () => {
-    mockAdminSession();
-    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
-    saveCloudConfigMock.mockResolvedValue({
-      ...cloudConfigPayload,
-      accessKeySecret: '********',
-    });
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    await screen.findByDisplayValue('cn-hangzhou');
-    fireEvent.click(screen.getByRole('button', { name: '保存云配置' }));
-
-    await waitFor(() => {
-      expect(saveCloudConfigMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', cloudConfigPayload);
-    });
-
-    expect((await within(screen.getByTestId('cloud-config-form')).findByRole('status')).textContent).toBe('云配置已保存。');
+  it('preserves current workspace on failed switch and reports its error', async () => {
+    select.mockRejectedValue(new Error('账号不可切换'));
+    render(<SettingsScreen />); await screen.findByText('111'); openTencent();
+    fireEvent.click(screen.getByRole('button', { name: '切换到此账号' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '账号不可切换');
+    expect(screen.getByText('阿里云 · 杭州训练账号')).toBeTruthy();
   });
-
-  it('shows the STS or OSS initialization error returned while saving', async () => {
-    mockAdminSession();
-    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
-    saveCloudConfigMock.mockRejectedValue(new AdminApiError(400, '阿里云账号身份校验失败（HTTP 403）。'));
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    await screen.findByDisplayValue('cn-hangzhou');
-    fireEvent.click(screen.getByRole('button', { name: '保存云配置' }));
-
-    expect(await screen.findByText('阿里云账号身份校验失败（HTTP 403）。')).toBeTruthy();
+  it('keeps workspace administrators from binding unrelated cloud accounts', async () => {
+    state.manager = false; render(<SettingsScreen />); await screen.findByText('111');
+    expect(screen.queryByRole('button', { name: '绑定阿里云账号' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '编辑配置' })).toBeNull();
   });
-
-  it('renders nothing before the admin session is ready', () => {
-    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
-      token: null,
-      profile: null,
-      isAdmin: false,
-      isReady: false,
-      login: vi.fn(),
-      logout: vi.fn(),
-    });
-
-    const { container } = render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    expect(container.firstChild).toBeNull();
-    expect(fetchCloudConfigMock).not.toHaveBeenCalled();
+  it('keeps binding controls based on the verified profile when same-user stored metadata loses its manager flag', async () => {
+    const page = render(<SettingsScreen />); await screen.findByText('111');
+    expect(screen.getByRole('button', { name: '绑定阿里云账号' })).toBeTruthy();
+    state.sessionManager = false; page.rerender(<SettingsScreen />);
+    expect(screen.getByRole('button', { name: '绑定阿里云账号' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '编辑配置' })).toBeTruthy();
   });
-
-  it('redirects to login when cloud configuration returns 401', async () => {
-    const logoutMock = vi.fn();
-    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
-      token: 'dev-admin-token',
-      profile: { id: 'admin', username: 'admin', role: 'admin' },
-      isAdmin: true,
-      isReady: true,
-      login: vi.fn(),
-      logout: logoutMock,
-    });
-    fetchCloudConfigMock.mockRejectedValue(new AdminApiError(401));
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    await waitFor(() => {
-      expect(logoutMock).toHaveBeenCalled();
-      expect(replaceMock).toHaveBeenCalledWith('/admin/login');
-    });
+  it('rejects mismatched saves and suppresses a late completion after leaving the page', async () => {
+    save.mockResolvedValue(ali.contexts[0]); render(<SettingsScreen />); await screen.findByText('111'); openTencent(); fillTencent();
+    fireEvent.submit(screen.getByRole('form', { name: '云账号绑定表单' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '保存返回的绑定账号不一致，请刷新核对。');
+    let resolve!: (value: typeof tencent.contexts[0]) => void;
+    save.mockImplementation(() => new Promise(done => { resolve = done; }));
+    fireEvent.submit(screen.getByRole('form', { name: '云账号绑定表单' }));
+    cleanup(); await act(async () => { resolve(tencent.contexts[0]); });
+    expect(select).not.toHaveBeenCalled();
   });
-
-  it('keeps the page shell visible while cloud configuration is loading', async () => {
-    mockAdminSession();
-    let resolveCloudConfig: ((value: typeof cloudConfigPayload) => void) | null = null;
-    fetchCloudConfigMock.mockImplementation(
-      () => new Promise<typeof cloudConfigPayload>((resolve) => {
-        resolveCloudConfig = resolve;
-      }),
-    );
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    expect(screen.getByRole('heading', { name: '云配置' })).toBeTruthy();
-    expect((screen.getByRole('button', { name: '保存云配置' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId('cloud-config-form').getAttribute('aria-busy')).toBe('true');
-    expect(screen.getByTestId('cloud-config-form-skeleton')).toBeTruthy();
-    expect(screen.queryByLabelText('默认地域')).toBeNull();
-
-    await waitFor(() => expect(resolveCloudConfig).not.toBeNull());
-    resolveCloudConfig?.(cloudConfigPayload);
-    await screen.findByDisplayValue('cn-hangzhou');
-  });
-
-  it('restores fresh cloud configuration without another request after returning', async () => {
-    mockAdminSession();
-    fetchCloudConfigMock.mockResolvedValue(cloudConfigPayload);
-
-    function CachedSettingsScreen({ visible }: { visible: boolean }) {
-      return (
-        <AdminScreenCacheProvider>
-          {visible ? <SettingsScreen apiBaseUrl="http://localhost:3001" /> : null}
-        </AdminScreenCacheProvider>
-      );
-    }
-
-    const { rerender } = render(<CachedSettingsScreen visible />);
-
-    await screen.findByDisplayValue('cn-hangzhou');
-    expect(fetchCloudConfigMock).toHaveBeenCalledTimes(1);
-
-    rerender(<CachedSettingsScreen visible={false} />);
-    rerender(<CachedSettingsScreen visible />);
-
-    expect(screen.getByDisplayValue('cn-hangzhou')).toBeTruthy();
-    await waitFor(() => expect(fetchCloudConfigMock).toHaveBeenCalledTimes(1));
-  });
-
-  it('keeps cloud configuration load failures inside the form and retries from there', async () => {
-    mockAdminSession();
-    fetchCloudConfigMock
-      .mockRejectedValueOnce(new Error('网络暂时不可用'))
-      .mockResolvedValueOnce(cloudConfigPayload);
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    const form = await screen.findByTestId('cloud-config-form');
-    expect(within(form).getByRole('alert').textContent).toContain('云配置加载失败，请稍后重试。');
-
-    fireEvent.click(within(form).getByRole('button', { name: '重试加载' }));
-
-    expect(screen.getByTestId('cloud-config-form-skeleton')).toBeTruthy();
-    expect(await screen.findByDisplayValue('cn-hangzhou')).toBeTruthy();
-    expect(fetchCloudConfigMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('redirects regular users away from cloud settings without loading configuration', async () => {
-    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue({
-      token: 'user-token',
-      profile: { id: 'user-1', username: 'alice', role: 'user' },
-      isAdmin: false,
-      isReady: true,
-      login: vi.fn(),
-      logout: vi.fn(),
-    });
-
-    render(<SettingsScreen apiBaseUrl="http://localhost:3001" />);
-
-    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios'));
-    expect(fetchCloudConfigMock).not.toHaveBeenCalled();
-    expect(screen.getByText('当前账号无权访问基础配置。')).toBeTruthy();
+  it('uses the normal session expiration path for account list failures', async () => {
+    list.mockRejectedValue(new AdminApiError(401)); render(<SettingsScreen />);
+    await waitFor(() => expect(logout).toHaveBeenCalled()); expect(replace).toHaveBeenCalledWith('/admin/login');
   });
 });

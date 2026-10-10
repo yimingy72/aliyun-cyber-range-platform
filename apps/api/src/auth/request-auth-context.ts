@@ -4,6 +4,7 @@ export type RequestAuthContext = {
   user: SessionUserProfile;
   source: 'web' | 'mcp';
   oauthClientId: string | null;
+  cloudWorkspaceId?: string | null;
 };
 
 export type AuthenticatedPlatformRequest = {

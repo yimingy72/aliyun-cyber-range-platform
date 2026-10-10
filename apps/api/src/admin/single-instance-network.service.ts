@@ -4,6 +4,7 @@ import { SystemConfigService, type SystemCloudAccountContext } from './system-co
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { SingleInstanceNetworkBootstrapService, singleNetworkWorkspaceKey } from '../provisioning/single-instance-network-bootstrap';
 import type { SessionUserProfile } from './admin-user-auth';
+import { describeTencentResourceInventory } from './tencent-cloud-resources';
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 @Injectable()
 export class SingleInstanceNetworkService {
@@ -17,14 +18,15 @@ export class SingleInstanceNetworkService {
 
   async ensureDefaultProfile(account?: SystemCloudAccountContext,creatorUserId?:string) {
     return this.cidrPoolService.serialize(async () => {
-      const snapshot = account ?? await this.systemConfigService.getAccountContext();
+      const snapshot = account ?? await this.systemConfigService.getExecutionAccountContext();
+      if (!['alibaba_cloud', 'tencent_cloud'].includes(snapshot.provider)) throw new ConflictException('该云厂商的实例创建与网络回收尚未开放。');
       if (!snapshot.accountUid || !snapshot.cloudAccountContextId)
         throw new ConflictException('Default network requires a verified cloud account');
       const identity = { createdByUserId:creatorUserId,provider: snapshot.provider, cloudAccountUid: snapshot.accountUid, cloudAccountContextId: snapshot.cloudAccountContextId, regionId: snapshot.defaultRegion, zoneId: snapshot.defaultZoneId };
       const existing = await this.adminRepository.getSingleInstanceNetworkProfile(identity);
       if (existing) {
         if(existing.cleanupRunId && !existing.cleanupOwnerUserIds?.includes(creatorUserId??'')) throw new ConflictException('Default network is reserved for an explicitly registered validation run');
-        if (existing.status === 'destroying' || !existing.vpcId || !existing.securityGroupId || existing.vswitchIds.length !== 3)
+        if (existing.status === 'destroying' || !existing.vpcId || !existing.securityGroupId || existing.vswitchIds.length !== (snapshot.provider === 'tencent_cloud' ? 1 : 3))
           throw new ConflictException(`Default network cleanup is required for profile ${existing.id}`);
         return existing;
       }
@@ -54,8 +56,9 @@ export class SingleInstanceNetworkService {
             if (pendingProfile) {
               if (pendingProfile.status !== 'destroying' || !pendingProfile.managedByPlatform ||
                   pendingProfile.cloudAccountContextId !== identity.cloudAccountContextId ||
-                  pendingProfile.workspaceKey !== singleNetworkWorkspaceKey(identity.cloudAccountUid, identity.regionId, identity.zoneId))
+                  pendingProfile.workspaceKey !== singleNetworkWorkspaceKey(identity.cloudAccountUid, identity.regionId, identity.zoneId, identity.provider, identity.cloudAccountContextId))
                 throw new ConflictException('Default network cleanup intent identity does not match');
+              await this.verifyTencentNetworkAbsent(pendingProfile, snapshot);
               await this.auditNetwork(pendingProfile, creatorUserId, 'bootstrap', 'failed', 'NETWORK_BOOTSTRAP_FAILED_CLEANED');
               await this.auditNetwork(pendingProfile, creatorUserId, 'bootstrap_cleanup', 'succeeded');
               await this.adminRepository.deleteSingleInstanceNetworkProfile(pendingProfile.id);
@@ -119,7 +122,10 @@ export class SingleInstanceNetworkService {
       if(!cleanupRunId||profile.cleanupRunId!==cleanupRunId||profile.cleanupRegisteredByUserId!==currentUser.id) throw new ConflictException('Network cleanup requires its pre-registered run ID and registering administrator');
       if (!profile.managedByPlatform || !profile.cloudAccountContextId)
         throw new ConflictException('Legacy or unbound shared networks cannot be destroyed through this endpoint');
-      const account = await this.systemConfigService.getAccountContextById(profile.cloudAccountContextId);
+      const sourceAccount = await this.systemConfigService.getExecutionAccountContext({ cloudAccountContextId: profile.cloudAccountContextId });
+      if (profile.provider !== sourceAccount.provider)
+        throw new ConflictException('该云厂商的默认网络回收尚未开放。');
+      const account = { ...sourceAccount, defaultZoneId: profile.zoneId };
       if (account.accountUid !== profile.cloudAccountUid || account.defaultRegion !== profile.regionId)
         throw new ConflictException('Network cloud source does not match its persisted identity');
       const references = (await this.adminRepository.listRangeInstances()).filter(instance => instance.singleInstanceConfig?.networkProfileId === id || instance.resourceSummary?.vpcId === profile.vpcId || profile.vswitchIds.includes(instance.singleInstanceConfig?.assignedVswitchId ?? ''));
@@ -137,6 +143,7 @@ export class SingleInstanceNetworkService {
         await this.execution.assertNetworkUnused(profile, account);
         let cleanupVerified = false;
         await this.bootstrap.destroyDefaultProfile(profile, account, async () => {
+          await this.verifyTencentNetworkAbsent(profile, account);
           await this.auditNetwork(profile, currentUser.id, 'destroy', 'succeeded');
           await this.adminRepository.deleteSingleInstanceNetworkProfile(id);
           cleanupVerified = true;
@@ -155,6 +162,18 @@ export class SingleInstanceNetworkService {
     const parts = network.split('.');
     return { vswitchId: profile.vswitchIds[index], vswitchCidr: profile.vswitchCidrs[index], zoneKey: `zone-${index + 1}`, privateIp: `${parts[0]}.${parts[1]}.${parts[2]}.${10 + (Math.abs(offset) % 200)}` };
   }
+  private async verifyTencentNetworkAbsent(profile: SingleInstanceNetworkProfileRecord, account: SystemCloudAccountContext) {
+    if (account.provider !== 'tencent_cloud') return;
+    const checks = await Promise.allSettled([
+      describeTencentResourceInventory(account,'vpc',{ ids: profile.vpcId ? [profile.vpcId] : [] }),
+      describeTencentResourceInventory(account,'vswitch',{ ids: profile.vswitchIds }),
+      describeTencentResourceInventory(account,'security_group',{ ids: profile.securityGroupId ? [profile.securityGroupId] : [] }),
+    ]);
+    const failed = checks.find((check): check is PromiseRejectedResult => check.status === 'rejected');
+    if (failed) throw failed.reason;
+    if (checks.some(check => check.status === 'fulfilled' && check.value.length)) throw new ConflictException('Tencent default network deletion is not confirmed; preserve the profile and audit');
+  }
+
   private auditNetwork(profile: SingleInstanceNetworkProfileRecord, actorUserId: string | undefined,
     action: 'bootstrap' | 'bootstrap_cleanup' | 'destroy', phase: OperationAuditPhase, errorCode?: string) {
     const operationId = `single-network:${profile.id}:${action}`;

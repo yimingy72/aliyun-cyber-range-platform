@@ -1,4 +1,5 @@
 import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 import {
   ADMIN_REPOSITORY,
@@ -19,12 +20,13 @@ import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/p
 import { imageRpc, cloudItems, cloudPage } from './aliyun-image-rpc';
 import { PackedImagesService } from './packed-images.service';
 import { SystemConfigService } from './system-config.service';
+import { deleteTencentImage, describeTencentImages } from './tencent-image-rpc';
 
 type ImageCatalogScopePayload = {
   snapshots: Array<
     Pick<
       CloudImageSnapshotRecord,
-      'id' | 'provider' | 'scope' | 'imageId' | 'sourceImageName' | 'platform' | 'status' | 'isAvailable'
+      'id' | 'provider' | 'scope' | 'imageId' | 'sourceImageName' | 'platform' | 'architecture' | 'minimumSystemDiskSize' | 'status' | 'isAvailable'
     > & { ownedSnapshotCleanup?: { snapshotCount: number; status: 'ready' | 'deleting' } }
   >;
   catalogItems: Array<
@@ -130,15 +132,21 @@ export class ImageCatalogService {
     return this.syncScope('custom', 'self');
   }
 
+  private selectedContext() {
+    return typeof this.systemConfigService.getSelectedAccountContext === 'function'
+      ? this.systemConfigService.getSelectedAccountContext() : this.systemConfigService.getAccountContext();
+  }
+
   async listPlatformAssets(
     currentUser: SessionUserProfile,
     view: PlatformImageView = 'platform',
   ): Promise<PlatformImageAssetsPayload> {
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
+    const workspace = getCurrentCloudWorkspaceScope();
+    const historical = workspace && !('system' in workspace) && workspace.isReadOnly;
     const baseFilter = {
-      provider: accountContext.provider,
-      accountUid: accountContext.accountUid,
-      regionId: accountContext.defaultRegion,
+      ...(historical ? {} : { provider: accountContext.provider,
+        ...(workspace && !('system' in workspace) ? {} : { accountUid: accountContext.accountUid }), regionId: accountContext.defaultRegion }),
       ...(view === 'platform' ? { visibility: 'platform' as const } : { ownerUserId: currentUser.id }),
     };
 
@@ -167,6 +175,8 @@ export class ImageCatalogService {
           canChangeVisibility: assetView.canChangeVisibility ?? false,
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
+          architecture: snapshot?.architecture ?? null,
+          minimumSystemDiskSize: snapshot?.minimumSystemDiskSize ?? null,
         };
       }),
     };
@@ -244,7 +254,7 @@ export class ImageCatalogService {
       throw new NotFoundException('Image snapshot not found');
     }
 
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     if (!this.isSnapshotInScope(snapshot, accountContext)) {
       throw new NotFoundException('Image snapshot not found');
@@ -348,14 +358,14 @@ export class ImageCatalogService {
 
   async prepareCustomDelete(snapshotId: string, currentUser: SessionUserProfile, deleteOwnedSnapshots: boolean) {
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
-    if (!snapshot || snapshot.scope !== 'custom' || snapshot.provider !== 'alibaba_cloud') throw new NotFoundException('Image snapshot not found');
+    if (!snapshot || snapshot.scope !== 'custom') throw new NotFoundException('Image snapshot not found');
     if (deleteOwnedSnapshots) {
       const [artifact] = await this.adminRepository.listPackedImageArtifacts({ sourceSnapshotId: snapshotId });
       if (!artifact || artifact.cloudAccountUid !== snapshot.accountUid || artifact.regionId !== snapshot.regionId || artifact.imageId !== snapshot.imageId
         || (currentUser.role !== 'admin' && artifact.ownerUserId !== currentUser.id)) throw new ForbiddenException('仅 owner 或管理员可完整回收已验证的平台打包镜像。');
     } else {
       if (currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
-      const account = await this.systemConfigService.getAccountContext();
+      const account = await this.selectedContext();
       if (!this.isSnapshotInScope(snapshot, account)) throw new NotFoundException('Image snapshot not found');
     }
     await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
@@ -381,7 +391,7 @@ export class ImageCatalogService {
     }
     if (currentUser && currentUser.role !== 'admin') throw new ForbiddenException('仅管理员可删除云镜像；owner 请显式选择完整打包回收。');
 
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     if (
       snapshot.provider !== accountContext.provider ||
@@ -395,6 +405,9 @@ export class ImageCatalogService {
     await this.assertImageSnapshotNotImporting(snapshot);
 
     if (await this.describeImageById(snapshot.imageId, accountContext)) {
+      if (accountContext.provider === 'tencent_cloud') {
+        await deleteTencentImage(this.tencentCredentials(accountContext), snapshot.imageId);
+      } else {
       await this.performAliyunRpcRequest({
         accessKeyId: accountContext.accessKeyId,
         accessKeySecret: accountContext.accessKeySecret,
@@ -405,6 +418,7 @@ export class ImageCatalogService {
           Force: 'false',
         },
       });
+      }
       await this.adminRepository.upsertImageSnapshots({
         provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, scope: 'custom',
         snapshots: [{ imageId: snapshot.imageId, sourceImageName: snapshot.sourceImageName,
@@ -449,20 +463,19 @@ export class ImageCatalogService {
   }
 
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
+    const workspace = getCurrentCloudWorkspaceScope();
+    const placement = workspace && !('system' in workspace) && workspace.isReadOnly ? {}
+      : { provider: accountContext.provider, ...(workspace && !('system' in workspace) ? {} : { accountUid: accountContext.accountUid }), regionId: accountContext.defaultRegion };
 
     const [snapshots, catalogItems, packedArtifacts] = await Promise.all([
       this.adminRepository.listImageSnapshots({
-        provider: accountContext.provider,
-        accountUid: accountContext.accountUid,
-        regionId: accountContext.defaultRegion,
+        ...placement,
         scope,
       }),
       this.adminRepository.listImageCatalogItems({
-        provider: accountContext.provider,
+        ...placement,
         scope,
-        accountUid: accountContext.accountUid,
-        regionId: accountContext.defaultRegion,
       }),
       scope === 'custom' ? this.adminRepository.listPackedImageArtifacts() : Promise.resolve([]),
     ]);
@@ -480,6 +493,8 @@ export class ImageCatalogService {
         imageId: snapshot.imageId,
         sourceImageName: snapshot.sourceImageName,
         platform: snapshot.platform,
+        architecture: snapshot.architecture,
+        minimumSystemDiskSize: snapshot.minimumSystemDiskSize,
         status: snapshot.status,
         isAvailable: snapshot.isAvailable,
         ...(cleanupBySnapshot.get(snapshot.id)?.imageId === snapshot.imageId ? {
@@ -505,7 +520,7 @@ export class ImageCatalogService {
     currentUser: SessionUserProfile,
   ): Promise<PlatformImageAssetRecord> {
     const asset = await this.adminRepository.getPlatformImageAssetById(id);
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
 
     if (
       !asset ||
@@ -797,7 +812,15 @@ export class ImageCatalogService {
     scope: CloudImageScope,
     imageOwnerAlias: 'system' | 'self',
   ): Promise<ImageCatalogScopePayload> {
-    const accountContext = await this.systemConfigService.getAccountContext();
+    const accountContext = await this.selectedContext();
+    if (accountContext.provider === 'tencent_cloud') {
+      const images = await describeTencentImages(this.tencentCredentials(accountContext), { scope });
+      await this.adminRepository.reconcileImageSnapshots({ provider: accountContext.provider, accountUid: accountContext.accountUid,
+        regionId: accountContext.defaultRegion, scope, snapshots: images.map(image => ({ imageId: image.ImageId,
+          sourceImageName: image.ImageName, osType: image.OSType, platform: image.Platform, architecture: image.Architecture,
+          minimumSystemDiskSize: image.ImageSize, status: image.Status, isAvailable: image.Status === 'Available', lastSyncedAt: new Date() })) });
+      return this.listScope(scope);
+    }
     const lastSyncedAt = new Date();
     const snapshots: UpsertImageSnapshotInput[] = [];
 
@@ -869,8 +892,11 @@ export class ImageCatalogService {
 
   private async describeImageById(
     imageId: string,
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+    accountContext: Awaited<ReturnType<SystemConfigService['getSelectedAccountContext']>>,
   ) {
+    if (accountContext.provider === 'tencent_cloud') {
+      return (await describeTencentImages(this.tencentCredentials(accountContext), { ImageId: imageId }))[0] ?? null;
+    }
     const response = await this.performAliyunRpcRequest<AliyunDescribeImagesResponse>({
       accessKeyId: accountContext.accessKeyId,
       accessKeySecret: accountContext.accessKeySecret,
@@ -887,6 +913,14 @@ export class ImageCatalogService {
     const items = this.normalizeImages(response);
     if (cloudPage(response, 1, 100, items.length) !== items.length || items.length > 1 || items.some(item => item.ImageId !== imageId || !item.Status)) throw new Error('Invalid exact image query');
     return items[0] ?? null;
+  }
+
+  private tencentCredentials(account: Awaited<ReturnType<SystemConfigService['getSelectedAccountContext']>>) {
+    if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || !account.accountUid || !account.cloudAccountContextId) {
+      throw new BadRequestException('腾讯云镜像操作缺少已验证账号配置。');
+    }
+    return { provider: account.provider, id: account.cloudAccountContextId, accountUid: account.accountUid,
+      regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret };
   }
 
   private async performAliyunRpcRequest<ResponsePayload>(input: {

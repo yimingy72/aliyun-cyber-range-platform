@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
@@ -17,9 +19,11 @@ import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { retiredResourceInventory, retiredBillableIds } from './retired-resource-inventory';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
+import { describeTencentResourceInventory, readTencentAttachedDiskInventory } from '../admin/tencent-cloud-resources';
+import { TencentCloudRequestError } from '../admin/tencent-cloud-client';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
-import { SystemConfigService } from '../admin/system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from '../admin/system-config.service';
 import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatchLease } from '../admin/single-instance-opentofu-execution.service';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
@@ -31,6 +35,7 @@ import {
   type RangeProvisionDestroyInput,
   type RangeProvisionStepEvent,
   type RangeProvisionStepReporter,
+  type ResolvedProvisioningRuntimeConfig,
   RangeProvisioner,
 } from './provisioning.types';
 
@@ -50,11 +55,14 @@ type SingleInstanceJobInput = {
   job: ProvisionJobRecord;
   instance: RangeInstanceRecord;
   effectiveJobType: 'create' | 'update' | 'destroy' | 'refresh_status';
-  runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
   reportStep: RangeProvisionStepReporter;
   batchLease?: SingleInstanceOpenTofuBatchLease;
 };
 type SingleInstanceExecutionItem = { instance: RangeInstanceRecord; job: ProvisionJobRecord };
+type ReconciliationAccountContextRunner = {
+  listWorkspaceAccountContextIds(): Promise<string[]>;
+  runInAccountContext<T>(contextId: string, work: () => Promise<T>): Promise<T>;
+};
 
 @Injectable()
 export class ProvisioningWorkerService {
@@ -122,13 +130,45 @@ export class ProvisioningWorkerService {
   }
 
   async recoverInterruptedJobs(now: Date): Promise<number> {
-    return this.adminRepository.requeueInterruptedProvisionJobs(
+    return runInSystemCloudWorkspaceScope(() => this.adminRepository.requeueInterruptedProvisionJobs(
       new Date(now.getTime() - readInterruptedJobStaleAfterMs()),
-    );
+    ));
   }
 
   async reconcilePlatformResources(now: Date) {
-    return this.platformResourceReconciliationService.reconcile(now);
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    if (!spaces) return this.platformResourceReconciliationService.reconcile(now);
+    const results: Awaited<ReturnType<PlatformResourceReconciliationService['reconcile']>>[] = [];
+    let failed = false;
+    for (const space of spaces) {
+      try {
+        await runInExecutionCloudWorkspace(this.systemConfigService, space.id, async () => {
+          const contexts = this.systemConfigService as SystemConfigService & Partial<ReconciliationAccountContextRunner>;
+          if (typeof contexts.listWorkspaceAccountContextIds !== 'function' || typeof contexts.runInAccountContext !== 'function') {
+            if (process.env.NODE_ENV !== 'test') throw new Error('Resource reconciliation requires frozen regional account contexts');
+            results.push(await this.platformResourceReconciliationService.reconcile(now));
+            return;
+          }
+          const contextIds = await contexts.listWorkspaceAccountContextIds();
+          for (const contextId of new Set(contextIds)) {
+            try {
+              results.push(await contexts.runInAccountContext(contextId, () => this.platformResourceReconciliationService.reconcile(now)));
+            } catch (error) { failed = true; this.logReconciliationFailure(space, contextId, error); }
+          }
+        }, { provider: space.provider, accountUid: space.accountUid });
+      } catch (error) { failed = true; this.logReconciliationFailure(space, null, error); }
+    }
+    if (failed) throw new Error('Cloud reconciliation failed for a workspace; other source workspaces were still processed');
+    return results;
+  }
+
+  private logReconciliationFailure(space: { id: string; provider: string }, contextId: string | null, error: unknown) {
+    // The TC3 client already strips credentials and vendor messages from its typed code.
+    const code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
+      ? error.code : 'UNCLASSIFIED_RECONCILIATION_ERROR';
+    const request = error instanceof TencentCloudRequestError
+      ? { ...(error.service ? { service: error.service } : {}), ...(error.action ? { action: error.action } : {}) } : {};
+    this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code, ...request } }));
   }
 
   private async reconcilePlatformResourcesIfDue(now: Date) {
@@ -151,48 +191,79 @@ export class ProvisioningWorkerService {
   }
 
   async processExpiredInstances(now: Date) {
-    const instances = await this.adminRepository.listExpiredRangeInstances(now);
+    const instances = await runInSystemCloudWorkspaceScope(() => this.adminRepository.listExpiredRangeInstances(now));
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    const allowed = spaces ? new Set(spaces.map(space => space.id)) : null;
 
-    for (const instance of instances) {
-      if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
-        await this.adminRepository.withSingleInstanceControlLock(async () => {
-          const current=await this.adminRepository.getRangeInstanceById(instance.id);
-          if(!current || !['running','creating'].includes(current.status)) return;
-          const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
-          if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
-          if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
-          const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
-          await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
-        });
-        continue;
+    for (const listed of instances) {
+      if (allowed && (!listed.cloudWorkspaceId || !allowed.has(listed.cloudWorkspaceId))) continue;
+      try {
+        const instance = await runInSystemCloudWorkspaceScope(() => this.adminRepository.getRangeInstanceById(listed.id));
+        if (!instance || instance.cloudWorkspaceId !== listed.cloudWorkspaceId) continue;
+        await runInExecutionCloudWorkspace(this.systemConfigService, instance.cloudWorkspaceId,
+          () => this.processExpiredInstance(instance, now), this.executionSource(instance));
+      } catch {
+        this.logger.error(`Expired instance ${listed.id} cleanup scheduling failed; its source record remains available for retry.`);
       }
-      if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
-        continue;
-      }
-
-      if (instance.instanceMode === 'range') {
-        await this.adminRepository.queueRangeInstanceJob({
-          rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'system:auto-expire',
-          expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
-        });
-        continue;
-      }
-      const job = await this.adminRepository.createProvisionJob({
-        rangeInstanceId: instance.id,
-        jobType: 'destroy',
-        triggeredBy: 'system:auto-expire',
-      });
-
-      await this.adminRepository.updateRangeInstance(instance.id, {
-        status: 'pending_destroy',
-        lastJobId: job.id,
-      });
     }
   }
 
+  private async processExpiredInstance(instance: RangeInstanceRecord, now: Date) {
+    if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
+      await this.adminRepository.withSingleInstanceControlLock(async () => {
+        const current=await this.adminRepository.getRangeInstanceById(instance.id);
+        if(!current || !['running','creating'].includes(current.status)) return;
+        const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
+        if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
+        if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
+        const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
+        await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
+      });
+      return;
+    }
+    if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
+      return;
+    }
+
+    if (instance.instanceMode === 'range') {
+      await this.adminRepository.queueRangeInstanceJob({
+        rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'system:auto-expire',
+        expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
+      });
+      return;
+    }
+    const job = await this.adminRepository.createProvisionJob({
+      rangeInstanceId: instance.id,
+      jobType: 'destroy',
+      triggeredBy: 'system:auto-expire',
+    });
+
+    await this.adminRepository.updateRangeInstance(instance.id, {
+      status: 'pending_destroy',
+      lastJobId: job.id,
+    });
+  }
+
   async process(jobId: string) {
+    const source = await runInSystemCloudWorkspaceScope(async () => {
+      const job = await this.adminRepository.getProvisionJobById(jobId);
+      const instance = job ? await this.adminRepository.getRangeInstanceById(job.rangeInstanceId) : null;
+      return { job, instance };
+    });
+    if (!source.job) return;
+    if (source.instance && source.job.cloudWorkspaceId !== source.instance.cloudWorkspaceId) {
+      throw new Error('Provision job and target instance belong to different cloud workspaces');
+    }
+    return runInExecutionCloudWorkspace(this.systemConfigService, source.job.cloudWorkspaceId,
+      () => this.processInWorkspace(jobId), source.instance ? this.executionSource(source.instance) : undefined);
+  }
+
+  private async processInWorkspace(jobId: string) {
     const pendingJob = await this.adminRepository.getProvisionJobById(jobId);
     const instance = pendingJob ? await this.adminRepository.getRangeInstanceById(pendingJob.rangeInstanceId) : null;
+    if (instance && pendingJob?.cloudWorkspaceId !== instance.cloudWorkspaceId) {
+      throw new Error('Provision job and target instance belong to different cloud workspaces');
+    }
     if (instance?.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu'
       && pendingJob?.jobType !== 'refresh_status') {
       const batchId = instance.singleInstanceBatchId;
@@ -213,6 +284,7 @@ export class ProvisioningWorkerService {
       ? await this.adminRepository.claimRangeProvisionJob(jobId, claimedAt)
       : await this.adminRepository.claimProvisionJob(jobId, claimedAt);
     if (!job) return;
+    if (instance && job.cloudWorkspaceId !== instance.cloudWorkspaceId) throw new Error('Claimed job changed its source cloud workspace');
     const controller = new AbortController();
     const heartbeat = this.startProvisionJobHeartbeat([job], controller);
     try {
@@ -272,7 +344,7 @@ export class ProvisioningWorkerService {
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
       const rangeContext = instance.instanceMode === 'range' ? await this.resolveRangeAccountContext(instance, job) : null;
-      const runtimeConfig = rangeContext ?? await this.systemConfigService.getSnapshot();
+      const runtimeConfig = rangeContext!;
 
       if (instance.instanceMode === 'single') {
         const current = await this.adminRepository.withSingleInstanceControlLock(async () => {
@@ -292,7 +364,6 @@ export class ProvisioningWorkerService {
           job,
           instance: current,
           effectiveJobType,
-          runtimeConfig,
           reportStep,
           batchLease,
         });
@@ -406,6 +477,7 @@ export class ProvisioningWorkerService {
         }
         failedCreateCleanupInput = {
           rangeInstanceId: instance.id,
+          expiresAt: instance.expiresAt?.toISOString(),
           templateModulePath,
           allocatedCidr: instance.allocatedCidr,
           runtimeConfig,
@@ -414,7 +486,7 @@ export class ProvisioningWorkerService {
           topologySpec,
           compiledProvisionSpec,
           compiledSpec,
-          billingTags: { ...billingTags, ...(accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, ExecutionBackend: 'opentofu' } : {}) },
+          billingTags: { ...billingTags, PlatformCreateJobId: job.id, CloudProvider: accountContext.provider, ...(accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, ExecutionBackend: 'opentofu' } : {}) },
           requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
           signal,
         };
@@ -544,7 +616,7 @@ export class ProvisioningWorkerService {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
       allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
       requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
-      billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid! } : undefined,
+      billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, PlatformScope: instance.ownerUserId ? 'user' : 'platform', ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}) } : undefined,
     };
     const evidence = await this.captureRangeResources(job, instance, cleanupInput, accountContext);
     await this.rangeProvisioner.destroy(cleanupInput);
@@ -562,7 +634,7 @@ export class ProvisioningWorkerService {
   private async processRangeInstanceUpdateJob(input: {
     job: ProvisionJobRecord;
     instance: RangeInstanceRecord;
-    runtimeConfig: Awaited<ReturnType<SystemConfigService['getSnapshot']>>;
+    runtimeConfig: SystemCloudAccountContext;
     reportStep: RangeProvisionStepReporter;
     accountContext: Awaited<ReturnType<ProvisioningWorkerService['resolveAccountContext']>>;
     onApplyStart: () => void;
@@ -587,6 +659,7 @@ export class ProvisioningWorkerService {
       ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
+      expiresAt: input.instance.expiresAt?.toISOString(),
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
@@ -599,7 +672,7 @@ export class ProvisioningWorkerService {
       topologySpec: topologySnapshot.topologySpec as RangeTemplateTopologySpec,
       compiledProvisionSpec: topologySnapshot.compiledProvisionSpec,
       compiledSpec: topologySnapshot.compiledSpec as RangeTemplateCompiledSpec,
-      billingTags: { CloudAccountContextId: input.accountContext.cloudAccountContextId!, CloudAccountUid: input.accountContext.accountUid!, ExecutionBackend: 'opentofu', ...buildBillingTags({
+      billingTags: { PlatformCreateJobId: input.job.id, CloudProvider: input.accountContext.provider, CloudAccountContextId: input.accountContext.cloudAccountContextId!, CloudAccountUid: input.accountContext.accountUid!, ExecutionBackend: 'opentofu', ...buildBillingTags({
         billingScope: input.instance.ownerUserId ? 'user' : 'platform',
         ownerUserId: input.instance.ownerUserId,
         rangeInstanceId: input.instance.id,
@@ -710,7 +783,13 @@ export class ProvisioningWorkerService {
   }
 
   private async startEligiblePendingJobs() {
+    return runInSystemCloudWorkspaceScope(() => this.pollEligiblePendingJobs());
+  }
+
+  private async pollEligiblePendingJobs() {
     this.clearExpiredTaskFailures();
+    const spaces = await listExecutionCloudWorkspaces(this.systemConfigService);
+    const allowed = spaces ? new Set(spaces.map(space => space.id)) : null;
     let started = 0;
     let after: { createdAt: Date; id: string } | undefined;
     const now = new Date();
@@ -720,9 +799,10 @@ export class ProvisioningWorkerService {
       const instances = await this.adminRepository.listProvisioningInstancesByIds([...new Set(pendingJobs.map(job => job.rangeInstanceId))]);
       const instancesById = new Map(instances.map(instance => [instance.id, instance]));
       for (const job of pendingJobs) {
+        if (allowed && (!job.cloudWorkspaceId || !allowed.has(job.cloudWorkspaceId))) continue;
         if (this.failedTaskRetryAfter.has(job.id)) continue;
         const instance = instancesById.get(job.rangeInstanceId);
-        if (!instance) continue;
+        if (!instance || instance.cloudWorkspaceId !== job.cloudWorkspaceId) continue;
         if (instance.instanceMode === 'single') {
           if (this.startSingleInstanceJob(job, instance.singleInstanceBatchId ?? instance.id)) started += 1;
           continue;
@@ -756,11 +836,12 @@ export class ProvisioningWorkerService {
 
   private rangeSummaryHasIds(summary: RangeResourceSummary | null): boolean {
     return Boolean(summary && (this.rangeSummaryHasIds(summary.retiredResources ?? null) || summary.vpcId || summary.eipAllocationId
-      || ['hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
+      || ['hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','routeTableIds','subnetIds','networkAclIds','securityGroupIds','secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationIds']
         .some(field => Object.values((summary as any)[field] ?? {}).some(Boolean))));
   }
 
   private async resolveRangeAccountContext(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
+    if (!['alibaba_cloud','tencent_cloud'].includes(instance.cloudProvider)) throw new Error('This cloud provider is not enabled for range provisioning or recovery');
     const bound = instance.resourceSummary?.executionContext;
     if (this.rangeProvisioner.mode === 'dry-run') {
       if (instance.resourceSummary?.creationAttempted || bound || (instance.resourceSummary?.mode !== 'dry-run' && this.rangeSummaryHasIds(instance.resourceSummary)))
@@ -769,21 +850,22 @@ export class ProvisioningWorkerService {
     }
     if (bound) {
       const service = this.systemConfigService;
-      const context = typeof service.getAccountContextById === 'function'
-        ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
+      const context = typeof service.getExecutionAccountContext === 'function'
+        ? await service.getExecutionAccountContext({ cloudAccountContextId: bound.cloudAccountContextId }) : process.env.NODE_ENV === 'test' && typeof service.getAccountContextById === 'function' ? await service.getAccountContextById(bound.cloudAccountContextId) : await this.resolveAccountContext();
+      if (context.provider !== instance.cloudProvider || bound.provider && bound.provider !== context.provider) throw new Error('Range source cloud provider does not match the provisioner');
       if (!context.accountUidResolved || context.accountUid !== bound.cloudAccountUid || context.cloudAccountContextId !== bound.cloudAccountContextId
-        || context.defaultRegion !== bound.regionId || context.defaultZoneId !== bound.zoneId)
+        || context.defaultRegion !== bound.regionId || !bound.zoneId)
         throw new Error('Range execution account no longer matches its frozen cloud identity');
-      return context;
+      return { ...context, defaultZoneId: bound.zoneId };
     }
     if (await this.rangeHasApplyEvidence(instance, job) || ['destroy','update'].includes(this.resolveEffectiveJobType(job, instance)))
       throw new Error('Range has no verified source account binding; manual resource recovery is required');
     const context = await this.resolveAccountContext();
-    if (!context.accountUidResolved || !context.accountUid || !context.cloudAccountContextId
+    if (context.provider !== instance.cloudProvider || !context.accountUidResolved || !context.accountUid || !context.cloudAccountContextId
       || !context.accessKeyId || !context.accessKeySecret || !context.defaultRegion || !context.defaultZoneId)
       throw new Error('A verified cloud account context is required before range provisioning');
     await this.updateRangeForClaim(job, { resourceSummary: { mode: 'opentofu', creationAttempted: false,
-      executionContext: { cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     return context;
   }
@@ -796,13 +878,13 @@ export class ProvisioningWorkerService {
     if (!current || current.expiresAt && current.expiresAt <= new Date()) throw new Error('Range expired before cloud creation started');
     if (!context.cloudAccountContextId || !context.accountUid) throw new Error('Range execution account is not verified');
     await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', creationAttempted: true,
-      executionContext: { cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     signal?.throwIfAborted();
   }
 
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['retiredResources','vpcId','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
+    const inventory = Object.fromEntries(['retiredResources','vpcId','routeTableIds','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();
@@ -812,7 +894,7 @@ export class ProvisioningWorkerService {
   }
 
   private async captureRangeResources(job: ProvisionJobRecord, instance: RangeInstanceRecord,
-    input: RangeProvisionDestroyInput, context: { defaultRegion: string; accountUid: string | null; accessKeyId: string; accessKeySecret: string }) {
+    input: RangeProvisionDestroyInput, context: ResolvedProvisioningRuntimeConfig & { accountUid: string | null }) {
     input.signal?.throwIfAborted();
     if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
     const current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
@@ -833,6 +915,19 @@ export class ProvisioningWorkerService {
         (summary as any)[field] = value;
       }
     }
+    if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
+      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext) },async () => {
+        input.signal?.throwIfAborted();
+        if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
+      },async (recovered,sourceJobId) => {
+        const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
+        if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt) throw new Error('Tencent recovery has no original submitted platform job');
+        for (const field of ['natGatewayIds','eipAllocationIds'] as const) summary[field] = { ...summary[field], ...recovered[field] };
+        const saved = await this.updateRangeForClaim(job,{ resourceSummary: summary });
+        await this.recordRangeResourceInventory(job,summary);
+        await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: saved, resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid, sourceProvisionJobId: sourceJobId, billingStartAt: instance.createdAt });
+      });
+    }
     summary = await this.captureRangeDisks(job, instance, summary, context, true);
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
     await this.recordRangeResourceInventory(job, summary);
@@ -843,7 +938,7 @@ export class ProvisioningWorkerService {
   }
 
   private async captureRangeDisks(job: ProvisionJobRecord, instance: RangeInstanceRecord, summary: RangeResourceSummary,
-    context: { accessKeyId: string; accessKeySecret: string; defaultRegion: string; accountUid: string | null }, destroying: boolean) {
+    context: ResolvedProvisioningRuntimeConfig & { accountUid: string | null }, destroying: boolean) {
     if (summary.mode === 'dry-run' || !Object.keys(summary.hostIds ?? {}).length) return summary;
     const bound = summary.executionContext;
     if (!bound || !context.accountUid || bound.cloudAccountUid !== context.accountUid || bound.regionId !== context.defaultRegion)
@@ -858,7 +953,10 @@ export class ProvisioningWorkerService {
     const inventories = [];
     for (const [hostKey, instanceId] of Object.entries(summary.hostIds ?? {})) {
       if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
-      const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
+      const disks = context.provider === 'tencent_cloud' ? await readTencentAttachedDiskInventory(context as SystemCloudAccountContext, instanceId, {
+        systemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        dataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+        previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId) }, expectedTags) : await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
         endpoint: `ecs.${context.defaultRegion}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action,
         accessKeyId: context.accessKeyId, accessKeySecret: context.accessKeySecret, parameters: { RegionId: context.defaultRegion, ...parameters } }),
         instanceId, knownSystemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
@@ -875,31 +973,11 @@ export class ProvisioningWorkerService {
     return summary;
   }
 
-  private async resolveAccountContext() {
-    const service = this.systemConfigService as SystemConfigService & {
-      getAccountContext?: () => Promise<{
-        provider: 'alibaba_cloud';
-        defaultRegion: string;
-        defaultZoneId: string;
-        accessKeyId: string;
-        accessKeySecret: string;
-        accountUid: string | null;
-        accountUidResolved: boolean;
-      }>;
-    };
-
-    if (typeof service.getAccountContext === 'function') {
-      return service.getAccountContext();
-    }
-
-    const snapshot = await this.systemConfigService.getSnapshot();
-
-    return {
-      ...snapshot,
-      cloudAccountContextId: null,
-      accountUid: null,
-      accountUidResolved: false,
-    };
+  private async resolveAccountContext(): Promise<SystemCloudAccountContext> {
+    if (typeof this.systemConfigService.getExecutionAccountContext === 'function') return this.systemConfigService.getExecutionAccountContext();
+    if (process.env.NODE_ENV !== 'test') throw new Error('Provider-aware execution account resolution is required');
+    if (typeof this.systemConfigService.getAccountContext === 'function') return this.systemConfigService.getAccountContext();
+    return { ...await this.systemConfigService.getSnapshot(), cloudAccountContextId: null, accountUid: null, accountUidResolved: false };
   }
 
   private async shouldAllowTemplateFallback(
@@ -939,15 +1017,21 @@ export class ProvisioningWorkerService {
   }
 
   private async dispatchSingleInstanceJob(jobId: string) {
+    return runInSystemCloudWorkspaceScope(() => this.dispatchPendingSingleInstanceJob(jobId));
+  }
+
+  private async dispatchPendingSingleInstanceJob(jobId: string) {
     const job = await this.adminRepository.getProvisionJobById(jobId);
 
     if (!job || job.status !== 'pending') {
       return;
     }
+    const spaces = await listExecutionCloudWorkspaces(this.systemConfigService);
+    if (spaces && !spaces.some(space => space.id === job.cloudWorkspaceId)) return;
 
     const instance = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
 
-    if (!instance || instance.instanceMode !== 'single') {
+    if (!instance || instance.instanceMode !== 'single' || instance.cloudWorkspaceId !== job.cloudWorkspaceId) {
       return;
     }
 
@@ -1095,6 +1179,7 @@ export class ProvisioningWorkerService {
     const candidateInstances = group.instances.filter((instance) => (instance.status === targetStatus
       || input.instance.singleInstanceConfig?.executionBackend === 'opentofu' && input.effectiveJobType === 'create' && ['creating', 'running'].includes(instance.status))
       && instance.ownerUserId === input.instance.ownerUserId
+      && instance.cloudWorkspaceId === input.instance.cloudWorkspaceId
       && JSON.stringify([instance.singleInstanceConfig?.cloudAccountUid,instance.singleInstanceConfig?.cloudAccountContextId,instance.singleInstanceConfig?.regionId,instance.singleInstanceConfig?.networkProfileId,instance.singleInstanceConfig?.executionBackend])
         === JSON.stringify([input.instance.singleInstanceConfig?.cloudAccountUid,input.instance.singleInstanceConfig?.cloudAccountContextId,input.instance.singleInstanceConfig?.regionId,input.instance.singleInstanceConfig?.networkProfileId,input.instance.singleInstanceConfig?.executionBackend]));
     const jobsById = new Map(
@@ -1112,7 +1197,7 @@ export class ProvisioningWorkerService {
     const groupedItems = candidateInstances.flatMap((instance) => {
       const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
 
-      if (!job || job.rangeInstanceId !== instance.id || job.status !== 'pending'
+      if (!job || job.cloudWorkspaceId !== instance.cloudWorkspaceId || job.rangeInstanceId !== instance.id || job.status !== 'pending'
         || this.resolveEffectiveJobType(job, instance) !== input.effectiveJobType) {
         return [];
       }
@@ -1158,6 +1243,11 @@ export class ProvisioningWorkerService {
     }
 
     return job.jobType;
+  }
+
+  private executionSource(instance: RangeInstanceRecord) {
+    return { provider: instance.cloudProvider,
+      accountUid: instance.singleInstanceConfig?.cloudAccountUid ?? instance.resourceSummary?.executionContext?.cloudAccountUid };
   }
 
   private getCompiledTopologySpec(
@@ -1377,11 +1467,16 @@ export class ProvisioningWorkerService {
       accessKeyId: string;
       accessKeySecret: string;
       defaultRegion: string;
+      provider?: 'alibaba_cloud' | 'tencent_cloud';
+      accountUid?: string | null;
+      cloudAccountContextId?: string | null;
     },
   ) {
+    const summary = instance.cloudProvider === 'tencent_cloud'
+      ? await this.tencentCleanupLedgerInventory(instance,runtimeConfig as SystemCloudAccountContext) : instance.resourceSummary;
     for (let attempt = 0; attempt < DESTROY_VERIFICATION_ATTEMPTS; attempt += 1) {
       const residualResources = await this.findResidualCloudResources(
-        instance.resourceSummary,
+        summary,
         runtimeConfig,
       );
 
@@ -1400,18 +1495,60 @@ export class ProvisioningWorkerService {
     }
   }
 
+  private async tencentCleanupLedgerInventory(instance: RangeInstanceRecord, account: SystemCloudAccountContext): Promise<RangeResourceSummary> {
+    const bound = instance.resourceSummary?.executionContext;
+    if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || !bound || bound.provider && bound.provider !== account.provider
+      || bound.cloudAccountContextId !== account.cloudAccountContextId || bound.cloudAccountUid !== account.accountUid || bound.regionId !== account.defaultRegion || bound.zoneId !== account.defaultZoneId)
+      throw new Error('Tencent cleanup ledger verification requires the original frozen account context');
+    const summary: RangeResourceSummary = { ...instance.resourceSummary!, hostIds: { ...instance.resourceSummary?.hostIds },
+      dataDiskIds: { ...instance.resourceSummary?.dataDiskIds }, eipAllocationIds: { ...instance.resourceSummary?.eipAllocationIds }, natGatewayIds: { ...instance.resourceSummary?.natGatewayIds } };
+    const ledger = await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+    for (const row of ledger.filter(row => !row.releasedAt && !['image','snapshot'].includes(row.cloudResourceType))) {
+      if (row.rangeInstanceId !== instance.id || row.cloudProvider !== account.provider || row.cloudAccountUid !== account.accountUid || row.regionId !== bound.regionId || row.ownerUserId !== instance.ownerUserId)
+        throw new Error('Tencent cleanup ledger contains an unverified owner or source account');
+      const fields = { ecs: 'hostIds', disk: 'dataDiskIds', eip: 'eipAllocationIds', nat_gateway: 'natGatewayIds' } as const;
+      if (row.cloudResourceType === 'snat_entry' || row.cloudResourceType === 'dnat_entry') continue;
+      const field = fields[row.cloudResourceType as keyof typeof fields];
+      if (!field) throw new Error('Tencent cleanup cannot release an unsupported billable resource type');
+      summary[field]![`ledger:${row.id}`] = row.cloudResourceId;
+    }
+    return summary;
+  }
+
+  private async findTencentResidualResources(summary: RangeResourceSummary, account: SystemCloudAccountContext): Promise<string[]> {
+    const bound = summary.executionContext;
+    if (!bound || bound.provider && bound.provider !== 'tencent_cloud' || account.provider !== 'tencent_cloud' || !account.accountUidResolved || bound.cloudAccountUid !== account.accountUid || bound.cloudAccountContextId !== account.cloudAccountContextId || bound.regionId !== account.defaultRegion) throw new Error('Tencent cleanup requires the exact frozen execution identity');
+    if (summary.retiredResources && !summary.retiredResources.executionContext) throw new Error('Tencent retired cleanup requires its original frozen execution identity');
+    const ids: Array<['ecs'|'disk'|'vpc'|'vswitch'|'security_group'|'network_acl'|'eni'|'nat'|'eip',string[]]> = [
+      ['ecs',Object.values(summary.hostIds ?? {})], ['disk',inventoryDiskIds(summary)], ['vpc',summary.vpcId ? [summary.vpcId] : []],
+      ['vswitch',Object.values(summary.subnetIds ?? {})], ['security_group',Object.values(summary.securityGroupIds ?? {})], ['network_acl',Object.values(summary.networkAclIds ?? {})],
+      ['eni',Object.values(summary.secondaryNetworkInterfaceIds ?? {})], ['nat',Object.values(summary.natGatewayIds ?? {})],
+      ['eip',[summary.eipAllocationId,...Object.values(summary.eipAllocationIds ?? {})].filter((id): id is string => Boolean(id))],
+    ];
+    const results = await Promise.allSettled(ids.filter(([,values]) => values.length).map(async ([kind,values]) => (await describeTencentResourceInventory(account,kind,{ ids: [...new Set(values)] })).map(resource => `${kind}:${resource.id}`)));
+    const failed = results.find((value): value is PromiseRejectedResult => value.status === 'rejected');
+    if (failed) throw failed.reason;
+    const residual = results.flatMap(value => value.status === 'fulfilled' ? value.value : []);
+    if (summary.retiredResources) residual.push(...await this.findTencentResidualResources({ ...summary.retiredResources, retiredResources: null },account));
+    return residual;
+  }
+
   private async findResidualCloudResources(
     resourceSummary: RangeResourceSummary | null,
     runtimeConfig: {
       accessKeyId: string;
       accessKeySecret: string;
       defaultRegion: string;
+      provider?: 'alibaba_cloud' | 'tencent_cloud';
+      accountUid?: string | null;
+      cloudAccountContextId?: string | null;
     },
   ) {
     if (!resourceSummary || resourceSummary.mode === 'dry-run') {
       return [];
     }
 
+    if ('provider' in runtimeConfig && runtimeConfig.provider === 'tencent_cloud') return this.findTencentResidualResources(resourceSummary, runtimeConfig as SystemCloudAccountContext);
     const regionId = runtimeConfig.defaultRegion;
     const residualResources: string[] = [];
 

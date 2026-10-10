@@ -25,6 +25,9 @@ import {
   validateAndSaveRangeTemplate,
 } from '../../../lib/admin-api';
 import { useAdminScreenCache } from '../../../lib/admin-screen-cache';
+import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
+import { readCloudWorkspaceSelection, workspaceStorageKey } from '../../../lib/cloud-workspace-selection';
+import { useCloudWorkspace } from '../cloud-workspace-provider';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset, RangeTemplate } from '../../../lib/admin-types';
 import { resolvePreferredInstanceTypes } from '../../../lib/instance-type-catalog';
 import {
@@ -125,8 +128,14 @@ const TemplatePropertyPanel = dynamic(
 
 function applyEconomyInstanceType(
   node: Pick<EcsTemplateNode, 'cpu' | 'memory' | 'instanceType' | 'instanceTypeStrategy'>,
-  options?: { preserveExisting?: boolean },
+  options?: { preserveExisting?: boolean; provider?: 'alibaba_cloud' | 'tencent_cloud' },
 ): Pick<EcsTemplateNode, 'instanceType' | 'instanceTypeStrategy'> {
+  if (options?.provider === 'tencent_cloud') {
+    const configured = readConfiguredInstanceType(node.instanceTypeStrategy.instanceType) ?? readConfiguredInstanceType(node.instanceType);
+    return options.preserveExisting && configured && !configured.startsWith('ecs.')
+      ? { instanceType: configured, instanceTypeStrategy: { mode: 'fixed', instanceType: configured } }
+      : { instanceType: undefined, instanceTypeStrategy: { mode: 'auto', preferredInstanceTypes: [] } };
+  }
   const preferredInstanceTypes = resolvePreferredInstanceTypes(node.cpu, node.memory);
   const instanceType = preferredInstanceTypes[0];
   const configuredInstanceType =
@@ -193,7 +202,7 @@ function readTopologyCacheKey(template: RangeTemplate | null | undefined, fallba
     return null;
   }
 
-  return `${TOPOLOGY_CACHE_PREFIX}:${resolvedTemplateId}:${revision}`;
+  return workspaceStorageKey(`${TOPOLOGY_CACHE_PREFIX}:${resolvedTemplateId}:${revision}`);
 }
 
 function readTopologyGraphFromCache(
@@ -413,6 +422,7 @@ function createDefaultEcsNode(
   privateIp: string,
   exposePublic: boolean,
   ordinal: number,
+  provider: 'alibaba_cloud' | 'tencent_cloud' = 'alibaba_cloud',
 ): EcsTemplateNode {
   return {
     id,
@@ -457,7 +467,7 @@ function createDefaultEcsNode(
         mode: 'auto',
         preferredInstanceTypes: [],
       },
-    }),
+    }, { provider }),
   };
 }
 
@@ -760,15 +770,19 @@ function readPublishErrorMessage(error: unknown) {
   return '编排发布失败，请检查拓扑与编译结果';
 }
 
-function buildScenarioTemplateMetadata(template: RangeTemplate): TemplateAuthoringMetadata {
+function buildScenarioTemplateMetadata(template: RangeTemplate, provider: 'alibaba_cloud' | 'tencent_cloud'): TemplateAuthoringMetadata {
   return {
     name: template.name ?? template.slug,
     slug: template.slug,
     version: 'v1',
-    cloudProvider: 'alibaba_cloud',
-    iacType: 'opentofu',
-    modulePathOrRef: TEMPLATE_MODULE_PATH,
+    cloudProvider: template.cloudProvider ?? template.scenarioTemplateSpec?.metadata.cloudProvider ?? provider,
+    iacType: template.iacType ?? 'opentofu',
+    modulePathOrRef: (template.cloudProvider ?? provider) === 'tencent_cloud' ? 'infra/opentofu/modules/tencentcloud-enterprise-range' : TEMPLATE_MODULE_PATH,
   };
+}
+
+function templateProvider(template: RangeTemplate | null | undefined, provider?: 'alibaba_cloud' | 'tencent_cloud'): 'alibaba_cloud' | 'tencent_cloud' {
+  return template?.cloudProvider ?? template?.scenarioTemplateSpec?.metadata.cloudProvider ?? provider ?? 'alibaba_cloud';
 }
 
 function createNewTemplateDraftId() {
@@ -784,7 +798,7 @@ function readNewTemplateSession(): NewTemplateDraft {
 
   if (typeof window !== 'undefined') {
     try {
-      seed = JSON.parse(window.sessionStorage.getItem(NEW_TEMPLATE_SESSION_KEY) ?? '{}') as typeof seed;
+      seed = JSON.parse(window.sessionStorage.getItem(workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY)) ?? '{}') as typeof seed;
     } catch {
       seed = {};
     }
@@ -797,7 +811,7 @@ function readNewTemplateSession(): NewTemplateDraft {
 
   if (typeof window !== 'undefined' && seed.draftId !== draftId) {
     window.sessionStorage.setItem(
-      NEW_TEMPLATE_SESSION_KEY,
+      workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY),
       JSON.stringify({ ...seed, draftId }),
     );
   }
@@ -971,6 +985,7 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
         typeof candidateRecord.privateIp === 'string' ? candidateRecord.privateIp : '',
         typeof candidateRecord.exposePublic === 'boolean' ? candidateRecord.exposePublic : false,
         kindOrdinal,
+        template?.cloudProvider ?? template?.scenarioTemplateSpec?.metadata.cloudProvider ?? 'alibaba_cloud',
       );
 
       return {
@@ -1078,6 +1093,8 @@ export function TemplateEditorScreen({
   template: providedTemplate,
 }: TemplateEditorScreenProps) {
   const session = useAdminSession();
+  const workspace = useCloudWorkspace()?.workspace;
+  const canEdit = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const router = useRouter();
   const screenCache = useAdminScreenCache();
   const [template, setTemplate] = useState<RangeTemplate | null>(() =>
@@ -1117,6 +1134,8 @@ export function TemplateEditorScreen({
   }
 
   const [, setHistoryState] = useState<TopologyHistory>(historyRef.current);
+
+  function currentProvider() { return templateProvider(template ?? providedTemplate, workspace?.provider); }
 
   function applyTemplateState(nextTemplate: RangeTemplate | null) {
     const nextNodes = readNodesFromTemplate(nextTemplate, templateId);
@@ -1165,9 +1184,7 @@ export function TemplateEditorScreen({
             ...(node.nics?.[0]?.switchId && switchById.has(node.nics[0].switchId)
               ? { zoneKey: switchById.get(node.nics[0].switchId)!.zoneKey }
               : {}),
-            ...applyEconomyInstanceType(node, {
-              preserveExisting: true,
-            }),
+            ...(currentProvider() === 'tencent_cloud' ? {} : applyEconomyInstanceType(node, { preserveExisting: true })),
           }
         : node,
     );
@@ -1314,7 +1331,7 @@ export function TemplateEditorScreen({
 
     return buildTopologyDraftPayload({
       graph: topologyGraph,
-      metadata: buildScenarioTemplateMetadata(currentTemplate),
+      metadata: buildScenarioTemplateMetadata(currentTemplate, currentProvider()),
       viewport: currentViewport,
     });
   }
@@ -1398,7 +1415,7 @@ export function TemplateEditorScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, session.isReady, session.token]);
+  }, [apiBaseUrl, session.isReady, session.token, workspace?.id]);
 
   const selectedNode = useMemo(
     () =>
@@ -1465,7 +1482,7 @@ export function TemplateEditorScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, selectedEcsNode, session.isReady, session.token]);
+  }, [apiBaseUrl, selectedEcsNode, session.isReady, session.token, workspace?.id]);
 
   useEffect(() => {
     if (!topologyCacheKey || !template) {
@@ -1608,6 +1625,7 @@ export function TemplateEditorScreen({
               '',
               false,
               kindCount,
+              currentProvider(),
             );
     const nextPosition =
       position && Number.isFinite(position.x) && Number.isFinite(position.y)
@@ -1644,7 +1662,7 @@ export function TemplateEditorScreen({
         zoneKey: primarySwitch?.kind === 'switch' ? primarySwitch.zoneKey : nextNode.zoneKey,
         privateIp: primaryPrivateIp,
         ...applyEconomyInstanceType(nextNode, {
-          preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory,
+          preserveExisting: node.cpu === nextNode.cpu && node.memory === nextNode.memory, provider: currentProvider(),
         }),
       };
     });
@@ -1810,7 +1828,7 @@ export function TemplateEditorScreen({
   }
 
   async function handleDetectTopology() {
-    if (!template || !session.token || isSubmitting) {
+    if (!canEdit || !template || !session.token || isSubmitting) {
       return;
     }
 
@@ -1822,11 +1840,30 @@ export function TemplateEditorScreen({
     }
 
     let payload: ReturnType<typeof buildValidatedDraftPayload>;
-
+    setIsSubmitting(true);
+    const sourceWorkspaceId = workspace?.id;
     try {
-      payload = buildValidatedDraftPayload(template, nodes, edges, viewport);
+      let validatedNodes = nodes;
+      if (currentProvider() === 'tencent_cloud') {
+        validatedNodes = await Promise.all(nodes.map(async node => {
+          if (node.kind !== 'ecs') return node;
+          const image = platformImageAssets.find(asset => asset.id === node.platformImageAssetId && asset.imageId === node.imageId);
+          if (!image) throw new Error(`${node.label} 请选择当前工作空间的可用镜像。`);
+          const imageError = tencentImageError(image);
+          if (imageError) throw new Error(`${node.label} ${imageError}`);
+          const cpu = Number(node.cpu);
+          const memory = Number(node.memory);
+          if (!Number.isInteger(cpu) || cpu <= 0 || !Number.isInteger(memory) || memory <= 0) throw new Error(`${node.label} 请填写有效的 CPU 和内存规格。`);
+          const snapshot = await fetchInstanceTypeAvailability(apiBaseUrl, session.token!, cpu, memory);
+          const instanceTypes = verifiedTencentInstanceTypes(snapshot, cpu, memory);
+          return { ...node, instanceType: instanceTypes[0], instanceTypeStrategy: { mode: 'prefer-list' as const, preferredInstanceTypes: instanceTypes } };
+        }));
+      }
+      if (sourceWorkspaceId && readCloudWorkspaceSelection() !== sourceWorkspaceId) throw new Error('云账号工作空间已切换，请在当前空间重新检测。');
+      payload = buildValidatedDraftPayload(template, validatedNodes, edges, viewport);
     } catch (error) {
       setStatusMessage(readPersistTopologyErrorMessage(error));
+      setIsSubmitting(false);
       return;
     }
 
@@ -1852,7 +1889,7 @@ export function TemplateEditorScreen({
       }
 
       if (template.id === 'new' && typeof window !== 'undefined') {
-        window.sessionStorage.removeItem(NEW_TEMPLATE_SESSION_KEY);
+        window.sessionStorage.removeItem(workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY));
       }
 
       applyTemplateState(nextTemplate);
@@ -1870,7 +1907,7 @@ export function TemplateEditorScreen({
   }
 
   async function handlePublishTemplate() {
-    if (!template || !session.token || isSubmitting) {
+    if (!canEdit || !template || !session.token || isSubmitting) {
       return;
     }
 
@@ -1961,7 +1998,7 @@ export function TemplateEditorScreen({
         <div className="template-editor-toolbar-actions">
           <Button
             className="border border-destructive/40 bg-card hover:bg-destructive/10 hover:text-destructive"
-            disabled={(selection.nodeIds.length === 0 && selection.edgeIds.length === 0) || isSubmitting}
+            disabled={!canEdit || (selection.nodeIds.length === 0 && selection.edgeIds.length === 0) || isSubmitting}
             onClick={handleDeleteSelection}
             size="sm"
             type="button"
@@ -1970,7 +2007,7 @@ export function TemplateEditorScreen({
             删除选中
           </Button>
           <Button
-            disabled={isSubmitting}
+            disabled={!canEdit || isSubmitting}
             onClick={() => void handleDetectTopology()}
             size="sm"
             type="button"
@@ -1979,7 +2016,7 @@ export function TemplateEditorScreen({
             检测与保存
           </Button>
           <Button
-            disabled={isSubmitting}
+            disabled={!canEdit || isSubmitting}
             onClick={() => void handlePublishTemplate()}
             size="sm"
             type="button"
@@ -1991,6 +2028,7 @@ export function TemplateEditorScreen({
 
       <div className="template-editor-grid">
         <TopologyFlowCanvas
+          mode={canEdit ? 'edit' : 'readonly'}
           nodes={nodes}
           edges={edges}
           viewport={viewport}
@@ -2008,6 +2046,7 @@ export function TemplateEditorScreen({
         />
         {selectedNode && isPropertyPanelOpen ? (
           <TemplatePropertyPanel
+            readOnly={!canEdit}
             selectedNode={selectedNode}
             allNodes={nodes}
             platformImageAssets={platformImageAssets}

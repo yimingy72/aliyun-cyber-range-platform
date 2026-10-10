@@ -5,7 +5,7 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { createProvenBillingLedger } from './support/create-billing-fixture';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
-const billingConfigService = { getAccountContext: jest.fn(async () => ({ accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' })) } as unknown as SystemConfigService;
+const billingConfigService = { getAccountContext: jest.fn(async () => ({ provider: 'alibaba_cloud', accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' })) } as unknown as SystemConfigService;
 
 describe('BillingSyncService', () => {
   afterEach(() => jest.useRealTimers());
@@ -495,7 +495,7 @@ describe('BillingSyncService', () => {
   it('does not infer platform creation from tags or a configured shared OSS bucket', async () => {
     const repository = createMemoryAdminRepository();
     const systemConfigService = {
-      getAccountContext: jest.fn().mockResolvedValue({ accountUid: '1234567890', accountUidResolved: true,
+      getAccountContext: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', accountUid: '1234567890', accountUidResolved: true,
         defaultRegion: 'cn-hangzhou',
         imageImportBucket: 'wzxy-shootingrange',
       }),

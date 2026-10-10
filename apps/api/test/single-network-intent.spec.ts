@@ -57,7 +57,7 @@ describe('shared network durable apply intent', () => {
     };
     (bootstrap as any).runner = runner;
     service = new SingleInstanceNetworkService(repository, {
-      getAccountContext: async () => account, getAccountContextById: async () => account,
+      getExecutionAccountContext: async () => account, getAccountContext: async () => account, getAccountContextById: async () => account,
     } as any, bootstrap, cidr, { assertNetworkUnused: async () => undefined } as any);
   });
   afterEach(async () => { jest.restoreAllMocks(); await fs.rm(root, { recursive: true, force: true }); });

@@ -157,6 +157,7 @@ const {
   replaceMock,
   routerMock,
   sessionState,
+  workspaceState,
 } = vi.hoisted(() => {
   const pushMock = vi.fn();
   const replaceMock = vi.fn();
@@ -179,6 +180,7 @@ const {
       replace: replaceMock,
     },
     sessionState: { token: 'dev-admin-token', profile: { id: 'admin', username: 'admin', role: 'admin' as 'admin' | 'user' } },
+    workspaceState: { workspace: undefined as undefined | { id: string; provider: string; isReadOnly: boolean; capabilities: { provisioning: boolean; rangeProvisioning: boolean } } },
   };
 });
 
@@ -215,6 +217,10 @@ vi.mock('./use-admin-session', () => ({
   }),
 }));
 
+vi.mock('./cloud-workspace-provider', () => ({
+  useCloudWorkspace: () => workspaceState,
+}));
+
 vi.mock('./template-editor/topology-flow-canvas', () => ({
   TopologyFlowCanvas: TopologyFlowCanvasMock,
 }));
@@ -225,6 +231,7 @@ import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 describe('RangeInstanceDetailScreen', () => {
   beforeEach(() => {
+    workspaceState.workspace = undefined;
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     sessionState.token = 'dev-admin-token';
     sessionState.profile = { id: 'admin', username: 'admin', role: 'admin' };
@@ -296,6 +303,19 @@ describe('RangeInstanceDetailScreen', () => {
     rerender(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
     await waitFor(() => expect(fetchRangeInstanceDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'renewed-token', 'range-1'));
     expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('4');
+  });
+
+  it('keeps draft editing available while the workspace blocks resource apply', async () => {
+    workspaceState.workspace = { id: 'tencent-space', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: false } };
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph() });
+    applyRangeInstanceDraftMock.mockClear();
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    const applyButton = await screen.findByRole('button', { name: '应用变更' });
+    expect((applyButton as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '保存草稿' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(applyButton);
+    expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
   });
 
   it.each(['succeeded', 'failed'])('tracks apply through %s and refreshes the runtime snapshot', async (status) => {
@@ -371,7 +391,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     expect((await screen.findAllByText('实例名')).length).toBeGreaterThan(0);
     expect(screen.getByRole('heading', { name: '实例详情' })).toBeTruthy();
-    expect(screen.getByRole('tablist', { name: '实例详情视图切换' })).toBeTruthy();
+    expect(await screen.findByRole('tablist', { name: '实例详情视图切换' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '节点目录' })).toBeTruthy();
     expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '打开VNC' })).toBeTruthy();

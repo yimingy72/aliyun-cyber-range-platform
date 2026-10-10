@@ -2,8 +2,8 @@ import { IsIn, IsString, Matches, NotEquals, ValidateIf } from 'class-validator'
 
 export class UpdateSystemCloudConfigDto {
   @ValidateIf((_object, value) => value !== undefined)
-  @IsIn(['alibaba_cloud'])
-  provider?: 'alibaba_cloud';
+  @IsIn(['alibaba_cloud', 'tencent_cloud'])
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
 
   @ValidateIf((_object, value) => value !== undefined)
   @IsString()

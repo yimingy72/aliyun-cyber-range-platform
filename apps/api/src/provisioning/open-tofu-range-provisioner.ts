@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from './opentofu-state-evidence';
+import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, fileExists } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { requestTencentCloud } from '../admin/tencent-cloud-client';
 
 import {
   OpenTofuRunner,
@@ -13,6 +14,7 @@ import {
   type OpenTofuPlanOptions,
   type OpenTofuValidateOptions,
   type OpenTofuShowPlanOptions,
+  type OpenTofuImportOptions,
   type OpenTofuWorkspaceCommandOptions,
 } from '@aliyun-cyber-range/iac-runner';
 
@@ -25,6 +27,10 @@ import type {
 } from '../admin/admin.repository';
 import { selectZoneAndHostInstanceTypes } from './aliyun-zone-instance-scheduler';
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
+import { describeTencentResourceInventory } from '../admin/tencent-cloud-resources';
+import type { SystemCloudAccountContext } from '../admin/system-config.service';
+import { renderTencentRangeVariables } from './renderers/tencent-cloud-range-renderer';
+import { selectTencentHostInstanceTypes, assertTencentImagesAvailable } from './tencent-cloud-zone-instance-scheduler';
 import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
 import { resolvePreferredInstanceTypes } from './instance-type-catalog';
 import { AlibabaCloudOpenTofuRenderer } from './renderers/alibaba-cloud-opentofu-renderer';
@@ -43,6 +49,10 @@ import {
 type OpenTofuProvisionerEnv = Partial<
   Pick<
     NodeJS.ProcessEnv,
+    | 'TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED'
+    | 'TENCENTCLOUD_PROVIDER_ZIP_PATH'
+    | 'TENCENTCLOUD_PROVIDER_UNPACKED_MIRROR_ROOT'
+    | 'TENCENTCLOUD_SYSTEM_DISK_TYPE'
     | 'ALICLOUD_ACCESS_KEY'
     | 'ALICLOUD_SECRET_KEY'
     | 'ALICLOUD_REGION'
@@ -92,6 +102,7 @@ type OpenTofuOutputs = {
   }>;
   resource_summary?: OpenTofuOutputValue<{
     vpc_id?: string;
+    route_table_ids?: Record<string, string>;
     subnet_ids?: Record<string, string>;
     network_acl_ids?: Record<string, string>;
     security_group_ids?: Record<string, string>;
@@ -124,6 +135,7 @@ type OpenTofuRunnerLike = {
   apply(options: OpenTofuApplyOptions): Promise<OpenTofuCommandResult>;
   output<T>(options: OpenTofuWorkspaceCommandOptions): Promise<T>;
   destroy(options: OpenTofuDestroyOptions): Promise<OpenTofuCommandResult>;
+  importResource?(options: OpenTofuImportOptions): Promise<OpenTofuCommandResult>;
   showPlan<T>(options: OpenTofuShowPlanOptions): Promise<T>;
 };
 
@@ -293,6 +305,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   }
 
   async create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult> {
+    if (input.runtimeConfig?.provider === 'tencent_cloud' && input.instanceMode === 'single') throw new Error('Tencent single instances must use the frozen batch executor');
     const plan =
       input.instanceMode === 'single'
         ? null
@@ -351,7 +364,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await runProvisionStep(input.reportStep, 'tofu_apply', async () => {
       const planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir,
         signal: input.signal, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
-      await recordApplyPlan(workspace.workspaceDir, planned);
+      await recordApplyPlan(workspace.workspaceDir, planned,input.billingTags?.PlatformCreateJobId);
       await input.onApplyStart?.();
       const command = await this.runner.apply({
         workspaceDir: workspace.workspaceDir,
@@ -413,13 +426,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     };
     if (resourceSummary?.vpc_id && stateResources?.vpcId && resourceSummary.vpc_id !== stateResources.vpcId)
       throw new Error('OpenTofu outputs conflict with persisted VPC identity');
+    const routeTableIds = mergeIds(resourceSummary?.route_table_ids, stateResources?.routeTableIds);
 
     return {
       accessEntry: {
         hostRole: publicEntry?.host_role ?? 'dmz',
         publicIp: publicEntry?.public_ip ?? null,
         privateIp: publicEntry?.private_ip ?? null,
-        ssh: publicEntry?.ssh ?? null,
+        ssh: input.runtimeConfig?.provider === 'tencent_cloud' && input.runtimeCredentials?.[publicEntry?.host_role ?? '']?.username === 'Administrator' ? null : publicEntry?.ssh ?? null,
         ...(publicEntry?.url ? { url: publicEntry.url } : {}),
       },
       resourceSummary: {
@@ -427,6 +441,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         workspaceDir: workspace.workspaceDir,
         outputFilePath: workspace.outputsFilePath,
         vpcId: stateResources?.vpcId ?? resourceSummary?.vpc_id ?? null,
+        ...(routeTableIds ? { routeTableIds } : {}),
         subnetIds: mergeIds(resourceSummary?.subnet_ids, stateResources?.subnetIds),
         networkAclIds: mergeIds(resourceSummary?.network_acl_ids, stateResources?.networkAclIds),
         securityGroupIds: mergeIds(resourceSummary?.security_group_ids, stateResources?.securityGroupIds),
@@ -496,7 +511,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         varsFilePath: workspace.varsFilePath,
       });
 
-      await assertDestroyComplete(workspace.workspaceDir, priorState, unresolvedApply);
+      const absenceProof = input.runtimeConfig?.provider === 'tencent_cloud'
+        ? await this.readTencentAbsenceProof(workspace.workspaceDir,input,priorState) : false;
+      await assertDestroyComplete(workspace.workspaceDir, priorState, unresolvedApply && !absenceProof);
+      await fs.rm(path.join(workspace.workspaceDir,'.tencent-apply-absence-proved.json'),{force:true});
       return {
         result: command,
         message: 'OpenTofu destroy completed.',
@@ -506,18 +524,196 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
   }
 
+  async recoverUntrackedResources(input: RangeProvisionDestroyInput, assertCurrent: () => Promise<void>, persist: (summary: RangeResourceSummary, sourceProvisionJobId: string) => Promise<void>) {
+    if (input.runtimeConfig?.provider !== 'tencent_cloud') return;
+    const account = input.runtimeConfig as SystemCloudAccountContext;
+    const dir = path.join(this.workspacesRootDir,input.rangeInstanceId);
+    const pending = await readPendingApplyEvidence(dir);
+    if (!pending) return;
+    await this.assertTencentWorkspaceIdentity(dir,input);
+    const state = await readWorkspaceState(dir,true);
+    if (!state || !pending.sourceProvisionJobId || !pending.submittedAt || !Number.isFinite(Date.parse(pending.submittedAt))) throw new Error('Tencent recovery requires the original durable submission and state lineage');
+    const variables = JSON.parse(await fs.readFile(path.join(dir,'range.auto.tfvars.json'),'utf8'));
+    const tags = variables.tags as Record<string,string>;
+    if (!tags || tags.PlatformCreateJobId !== pending.sourceProvisionJobId || tags.CloudAccountContextId !== account.cloudAccountContextId || tags.CloudAccountUid !== account.accountUid || tags.RangeInstanceId !== input.rangeInstanceId) throw new Error('Tencent recovery intent differs from its original source job');
+    const vpc = state.instances.find(resource => resource.type === 'tencentcloud_vpc');
+    const originalVpcId = vpc ? String(vpc.attributes.id) : input.knownResourceSummary?.vpcId;
+    if (!originalVpcId) throw new Error('Tencent recovery cannot adopt a network without its original persisted VPC identity');
+    const ownedVpcs = await describeTencentResourceInventory(account,'vpc',{ ids: [originalVpcId] });
+    if (!ownedVpcs.length) {
+      await this.proveTencentUnknownApplyAbsent(input,dir,pending,state,tags,originalVpcId,assertCurrent);
+      return;
+    }
+    if (!vpc) throw new Error('Tencent recovery cannot adopt a network without its original persisted VPC identity');
+    const tagKeys = ['CloudProvider','PlatformManaged','CreatedBy','PlatformScope','PlatformUserId','CloudAccountUid','CloudAccountContextId','RangeInstanceId','PlatformCreateJobId'];
+    const owns = (actual: Record<string,string>) => tagKeys.every(key => tags[key] === undefined ? actual[key] === undefined : actual[key] === tags[key]);
+    if (ownedVpcs.length !== 1 || !owns(ownedVpcs[0].tags)) throw new Error('Tencent recovery VPC ownership cannot be independently verified');
+    const expected = [
+      ...variables.eips.map((value: any) => ({ kind: 'eip' as const, type: 'tencentcloud_eip', name: 'range', value })),
+      ...variables.nat_gateways.map((value: any) => ({ kind: 'nat' as const, type: 'tencentcloud_nat_gateway', name: 'shared', value })),
+    ];
+    const missing = expected.filter(entry => {
+      const address = `module.range.${entry.type}.${entry.name}[${JSON.stringify(entry.value.key)}]`;
+      return pending.createAddresses.includes(address) && !state.instances.some(resource => resource.address === address);
+    });
+    if (!missing.length) return;
+    if (!this.runner.importResource) throw new Error('Tencent recovery requires fenced OpenTofu state import support');
+    const allEipIds = state.instances.filter(resource => resource.type === 'tencentcloud_eip').map(resource => String(resource.attributes.id));
+    const eips = allEipIds.length ? await describeTencentResourceInventory(account,'eip',{ ids: allEipIds }) : [];
+    const recovered: Array<{ address: string; id: string; field: 'eipAllocationIds'|'natGatewayIds'; key: string }> = [];
+    for (const entry of missing) {
+      await assertCurrent(); input.signal?.throwIfAborted();
+      const intent = entry.value.creation_intent_id;
+      if (typeof intent !== 'string' || !/^[a-f0-9]{32}$/.test(intent)) throw new Error('Tencent recovery has no exact atomic creation nonce');
+      const candidates = await describeTencentResourceInventory(account,entry.kind,{ tags: { RangeInstanceId: input.rangeInstanceId, CreationIntentId: intent }, ...(entry.kind === 'nat' ? { vpcId: ownedVpcs[0].id } : {}) });
+      const candidate = candidates[0];
+      const expectedName = `${variables.resource_name_prefix}-${intent.slice(0,16)}`;
+      if (candidates.length !== 1 || !candidate || !owns(candidate.tags) || candidate.tags.CreationIntentId !== intent || candidate.name !== expectedName) throw new Error('Tencent submitted resource has no unique independently proven recovery match');
+      if (entry.kind === 'eip') {
+        if (!candidate.publicIp || candidate.bandwidth !== entry.value.bandwidth) throw new Error('Tencent EIP recovery does not match its frozen allocation');
+        eips.push(candidate);
+      } else {
+        const expectedAddresses = eips.filter(eip => owns(eip.tags)).map(eip => eip.publicIp).filter(Boolean);
+        if (candidate.vpcId !== ownedVpcs[0].id || candidate.natProductVersion !== 2 || candidate.bandwidth !== 5000 || candidate.maxConcurrent !== 2000000 || !Array.isArray(candidate.publicIpAddresses) || !expectedAddresses.length || candidate.publicIpAddresses.length !== expectedAddresses.length || candidate.publicIpAddresses.some(ip => !expectedAddresses.includes(ip))) throw new Error('Tencent NAT recovery does not match its original VPC, EIPs and specifications');
+      }
+      recovered.push({ address: `module.range.${entry.type}.${entry.name}[${JSON.stringify(entry.value.key)}]`, id: candidate.id, key: entry.value.key, field: entry.kind === 'nat' ? 'natGatewayIds' : 'eipAllocationIds' });
+    }
+    const summary: RangeResourceSummary = { mode: 'opentofu', natGatewayIds: {}, eipAllocationIds: {} };
+    for (const entry of recovered) summary[entry.field]![entry.key] = entry.id;
+    await assertCurrent();
+    await persist(summary,pending.sourceProvisionJobId);
+    const env = await this.buildRunnerEnv(account);
+    await this.runner.init({ workspaceDir: dir, env, signal: input.signal, upgrade: true });
+    for (const entry of recovered) {
+      await assertCurrent(); input.signal?.throwIfAborted();
+      await this.runner.importResource({ workspaceDir: dir, env, signal: input.signal, varsFilePath: path.join(dir,'range.auto.tfvars.json'), address: entry.address, resourceId: entry.id });
+      const imported = await readWorkspaceState(dir,true);
+      if (imported?.lineage !== state.lineage || imported.instances.find(resource => resource.address === entry.address)?.attributes.id !== entry.id) throw new Error('Tencent recovery import did not persist its exact original identity');
+    }
+    await assertCurrent();
+  }
+
+  private async proveTencentUnknownApplyAbsent(input: RangeProvisionDestroyInput, dir: string,
+    pending: NonNullable<Awaited<ReturnType<typeof readPendingApplyEvidence>>>, state: NonNullable<Awaited<ReturnType<typeof readWorkspaceState>>>,
+    tags: Record<string,string>, vpcId: string, assertCurrent: () => Promise<void>) {
+    const account = input.runtimeConfig as SystemCloudAccountContext;
+    const bound = input.knownResourceSummary?.executionContext;
+    if (!bound || bound.provider !== 'tencent_cloud' || bound.cloudAccountUid !== account.accountUid || bound.cloudAccountContextId !== account.cloudAccountContextId
+      || bound.regionId !== account.defaultRegion || bound.zoneId !== account.defaultZoneId || input.knownResourceSummary?.vpcId !== vpcId
+      || tags.CloudProvider !== 'tencent_cloud' || tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformManaged !== 'true'
+      || !['user','platform'].includes(tags.PlatformScope) || tags.PlatformScope === 'user' && !tags.PlatformUserId
+      || tags.PlatformScope === 'platform' && Boolean(tags.PlatformUserId)
+      || ['PlatformScope','PlatformUserId'].some(key => input.billingTags?.[key] !== undefined && input.billingTags[key] !== tags[key]))
+      throw new Error('Tencent absence recovery requires its original frozen resource inventory and owner');
+    const fields = { ecs:'hostIds',disk:'systemDiskIds',vpc:'vpcId',vswitch:'subnetIds',security_group:'securityGroupIds',network_acl:'networkAclIds',eni:'secondaryNetworkInterfaceIds',nat:'natGatewayIds',eip:'eipAllocationIds' } as const;
+    const stateKinds = { ecs:'tencentcloud_instance',vpc:'tencentcloud_vpc',vswitch:'tencentcloud_subnet',security_group:'tencentcloud_security_group',network_acl:'tencentcloud_vpc_acl',eni:'tencentcloud_eni',nat:'tencentcloud_nat_gateway',eip:'tencentcloud_eip' };
+    const ids = (kind: keyof typeof fields): string[] => {
+      const collect = (summary: RangeResourceSummary): string[] => {
+        if (!summary.executionContext || ['provider','cloudAccountUid','cloudAccountContextId','regionId','zoneId'].some(key => (summary.executionContext as any)[key] !== (bound as any)[key]))
+          throw new Error('Tencent absence recovery inventory has conflicting frozen identities');
+        const value = summary[fields[kind]];
+        return [...(typeof value === 'string' ? [value] : Object.values(value ?? {})),
+          ...(kind === 'disk' ? Object.values(summary.dataDiskIds ?? {}) : []), ...(kind === 'eip' && summary.eipAllocationId ? [summary.eipAllocationId] : []),
+          ...(summary.retiredResources ? collect(summary.retiredResources) : [])];
+      };
+      const stateIds = kind === 'disk' ? state.instances.filter(entry => entry.type === 'tencentcloud_instance').map(entry => entry.attributes.system_disk_id)
+        : state.instances.filter(entry => entry.type === stateKinds[kind]).map(entry => entry.attributes.id);
+      return [...new Set([...collect(input.knownResourceSummary!), ...stateIds.filter((value): value is string => typeof value === 'string' && Boolean(value))])];
+    };
+    const scopeTags = Object.fromEntries(['CloudProvider','PlatformManaged','CreatedBy','PlatformScope','PlatformUserId','CloudAccountUid','CloudAccountContextId','RangeInstanceId']
+      .filter(key => tags[key] !== undefined).map(key => [key,tags[key]]));
+    const verifyAccountInventory = async (action:'DescribeNetworkAcls'|'DescribeRouteTables', setKey:'NetworkAclSet'|'RouteTableSet', idKey:'NetworkAclId'|'RouteTableId', known:string[]) => {
+      const seen = new Set<string>(); let total: number | undefined;
+      for (let page=0;page<100;page++) {
+        await assertCurrent(); input.signal?.throwIfAborted();
+        const response = await requestTencentCloud<Record<string,unknown>>({service:'vpc',version:'2017-03-12',action,regionId:account.defaultRegion,
+          accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,parameters: action === 'DescribeRouteTables' ? {Offset:String(seen.size),Limit:'100'} : {Offset:seen.size,Limit:100}});
+        const rows = response[setKey];
+        if (typeof response.RequestId !== 'string' || !response.RequestId.trim() || response.Error || response.NextToken
+          || !Number.isSafeInteger(response.TotalCount) || Number(response.TotalCount)<0 || !Array.isArray(rows) || rows.length>100
+          || total !== undefined && total !== response.TotalCount) throw new Error('Tencent account inventory is incomplete during absence recovery');
+        total=Number(response.TotalCount);
+        for (const raw of rows) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Tencent account inventory contains malformed resources');
+          const row=raw as Record<string,unknown>; const id=row[idKey];
+          if (typeof id !== 'string' || !(action === 'DescribeNetworkAcls' ? /^acl-[A-Za-z0-9]+$/ : /^rtb-[A-Za-z0-9]+$/).test(id) || seen.has(id)
+            || typeof row.VpcId !== 'string' || !/^vpc-[A-Za-z0-9]+$/.test(row.VpcId)) throw new Error('Tencent account inventory identities are incomplete or duplicated');
+          seen.add(id);
+          const actualTags:Record<string,string>=Object.create(null);
+          if (row.TagSet !== undefined && row.TagSet !== null) {
+            if (!Array.isArray(row.TagSet)) throw new Error('Tencent account inventory tags are malformed');
+            for (const tag of row.TagSet) {
+              if (!tag || typeof tag !== 'object' || typeof tag.Key !== 'string' || !tag.Key || typeof tag.Value !== 'string' || Object.hasOwn(actualTags,tag.Key))
+                throw new Error('Tencent account inventory tags are malformed');
+              actualTags[tag.Key]=tag.Value;
+            }
+          }
+          if (known.includes(id) || row.VpcId === vpcId || Object.entries(scopeTags).every(([key,value]) => actualTags[key] === value))
+            throw new Error('Tencent original network resources remain in complete account inventory');
+        }
+        if (seen.size>total || seen.size<total && !rows.length) throw new Error('Tencent account inventory pagination is incomplete');
+        if (seen.size === total) return;
+      }
+      throw new Error('Tencent account inventory pagination exceeded its recovery bound');
+    };
+    for (let round = 0; round < 2; round++) {
+      await assertCurrent(); input.signal?.throwIfAborted();
+      for (const kind of Object.keys(fields) as Array<keyof typeof fields>) {
+        const known = ids(kind);
+        if (known.length && (await describeTencentResourceInventory(account,kind,{ids:known})).length)
+          throw new Error('Tencent original tracked resources remain; preserve unknown apply recovery material');
+        if (kind === 'network_acl') await verifyAccountInventory('DescribeNetworkAcls','NetworkAclSet','NetworkAclId',known);
+        else if ((await describeTencentResourceInventory(account,kind,{tags:scopeTags})).length) throw new Error('Tencent original range resources remain; preserve unknown apply recovery material');
+      }
+      const recordedRoutes = (summary: RangeResourceSummary): string[] => [...Object.values(summary.routeTableIds ?? {}), ...(summary.retiredResources ? recordedRoutes(summary.retiredResources) : [])];
+      const routeIds = [...new Set([...recordedRoutes(input.knownResourceSummary!), ...state.instances.filter(entry => entry.type === 'tencentcloud_route_table').map(entry => String(entry.attributes.id))])];
+      await verifyAccountInventory('DescribeRouteTables','RouteTableSet','RouteTableId',routeIds);
+    }
+    await assertCurrent();
+    const proof = { version:1, identity:this.tencentWorkspaceIdentity(input), pendingHash:createHash('sha256').update(JSON.stringify(pending)).digest('hex'),
+      lineage:state.lineage, serial:state.serial, observedAt:new Date().toISOString() };
+    const file = path.join(dir,'.tencent-apply-absence-proved.json');
+    await fs.writeFile(`${file}.tmp`,JSON.stringify(proof),{mode:0o600});
+    await assertCurrent(); await fs.rename(`${file}.tmp`,file);
+  }
+
+  private async readTencentAbsenceProof(dir: string,input: RangeProvisionDestroyInput,state: NonNullable<Awaited<ReturnType<typeof readWorkspaceState>>>) {
+    const file = path.join(dir,'.tencent-apply-absence-proved.json');
+    if (!await fileExists(file)) return false;
+    const proof = JSON.parse(await fs.readFile(file,'utf8'));
+    const pending = await readPendingApplyEvidence(dir);
+    return Boolean(pending && proof.version === 1 && proof.lineage === state.lineage && proof.serial === state.serial
+      && JSON.stringify(proof.identity) === JSON.stringify(this.tencentWorkspaceIdentity(input))
+      && proof.pendingHash === createHash('sha256').update(JSON.stringify(pending)).digest('hex')
+      && Number.isFinite(Date.parse(proof.observedAt)) && Date.now()-Date.parse(proof.observedAt) >= 0 && Date.now()-Date.parse(proof.observedAt) < 5*60_000);
+  }
+
   async inspectResources(input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null> {
     const dir = path.join(this.workspacesRootDir, input.rangeInstanceId);
     const state = await readWorkspaceState(dir, input.requirePersistedState === true);
     if (!state) return null;
     const summary: RangeResourceSummary = { mode: 'opentofu', workspaceDir: dir };
+    const tencent = input.runtimeConfig?.provider === 'tencent_cloud';
+    if (tencent) await this.assertTencentWorkspaceIdentity(dir, input);
     const fields: Record<string, keyof RangeResourceSummary> = {
+      tencentcloud_route_table: 'routeTableIds',
+      tencentcloud_subnet: 'subnetIds', tencentcloud_vpc_acl: 'networkAclIds', tencentcloud_security_group: 'securityGroupIds',
+      tencentcloud_instance: 'hostIds', tencentcloud_eni: 'secondaryNetworkInterfaceIds',
+      tencentcloud_nat_gateway: 'natGatewayIds', tencentcloud_nat_gateway_snat: 'snatEntryIds', tencentcloud_dnat: 'dnatEntryIds', tencentcloud_eip: 'eipAllocationIds',
       alicloud_vswitch: 'subnetIds', alicloud_network_acl: 'networkAclIds', alicloud_security_group: 'securityGroupIds',
       alicloud_instance: 'hostIds', alicloud_network_interface: 'secondaryNetworkInterfaceIds',
       alicloud_nat_gateway: 'natGatewayIds', alicloud_snat_entry: 'snatEntryIds', alicloud_forward_entry: 'dnatEntryIds',
       alicloud_eip_address: 'eipAllocationIds',
     };
     for (const instance of state.instances) {
+      if (tencent) {
+        const tagged = new Set(['tencentcloud_vpc','tencentcloud_subnet','tencentcloud_security_group','tencentcloud_instance','tencentcloud_eni','tencentcloud_vpc_acl','tencentcloud_eip','tencentcloud_nat_gateway','tencentcloud_route_table']);
+        const relations = new Set(['tencentcloud_security_group_rule_set','tencentcloud_eni_attachment','tencentcloud_eni_ipv4_address','tencentcloud_vpc_acl_attachment','tencentcloud_route_table_entry','tencentcloud_nat_gateway_snat','tencentcloud_dnat','tencentcloud_route_table_association']);
+        if (instance.module !== 'module.range' || !tagged.has(instance.type) && !relations.has(instance.type)) throw new Error('Tencent state contains resources outside this range');
+        const tags = instance.attributes.tags as Record<string,string> | undefined;
+        if (tagged.has(instance.type) && (!tags || tags.CloudProvider !== 'tencent_cloud' || tags.RangeInstanceId !== input.rangeInstanceId || tags.CloudAccountContextId !== input.runtimeConfig?.cloudAccountContextId || tags.CloudAccountUid !== input.runtimeConfig?.accountUid || tags.CreatedBy !== 'cyber-range-platform' || !tags.PlatformCreateJobId || ['PlatformScope','PlatformUserId'].some(key => input.billingTags?.[key] && tags[key] !== input.billingTags[key]))) throw new Error('Tencent range state ownership or creation source cannot be verified');
+        if (instance.type === 'tencentcloud_instance' && (typeof instance.attributes.client_token !== 'string' || instance.attributes.client_token !== tags?.CreationIntentId || typeof instance.attributes.action_timer_terminate_at !== 'string')) throw new Error('Tencent CVM state lacks a frozen idempotent creation and termination intent');
+      }
       if (instance.type.startsWith('alicloud_')) {
         const tagTypes = new Set(['alicloud_vpc', 'alicloud_vswitch', 'alicloud_network_acl', 'alicloud_security_group', 'alicloud_instance', 'alicloud_network_interface', 'alicloud_nat_gateway', 'alicloud_eip_address']);
         const relationTypes = new Set(['alicloud_vpc_ipv4_cidr_block', 'alicloud_security_group_rule', 'alicloud_network_interface_attachment', 'alicloud_eip_association', 'alicloud_snat_entry', 'alicloud_forward_entry']);
@@ -529,7 +725,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         if (tagTypes.has(instance.type) && ['CloudAccountContextId', 'CloudAccountUid'].some(key => input.billingTags?.[key] && tags?.[key] !== input.billingTags[key]))
           throw new Error('OpenTofu range resource source account could not be verified');
       }
-      if (instance.type === 'alicloud_vpc') {
+      if (['alicloud_vpc','tencentcloud_vpc'].includes(instance.type)) {
         if (summary.vpcId && summary.vpcId !== instance.attributes.id) throw new Error('OpenTofu state contains multiple VPCs');
         summary.vpcId = instance.attributes.id as string;
       }
@@ -539,7 +735,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         addResourceId(values, instance.address, instance.attributes.id as string);
         (summary as Record<string, unknown>)[field] = values;
       }
-      if (instance.type === 'alicloud_instance' && typeof instance.attributes.system_disk_id === 'string' && instance.attributes.system_disk_id)
+      if (['alicloud_instance','tencentcloud_instance'].includes(instance.type) && typeof instance.attributes.system_disk_id === 'string' && instance.attributes.system_disk_id)
         addResourceId(summary.systemDiskIds ??= Object.create(null), instance.address, instance.attributes.system_disk_id);
     }
     return summary;
@@ -557,7 +753,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     for (const file of ['main.tf', 'variables.tf', 'outputs.tf', 'versions.tf', varsFileName]) {
       await assertFileExists(path.join(workspaceDir, file), 'Persisted OpenTofu destroy configuration is missing');
     }
-    await migrateAliCloudWorkspaceProvider(workspaceDir);
+    if (input.runtimeConfig?.provider !== 'tencent_cloud') await migrateAliCloudWorkspaceProvider(workspaceDir);
+    else await this.assertTencentWorkspaceIdentity(workspaceDir, input);
 
     return {
       workspaceDir,
@@ -580,6 +777,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     }
 
     const moduleDir = path.resolve(this.projectRootDir, input.templateModulePath);
+    if (input.runtimeConfig?.provider === 'tencent_cloud' && input.templateModulePath !== 'infra/opentofu/modules/tencentcloud-enterprise-range') throw new Error('Tencent range module must match its cloud provider');
     const workspaceDir = path.join(this.workspacesRootDir, input.rangeInstanceId);
     const planFilePath = path.join(workspaceDir, 'range.tfplan');
     const outputsFilePath = path.join(workspaceDir, 'outputs.json');
@@ -588,6 +786,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
     if (options.preserveWorkspaceState) {
       await assertWorkspaceCanApply(workspaceDir, input.requirePersistedState === true);
+      if (input.runtimeConfig?.provider === 'tencent_cloud') await this.assertTencentWorkspaceIdentity(workspaceDir, input);
     } else {
       if (input.requirePersistedState) throw new Error('OpenTofu state recovery is required before proceeding; persisted workspace was preserved');
       await assertUnusedWorkspace(workspaceDir);
@@ -595,7 +794,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     }
     await fs.mkdir(workspaceDir, { recursive: true });
 
-    const wrapperFiles = buildRootWrapperFiles(moduleDir);
+    const wrapperFiles: Record<string,string> = input.runtimeConfig?.provider === 'tencent_cloud' ? {} : buildRootWrapperFiles(moduleDir);
 
     await Promise.all(
       Object.entries(wrapperFiles).map(async ([fileName, contents]) => {
@@ -608,6 +807,18 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
+    if (input.runtimeConfig?.provider === 'tencent_cloud') {
+      const values = variables as Record<string,unknown>;
+      const lines = Object.keys(values).map(key => `  ${key} = var.${key}`).join('\n');
+      const files = {
+        'main.tf': `provider "tencentcloud" { region = var.region }\nmodule "range" {\n source = ${JSON.stringify(moduleDir)}\n${lines}\n}\n`,
+        'variables.tf': Object.keys(values).map(key => key === 'host_passwords' ? `variable "${key}" {\n type = map(string)\n sensitive = true\n}` : `variable "${key}" { type = any }`).join('\n'),
+        'outputs.tf': 'output "public_entry" { value = module.range.public_entry }\noutput "resource_summary" { value = module.range.resource_summary }\n',
+        'versions.tf': 'terraform {\n required_providers {\n  tencentcloud = { source = "tencentcloudstack/tencentcloud", version = "= 1.83.34-range.1" }\n }\n}\n',
+        'tencent-range-identity.json': JSON.stringify(this.tencentWorkspaceIdentity(input)),
+      };
+      await Promise.all(Object.entries(files).map(([name,contents]) => fs.writeFile(path.join(workspaceDir,name),contents,{ mode: 0o600 })));
+    }
     const runnerEnv = await this.buildRunnerEnv(input.runtimeConfig);
 
     return {
@@ -691,6 +902,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       allocatedCidr: input.allocatedCidr,
     });
     const runtimeConfig = this.resolveRuntimeConfig(input.runtimeConfig);
+    if (runtimeConfig.provider === 'tencent_cloud') return this.buildTencentVariables(input, plan, runtimeConfig, options);
     const hostProvisioningHints = buildHostInstanceResolutionHints(
       input.compiledProvisionSpec,
       input.compiledSpec,
@@ -1043,15 +1255,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private async buildRunnerEnv(
     runtimeConfig: ResolvedProvisioningRuntimeConfig = this.resolveRuntimeConfig(),
   ): Promise<NodeJS.ProcessEnv> {
-    const providerZipPath = this.env.ALICLOUD_PROVIDER_ZIP_PATH?.trim();
+    const tencent = runtimeConfig.provider === 'tencent_cloud';
+    const providerZipPath = (tencent ? this.env.TENCENTCLOUD_PROVIDER_ZIP_PATH : this.env.ALICLOUD_PROVIDER_ZIP_PATH)?.trim();
 
     const runnerEnv: NodeJS.ProcessEnv = {
       // ponytail: keep the runner env tiny; add keys here only for a concrete child-process need.
       ...pickEnv(process.env, RUNNER_ENV_KEYS),
       ...pickEnv(this.env, RUNNER_ENV_KEYS),
-      ALICLOUD_ACCESS_KEY: runtimeConfig.accessKeyId,
-      ALICLOUD_SECRET_KEY: runtimeConfig.accessKeySecret,
-      ALICLOUD_REGION: runtimeConfig.defaultRegion,
+      ...(tencent ? { TENCENTCLOUD_SECRET_ID: runtimeConfig.accessKeyId, TENCENTCLOUD_SECRET_KEY: runtimeConfig.accessKeySecret, TENCENTCLOUD_REGION: runtimeConfig.defaultRegion } : { ALICLOUD_ACCESS_KEY: runtimeConfig.accessKeyId, ALICLOUD_SECRET_KEY: runtimeConfig.accessKeySecret, ALICLOUD_REGION: runtimeConfig.defaultRegion }),
     };
 
     if (normalizeOptionalEnvValue(this.env.OPENTOFU_PASSTHROUGH_PROXY) === '1') {
@@ -1061,9 +1272,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     return {
       ...runnerEnv,
       ...await prepareOpenTofuProviderEnv({
-        providerZipPath,
+        provider: runtimeConfig.provider, providerZipPath,
         workspacesRootDir: this.workspacesRootDir,
-        unpackedMirrorRootDir: this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT?.trim(),
+        unpackedMirrorRootDir: (tencent ? this.env.TENCENTCLOUD_PROVIDER_UNPACKED_MIRROR_ROOT : this.env.OPENTOFU_PROVIDER_UNPACKED_MIRROR_ROOT)?.trim(),
       }),
     };
   }
@@ -1071,7 +1282,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private resolveRuntimeConfig(
     runtimeConfig?: ResolvedProvisioningRuntimeConfig,
   ): ResolvedProvisioningRuntimeConfig {
+    if (runtimeConfig?.provider === 'tencent_cloud' && (!runtimeConfig.accessKeyId || !runtimeConfig.accessKeySecret || !runtimeConfig.defaultRegion || !runtimeConfig.defaultZoneId || !runtimeConfig.cloudAccountContextId || !runtimeConfig.accountUid)) throw new Error('Tencent runtime requires a complete frozen account; environment fallback is forbidden');
     return {
+      ...runtimeConfig,
       accessKeyId:
         normalizeOptionalEnvValue(runtimeConfig?.accessKeyId) ??
         requireEnvValue(this.env.ALICLOUD_ACCESS_KEY, 'ALICLOUD_ACCESS_KEY'),
@@ -1085,6 +1298,43 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         normalizeOptionalEnvValue(runtimeConfig?.defaultZoneId) ??
         requireEnvValue(this.env.ALICLOUD_ZONE_ID, 'ALICLOUD_ZONE_ID'),
     };
+  }
+
+  private tencentWorkspaceIdentity(input: RangeProvisionCreateInput | RangeProvisionDestroyInput) {
+    const account = input.runtimeConfig;
+    if (account?.provider !== 'tencent_cloud' || !account.cloudAccountContextId || !account.accountUid) throw new Error('Tencent workspace requires a verified frozen account');
+    return { provider: account.provider, cloudAccountContextId: account.cloudAccountContextId, cloudAccountUid: account.accountUid, regionId: account.defaultRegion, zoneId: account.defaultZoneId, rangeInstanceId: input.rangeInstanceId };
+  }
+
+  private async assertTencentWorkspaceIdentity(dir: string, input: RangeProvisionCreateInput | RangeProvisionDestroyInput) {
+    const actual = JSON.parse(await fs.readFile(path.join(dir,'tencent-range-identity.json'),'utf8'));
+    if (JSON.stringify(actual) !== JSON.stringify(this.tencentWorkspaceIdentity(input))) throw new Error('Tencent workspace differs from frozen provider/account/region/zone identity');
+  }
+
+  private async buildTencentVariables(input: RangeProvisionCreateInput | RangeProvisionDestroyInput, plan: ReturnType<typeof buildEnterpriseProvisionPlan>, account: ResolvedProvisioningRuntimeConfig, options: { requireRuntimePasswords: boolean }) {
+    if (plan.natGateways.length && this.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED !== '1') throw new Error('Tencent NAT execution is disabled until controlled recovery validation is complete');
+    const hints = buildHostInstanceResolutionHints(input.compiledProvisionSpec,input.compiledSpec,input.topologyGraph);
+    const types = await selectTencentHostInstanceTypes(account,plan.hostDefinitions.map(host => {
+      const hint = hints.get(host.key);
+      const policy = resolveHostInstanceTypePolicy({ runtimeHint: hint, runtimeSelections: plan.runtimeSelections.instanceTypePolicies });
+      return { key: host.key, cpu: hint?.requestedCpu, memory: hint?.requestedMemoryGiB, instanceType: policy.fixedInstanceType, preferredInstanceTypes: policy.preferredInstanceTypes, strictPreferredInstanceTypes: policy.strictPreferredInstanceTypes };
+    }));
+    const images = Object.fromEntries(plan.hostDefinitions.map(host => [host.key,hints.get(host.key)?.finalImageId ?? '']));
+    const imageMetadata = await assertTencentImagesAvailable(account,Object.values(images));
+    const rendered = renderTencentRangeVariables({ plan, rangeInstanceId: input.rangeInstanceId, account, hostInstanceTypes: types, hostImageIds: images,
+      hostPasswords: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,options.requireRuntimePasswords ? requireRuntimePassword(input.runtimeCredentials,host.key) : DESTROY_PLACEHOLDER_PASSWORD])),
+      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,input.runtimeCredentials?.[host.key]?.username === 'Administrator'])),
+      expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
+      systemDiskSize: Math.max(50,...Object.values(imageMetadata).map(image => image.minimumSystemDiskSize)) });
+    const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
+    for (const entry of [...rendered.eips,...rendered.nat_gateways]) {
+      const kind = 'nat_key' in entry ? 'tencentcloud_eip' : 'tencentcloud_nat_gateway';
+      const prior = oldState?.instances.find(resource => resource.type === kind && resourceInstanceKey(resource.address) === entry.key);
+      const priorIntent = (prior?.attributes.tags as Record<string,string> | undefined)?.CreationIntentId;
+      if (priorIntent) entry.creation_intent_id = priorIntent;
+    }
+    return rendered;
+
   }
 
   private readSystemDiskCategory() {
@@ -1306,7 +1556,7 @@ function normalizeExplicitFinalImageId(value: string | null | undefined) {
     return normalizedValue;
   }
 
-  if (/^m-[a-z0-9]+$/i.test(normalizedValue)) {
+  if (/^(?:m|img)-[a-z0-9]+$/i.test(normalizedValue)) {
     return normalizedValue;
   }
 

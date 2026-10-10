@@ -13,6 +13,7 @@ export type PlatformApiClientOptions = {
   baseUrl: string;
   token: string;
   fetch?: typeof fetch;
+  cloudWorkspaceId?: string;
 };
 
 export type RangeAccessPayload = {
@@ -133,6 +134,10 @@ type NetworkDiagnosticRows = ReadonlyArray<Readonly<Record<string, unknown>>>;
 /** Server allowlisted facts for this instance only; excludes credentials and raw provider responses. */
 export type RangeInstanceNetworkDiagnostics = Readonly<{
   status: 'succeeded';
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
+  cloudAccountContextId?: string;
+  evidence?: ReadonlyArray<Readonly<{ action: string; requestId: string }>>;
+  guestConfigurationVerified?: boolean;
   checkedAt: string;
   regionId: string;
   cloudAccountUid: string;
@@ -153,6 +158,70 @@ export type RangeInstance = Record<string, unknown> & {
 };
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
+export type CloudAccountContext = {
+  cloudWorkspaceId?: string;
+  id: string;
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  displayName: string;
+  accountUid: string;
+  regionId: string;
+  zoneId: string;
+  isActive: boolean;
+  status: 'provisioning' | 'ready' | 'degraded' | 'disabled';
+  imageImportBucket: string;
+  bucketStatus: string;
+  lastVerifiedAt?: string | null;
+};
+export type SaveTencentCloudAccountInput = {
+  provider: 'tencent_cloud';
+  regionId: string;
+  zoneId: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+};
+export type SaveCloudAccountInput = Omit<SaveTencentCloudAccountInput, 'provider'> & {
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  cloudWorkspaceId?: string;
+  displayName?: string;
+  imageImportBucket?: string;
+};
+export type CloudWorkspaceView = {
+  id: string;
+  provider: 'alibaba_cloud' | 'tencent_cloud';
+  accountUid: string | null;
+  displayName: string;
+  isReadOnly: boolean;
+  activeCloudAccountContextId: string | null;
+  contexts: CloudAccountContext[];
+  capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean };
+};
+export type TencentCloudRegionsInput = {
+  regionIds: string[];
+  accessKeyId: string;
+  accessKeySecret: string;
+};
+export type TencentCloudRegionsPayload = {
+  provider: 'tencent_cloud';
+  regions: Array<{ regionId: string; displayName: string; zones: Array<{ zoneId: string; displayName: string }> }>;
+};
+export type TencentCloudImagesInput = {
+  cloudAccountContextId: string;
+  scope: 'public' | 'custom';
+  offset?: number;
+  limit?: number;
+};
+export type TencentCloudImagesPayload = {
+  provider: 'tencent_cloud';
+  cloudAccountContextId: string;
+  accountUid: string;
+  regionId: string;
+  zoneId: string;
+  scope: 'public' | 'custom';
+  offset: number;
+  limit: number;
+  totalCount: number;
+  items: Array<{ imageId: string; displayName: string; status: string; platform: string | null; architecture: string | null; isAvailable: boolean }>;
+};
 export type AdminUser = Record<string, unknown> & { id: string; username: string };
 export type SingleInstanceListPayload = {
   batches: Array<{
@@ -162,6 +231,22 @@ export type SingleInstanceListPayload = {
   standaloneInstances: RangeInstance[];
 };
 export type SingleInstanceCloudResourceStatus = {
+  recordedResourceStatus?: {
+    provider: 'tencent_cloud';
+    cloudAccountContextId: string;
+    cloudAccountUid: string;
+    regionId: string;
+    checkedAt: string;
+    coverage: 'persisted_instance_compute_resource_ids';
+    /** Only the persisted IDs checked in this result; null for empty or incomplete source coverage. */
+    allKnownAbsent: boolean | null;
+    resources: Array<{ cloudResourceType: 'ecs' | 'disk' | 'eip' | 'nat_gateway'; cloudResourceId: string;
+      sources: Array<'inventory' | 'ledger'>; ledgerIds: string[]; exists: boolean }>;
+    evidence: Array<{ provider: 'tencent_cloud'; cloudAccountContextId: string; accountUid: string;
+      regionId: string; action: string; requestIds: string[]; observedAt: string }>;
+    excludedUnverifiedDiskIds: string[];
+    unsupportedLedgerResourceTypes: string[];
+  };
   matchedInstances?:Array<{instanceId:string;ownerUserId:string|null;tags:Record<string,string>}>;
   singleInstanceId: string;
   regionId: string;
@@ -281,6 +366,7 @@ export type PlatformApiClientLike = {
   retryImageImport(id: string): Promise<ImageImportJob>;
   listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
   getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
+  validateRangeInstanceNodePackImage?(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>): Promise<Record<string, unknown>>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
   applyRangeInstanceDraft(
@@ -314,6 +400,15 @@ export type PlatformApiClientLike = {
   getProvisionJob(id: string): Promise<ProvisionJob>;
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
+  listCloudAccountContexts(includeInactive?: boolean): Promise<CloudAccountContext[]>;
+  saveTencentCloudAccount(payload: SaveTencentCloudAccountInput, operation?: OperationRequest): Promise<CloudAccountContext>;
+  saveCloudAccountBinding(payload: SaveCloudAccountInput, operation?: OperationRequest): Promise<CloudAccountContext>;
+  listCloudWorkspaces(): Promise<CloudWorkspaceView[]>;
+  getCurrentCloudWorkspace(): Promise<CloudWorkspaceView | null>;
+  switchCloudWorkspace(id: string): Promise<CloudWorkspaceView>;
+  discoverTencentCloudRegions(payload: TencentCloudRegionsInput): Promise<TencentCloudRegionsPayload>;
+  listTencentCloudImages(input: TencentCloudImagesInput): Promise<TencentCloudImagesPayload>;
+  getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   getBillingSummary(input?: BillingWindowInput): Promise<BillingSummary>;
   listBillingUsers(input?: BillingWindowInput): Promise<PaginatedResult<BillingUserSummary>>;
   getBillingUserSummary(userId: string, input?: BillingWindowInput): Promise<BillingUserSummary>;

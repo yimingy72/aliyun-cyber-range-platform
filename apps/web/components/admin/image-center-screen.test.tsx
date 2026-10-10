@@ -12,6 +12,9 @@ import type {
   PlatformImageAssetListPayload,
 } from '../../lib/admin-types';
 
+const workspaceState = vi.hoisted(() => ({ value: null as any }));
+vi.mock('./cloud-workspace-provider', () => ({ useCloudWorkspace: () => workspaceState.value, cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云' }));
+
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
   configurable: true,
   value: () => undefined,
@@ -255,6 +258,7 @@ const exportingMyImagesPayload: PlatformImageAssetListPayload = {
 };
 
 beforeEach(() => {
+  workspaceState.value = null;
   window.localStorage.removeItem(ADMIN_PAGE_SIZE_STORAGE_KEY);
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
@@ -400,6 +404,56 @@ afterEach(() => {
 });
 
 describe('ImageCenterScreen', () => {
+  it('rejects a foreign Tencent asset response before caching or showing its label', async () => {
+    workspaceState.value = { workspace: { id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
+      activeCloudAccountContextId: 'tencent-context', contexts: [], capabilities: { provisioning: false, imageImport: false, billingSync: true } } };
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'foreign', provider: 'tencent_cloud', accountUid: '999', displayName: '外国账号镜像', imageId: 'img-foreign', enabled: true, tags: [] }] });
+    render(<ImageCenterScreen />);
+    expect(await screen.findByText('镜像返回的账号或查询范围不一致，请刷新核对。')).toBeTruthy();
+    expect(screen.queryByText('外国账号镜像')).toBeNull();
+  });
+
+  it('requires separate real distribution/version fields for Tencent import and forwards them without guessing', async () => {
+    workspaceState.value = { workspace: { id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
+      activeCloudAccountContextId: 'tencent-context', contexts: [{ id: 'tencent-context', provider: 'tencent_cloud', cloudWorkspaceId: 'tencent-workspace', status: 'ready', imageImportBucket: 'fixture-cos-1250000000', bucketStatus: 'ready' }],
+      capabilities: { provisioning: true, imageImport: true, billingSync: true } } };
+    fetchPlatformImagesMock.mockResolvedValue({ items: [] });
+    createImageImportMock.mockRejectedValue(new Error('synthetic backend validation stopped upload'));
+    render(<ImageCenterScreen />);
+    await waitFor(() => expect(fetchPlatformImagesMock).toHaveBeenCalled());
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+    fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+    const version = await screen.findByLabelText('上传镜像操作系统版本') as HTMLInputElement;
+    expect(version.required).toBe(true); expect(version.value).toBe('');
+    fireEvent.change(screen.getByLabelText('系统盘镜像文件'), { target: { files: [new File(['fixture'], 'fixture.qcow2', { type: 'application/octet-stream' })] } });
+    fireEvent.change(screen.getByLabelText('上传镜像名'), { target: { value: 'Tencent import' } });
+    fireEvent.change(screen.getByLabelText('上传镜像系统版本'), { target: { value: 'Ubuntu' } });
+    fireEvent.change(version, { target: { value: '22.04' } });
+    fireEvent.submit(document.getElementById('image-import-form')!);
+    await waitFor(() => expect(createImageImportMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platform: 'Ubuntu', osVersion: '22.04', osType: 'linux', systemDiskSize: 50 })));
+    expect(await screen.findByText('synthetic backend validation stopped upload')).toBeTruthy();
+  });
+
+  it('uses the complete generic Tencent image center while respecting creation/import capabilities', async () => {
+    workspaceState.value = { workspace: { id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
+      activeCloudAccountContextId: 'tencent-context', contexts: [{ id: 'tencent-context', provider: 'tencent_cloud', cloudWorkspaceId: 'tencent-workspace', status: 'ready', imageImportBucket: 'fixture-cos-1250000000', bucketStatus: 'ready' }],
+      capabilities: { provisioning: false, imageImport: false, billingSync: true } } };
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'tencent-asset', provider: 'tencent_cloud', accountUid: '100001', accountScopeKey: '100001', regionId: 'ap-shanghai', sourceScope: 'public',
+      imageId: 'img-tencent', displayName: '腾讯平台镜像', enabled: true, sourceSnapshotAvailable: true, sourceSnapshotStatus: 'NORMAL', tags: [], canManage: true }] });
+    fetchCustomImageCatalogScopeMock.mockResolvedValue({ snapshots: [], catalogItems: [] });
+    fetchPublicImageCatalogScopeMock.mockResolvedValue({ snapshots: [], catalogItems: [] });
+    render(<ImageCenterScreen />);
+    expect(await screen.findByText('腾讯平台镜像')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '创建实例 腾讯平台镜像' })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
+    expect(await screen.findByRole('tab', { name: '腾讯云自定义镜像' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '腾讯云公共镜像' })).toBeTruthy();
+    expect(screen.queryByText('只读预览')).toBeNull();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+    expect((await screen.findByRole('button', { name: '上传镜像' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(createImageImportMock).not.toHaveBeenCalled();
+  });
+
   it('keeps the active tab table frame and domain headers when the platform image list is empty', async () => {
     fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
       view === 'mine' ? myImagesPayload : ({ items: [] } satisfies PlatformImageAssetListPayload),

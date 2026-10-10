@@ -6,6 +6,10 @@ import { PrismaService } from '../database/prisma.service';
 import type { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, FAILED_CREATE_SWITCH_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from './failed-create-cleanup-evidence';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import type { SaveCloudAccountContextDto } from './dto/cloud-account-context.dto';
+import { decryptCloudCredential, encryptCloudCredential, readCloudCredentialEncryptionKey } from './cloud-credential-encryption';
+import { requestTencentCloud, TencentCloudRequestError } from './tencent-cloud-client';
+import { getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
@@ -13,7 +17,7 @@ const ALICLOUD_STS_API_VERSION = '2015-04-01';
 
 export type CloudAccountContextCredentials = {
   id: string;
-  provider: 'alibaba_cloud';
+  provider: 'alibaba_cloud' | 'tencent_cloud';
   accountUid: string;
   regionId: string;
   zoneId: string;
@@ -21,6 +25,7 @@ export type CloudAccountContextCredentials = {
   accessKeySecret: string;
   imageImportBucket: string;
   status: 'provisioning' | 'ready' | 'degraded' | 'disabled';
+  cloudWorkspaceId?: string;
 };
 
 export type CloudAccountContextView = Omit<CloudAccountContextCredentials, 'accessKeyId' | 'accessKeySecret'> & {
@@ -34,6 +39,7 @@ export type CloudAccountContextView = Omit<CloudAccountContextCredentials, 'acce
 };
 
 type SaveCloudConfigInput = {
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
   defaultRegion: string;
   defaultZoneId: string;
   accessKeyId: string;
@@ -46,12 +52,18 @@ export class CloudAccountContextsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(options: { includeInactive?: boolean } = {}): Promise<CloudAccountContextView[]> {
+    const scope = getCurrentCloudWorkspaceScope();
     const contexts = await this.prisma.cloudAccountContext.findMany({
-      where: options.includeInactive ? undefined : { isActive: true, status: 'ready' },
+      where: scope && !('system' in scope)
+        ? { cloudWorkspaceId: scope.cloudWorkspaceId, ...(options.includeInactive ? {} : { status: 'ready' as const }) }
+        : options.includeInactive ? undefined : { isActive: true, status: 'ready' },
       orderBy: [{ updatedAt: 'desc' }],
     });
 
-    return contexts.map((context) => this.toView(context));
+    const workspace = scope && !('system' in scope)
+      ? await this.prisma.cloudWorkspace.findUnique({ where: { id: scope.cloudWorkspaceId } }) : null;
+    return contexts.map((context) => this.toView({ ...context,
+      ...(workspace ? { isActive: context.id === workspace.activeCloudAccountContextId } : {}) }));
   }
 
   async getCredentials(
@@ -64,15 +76,27 @@ export class CloudAccountContextsService {
       throw new NotFoundException('Cloud account context not found');
     }
 
-    if (options.requireReady && context.status !== 'ready') {
-      throw new BadRequestException('当前阿里云账号不可用，请先在云配置中修复。');
+    const scope = getCurrentCloudWorkspaceScope();
+    if (scope && !('system' in scope) && (context.cloudWorkspaceId !== scope.cloudWorkspaceId
+      || context.provider !== scope.provider || context.accountUid !== scope.accountUid)) {
+      throw new NotFoundException('Cloud account context not found in the selected workspace');
     }
 
-    if (options.requireActive && (!context.isActive || context.status !== 'ready')) {
-      throw new BadRequestException('请选择当前已启用且可用的阿里云账号。');
+    if (options.requireReady && context.status !== 'ready') {
+      throw new BadRequestException(`当前${context.provider === 'tencent_cloud' ? '腾讯云' : '阿里云'}账号不可用，请先在云配置中修复。`);
+    }
+
+    const selectedActive = scope && !('system' in scope)
+      ? (await this.prisma.cloudWorkspace.findUnique({ where: { id: scope.cloudWorkspaceId } }))?.activeCloudAccountContextId === context.id
+      : context.isActive;
+    if (options.requireActive && (!selectedActive || context.status !== 'ready')) {
+      throw new BadRequestException('请选择当前已启用且可用的云账号。');
     }
 
     if (options.requireImageImportBucket) {
+      if (context.provider === 'tencent_cloud') {
+        throw new BadRequestException('腾讯云导入的专属 COS 来源由上传入口核验，请通过平台创建上传任务。');
+      }
       if (!context.imageImportBucket.trim() || context.bucketStatus === 'unconfigured') {
         throw new BadRequestException('当前阿里云账号未配置镜像导入 Bucket，请先在云配置中填写自定义 OSS 存储桶名。');
       }
@@ -84,18 +108,152 @@ export class CloudAccountContextsService {
 
     return {
       id: context.id,
-      provider: 'alibaba_cloud',
+      provider: context.provider,
       accountUid: context.accountUid,
       regionId: context.regionId,
       zoneId: context.zoneId,
       accessKeyId: context.accessKeyId,
-      accessKeySecret: context.accessKeySecret,
+      accessKeySecret: context.provider === 'tencent_cloud' || context.accessKeySecret.startsWith('cloud-credential:v1:')
+        ? decryptCloudCredential(context.accessKeySecret, context) : context.accessKeySecret,
       imageImportBucket: context.imageImportBucket,
       status: context.status,
+      ...(context.cloudWorkspaceId ? { cloudWorkspaceId: context.cloudWorkspaceId } : {}),
     };
   }
 
+  async saveTencentCloudContext(input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
+    if (input?.imageImportBucket?.trim()) throw new BadRequestException('腾讯云导入使用平台自动创建的专属 COS Bucket，请勿填写已有桶。');
+    if (!input || input.provider !== 'tencent_cloud') {
+      throw new BadRequestException('新增云账号接口仅接受腾讯云账号；阿里云配置请使用现有云配置入口。');
+    }
+    const normalized = {
+      regionId: typeof input.regionId === 'string' ? input.regionId.trim() : '',
+      zoneId: typeof input.zoneId === 'string' ? input.zoneId.trim() : '',
+      accessKeyId: typeof input.accessKeyId === 'string' ? input.accessKeyId.trim() : '',
+      accessKeySecret: typeof input.accessKeySecret === 'string' ? input.accessKeySecret.trim() : '',
+    };
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(normalized.regionId)
+      || !normalized.zoneId.startsWith(`${normalized.regionId}-`)
+      || !/^[1-9]\d*$/.test(normalized.zoneId.slice(normalized.regionId.length + 1))) {
+      throw new BadRequestException('腾讯云可用区必须属于所填写的地域，请同时填写地域和可用区。');
+    }
+    if (!normalized.accessKeyId || !normalized.accessKeySecret
+      || normalized.accessKeyId === '********' || normalized.accessKeySecret === '********'
+      || normalized.accessKeyId.length > 128 || normalized.accessKeySecret.length > 128
+      || /\s/.test(normalized.accessKeyId) || /\s/.test(normalized.accessKeySecret)) {
+      throw new BadRequestException('请显式填写有效的腾讯云 SecretId 和 SecretKey，不支持沿用其它云账号凭据。');
+    }
+    // Validate encryption before any cloud request or persistence.
+    const encryptionKey = readCloudCredentialEncryptionKey();
+    let accountUid: string;
+    try {
+      const identity = await requestTencentCloud<{ AccountId?: unknown }>({
+        service: 'sts', version: '2018-08-13', action: 'GetCallerIdentity',
+        regionId: normalized.regionId,
+        accessKeyId: normalized.accessKeyId, accessKeySecret: normalized.accessKeySecret,
+      });
+      if (typeof identity.AccountId !== 'string' || !/^[1-9]\d{0,19}$/.test(identity.AccountId)) {
+        throw new BadRequestException('腾讯云身份校验未返回有效的主账号 AccountId。');
+      }
+      accountUid = identity.AccountId;
+      const zones = await requestTencentCloud<{ TotalCount?: unknown; ZoneSet?: unknown }>({
+        service: 'cvm', version: '2017-03-12', action: 'DescribeZones',
+        regionId: normalized.regionId, accessKeyId: normalized.accessKeyId, accessKeySecret: normalized.accessKeySecret,
+      });
+      if (!Number.isSafeInteger(zones.TotalCount) || !Array.isArray(zones.ZoneSet)
+        || zones.TotalCount !== zones.ZoneSet.length
+        || zones.ZoneSet.filter((item) => item && typeof item === 'object'
+          && item.Zone === normalized.zoneId && item.ZoneState === 'AVAILABLE').length !== 1) {
+        throw new BadRequestException('腾讯云可用区未通过云端校验，请检查地域、可用区和 CVM 查询权限。');
+      }
+    } catch (error) {
+      if (error instanceof TencentCloudRequestError) {
+        throw new BadRequestException(`腾讯云账号只读校验失败（${error.code}），请检查凭据、查询权限和网络。`);
+      }
+      throw error;
+    }
+    const cloudWorkspace = await this.resolveBindingWorkspace('tencent_cloud', accountUid, input);
+    const data = {
+      provider: 'tencent_cloud' as const, accountUid, regionId: normalized.regionId,
+      cloudWorkspaceId: cloudWorkspace.id,
+      zoneId: normalized.zoneId, accessKeyId: normalized.accessKeyId,
+      accessKeySecret: encryptCloudCredential(normalized.accessKeySecret, { provider: 'tencent_cloud', accountUid, regionId: normalized.regionId, accessKeyId: normalized.accessKeyId }, encryptionKey),
+      displayName: `腾讯云 ${accountUid} · ${normalized.regionId}`,
+      isActive: false, status: 'ready' as const, imageImportBucket: '',
+      bucketStatus: 'unconfigured', lastError: null, lastVerifiedAt: new Date(),
+    };
+    const context = await this.prisma.cloudAccountContext.upsert({
+      where: { provider_accountUid_regionId: { provider: 'tencent_cloud', accountUid, regionId: normalized.regionId } },
+      create: data, update: data,
+    });
+    await this.setWorkspaceDefaultContext(cloudWorkspace.id, context.id, input.cloudWorkspaceId !== undefined);
+    return this.toView(context);
+  }
+
+  async saveAccountBinding(input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
+    return runInSystemCloudWorkspaceScope(async () => {
+      if (input.provider === 'tencent_cloud') return this.saveTencentCloudContext(input);
+      if (input.provider !== 'alibaba_cloud') throw new BadRequestException('不支持该云厂商。');
+      const encryptionKey = readCloudCredentialEncryptionKey();
+      const values = { regionId: input.regionId.trim(), zoneId: input.zoneId.trim(), accessKeyId: input.accessKeyId.trim(), accessKeySecret: input.accessKeySecret.trim() };
+      if (!values.accessKeyId || !values.accessKeySecret || values.accessKeyId === '********' || values.accessKeySecret === '********'
+        || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(values.regionId)
+        || !values.zoneId.startsWith(values.regionId) || !/^-?[a-z][a-z0-9]*$/.test(values.zoneId.slice(values.regionId.length))) {
+        throw new BadRequestException('请填写有效的阿里云地域、可用区和两个访问凭据。');
+      }
+      const accountUid = await this.resolveAccountUid(values.accessKeyId, values.accessKeySecret);
+      const space = await this.resolveBindingWorkspace('alibaba_cloud', accountUid, input);
+      const existing = await this.prisma.cloudAccountContext.findUnique({ where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid, regionId: values.regionId } } });
+      const imageImportBucket = input.imageImportBucket?.trim() ?? existing?.imageImportBucket ?? '';
+      this.assertImageImportBucketName(imageImportBucket);
+      await this.assertImageImportBucketCanChange(existing, imageImportBucket);
+      const bucketVerification = await this.verifyImageImportBucket({ bucket: imageImportBucket, ...values });
+      const data = { ...values, accessKeySecret: encryptCloudCredential(values.accessKeySecret,
+        { provider: 'alibaba_cloud', accountUid, regionId: values.regionId, accessKeyId: values.accessKeyId }, encryptionKey),
+        provider: 'alibaba_cloud' as const, accountUid, cloudWorkspaceId: space.id,
+        displayName: `阿里云 ${accountUid} · ${values.regionId}`, imageImportBucket, status: 'ready' as const,
+        ...bucketVerification };
+      const context = await this.prisma.cloudAccountContext.upsert({
+        where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid, regionId: values.regionId } },
+        update: data, create: { ...data, isActive: false },
+      });
+      await this.setWorkspaceDefaultContext(space.id, context.id, input.cloudWorkspaceId !== undefined);
+      return this.toView(context);
+    });
+  }
+
+  private async resolveBindingWorkspace(provider: 'alibaba_cloud' | 'tencent_cloud', accountUid: string, input: SaveCloudAccountContextDto) {
+    if (input.cloudWorkspaceId) {
+      const target = await this.prisma.cloudWorkspace.findUnique({ where: { id: input.cloudWorkspaceId } });
+      if (!target || target.isReadOnly || target.provider !== provider || target.accountUid !== accountUid) {
+        throw new ConflictException('输入的云凭据不属于正在编辑的账号，原工作空间和配置未更改。');
+      }
+    }
+    try {
+      return await this.prisma.cloudWorkspace.upsert({
+        where: { provider_accountUid: { provider, accountUid } },
+        create: { provider, accountUid, displayName: input.displayName?.trim() || `${provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'} ${accountUid}` },
+        update: input.displayName ? { displayName: input.displayName.trim() } : {},
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+      const existing = await this.prisma.cloudWorkspace.findUnique({ where: { provider_accountUid: { provider, accountUid } } });
+      if (!existing || existing.isReadOnly || input.cloudWorkspaceId && input.cloudWorkspaceId !== existing.id) throw error;
+      return input.displayName ? this.prisma.cloudWorkspace.update({ where: { id: existing.id }, data: { displayName: input.displayName.trim() } }) : existing;
+    }
+  }
+
+  private async setWorkspaceDefaultContext(cloudWorkspaceId: string, contextId: string, editing: boolean) {
+    const workspace = await this.prisma.cloudWorkspace.findUniqueOrThrow({ where: { id: cloudWorkspaceId } });
+    if (!workspace.activeCloudAccountContextId || editing) {
+      await this.prisma.cloudWorkspace.update({ where: { id: cloudWorkspaceId }, data: { activeCloudAccountContextId: contextId } });
+    }
+  }
+
   async saveFromCloudConfig(input: SaveCloudConfigInput): Promise<CloudAccountContextView> {
+    if (input.provider !== undefined && input.provider !== 'alibaba_cloud') {
+      throw new BadRequestException('腾讯云账号请通过独立云账号入口保存，不能写入阿里云全局配置。');
+    }
     const requestedImageImportBucket = input.imageImportBucket?.trim();
     const normalized = {
       regionId: input.defaultRegion.trim(),
@@ -154,6 +312,9 @@ export class CloudAccountContextsService {
     const context = await this.prisma.cloudAccountContext.findUnique({ where: { id } });
     if (!context) {
       throw new NotFoundException('Cloud account context not found');
+    }
+    if (context.provider !== 'alibaba_cloud') {
+      throw new BadRequestException('当前版本仅支持将阿里云账号设为全局活跃账号；腾讯云账号可保存并进行只读验证。');
     }
     if (context.status !== 'ready') {
       throw new BadRequestException('当前阿里云账号不可用，无法切换。');
@@ -214,7 +375,7 @@ export class CloudAccountContextsService {
           && proof.claimStartedAt === job.startedAt!.toISOString()
           && step.finishedAt >= job.startedAt!
           && (sourceRegion === null || proof.regionId === sourceRegion)
-          && state.knownContexts.some((context) => context.id === proof.cloudAccountContextId
+          && state.knownContexts.some((context) => context.provider === 'alibaba_cloud' && context.id === proof.cloudAccountContextId
             && context.accountUid === proof.cloudAccountUid && context.regionId === proof.regionId
             && context.createdAt <= job.startedAt!);
       });
@@ -225,7 +386,7 @@ export class CloudAccountContextsService {
       if (instance.instanceMode !== 'single') {
         this.throwActiveResourcesConflict();
       }
-      const sources = state.knownContexts.filter((context) => context.regionId === sourceRegion);
+      const sources = state.knownContexts.filter((context) => context.provider === 'alibaba_cloud' && context.regionId === sourceRegion);
       if (sources.length !== 1) {
         throw new ConflictException('失败实例的来源账号缺失或存在歧义，云配置未切换。');
       }
@@ -559,9 +720,10 @@ export class CloudAccountContextsService {
   }
 
   private toView(context: {
+    cloudWorkspaceId?: string;
     id: string;
     displayName: string;
-    provider: 'alibaba_cloud';
+    provider: 'alibaba_cloud' | 'tencent_cloud';
     accountUid: string;
     regionId: string;
     zoneId: string;
@@ -575,6 +737,7 @@ export class CloudAccountContextsService {
     updatedAt: Date;
   }): CloudAccountContextView {
     return {
+      ...(context.cloudWorkspaceId ? { cloudWorkspaceId: context.cloudWorkspaceId } : {}),
       id: context.id,
       displayName: context.displayName,
       provider: context.provider,

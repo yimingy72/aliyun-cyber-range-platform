@@ -60,6 +60,7 @@ describe('AdminOidcCallbackScreen', () => {
     replace.mockReset();
     fetchMock.mockReset();
     storage.clear();
+    searchParamsState.value = new URLSearchParams('code=oidc-code&state=oidc-state');
     storage.set(ADMIN_OIDC_STATE_STORAGE_KEY, 'oidc-state');
     storage.set(ADMIN_OIDC_CODE_VERIFIER_STORAGE_KEY, 'oidc-code-verifier');
   });
@@ -116,6 +117,42 @@ describe('AdminOidcCallbackScreen', () => {
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: '重新登录' }).getAttribute('href')).toBe('/admin/login');
+  });
+
+  it.each(['network', 'invalid-json'])('offers login recovery when token exchange fails with %s', async failure => {
+    if (failure === 'network') fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    else fetchMock.mockResolvedValueOnce(new Response('invalid-json', { status: 200 }));
+
+    render(<AdminOidcCallbackScreen oidcIssuer="http://localhost:8080/realms/cyber-range" oidcClientId="platform-web" />);
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('管理员登录失败，请稍后重试。'));
+    expect(screen.getByRole('link', { name: '重新登录' }).getAttribute('href')).toBe('/admin/login');
+    expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('offers a fresh login after the identity service rejects authentication', async () => {
+    searchParamsState.value = new URLSearchParams('error=access_denied');
+    render(<AdminOidcCallbackScreen oidcIssuer="http://localhost:8080/realms/cyber-range" oidcClientId="platform-web" />);
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.getByRole('link', { name: '重新登录' }).getAttribute('href')).toBe('/admin/login');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('does not restore a cancelled login when its token response arrives late', async () => {
+    let resolveResponse!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(new Promise<Response>(resolve => { resolveResponse = resolve; }));
+    const view = render(<AdminOidcCallbackScreen oidcIssuer="http://localhost:8080/realms/cyber-range" oidcClientId="platform-web" />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    view.unmount();
+    const accessToken = `header.${Buffer.from(JSON.stringify({ sub: 'old-user', preferred_username: 'old-user', realm_access: { roles: ['user'] } })).toString('base64url')}.signature`;
+    resolveResponse(new Response(JSON.stringify({ access_token: accessToken }), { status: 200 }));
+    await waitFor(() => expect(storage.has(ADMIN_OIDC_STATE_STORAGE_KEY)).toBe(false));
+    expect(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY)).toBeNull();
     expect(replace).not.toHaveBeenCalled();
   });
 });

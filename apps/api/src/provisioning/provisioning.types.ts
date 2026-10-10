@@ -24,6 +24,9 @@ export type RangeProvisionStepReporter = (
 ) => Promise<void> | void;
 
 export type ResolvedProvisioningRuntimeConfig = {
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
+  accountUid?: string | null;
+  cloudAccountContextId?: string | null;
   accessKeyId: string;
   accessKeySecret: string;
   defaultRegion: string;
@@ -45,6 +48,7 @@ export type ProvisioningResourceSummary = RangeResourceSummary & {
 export type RangeProvisionCreateInput = {
   signal?: AbortSignal;
   rangeInstanceId: string;
+  expiresAt?: string;
   templateModulePath: string;
   allocatedCidr: string | null;
   preserveWorkspaceState?: boolean;
@@ -69,9 +73,11 @@ export type RangeProvisionCreateResult = {
 };
 
 export type RangeProvisionDestroyInput = {
+  knownResourceSummary?: RangeResourceSummary;
   signal?: AbortSignal;
   requirePersistedState?: boolean;
   rangeInstanceId: string;
+  expiresAt?: string;
   templateModulePath: string;
   allocatedCidr: string | null;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
@@ -91,5 +97,6 @@ export interface RangeProvisioner {
   readonly mode?: 'opentofu' | 'dry-run';
   create(input: RangeProvisionCreateInput): Promise<RangeProvisionCreateResult>;
   destroy(input: RangeProvisionDestroyInput): Promise<void>;
+  recoverUntrackedResources?(input: RangeProvisionDestroyInput, assertCurrent: () => Promise<void>, persist: (summary: RangeResourceSummary, sourceProvisionJobId: string) => Promise<void>): Promise<void>;
   inspectResources?(input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null>;
 }

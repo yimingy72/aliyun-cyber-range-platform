@@ -164,6 +164,20 @@ vi.mock('./admin-page-cache', () => ({
   ),
 }));
 
+vi.mock('./cloud-workspace-provider', () => ({
+  CloudWorkspaceProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useCloudWorkspace: () => null,
+  cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云',
+}));
+
+vi.mock('../../lib/admin-api', async () => ({
+  ...await vi.importActual<typeof import('../../lib/admin-api')>('../../lib/admin-api'),
+  fetchAuthenticatedAdminProfile: async (_url: string, token: string) => {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString());
+    return { id: payload.sub, username: payload.preferred_username, role: payload.realm_access.roles.includes('admin') ? 'admin' : 'user' };
+  },
+}));
+
 vi.mock('./use-admin-session', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./use-admin-session')>();
 

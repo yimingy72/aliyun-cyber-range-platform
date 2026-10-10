@@ -116,7 +116,7 @@ describe('Admin billing', () => {
       .useValue(repository)
       .overrideProvider(SystemConfigService)
       .useValue({
-        getAccountContext: jest.fn().mockResolvedValue({ accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }),
+        getAccountContext: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', accountUid: '1234567890', accountUidResolved: true, defaultRegion: 'cn-hangzhou', imageImportBucket: '' }),
       })
       .overrideProvider(BillingBssClient)
       .useValue({

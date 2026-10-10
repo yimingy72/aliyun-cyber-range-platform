@@ -22,7 +22,7 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
+      "redirectUris": ["http://localhost:3000/admin/callback", "http://127.0.0.1:3000/admin/callback"],
       "webOrigins": ["http://localhost:3000", "http://127.0.0.1:3000"],
       "protocolMappers": [
         {
@@ -96,7 +96,7 @@
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "+"
+        "post.logout.redirect.uris": "http://localhost:3000/admin/login##http://127.0.0.1:3000/admin/login"
       }
     },
     {

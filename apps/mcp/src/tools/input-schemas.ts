@@ -99,6 +99,11 @@ export const rangeInstanceIdInputSchema = z.object({ rangeInstanceId: identifier
 export const rangeInstanceGetInputSchema = rangeInstanceIdInputSchema.extend({
   includeNetworkDiagnostics: z.boolean().optional().describe('仅在需要核验网络时设为 true；只读查询该实例绑定账号和地域中的 ECS、网卡、安全组、ACL、NAT 与路由白名单事实，不接受云资源 ID。'),
 }).strict();
+export const rangeNodePackImageValidateInputSchema = rangeInstanceIdInputSchema.extend({
+  nodeId: identifier.describe('当前编排实例中的源 CVM 节点 ID，服务端核对原账号和 owner。'),
+  displayName: z.string().trim().min(1).max(60).describe('拟打包镜像的准确名称；该核验不会创建镜像。'),
+  description: z.string().max(256).optional(),
+}).strict();
 export const rangeLaunchInputSchema = operationSchema.extend({
   templateId: identifier,
   name: identifier,

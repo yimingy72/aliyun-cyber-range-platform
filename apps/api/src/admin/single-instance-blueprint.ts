@@ -7,6 +7,7 @@ import type { ScenarioTemplateSpec } from '../../../../packages/scenario-runtime
 import type { PlatformImageAssetRecord } from './admin.repository';
 
 type BuildSingleInstanceBlueprintInput = {
+  resolvedInstanceType?: string;
   name: string;
   hostKey: string;
   hostName: string;
@@ -23,6 +24,7 @@ type BuildSingleInstanceBlueprintInput = {
 };
 
 export function buildSingleInstanceBlueprint(input: BuildSingleInstanceBlueprintInput) {
+  if (input.image.provider === 'tencent_cloud' && !input.resolvedInstanceType) throw new Error('Tencent blueprint requires its exact saleable instance type');
   const instanceTypePolicyKey = `${input.hostKey}-instance-type`;
   const imagePolicyKey = `${input.hostKey}-image`;
   const runtimeScenarioTemplateSpec: ScenarioTemplateSpec = {
@@ -31,7 +33,7 @@ export function buildSingleInstanceBlueprint(input: BuildSingleInstanceBlueprint
       name: input.name,
       slug: input.name,
       version: 'single-instance',
-      cloudProvider: 'alibaba_cloud',
+      cloudProvider: input.image.provider as ScenarioTemplateSpec['metadata']['cloudProvider'],
       iacType: 'opentofu',
       description: `Single instance runtime for ${input.name}`,
     },
@@ -99,7 +101,7 @@ export function buildSingleInstanceBlueprint(input: BuildSingleInstanceBlueprint
         {
           key: instanceTypePolicyKey,
           mode: 'fixed',
-          preferredInstanceTypes: [...resolvePreferredInstanceTypes(input.cpu, input.memory)],
+          preferredInstanceTypes: input.resolvedInstanceType ? [input.resolvedInstanceType] : [...resolvePreferredInstanceTypes(input.cpu, input.memory)],
         },
       ],
     },

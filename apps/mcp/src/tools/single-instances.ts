@@ -47,11 +47,20 @@ const singleInstanceAccessOutputSchema = resultOutputSchema(
 const singleInstanceCloudResourceStatusOutputSchema = resultOutputSchema(
   z.object({
     singleInstanceId: z.string().describe('平台独立实例 ID。'),
-    regionId: z.string().describe('执行阿里云查询的地域。'),
-    exists: z.boolean().describe('阿里云中是否仍存在带该 RangeInstanceId 标签的 ECS。'),
-    instanceIds: z.array(z.string()).describe('当前匹配标签的 ECS 实例 ID 列表。'),
+    regionId: z.string().describe('实例原冻结云账号的查询地域。'),
+    exists: z.boolean().describe('原云账号中是否仍存在带该 RangeInstanceId 标签的 CVM/ECS；此字段不表示磁盘已消失。'),
+    instanceIds: z.array(z.string()).describe('当前匹配标签的 CVM/ECS 实例 ID 列表。'),
     checkedAt: z.string().describe('平台完成云端查询的 ISO-8601 时间。'),
     matchedInstances:z.array(z.object({instanceId:z.string(),ownerUserId:z.string().nullable(),tags:z.record(z.string(),z.string())})).optional().describe('真实云标签白名单；ownerUserId来自PlatformUserId，供核对owner和batch。'),
+    recordedResourceStatus: z.object({
+      provider: z.literal('tencent_cloud'), cloudAccountContextId: z.string(), cloudAccountUid: z.string(), regionId: z.string(), checkedAt: z.string(),
+      coverage: z.literal('persisted_instance_compute_resource_ids'),
+      allKnownAbsent: z.boolean().nullable().describe('仅本次核验的持久ID全部不存在；空集合、未证明磁盘或未覆盖账本类型为null，不代表整个账户费用已清空。'),
+      resources: z.array(z.object({ cloudResourceType: z.enum(['ecs','disk','eip','nat_gateway']), cloudResourceId: z.string(),
+        sources: z.array(z.enum(['inventory','ledger'])), ledgerIds: z.array(z.string()), exists: z.boolean() })),
+      evidence: z.array(z.object({ provider: z.literal('tencent_cloud'), cloudAccountContextId: z.string(), accountUid: z.string(), regionId: z.string(), action: z.string(), requestIds: z.array(z.string()), observedAt: z.string() })),
+      excludedUnverifiedDiskIds: z.array(z.string()), unsupportedLedgerResourceTypes: z.array(z.string()),
+    }).optional().describe('腾讯云实例的已知CVM/CBS/EIP/NAT物理ID只读核验，包含已released历史账本。空响应仅在完整分页成功后附云RequestId。'),
   }),
 );
 
@@ -110,10 +119,10 @@ export const singleInstanceTools: ToolDefinition[] = [
     name: 'single_instance_cloud_resource_status',
     title: '核验独立实例云资源',
     description:
-      '按独立实例的 RangeInstanceId 标签查询阿里云 ECS 是否仍存在。该工具只读取云资源状态，不会创建、停止或释放任何资源。',
+      '按独立实例原冻结账号查询 CVM/ECS 标签状态，并核验腾讯实例持久库存及账本中的已知 CVM/CBS/EIP/NAT ID（含 released 历史）。只读，不接收任意云资源 ID；结果不代表整个账户费用清空。',
     requiredScopes: ['instances:read'],
     readOnlyHint: true,
-    inputSchema: singleInstanceIdInputSchema,
+    inputSchema: singleInstanceIdInputSchema.strict(),
     outputSchema: singleInstanceCloudResourceStatusOutputSchema,
     call(context, args) {
       return context.client.getSingleInstanceCloudResourceStatus(

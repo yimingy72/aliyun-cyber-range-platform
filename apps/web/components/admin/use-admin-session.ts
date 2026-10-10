@@ -20,8 +20,8 @@ export function useAdminSession() {
 
   const login = useCallback((nextSession: AdminSessionPayload) => writeAdminSession(nextSession), []);
   const logout = useCallback(() => {
-    clearAdminSession();
-  }, []);
+    if (session?.token && readAdminSession()?.token === session.token) clearAdminSession();
+  }, [session?.token]);
 
   return useMemo(
     () => ({

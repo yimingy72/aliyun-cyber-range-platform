@@ -1,6 +1,9 @@
 import { createHmac, randomUUID } from 'node:crypto';
 
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
+import { SystemConfigService } from './system-config.service';
 
 import { ADMIN_REPOSITORY, type AdminRepository, type CloudImageSnapshotRecord } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -10,12 +13,29 @@ import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { imageRpc, cloudItems, cloudPage, cloudTags, AliyunImageRpcError } from './aliyun-image-rpc';
 import { PrismaService } from '../database/prisma.service';
+import { requestTencentCloud, TencentCloudRequestError } from './tencent-cloud-client';
+import { describeTencentImages, describeTencentSnapshot, tagTencentImageResources, deleteTencentImage, deleteTencentSnapshot, tencentImageRequest, type TencentSnapshot } from './tencent-image-rpc';
+type ManagedCosBucket = { id: string; bucketName: string; cloudWorkspaceId: string; cloudAccountContextId: string; cloudAccountUid: string; appId: string; regionId: string; cloudProvider: 'tencent_cloud' };
+type CosObjectInput = { contextCredentials: CloudAccountContextCredentials; bucketName: string; objectKey: string; method: 'PUT' | 'GET' | 'HEAD' | 'DELETE'; headers?: Record<string,string>; expiresAt?: Date };
+type ManagedCosBuckets = { withImportBucket<T>(input: { cloudAccountContextId: string; creatorUserId: string }, work: (bucket: ManagedCosBucket) => Promise<T>): Promise<T>;
+  getOwnedBucket(input: { bucketId: string; cloudAccountContextId: string; cloudAccountUid: string; regionId: string }): Promise<ManagedCosBucket>;
+  cleanupIfIdle(input: { bucketId: string; cloudAccountContextId: string; cloudAccountUid: string; regionId: string }): Promise<unknown>;
+  presignObject(input: CosObjectInput): Promise<{ url: string; headers: Record<string,string> }>;
+  requestObject(input: CosObjectInput): Promise<Response>;
+  refreshPendingBuckets?(): Promise<unknown> };
+
 
 const IMAGE_IMPORT_UPLOAD_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_IMAGE_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 const DEFAULT_IMAGE_IMPORT_MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
 type ImageImportJobRow = {
+  cloudProvider?: 'alibaba_cloud' | 'tencent_cloud';
+  managedBucketId?: string | null;
+  sourceObjectProof?: unknown;
+  sourceDiskIds?: unknown;
+  osVersion?: string | null;
+  cloudWorkspaceId?: string;
   id: string;
   cloudAccountContextId: string;
   cloudAccountUid: string | null;
@@ -57,7 +77,7 @@ type ImageImportJobRow = {
   updatedAt: Date;
 };
 
-export type ImageImportJobView = Omit<ImageImportJobRow, 'defaultPassword' | 'objectKey' | 'sourceSizeBytes' | 'leaseToken' | 'leaseExpiresAt'> & {
+export type ImageImportJobView = Omit<ImageImportJobRow, 'sourceObjectProof' | 'defaultPassword' | 'objectKey' | 'sourceSizeBytes' | 'leaseToken' | 'leaseExpiresAt'> & {
   sourceSizeBytes: number;
 };
 
@@ -67,6 +87,8 @@ export class ImageImportsService {
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly prisma: PrismaService,
     private readonly cloudAccountContextsService: CloudAccountContextsService,
+    @Optional() private readonly systemConfigService?: SystemConfigService,
+    @Optional() @Inject('TENCENT_COS_BUCKETS') private readonly cosBuckets?: ManagedCosBuckets,
   ) {}
 
   async createUpload(input: CreateImageImportDto, currentUser: SessionUserProfile) {
@@ -76,59 +98,35 @@ export class ImageImportsService {
       throw new BadRequestException(`镜像文件超出单次上传上限（${this.readMaxUploadBytes()} 字节）。`);
     }
 
-    const cloudContext = await this.cloudAccountContextsService.getCredentials(input.cloudContextId, {
-      requireReady: true,
-      requireActive: true,
-      requireImageImportBucket: true,
-    });
-    const now = new Date();
-    const uploadExpiresAt = new Date(now.getTime() + IMAGE_IMPORT_UPLOAD_TTL_MS);
+    const initial = await this.cloudAccountContextsService.getCredentials(input.cloudContextId, { requireReady: true, requireActive: true });
+    const now = new Date(), uploadExpiresAt = new Date(now.getTime() + IMAGE_IMPORT_UPLOAD_TTL_MS);
     const sourceFileName = this.normalizeSourceFileName(input.sourceFileName);
     this.assertSourceFileMatchesFormat(sourceFileName, input.imageFormat);
     const objectKey = `image-imports/${currentUser.id}/${randomUUID()}/${sourceFileName}`;
     const contentType = input.sourceContentType?.trim() || 'application/octet-stream';
-    const job = await this.prisma.imageImportJob.create({
-      data: {
-        cloudAccountContextId: cloudContext.id,
-        cloudAccountUid: cloudContext.accountUid,
-        regionId: cloudContext.regionId,
-        imageImportBucket: cloudContext.imageImportBucket,
-        ownerUserId: currentUser.id,
-        displayName: input.displayName.trim(),
-        defaultHostName: input.defaultHostName?.trim() || null,
-        defaultPassword: encryptPlatformImageDefaultPassword(input.defaultPassword),
-        description: input.description?.trim() || null,
-        osType: input.osType,
-        platform: input.platform?.trim() || null,
-        architecture: input.architecture,
-        bootMode: input.bootMode,
-        imageFormat: input.imageFormat,
-        systemDiskSize: input.systemDiskSize,
-        sourceFileName,
-        sourceContentType: contentType,
-        sourceSizeBytes: String(sourceSizeBytes),
-        objectKey,
-        uploadExpiresAt,
-      },
-    });
-
-    return {
-      job: this.toView(job),
-      upload: {
-        method: 'PUT' as const,
-        url: this.createPresignedPutUrl({
-          bucket: cloudContext.imageImportBucket,
-          regionId: cloudContext.regionId,
-          objectKey,
-          contentType,
-          accessKeyId: cloudContext.accessKeyId,
-          accessKeySecret: cloudContext.accessKeySecret,
-          expiresAt: uploadExpiresAt,
-        }),
-        headers: { 'Content-Type': contentType },
-        expiresAt: uploadExpiresAt,
-      },
+    if (contentType.length > 256 || /[\r\n]/.test(contentType)) throw new BadRequestException('镜像内容类型无效。');
+    const password = encryptPlatformImageDefaultPassword(input.defaultPassword);
+    const create = async (cloudContext: CloudAccountContextCredentials, bucket?: ManagedCosBucket) => {
+      const job = await this.prisma.imageImportJob.create({ data: {
+        cloudProvider: cloudContext.provider, managedBucketId: bucket?.id, osVersion: input.osVersion?.trim() || null,
+        cloudAccountContextId: cloudContext.id, cloudAccountUid: cloudContext.accountUid, regionId: cloudContext.regionId,
+        imageImportBucket: bucket?.bucketName ?? cloudContext.imageImportBucket, ownerUserId: currentUser.id,
+        displayName: input.displayName.trim(), defaultHostName: input.defaultHostName?.trim() || null, defaultPassword: password,
+        description: input.description?.trim() || null, osType: input.osType, platform: input.platform?.trim() || null,
+        architecture: input.architecture, bootMode: input.bootMode, imageFormat: input.imageFormat, systemDiskSize: input.systemDiskSize,
+        sourceFileName, sourceContentType: contentType, sourceSizeBytes: String(sourceSizeBytes), objectKey, uploadExpiresAt } });
+      const signed = bucket ? await this.requireCos().presignObject({ contextCredentials: cloudContext, bucketName: bucket.bucketName, objectKey, method: 'PUT', expiresAt: uploadExpiresAt,
+        headers: { 'content-type': contentType, 'content-length': String(sourceSizeBytes), 'x-cos-forbid-overwrite': 'true',
+          'x-cos-meta-platform-image-job': job.id, 'x-cos-meta-platform-image-owner': job.ownerUserId, 'x-cos-meta-platform-cloud-context': job.cloudAccountContextId } })
+        : { url: this.createPresignedPutUrl({ bucket: cloudContext.imageImportBucket, regionId: cloudContext.regionId, objectKey, contentType,
+            accessKeyId: cloudContext.accessKeyId, accessKeySecret: cloudContext.accessKeySecret, expiresAt: uploadExpiresAt }), headers: { 'Content-Type': contentType } };
+      return { job: this.toView(job), upload: { method: 'PUT' as const, url: signed.url, headers: signed.headers, expiresAt: uploadExpiresAt } };
     };
+    if (initial.provider === 'tencent_cloud') {
+      await this.validateTencentImportOs(initial, input);
+      return this.requireCos().withImportBucket({ cloudAccountContextId: initial.id, creatorUserId: currentUser.id }, bucket => create(initial, bucket));
+    }
+    return create(await this.cloudAccountContextsService.getCredentials(input.cloudContextId, { requireReady: true, requireActive: true, requireImageImportBucket: true }));
   }
 
   async completeUpload(id: string, currentUser: SessionUserProfile) {
@@ -146,7 +144,7 @@ export class ImageImportsService {
     }
 
     const context = await this.boundContext(job);
-    const uploadedObject = await this.headOssObject(context, job.objectKey);
+    const uploadedObject = await this.headOssObject(context, job.objectKey, job);
 
     if (!uploadedObject) {
       throw new BadRequestException('OSS 中未找到已上传的镜像文件，请完成上传后再导入。');
@@ -159,6 +157,7 @@ export class ImageImportsService {
       throw new BadRequestException('上传文件大小与提交信息不一致，请重新上传镜像文件。');
     }
 
+    if (context.provider === 'tencent_cloud' && uploadedObject) job = await this.updateJob(job, { sourceObjectProof: uploadedObject });
     // Persist intent before the request: a timeout/crash must never become a fresh import.
     job = await this.updateJob(job, { status: 'importing', submissionRejected: false, uploadCompletedAt: job.uploadCompletedAt ?? new Date(), errorMessage: null });
     let imageId: string;
@@ -174,7 +173,7 @@ export class ImageImportsService {
       taskId = response.TaskId?.trim() || null;
     } catch (error) {
       const message = error instanceof Error ? error.message : '镜像导入请求失败。';
-      const rejected = error instanceof AliyunImageRpcError && /^(Forbidden(?:\.|$)|InvalidParameter(?:\.|$)|MissingParameter(?:\.|$)|InvalidAccessKeyId(?:\.|$)|SignatureDoesNotMatch(?:\.|$)|Throttling(?:\.|$))/.test(error.cloudCode ?? '');
+      const rejected = error instanceof TencentCloudRequestError ? /^(UnauthorizedOperation|AuthFailure|InvalidParameter|MissingParameter|InvalidImageName|InvalidImageOsType|InvalidImageOsVersion|ImageQuotaLimitExceeded)(?:[.]|$)/.test(error.code) : error instanceof AliyunImageRpcError && /^(Forbidden(?:\.|$)|InvalidParameter(?:\.|$)|MissingParameter(?:\.|$)|InvalidAccessKeyId(?:\.|$)|SignatureDoesNotMatch(?:\.|$)|Throttling(?:\.|$))/.test(error.cloudCode ?? '');
       const retryable = await this.updateJob(job, rejected
         ? { status: 'failed', submissionRejected: true, errorMessage: message }
         : { errorMessage: `导入提交结果未确认，正在按来源标记恢复；禁止重复提交。${message}` });
@@ -247,7 +246,7 @@ export class ImageImportsService {
       const failed = /Failed|Error|Unavailable/i.test(rawStatus);
       const syncedAt = new Date();
       await this.adminRepository.upsertImageSnapshots({
-        provider: 'alibaba_cloud',
+        provider: context.provider,
         accountUid: context.accountUid,
         regionId: context.regionId,
         scope: 'custom',
@@ -255,6 +254,7 @@ export class ImageImportsService {
           {
             imageId: importJob.imageId!,
             sourceImageName: image.ImageName?.trim() || importJob.displayName,
+            minimumSystemDiskSize: image.ImageSize,
             osType: image.OSType?.trim() || importJob.osType,
             platform: image.Platform?.trim() || importJob.platform,
             architecture: image.Architecture?.trim() || importJob.architecture,
@@ -293,10 +293,30 @@ export class ImageImportsService {
   }
 
   async refreshPendingImports() {
+    const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
+    const workspaceFilter = spaces ? { cloudWorkspaceId: { in: spaces.map(space => space.id) } } : {};
+    const [jobs, expiredUploads, terminalJobs] = await runInSystemCloudWorkspaceScope(() => this.listPendingImports(workspaceFilter));
+    const polling = await Promise.allSettled(jobs.map(job => runInExecutionCloudWorkspace(this.systemConfigService, job.cloudWorkspaceId,
+      () => this.refreshImport(job.id), { provider: job.cloudProvider ?? 'alibaba_cloud', accountUid: job.cloudAccountUid })));
+    const expired = await Promise.allSettled(expiredUploads.map(job => runInExecutionCloudWorkspace(this.systemConfigService, job.cloudWorkspaceId,
+      () => this.withClaim(job.id, fresh => this.cancelExpiredUpload(fresh)), { provider: job.cloudProvider ?? 'alibaba_cloud', accountUid: job.cloudAccountUid })));
+    const terminal = await Promise.allSettled(terminalJobs.map(job => runInExecutionCloudWorkspace(this.systemConfigService, job.cloudWorkspaceId,
+      () => this.withClaim(job.id, fresh => this.cleanupTerminalArtifacts(fresh)), { provider: job.cloudProvider ?? 'alibaba_cloud', accountUid: job.cloudAccountUid })));
+    if ([...polling, ...expired, ...terminal].some(result => result.status === 'rejected')) {
+      throw new Error('Image import polling failed for a source workspace; other pending jobs were still processed');
+    }
+    return jobs.length + expiredUploads.length + terminalJobs.length;
+  }
+
+  async refreshManagedBuckets() {
+    return this.cosBuckets?.refreshPendingBuckets?.();
+  }
+
+  private async listPendingImports(workspaceFilter: { cloudWorkspaceId?: { in: string[] } }) {
     const [jobs, expiredUploads, terminalJobs] = await Promise.all([
       this.prisma.imageImportJob.findMany({
-        where: { OR: [{ status: 'importing' }, { status: 'failed', imageId: null, submissionRejected: false }] },
-        select: { id: true },
+        where: { ...workspaceFilter, OR: [{ status: 'importing' }, { status: 'failed', imageId: null, submissionRejected: false }] },
+        select: { id: true, cloudWorkspaceId: true, cloudAccountUid: true, cloudProvider: true },
         take: 20,
         orderBy: [
           { lastPolledAt: { sort: 'asc', nulls: 'first' } },
@@ -305,6 +325,7 @@ export class ImageImportsService {
       }),
       this.prisma.imageImportJob.findMany({
         where: {
+          ...workspaceFilter,
           OR: [{ status: 'awaiting_upload' }, { status: 'failed', submissionRejected: true }],
           imageId: null,
           uploadExpiresAt: { lt: new Date() },
@@ -314,6 +335,7 @@ export class ImageImportsService {
       }),
       this.prisma.imageImportJob.findMany({
         where: {
+          ...workspaceFilter,
           OR: [
             {
               temporaryObjectDeletedAt: null,
@@ -333,10 +355,7 @@ export class ImageImportsService {
         orderBy: { updatedAt: 'asc' },
       }),
     ]);
-    await Promise.all(jobs.map((job) => this.refreshImport(job.id)));
-    await Promise.all(expiredUploads.map(job => this.withClaim(job.id, fresh => this.cancelExpiredUpload(fresh))));
-    await Promise.all(terminalJobs.map(job => this.withClaim(job.id, fresh => this.cleanupTerminalArtifacts(fresh))));
-    return jobs.length + expiredUploads.length + terminalJobs.length;
+    return [jobs, expiredUploads, terminalJobs] as const;
   }
 
   private async getAccessibleJob(id: string, currentUser: SessionUserProfile): Promise<ImageImportJobRow> {
@@ -376,7 +395,7 @@ export class ImageImportsService {
 
     const syncedAt = new Date();
     await this.adminRepository.upsertImageSnapshots({
-      provider: 'alibaba_cloud',
+      provider: context.provider,
       accountUid: context.accountUid,
       regionId: context.regionId,
       scope: 'custom',
@@ -417,6 +436,7 @@ export class ImageImportsService {
     accountUid: string;
     billingStartAt: Date;
     imageImportJobId: string;
+    cloudProvider: 'alibaba_cloud' | 'tencent_cloud';
   }) {
     const tagsSnapshot = buildBillingTags({
       billingScope: 'platform',
@@ -425,7 +445,7 @@ export class ImageImportsService {
       billingStartAt: input.billingStartAt,
     });
     const legacySnapshotLedger = await this.adminRepository.findBillingLedgerResource({
-      cloudProvider: 'alibaba_cloud',
+      cloudProvider: input.cloudProvider,
       regionId: input.regionId,
       cloudResourceId: input.imageId,
       cloudResourceType: 'snapshot',
@@ -444,7 +464,7 @@ export class ImageImportsService {
 
     for (const resource of resources) {
       const existing = await this.adminRepository.findBillingLedgerResource({
-        cloudProvider: 'alibaba_cloud',
+        cloudProvider: input.cloudProvider,
         regionId: input.regionId,
         cloudResourceId: resource.cloudResourceId,
         cloudResourceType: resource.cloudResourceType,
@@ -463,7 +483,7 @@ export class ImageImportsService {
       }
 
       await this.adminRepository.createBillingLedgerResource({
-        cloudProvider: 'alibaba_cloud',
+        cloudProvider: input.cloudProvider,
         cloudAccountUid: input.accountUid,
         regionId: input.regionId,
         cloudResourceId: resource.cloudResourceId,
@@ -479,7 +499,7 @@ export class ImageImportsService {
 
   private async resolveSnapshot(context: ImportContext, imageId: string): Promise<CloudImageSnapshotRecord> {
     const [snapshot] = await this.adminRepository.listImageSnapshots({
-      provider: 'alibaba_cloud',
+      provider: context.provider,
       accountUid: context.accountUid,
       regionId: context.regionId,
       scope: 'custom',
@@ -494,6 +514,19 @@ export class ImageImportsService {
   }
 
   private async importImage(context: ImportContext, job: ImageImportJobRow) {
+    if (context.provider === 'tencent_cloud') {
+      this.assertTencentObjectProof(job);
+      if (!job.platform || !job.osVersion || !job.sourceObjectProof) throw new ConflictException('腾讯云导入缺少明确 OS 版本或已上传对象来源证明。');
+      const signed = await this.requireCos().presignObject({ contextCredentials: context, bucketName: context.imageImportBucket, objectKey: job.objectKey, method: 'GET', expiresAt: new Date(Date.now() + this.readMaxImportDurationMs()) });
+      const tags = { ...buildBillingTags({ billingScope: 'platform', platformResourceType: 'image', platformImageImportJobId: job.id, billingStartAt: job.uploadCompletedAt ?? job.createdAt }),
+        CloudProvider: 'tencent_cloud', CloudAccountUid: context.accountUid, CloudAccountContextId: context.id,
+        CyberRangeOwnerUserId: job.ownerUserId, CyberRangeCloudContextId: job.cloudAccountContextId };
+      await this.assertClaim(context);
+      return tencentImageRequest<{ ImageId?: string; TaskId?: string }>(context, 'cvm', 'ImportImage', { ImageName: job.displayName,
+        ...(job.description ? { ImageDescription: job.description } : {}), Architecture: job.architecture === 'arm64' ? 'arm_64' : job.architecture,
+        OsType: job.platform, OsVersion: job.osVersion, ImageUrl: signed.url, BootMode: job.bootMode === 'BIOS' ? 'Legacy BIOS' : 'UEFI', Force: false,
+        TagSpecification: [{ ResourceType: 'image', Tags: Object.entries(tags).map(([Key,Value]) => ({Key,Value})) }] });
+    }
     const billingTags = buildBillingTags({
       billingScope: 'platform',
       platformResourceType: 'image',
@@ -534,6 +567,8 @@ export class ImageImportsService {
   }
 
   private async describeImages(context: ImportContext, parameters: Record<string, string>) {
+    if (context.provider === 'tencent_cloud') { await this.assertClaim(context); return describeTencentImages(context, parameters.ImageId ? { ImageId: parameters.ImageId } : {
+      ...(parameters.SnapshotId ? { SnapshotId: parameters.SnapshotId } : {}), ...(parameters['Tag.1.Key'] ? { tags: { [parameters['Tag.1.Key']]: parameters['Tag.1.Value'] } } : {}) }); }
     const images: AliyunImage[] = [];
     let page = 1, expectedTotal: number | undefined;
     do {
@@ -558,6 +593,7 @@ export class ImageImportsService {
 
   private assertImageOwnership(job: ImageImportJobRow, image: AliyunImage) {
     const tags = cloudTags(image.Tags);
+    if (job.cloudProvider === 'tencent_cloud' && (tags.CloudProvider !== 'tencent_cloud' || tags.CloudAccountUid !== job.cloudAccountUid || tags.CloudAccountContextId !== job.cloudAccountContextId)) throw new ConflictException('腾讯云导入镜像缺少冻结厂商与账号来源证明。');
     if ((job.imageId && image.ImageId !== job.imageId) || tags.CreatedBy !== 'cyber-range-platform'
       || tags.PlatformImageImportJobId !== job.id || tags.CyberRangeOwnerUserId !== job.ownerUserId
       || tags.CyberRangeCloudContextId !== job.cloudAccountContextId) throw new ConflictException('导入镜像来源或 owner 证明不匹配。');
@@ -600,12 +636,21 @@ export class ImageImportsService {
       const snapshot = await this.describeSnapshot(context, sid);
       if (!snapshot) throw new Error('导入快照暂不可见。');
       const tags = cloudTags(snapshot.Tags);
+      if (context.provider === 'tencent_cloud') {
+        const proof = snapshot as TencentSnapshot;
+        if (snapshotIds.length !== 1 || !job.sourceObjectProof || proof.CopyFromRemote || proof.SnapshotType !== 'PRIVATE_SNAPSHOT' || proof.ShareReference !== 0
+          || proof.ImageIds.some(id => id !== job.imageId) || !proof.SourceDiskId.startsWith('disk-') || !Number.isFinite(Date.parse(proof.CreationTime))
+          || Date.parse(proof.CreationTime) < (job.uploadCompletedAt ?? job.createdAt).getTime() - 30000 || Date.parse(proof.CreationTime) > Date.now() + 30000)
+          throw new ConflictException('腾讯云导入快照缺少完整且新生成的私有来源证明。');
+        if (Array.isArray(job.sourceDiskIds) && job.sourceDiskIds.length && (job.sourceDiskIds.length !== 1 || job.sourceDiskIds[0] !== proof.SourceDiskId)) throw new ConflictException('腾讯云导入源盘证明已发生变化。');
+        job = await this.updateJob(job, { sourceDiskIds: [proof.SourceDiskId] });
+      }
       if ((tags.PlatformImageImportJobId && tags.PlatformImageImportJobId !== job.id)
         || (tags.CreatedBy && tags.CreatedBy !== 'cyber-range-platform') || tags.PlatformPackedImageArtifactId
         || (tags.CyberRangeOwnerUserId && tags.CyberRangeOwnerUserId !== job.ownerUserId)) throw new ConflictException('导入快照已有其它来源，拒绝覆盖。');
     }
-    await this.syncImportedImageBillingLedger({ imageId: job.imageId, snapshotIds, platformImageAssetId, regionId: context.regionId, accountUid: context.accountUid, billingStartAt: job.uploadCompletedAt ?? job.createdAt, imageImportJobId: job.id });
-    await this.tagEcsResources(context, 'image', [job.imageId], imageTags);
+    await this.syncImportedImageBillingLedger({ imageId: job.imageId!, snapshotIds, platformImageAssetId, regionId: context.regionId, accountUid: context.accountUid, billingStartAt: job.uploadCompletedAt ?? job.createdAt, imageImportJobId: job.id, cloudProvider: context.provider });
+    await this.tagEcsResources(context, 'image', [job.imageId!], imageTags);
     for (const sid of snapshotIds) await this.tagEcsResources(context, 'snapshot', [sid], { ...imageTags, PlatformResourceType: 'snapshot', CyberRangeOwnerUserId: job.ownerUserId, CyberRangeCloudContextId: job.cloudAccountContextId });
     return snapshotIds;
   }
@@ -616,6 +661,7 @@ export class ImageImportsService {
     resourceIds: string[],
     tags: Record<string, string>,
   ) {
+    if (context.provider === 'tencent_cloud') { await this.assertClaim(context); return tagTencentImageResources(context, resourceType, resourceIds, tags); }
     await this.performAliyunEcsRequest({
       ...context,
       action: 'TagResources',
@@ -629,16 +675,28 @@ export class ImageImportsService {
 
   private async performAliyunEcsRequest<ResponsePayload>(input: ImportContext & { action: string; parameters: Record<string, string> }): Promise<ResponsePayload> {
     await this.assertClaim(input);
+    if (input.provider === 'tencent_cloud') {
+      if (input.action === 'DeleteImage') return deleteTencentImage(input, input.parameters.ImageId) as Promise<ResponsePayload>;
+      if (input.action === 'DeleteSnapshot') return deleteTencentSnapshot(input, input.parameters.SnapshotId) as Promise<ResponsePayload>;
+      throw new ConflictException('腾讯云导入 RPC 未匹配已核验的接口。');
+    }
     return imageRpc<ResponsePayload>(input, input.action, input.parameters);
   }
 
-  private async headOssObject(context: ImportContext, objectKey: string) {
+  private async headOssObject(context: ImportContext, objectKey: string, job?: ImageImportJobRow) {
     const response = await this.ossRequest({ context, objectKey, method: 'HEAD' });
 
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(`OSS 文件核验失败（HTTP ${response.status}）。`);
 
     const contentLength = Number(response.headers.get('content-length'));
+    if (context.provider === 'tencent_cloud') {
+      if (!job || response.headers.get('x-cos-meta-platform-image-job') !== job.id || response.headers.get('x-cos-meta-platform-image-owner') !== job.ownerUserId
+        || response.headers.get('x-cos-meta-platform-cloud-context') !== job.cloudAccountContextId || !response.headers.get('etag') || !Number.isSafeInteger(contentLength))
+        throw new ConflictException('COS 上传对象的 job、owner、context 或大小证明不匹配。');
+      return { provider: 'tencent_cloud', bucketId: job.managedBucketId!, bucketName: job.imageImportBucket!, objectKey, jobId: job.id, ownerUserId: job.ownerUserId,
+        cloudAccountContextId: job.cloudAccountContextId, cloudAccountUid: job.cloudAccountUid!, regionId: job.regionId!, contentLength, etag: response.headers.get('etag')!, verifiedAt: new Date().toISOString() };
+    }
     return {
       contentLength: Number.isSafeInteger(contentLength) && contentLength >= 0 ? contentLength : null,
     };
@@ -646,6 +704,7 @@ export class ImageImportsService {
 
   private async deleteOssObject(context: ImportContext, objectKey: string) {
     const response = await this.ossRequest({ context, objectKey, method: 'DELETE' });
+    if (context.provider === 'tencent_cloud' && (response.ok || response.status === 404)) return (await this.ossRequest({ context, objectKey, method: 'HEAD' })).status === 404;
     return response.ok || response.status === 404;
   }
 
@@ -655,6 +714,7 @@ export class ImageImportsService {
     method: 'HEAD' | 'DELETE';
   }) {
     await this.assertClaim(input.context);
+    if (input.context.provider === 'tencent_cloud') return this.requireCos().requestObject({ contextCredentials: input.context, bucketName: input.context.imageImportBucket, objectKey: input.objectKey, method: input.method });
     const date = new Date().toUTCString();
     const canonicalResource = `/${input.context.imageImportBucket}/${input.objectKey}`;
     const stringToSign = `${input.method}\n\n\n${date}\n${canonicalResource}`;
@@ -759,6 +819,7 @@ export class ImageImportsService {
       const image = await this.describeImage(context, job.imageId);
       if (image) {
         this.assertImageOwnership(job, image);
+        if (context.provider === 'tencent_cloud' && image.Status !== 'Available' && !/Failed|UnAvailable/i.test(image.Status ?? '')) throw new ConflictException('腾讯云导入镜像操作尚未进入可清理终态。');
         const ids = extractImageSnapshotIds(image);
         if (!ids.length) throw new Error('导入镜像快照清单尚未完整，保留云镜像等待核验。');
         if (job.backingSnapshotIds.some(id => !ids.includes(id))) throw new Error('导入镜像快照绑定发生变化。');
@@ -772,11 +833,18 @@ export class ImageImportsService {
       job = await this.updateJob(job, { cloudImageDeletedAt: new Date() });
     }
     await this.releaseImportLedger(context, job, job.imageId!, 'image');
-    await this.adminRepository.upsertImageSnapshots({ provider: 'alibaba_cloud', accountUid: context.accountUid, regionId: context.regionId, scope: 'custom', snapshots: [{ imageId: job.imageId!, sourceImageName: job.displayName, status: 'Deleted', isAvailable: false, lastSyncedAt: new Date() }] });
+    await this.adminRepository.upsertImageSnapshots({ provider: context.provider, accountUid: context.accountUid, regionId: context.regionId, scope: 'custom', snapshots: [{ imageId: job.imageId!, sourceImageName: job.displayName, status: 'Deleted', isAvailable: false, lastSyncedAt: new Date() }] });
     for (const sid of job.backingSnapshotIds) {
       if (!job.deletedSnapshotIds.includes(sid)) {
         const snapshot = await this.describeSnapshot(context, sid);
         if (snapshot) {
+          if (context.provider === 'tencent_cloud') {
+            this.assertTencentObjectProof(job);
+            const proof = snapshot as TencentSnapshot;
+            if (!Array.isArray(job.sourceDiskIds) || !job.sourceDiskIds.includes(proof.SourceDiskId) || proof.CopyFromRemote || proof.SnapshotType !== 'PRIVATE_SNAPSHOT' || proof.ShareReference !== 0
+              || !Number.isFinite(Date.parse(proof.CreationTime)) || Date.parse(proof.CreationTime) < (job.uploadCompletedAt ?? job.createdAt).getTime() - 30000)
+              throw new ConflictException('腾讯云导入快照来源不匹配，保留清理与费用材料。');
+          }
           const tags = cloudTags(snapshot.Tags);
           if (tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformImageImportJobId !== job.id
             || tags.CyberRangeOwnerUserId !== job.ownerUserId || tags.CyberRangeCloudContextId !== job.cloudAccountContextId) throw new Error('快照缺少匹配的导入来源证明。');
@@ -795,6 +863,7 @@ export class ImageImportsService {
   }
 
   private async describeSnapshot(context: ImportContext, sid: string) {
+    if (context.provider === 'tencent_cloud') { await this.assertClaim(context); return describeTencentSnapshot(context, sid); }
     const body = await this.performAliyunEcsRequest<unknown>({ ...context, action: 'DescribeSnapshots', parameters: { SnapshotIds: JSON.stringify([sid]), Status: 'all', PageNumber: '1', PageSize: '100' } });
     const rows = cloudItems<{ SnapshotId: string; Usage?: string; Tags?: unknown }>(body, 'Snapshots', 'Snapshot');
     if (rows.length > 1 || rows.some(row => row.SnapshotId !== sid) || cloudPage(body, 1, 100, rows.length) !== rows.length || (body as { NextToken?: string }).NextToken) throw new Error('快照查询身份或分页不完整。');
@@ -804,7 +873,7 @@ export class ImageImportsService {
   private async releaseImportLedger(context: ImportContext, job: ImageImportJobRow, id: string, type: 'image' | 'snapshot') {
     await this.assertClaim(context);
     const rows = await this.adminRepository.listBillingLedgerResources();
-    for (const item of rows.filter(row => row.cloudAccountUid === context.accountUid && row.regionId === context.regionId
+    for (const item of rows.filter(row => row.cloudProvider === context.provider && row.cloudAccountUid === context.accountUid && row.regionId === context.regionId
       && row.cloudResourceType === type && row.cloudResourceId === id && !row.releasedAt
       && row.tagsSnapshot.PlatformImageImportJobId === job.id)) await this.adminRepository.updateBillingLedgerResource(item.id, { releasedAt: new Date() });
   }
@@ -820,7 +889,9 @@ export class ImageImportsService {
       throw new Error('删除 OSS 临时镜像文件失败。');
     }
 
-    return this.updateJob(job, { temporaryObjectDeletedAt: new Date(), ...(job.status === 'available' ? { errorMessage: null } : {}), ...(job.status === 'failed' ? { errorMessage: this.withoutCleanupError(job.errorMessage) } : {}) });
+    const completed = await this.updateJob(job, { temporaryObjectDeletedAt: new Date(), ...(job.status === 'available' ? { errorMessage: null } : {}), ...(job.status === 'failed' ? { errorMessage: this.withoutCleanupError(job.errorMessage) } : {}) });
+    if (context.provider === 'tencent_cloud' && job.managedBucketId) await this.requireCos().cleanupIfIdle({ bucketId: job.managedBucketId, cloudAccountContextId: job.cloudAccountContextId, cloudAccountUid: context.accountUid, regionId: context.regionId });
+    return completed;
   }
 
   private readMaxUploadBytes() {
@@ -890,9 +961,39 @@ export class ImageImportsService {
     );
   }
 
+  private assertTencentObjectProof(job: ImageImportJobRow) {
+    const value = job.sourceObjectProof;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ConflictException('腾讯云导入缺少已核验的上传对象证明。');
+    const proof = value as Record<string,unknown>;
+    if (proof.provider !== 'tencent_cloud' || proof.bucketId !== job.managedBucketId || proof.bucketName !== job.imageImportBucket
+      || proof.objectKey !== job.objectKey || proof.jobId !== job.id || proof.ownerUserId !== job.ownerUserId || proof.cloudAccountContextId !== job.cloudAccountContextId
+      || proof.cloudAccountUid !== job.cloudAccountUid || proof.regionId !== job.regionId || proof.contentLength !== Number(job.sourceSizeBytes)
+      || typeof proof.etag !== 'string' || !proof.etag || typeof proof.verifiedAt !== 'string' || !Number.isFinite(Date.parse(proof.verifiedAt)))
+      throw new ConflictException('腾讯云上传对象证明与作业冻结来源不一致。');
+  }
+  private requireCos() { if (!this.cosBuckets) throw new ConflictException('腾讯云专属 COS 来源服务不可用。'); return this.cosBuckets; }
+  private async validateTencentImportOs(context: CloudAccountContextCredentials, input: CreateImageImportDto) {
+    if (!input.platform?.trim() || !input.osVersion?.trim() || input.displayName.trim().length > 60 || (input.description?.length ?? 0) > 256)
+      throw new BadRequestException('腾讯云导入需要明确发行版和 OS 版本，名称最多60字符、描述最多256字符。');
+    const result = await tencentImageRequest<any>(context, 'cvm', 'DescribeImportImageOs');
+    const group = result.ImportImageOsListSupported?.[input.osType === 'windows' ? 'Windows' : 'Linux'];
+    const rows = result.ImportImageOsVersionSet;
+    if (!Array.isArray(group) || group.some(value => typeof value !== 'string') || !Array.isArray(rows)
+      || rows.some(row => !row || typeof row.OsName !== 'string' || !Array.isArray(row.OsVersions) || !Array.isArray(row.Architecture)
+        || [...row.OsVersions, ...row.Architecture].some(value => typeof value !== 'string'))) throw new ConflictException('腾讯云导入 OS 支持矩阵响应不完整。');
+    const architecture = input.architecture === 'arm64' ? 'arm_64' : input.architecture;
+    if (!group.includes(input.platform.trim()) || rows.filter(row => row.OsName === input.platform!.trim() && row.OsVersions.includes(input.osVersion!.trim()) && row.Architecture.includes(architecture)).length !== 1)
+      throw new BadRequestException('请求的发行版、OS 版本与架构未被腾讯云地域导入支持矩阵确认。');
+  }
   private async boundContext(job: ImageImportJobRow): Promise<ImportContext> {
     const context = await this.cloudAccountContextsService.getCredentials(job.cloudAccountContextId, { requireReady: true });
-    if (!job.cloudAccountUid || !job.regionId || !job.imageImportBucket || context.accountUid !== job.cloudAccountUid || context.regionId !== job.regionId) throw new ConflictException('导入云账号或地域证明不匹配，停止云操作。');
+    if ((job.cloudProvider ?? 'alibaba_cloud') !== context.provider || !job.cloudAccountUid || !job.regionId || !job.imageImportBucket || context.accountUid !== job.cloudAccountUid || context.regionId !== job.regionId) throw new ConflictException('导入云账号或地域证明不匹配，停止云操作。');
+    if (context.provider === 'tencent_cloud') {
+      if (!job.managedBucketId) throw new ConflictException('腾讯云导入缺少专属 COS 来源记录。');
+      if (job.sourceObjectProof) this.assertTencentObjectProof(job);
+      const bucket = await this.requireCos().getOwnedBucket({ bucketId: job.managedBucketId, cloudAccountContextId: job.cloudAccountContextId, cloudAccountUid: job.cloudAccountUid, regionId: job.regionId });
+      if (bucket.bucketName !== job.imageImportBucket) throw new ConflictException('COS 来源 Bucket 身份与导入任务冻结记录不一致。');
+    }
     return { ...context, imageImportBucket: job.imageImportBucket, importLease: { id: job.id, token: job.leaseToken! } };
   }
 
@@ -933,7 +1034,7 @@ export class ImageImportsService {
   }
 
   private toView(job: ImageImportJobRow): ImageImportJobView {
-    const { defaultPassword: _defaultPassword, objectKey: _objectKey, leaseToken: _leaseToken, leaseExpiresAt: _leaseExpiresAt, sourceSizeBytes, ...rest } = job;
+    const { sourceObjectProof: _sourceObjectProof, defaultPassword: _defaultPassword, objectKey: _objectKey, leaseToken: _leaseToken, leaseExpiresAt: _leaseExpiresAt, sourceSizeBytes, ...rest } = job;
     return {
       ...rest,
       sourceSizeBytes: Number(sourceSizeBytes),
@@ -943,6 +1044,7 @@ export class ImageImportsService {
 
 type AliyunImage = {
   ImageId?: string;
+  ImageSize?: number | null;
   ImageName?: string;
   OSType?: string;
   Platform?: string;
@@ -959,7 +1061,7 @@ function extractImageSnapshotIds(image: AliyunImage | null) {
   const mappings = image?.DiskDeviceMappings?.DiskDeviceMapping;
   const entries = Array.isArray(mappings) ? mappings : mappings ? [mappings] : [];
   const ids = entries.map(entry => entry.SnapshotId?.trim() ?? '');
-  if (ids.some(id => !/^s-/.test(id)) || new Set(ids).size !== ids.length) throw new Error('镜像快照绑定清单不完整。');
+  if (ids.some(id => !(id.startsWith('snap-') ? /^snap-[A-Za-z0-9]+$/ : /^s-/).test(id)) || new Set(ids).size !== ids.length) throw new Error('镜像快照绑定清单不完整。');
   return ids;
 }
 

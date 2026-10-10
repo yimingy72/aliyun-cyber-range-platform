@@ -65,6 +65,13 @@ describe('provider mirror publication across concurrent jobs', () => {
     expect(await prepareOpenTofuProviderEnv({ workspacesRootDir: root })).toEqual({});
   });
 
+  it('rejects Tencent archives that differ from the audited patched provider before publishing', async () => {
+    const source = path.join(root,'terraform-provider-tencentcloud_1.83.34-range.1_linux_amd64.zip');
+    await fs.writeFile(source,'tampered archive');
+    await expect(prepareOpenTofuProviderEnv({ provider: 'tencent_cloud', providerZipPath: source, workspacesRootDir: root })).rejects.toThrow('checksum mismatch');
+    await expect(prepareOpenTofuProviderEnv({ provider: 'tencent_cloud', providerZipPath: '/terraform-provider-tencentcloud_1.83.34_linux_amd64.zip', workspacesRootDir: root })).rejects.toThrow('ClientToken');
+  });
+
   it.each(['1.282.0', '1.282.0-range.1'])('reuses ready read-only mirror %s without copying archives or replacing identical CLI config', async version => {
     const sha256 = checksum(Buffer.from('fixture'));
     const unpackedMirrorRootDir = path.join(root, 'unpacked', sha256);

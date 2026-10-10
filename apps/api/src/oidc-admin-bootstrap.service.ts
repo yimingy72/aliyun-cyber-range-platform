@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { KeycloakAdminService } from './admin/keycloak-admin.service';
 import { PrismaService } from './database/prisma.service';
+import { runInSystemCloudWorkspaceScope } from './auth/cloud-workspace-scope';
 
 @Injectable()
 export class OidcAdminBootstrapService {
@@ -17,17 +18,21 @@ export class OidcAdminBootstrapService {
       return;
     }
 
+    return runInSystemCloudWorkspaceScope(() => this.bindPlatformManager());
+  }
+
+  private async bindPlatformManager() {
     const adminUsername = process.env.ADMIN_USERNAME?.trim() || 'admin';
     const issuer = process.env.OIDC_ISSUER?.trim() || 'http://localhost:8080/realms/cyber-range';
-    const user = await this.prisma.platformUser.findUnique({ where: { username: adminUsername } })
+    const user = await this.prisma.platformUser.findUnique({ where: { loginUsername: adminUsername } })
       ?? await this.prisma.platformUser.findUnique({ where: { id: 'admin' } });
 
     if (!user) {
       return;
     }
 
-    if (user.role !== 'admin' || user.status !== 'active') {
-      this.logger.warn('Configured platform administrator is not an active admin; identity binding was skipped.');
+    if (user.role !== 'admin' || user.status !== 'active' || !user.isPlatformManager || user.cloudWorkspaceId !== null) {
+      this.logger.warn('Configured account is not the active platform manager; identity binding was skipped.');
       return;
     }
 
@@ -38,7 +43,7 @@ export class OidcAdminBootstrapService {
       return;
     }
 
-    if (user.username === adminUsername && user.oidcIssuer === issuer && user.oidcSubject === subject) {
+    if (user.loginUsername === adminUsername && user.oidcIssuer === issuer && user.oidcSubject === subject) {
       return;
     }
 
@@ -46,6 +51,7 @@ export class OidcAdminBootstrapService {
       where: { id: user.id },
       data: {
         username: adminUsername,
+        loginUsername: adminUsername,
         oidcIssuer: issuer,
         oidcSubject: subject,
       },

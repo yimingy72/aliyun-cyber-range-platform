@@ -11,7 +11,7 @@
 | 靶场编排 | 在线编辑网络与 ECS 拓扑，保存草稿、发布模板并从模板生成综合靶场。 |
 | 靶场实例 | 查看综合靶场实例、任务、运行状态和访问入口；支持生命周期管理。 |
 | 实例管理 | 基于平台镜像批量创建单实例，支持规格校验、任务重试、重启、VNC、镜像打包与自动到期销毁。 |
-| 镜像中心 | 管理平台镜像、个人镜像、阿里云自定义镜像和公共镜像来源。 |
+| 镜像中心 | 管理平台镜像、个人镜像、阿里云与腾讯云自定义镜像和公共镜像来源。 |
 | 账单费用 | 展示平台总应付与公共费用；按一次成功开通分组查看用户或平台费用，展开可审计资源账单项。 |
 | 用户与基础配置 | 管理平台用户、资源归属和云账号基础配置。 |
 | MCP Gateway | 通过受 OIDC 保护的 Streamable HTTP MCP 服务，将平台能力接入 Codex、Claude Code 或其他 MCP 客户端。 |
@@ -59,6 +59,8 @@ pnpm provider:build
 
 当前运行版本使用定制 provider，先运行 `pnpm provider:build` 在 Docker 中构建并验证。镜像默认写入 `.local/provider-fast-wait/mirror/`，通过 `OPENTOFU_PROVIDER_MIRROR_HOST_PATH` 可指定其它位置。
 
+腾讯云运行时同样需要经过核验的 provider 缓存：执行 `sh scripts/provider/tencentcloud-idempotency/build.sh`，默认写入 `.local/tencentcloud-idempotency/mirror/`，通过 `TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH` 指定挂载目录。新 Compose 同时挂载两家 provider；不能用官方 ZIP 替换定制版本。
+
 `provider:download` 仍下载官方 1.282.0，供旧版本回滚使用；新模块精确要求 1.282.0-range.1，不能将官方 ZIP 重命名作为定制版本。
 
 ### 3. 启动完整容器环境
@@ -72,6 +74,8 @@ pnpm compose:up
 ### OpenTofu 版本与任务并发
 
 容器固定为 OpenTofu **1.13.1**，阿里云 provider 使用基于官方 1.282.0 的 **1.282.0-range.1**。定制补丁仅将 ECS 创建首次状态检查等待从 10 秒缩短至 2 秒，删除等待和原有状态判定、重试仍保留。固定源码、补丁、可复现 Docker 构建与摘要见 [provider 构建说明](scripts/provider/alicloud-fast-wait/README.md)。
+
+腾讯云使用 **1.83.34-range.1**。补丁将持久 ClientToken 和云端到期终止时间随 CVM 创建原子提交，并禁止平台 NAT 未知结果的自动重复创建，详见 [腾讯云 provider 补丁](scripts/provider/tencentcloud-idempotency/README.md)。腾讯云单实例也由 OpenTofu 批次工作区创建；真实编排开通默认由 `TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED=0` 关闭，完成受控回收实测后再启用。
 
 API 负责校验并入队，资源任务统一由 worker 执行。每个 worker 默认同时执行 **2 个编排任务**、**3 个单实例批次任务**。新单实例通过 OpenTofu 创建和销毁：同批冻结账号与网络、共享一个状态工作区，以平台实例 ID 管理独立 ECS。数据库批次租约和逐成员认领防止多个 worker 拆分或重复执行同一状态图。已有 API 实例保留兼容回收路径。状态刷新每次只读一次，未就绪时延迟入队并释放执行名额。
 
@@ -142,6 +146,8 @@ MCP_PUBLIC_URL=https://203.0.113.10/mcp
 - 不存在、地域不匹配或不可访问：云账号仍可使用，镜像上传关闭并显示原因。
 
 镜像直传由浏览器完成，因此 Bucket 管理员还需要自行配置允许平台 Web 来源执行 `PUT` 的 CORS，并为当前凭据授予上传、查询和清理临时对象所需的权限。
+
+腾讯云导入使用平台新建的私有专属 COS Bucket，按冻结账号、APPID、地域及创建来源核验，不复用现有混用桶。临时对象与空闲桶逐项确认消失后释放台账；打包镜像及其依赖快照保留期间仍可能计费。详细边界见 [腾讯云镜像生命周期](docs/operations/tencent-image-lifecycle.md)。
 
 ## MCP 连接
 

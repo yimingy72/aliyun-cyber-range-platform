@@ -44,6 +44,7 @@ describe('KeycloakAdminService', () => {
       const service = new serviceModule.KeycloakAdminService();
       const subject = await service.createUser({
         username: 'alice',
+        loginUsername: 'alice.workspace-a',
         password: 'TemporaryPassword123!',
         role: 'user',
         status: 'active',
@@ -58,12 +59,12 @@ describe('KeycloakAdminService', () => {
       );
       expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual(
         expect.objectContaining({
-          username: 'alice',
+          username: 'alice.workspace-a',
           enabled: true,
           emailVerified: true,
           firstName: 'Platform',
           lastName: 'User',
-          email: 'alice@example.local',
+          email: expect.stringMatching(/^[a-f0-9]{64}@example\.local$/),
           credentials: [{ type: 'password', value: 'TemporaryPassword123!', temporary: false }],
           requiredActions: [],
         }),
@@ -96,6 +97,17 @@ describe('Keycloak user write recovery', () => {
     process.env.KEYCLOAK_ADMIN_CLIENT_SECRET = 'synthetic-secret';
   });
   afterEach(() => { jest.restoreAllMocks(); process.env = { ...environment }; });
+
+  it.each([[400,400], [409,409], [403,503], [500,503]] as const)('maps upstream user creation HTTP %s to safe platform HTTP %s', async (upstream, expected) => {
+    const { KeycloakAdminService } = require('../src/admin/keycloak-admin.service');
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'synthetic-token' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ errorMessage: 'synthetic-password-and-token-must-not-return' }), { status: upstream }));
+    const error = await new KeycloakAdminService().createUser({ username: 'synthetic-user', loginUsername: 'synthetic-user.workspace', password: 'SyntheticPassword123!', role: 'user', status: 'active' }).catch((value: any) => value);
+    expect(error.getStatus()).toBe(expected);
+    expect(JSON.stringify(error.getResponse())).not.toContain('synthetic-password-and-token-must-not-return');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 
   function setup(failure: 'assign' | 'remove' | 'create-role' | 'cleanup' | 'reset' | 'reset-cleanup' | 'reset-cleanup-network' | 'create-network' | null = null) {
     const { KeycloakAdminService } = require('../src/admin/keycloak-admin.service');

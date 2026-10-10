@@ -8,10 +8,19 @@ CI_NETWORK="cyber-range-ci-$RUN_ID"
 CI_DB="cyber-range-ci-postgres-$RUN_ID"
 CI_PACKED_DB="cyber-range-ci-packed-postgres-$RUN_ID"
 CI_TAG_DB="cyber-range-ci-image-tags-postgres-$RUN_ID"
+CI_TENCENT_IMAGE="cyber-range-tencentcloud-iac:$RUN_ID"
 CI_PROVIDER_MIRROR_ARGS=()
 if [ -n "${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
   CI_PROVIDER_MIRROR_HOST="$(cd "${OPENTOFU_PROVIDER_MIRROR_HOST_PATH}" && pwd)"
   CI_PROVIDER_MIRROR_ARGS=(-v "${CI_PROVIDER_MIRROR_HOST}:/app/.local/provider-mirror:ro")
+fi
+if [ -n "${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
+  CI_TENCENT_MIRROR_HOST="$(cd "${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH}" && pwd)"
+  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-idempotency/mirror:ro")
+else
+  CI_TENCENT_MIRROR_HOST="$REPO_ROOT/.local/tencentcloud-idempotency/mirror"
+  mkdir -p "$CI_TENCENT_MIRROR_HOST"
+  CI_TENCENT_MIRROR_ARGS=(-v "${CI_TENCENT_MIRROR_HOST}:/app/.local/tencentcloud-idempotency/mirror")
 fi
 CONTEXT_DIR="$(mktemp -d)"
 CONTEXT_IMAGE="cyber-range-ci-context:$RUN_ID"
@@ -22,6 +31,7 @@ cleanup() {
   docker rm -f "$CI_TAG_DB" >/dev/null 2>&1 || true
   docker network rm "$CI_NETWORK" >/dev/null 2>&1 || true
   docker image rm "$CONTEXT_IMAGE" >/dev/null 2>&1 || true
+  docker image rm "$CI_TENCENT_IMAGE" >/dev/null 2>&1 || true
   rm -rf "$CONTEXT_DIR"
 }
 trap cleanup EXIT
@@ -61,6 +71,15 @@ for compose_file in docker-compose.yml deploy/current-system/docker-compose.yml 
   docker compose --env-file /dev/null -f "$compose_file" config --quiet
 done
 
+# Build/verify the pinned source patch in Docker; offline IaC must expose durable CVM intent and atomic expiry.
+TENCENTCLOUD_PROVIDER_BUILD_OUTPUT="$REPO_ROOT/.local/tencentcloud-idempotency" sh scripts/provider/tencentcloud-idempotency/build.sh
+if [ "$CI_TENCENT_MIRROR_HOST" != "$REPO_ROOT/.local/tencentcloud-idempotency/mirror" ]; then
+  echo "A custom Tencent mirror must contain the audited patched provider and checksum." >&2
+fi
+TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH="$CI_TENCENT_MIRROR_HOST" \
+  TENCENTCLOUD_IAC_IMAGE="$CI_TENCENT_IMAGE" TENCENTCLOUD_RUN_ID="$RUN_ID" \
+  sh scripts/dev/validate-tencentcloud-opentofu.sh
+
 if [ "${#CI_PROVIDER_MIRROR_ARGS[@]}" = 0 ]; then
   # Build the pinned source patch in Docker before isolated tests use its read-only mirror.
   ALICLOUD_PROVIDER_BUILD_OUTPUT="$REPO_ROOT/.local/provider-fast-wait" sh scripts/provider/alicloud-fast-wait/build.sh
@@ -75,6 +94,7 @@ docker run --rm --network none "${CI_PROVIDER_MIRROR_ARGS[@]}" \
 
 docker network create --internal "$CI_NETWORK" >/dev/null
 docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
+  --network-alias billing-test-postgres --network-alias cos-test-postgres \
   --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_DB=cyber_range -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
@@ -107,17 +127,27 @@ docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE billing_test' >/dev/null
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cos_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE native_batch_test' >/dev/null
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE user_auth_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cyber_range_workspace_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cyber_range_workspace_migration_test' >/dev/null
 
 docker run --rm --network "$CI_NETWORK" \
   "${CI_PROVIDER_MIRROR_ARGS[@]}" \
   -e DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range?schema=public' \
   -e SETTINGS_SWITCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_settings_test?schema=public' \
   -e BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/billing_test?schema=public' \
+  -e TENCENT_BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@billing-test-postgres:5432/billing_test?schema=public' \
+  -e TENCENT_COS_TEST_DATABASE_URL='postgresql://postgres:postgres@cos-test-postgres:5432/cos_test?schema=public' \
   -e NATIVE_BATCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/native_batch_test?schema=public' \
   -e USER_AUTH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/user_auth_test?schema=public' \
+  -e WORKSPACE_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public' \
+  -e CLOUD_WORKSPACE_MIGRATION_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_migration_test?schema=public' \
   -e PACKED_IMAGE_TEST_DATABASE_URL='postgresql://postgres:postgres@packed-image-test-postgres:5432/packed_image_test?schema=public' \
   -e IMAGE_TAG_TEST_DATABASE_URL='postgresql://postgres:postgres@image-tags-test-postgres:5432/image_tags_test?schema=public' \
   -e SINGLE_TOFU_OFFLINE_VALIDATION=1 -e SINGLE_TOFU_PROVIDER_MIRROR_PATH=/app/.local/provider-mirror \
@@ -130,11 +160,14 @@ docker run --rm --network "$CI_NETWORK" \
     pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$SETTINGS_SWITCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$BILLING_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$TENCENT_COS_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$NATIVE_BATCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$USER_AUTH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$PACKED_IMAGE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$IMAGE_TAG_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     pnpm test
     NODE_ENV=production pnpm build
     ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0-range.1_linux_amd64.zip pnpm iac:validate
+    pnpm --filter @aliyun-cyber-range/database smoke:workspace-migration
   '

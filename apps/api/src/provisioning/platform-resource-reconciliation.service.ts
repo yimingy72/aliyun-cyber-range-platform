@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -6,7 +6,8 @@ import { ADMIN_REPOSITORY, type AdminRepository, type RangeInstanceRecord } from
 import { buildAliyunTagParameters } from '../admin/billing-tagging';
 import { syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
-import { SystemConfigService } from '../admin/system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from '../admin/system-config.service';
+import { describeTencentResourceInventory, type TencentResource, type TencentResourceKind } from '../admin/tencent-cloud-resources';
 import { readRecordedDisks } from '../admin/instance-disk-inventory';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -15,6 +16,7 @@ const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_PAGE_SIZE = 100;
 
 export type AliyunEcsCredentials = {
+  provider?: 'alibaba_cloud' | 'tencent_cloud';
   accessKeyId: string;
   accessKeySecret: string;
   regionId: string;
@@ -48,7 +50,7 @@ export class AliyunEcsResourceClient {
   constructor(private readonly systemConfigService: SystemConfigService) {}
 
   async getDefaultCredentials(): Promise<AliyunEcsCredentials | null> {
-    const config = await this.systemConfigService.getAccountContext();
+    const config = await this.systemConfigService.getExecutionAccountContext();
     const accessKeyId = config.accessKeyId.trim();
     const accessKeySecret = config.accessKeySecret.trim();
 
@@ -57,6 +59,7 @@ export class AliyunEcsResourceClient {
     }
 
     return {
+      provider: config.provider,
       accessKeyId,
       accessKeySecret,
       regionId: config.defaultRegion,
@@ -167,6 +170,7 @@ export class AliyunEcsResourceClient {
     action: string;
     parameters?: Record<string, string>;
   }): Promise<ResponsePayload> {
+    if (input.credentials.provider === 'tencent_cloud') throw new Error('Tencent credentials cannot be sent to the Aliyun resource API');
     const query = signAliyunRpcQuery(
       {
         Action: input.action,
@@ -206,6 +210,7 @@ export class PlatformResourceReconciliationService {
       return { recovered: 0, drifts: 0, skipped: true };
     }
 
+    if (credentials.provider === 'tencent_cloud') return this.reconcileTencent(credentials, now);
     const cloudReadStartedAt = new Date();
     const [instances, cloudInstances] = await Promise.all([
       this.adminRepository.listRangeInstances(),
@@ -284,6 +289,74 @@ export class PlatformResourceReconciliationService {
     }
 
     return { recovered, drifts, skipped: false };
+  }
+
+  private async reconcileTencent(credentials: AliyunEcsCredentials, now: Date) {
+    const account: SystemCloudAccountContext = { provider: 'tencent_cloud', defaultRegion: credentials.regionId, defaultZoneId: '', imageImportBucket: '',
+      accountUid: credentials.accountUid ?? null, cloudAccountContextId: credentials.cloudAccountContextId,
+      accountUidResolved: credentials.accountUidResolved === true, accessKeyId: credentials.accessKeyId, accessKeySecret: credentials.accessKeySecret };
+    const readStartedAt = new Date();
+    const instances = await this.adminRepository.listRangeInstances();
+    const sources = instances.filter(instance => {
+      const source = instance.instanceMode === 'single' ? instance.singleInstanceConfig : instance.resourceSummary?.executionContext;
+      return instance.cloudProvider === 'tencent_cloud' && source?.cloudAccountUid === account.accountUid
+        && source.cloudAccountContextId === account.cloudAccountContextId && source.regionId === account.defaultRegion;
+    });
+    const inventory = new Map<string, TencentResource>();
+    const observe = (resource: TencentResource) => inventory.set(`${resource.kind}:${resource.id}`, resource);
+    for (const kind of ['ecs', 'disk', 'vpc', 'vswitch', 'security_group', 'eni', 'nat', 'eip'] as TencentResourceKind[]) {
+      // Tag observations are audit evidence only; they never establish lifecycle or billing ownership.
+      for (const resource of await describeTencentResourceInventory(account, kind, { tags: { CreatedBy: 'cyber-range-platform' } })) observe(resource);
+      const recordedIds = [...new Set(sources.flatMap(instance => recordedTencentResourceIds(instance, kind)))];
+      for (const resource of await describeTencentResourceInventory(account, kind, { ids: recordedIds })) observe(resource);
+    }
+    const snapshotIds = (await this.adminRepository.listBillingLedgerResources()).filter(ledger => ledger.cloudProvider === 'tencent_cloud'
+      && ledger.cloudAccountUid === account.accountUid && ledger.regionId === account.defaultRegion && ledger.cloudResourceType === 'snapshot').map(ledger => ledger.cloudResourceId);
+    for (const resource of await describeTencentResourceInventory(account, 'snapshot', { ids: snapshotIds })) observe(resource);
+    const aclIds = [...new Set(sources.flatMap(instance => recordedTencentResourceIds(instance, 'network_acl')))];
+    for (const resource of await describeTencentResourceInventory(account, 'network_acl', { ids: aclIds })) observe(resource);
+    for (const vpcId of [...new Set(sources.map(instance => instance.resourceSummary?.vpcId).filter((id): id is string => Boolean(id)))]) {
+      for (const resource of await describeTencentResourceInventory(account, 'network_acl', { vpcId })) observe(resource);
+    }
+    let drifts = 0;
+    for (const resource of inventory.values()) {
+      const rangeInstanceId = resource.tags.RangeInstanceId;
+      const instance = rangeInstanceId ? await this.adminRepository.getRangeInstanceById(rangeInstanceId) : null;
+      const source = instance?.instanceMode === 'single' ? instance.singleInstanceConfig : instance?.resourceSummary?.executionContext;
+      const currentJob = instance?.lastJobId ? await this.adminRepository.getProvisionJobById(instance.lastJobId) : null;
+      if (instance && (instance.updatedAt > readStartedAt || currentJob && ['pending', 'running'].includes(currentJob.status))) continue;
+      const sourceJobId = resource.tags.PlatformCreateJobId;
+      const sourceJob = sourceJobId ? await this.adminRepository.getProvisionJobById(sourceJobId) : null;
+      const tags = resource.tags;
+      const owned = instance?.cloudProvider === 'tencent_cloud' && source?.cloudAccountUid === account.accountUid
+        && source.cloudAccountContextId === account.cloudAccountContextId && source.regionId === account.defaultRegion
+        && tags.CloudAccountUid === account.accountUid && tags.CloudAccountContextId === account.cloudAccountContextId
+        && tags.CreatedBy === 'cyber-range-platform' && tags.PlatformManaged === 'true' && tags.ExecutionBackend === 'opentofu'
+        && tags.RangeInstanceId === instance.id && (tags.PlatformUserId ?? null) === instance.ownerUserId
+        && tags.PlatformScope === (instance.ownerUserId ? 'user' : 'platform')
+        && (instance.instanceMode !== 'single' || tags.SingleInstanceBatchId === instance.singleInstanceBatchId)
+        && sourceJob?.rangeInstanceId === instance.id && ['create', 'retry'].includes(sourceJob.jobType)
+        && (instance.instanceMode !== 'single' || instance.singleInstanceConfig?.opentofuCreateJobId === sourceJobId
+          && tags.CreationIntentId === createHash('sha256').update(JSON.stringify(['tencent_cloud', source.cloudAccountContextId, source.cloudAccountUid,
+            source.regionId, instance.singleInstanceConfig?.zoneId, instance.singleInstanceBatchId, instance.id, sourceJobId])).digest('hex').slice(0, 32))
+        && recordedTencentResourceIds(instance, resource.kind).includes(resource.id);
+      const ledgers = owned && instance ? await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: instance.id }) : [];
+      const tracked = ledgers.some(ledger => ledger.cloudProvider === 'tencent_cloud' && ledger.cloudResourceId === resource.id
+        && ledger.cloudAccountUid === account.accountUid && ledger.regionId === account.defaultRegion && !ledger.releasedAt
+        && ledger.ownerUserId === instance?.ownerUserId);
+      const freeResource = ['vpc', 'vswitch', 'security_group', 'network_acl', 'eni'].includes(resource.kind);
+      const verified = owned && (tracked || freeResource) && instance?.status === 'running' && currentJob?.status === 'succeeded';
+      await this.adminRepository.upsertCloudResourceDrift({ cloudProvider: 'tencent_cloud', regionId: account.defaultRegion,
+        cloudResourceType: resource.kind === 'nat' ? 'nat_gateway' : resource.kind, cloudResourceId: resource.id,
+        rangeInstanceId: instance?.id ?? null, severity: 'critical', observedAt: now,
+        reason: verified ? 'Frozen Tencent resource inventory matches durable platform ownership and existing billing evidence.'
+          : 'Tencent resource exists without complete durable platform lifecycle, creation and billing proof; no resource was adopted, deleted or marked released.',
+        tagsSnapshot: { ...resource.tags, providerEvidence: resource.evidence, observedInstanceId: resource.instanceId, observedVpcId: resource.vpcId } });
+      if (verified) await this.adminRepository.resolveCloudResourceDrift({ cloudProvider: 'tencent_cloud', regionId: account.defaultRegion,
+        cloudResourceType: resource.kind === 'nat' ? 'nat_gateway' : resource.kind, cloudResourceId: resource.id, resolvedAt: now });
+      else drifts++;
+    }
+    return { recovered: 0, drifts, skipped: false };
   }
 
   private async reconcileCompletedOpenTofuMember(credentials: AliyunEcsCredentials, instanceId: string,
@@ -425,4 +498,15 @@ function readTag(tags: Record<string, string>, key: string) {
 
 function buildAliyunArrayParameters(prefix: string, values: string[]) {
   return Object.fromEntries(values.map((value, index) => [`${prefix}.${index + 1}`, value]));
+}
+
+function recordedTencentResourceIds(instance: RangeInstanceRecord, kind: TencentResourceKind): string[] {
+  const summary = instance.resourceSummary;
+  const map: Partial<Record<TencentResourceKind, Record<string, string> | null | undefined>> = {
+    ecs: summary?.hostIds, disk: { ...summary?.systemDiskIds, ...summary?.dataDiskIds }, vswitch: summary?.subnetIds,
+    security_group: summary?.securityGroupIds, network_acl: summary?.networkAclIds, eni: summary?.secondaryNetworkInterfaceIds, nat: summary?.natGatewayIds,
+  };
+  if (kind === 'vpc') return summary?.vpcId ? [summary.vpcId] : [];
+  if (kind === 'eip') return [...new Set([summary?.eipAllocationId, ...Object.values(summary?.eipAllocationIds ?? {})].filter((id): id is string => Boolean(id)))];
+  return Object.values(map[kind] ?? {});
 }

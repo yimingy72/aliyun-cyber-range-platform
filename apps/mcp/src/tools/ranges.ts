@@ -15,6 +15,7 @@ import {
   rangeListInputSchema,
   rangeNodeActionInputSchema,
   rangeNodeOpenVncInputSchema,
+  rangeNodePackImageValidateInputSchema,
   rangeRetryInputSchema,
   rangeTopologyChangeInputSchema,
 } from './input-schemas';
@@ -51,7 +52,7 @@ export const rangeTools: ToolDefinition[] = [
   {
     name: 'range_instance_get',
     title: '获取编排实例详情',
-    description: '对应编排实例页的“查看详情”。返回实例状态、已保存的运行拓扑和资源摘要；includeNetworkDiagnostics=true 时附加该实例绑定账号/地域的只读网络诊断白名单，由服务端校验 owner/admin 权限，不接受任意云资源 ID。运行凭据与密码不会在此工具返回。',
+    description: '对应编排实例页的“查看详情”。返回实例状态、已保存拓扑和资源摘要，以及同来源打包的安全阶段/错误类别与每个原源盘的快照候选和官方 RequestId；候选所有权未确认，不等于可接管或已完整清理。includeNetworkDiagnostics=true 时附加原账号/地域只读网络诊断。由服务端校验 owner/admin，不接受任意云资源 ID，运行凭据与密码不返回。',
     requiredScopes: ['ranges:read'],
     readOnlyHint: true,
     inputSchema: rangeInstanceGetInputSchema,
@@ -183,6 +184,20 @@ export const rangeTools: ToolDefinition[] = [
     call(context, args) {
       const input = args as { rangeInstanceId: string; nodeId: string };
       return context.client.runRangeInstanceNodeAction(input.rangeInstanceId, input.nodeId, 'open-vnc');
+    },
+  },
+  {
+    name: 'range_instance_node_pack_image_validate',
+    title: '只读核验腾讯节点镜像参数',
+    description: '对当前运行中的腾讯云编排节点调用官方 CreateImage DryRun=true，只验证拟打包的准确名称/描述和同一组平台来源标签，不创建镜像、快照、目录资产或打包记录。原来源有 UNKNOWN/进行中打包时拒绝；成功核验不能代替之后的用户创建确认或创建结果。',
+    requiredScopes: ['ranges:read', 'images:read'],
+    readOnlyHint: true,
+    inputSchema: rangeNodePackImageValidateInputSchema,
+    outputSchema: resultOutputSchema(z.object({ status: z.enum(['validated', 'rejected', 'unverified']), dryRun: z.literal(true) }).passthrough()),
+    call(context, args) {
+      if (!context.client.validateRangeInstanceNodePackImage) throw new Error('官方镜像参数核验服务尚未配置');
+      const input = args as { rangeInstanceId: string; nodeId: string; displayName: string; description?: string };
+      return context.client.validateRangeInstanceNodePackImage(input.rangeInstanceId, input.nodeId, { displayName: input.displayName, ...(input.description === undefined ? {} : { description: input.description }) });
     },
   },
   {
@@ -319,7 +334,7 @@ function metadataFromRangeInstance(instance: Record<string, unknown>): TemplateA
     name: readString(metadata.name) ?? readString(instance.name) ?? 'range-instance',
     slug: readString(metadata.slug) ?? readString(instance.id) ?? 'range-instance',
     version: readString(metadata.version) ?? 'v1',
-    cloudProvider: metadata.cloudProvider === 'alibaba_cloud' ? 'alibaba_cloud' : 'alibaba_cloud',
+    cloudProvider: metadata.cloudProvider === 'tencent_cloud' || instance.cloudProvider === 'tencent_cloud' ? 'tencent_cloud' : 'alibaba_cloud',
     iacType: metadata.iacType === 'terraform' ? 'terraform' : 'opentofu',
     description: readString(metadata.description),
     modulePathOrRef: 'runtime/range-instance',

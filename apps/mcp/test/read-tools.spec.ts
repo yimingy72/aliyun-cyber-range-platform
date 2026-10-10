@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import { PlatformApiClient, PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 import {
   resolveUniqueDnatEntryHost,
   type ScenarioGraphDraft,
@@ -38,6 +38,34 @@ const authoringGraph: ScenarioGraphDraft = {
 };
 
 describe('resolveUniqueDnatEntryHost', () => {
+  it('preserves destroyed range pack artifacts and empty original-disk receipts through the actual SDK and MCP path', async () => {
+    const fetchMock=vi.fn(async(input:string,init?:RequestInit)=>{
+      expect(input).toBe('https://platform.example/admin/ranges/range%2Fsource'); expect(init?.method).toBe('GET');
+      return new Response(JSON.stringify({id:'range/source',status:'destroyed',resourceSummary:null,runtimeCredentials:{entry:{password:'private-password'}},
+        packedImageArtifacts:[{id:'artifact-source',status:'creating',phase:'create_image',cloudErrorCode:'InvalidParameterValue',cloudParameterName:'TagSpecification',cloudErrorHint:'invalid_value'}],
+        packSourceSnapshots:[{artifactId:'artifact-source',status:'absent',ownership:'unconfirmed',sourceDisks:[{sourceDiskId:'disk-source',status:'absent',candidateSnapshots:[],
+          evidence:[{provider:'tencent_cloud',action:'DescribeSnapshots',requestIds:['original-disk-receipt']}]}]}]}));
+    });
+    const registry=createToolRegistry(new PlatformApiClient({baseUrl:'https://platform.example',token:'synthetic-token',fetch:fetchMock as typeof fetch}));
+    const result=await registry.callTool('range_instance_get',['ranges:read'],{rangeInstanceId:'range/source'});
+    expect(result).toMatchObject({structuredContent:{result:{packedImageArtifacts:[{id:'artifact-source',cloudParameterName:'TagSpecification'}],
+      packSourceSnapshots:[{artifactId:'artifact-source',sourceDisks:[{evidence:[{requestIds:['original-disk-receipt']}]}]}]}}});
+    expect(JSON.stringify(result)).not.toContain('private-password'); expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('exposes distinct read-only Tencent pack validation without creating a real pack request', async () => {
+    const client = createClientStub();
+    client.validateRangeInstanceNodePackImage = vi.fn().mockResolvedValue({status:'rejected',dryRun:true,cloudParameterName:'TagSpecification',cloudErrorHint:'invalid_value',cloudRequestId:'dry-run-receipt'});
+    const registry = createToolRegistry(client);
+    const scopes = ['ranges:read','images:read'];
+    const tool = registry.listTools(scopes).find(tool=>tool.name==='range_instance_node_pack_image_validate')!;
+    expect(tool.annotations?.readOnlyHint).toBe(true);
+    await expect(registry.callTool(tool.name,scopes,{rangeInstanceId:'range-1',nodeId:'host',displayName:'Exact image',description:'Exact description'}))
+      .resolves.toMatchObject({structuredContent:{result:{dryRun:true,cloudParameterName:'TagSpecification'}}});
+    expect(client.validateRangeInstanceNodePackImage).toHaveBeenCalledWith('range-1','host',{displayName:'Exact image',description:'Exact description'});
+    expect(client.runRangeInstanceNodeAction).not.toHaveBeenCalled();
+    await expect(registry.callTool(tool.name,['ranges:read'],{rangeInstanceId:'range-1',nodeId:'host',displayName:'Exact image'})).rejects.toThrow('Forbidden tool');
+    await expect(registry.callTool(tool.name,scopes,{rangeInstanceId:'range-1',nodeId:'host',displayName:'Exact image',DryRun:false})).rejects.toThrow('Invalid input');
+  });
   it('forwards owned-image cleanup consent and confirmation while preserving the verified cloud result', async () => {
     const client = createClientStub();
     vi.mocked(client.removeCustomImageSnapshot).mockResolvedValue({ removed: true, status: 'deleted', snapshotId: 'source-new', snapshotIds: ['s-new'], deletedSnapshotIds: ['s-new'] });
@@ -185,6 +213,15 @@ function createClientStub(): ClientStub {
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),
     fetchCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud' }),
     saveCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou' }),
+    listCloudAccountContexts: vi.fn().mockResolvedValue([]),
+    listCloudWorkspaces: vi.fn().mockResolvedValue([]),
+    getCurrentCloudWorkspace: vi.fn().mockResolvedValue({ id: 'fixture-ali-workspace', provider: 'alibaba_cloud', accountUid: '100001', isReadOnly: false, activeCloudAccountContextId: 'fixture-context', contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: '100001', status: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } }),
+    switchCloudWorkspace: vi.fn(),
+    saveCloudAccountBinding: vi.fn(),
+    saveTencentCloudAccount: vi.fn(),
+    discoverTencentCloudRegions: vi.fn(),
+    listTencentCloudImages: vi.fn(),
+    getCloudAccountInstanceTypeAvailability: vi.fn(),
     listAdminUsers: vi.fn().mockResolvedValue([{ id: 'user-1', username: 'alice' }]),
     createAdminUser: vi.fn().mockResolvedValue({ id: 'user-2', username: 'bob' }),
     updateAdminUserRole: vi.fn().mockResolvedValue({ id: 'user-1', username: 'alice', role: 'admin' }),
@@ -540,6 +577,50 @@ describe('tool registry', () => {
     })).rejects.toThrow('确认请求的拓扑与已保存草稿不一致');
     expect(client.saveRangeInstanceDraft).toHaveBeenCalledTimes(1);
     expect(client[method]).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives Tencent creation metadata from the verified fixed workspace for an ordinary template author', async () => {
+    const client = createClientStub();
+    (client.getCurrentCloudWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
+      activeCloudAccountContextId: 'tencent-context', contexts: [{ id: 'tencent-context', provider: 'tencent_cloud', accountUid: '100001', status: 'ready' }], capabilities: { provisioning: true } });
+    const registry = createToolRegistry(client);
+    const graph = structuredClone(authoringGraph);
+    const host = graph.nodes.find(node => node.kind === 'ecs')!;
+    if (host.kind === 'ecs') { host.cpu = 2; host.memory = 2; }
+    await registry.callTool('range_template_create', ['templates:write'], { name: '腾讯靶场', topologyGraph: graph }, 'user');
+    const payload = (client.createRangeTemplate as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(JSON.stringify(payload.scenarioTemplateSpec.runtimePreferences.instanceTypePolicies)).not.toContain('ecs.');
+    expect(client.getCurrentCloudWorkspace).toHaveBeenCalledOnce();
+    expect(client.fetchCloudConfig).not.toHaveBeenCalled();
+    expect(client.createRangeTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      scenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+      compiledProvisionSpec: expect.objectContaining({ identity: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+      compiledSpec: expect.objectContaining({ resources: expect.arrayContaining([expect.objectContaining({ provider: 'tencent_cloud' })]) }),
+    }), expect.anything());
+  });
+
+  it('preserves Tencent metadata when compiling an existing instance draft', async () => {
+    const client = createClientStub();
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'tencent-range', name: 'Tencent range', cloudProvider: 'tencent_cloud', draftRevision: 1,
+      draftScenarioTemplateSpec: { metadata: { cloudProvider: 'tencent_cloud' } } });
+    await createToolRegistry(client).callTool('range_instance_topology_save', ['ranges:write'], { rangeInstanceId: 'tencent-range', topologyGraph: authoringGraph });
+    expect(client.saveRangeInstanceDraft).toHaveBeenCalledWith('tencent-range', expect.objectContaining({
+      draftScenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+      draftCompiledProvisionSpec: expect.objectContaining({ identity: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
+    }), expect.anything());
+  });
+
+  it.each([null, { isReadOnly: true }, { accountUid: null }, { activeCloudAccountContextId: null }, { contexts: [] },
+    { contexts: [{ id: 'fixture-context', provider: 'tencent_cloud', accountUid: '100001', status: 'ready' }] },
+    { contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: 'different', status: 'ready' }] },
+    { contexts: [{ id: 'fixture-context', provider: 'alibaba_cloud', accountUid: '100001', status: 'ready', cloudWorkspaceId: 'foreign-workspace' }] },
+    { capabilities: { provisioning: false } }])('refuses unverified creation workspace %j before a template write', async overrides => {
+    const client = createClientStub();
+    const current = await client.getCurrentCloudWorkspace();
+    (client.getCurrentCloudWorkspace as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(overrides === null ? null : { ...current, ...overrides });
+    await expect(createToolRegistry(client).callTool('range_template_create', ['templates:write'], { name: 'blocked', topologyGraph: authoringGraph })).rejects.toThrow('已验证');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    expect(client.fetchCloudConfig).not.toHaveBeenCalled();
   });
 
   it('compiles a new topology graph before forwarding template creation', async () => {
@@ -1273,7 +1354,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(75);
+    expect(tools).toHaveLength(84);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

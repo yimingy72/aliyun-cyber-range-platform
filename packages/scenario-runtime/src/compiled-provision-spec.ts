@@ -8,7 +8,7 @@ export type CompiledProvisionSpec = {
   identity: {
     templateSlug: string;
     templateVersion: string;
-    cloudProvider: 'alibaba_cloud';
+    cloudProvider: 'alibaba_cloud' | 'tencent_cloud';
     iacType: 'opentofu' | 'terraform';
   };
   topology: {

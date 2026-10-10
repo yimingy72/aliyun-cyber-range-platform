@@ -75,12 +75,13 @@ test('database bootstrap exposes postgres + prisma contract', () => {
   assert.match(schema, /model ProvisionJobStepLog/);
   assert.match(schema, /enum RangeInstanceStatus/);
   assert.match(schema, /enum ProvisionJobStatus/);
-  assert.match(platformUser, /username\s+String\s+@unique/);
+  assert.match(platformUser, /loginUsername\s+String\s+@unique/);
+  assert.match(platformUser, /@@unique\(\[cloudWorkspaceId,\s*username\]\)/);
   assert.match(platformUser, /role\s+UserRole\s+@default\(user\)/);
   assert.match(platformUser, /status\s+UserStatus\s+@default\(active\)/);
   assert.match(operationConfirmation, /argumentsHash\s+String/);
   assert.match(operationConfirmation, /consumedAt\s+DateTime\?/);
-  assert.match(idempotentOperation, /@@unique\(\[actorUserId,\s*toolName,\s*idempotencyKey\]\)/);
+  assert.match(idempotentOperation, /@@unique\(\[cloudWorkspaceId,\s*actorUserId,\s*toolName,\s*idempotencyKey\]\)/);
   assert.match(operationAuditEvent, /source\s+OperationSource/);
   assert.match(operationAuditEvent, /sanitizedInput\s+Json\?/);
   assert.match(platformImageAsset, /ownerUserId\s+String\?/);

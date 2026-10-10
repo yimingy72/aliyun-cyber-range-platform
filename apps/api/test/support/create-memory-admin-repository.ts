@@ -61,33 +61,80 @@ import {
   UpdateRangeInstanceInput,
 } from '../../src/admin/admin.repository';
 import { toAccountScopeKey } from '../../src/admin/image-account-scope';
+import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../../src/auth/cloud-workspace-scope';
 
-function schedulingInstance({ id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt }: RangeInstanceRecord) {
-  return { id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt };
+function workspaceProvider(): 'alibaba_cloud' | 'tencent_cloud' {
+  const scope = getCurrentCloudWorkspaceScope();
+  return scope && !('system' in scope) ? scope.provider : 'alibaba_cloud';
+}
+
+function visibleInWorkspace(record: { cloudWorkspaceId?: string | null; isPlatformManager?: boolean }) {
+  const id = getCurrentCloudWorkspaceId();
+  return !id || record.cloudWorkspaceId === id || record.isPlatformManager === true;
+}
+
+function workspaceRecords<T extends { cloudWorkspaceId?: string | null }>() {
+  const records: T[] = [];
+  const visible = () => records.filter(visibleInWorkspace);
+  const stamp = (record: T) => {
+    const id = getCurrentCloudWorkspaceId();
+    if (id && record.cloudWorkspaceId !== undefined && record.cloudWorkspaceId !== null && record.cloudWorkspaceId !== id) {
+      throw new Error('Resources cannot move between cloud workspaces');
+    }
+    if (record.cloudWorkspaceId === undefined) record.cloudWorkspaceId = id ?? 'legacy-unbound';
+    return record;
+  };
+  return new Proxy(records, {
+    get(target, property) {
+      if (property === 'push' || property === 'unshift') return (...items: T[]) => target[property](...items.map(stamp));
+      if (property === 'find' || property === 'filter' || property === 'some' || property === 'every' || property === 'findIndex') {
+        return (predicate: (record: T, index: number) => boolean) => {
+          if (property === 'every') return target.every((record, index) => !visibleInWorkspace(record) || predicate(record, index));
+          return target[property]((record, index) => visibleInWorkspace(record) && predicate(record, index));
+        };
+      }
+      if (['map', 'slice', 'sort', 'reduce', 'forEach', 'values', 'entries', 'keys'].includes(String(property))) {
+        return (...args: any[]) => (visible() as any)[property](...args);
+      }
+      if (property === Symbol.iterator) return () => visible()[Symbol.iterator]();
+      if (property === 'splice') return (start: number, count: number, ...items: T[]) => {
+        if (getCurrentCloudWorkspaceId() && target.slice(start, start + count).some(record => !visibleInWorkspace(record))) {
+          throw new Error('Cannot remove data from another cloud workspace');
+        }
+        return target.splice(start, count, ...items.map(stamp));
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function schedulingInstance({ cloudWorkspaceId, id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt }: RangeInstanceRecord) {
+  return { cloudWorkspaceId, id, instanceMode, singleInstanceBatchId, status, lastJobId, ownerUserId, expiresAt };
 }
 
 export function createMemoryAdminRepository(): AdminRepository {
-  const packedImageArtifacts: PackedImageArtifactRecord[] = [];
+  const packedImageArtifacts = workspaceRecords<PackedImageArtifactRecord>();
   const packedImageClaims = new Map<string, { token: string; expiresAt: Date }>();
-  const platformUsers: PlatformUserRecord[] = [];
-  const rangeTemplates: RangeTemplateRecord[] = [];
-  const rangeTemplateVersions: RangeTemplateVersionRecord[] = [];
-  const singleInstanceBatches: SingleInstanceBatchRecord[] = [];
-  const rangeInstances: RangeInstanceRecord[] = [];
-  const provisionJobs: ProvisionJobRecord[] = [];
-  const provisionJobStepLogs: ProvisionJobStepLogRecord[] = [];
-  const imageSnapshots: CloudImageSnapshotRecord[] = [];
-  const imageCatalogItems: ImageCatalogItemRecord[] = [];
-  const platformImageAssets: PlatformImageAssetRecord[] = [];
-  const platformImageTags: PlatformImageTagRecord[] = [];
-  const singleInstanceNetworkProfiles: SingleInstanceNetworkProfileRecord[] = [];
-  const billingLedgerResources: BillingLedgerResourceRecord[] = [];
-  const billingLineItems: BillingLineItemRecord[] = [];
-  const billingAnomalies: BillingAnomalyRecord[] = [];
-  const cloudResourceDrifts: CloudResourceDriftRecord[] = [];
-  const operationConfirmations: OperationConfirmationRecord[] = [];
-  const idempotentOperations: IdempotentOperationRecord[] = [];
-  const operationAuditEvents: OperationAuditEventRecord[] = [];
+  const platformUsers = workspaceRecords<PlatformUserRecord>();
+  const rangeTemplates = workspaceRecords<RangeTemplateRecord>();
+  const rangeTemplateVersions = workspaceRecords<RangeTemplateVersionRecord>();
+  const singleInstanceBatches = workspaceRecords<SingleInstanceBatchRecord>();
+  const rangeInstances = workspaceRecords<RangeInstanceRecord>();
+  const provisionJobs = workspaceRecords<ProvisionJobRecord>();
+  const provisionJobStepLogs = workspaceRecords<ProvisionJobStepLogRecord>();
+  const imageSnapshots = workspaceRecords<CloudImageSnapshotRecord>();
+  const imageCatalogItems = workspaceRecords<ImageCatalogItemRecord>();
+  const platformImageAssets = workspaceRecords<PlatformImageAssetRecord>();
+  const platformImageTags = workspaceRecords<PlatformImageTagRecord>();
+  const singleInstanceNetworkProfiles = workspaceRecords<SingleInstanceNetworkProfileRecord>();
+  const billingLedgerResources = workspaceRecords<BillingLedgerResourceRecord>();
+  const billingLineItems = workspaceRecords<BillingLineItemRecord>();
+  const billingAnomalies = workspaceRecords<BillingAnomalyRecord>();
+  const cloudResourceDrifts = workspaceRecords<CloudResourceDriftRecord>();
+  const operationConfirmations = workspaceRecords<OperationConfirmationRecord>();
+  const idempotentOperations = workspaceRecords<IdempotentOperationRecord>();
+  const operationAuditEvents = workspaceRecords<OperationAuditEventRecord>();
 
   let idCounter = 1;
   let singleControlQueue: Promise<unknown> = Promise.resolve();
@@ -201,19 +248,21 @@ export function createMemoryAdminRepository(): AdminRepository {
   };
 
   const assertPlatformUserUnique = (
-    input: { id?: string; username?: string; oidcIssuer?: string | null; oidcSubject?: string | null },
+    input: { id?: string; username?: string; loginUsername?: string; cloudWorkspaceId?: string | null; isPlatformManager?: boolean; oidcIssuer?: string | null; oidcSubject?: string | null },
     ignoreId?: string,
   ) => {
+    const cloudWorkspaceId = input.isPlatformManager ? null : input.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
+    if (input.loginUsername && runInSystemCloudWorkspaceScope(() => platformUsers.some(user => user.loginUsername === input.loginUsername && user.id !== ignoreId))) throw new Error('Platform user unique constraint failed: loginUsername');
     if (
       input.id !== undefined &&
-      platformUsers.some((user) => user.id === input.id && user.id !== ignoreId)
+      runInSystemCloudWorkspaceScope(() => platformUsers.some((user) => user.id === input.id && user.id !== ignoreId))
     ) {
       throw new Error(`Platform user unique constraint failed: id (${input.id})`);
     }
 
     if (
       input.username !== undefined &&
-      platformUsers.some((user) => user.username === input.username && user.id !== ignoreId)
+      runInSystemCloudWorkspaceScope(() => platformUsers.some((user) => user.username === input.username && user.cloudWorkspaceId === cloudWorkspaceId && user.id !== ignoreId))
     ) {
       throw new Error(`Platform user unique constraint failed: username (${input.username})`);
     }
@@ -221,12 +270,12 @@ export function createMemoryAdminRepository(): AdminRepository {
     if (
       input.oidcIssuer != null &&
       input.oidcSubject != null &&
-      platformUsers.some(
+      runInSystemCloudWorkspaceScope(() => platformUsers.some(
         (user) =>
           user.oidcIssuer === input.oidcIssuer &&
           user.oidcSubject === input.oidcSubject &&
           user.id !== ignoreId,
-      )
+      ))
     ) {
       throw new Error(`Platform user unique constraint failed: oidc identity (${input.oidcIssuer}, ${input.oidcSubject})`);
     }
@@ -242,16 +291,23 @@ export function createMemoryAdminRepository(): AdminRepository {
     return record;
   };
 
-  return {
+  const repository: AdminRepository = {
     async createPlatformUser(input: CreatePlatformUserInput) {
       assertPlatformUserUnique({
         id: input.id,
         username: input.username,
+        loginUsername: input.loginUsername ?? input.username,
+        cloudWorkspaceId: input.cloudWorkspaceId,
+        isPlatformManager: input.isPlatformManager,
       });
 
       const record: PlatformUserRecord = {
         id: input.id,
         username: input.username,
+        loginUsername: input.loginUsername ?? input.username,
+        cloudWorkspaceId: input.isPlatformManager ? null : input.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound',
+        isPlatformManager: input.isPlatformManager ?? false,
+        selectedCloudWorkspaceId: input.selectedCloudWorkspaceId ?? null,
         passwordHash: input.passwordHash,
         oidcIssuer: input.oidcIssuer ?? null,
         oidcSubject: input.oidcSubject ?? null,
@@ -266,7 +322,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async listPlatformUsers() {
-      return cloneList(platformUsers);
+      return cloneList(platformUsers.filter(user => !user.isPlatformManager));
     },
     async getPlatformUserById(id: string) {
       const record = platformUsers.find((user) => user.id === id);
@@ -274,7 +330,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return record ? clone(record) : null;
     },
     async getPlatformUserByUsername(username: string) {
-      const record = platformUsers.find((user) => user.username === username);
+      const record = platformUsers.find((user) => user.username === username && (!getCurrentCloudWorkspaceId() || !user.isPlatformManager));
 
       return record ? clone(record) : null;
     },
@@ -292,6 +348,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       assertPlatformUserUnique(
         {
           username: input.username,
+          loginUsername: input.loginUsername,
+          cloudWorkspaceId: record.cloudWorkspaceId,
+          isPlatformManager: record.isPlatformManager,
           oidcIssuer,
           oidcSubject,
         },
@@ -300,6 +359,8 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       Object.assign(record, {
         username: input.username ?? record.username,
+        loginUsername: input.loginUsername ?? record.loginUsername,
+        selectedCloudWorkspaceId: input.selectedCloudWorkspaceId !== undefined ? input.selectedCloudWorkspaceId : record.selectedCloudWorkspaceId,
         passwordHash: input.passwordHash ?? record.passwordHash,
         oidcIssuer,
         oidcSubject,
@@ -311,7 +372,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async countActiveAdmins() {
-      return platformUsers.filter((user) => user.role === 'admin' && user.status === 'active').length;
+      return platformUsers.filter((user) => !user.isPlatformManager && user.role === 'admin' && user.status === 'active').length;
     },
     async createOperationConfirmation(input: CreateOperationConfirmationInput) {
       const record: OperationConfirmationRecord = {
@@ -422,7 +483,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         description: input.description ?? null,
         slug: input.slug,
         version: input.version,
-        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         iacType: input.iacType ?? 'opentofu',
         modulePathOrRef: input.modulePathOrRef,
         topologySpec: clone(input.topologySpec),
@@ -666,7 +727,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
 
       for (let i = rangeTemplateVersions.length - 1; i >= 0; i -= 1) {
-        if (rangeTemplateVersions[i].templateId === id) {
+        if (visibleInWorkspace(rangeTemplateVersions[i]) && rangeTemplateVersions[i].templateId === id) {
           rangeTemplateVersions.splice(i, 1);
         }
       }
@@ -773,7 +834,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         draftUpdatedAt: input.draftUpdatedAt ?? null,
         status: input.status ?? 'draft',
         allocatedCidr: input.allocatedCidr ?? null,
-        cloudProvider: 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         accessEntry: cloneIfDefined(input.accessEntry ?? null),
         resourceSummary: cloneIfDefined(input.resourceSummary ?? null),
         errorSummary: input.errorSummary ?? null,
@@ -987,7 +1048,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(provisionJobs.filter(value => value.status === 'pending' && (value.availableAt ?? value.createdAt) <= timestamp && (!input.after
         || value.createdAt > input.after.createdAt || value.createdAt.getTime() === input.after.createdAt.getTime() && value.id > input.after.id))
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)).slice(0, limit)
-        .map(({ id, rangeInstanceId, jobType, status, createdAt }) => ({ id, rangeInstanceId, jobType, status, createdAt })));
+        .map(({ cloudWorkspaceId, id, rangeInstanceId, jobType, status, createdAt }) => ({ cloudWorkspaceId, id, rangeInstanceId, jobType, status, createdAt })));
     },
     async createProvisionJob(input: CreateProvisionJobInput) {
       return clone(createJobRecord(input));
@@ -1146,7 +1207,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async upsertCloudResourceDrift(input: UpsertCloudResourceDriftInput) {
-      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const cloudProvider = input.cloudProvider ?? workspaceProvider();
       const existing = cloudResourceDrifts.find(
         (record) =>
           record.cloudProvider === cloudProvider &&
@@ -1188,7 +1249,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async resolveCloudResourceDrift(input) {
-      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const cloudProvider = input.cloudProvider ?? workspaceProvider();
       const record = cloudResourceDrifts.find(
         (item) =>
           item.cloudProvider === cloudProvider &&
@@ -1229,6 +1290,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         if (existing) {
           if (['Deleting', 'Deleted'].includes(existing.status ?? '') && !['Deleting', 'Deleted'].includes(snapshot.status ?? '')) continue;
           Object.assign(existing, {
+            ...(snapshot.minimumSystemDiskSize !== undefined ? { minimumSystemDiskSize: snapshot.minimumSystemDiskSize } : {}),
             sourceImageName: snapshot.sourceImageName,
             osType: snapshot.osType ?? null,
             platform: snapshot.platform ?? null,
@@ -1242,6 +1304,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         }
 
         imageSnapshots.unshift({
+          minimumSystemDiskSize: snapshot.minimumSystemDiskSize ?? null,
           id: nextId(),
           provider: input.provider,
           accountUid: input.accountUid,
@@ -1271,6 +1334,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       for (let index = imageSnapshots.length - 1; index >= 0; index -= 1) {
         const record = imageSnapshots[index];
+        if (!visibleInWorkspace(record)) continue;
 
         if (
           record.provider === input.provider &&
@@ -1475,7 +1539,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async deletePlatformImageAssetsBySnapshotId(snapshotId: string) {
       for (let index = platformImageAssets.length - 1; index >= 0; index -= 1) {
-        if (platformImageAssets[index].sourceSnapshotId === snapshotId) {
+        if (visibleInWorkspace(platformImageAssets[index]) && platformImageAssets[index].sourceSnapshotId === snapshotId) {
           platformImageAssets.splice(index, 1);
         }
       }
@@ -1507,13 +1571,13 @@ export function createMemoryAdminRepository(): AdminRepository {
       if (jobPatch) Object.assign(current, clone(jobPatch), {updatedAt: now()});
       return true;
     },
-    async listSingleInstanceNetworkProfiles() { return clone(singleInstanceNetworkProfiles); },
+    async listSingleInstanceNetworkProfiles() { return cloneList(singleInstanceNetworkProfiles); },
     async getSingleInstanceNetworkProfileById(id) { return clone(singleInstanceNetworkProfiles.find((value) => value.id === id) ?? null); },
     async registerSingleInstanceNetworkCleanup(id,runId,adminId,ownerIds) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)Object.assign(profile,{cleanupRunId:runId,cleanupRegisteredByUserId:adminId,cleanupOwnerUserIds:ownerIds});},
     async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},
     async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
     async createPackedImageArtifact(input) {
-      const record: PackedImageArtifactRecord = { ...input, id: nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
+      const record: PackedImageArtifactRecord = { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', sourceSnapshotBaseline: null, ...input, id: input.id ?? nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
       packedImageArtifacts.push(record); return clone(record);
     },
     async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },
@@ -1536,6 +1600,8 @@ export function createMemoryAdminRepository(): AdminRepository {
     async updatePackedImageArtifact(id, input) {
       const record = packedImageArtifacts.find(item => item.id === id);
       if (!record) throw new Error('Packed image artifact not found');
+      if ('sourceSnapshotBaseline' in input || record.sourceSnapshotBaseline && ['cloudProvider','cloudWorkspaceId','cloudAccountContextId','cloudAccountUid','regionId','ownerUserId','sourceRangeInstanceId','sourceHostKey','sourceInstanceId','sourceDiskIds']
+        .some(key => key in input && JSON.stringify((input as any)[key]) !== JSON.stringify((record as any)[key]))) throw new Error('Packed snapshot baseline and creation source are immutable');
       Object.assign(record, clone(input), { updatedAt: now() }); return clone(record);
     },
     async getSingleInstanceNetworkProfile(input) {
@@ -1602,11 +1668,12 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(record);
     },
     async listBillingImageImportResources() { return []; },
+    async listBillingManagedCosBuckets() { return []; },
     async createBillingLedgerResource(input: CreateBillingLedgerResourceInput) {
       const timestamp = now();
       const record: BillingLedgerResourceRecord = {
         id: nextId(),
-        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
         cloudAccountUid: input.cloudAccountUid ?? null,
         regionId: input.regionId,
         cloudResourceId: input.cloudResourceId,
@@ -1631,7 +1698,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     async findBillingLedgerResource(input: FindBillingLedgerResourceInput) {
       const record = billingLedgerResources.find(
         (item) =>
-          item.cloudProvider === (input.cloudProvider ?? 'alibaba_cloud') &&
+          item.cloudProvider === (input.cloudProvider ?? workspaceProvider()) &&
           item.regionId === input.regionId &&
           item.cloudResourceId === input.cloudResourceId &&
           item.cloudResourceType === input.cloudResourceType,
@@ -1672,25 +1739,30 @@ export function createMemoryAdminRepository(): AdminRepository {
       return latest ? new Date(latest) : null;
     },
     async replaceBillingDay(input) {
+      const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
+      const scope = getCurrentCloudWorkspaceScope();
+      if (scope && !('system' in scope) && (scope.provider !== cloudProvider || scope.accountUid !== input.cloudAccountUid)) throw new Error('Billing replacement workspace, provider, account or date mismatch');
       const date = new Date(input.billingDate).getTime();
-      if ([...input.lineItems, ...input.anomalies].some(item => item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
+      if (!input.cloudAccountUid || !Number.isFinite(date) || [...input.lineItems, ...input.anomalies].some(item => (item.cloudProvider ?? 'alibaba_cloud') !== cloudProvider || item.cloudWorkspaceId !== undefined && item.cloudWorkspaceId !== (getCurrentCloudWorkspaceId() ?? 'legacy-unbound') || item.cloudAccountUid !== input.cloudAccountUid || new Date(item.billingDate).getTime() !== date)) throw new Error('Billing replacement account or date mismatch');
       const oldLines = cloneList(billingLineItems);
       const oldAnomalies = cloneList(billingAnomalies);
       try {
-        for (const item of billingLineItems) if (item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
-        for (let i = billingLineItems.length - 1; i >= 0; i--) if (billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
-        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
+        for (const item of billingLineItems) if ((item.cloudProvider ?? 'alibaba_cloud') === cloudProvider && item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudProvider === cloudProvider && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === item.cloudResourceType && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
+        for (let i = billingLineItems.length - 1; i >= 0; i--) if (visibleInWorkspace(billingLineItems[i]) && (billingLineItems[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
+        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (visibleInWorkspace(billingAnomalies[i]) && (billingAnomalies[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
         await this.upsertBillingLineItems(input.lineItems);
         for (const item of input.anomalies) await this.createBillingAnomaly(item);
       } catch (error) {
-        billingLineItems.splice(0, billingLineItems.length, ...oldLines);
-        billingAnomalies.splice(0, billingAnomalies.length, ...oldAnomalies);
+        for (let index = billingLineItems.length - 1; index >= 0; index--) if (visibleInWorkspace(billingLineItems[index])) billingLineItems.splice(index, 1);
+        for (let index = billingAnomalies.length - 1; index >= 0; index--) if (visibleInWorkspace(billingAnomalies[index])) billingAnomalies.splice(index, 1);
+        billingLineItems.push(...oldLines);
+        billingAnomalies.push(...oldAnomalies);
         throw error;
       }
     },
     async deleteBillingLineItemsBySyncBatchId(syncBatchId: string) {
       for (let index = billingLineItems.length - 1; index >= 0; index -= 1) {
-        if (billingLineItems[index]?.syncBatchId === syncBatchId) {
+        if (visibleInWorkspace(billingLineItems[index]) && billingLineItems[index]?.syncBatchId === syncBatchId) {
           billingLineItems.splice(index, 1);
         }
       }
@@ -1699,9 +1771,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
 
       return input.map((item) => {
-        const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint);
+        const existing = billingLineItems.find((entry) => entry.sourceFingerprint === item.sourceFingerprint && (entry.cloudProvider ?? 'alibaba_cloud') === (item.cloudProvider ?? 'alibaba_cloud'));
 
         if (existing) {
+          existing.cloudProvider = item.cloudProvider ?? 'alibaba_cloud';
           existing.cloudAccountUid = item.cloudAccountUid ?? null;
           existing.syncBatchId = item.syncBatchId;
           existing.billCycle = item.billCycle;
@@ -1724,6 +1797,7 @@ export function createMemoryAdminRepository(): AdminRepository {
 
         const created: BillingLineItemRecord = {
           id: nextId(),
+          cloudProvider: item.cloudProvider ?? 'alibaba_cloud',
           cloudAccountUid: item.cloudAccountUid ?? null,
           syncBatchId: item.syncBatchId,
           sourceFingerprint: item.sourceFingerprint,
@@ -1752,7 +1826,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(
         billingLineItems.filter(
           (item) =>
-            inDateRange(item.billingDate, filter.startAt, filter.endAt) &&
+            inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudProvider === undefined || (item.cloudProvider ?? 'alibaba_cloud') === filter.cloudProvider) &&
             (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid) &&
             (filter.ownerUserId === undefined || item.ownerUserId === filter.ownerUserId) &&
             (filter.billingScope === undefined || item.billingScope === filter.billingScope) &&
@@ -1761,9 +1835,10 @@ export function createMemoryAdminRepository(): AdminRepository {
       );
     },
     async createBillingAnomaly(input: CreateBillingAnomalyInput) {
-      const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint);
+      const existing = billingAnomalies.find((item) => item.sourceFingerprint === input.sourceFingerprint && (item.cloudProvider ?? 'alibaba_cloud') === (input.cloudProvider ?? 'alibaba_cloud'));
 
       if (existing) {
+        existing.cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
         existing.cloudAccountUid = input.cloudAccountUid ?? null;
         existing.syncBatchId = input.syncBatchId;
         existing.billCycle = input.billCycle;
@@ -1782,6 +1857,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       const timestamp = now();
       const record: BillingAnomalyRecord = {
         id: nextId(),
+        cloudProvider: input.cloudProvider ?? 'alibaba_cloud',
         cloudAccountUid: input.cloudAccountUid ?? null,
         syncBatchId: input.syncBatchId,
         sourceFingerprint: input.sourceFingerprint,
@@ -1803,13 +1879,27 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async deleteBillingAnomaliesBySyncBatchId(syncBatchId: string) {
       for (let index = billingAnomalies.length - 1; index >= 0; index -= 1) {
-        if (billingAnomalies[index]?.syncBatchId === syncBatchId) {
+        if (visibleInWorkspace(billingAnomalies[index]) && billingAnomalies[index]?.syncBatchId === syncBatchId) {
           billingAnomalies.splice(index, 1);
         }
       }
     },
     async listBillingAnomalies(filter: ListBillingAnomaliesFilter = {}) {
-      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
+      return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudProvider === undefined || (item.cloudProvider ?? 'alibaba_cloud') === filter.cloudProvider) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
+  return new Proxy(repository, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (typeof value !== 'function' || value._isMockFunction) return value;
+      return (...args: unknown[]) => {
+        const scope = getCurrentCloudWorkspaceScope();
+        const operation = String(property);
+        if (scope && !('system' in scope) && scope.isReadOnly
+          && /^(create|update|delete|set|collect|replace|reconcile|upsert|queue|claim|consume|apply|complete|save|sync|release|mark|register|renew)/.test(operation)
+          && !/(Operation|Confirmation|Audit)/.test(operation)) return Promise.reject(new Error('Historical cloud workspace is read-only'));
+        return value.apply(target, args);
+      };
+    },
+  });
 }

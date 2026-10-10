@@ -34,7 +34,7 @@ function createSystemConfigServiceStub() {
       accessKeySecret: 'test-sk',
     }),
     getAccountContextById:jest.fn().mockResolvedValue({provider:'alibaba_cloud',defaultRegion:'cn-hangzhou',defaultZoneId:'cn-hangzhou-h',accessKeyId:'test-ak',accessKeySecret:'test-sk',accountUid:'single-test-account',accountUidResolved:true,cloudAccountContextId:'single-test-context'}),
-    getAccountContext: jest.fn().mockResolvedValue({
+    getExecutionAccountContext: jest.fn().mockResolvedValue({
       provider: 'alibaba_cloud',
       defaultRegion: 'cn-hangzhou',
       defaultZoneId: 'cn-hangzhou-h',
@@ -2205,7 +2205,7 @@ describe('single instances', () => {
     const service = new SingleInstanceNetworkService(
       repository,
       {
-        getAccountContext: jest.fn().mockResolvedValue({...snapshot,accountUid:'single-test-account',cloudAccountContextId:'single-test-context'}),
+        getExecutionAccountContext: jest.fn().mockResolvedValue({...snapshot,accountUid:'single-test-account',cloudAccountContextId:'single-test-context'}),
       } as any,
       bootstrapServiceStub as any,
       cidrPoolService,

@@ -20,6 +20,7 @@
 | 取消平台发布 | `platform_image_unpublish` | `platformImageAssetId` | 操作元数据 | `images:write`，仅管理员 |
 | 删除平台镜像资产 | `platform_image_remove` | `platformImageAssetId` | 操作元数据 | `images:write` |
 | 查询镜像目录 | `image_catalog_list` | `scope: public\|custom` | — | `images:read` |
+| 查询腾讯云镜像目录 | `tencent_cloud_image_list` | `cloudAccountContextId`、`scope` | `offset`、`limit` | `settings:read`、`images:read`，仅管理员 |
 | 同步镜像目录 | `image_catalog_sync` | `scope: public\|custom` | — | `images:read` |
 | 删除自定义云镜像 | `image_catalog_custom_delete` | `snapshotId` | `deleteOwnedSnapshots`（默认 `false`）、操作元数据 | `images:write` |
 | 查询导入任务 | `image_import_job_list` | — | — | `images:read` |
@@ -40,7 +41,7 @@
 - 完整回收本次平台打包镜像时显式设置 `deleteOwnedSnapshots: true`。仅 owner 或管理员可操作，且必须有新打包生成的持久化来源记录、云账号 UID、地域、owner、全部源磁盘、镜像绑定快照、唯一来源标签和台账证明；旧镜像、外部或共享快照拒绝自动回收。删除不用 Force，每个云资源确认消失后才释放对应台账；仅 `removed: true` 且 `status: deleted` 表示全部完成。
 - 镜像中心的云上自定义镜像删除弹窗默认“仅删除镜像”；有完整平台打包来源记录时可明确选择“同时清理所属快照”。仅删除云镜像后仍有所属快照的记录保留为“快照待回收”，可继续使用相同目标回收。列表资格提示不替代服务端实时所有权、引用和删除确认检查。
 - 清理失败保留确切镜像/快照清单和已删除进度，使用相同 `snapshotId` 重试；不得改成其它镜像、强制删除或删掉审计材料。worker 也会继续恢复已开始的清理。
-- `snapshotId` 使用目录来源行的 `id` 或资产的 `sourceSnapshotId`；完整回收结果中的 `snapshotIds` 和 `deletedSnapshotIds` 是真实阿里云 backing snapshot ID。若前一次已确认操作进入 `failed`，保持业务目标不变，用新的幂等键重新取得确认再重试；同一次二阶段确认必须复用相同幂等键。
+- `snapshotId` 使用目录来源行的 `id` 或资产的 `sourceSnapshotId`；完整回收结果中的 `snapshotIds` 和 `deletedSnapshotIds` 是对应厂商的真实 backing snapshot ID。若前一次已确认操作进入 `failed`，保持业务目标不变，用新的幂等键重新取得确认再重试；同一次二阶段确认必须复用相同幂等键。
 - 打包返回 `packedImageArtifactId` 与初始 `imageReady: false`。用 `platform_image_list({ view: 'mine' })` 跟踪同一资产；仅 `sourceSnapshotAvailable: true` 且 `enabled: true` 可以创建实例。创建中、失败、云端消失或清理中的资产不可启用/重复收录；重复收录保留 owner、默认配置和现有启停状态。
 - 目录同步查询全部云状态并完整校验分页。云端消失的来源会保留为不可用记录并停用关联资产；错误、业务失败或不完整响应保留原目录。
 - 导入任务仅对 `failed` 状态使用 `image_import_job_retry`。云端明确拒绝且未返回 ImageId 时可显式重试；超时/断连等未知提交只按原任务唯一标记恢复，不能当成未创建，也不会自动重新提交。`available` 后才可稳定使用。
@@ -49,6 +50,10 @@
 - 本地 QCOW2、RAW、VHD 上传不由 MCP 提供：JSON 工具不能承载二进制，预签名上传地址也不能作为普通工具结果处理。通过平台上传后，用导入任务工具跟踪。
 
 从运行实例生成镜像不属于本模块：独立实例使用 `single_instance_pack_image`，编排节点使用 `range_instance_node_pack_image`。
+
+腾讯云导入必须显式选择官方支持的操作系统平台与版本，由平台创建私有专属 COS Bucket 并保留完整来源证明。未知导入或 Bucket 创建结果只恢复原请求，不重复创建；临时对象确认消失、上传授权过期且 Bucket 无活动任务、对象、版本或分片后才能回收桶。当前单实例创建仅支持可用的 x86_64 系统盘镜像，并实时核对镜像最小系统盘容量；带数据盘镜像拒绝创建，不能依赖目录缓存绕过核验。
+
+腾讯云新打包在 CreateImage 前保存全部源盘的完整快照基线和官方 RequestId，基线绑定原空间、UID、配置、地域及 owner，创建后不可补写或替换。只接管不在该基线中的私有、非复制、无共享快照，且必须精确对应源盘并仅绑定原带原子来源标签的平台镜像。厂商未注明时区的 CreateTime 保留原文，不靠猜测 UTC 或 UTC+8 判断新旧。旧或未知打包没有基线时继续隔离核验，不能补基线后重建或将外部快照归属平台。
 
 标签字典当前只有查询和创建，没有全局标签重命名或删除能力。资产标签关联采用完整集合替换：先用 `platform_image_tag_list` 取得已有定义ID，再传完整目标 `tagIds`；`[]` 仅清空该资产关联，标签定义继续保留。普通用户只可修改自己的当前账号/地域资产关联；公开可见的他人资产仍不可修改。全局创建与关联替换按MCP二阶段确认，执行时重新验证角色/owner和标签存在性；不修改阿里云资源标签。
 

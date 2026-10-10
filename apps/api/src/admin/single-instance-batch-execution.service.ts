@@ -3,7 +3,8 @@ import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { ADMIN_REPOSITORY, type AdminRepository, type ProvisionJobRecord, type RangeInstanceRecord, type RangeResourceSummary, } from './admin.repository';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from './billing-ledger-sync';
-import { SystemConfigService } from './system-config.service';
+import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
+import { describeTencentInstances, describeTencentResourceInventory, readTencentAttachedDiskInventory, assertTencentOwnedInstance, terminateTencentInstances } from './tencent-cloud-resources';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, findExistingInventoryDiskIds, inventoryDiskIds } from './instance-disk-inventory';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -61,7 +62,7 @@ type AliyunInstanceDetail = {
   };
 };
 type InstanceDescribeInput = {
-  accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+  accountContext: SystemCloudAccountContext;
   instanceIds: string[];
 };
 type PendingInstanceDescribe = {
@@ -102,7 +103,9 @@ export class SingleInstanceBatchExecutionService {
       const scopedInstance = instance ?? await this.adminRepository.getRangeInstanceById(rangeInstanceId);
       if (!scopedInstance || scopedInstance.id !== rangeInstanceId) throw new UnverifiedSingleInstanceAccountError('缺少原云账号绑定，需核验实例来源后才能继续。');
       const accountContext = await this.resolveInstanceAccount(scopedInstance);
-      const details = await this.findSingleInstanceDetailsByRangeInstanceTag({
+      const details = accountContext.provider === 'tencent_cloud'
+        ? await describeTencentInstances(accountContext, { tags: { RangeInstanceId: rangeInstanceId } })
+        : await this.findSingleInstanceDetailsByRangeInstanceTag({
         accessKeyId: accountContext.accessKeyId,
         accessKeySecret: accountContext.accessKeySecret,
         regionId: accountContext.defaultRegion,
@@ -129,6 +132,7 @@ export class SingleInstanceBatchExecutionService {
           if (!config)
             throw new Error('Single instance config missing');
           const accountContext = await this.resolveInstanceAccount(first);
+          if (accountContext.provider !== 'alibaba_cloud') throw new Error('Tencent instances must be created by OpenTofu; native creation is disabled');
           const profile = config.networkProfileId
             ? await this.adminRepository.getSingleInstanceNetworkProfileById(config.networkProfileId)
             : await this.adminRepository.getSingleInstanceNetworkProfile({ provider: first.cloudProvider,
@@ -229,6 +233,7 @@ export class SingleInstanceBatchExecutionService {
         try {
           await this.assertCurrent(item);
           const accountContext = await this.resolveInstanceAccount(item.instance);
+          if (accountContext.provider !== 'alibaba_cloud') throw new Error('Tencent instances require their OpenTofu workspace for destruction');
           const taggedIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: accountContext.accessKeyId,
             accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, rangeInstanceId: item.instance.id });
           const instanceIds = [...new Set([...Object.values(item.instance.resourceSummary?.hostIds ?? {}), ...taggedIds])];
@@ -286,13 +291,21 @@ export class SingleInstanceBatchExecutionService {
     });
   }
   async resolveInstanceAccount(instance: RangeInstanceRecord) {
+    if (!['alibaba_cloud', 'tencent_cloud'].includes(instance.cloudProvider)) {
+      throw new UnverifiedSingleInstanceAccountError('该云厂商的单实例执行与回收尚未开放；已保留资源材料。');
+    }
     const config = instance.singleInstanceConfig;
+    if (instance.cloudProvider === 'tencent_cloud' && (config?.executionBackend !== 'opentofu' || !config.regionId?.trim() || !config.zoneId?.trim()))
+      throw new UnverifiedSingleInstanceAccountError('腾讯云实例需要完整冻结的 OpenTofu 来源、地域和可用区；已保留资源材料。');
     if (!config?.cloudAccountContextId?.trim() || !config.cloudAccountUid?.trim()) {
       throw new UnverifiedSingleInstanceAccountError('缺少原云账号绑定，需核验实例来源后才能继续；已保留实例记录和资源材料。');
     }
     const account = await this.systemConfigService.getAccountContextById(config.cloudAccountContextId).catch(() => {
       throw new UnverifiedSingleInstanceAccountError('原云账号绑定不可用，需核验实例来源后才能继续；已保留实例记录和资源材料。');
     });
+    if (account.provider !== instance.cloudProvider) {
+      throw new UnverifiedSingleInstanceAccountError('原云账号厂商与单实例执行器不符；未调用云端接口。');
+    }
     if (!account.accountUidResolved || account.cloudAccountContextId !== config.cloudAccountContextId || account.accountUid !== config.cloudAccountUid) {
       throw new UnverifiedSingleInstanceAccountError('原云账号身份未核验或与实例绑定不符，需核验实例来源后才能继续；已保留实例记录和资源材料。');
     }
@@ -304,7 +317,7 @@ export class SingleInstanceBatchExecutionService {
       throw new Error('Single instance cloud context differs from its immutable launch identity');
     return { ...account, defaultZoneId: config?.zoneId ?? account.defaultZoneId };
   }
-  async captureInstanceDisks(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+  async captureInstanceDisks(item: SingleInstanceExecutionItem, account: SystemCloudAccountContext,
     summary: RangeResourceSummary, destroying = false, assertLease: () => Promise<void> = async () => {}) {
     await assertLease();
     await this.assertCurrent(item);
@@ -325,7 +338,12 @@ export class SingleInstanceBatchExecutionService {
     const inventories = [];
     for (const [hostKey, instanceId] of Object.entries(summary.hostIds ?? {})) {
       await this.assertCurrent(item);
-      const disks = await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
+      const disks = account.provider === 'tencent_cloud'
+        ? await readTencentAttachedDiskInventory(account, instanceId, {
+          systemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+          dataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
+          previouslyInventoried: Object.values(summary.diskInventoryHostIds ?? {}).includes(instanceId) }, expectedTags)
+        : await readAttachedDiskInventory({ rpc: (action, parameters) => this.performAliyunRpcRequest({
         accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action, parameters }),
         instanceId, knownSystemDiskIds: Object.values(summary.systemDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
         knownDataDiskIds: Object.values(summary.dataDiskIds ?? {}).filter(id => !Object.values(summary.unverifiedDiskIds ?? {}).includes(id)),
@@ -346,19 +364,40 @@ export class SingleInstanceBatchExecutionService {
     for (const disks of inventories) assertDiskInventorySafe(disks, destroying);
     return summary;
   }
-  async assertInstanceDisksAbsent(instance: RangeInstanceRecord, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>) {
+  async assertInstanceDisksAbsent(instance: RangeInstanceRecord, account: SystemCloudAccountContext) {
     const current = await this.adminRepository.getRangeInstanceById(instance.id);
+    if (account.provider === 'tencent_cloud') {
+      const summary = current?.resourceSummary ?? instance.resourceSummary;
+      const [byId, byTag] = await Promise.all([
+        describeTencentResourceInventory(account, 'disk', { ids: inventoryDiskIds(summary) }),
+        describeTencentResourceInventory(account, 'disk', { tags: { RangeInstanceId: instance.id } }),
+      ]);
+      if (byId.length || byTag.length) throw new Error('Tencent CBS disks remain after instance deletion; retain billing evidence');
+      const ledgers = (await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: instance.id }))
+        .filter(ledger => !ledger.releasedAt && !['image', 'snapshot'].includes(ledger.cloudResourceType));
+      if (ledgers.some(ledger => ledger.cloudProvider !== 'tencent_cloud' || ledger.cloudAccountUid !== account.accountUid || ledger.regionId !== account.defaultRegion || ledger.ownerUserId !== instance.ownerUserId || ledger.rangeInstanceId !== instance.id))
+        throw new Error('Tencent cleanup billing evidence conflicts with its frozen account; no ledger may be released');
+      for (const [ledgerKind, cloudKind] of [['ecs', 'ecs'], ['disk', 'disk'], ['eip', 'eip'], ['nat_gateway', 'nat']] as const) {
+        const ids = ledgers.filter(ledger => ledger.cloudResourceType === ledgerKind).map(ledger => ledger.cloudResourceId);
+        if ((await describeTencentResourceInventory(account, cloudKind, { ids })).length)
+          throw new Error('Tencent member billing resources remain; retain billing evidence');
+      }
+      if (ledgers.some(ledger => !['ecs', 'disk', 'eip', 'nat_gateway'].includes(ledger.cloudResourceType)))
+        throw new Error('Tencent member contains an unsupported billable resource; preserve recovery material');
+      return;
+    }
     const remaining = await findExistingInventoryDiskIds((action, parameters) => this.performAliyunRpcRequest({
       accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action, parameters }),
       inventoryDiskIds(current?.resourceSummary ?? instance.resourceSummary));
     if (remaining.length) throw new Error(`ECS disks remain after instance deletion: ${remaining.join(', ')}`);
   }
-  async readOpenTofuInstances(account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, instanceIds: string[]) {
+  async readOpenTofuInstances(account: SystemCloudAccountContext, instanceIds: string[]) {
     return this.runWithSlot(() => this.describeInstances({ accountContext: account, instanceIds }));
   }
   async readOpenTofuInstancesByTag(instance: RangeInstanceRecord) {
     return this.runWithSlot(async () => {
       const account = await this.resolveInstanceAccount(instance);
+      if (account.provider === 'tencent_cloud') return describeTencentInstances(account, { tags: { RangeInstanceId: instance.id } });
       return this.findSingleInstanceDetailsByRangeInstanceTag({ accessKeyId: account.accessKeyId,
         accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: instance.id }, true);
     });
@@ -369,6 +408,7 @@ export class SingleInstanceBatchExecutionService {
       || !item.instance.singleInstanceConfig.cloudAccountContextId) throw new Error('Emergency cleanup requires a new bound OpenTofu member');
     const account = await this.resolveInstanceAccount(item.instance);
     const ids = [...new Set(instanceIds)];
+    if (account.provider === 'tencent_cloud') return this.deleteOwnedTencentOpenTofuInstances(item, account, ids, assertLease);
     const matches = (detail: NormalizedInstanceDetail) => ids.includes(detail.instanceId)
       && detail.tags.RangeInstanceId === item.instance.id && detail.tags.SingleInstanceBatchId === item.instance.singleInstanceBatchId
       && detail.tags.CloudAccountUid === item.instance.singleInstanceConfig?.cloudAccountUid
@@ -398,6 +438,52 @@ export class SingleInstanceBatchExecutionService {
     }
     throw new Error('Emergency cleanup absence could not be confirmed');
   }
+  private async deleteOwnedTencentOpenTofuInstances(item: SingleInstanceExecutionItem, account: SystemCloudAccountContext, ids: string[], assertLease: () => Promise<void>) {
+    if (!ids.length) throw new Error('Tencent emergency cleanup requires a recorded physical creation identity; empty tag queries cannot prove no unknown submission');
+    const config = item.instance.singleInstanceConfig!;
+    const sourceJobId = config.opentofuCreateJobId;
+    const sourceJob = sourceJobId ? await this.adminRepository.getProvisionJobById(sourceJobId) : null;
+    if (!sourceJobId || !sourceJob || sourceJob.rangeInstanceId !== item.instance.id || !['create', 'retry'].includes(sourceJob.jobType))
+      throw new Error('Tencent emergency cleanup requires a durable original creation job');
+    const intent = createHash('sha256').update(JSON.stringify(['tencent_cloud', config.cloudAccountContextId, config.cloudAccountUid,
+      config.regionId, config.zoneId, item.instance.singleInstanceBatchId, item.instance.id, sourceJobId])).digest('hex').slice(0, 32);
+    const matches = (detail: NormalizedInstanceDetail) => {
+      assertTencentOwnedInstance(item.instance, account, detail, config.hostKey);
+      if (!ids.includes(detail.instanceId) || detail.tags.PlatformCreateJobId !== sourceJobId || detail.tags.CreationIntentId !== intent)
+        throw new Error('Tencent emergency cleanup resource has no exact creation intent proof');
+    };
+    await assertLease(); await this.assertCurrent(item);
+    const resources = await describeTencentResourceInventory(account, 'ecs', { ids });
+    for (const resource of resources) {
+      matches(resource.detail!);
+      if (resource.chargeType !== 'POSTPAID_BY_HOUR') throw new Error('Tencent fallback cleanup supports only proven pay-as-you-go CVM');
+    }
+    const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
+    if (resources.some(resource => !Object.values(current?.resourceSummary?.diskInventoryHostIds ?? {}).includes(resource.id)))
+      throw new Error('Tencent fallback cleanup requires persisted complete disk inventory');
+    for (const resource of resources) {
+      const disks = await describeTencentResourceInventory(account, 'disk', { instanceId: resource.id });
+      const known = new Set(inventoryDiskIds(current?.resourceSummary));
+      if (!disks.some(disk => disk.diskUsage === 'SYSTEM_DISK' && known.has(disk.id))
+        || disks.some(disk => disk.shared || (known.has(disk.id) ? disk.deleteWithInstance !== true : disk.deleteWithInstance !== false)))
+        throw new Error('Tencent fallback cleanup cannot prove automatic CBS deletion or safe external attachments; use the frozen OpenTofu state');
+    }
+    await assertLease(); await this.assertCurrent(item);
+    const toTerminate = resources.filter(resource => !['Terminating', 'Terminated'].includes(resource.detail?.status ?? ''));
+    if (toTerminate.length) await terminateTencentInstances(account, toTerminate.map(resource => resource.id));
+    let empty = 0;
+    for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt++) {
+      await assertLease(); await this.assertCurrent(item);
+      const [byId, byTag] = await Promise.all([describeTencentInstances(account, { instanceIds: ids }),
+        describeTencentInstances(account, { tags: { RangeInstanceId: item.instance.id } })]);
+      [...byId, ...byTag].forEach(matches);
+      if (!byId.length && !byTag.length) {
+        if (++empty >= 2) { await this.assertInstanceDisksAbsent(item.instance, account); return; }
+      } else empty = 0;
+      if (attempt < DESTROY_RETRY_ATTEMPTS - 1) await sleep(readDestroyRetryIntervalMs());
+    }
+    throw new Error('Tencent CVM disappearance has not been verified; preserve recovery and billing evidence');
+  }
   private async isCurrent(item: SingleInstanceExecutionItem) {
     const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
     return current?.instanceMode === 'single' && !['destroyed', 'create_failed'].includes(current.status) && current.lastJobId === item.job.id && Boolean(item.job.startedAt)
@@ -407,7 +493,7 @@ export class SingleInstanceBatchExecutionService {
     if (!(await this.isCurrent(item)))
       throw new LostSingleInstanceClaimError();
   }
-  private async waitForSystemDisks(accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, instanceId: string) {
+  private async waitForSystemDisks(accountContext: SystemCloudAccountContext, instanceId: string) {
     for (let attempt = 0; attempt < DESCRIBE_INSTANCE_ATTEMPTS; attempt += 1) {
       const response = await this.performAliyunRpcRequest<{
         Disks?: {
@@ -429,7 +515,7 @@ export class SingleInstanceBatchExecutionService {
     }
     throw new Error('Created ECS instance has no visible system disk');
   }
-  private async verifyAbsent(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, knownIds: string[]) {
+  private async verifyAbsent(item: SingleInstanceExecutionItem, account: SystemCloudAccountContext, knownIds: string[]) {
     let consecutiveEmpty = 0;
     for (let attempt = 0; attempt < DESTROY_RETRY_ATTEMPTS; attempt += 1) {
       await this.assertCurrent(item);
@@ -459,9 +545,13 @@ export class SingleInstanceBatchExecutionService {
     }
     throw new Error('ECS deletion could not be confirmed');
   }
-  async assertNetworkUnused(profile: NonNullable<Awaited<ReturnType<AdminRepository['getSingleInstanceNetworkProfileById']>>>, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>) {
+  async assertNetworkUnused(profile: NonNullable<Awaited<ReturnType<AdminRepository['getSingleInstanceNetworkProfileById']>>>, account: SystemCloudAccountContext) {
     if (!profile.vpcId)
       return;
+    if (account.provider === 'tencent_cloud') {
+      if ((await describeTencentInstances(account, { vpcId: profile.vpcId })).length) throw new Error('Default network still contains Tencent CVM instances');
+      return;
+    }
     const response = await this.performAliyunRpcRequest<AliyunDescribeInstancesResponse>({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action: 'DescribeInstances', parameters: { VpcId: profile.vpcId, PageSize: '100' } });
     if (normalizeInstanceDetails(response).length)
       throw new Error('Default network still contains cloud ECS instances');
@@ -500,7 +590,7 @@ export class SingleInstanceBatchExecutionService {
         const message = error instanceof Error ? error.message : 'Unknown single-instance batch destroy error';
         if (isAlreadyGoneDestroyError(message)) {
           pendingInstanceIds = await this.listExistingInstanceIds({
-            accountContext: { defaultRegion: input.regionId, accessKeyId: input.accessKeyId, accessKeySecret: input.accessKeySecret } as Awaited<ReturnType<SystemConfigService['getAccountContext']>>,
+            accountContext: { defaultRegion: input.regionId, accessKeyId: input.accessKeyId, accessKeySecret: input.accessKeySecret } as SystemCloudAccountContext,
             instanceIds: pendingInstanceIds,
           });
           if (!pendingInstanceIds.length) {
@@ -518,7 +608,7 @@ export class SingleInstanceBatchExecutionService {
     throw lastError instanceof Error ? lastError : new Error('Single-instance batch destroy exhausted retry attempts.');
   }
   private async waitForInstancesVisible(input: {
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+    accountContext: SystemCloudAccountContext;
     instanceIds: string[];
     requirePublicIp?: boolean;
     requireRunning?: boolean;
@@ -583,6 +673,7 @@ export class SingleInstanceBatchExecutionService {
   }
   private async requestInstanceDetails(input: InstanceDescribeInput) {
     const account = input.accountContext;
+    if (account.provider === 'tencent_cloud') return describeTencentInstances(account, { instanceIds: input.instanceIds });
     const response = await this.performAliyunRpcRequest<AliyunDescribeInstancesResponse>({ accessKeyId: account.accessKeyId,
       accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, action: 'DescribeInstances', parameters: { InstanceIds: JSON.stringify(input.instanceIds), PageSize: '100' } });
     const raw = response.Instances?.Instance;
@@ -600,7 +691,7 @@ export class SingleInstanceBatchExecutionService {
     return details;
   }
   private async listExistingInstanceIds(input: {
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+    accountContext: SystemCloudAccountContext;
     instanceIds: string[];
   }) {
     return (await this.describeInstances(input)).map(detail => detail.instanceId).filter(id => input.instanceIds.includes(id));
@@ -611,7 +702,7 @@ export class SingleInstanceBatchExecutionService {
     systemDiskIds: string[];
     profile: Awaited<ReturnType<AdminRepository['getSingleInstanceNetworkProfile']>>;
     resolvedInstanceType: string;
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+    accountContext: SystemCloudAccountContext;
   }) {
     const hostKey = input.item.instance.singleInstanceConfig?.hostKey ?? 'single-ecs';
     let resourceSummary: RangeResourceSummary = {
@@ -675,7 +766,7 @@ export class SingleInstanceBatchExecutionService {
       }
     }
   }
-  private async cleanupFailedSingleInstanceCreate(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, knownIds: string[]) {
+  private async cleanupFailedSingleInstanceCreate(item: SingleInstanceExecutionItem, account: SystemCloudAccountContext, knownIds: string[]) {
     try {
       await this.assertCurrent(item);
       const taggedIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: item.instance.id });
@@ -698,7 +789,7 @@ export class SingleInstanceBatchExecutionService {
     const createJobId = item.instance.singleInstanceConfig?.nativeCreateJobId;
     return Boolean(createJobId && (await this.adminRepository.getProvisionJobById(createJobId))?.status !== 'succeeded');
   }
-  private async rememberCleanupResources(item: SingleInstanceExecutionItem, account: Awaited<ReturnType<SystemConfigService['getAccountContext']>>, ids: string[]) {
+  private async rememberCleanupResources(item: SingleInstanceExecutionItem, account: SystemCloudAccountContext, ids: string[]) {
     await this.assertCurrent(item);
     const current = await this.adminRepository.getRangeInstanceById(item.instance.id);
     const summary = { ...(current?.resourceSummary ?? item.instance.resourceSummary ?? {}), mode: 'ecs-native' as const,
@@ -757,7 +848,7 @@ export class SingleInstanceBatchExecutionService {
     }
   }
   private async tagAliyunResources(input: {
-    accountContext: Awaited<ReturnType<SystemConfigService['getAccountContext']>>;
+    accountContext: SystemCloudAccountContext;
     resourceType: 'disk';
     resourceIds: string[];
     tags: Record<string, string>;
@@ -852,6 +943,7 @@ function compareAliyunRpcKeys(leftKey: string, rightKey: string) {
   return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 export type NormalizedInstanceDetail = {
+  systemDiskId?: string;
   instanceId: string;
   instanceName: string;
   hostName: string;
