@@ -14,6 +14,7 @@ const input={dns:{servers:["10.0.1.10"],nicIds:["nic-secondary"]},interfaces:[{n
 fs.writeFileSync("/fixtures/verify.ps1",m.exports.buildWindowsDnsVerificationScript(input));
 fs.writeFileSync("/fixtures/verify-ad.ps1",m.exports.buildWindowsDnsVerificationScript({...input,dns:{...input.dns,servers:["127.0.0.1"],domain:"lab.example"}}));
 fs.writeFileSync("/fixtures/start.ps1",m.exports.buildWindowsDnsUserData({...input,provider:"alicloud",scripts:[{type:"powershell",content:"Write-Output USER_INITIALIZATION"}]}).replace(/^\[powershell\]\n/,""));
+fs.writeFileSync("/fixtures/start-reset.ps1",m.exports.buildWindowsDnsUserData({...input,provider:"alicloud",scripts:[{type:"powershell",content:"Set-DnsClientServerAddress -InterfaceIndex 12 -ServerAddresses @(\"8.8.4.4\"); Write-Output USER_INITIALIZATION"}]}).replace(/^\[powershell\]\n/,""));
 '
 docker run --rm --network none --entrypoint pwsh \
   -v "$fixture_dir:/fixtures" -v "$repo_root/scripts/ci/test-windows-host-dns.ps1:/test.ps1:ro" \

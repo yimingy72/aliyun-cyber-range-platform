@@ -52,7 +52,8 @@ function Invoke-Case([string]$Mode,[string]$File,[string]$ExpectedStatus,[string
   if ($ExpectedError -and $report.errorCode -ne $ExpectedError) { throw "Wrong failure code for $Mode" }
   if ($ExpectedStatus -eq 'failed' -and $output -contains 'USER_INITIALIZATION') { throw "User initialization ran after DNS failure in $Mode" }
   if ($File -eq 'verify.ps1' -and $script:configured.Count) { throw 'Readonly verification changed DNS' }
-  if ($Mode -eq 'modern' -and $File -eq 'start.ps1' -and ($script:configured.Count -ne 1 -or $script:configured[0] -ne 12)) { throw 'Primary NIC was configured accidentally' }
+  if ($Mode -eq 'modern' -and $File -eq 'start.ps1' -and ($script:configured.Count -ne 2 -or @($script:configured | Where-Object { $_ -ne 12 }).Count -ne 0)) { throw 'Primary NIC was configured accidentally' }
+  if ($Mode -eq 'reset-init' -and ($script:servers[12][0] -ne '10.0.1.10' -or $script:servers[11][0] -ne '8.8.8.8')) { throw 'User initialization overrode the selected DNS policy or changed the primary NIC' }
   if ($ExpectedStatus -eq 'verified' -and $report.interfaces[0].nicId -ne 'nic-secondary') { throw 'Wrong target NIC' }
   $expectedUntouched = $(if ($Mode -eq 'preservation-changed') { '9.9.9.9' } else { '8.8.8.8' })
   if ($ExpectedStatus -eq 'verified' -and ($report.observedInterfaces.Count -ne 2 -or $report.observedInterfaces[0].actualServers[0] -ne $expectedUntouched)) { throw 'Missing fresh unselected NIC DNS observation' }
@@ -119,3 +120,5 @@ try {
   $tcpServer | Receive-Job -ErrorAction Stop | Out-Null
 } finally { @($server,$tcpServer) | Stop-Job; @($server,$tcpServer) | Remove-Job -Force }
 'PowerShell mocked networking checks complete; this is not a Windows VM test.'
+
+Invoke-Case 'reset-init' 'start-reset.ps1' 'verified'
