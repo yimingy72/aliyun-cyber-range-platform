@@ -175,7 +175,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
     </form> : null}
     <ConfirmActionDialog
       open={Boolean(deleting)} title="删除云账号" confirmLabel={isDeleting ? '正在删除…' : '删除账号'} pending={isDeleting}
-      description={`删除“${deleting?.displayName ?? ''}”的账号绑定与凭据，历史数据保留。重新绑定同一云账号可恢复；此操作不会删除云上资源。`}
+      description={`删除“${deleting?.displayName ?? ''}”的绑定与凭据，历史数据保留。账单同步将停止，未出账费用需重新绑定同一账号后同步。此操作不会删除云上资源。`}
       onOpenChange={open => { if (!open && !isDeleting) setDeleting(null); }} onConfirm={() => void remove()}
     />
   </section></div>;
