@@ -133,3 +133,13 @@ describe('RangeInstanceTopologyWorkspace', () => {
     );
   });
 });
+
+it('locks deployed node configuration while keeping new draft nodes editable', () => {
+  const props = createWorkspaceProps(true);
+  const { rerender } = render(<RangeInstanceTopologyWorkspace {...props} deployedNodeIds={[ecsNode.id, switchNode.id]} />);
+  expect(screen.getByLabelText('CPU').matches(':disabled')).toBe(true);
+  expect((screen.getByLabelText('交换机标识 1') as HTMLButtonElement).disabled).toBe(true);
+  rerender(<RangeInstanceTopologyWorkspace {...props} deployedNodeIds={[switchNode.id]} />);
+  expect(screen.getByLabelText('CPU').matches(':disabled')).toBe(false);
+  expect((screen.getByLabelText('交换机标识 1') as HTMLButtonElement).disabled).toBe(false);
+});

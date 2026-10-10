@@ -21,6 +21,7 @@ type RangeInstanceTopologyWorkspaceProps = {
   viewport?: TopologyViewport | null;
   selection?: TopologySelection;
   editable?: boolean;
+  deployedNodeIds?: string[];
   linkedSwitchIdsByHostId?: Record<string, string[]>;
   platformImageAssets?: PlatformImageAsset[];
   instanceTypeAvailability?: InstanceTypeAvailabilitySnapshot | null;
@@ -58,6 +59,7 @@ export function RangeInstanceTopologyWorkspace({
   viewport = null,
   selection,
   editable,
+  deployedNodeIds = [],
   linkedSwitchIdsByHostId = {},
   platformImageAssets = [],
   instanceTypeAvailability = null,
@@ -132,6 +134,7 @@ export function RangeInstanceTopologyWorkspace({
         platformImageAssets={platformImageAssets}
         readOnly={!isEditable}
         runtimeNodeStatus={runtimeNodeStatus}
+        runtimeExistingNode={Boolean(selectedNode && deployedNodeIds.includes(selectedNode.id))}
         selectedNode={selectedNode}
       />
     </section>
