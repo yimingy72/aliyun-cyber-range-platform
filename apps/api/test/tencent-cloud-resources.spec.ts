@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describeTencentInstances, describeTencentResourceInventory, readTencentAttachedDiskInventory, resetTencentStoppedInstancePassword, terminateTencentInstances } from '../src/admin/tencent-cloud-resources';
+import { describeTencentInstances, describeTencentKnownResourcesWithEvidence, describeTencentResourceInventory, readTencentAttachedDiskInventory, resetTencentStoppedInstancePassword, terminateTencentInstances } from '../src/admin/tencent-cloud-resources';
 import { requestTencentCloud, TencentCloudRequestError } from '../src/admin/tencent-cloud-client';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { RangeInstanceNodeActionsService } from '../src/admin/range-instance-node-actions.service';
@@ -31,6 +31,32 @@ describe('Tencent frozen inventory and complete pagination', () => {
     request.mockResolvedValueOnce(body('InstanceSet', [cvm('ins-first')], 2)).mockResolvedValueOnce(body('InstanceSet', [cvm('ins-second')], 2));
     expect((await describeTencentInstances(account, { instanceIds: ['ins-first', 'ins-second'] })).map(row => row.instanceId)).toEqual(['ins-first', 'ins-second']);
     expect(request.mock.calls[1][0].parameters.Offset).toBe(1);
+  });
+  it('treats documented exact single security-group ResourceNotFound as absence with its original RequestId', async () => {
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-absent-group'));
+    const result = await describeTencentKnownResourcesWithEvidence(account, 'security_group', ['sg-gone']);
+    expect(result.resources).toEqual([]); expect(result.evidence).toMatchObject([{ action: 'DescribeSecurityGroups', requestIds: ['request-absent-group'], errorCode: 'ResourceNotFound' }]);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it('splits a multi-ID missing-group error so a retained group cannot be marked absent', async () => {
+    request.mockRejectedValueOnce(new TencentCloudRequestError('ResourceNotFound', 'request-batch'))
+      .mockRejectedValueOnce(new TencentCloudRequestError('ResourceNotFound', 'request-gone'))
+      .mockResolvedValueOnce(body('SecurityGroupSet', [{ SecurityGroupId: 'sg-kept', TagSet: [] }]));
+    const result = await describeTencentKnownResourcesWithEvidence(account, 'security_group', ['sg-gone','sg-kept']);
+    expect(result.resources.map(row => row.id)).toEqual(['sg-kept']); expect(result.evidence).toHaveLength(3);
+    expect(request.mock.calls.map(([input]) => input.parameters.SecurityGroupIds)).toEqual([['sg-gone','sg-kept'],['sg-gone'],['sg-kept']]);
+  });
+  it.each(['UnauthorizedOperation','ResourceNotFound.SecurityGroup','InvalidParameterValue.Malformed','InternalError'])('never turns undocumented %s into security-group absence', async code => {
+    request.mockRejectedValue(new TencentCloudRequestError(code, 'request-error'));
+    await expect(describeTencentResourceInventory(account,'security_group',{ids:['sg-gone']})).rejects.toMatchObject({ code });
+  });
+  it('requires a real request ID and rejects ResourceNotFound for tag, VPC-filter and other resource reads', async () => {
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound'));
+    await expect(describeTencentResourceInventory(account,'security_group',{ids:['sg-gone']})).rejects.toThrow();
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound','request-error'));
+    await expect(describeTencentResourceInventory(account,'security_group',{tags:{CreatedBy:'cyber-range-platform'}})).rejects.toThrow();
+    await expect(describeTencentResourceInventory(account,'disk',{ids:['disk-gone']})).rejects.toThrow();
+    await expect(describeTencentResourceInventory(account,'network_acl',{vpcId:'vpc-owned'})).rejects.toThrow();
   });
   it.each([
     body('InstanceSet', [], 2), body('InstanceSet', [cvm('ins-other')]),

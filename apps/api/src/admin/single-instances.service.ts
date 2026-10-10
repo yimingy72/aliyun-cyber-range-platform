@@ -24,6 +24,7 @@ import { SystemConfigService, type InstanceTypeAvailabilitySnapshot, type System
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
+import { readTencentSingleRecordedResourceStatus } from './single-instance-recorded-resource-status';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
@@ -110,6 +111,9 @@ export class SingleInstancesService {
 
   async getCloudResourceStatus(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
+    const recordedResourceStatus = instance.cloudProvider === 'tencent_cloud'
+      ? await readTencentSingleRecordedResourceStatus(instance, await this.singleInstanceBatchExecutionService.resolveInstanceAccount(instance), this.adminRepository)
+      : undefined;
     const result = await this.singleInstanceBatchExecutionService.findCloudInstanceIdsByRangeInstanceId(instance.id, instance);
 
     return {
@@ -119,6 +123,7 @@ export class SingleInstancesService {
       instanceIds: result.instanceIds,
       matchedInstances:result.matchedInstances,
       checkedAt: new Date().toISOString(),
+      ...(recordedResourceStatus ? { recordedResourceStatus } : {}),
     };
   }
 

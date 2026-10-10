@@ -231,6 +231,22 @@ export type SingleInstanceListPayload = {
   standaloneInstances: RangeInstance[];
 };
 export type SingleInstanceCloudResourceStatus = {
+  recordedResourceStatus?: {
+    provider: 'tencent_cloud';
+    cloudAccountContextId: string;
+    cloudAccountUid: string;
+    regionId: string;
+    checkedAt: string;
+    coverage: 'persisted_instance_compute_resource_ids';
+    /** Only the persisted IDs checked in this result; null for empty or incomplete source coverage. */
+    allKnownAbsent: boolean | null;
+    resources: Array<{ cloudResourceType: 'ecs' | 'disk' | 'eip' | 'nat_gateway'; cloudResourceId: string;
+      sources: Array<'inventory' | 'ledger'>; ledgerIds: string[]; exists: boolean }>;
+    evidence: Array<{ provider: 'tencent_cloud'; cloudAccountContextId: string; accountUid: string;
+      regionId: string; action: string; requestIds: string[]; observedAt: string }>;
+    excludedUnverifiedDiskIds: string[];
+    unsupportedLedgerResourceTypes: string[];
+  };
   matchedInstances?:Array<{instanceId:string;ownerUserId:string|null;tags:Record<string,string>}>;
   singleInstanceId: string;
   regionId: string;

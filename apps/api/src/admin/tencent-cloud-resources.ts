@@ -3,16 +3,17 @@ import type { RangeInstanceRecord } from './admin.repository';
 import type { AttachedDiskInventory } from './instance-disk-inventory';
 import type { NormalizedInstanceDetail } from './single-instance-batch-execution.service';
 import type { SystemCloudAccountContext } from './system-config.service';
-import { requestTencentCloud } from './tencent-cloud-client';
+import { requestTencentCloud, TencentCloudRequestError } from './tencent-cloud-client';
 
 export type TencentResourceKind = 'ecs' | 'disk' | 'snapshot' | 'vpc' | 'vswitch' | 'security_group' | 'network_acl' | 'eni' | 'nat' | 'eip';
 export type TencentResourceEvidence = { provider: 'tencent_cloud'; accountUid: string; cloudAccountContextId: string;
-  regionId: string; action: string; requestIds: string[]; observedAt: string };
+  regionId: string; action: string; requestIds: string[]; observedAt: string; errorCode?: 'ResourceNotFound' };
 export type TencentResource = { id: string; kind: TencentResourceKind; tags: Record<string, string>; evidence: TencentResourceEvidence;
   instanceId: string | null; vpcId: string | null; diskUsage: string | null; deleteWithInstance: boolean | null;
   name?: string; state?: string; publicIp?: string; publicIpAddresses?: string[]; instanceType?: string; imageId?: string; zoneId?: string; subnetId?: string; natProductVersion?: number; bandwidth?: number; maxConcurrent?: number;
   shared: boolean; chargeType: string | null; createdAt?: string; detail?: NormalizedInstanceDetail };
-type Query = { ids?: string[]; tags?: Record<string, string>; vpcId?: string; instanceId?: string; diskIds?: string[] };
+type Query = { ids?: string[]; tags?: Record<string, string>; vpcId?: string; instanceId?: string; diskIds?: string[];
+  onEvidence?: (evidence: TencentResourceEvidence) => void };
 const TAG_KEYS = new Set(['CloudProvider', 'PlatformManaged', 'CreatedBy', 'PlatformScope', 'PlatformUserId', 'RangeInstanceId',
   'SingleInstanceBatchId', 'PlatformResourceType', 'PlatformHostKey', 'CloudAccountUid', 'CloudAccountContextId',
   'ExecutionBackend', 'PlatformCreateJobId', 'CreationIntentId', 'PlatformPackedImageArtifactId', 'PlatformImageImportJobId']);
@@ -69,10 +70,10 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
     if (!unique.length) return [];
     if (unique.length > 100) {
       const result: TencentResource[] = [];
-      for (let start = 0; start < unique.length; start += 100) result.push(...await describeTencentResourceInventory(account, kind, { ids: unique.slice(start, start + 100) }));
+      for (let start = 0; start < unique.length; start += 100) result.push(...await describeTencentResourceInventory(account, kind, { ids: unique.slice(start, start + 100), onEvidence: query.onEvidence }));
       return result;
     }
-    query = { ids: unique };
+    query = { ids: unique, onEvidence: query.onEvidence };
   } else if (!query.vpcId && !query.instanceId && !query.diskIds?.length && !Object.keys(query.tags ?? {}).length) throw new Error('Tencent inventory requires a bounded identity or ownership filter');
   if (kind === 'snapshot' && query.tags) throw new Error('Tencent snapshot inventory requires known IDs or source disks; the documented API has no tag filter');
   if (query.diskIds && (kind !== 'snapshot' || !query.diskIds.length || query.diskIds.length > 10 || query.diskIds.some(id => !/^disk-[A-Za-z0-9]+$/.test(id)))) throw new Error('Tencent snapshot disk filter exceeds the documented scope');
@@ -93,10 +94,26 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
   let total: number | undefined;
   for (let page = 0; page < 100; page++) {
     const stringPaging = ['vpc', 'vswitch', 'security_group'].includes(kind);
-    const response = object(await requestTencentCloud({ service, version: '2017-03-12', action, regionId: account.defaultRegion,
+    let response: Record<string, unknown>;
+    try { response = object(await requestTencentCloud({ service, version: '2017-03-12', action, regionId: account.defaultRegion,
       accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret,
       parameters: { ...(query.ids ? { [idsKey]: query.ids } : { Filters: filters }), Offset: stringPaging ? String(resources.length) : resources.length,
-        Limit: stringPaging ? '100' : 100 } }));
+        Limit: stringPaging ? '100' : 100 } })); }
+    catch (error) {
+      // DescribeSecurityGroups explicitly documents ResourceNotFound. It is not an empty tag search,
+      // and a multi-ID error cannot prove that every requested group is absent.
+      if (kind !== 'security_group' || !query.ids?.length || page !== 0 || resources.length
+        || !(error instanceof TencentCloudRequestError) || error.code !== 'ResourceNotFound'
+        || !error.requestId || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(error.requestId)) throw error;
+      const proofs: TencentResourceEvidence[] = [{ provider: 'tencent_cloud', accountUid: account.accountUid!, cloudAccountContextId: account.cloudAccountContextId!,
+        regionId: account.defaultRegion, action, requestIds: [error.requestId], observedAt: new Date().toISOString(), errorCode: 'ResourceNotFound' }];
+      const found: TencentResource[] = [];
+      if (query.ids.length > 1) {
+        for (const id of query.ids) found.push(...await describeTencentResourceInventory(account, kind, { ids: [id], onEvidence: value => proofs.push(value) }));
+      }
+      for (const proof of proofs) query.onEvidence?.(proof);
+      return found;
+    }
     const rows = response[setKey];
     if (response.Error || response.NextToken || typeof response.RequestId !== 'string' || !response.RequestId.trim()
       || !Number.isSafeInteger(response.TotalCount) || Number(response.TotalCount) < 0 || !Array.isArray(rows) || rows.length > 100
@@ -138,11 +155,20 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
     if (resources.length > total) throw new Error('Tencent inventory exceeds its declared total');
     if (resources.length === total) {
       if (kind !== 'nat' && kind !== 'network_acl' && resources.some(resource => Object.entries(query.tags ?? {}).some(([key, value]) => resource.tags[key] !== value))) throw new Error('Tencent inventory ownership filter does not match cloud tags');
+      query.onEvidence?.({ provider: 'tencent_cloud', accountUid: account.accountUid!, cloudAccountContextId: account.cloudAccountContextId!,
+        regionId: account.defaultRegion, action, requestIds: [...requestIds], observedAt: new Date().toISOString() });
       return kind === 'nat' || kind === 'network_acl' ? resources.filter(resource => Object.entries(query.tags ?? {}).every(([key, value]) => resource.tags[key] === value)) : resources;
     }
     if (!rows.length) throw new Error('Tencent inventory pagination ended before its declared total');
   }
   throw new Error('Tencent inventory exceeded its bounded pagination limit');
+}
+
+/** Exact-ID reads retain successful empty-response RequestIds as physical absence evidence. */
+export async function describeTencentKnownResourcesWithEvidence(account: SystemCloudAccountContext, kind: TencentResourceKind, ids: string[]) {
+  const evidence: TencentResourceEvidence[] = [];
+  const resources = await describeTencentResourceInventory(account, kind, { ids, onEvidence: value => evidence.push(value) });
+  return { resources, evidence };
 }
 
 export async function describeTencentInstances(account: SystemCloudAccountContext, query: { instanceIds?: string[]; tags?: Record<string, string>; vpcId?: string }) {

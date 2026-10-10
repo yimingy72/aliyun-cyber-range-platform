@@ -11,7 +11,7 @@ export type TencentCloudRequest = {
 };
 
 export class TencentCloudRequestError extends Error {
-  constructor(readonly code: string) {
+  constructor(readonly code: string, readonly requestId?: string) {
     super(`腾讯云请求失败（${code}）。`);
     this.name = 'TencentCloudRequestError';
   }
@@ -76,7 +76,10 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
     const rawCode = error && typeof error === 'object' ? (error as { Code?: unknown }).Code : null;
     const code = typeof rawCode === 'string' && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(rawCode)
       && !rawCode.includes(input.accessKeyId) && !rawCode.includes(input.accessKeySecret) ? rawCode : 'CLOUD_ERROR';
-    throw new TencentCloudRequestError(code);
+    const rawRequestId = (result as { RequestId?: unknown }).RequestId;
+    const requestId = typeof rawRequestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(rawRequestId)
+      && !rawRequestId.includes(input.accessKeyId) && !rawRequestId.includes(input.accessKeySecret) ? rawRequestId : undefined;
+    throw new TencentCloudRequestError(code, requestId);
   }
   if (!response.ok) throw new TencentCloudRequestError(`HTTP_${response.status}`);
   if (!result || typeof result !== 'object' || Array.isArray(result)

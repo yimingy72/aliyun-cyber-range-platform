@@ -26,6 +26,7 @@ describe('Tencent Cloud TC3 request boundary', () => {
     catch (error) {
       expect(error).toBeInstanceOf(TencentCloudRequestError);
       expect((error as TencentCloudRequestError).code).toBe('AuthFailure.SignatureFailure');
+      expect((error as TencentCloudRequestError).requestId).toBe('request-2');
       expect(String(error)).not.toContain(input.accessKeyId); expect(String(error)).not.toContain(input.accessKeySecret);
     }
     expect(fetch.mock.calls[0][1]?.headers).not.toHaveProperty('X-TC-Region');
@@ -38,6 +39,10 @@ describe('Tencent Cloud TC3 request boundary', () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Error: { Code: input.accessKeySecret, Message: 'private' } })).mockResolvedValueOnce(new Response('private', { status: 503 }));
     await expect(requestTencentCloud(input)).rejects.toMatchObject({ code: 'CLOUD_ERROR' });
     await expect(requestTencentCloud(input)).rejects.toMatchObject({ code: 'HTTP_503' });
+  });
+  it.each(['invalid\nprivate', input.accessKeyId, input.accessKeySecret, null])('does not retain an invalid or credential-bearing error request ID', async requestId => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ RequestId: requestId, Error: { Code: 'ResourceNotFound', Message: input.accessKeySecret } }));
+    await expect(requestTencentCloud(input)).rejects.toMatchObject({ code: 'ResourceNotFound', requestId: undefined });
   });
   it('does not retry write requests on an unknown network result', async () => {
     const fetch = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error(input.accessKeySecret));
