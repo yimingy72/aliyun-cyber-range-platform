@@ -50,6 +50,7 @@ describe('per-host DNS model boundaries', () => {
   });
   it.each([
     null, {}, { ...dns, servers: [] }, { ...dns, servers: ['10.0.0.1', '10.0.0.1'] },
+    { ...dns, servers: ['0.0.0.0'] }, { ...dns, servers: ['0.1.2.3'] }, { ...dns, servers: ['224.0.0.1'] }, { ...dns, servers: ['255.255.255.255'] },
     { ...dns, servers: ['10.0.0.999'] }, { ...dns, servers: ['10.00.0.1'] }, { ...dns, servers: ['10.0.0.1;Stop-Computer'] },
     { ...dns, servers: ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4', '5.5.5.5'] },
     { ...dns, nicIds: [] }, { ...dns, nicIds: ['foreign-nic'] }, { ...dns, nicIds: ['nic-secondary', 'nic-secondary'] },
@@ -63,6 +64,9 @@ describe('per-host DNS model boundaries', () => {
     const payload: any = compileTemplateTopology(graph(), metadata);
     payload.compiledProvisionSpec.hosts[0].dns = { ...dns, nicIds: ['another-host-nic'] };
     expect(() => plan(payload)).toThrow(/nicIds/);
+  });
+  it('permits the local domain controller resolver', () => {
+    expect(validateHostDnsConfig({ servers: ['127.0.0.1'], nicIds: ['nic-primary'] }, ['nic-primary']).servers).toEqual(['127.0.0.1']);
   });
   it('preserves DNS server order and does not require AD SRV checks without a domain', () => {
     expect(validateHostDnsConfig({ servers: ['10.0.1.11', '10.0.1.10'], nicIds: ['nic-primary'] }, ['nic-primary'])).toEqual({ servers: ['10.0.1.11', '10.0.1.10'], nicIds: ['nic-primary'] });

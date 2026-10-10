@@ -12,6 +12,7 @@ describe('MCP host DNS input schema', () => {
     expect((topologyGraphSchema.parse(graph()).nodes[1] as any).dns).toEqual(dns);
   });
   it.each([
+    { ...dns, servers: ['0.0.0.0'] }, { ...dns, servers: ['224.0.0.1'] }, { ...dns, servers: ['255.255.255.255'] },
     { ...dns, servers: [] }, { ...dns, servers: ['999.0.0.1'] }, { ...dns, servers: ['10.0.0.10', '10.0.0.10'] },
     { ...dns, servers: ['10.0.0.10\nWrite-Host hacked'] }, { ...dns, nicIds: [] }, { ...dns, nicIds: ['foreign'] },
     { ...dns, nicIds: ['nic-primary', 'nic-primary'] }, { ...dns, domain: 'ad.test;shutdown' }, { ...dns, typo: true }, null,

@@ -6,7 +6,8 @@ export type HostDnsConfig = {
 
 export function isHostDnsIpv4(value: unknown): value is string {
   return typeof value === 'string' && /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(value)
-    && value.split('.').every((octet) => Number(octet) <= 255);
+    && value.split('.').every((octet) => Number(octet) <= 255)
+    && Number(value.split('.')[0]) > 0 && Number(value.split('.')[0]) < 224;
 }
 
 export function isHostDnsDomain(value: unknown): value is string {
