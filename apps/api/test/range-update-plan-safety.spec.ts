@@ -1,5 +1,6 @@
 import { assertApprovedRangeUpdatePlan, preserveDeployedRangeHostFacts, type RangeChangeApproval } from '../src/provisioning/range-update-plan-safety';
 import type { WorkspaceState } from '../src/provisioning/opentofu-state-evidence';
+import { assertWorkspaceCanApply } from '../src/provisioning/opentofu-state-evidence';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -81,21 +82,25 @@ describe.each([false, true])('approved runtime update safety, Tencent=%s', tence
     f.nextVariables.eips=structuredClone(f.priorVariables.eips); const eip=f.plan.resource_changes.find((record:any)=>record.type === (tencent ? 'tencentcloud_eip' : 'alicloud_eip_address')); eip.change.actions=['delete','create'];
     expect(()=>assertApprovedRangeUpdatePlan(f.input)).toThrow();
   });
-  it('rejects a real provisioner plan before apply, command intent or callback is written', async () => {
+  it.each(['replacement','callback'] as const)('rejects a real provisioner %s before apply or command intent and preserves prior completion evidence', async rejection => {
     const f = fixture(tencent), root = await fs.mkdtemp(path.join(os.tmpdir(), 'range-update-guard-'));
     const modulePath = tencent ? 'infra/opentofu/modules/tencentcloud-enterprise-range' : 'infra/module';
     const dir = path.join(root,'workspaces','range-owned'); await fs.mkdir(path.join(root,modulePath),{recursive:true}); await fs.mkdir(dir,{recursive:true});
     const resources = f.state.instances.map(resource => { const match = resource.address.match(/^module\.range\.([^.]+)\.([^\[]+)(?:\[(.*)\])?$/)!; return {mode:'managed',module:'module.range',type:match[1],name:match[2],instances:[{...(match[3] ? {index_key:JSON.parse(match[3])} : {}),attributes:resource.attributes}]}; });
-    await fs.writeFile(path.join(dir,'terraform.tfstate'),JSON.stringify({version:4,lineage:f.state.lineage,serial:1,resources})); await fs.writeFile(path.join(dir,'range.auto.tfvars.json'),JSON.stringify({...f.priorVariables,bootstrap_scripts:[]}));
+    const originalState=JSON.stringify({version:4,lineage:f.state.lineage,serial:1,resources});
+    const originalCompletion=JSON.stringify({version:1,addresses:f.state.instances.map(resource=>resource.address),createAddresses:[],priorIds:{},priorLineage:f.state.lineage});
+    await fs.writeFile(path.join(dir,'terraform.tfstate'),originalState); await fs.writeFile(path.join(dir,'.range-apply-complete.json'),originalCompletion); await fs.writeFile(path.join(dir,'range.auto.tfvars.json'),JSON.stringify({...f.priorVariables,bootstrap_scripts:[]}));
     if (tencent) await fs.writeFile(path.join(dir,'tencent-range-identity.json'),JSON.stringify({provider:f.account.provider,cloudAccountContextId:f.account.cloudAccountContextId,cloudAccountUid:f.account.accountUid,regionId:f.account.defaultRegion,zoneId:f.account.defaultZoneId,rangeInstanceId:'range-owned'}));
-    vm(f).change.actions=['delete','create'];
+    if(rejection==='replacement') vm(f).change.actions=['delete','create'];
     const runner = { init:jest.fn(async()=>({stdout:'',stderr:''})),plan:jest.fn(async()=>({stdout:'',stderr:''})),showPlan:jest.fn(async()=>f.plan),apply:jest.fn() };
     const provisioner = new OpenTofuRangeProvisioner({runner:runner as any,projectRootDir:root,workspacesRootDir:path.join(root,'workspaces')});
     jest.spyOn(provisioner as any,'buildVariables').mockResolvedValue({...f.nextVariables,bootstrap_scripts:[]}); jest.spyOn(provisioner as any,'buildRunnerEnv').mockResolvedValue({});
-    const onApplyStart=jest.fn();
+    const onApplyStart=jest.fn(async()=>{throw new Error('Controlled pre-apply expiry rejection');});
     try {
-      await expect(provisioner.create({rangeInstanceId:'range-owned',templateModulePath:modulePath,allocatedCidr:null,runtimeConfig:f.account,runtimeCredentials:{old:{username:'root',password:'Original123!'}},billingTags:f.billingTags,knownResourceSummary:f.knownResourceSummary,preserveWorkspaceState:true,requirePersistedState:true,changeApproval:f.approval,onApplyStart,topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[{key:'main',name:'Main',purpose:'internal',cidr:'10.0.0.0/24'}],hosts:[{key:'old',name:'Old',zoneKey:'main',role:'entry',privateIp:'10.0.0.10'}],publicEntry:{hostKey:'old',protocols:[]}}})).rejects.toThrow('replacement');
-      expect(runner.apply).not.toHaveBeenCalled(); expect(onApplyStart).not.toHaveBeenCalled(); await expect(fs.stat(path.join(dir,'.range-apply-started'))).rejects.toMatchObject({code:'ENOENT'});
+      await expect(provisioner.create({rangeInstanceId:'range-owned',templateModulePath:modulePath,allocatedCidr:null,runtimeConfig:f.account,runtimeCredentials:{old:{username:'root',password:'Original123!'}},billingTags:f.billingTags,knownResourceSummary:f.knownResourceSummary,preserveWorkspaceState:true,requirePersistedState:true,changeApproval:f.approval,onApplyStart,topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[{key:'main',name:'Main',purpose:'internal',cidr:'10.0.0.0/24'}],hosts:[{key:'old',name:'Old',zoneKey:'main',role:'entry',privateIp:'10.0.0.10'}],publicEntry:{hostKey:'old',protocols:[]}}})).rejects.toThrow(rejection==='replacement'?'replacement':'Controlled pre-apply expiry rejection');
+      expect(runner.apply).not.toHaveBeenCalled(); expect(onApplyStart).toHaveBeenCalledTimes(rejection==='replacement'?0:1); await expect(fs.stat(path.join(dir,'.range-apply-started'))).rejects.toMatchObject({code:'ENOENT'});
+      expect(await fs.readFile(path.join(dir,'terraform.tfstate'),'utf8')).toBe(originalState); expect(await fs.readFile(path.join(dir,'.range-apply-complete.json'),'utf8')).toBe(originalCompletion);
+      await expect(assertWorkspaceCanApply(dir,true)).resolves.toMatchObject({lineage:f.state.lineage});
       const persisted = JSON.parse(await fs.readFile(path.join(dir,'range.auto.tfvars.json'),'utf8')); expect(persisted.hosts[0]).toEqual(f.priorVariables.hosts[0]);
     } finally { await fs.rm(root,{recursive:true,force:true}); }
   });
