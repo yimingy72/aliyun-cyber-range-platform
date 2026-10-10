@@ -45,6 +45,17 @@ function createLaunchFixture() {
 }
 
 describe('SingleInstancesService', () => {
+  it('shows a targeted original packed artifact safely through the existing instance getter', async () => {
+    const fixture = createLaunchFixture();
+    const instance = await fixture.repository.createRangeInstance({ name: 'packed-source', cloudProvider: 'tencent_cloud', instanceMode: 'single', ownerUserId: fixture.actor.id,
+      singleInstanceConfig: { cloudAccountContextId: 'context-packed', cloudAccountUid: '123456', regionId: 'ap-shanghai', hostKey: 'host' } as never });
+    const artifact = await fixture.repository.createPackedImageArtifact({ cloudProvider: 'tencent_cloud', cloudAccountContextId: 'context-packed', cloudAccountUid: '123456', regionId: 'ap-shanghai',
+      ownerUserId: fixture.actor.id, sourceRangeInstanceId: instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-source', sourceDiskIds: ['disk-source'] });
+    await fixture.repository.updatePackedImageArtifact(artifact.id, { status: 'creating', errorMessage: 'private raw legacy error' });
+    expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packedImageArtifacts: [expect.objectContaining({ id: artifact.id, phase: 'unknown', cloudErrorCode: 'UNKNOWN' })] });
+    await expect(fixture.service.getById(instance.id, { ...fixture.actor, id: 'foreign' } as never)).rejects.toThrow();
+    expect(fixture.config.getExecutionAccountContext).not.toHaveBeenCalled();
+  });
   it('rejects a launch whose expiration time is already in the past before preparing cloud resources', async () => {
     const ensureDefaultProfile = jest.fn();
     const service = new SingleInstancesService(

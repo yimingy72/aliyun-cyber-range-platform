@@ -25,6 +25,7 @@ import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 import { readTencentSingleRecordedResourceStatus } from './single-instance-recorded-resource-status';
+import { packedImageArtifactSummaries } from './packed-image-diagnostic';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
@@ -106,7 +107,9 @@ export class SingleInstancesService {
   async getById(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
     const [detail] = await attachCreatedByUsernames(this.adminRepository, [toSingleInstanceListItem(instance)]);
-    return detail;
+    const packedImageArtifacts = packedImageArtifactSummaries(instance, await this.adminRepository.listPackedImageArtifacts({ cloudAccountUid: instance.singleInstanceConfig?.cloudAccountUid ?? undefined,
+      regionId: instance.singleInstanceConfig?.regionId }));
+    return { ...detail, packedImageArtifacts };
   }
 
   async getCloudResourceStatus(id: string, currentUser: SessionUserProfile) {
