@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, fileExists, type WorkspaceState } from './opentofu-state-evidence';
+import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, assertPendingApplyAncestor, fileExists, type WorkspaceState } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
@@ -510,6 +510,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       };
     });
     const priorState = (await readWorkspaceState(workspace.workspaceDir, true))!;
+    assertPendingApplyAncestor(priorState, await readPendingApplyEvidence(workspace.workspaceDir));
     const unresolvedApply = await hasUnresolvedApply(workspace.workspaceDir, priorState);
     const tencentRecovery = unresolvedApply && input.runtimeConfig?.provider === 'tencent_cloud'
       ? await this.readTencentDestroyRecoveryIntent(input, workspace.workspaceDir) : null;
@@ -624,6 +625,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await this.assertTencentWorkspaceIdentity(dir,input);
     const state = await readWorkspaceState(dir,true);
     if (!state || !pending.sourceProvisionJobId || !pending.submittedAt || !Number.isFinite(Date.parse(pending.submittedAt))) throw new Error('Tencent recovery requires the original durable submission and state lineage');
+    assertPendingApplyAncestor(state, pending);
     if (!input.assertRecoverySourceJob) throw new Error('Tencent recovery requires the original submitted platform source job proof');
     const verifiedSourceJobs = new Set<string>();
     const verifySourceJob = async (id: unknown) => {

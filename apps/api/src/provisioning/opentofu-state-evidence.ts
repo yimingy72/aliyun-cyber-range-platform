@@ -7,7 +7,7 @@ const RECOVERY_REQUIRED = 'OpenTofu state recovery is required before proceeding
 
 type StateInstance = { address: string; type: string; module?: string; attributes: Record<string, unknown>; tainted: boolean };
 export type WorkspaceState = { lineage: string; serial: number; instances: StateInstance[] };
-export type ApplyEvidence = { submittedAt?: string; sourceProvisionJobId?: string; version: 1; addresses: string[]; createAddresses: string[]; priorLineage: string | null; priorIds: Record<string, string> };
+export type ApplyEvidence = { submittedAt?: string; sourceProvisionJobId?: string; version: 1; addresses: string[]; createAddresses: string[]; priorLineage: string | null; priorSerial?: number | null; priorIds: Record<string, string> };
 
 export async function fileExists(file: string) {
   try { await fs.stat(file); return true; } catch (error) {
@@ -61,7 +61,8 @@ async function readEvidence(dir: string, file = APPLY_PENDING_FILE): Promise<App
         new Set(value.addresses).size !== value.addresses.length ||
         !value.priorIds || typeof value.priorIds !== 'object' || Array.isArray(value.priorIds) ||
         !Object.entries(value.priorIds).every(([key, id]) => value.createAddresses.includes(key) && typeof id === 'string' && id.length > 0) ||
-        !(value.priorLineage === null || typeof value.priorLineage === 'string')) return 'unknown';
+        !(value.priorLineage === null || typeof value.priorLineage === 'string' && Boolean(value.priorLineage.trim()))
+        || value.priorSerial !== undefined && value.priorSerial !== null && (!Number.isSafeInteger(value.priorSerial) || value.priorSerial < 0 || value.priorLineage === null)) return 'unknown';
     return value;
   } catch { return 'unknown'; }
 }
@@ -69,6 +70,7 @@ async function readEvidence(dir: string, file = APPLY_PENDING_FILE): Promise<App
 function stateCoversPlan(state: WorkspaceState | null, evidence: ApplyEvidence) {
   const addresses = state?.instances.map(instance => instance.address) ?? [];
   return Boolean(state && (!evidence.priorLineage || evidence.priorLineage === state.lineage) &&
+    (evidence.priorSerial == null || state.serial >= evidence.priorSerial) &&
     !state.instances.some(instance => instance.tainted) && new Set(addresses).size === addresses.length &&
     evidence.addresses.length === addresses.length && evidence.addresses.every(address => addresses.includes(address)) &&
     Object.entries(evidence.priorIds).every(([address, id]) => state.instances.find(instance => instance.address === address)?.attributes.id !== id));
@@ -77,6 +79,12 @@ function stateCoversPlan(state: WorkspaceState | null, evidence: ApplyEvidence) 
 export async function hasUnresolvedApply(dir: string, state: WorkspaceState | null) {
   const pending = await readEvidence(dir);
   return pending === 'unknown' || Boolean(pending && !stateCoversPlan(state, pending));
+}
+
+export function assertPendingApplyAncestor(state: WorkspaceState, evidence: ApplyEvidence | null) {
+  if (evidence && (evidence.priorLineage !== null && evidence.priorLineage !== state.lineage
+    || evidence.priorSerial != null && state.serial < evidence.priorSerial))
+    throw new Error('OpenTofu pending apply ancestor state does not match; recovery is required');
 }
 
 export async function assertWorkspaceCanApply(dir: string, requireState = false) {
@@ -113,7 +121,7 @@ export async function recordApplyPlan(dir: string, plan: unknown, sourceProvisio
   }
   const state = await assertWorkspaceCanApply(dir);
   const priorIds = Object.fromEntries((state?.instances ?? []).filter(instance => createAddresses.includes(instance.address)).map(instance => [instance.address, instance.attributes.id as string]));
-  const evidence: ApplyEvidence = { submittedAt: new Date().toISOString(), ...(sourceProvisionJobId ? { sourceProvisionJobId } : {}), version: 1, addresses, createAddresses, priorLineage: state?.lineage ?? null, priorIds };
+  const evidence: ApplyEvidence = { submittedAt: new Date().toISOString(), ...(sourceProvisionJobId ? { sourceProvisionJobId } : {}), version: 1, addresses, createAddresses, priorLineage: state?.lineage ?? null, priorSerial: state?.serial ?? null, priorIds };
   await fs.writeFile(path.join(dir, APPLY_PENDING_FILE), JSON.stringify(evidence), { mode: 0o600 });
 }
 
@@ -121,7 +129,7 @@ export async function completeApply(dir: string) {
   const state = await readWorkspaceState(dir, true);
   const pending = await readEvidence(dir);
   if (!pending || pending === 'unknown' || !stateCoversPlan(state, pending)) throw new Error(RECOVERY_REQUIRED);
-  await fs.writeFile(path.join(dir, APPLY_COMPLETE_FILE), JSON.stringify({ ...pending, priorLineage: state!.lineage }), { mode: 0o600 });
+  await fs.writeFile(path.join(dir, APPLY_COMPLETE_FILE), JSON.stringify({ ...pending, priorLineage: state!.lineage, priorSerial: state!.serial }), { mode: 0o600 });
   await fs.rm(path.join(dir, APPLY_PENDING_FILE));
 }
 

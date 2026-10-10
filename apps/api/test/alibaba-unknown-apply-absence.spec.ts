@@ -125,4 +125,15 @@ describe('unresolved Alibaba apply marker lifecycle', () => {
       expect(await fs.stat(path.join(f.dir,APPLY_PENDING_FILE))).toBeTruthy();
     } finally { await fs.rm(f.dir,{recursive:true,force:true}); }
   });
+  it.each(['foreign-lineage','rewound-serial'])('blocks %s before cloud destruction or clearing the pending marker',async scenario=>{
+    const f=await setup();
+    try {
+      const pending={...f.pending,priorLineage:scenario==='foreign-lineage'?'foreign-ancestor':f.pending.priorLineage,priorSerial:scenario==='rewound-serial'?8:7};
+      await fs.writeFile(path.join(f.dir,APPLY_PENDING_FILE),JSON.stringify(pending));
+      const proof=jest.fn().mockResolvedValue(undefined);
+      await expect(f.provisioner.destroy({...f.input,verifyUnresolvedApplyAbsence:proof})).rejects.toThrow('ancestor state');
+      expect(f.runner.destroy).not.toHaveBeenCalled();expect(proof).not.toHaveBeenCalled();
+      expect(JSON.parse(await fs.readFile(path.join(f.dir,APPLY_PENDING_FILE),'utf8'))).toEqual(pending);
+    } finally {await fs.rm(f.dir,{recursive:true,force:true});}
+  });
 });

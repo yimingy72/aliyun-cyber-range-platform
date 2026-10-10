@@ -55,6 +55,15 @@ it('discovers the exact atomically tagged submitted NAT and persists fee evidenc
   expect(test.runner.apply).not.toHaveBeenCalled();
   expect(await fs.stat(path.join(test.dir,'.range-apply-started'))).toBeDefined();
 });
+it.each(['foreign-lineage','rewound-serial'])('blocks %s before any Tencent discovery, persistence or import',async scenario=>{
+  const test=await fixture();const file=path.join(test.dir,'.range-apply-started');
+  const pending=JSON.parse(await fs.readFile(file,'utf8'));
+  Object.assign(pending,{priorLineage:scenario==='foreign-lineage'?'foreign':'source-lineage',priorSerial:scenario==='rewound-serial'?2:1});
+  await fs.writeFile(file,JSON.stringify(pending));
+  await expect(test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist)).rejects.toThrow('ancestor state');
+  expect(test.query).not.toHaveBeenCalled();expect(test.persist).not.toHaveBeenCalled();expect(test.runner.importResource).not.toHaveBeenCalled();
+  expect(JSON.parse(await fs.readFile(file,'utf8'))).toEqual(pending);
+});
 it('records the original partial-create billing source even when all submitted NAT and EIP identities already reached state', async () => {
   const test = await fixture();
   const statePath = path.join(test.dir, 'terraform.tfstate');
