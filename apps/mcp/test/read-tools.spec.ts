@@ -975,7 +975,7 @@ describe('tool registry', () => {
 
   });
 
-  it('requires a DNAT mapping even when an ECS has legacy public entry flags', async () => {
+  it('accepts a pure private topology without DNAT despite legacy public flags', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
     const invalidGraph = structuredClone(authoringGraph);
@@ -985,18 +985,14 @@ describe('tool registry', () => {
       throw new Error('Expected a switch node');
     }
 
-    switchNode.nat = { snatEnabled: true, dnatMappings: [] };
-
-    await expect(
-      registry.callTool('range_template_create', ['templates:write'], {
-        name: '缺少入口 DNAT',
-        topologyGraph: invalidGraph,
-      }),
-    ).rejects.toThrow('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
-    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    switchNode.nat = { snatEnabled: false, dnatMappings: [] };
+    await registry.callTool('range_template_create', ['templates:write'], { name: '纯内网', topologyGraph: invalidGraph });
+    const created = vi.mocked(client.createRangeTemplate).mock.calls[0]![0];
+    expect(created.compiledProvisionSpec).toMatchObject({ natGateways: [], eips: [], dnatEntries: [] });
+    expect(created.topologyGraph.nodes.filter((node: any) => node.kind === 'ecs').every((node: any) => !node.exposePublic)).toBe(true);
   });
 
-  it('rejects DNAT mappings that target multiple ECS nodes', async () => {
+  it('accepts multiple host DNAT mappings sharing one public entry', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
     const invalidGraph = structuredClone(authoringGraph);
@@ -1019,13 +1015,9 @@ describe('tool registry', () => {
       protocol: 'tcp',
     });
 
-    await expect(
-      registry.callTool('range_template_create', ['templates:write'], {
-        name: '多个 DNAT 目标',
-        topologyGraph: invalidGraph,
-      }),
-    ).rejects.toThrow('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
-    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    await registry.callTool('range_template_create', ['templates:write'], { name: '多个 DNAT 目标', topologyGraph: invalidGraph });
+    const created = vi.mocked(client.createRangeTemplate).mock.calls[0]![0];
+    expect(created.compiledProvisionSpec.dnatEntries).toEqual(expect.arrayContaining([expect.objectContaining({ hostKey: 'ecs-nginx' }), expect.objectContaining({ hostKey: 'ecs-api' })]));
   });
 
   it('rejects a DNAT mapping whose target ECS does not exist', async () => {
