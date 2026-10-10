@@ -213,7 +213,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect(cloudCalls.at(-1)).toEqual({ action: 'StopInstance', instanceId: a.resourceSummary!.hostIds!['dmz-entry'] });
     const jobs = new ProvisionJobsService(repository);
     await expect(jobs.getById(a.lastJobId!, bob)).rejects.toMatchObject({ status: 403 });
-    expect((await jobs.getById(a.lastJobId!, alice)).topologySnapshot).not.toHaveProperty('runtimeCredentials');
+    expect(JSON.stringify(await jobs.getById(a.lastJobId!, alice))).not.toContain('"runtimeCredentials"');
     const allLedgers = await repository.listBillingLedgerResources();
     expect(allLedgers.filter(row => row.rangeInstanceId === a.id && row.cloudResourceType === 'disk')).toHaveLength(4);
     expect(allLedgers.filter(row => row.rangeInstanceId === b.id && row.cloudResourceType === 'disk')).toHaveLength(4);
