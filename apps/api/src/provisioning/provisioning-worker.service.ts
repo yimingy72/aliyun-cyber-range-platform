@@ -53,6 +53,12 @@ const DESTROY_VERIFICATION_ATTEMPTS = 12;
 const DESTROY_VERIFICATION_INTERVAL_MS = 5_000;
 const SINGLE_INSTANCE_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-vpc-single-ecs';
 
+class AliyunVerificationRequestError extends Error {
+  constructor(readonly action: string, readonly status: number, readonly code: string | null, readonly requestId: string | null) {
+    super(`Aliyun ${action} request failed with status ${status}${code ? ` (${code})` : ''}`);
+  }
+}
+
 type SingleInstanceJobInput = {
   job: ProvisionJobRecord;
   instance: RangeInstanceRecord;
@@ -1561,7 +1567,7 @@ export class ProvisioningWorkerService {
 
     const vpcId = resourceSummary.vpcId?.trim();
     const vpcExists = vpcId
-      ? await this.checkVpcExists(vpcId, runtimeConfig, regionId)
+      ? await this.checkVpcExists(vpcId, runtimeConfig, regionId, this.isFrozenAliyunInventory(resourceSummary, runtimeConfig))
       : false;
 
     if (vpcExists && vpcId) {
@@ -1571,7 +1577,7 @@ export class ProvisioningWorkerService {
     const checks: Array<() => Promise<string[]>> = [];
     {
       for (const subnetId of new Set(Object.values(resourceSummary.subnetIds ?? {}).filter(Boolean))) {
-        checks.push(async () => await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, vpcId ?? undefined) ? [`vswitch:${subnetId}`] : []);
+        checks.push(async () => await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, this.isFrozenAliyunInventory(resourceSummary, runtimeConfig)) ? [`vswitch:${subnetId}`] : []);
       }
     }
     checks.push(async () => (await this.findExistingInstanceIds(Object.values(resourceSummary.hostIds ?? {}).filter(Boolean), runtimeConfig, regionId))
@@ -1642,24 +1648,32 @@ export class ProvisioningWorkerService {
       accessKeySecret: string;
     },
     regionId: string,
+    hasFrozenInventory = false,
   ) {
-    const payload = await this.performAliyunRpcRequest<{
-      Vpcs?: {
-        Vpc?: Array<{ VpcId?: string }> | { VpcId?: string };
-      };
-    }>({
+    // The get API documents exact missing-ID receipts; a list API's arbitrary
+    // HTTP 400 is not evidence that the recorded VPC was reclaimed.
+    let payload: { RequestId?: string; VpcId?: string; RegionId?: string; Code?: unknown };
+    try { payload = await this.performAliyunRpcRequest<typeof payload>({
       endpoint: `vpc.${regionId}.aliyuncs.com`,
       version: ALICLOUD_VPC_API_VERSION,
-      action: 'DescribeVpcs',
+      action: 'DescribeVpcAttribute',
       accessKeyId: runtimeConfig.accessKeyId,
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        VpcId: vpcId, PageSize: '100', PageNumber: '1',
+        VpcId: vpcId,
       },
-    });
+    }); } catch (error) {
+      // https://help.aliyun.com/en/vpc/developer-reference/api-vpc-2016-04-28-describevpcattribute
+      if (hasFrozenInventory && /^vpc-[a-zA-Z0-9]+$/.test(vpcId) && error instanceof AliyunVerificationRequestError && error.requestId
+        && error.action === 'DescribeVpcAttribute' && ((error.status === 400 && error.code === 'Forbidden.VpcNotFound')
+          || (error.status === 404 && error.code === 'InvalidVpcId.NotFound'))) return false;
+      throw error;
+    }
 
-    return this.readVerificationPage(payload, payload.Vpcs?.Vpc, 'VpcId', [vpcId]).length > 0;
+    if (!payload || payload.Code || typeof payload.RequestId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId)
+      || payload.VpcId !== vpcId || payload.RegionId !== regionId) throw new Error('Cloud VPC destroy verification returned an unexpected resource identity');
+    return true;
   }
 
   private async checkVSwitchExists(
@@ -1669,9 +1683,10 @@ export class ProvisioningWorkerService {
       accessKeySecret: string;
     },
     regionId: string,
-    vpcId?: string,
+    hasFrozenInventory = false,
   ) {
-    const payload = await this.performAliyunRpcRequest<{
+    let payload: { VSwitches?: { VSwitch?: Array<{ VSwitchId?: string }> | { VSwitchId?: string } } };
+    try { payload = await this.performAliyunRpcRequest<{
       VSwitches?: {
         VSwitch?: Array<{ VSwitchId?: string }> | { VSwitchId?: string };
       };
@@ -1683,10 +1698,15 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        ...(vpcId ? { VpcId: vpcId } : {}),
+        // Query the exact recorded switch independently of its deleted parent.
         VSwitchId: vSwitchId, PageSize: '100', PageNumber: '1',
       },
-    });
+    }); } catch (error) {
+      // https://help.aliyun.com/zh/vpc/developer-reference/api-vpc-2016-04-28-describevswitches
+      if (hasFrozenInventory && /^vsw-[a-zA-Z0-9]+$/.test(vSwitchId) && error instanceof AliyunVerificationRequestError && error.requestId
+        && error.action === 'DescribeVSwitches' && error.status === 404 && error.code === 'InvalidVSwitchId.NotFound') return false;
+      throw error;
+    }
 
     return this.readVerificationPage(payload, payload.VSwitches?.VSwitch, 'VSwitchId', [vSwitchId]).length > 0;
   }
@@ -1832,11 +1852,27 @@ export class ProvisioningWorkerService {
       },
     });
 
-    if (!response.ok) {
-      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}`);
+    const payload: unknown = await response.json().catch(() => null);
+    const object = this.readJsonObject(payload);
+    if (!response.ok || object?.Code) {
+      // Keep only bounded machine fields. The cloud Message/URL may contain
+      // caller-provided or sensitive data and is never copied to job logs.
+      const code = typeof object?.Code === 'string' && /^[a-zA-Z0-9_.-]{1,128}$/.test(object.Code) ? object.Code : null;
+      const requestId = typeof object?.RequestId === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(object.RequestId) ? object.RequestId : null;
+      throw new AliyunVerificationRequestError(input.action, response.status, code, requestId);
     }
+    if (!object) throw new Error(`Aliyun ${input.action} returned an invalid JSON object`);
+    return payload as ResponsePayload;
+  }
 
-    return (await response.json()) as ResponsePayload;
+  private isFrozenAliyunInventory(summary: RangeResourceSummary, account: { provider?: string; accountUid?: string | null;
+    cloudAccountContextId?: string | null; defaultRegion: string; defaultZoneId?: string; accountUidResolved?: boolean }) {
+    const bound = summary.executionContext;
+    return account.provider === 'alibaba_cloud' && account.accountUidResolved === true && Boolean(bound)
+      && (!bound!.provider || bound!.provider === account.provider) && Boolean(bound!.cloudAccountUid)
+      && bound!.cloudAccountUid === account.accountUid && Boolean(bound!.cloudAccountContextId)
+      && bound!.cloudAccountContextId === account.cloudAccountContextId && bound!.regionId === account.defaultRegion
+      && Boolean(bound!.zoneId) && bound!.zoneId === account.defaultZoneId;
   }
 
   private async failJob(

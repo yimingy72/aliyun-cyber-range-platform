@@ -53,7 +53,6 @@ describe('range destroy verification performance and completeness', () => {
   });
 
   it.each([
-    ['checkVpcExists', 'Vpcs', 'Vpc', 'VpcId', 'vpc-owned'],
     ['checkVSwitchExists', 'VSwitches', 'VSwitch', 'VSwitchId', 'vsw-owned'],
     ['checkNetworkInterfaceExists', 'NetworkInterfaceSets', 'NetworkInterfaceSet', 'NetworkInterfaceId', 'eni-owned'],
     ['checkNatGatewayExists', 'NatGateways', 'NatGateway', 'NatGatewayId', 'nat-owned'],
