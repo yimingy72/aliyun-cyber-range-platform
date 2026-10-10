@@ -85,11 +85,11 @@ describe('single-instance OpenTofu batch execution', () => {
       await fs.writeFile(path.join(workspace, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: applyCalls,
         resources: stateMembers.size ? [{ module: 'module.single_batch', mode: 'managed', type: tencent ? 'tencentcloud_instance' : 'alicloud_instance', name: 'members', instances: [...stateMembers].map(([index_key, value]) => ({ index_key, ...value })) }] : [] }));
     }
-    async function createMember(id: string, options: { tainted?: boolean; status?: string; disk?: boolean } = {}) {
+    async function createMember(id: string, options: { tainted?: boolean; status?: string; disk?: boolean; nativeId?: string; diskId?: string } = {}) {
       const input = JSON.parse(await fs.readFile(path.join(workspace, 'terraform.tfvars.json'), 'utf8'));
       const definition = input.members[id];
-      const cloudId = tencent ? `ins-${id.replace(/-/g,'')}` : `i-${id}`;
-      stateMembers.set(id, { ...(options.tainted ? { status: 'tainted' } : {}), attributes: { id: cloudId, ...(tencent ? { client_token: definition.client_token, action_timer_terminate_at: definition.action_timer_terminate_at, instance_status: (options.status ?? 'Running').toUpperCase() } : { status: options.status ?? 'Running' }), system_disk_id: options.disk === false ? '' : tencent ? `disk-${id.replace(/-/g,'')}` : `d-${id}`, tags: definition.tags,
+      const cloudId = options.nativeId ?? (tencent ? `ins-${id.replace(/-/g,'')}` : `i-${id}`);
+      stateMembers.set(id, { ...(options.tainted ? { status: 'tainted' } : {}), attributes: { id: cloudId, ...(tencent ? { client_token: definition.client_token, action_timer_terminate_at: definition.action_timer_terminate_at, instance_status: (options.status ?? 'Running').toUpperCase() } : { status: options.status ?? 'Running' }), system_disk_id: options.disk === false ? '' : options.diskId ?? (tencent ? `disk-${id.replace(/-/g,'')}` : `d-${id}`), tags: definition.tags,
         private_ip: '172.16.1.20', public_ip: '203.0.113.1' } });
       cloud.set(cloudId, { instanceId: cloudId, privateIp: '172.16.1.20', publicIp: '203.0.113.1', status: options.status ?? 'Running', tags: definition.tags });
       await saveState();
@@ -451,11 +451,15 @@ describe('single-instance OpenTofu batch execution', () => {
     await test.service.executeCreateBatch(test.items, test.lease);
     expect(test.instances[0].status).toBe('create_failed'); expect(test.cloud.size).toBe(0);
     const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    test.onApply = async () => { await test.createMember('member-1', { nativeId: 'i-retrymember1', diskId: 'd-retrymember1' }); test.onApply = undefined; };
     await test.service.executeCreateBatch([retry], test.lease);
     expect(test.instances[0].status).toBe('running');
-    expect(test.cloud.get('i-member-1').tags.PlatformCreateJobId).toBe(retry.job.id);
+    expect(test.cloud.get('i-retrymember1').tags.PlatformCreateJobId).toBe(retry.job.id);
     expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe(retry.job.id);
-    expect(test.ledger.every(row => row.sourceProvisionJobId === retry.job.id)).toBe(true);
+    expect(test.ledger.filter(row => ['i-retrymember1', 'd-retrymember1'].includes(row.cloudResourceId))).toHaveLength(2);
+    expect(test.ledger.filter(row => ['i-member-1', 'd-member-1'].includes(row.cloudResourceId))).toHaveLength(2);
+    expect(test.ledger.filter(row => ['i-retrymember1', 'd-retrymember1'].includes(row.cloudResourceId)).every(row => row.sourceProvisionJobId === retry.job.id && !row.releasedAt)).toBe(true);
+    expect(test.ledger.filter(row => ['i-member-1', 'd-member-1'].includes(row.cloudResourceId)).every(row => row.sourceProvisionJobId === 'job-1' && row.releasedAt)).toBe(true);
   });
 
   it('rejects a plan that touches a healthy sibling and never applies that plan', async () => {

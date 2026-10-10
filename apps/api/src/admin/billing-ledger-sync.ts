@@ -211,7 +211,8 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
       singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
       // Native IDs identify the same resource across update, reconciliation and cleanup.
       // Preserve its birth job even if that submission failed or its source was an update.
-      sourceProvisionJobId: existing.sourceProvisionJobId ?? sourceProvisionJobId,
+      sourceProvisionJobId: input.instance.cloudProvider === 'tencent_cloud' ? existing.sourceProvisionJobId
+        : existing.sourceProvisionJobId ?? sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? (isSuccessfulLaunchJob(incomingJob) ? incomingJob.id : null),
       releasedAt: null,
     });
   }

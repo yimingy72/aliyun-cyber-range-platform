@@ -335,7 +335,10 @@ export class PlatformResourceReconciliationService {
         && tags.RangeInstanceId === instance.id && (tags.PlatformUserId ?? null) === instance.ownerUserId
         && tags.PlatformScope === (instance.ownerUserId ? 'user' : 'platform')
         && (instance.instanceMode !== 'single' || tags.SingleInstanceBatchId === instance.singleInstanceBatchId)
-        && sourceJob?.rangeInstanceId === instance.id && ['create', 'retry'].includes(sourceJob.jobType)
+        && sourceJob?.rangeInstanceId === instance.id
+        && (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') === (instance.cloudWorkspaceId ?? 'legacy-unbound')
+        && (['create', 'retry'].includes(sourceJob.jobType) || instance.instanceMode === 'range' && sourceJob.jobType === 'update'
+          && Boolean(sourceJob.startedAt) && sourceJob.topologySnapshot?.operation === 'update')
         && (instance.instanceMode !== 'single' || instance.singleInstanceConfig?.opentofuCreateJobId === sourceJobId
           && tags.CreationIntentId === createHash('sha256').update(JSON.stringify(['tencent_cloud', source.cloudAccountContextId, source.cloudAccountUid,
             source.regionId, instance.singleInstanceConfig?.zoneId, instance.singleInstanceBatchId, instance.id, sourceJobId])).digest('hex').slice(0, 32))
