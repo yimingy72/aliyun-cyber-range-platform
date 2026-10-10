@@ -1,6 +1,8 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { compileTemplateTopology } from '@aliyun-cyber-range/scenario-runtime';
+import { buildRangeChangeApproval } from '../../../api/src/admin/range-draft-change-policy';
 
 type TopologyFlowCanvasMockProps = {
   mode?: 'edit' | 'readonly';
@@ -1126,6 +1128,109 @@ describe('RangeInstanceDetailScreen', () => {
     workspaceState.workspace = { ...workspaceState.workspace, id: 'account-b' };
     rerender(<RangeInstanceDetailScreen rangeId="range-1" />);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认应用变更' })).toBeNull());
+    expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing host definition exact through frontend save and backend change approval', async () => {
+    const metadata = { name: 'Existing', slug: 'existing', version: 'v1', cloudProvider: 'alibaba_cloud' as const, iacType: 'opentofu' as const, modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range' };
+    const source = createValidTopologyGraph() as any;
+    source.edges = source.edges.map((edge: any) => ({ ...edge, relationType: 'manual' }));
+    const sourceHost = source.nodes.find((node: any) => node.kind === 'ecs');
+    sourceHost.platformImageAssetId = 'asset-retained';
+    sourceHost.instanceType = 'ecs.existing-type';
+    sourceHost.instanceTypeStrategy = { mode: 'fixed', instanceType: 'ecs.existing-type' };
+    const compiled = compileTemplateTopology(source, metadata);
+    const graph = compiled.topologyGraph;
+    const detail = { id: 'range-1', status: 'running', draftRevision: 0, runtimeTopologyGraph: graph, runtimeTopologySpec: compiled.topologySpec, runtimeScenarioTemplateSpec: compiled.scenarioTemplateSpec, runtimeCompiledProvisionSpec: compiled.compiledProvisionSpec };
+    fetchRangeInstanceDetailMock.mockResolvedValue(detail);
+    saveRangeInstanceDraftMock.mockImplementation(async (_base, _token, _id, input) => ({ ...detail, ...input, draftRevision: 1 }));
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: 'checker' }));
+    fireEvent.click(screen.getByRole('combobox', { name: '安全协议 1-1' }));
+    fireEvent.click(screen.getByRole('option', { name: 'udp' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(saveRangeInstanceDraftMock).toHaveBeenCalledOnce());
+    const input = saveRangeInstanceDraftMock.mock.calls[0]![3];
+    const original = graph.nodes.find(node => node.kind === 'ecs') as any;
+    const saved = input.draftTopologyGraph.nodes.find((node: any) => node.kind === 'ecs');
+    expect(saved.platformImageAssetId).toBe('asset-retained');
+    expect(saved.instanceTypeStrategy).toEqual(original.instanceTypeStrategy);
+    for (const field of ['imageName', 'hostName', 'cpu', 'memory', 'bootPriority', 'bootWaitSeconds']) expect(Object.hasOwn(saved, field)).toBe(Object.hasOwn(original, field));
+    expect(saved.nics[0].securityGroupRules[0].protocol).toBe('udp');
+    expect(() => buildRangeChangeApproval({ ...detail, expiresAt: new Date('2100-01-01'), cloudWorkspaceId: 'fixture', resourceSummary: { hostIds: { 'host-1': 'physical-fixture' } } } as any,
+      { draftRevision: 1, topologyGraph: input.draftTopologyGraph, topologySpec: input.draftTopologySpec, scenarioTemplateSpec: input.draftScenarioTemplateSpec, compiledProvisionSpec: input.draftCompiledProvisionSpec } as any)).not.toThrow();
+  });
+
+  it('disables confirmation for a preview without configuration changes', async () => {
+    const graph = createValidTopologyGraph();
+    const detail = { id: 'range-1', status: 'running', draftRevision: 0, runtimeTopologyGraph: graph };
+    fetchRangeInstanceDetailMock.mockResolvedValue(detail);
+    saveRangeInstanceDraftMock.mockResolvedValue({ ...detail, draftRevision: 1, draftTopologyGraph: graph });
+    previewRangeInstanceDraftMock.mockImplementation(async (_base, _token, id, revision) => ({ id: 'none', rangeInstanceId: id, expectedDraftRevision: revision, kind: 'expected-topology-diff', previewToken: 'none', expiresAt: new Date(Date.now() + 300000).toISOString(), addedHosts: [], deletedHosts: [], ruleChanges: [], resourceChanges: [] }));
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: '预览变更' }));
+    const dialog = await screen.findByRole('dialog', { name: '确认应用变更' });
+    expect(within(dialog).getByText('没有需要应用的配置变化。')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: '确认应用变更' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
+  });
+
+  it('resumes the already accepted job after an apply response is lost without submitting again', async () => {
+    const graph = createValidTopologyGraph();
+    const detail = { id: 'range-1', status: 'running', draftRevision: 0, runtimeTopologyGraph: graph };
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(detail).mockResolvedValue({ ...detail, draftRevision: 1, lastJobId: 'accepted-job' });
+    saveRangeInstanceDraftMock.mockResolvedValue({ ...detail, draftRevision: 1, draftTopologyGraph: graph });
+    applyRangeInstanceDraftMock.mockRejectedValue(new Error('响应丢失'));
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'accepted-job', jobType: 'update', status: 'running' }, steps: [] });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: '预览变更' }));
+    const dialog = await screen.findByRole('dialog', { name: '确认应用变更' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认应用变更' }));
+    await waitFor(() => expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'accepted-job'));
+    expect(await screen.findByText('实例配置变更正在应用。')).toBeTruthy();
+    expect(applyRangeInstanceDraftMock).toHaveBeenCalledOnce();
+    expect((screen.getByRole('button', { name: '预览变更' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('响应丢失')).toBeNull();
+  });
+
+  it('discards a delayed previous-workspace preview and loads the new workspace scope', async () => {
+    let resolvePreview!: (value: unknown) => void;
+    const graph = createValidTopologyGraph();
+    const detail = { id: 'range-1', status: 'running', draftRevision: 0, runtimeTopologyGraph: graph };
+    workspaceState.workspace = { id: 'account-a', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: true } };
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(detail).mockResolvedValue({ ...detail, runtimeTopologyGraph: createValidTopologyGraph('新空间主机') });
+    saveRangeInstanceDraftMock.mockResolvedValue({ ...detail, draftRevision: 1, draftTopologyGraph: graph });
+    previewRangeInstanceDraftMock.mockReturnValue(new Promise(resolve => { resolvePreview = resolve; }));
+    const { rerender } = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: '预览变更' }));
+    await waitFor(() => expect(previewRangeInstanceDraftMock).toHaveBeenCalledOnce());
+    workspaceState.workspace = { ...workspaceState.workspace, id: 'account-b' };
+    rerender(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await screen.findByRole('button', { name: '新空间主机' });
+    await act(async () => { resolvePreview({ id: 'old', rangeInstanceId: 'range-1', expectedDraftRevision: 1, kind: 'expected-topology-diff', previewToken: 'old', expiresAt: new Date(Date.now() + 300000).toISOString(), addedHosts: [], deletedHosts: [], ruleChanges: [{ nodeId: 'switch-1' }], resourceChanges: [] }); });
+    expect(screen.queryByRole('dialog', { name: '确认应用变更' })).toBeNull();
+    expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
+    expect(fetchRangeInstanceDetailMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the last host and the deployed directory intact when deleting its draft selection', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph() });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    fireEvent.click(screen.getByRole('button', { name: 'checker' }));
+    fireEvent.click(screen.getByRole('button', { name: 'flow delete selection' }));
+    expect(await screen.findByText('编排至少需要保留一台主机；回收全部资源请使用编排实例列表的销毁操作。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'checker' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '添加主机' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '节点目录' }));
+    const table = screen.getByRole('table', { name: '实例节点目录' });
+    expect(within(table).getByText('checker')).toBeTruthy();
+    expect(within(table).queryByText('ECS 2')).toBeNull();
+    expect(saveRangeInstanceDraftMock).not.toHaveBeenCalled();
     expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
   });
 

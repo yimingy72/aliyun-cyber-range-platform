@@ -645,6 +645,7 @@ function normalizeTopologyNode(value: Record<string, unknown>): TemplateNode | n
     customPassword: typeof value.customPassword === 'string' ? value.customPassword : undefined,
     exposePublic: typeof value.exposePublic === 'boolean' ? value.exposePublic : false,
     image: imageName,
+    platformImageAssetId: typeof value.platformImageAssetId === 'string' ? value.platformImageAssetId : undefined,
     instanceName: typeof value.instanceName === 'string' ? value.instanceName : readNodeLabel(value),
     hostName: typeof value.hostName === 'string' ? value.hostName : '',
     imageName,
@@ -678,6 +679,23 @@ function normalizeTopologyNode(value: Record<string, unknown>): TemplateNode | n
     ...(typeof value.account === 'string' ? { account: value.account } : {}),
     ...(typeof value.password === 'string' ? { password: value.password } : {}),
   } as EcsTemplateNode;
+}
+
+function restoreDeployedHostDefinitions(nodes: TemplateNode[], runtimeGraph: Record<string, unknown> | null | undefined): TemplateNode[] {
+  const deployedNodes = (Array.isArray(runtimeGraph?.nodes) ? runtimeGraph.nodes : []) as TemplateNode[];
+  const deployed = new Map(deployedNodes.filter((node) => node.kind === 'ecs').map((node) => [node.id, node]));
+  return nodes.map((node) => {
+    const original = deployed.get(node.id);
+    if (node.kind !== 'ecs' || original?.kind !== 'ecs') return node;
+    return { ...original, ...(node.position ? { position: node.position } : {}),
+      ...(original.nics ? { nics: original.nics.map((nic) => {
+        const edited = node.nics?.find((current) => current.id === nic.id);
+        return { ...nic, ...(edited ? { securityGroupRules: edited.securityGroupRules,
+          ...(edited.securityGroupRulesMode !== undefined ? { securityGroupRulesMode: edited.securityGroupRulesMode } : {}),
+        } : {}) };
+      }) } : {}),
+    };
+  });
 }
 
 function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefined): DraftTopologyGraph | null {
@@ -910,8 +928,8 @@ export function RangeInstanceDetailScreen({
   const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
   const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(() => cachedDetail?.data.draftTopologyGraph ?? cachedDetail?.data.runtimeTopologyGraph ?? null);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
-  const [isSyncingTemplate, setIsSyncingTemplate] = useState(false);
-  const [isTemplateSyncDialogOpen, setIsTemplateSyncDialogOpen] = useState(false);
+  const [isCopyingTemplate, setIsCopyingTemplate] = useState(false);
+  const [isTemplateCopyDialogOpen, setIsTemplateCopyDialogOpen] = useState(false);
   const [templateCopyName, setTemplateCopyName] = useState('');
   const [templateCopyDescription, setTemplateCopyDescription] = useState('');
   const [changePreview, setChangePreview] = useState<RangeInstanceChangePreview | null>(null);
@@ -930,7 +948,7 @@ export function RangeInstanceDetailScreen({
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
-  useEffect(() => { setChangePreview(null); setIsTemplateSyncDialogOpen(false); copyRequestRef.current = null; }, [identityKey]);
+  useEffect(() => { setChangePreview(null); setIsTemplateCopyDialogOpen(false); copyRequestRef.current = null; }, [identityKey]);
 
   useEffect(() => {
     if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
@@ -1008,11 +1026,11 @@ export function RangeInstanceDetailScreen({
       setDetail(null);
       setTrackedUpdateJobId(null);
       setPackImageDialog(null);
-      setIsTemplateSyncDialogOpen(false);
+      setIsTemplateCopyDialogOpen(false);
       setPendingNodeAction(null);
       setSuccessMessage(null);
       setIsSavingDraft(false);
-      setIsSyncingTemplate(false);
+      setIsCopyingTemplate(false);
     }
     if (cached) {
       receiveDetailSnapshot(cached.data);
@@ -1048,7 +1066,7 @@ export function RangeInstanceDetailScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isPageActive, loadAttempt, rangeId, router, screenCache, session.isReady, session.token, session.profile?.id, session.profile?.role]);
+  }, [apiBaseUrl, isPageActive, loadAttempt, rangeId, router, screenCache, session.isReady, session.token, session.profile?.id, session.profile?.role, identityKey]);
 
   useEffect(() => {
     if (!isPageActive || !session.token || !trackedUpdateJobId) {
@@ -1080,6 +1098,7 @@ export function RangeInstanceDetailScreen({
           setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
           return;
         }
+        setErrorMessage(null);
         setSuccessMessage('实例配置变更正在应用。');
       } catch (error) {
         if (!isActive) return;
@@ -1134,7 +1153,8 @@ export function RangeInstanceDetailScreen({
   );
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
   const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
-  const canEditTopology = canOperateInstance && !isSavingDraft && !isSyncingTemplate && !trackedUpdateJobId;
+  const canEditTopology = canOperateInstance && !isSavingDraft && !isCopyingTemplate && !trackedUpdateJobId;
+  useEffect(() => { if (!canApplyInstance) setChangePreview(null); }, [canApplyInstance]);
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1301,9 +1321,9 @@ export function RangeInstanceDetailScreen({
         typeof (currentSpec.topology as Record<string, unknown>).vpcCidr === 'string'
           ? ((currentSpec.topology as Record<string, unknown>).vpcCidr as string)
           : detail.resourceSummary?.topologySpec?.vpcCidr ?? '10.0.0.0/16';
-      let verifiedNodes = topologyDraft.nodes;
+      let verifiedNodes = restoreDeployedHostDefinitions(topologyDraft.nodes, detail.runtimeTopologyGraph);
       if ((metadata.cloudProvider ?? detail.cloudProvider ?? workspace?.provider) === 'tencent_cloud') {
-        verifiedNodes = await Promise.all(topologyDraft.nodes.map(async node => {
+        verifiedNodes = await Promise.all(verifiedNodes.map(async node => {
           if (node.kind !== 'ecs' || deployedNodeIds.includes(node.id)) return node;
           const image = platformImageAssets.find(asset => asset.id === node.platformImageAssetId && asset.imageId === node.imageId);
           if (!image) throw new Error(`${node.label} 请选择当前工作空间的可用镜像。`);
@@ -1377,7 +1397,7 @@ export function RangeInstanceDetailScreen({
   }
 
   async function handleApplyDraft() {
-    if (!session.token || !detail || isSavingDraft || isSyncingTemplate || trackedUpdateJobId || !canApplyInstance) return;
+    if (!session.token || !detail || isSavingDraft || isCopyingTemplate || trackedUpdateJobId || !canApplyInstance) return;
     setIsSavingDraft(true); setErrorMessage(null); setSuccessMessage(null);
     try {
       const saved = await persistDraftChanges();
@@ -1395,7 +1415,7 @@ export function RangeInstanceDetailScreen({
 
   async function handleConfirmApply() {
     const preview = changePreview;
-    if (!session.token || !detail || !preview || isSavingDraft || trackedUpdateJobId) return;
+    if (!session.token || !detail || !preview || !canApplyInstance || isSavingDraft || isCopyingTemplate || trackedUpdateJobId) return;
     if (!Number.isFinite(Date.parse(preview.expiresAt)) || Date.parse(preview.expiresAt) <= Date.now()) { setChangePreview(null); setErrorMessage('变更预览已过期，请重新预览。'); return; }
     setIsSavingDraft(true); setErrorMessage(null);
     try {
@@ -1409,7 +1429,9 @@ export function RangeInstanceDetailScreen({
     } catch (error) {
       if (scopeRef.current !== scopeKey) return;
       if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
-      else { setChangePreview(null); setErrorMessage(error instanceof Error ? error.message : '提交结果未确认，请刷新查看任务状态后再操作。'); void reloadDetailSnapshot().catch(() => undefined); }
+      else { setChangePreview(null); setErrorMessage(error instanceof Error ? error.message : '提交结果未确认，请刷新查看任务状态后再操作。'); void reloadDetailSnapshot().then(payload => {
+        if (scopeRef.current === scopeKey && payload?.lastJobId && payload.lastJobId !== detail.lastJobId) setTrackedUpdateJobId(payload.lastJobId);
+      }).catch(() => undefined); }
     } finally { if (scopeRef.current === scopeKey) setIsSavingDraft(false); }
   }
 
@@ -1435,9 +1457,9 @@ export function RangeInstanceDetailScreen({
     }
   }
 
-  async function handleConfirmSyncTemplate() {
-    if (!session.token || !detail || isSyncingTemplate || !templateCopyName.trim()) return;
-    setIsSyncingTemplate(true); setErrorMessage(null); setSuccessMessage(null);
+  async function handleConfirmCopyTemplate() {
+    if (!session.token || !detail || isCopyingTemplate || !templateCopyName.trim()) return;
+    setIsCopyingTemplate(true); setErrorMessage(null); setSuccessMessage(null);
     const name = templateCopyName.trim(), description = templateCopyDescription.trim();
     try {
       const graph = JSON.stringify(topologyDraft);
@@ -1453,12 +1475,12 @@ export function RangeInstanceDetailScreen({
       if (!result.templateId || result.rangeInstanceId !== detail.id || result.sourceDraftRevision !== request.revision || result.visibility !== 'private') throw new Error('另存返回不一致，请使用原请求重试。');
       screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
       setSuccessMessage(`已另存为私有拓扑“${result.name}”，原拓扑保持不变。`);
-      copyRequestRef.current = null; setIsTemplateSyncDialogOpen(false);
+      copyRequestRef.current = null; setIsTemplateCopyDialogOpen(false);
     } catch (error) {
       if (scopeRef.current !== scopeKey) return;
       if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
       else setErrorMessage(error instanceof Error ? error.message : '另存结果未确认，请保持名称和配置不变后重试。');
-    } finally { if (scopeRef.current === scopeKey) setIsSyncingTemplate(false); }
+    } finally { if (scopeRef.current === scopeKey) setIsCopyingTemplate(false); }
   }
 
   function openPackImageDialog(nodeId: string) {
@@ -2024,7 +2046,7 @@ export function RangeInstanceDetailScreen({
                 <div className="range-instance-workbench-actions">
                   <Button disabled={!canEditTopology} onClick={() => handleAddTopologyNode('ecs')} size="sm" type="button" variant="outline">添加主机</Button>
                   <Button
-                    disabled={isSavingDraft || isSyncingTemplate}
+                    disabled={isSavingDraft || isCopyingTemplate}
                     onClick={() => void handleSaveDraft()}
                     size="sm"
                     type="button"
@@ -2033,7 +2055,7 @@ export function RangeInstanceDetailScreen({
                       {isSavingDraft ? '处理中...' : '保存草稿'}
                   </Button>
                   <Button
-                    disabled={!canApplyInstance || isSavingDraft || isSyncingTemplate || Boolean(trackedUpdateJobId)}
+                    disabled={!canApplyInstance || isSavingDraft || isCopyingTemplate || Boolean(trackedUpdateJobId)}
                     title={!canApplyInstance ? '当前云账号尚未开放编排资源变更。' : undefined}
                     onClick={() => void handleApplyDraft()}
                     size="sm"
@@ -2043,12 +2065,12 @@ export function RangeInstanceDetailScreen({
                       {isSavingDraft ? '处理中...' : '预览变更'}
                   </Button>
                   <Button
-                    disabled={isSavingDraft || isSyncingTemplate}
-                    onClick={() => { setTemplateCopyName(templateCopyName || `${detail.name ?? '编排'}-副本`); setIsTemplateSyncDialogOpen(true); }}
+                    disabled={isSavingDraft || isCopyingTemplate}
+                    onClick={() => { setTemplateCopyName(templateCopyName || `${detail.name ?? '编排'}-副本`); setIsTemplateCopyDialogOpen(true); }}
                     size="sm"
                     type="button"
                   >
-                      {isSyncingTemplate ? '处理中...' : '另存为新拓扑'}
+                      {isCopyingTemplate ? '处理中...' : '另存为新拓扑'}
                   </Button>
                 </div>
               ) : null}
@@ -2109,9 +2131,9 @@ export function RangeInstanceDetailScreen({
       </section>
 
       <RangeChangePreviewDialog preview={changePreview} pending={isSavingDraft} onClose={() => setChangePreview(null)} onConfirm={() => void handleConfirmApply()} />
-      <AdminDialog open={isTemplateSyncDialogOpen} title="另存为新拓扑" description="保存当前草稿为新的私有编排拓扑，原拓扑和运行资源保持不变。" pending={isSyncingTemplate}
-        onOpenChange={setIsTemplateSyncDialogOpen} footer={<><Button disabled={isSyncingTemplate} variant="outline" onClick={() => setIsTemplateSyncDialogOpen(false)}>取消</Button><Button disabled={isSyncingTemplate || !templateCopyName.trim()} onClick={() => void handleConfirmSyncTemplate()}>{isSyncingTemplate ? '正在保存…' : '保存新拓扑'}</Button></>}>
-        <div className="grid gap-4"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isSyncingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isSyncingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>
+      <AdminDialog open={isTemplateCopyDialogOpen} title="另存为新拓扑" description="保存当前草稿为新的私有编排拓扑，原拓扑和运行资源保持不变。" pending={isCopyingTemplate}
+        onOpenChange={setIsTemplateCopyDialogOpen} footer={<><Button disabled={isCopyingTemplate} variant="outline" onClick={() => setIsTemplateCopyDialogOpen(false)}>取消</Button><Button disabled={isCopyingTemplate || !templateCopyName.trim()} onClick={() => void handleConfirmCopyTemplate()}>{isCopyingTemplate ? '正在保存…' : '保存新拓扑'}</Button></>}>
+        <div className="grid gap-4"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isCopyingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isCopyingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>
       </AdminDialog>
 
       {packImageDialog && detail ? (
