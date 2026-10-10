@@ -62,4 +62,4 @@ docker compose up -d mcp
 curl -fsS http://127.0.0.1:8787/healthz
 ```
 
-协议 smoke 使用 OIDC 登录与交换后的当前用户身份，按 [客户端手册](../../docs/product/2026-07-15-MCP客户端接入示例.md) 在 Docker 中运行项目 SDK 脚本。不在本机起开发进程代替容器验证，不调用付费云操作作为普通网关回归。
+协议 smoke 仅消费已有启用用户的 `MCP_BEARER_TOKEN`，在现有容器内使用 loopback 请求网关；不自动登录、启动服务、创建或提升账号。默认查询平台模板，只允许非凭据/VNC 的 `readOnlyHint: true` 工具，输出仅含工具列表和成功标志。按 [客户端手册](../../docs/product/2026-07-15-MCP客户端接入示例.md) 在 Docker 中运行项目 SDK 脚本。不在本机起开发进程代替容器验证，不调用付费云操作作为普通网关回归。
