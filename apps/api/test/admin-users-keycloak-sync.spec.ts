@@ -41,7 +41,7 @@ describe('AdminUsersService Keycloak sync', () => {
     const service = new AdminUsersService(repository, prisma as never, keycloak as never);
     await service.createUser(input);
     await expect(repository.getPlatformUserByUsername('alice')).resolves.toEqual(expect.objectContaining({ username: 'alice', oidcSubject: 'keycloak-alice-subject' }));
-    expect(keycloak.createUser).toHaveBeenCalledWith({ ...input, loginUsername: expect.stringMatching(/^alice~[a-f0-9]{64}$/), status: 'active' });
+    expect(keycloak.createUser).toHaveBeenCalledWith({ ...input, loginUsername: expect.stringMatching(/^alice\.[a-f0-9]{64}$/), status: 'active' });
   }));
 
   it('removes only the newly created identity when the database write fails, permitting a retry', async () => runInCloudWorkspace(workspace, async () => {

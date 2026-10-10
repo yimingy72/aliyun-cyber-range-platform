@@ -1,4 +1,4 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 
 import type { UserRole, UserStatus } from './admin.repository';
@@ -26,9 +26,9 @@ type ResetKeycloakPasswordInput = {
   password: string;
 };
 
-class KeycloakAdminError extends Error {
-  constructor(message: string, readonly status?: number) {
-    super(message);
+class KeycloakAdminError extends ServiceUnavailableException {
+  constructor(message: string, readonly upstreamStatus?: number) {
+    super(upstreamStatus ? `${message} (identity service HTTP ${upstreamStatus})` : message);
     this.name = 'KeycloakAdminError';
   }
 }
@@ -72,7 +72,11 @@ export class KeycloakAdminService {
     }
 
     if (response.status === 409) {
-      throw new KeycloakAdminError('Username already exists', 409);
+      throw new ConflictException('Username already exists');
+    }
+
+    if (response.status === 400) {
+      throw new BadRequestException('Identity service rejected user creation (HTTP 400)');
     }
 
     if (response.status !== 201) {

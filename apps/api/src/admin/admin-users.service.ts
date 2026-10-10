@@ -41,7 +41,8 @@ export class AdminUsersService {
   async createUser(input: CreateAdminUserDto): Promise<AdminUserDto> {
     const cloudWorkspaceId = this.requireWritableWorkspace();
     const username = this.normalizeUsername(input.username);
-    const loginUsername = `${username}~${createHash('sha256').update(cloudWorkspaceId).digest('hex')}`;
+    // Keycloak's default username validator forbids '~'; '.' preserves a deterministic workspace namespace.
+    const loginUsername = `${username}.${createHash('sha256').update(cloudWorkspaceId).digest('hex')}`;
     const id = randomUUID();
     const passwordHash = hashPassword(input.password);
 
