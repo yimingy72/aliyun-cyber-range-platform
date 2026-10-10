@@ -182,7 +182,9 @@ MCP Gateway 是面向外部 MCP 客户端的 Streamable HTTP 服务。部署完�
 - `OIDC_ISSUER` 是 token 中的公开 issuer，应与客户端可访问的 Keycloak / OIDC 地址一致。
 - `OIDC_JWKS_URL` 与 `OIDC_TOKEN_ENDPOINT` 供 Gateway 在 Compose 网络内验签和 Token Exchange，可继续使用 `keycloak:8080`，不要改为容器内的 `localhost`。
 - `MCP_OIDC_CLIENT_ID`、`MCP_OIDC_CLIENT_SECRET`、`MCP_OIDC_AUDIENCE` 和 `PLATFORM_API_AUDIENCE` 必须与 OIDC realm 配置一致。
-- 生产环境不要设置 `MCP_STATIC_BEARER_TOKEN`，它仅用于受控的本地 stub / smoke。
+- 网关只接受 OIDC access token；`MCP_STATIC_BEARER_TOKEN`、`MCP_STATIC_SCOPES` 和 `PLATFORM_API_TOKEN` 已停用，不提供静态管理员或共享下游身份兜底。
+- `MCP_PUBLIC_URL` 的主机和 Origin 会参与精确校验；额外入口使用 `MCP_ALLOWED_HOSTS`（逗号分隔 `host:port`）与 `MCP_ALLOWED_ORIGINS`（精确 Origin）显式声明。Compose 内部访问使用 `mcp:8787`，部署默认将其列入允许主机。网关不信任 `X-Forwarded-Host`。
+- 网关每次请求核验当前平台用户状态和角色，并将该用户的 token 换取仅用于 API 的 token，校验交换后的主体及网关 client ID；无跨用户或跨工作空间的共享会话。
 
 部署后可依次验证：
 

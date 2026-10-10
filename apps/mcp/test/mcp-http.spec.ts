@@ -141,7 +141,8 @@ describe('mcp http e2e', () => {
       return new Response(JSON.stringify({ items: [{ id: `image-${scope}`, displayName: `镜像 ${scope}` }] }));
     });
     vi.stubGlobal('fetch', downstream);
-    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://workspace-fixture.invalid', platformApiToken: 'fixture-downstream-token' }, {
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://workspace-fixture.invalid' }, {
+      resolvePlatformApiToken: async () => 'fixture-downstream-token',
       authenticateRequest: async () => ({ token: 'fixture-inbound-token', clientId: 'fixture', scopes: ['images:read'], extra: { role: 'user' } }),
     });
     await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
@@ -161,7 +162,7 @@ describe('mcp http e2e', () => {
   it('passes the authenticated user role into image tool discovery and rejects hidden admin tools', async () => {
     const platformClient = createClientStub();
     const auth: AuthInfo = { token: 'user-token', clientId: 'owner', scopes: ['images:read', 'images:write'], extra: { role: 'user' } };
-    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', platformApiToken: 'mock' }, { authenticateRequest: async () => auth, client: platformClient });
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', }, { authenticateRequest: async () => auth, client: platformClient });
     await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Expected server address');
@@ -180,7 +181,7 @@ describe('mcp http e2e', () => {
     const platformClient = createClientStub();
     const details = { statusCode: 400, error: 'Bad Request', message: '阿里云可售机型查询失败（HTTP 404，InvalidRegionId.NotFound）。' };
     vi.mocked(platformClient.getCloudAccountInstanceTypeAvailability).mockRejectedValue(new PlatformApiError(400, details.message, details));
-    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', platformApiToken: 'fixture-downstream-token' }, {
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', }, {
       authenticateRequest: async () => ({ token: 'fixture-inbound-token', clientId: 'fixture', scopes: ['settings:read'], extra: { role: 'admin' } }), client: platformClient,
     });
     await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
@@ -200,7 +201,7 @@ describe('mcp http e2e', () => {
     const platformClient = createClientStub();
     const challenge = { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirmation-platform', idempotencyKey: 'stable-idempotency', summary: { targetName: 'fixture-range', createsCloudResources: true } };
     vi.mocked(platformClient.launchRange).mockRejectedValueOnce(new PlatformApiError(409, 'confirmation required', challenge)).mockResolvedValueOnce({ id: 'fixture-range' } as never);
-    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', platformApiToken: 'fixture-downstream-token' }, {
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', }, {
       authenticateRequest: async () => ({ token: 'fixture-inbound-token', clientId: 'fixture', scopes: ['ranges:create'], extra: { role: 'admin' } }), client: platformClient,
     });
     await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
@@ -230,7 +231,6 @@ describe('mcp http e2e', () => {
         host: '127.0.0.1',
         port: 0,
         platformApiBaseUrl: 'https://platform.example',
-        platformApiToken: 'token-1',
       },
       {
         authenticateRequest: async () => auth,
@@ -335,7 +335,6 @@ describe('mcp http e2e', () => {
         host: '127.0.0.1',
         port: 0,
         platformApiBaseUrl: 'https://platform.example',
-        platformApiToken: 'token-1',
       },
       {
         authenticateRequest: async () => auth,

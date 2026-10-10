@@ -10,7 +10,6 @@ async function main() {
   const host = process.env.MCP_HOST?.trim() || '127.0.0.1';
   const token = await getSmokeBearerToken();
 
-  process.env.MCP_STATIC_BEARER_TOKEN = token;
   const server = createHttpApp({
     host,
     port: 0,

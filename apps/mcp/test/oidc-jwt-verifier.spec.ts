@@ -121,3 +121,35 @@ describe('OIDC JWKS rotation', () => {
     await expect(s.verifier.verifyAccessToken(s.token(s.a, 'key-b'))).rejects.toThrow('OIDC token signature is invalid');
   });
 });
+
+describe('OIDC JWT trust boundary', () => {
+  const environment = { ...process.env };
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  beforeEach(() => {
+    process.env.OIDC_ISSUER = 'https://issuer.invalid'; process.env.OIDC_JWKS_URL = 'https://issuer.invalid/jwks'; process.env.MCP_OIDC_AUDIENCE = 'mcp';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ keys: [{ ...pair.publicKey.export({ format: 'jwk' }), kid: 'test-key', use: 'sig', alg: 'RS256' }] })));
+  });
+  afterEach(() => { vi.restoreAllMocks(); process.env = { ...environment }; });
+  const payload = () => ({ iss: 'https://issuer.invalid', sub: 'subject', aud: 'mcp', exp: Math.floor(Date.now() / 1000) + 600 });
+  it.each([{ sub: 42 }, { exp: '9999999999' }, { nbf: '0' }, { iat: '0' }, { scope: [] }, { azp: 10 }, { typ: 'ID' }, { aud: ['mcp', 42] }])('rejects malformed access token claims %j', async override => {
+    await expect(new OidcJwtVerifier().verifyAccessToken(signJwt(pair.privateKey, { ...payload(), ...override }, 'test-key'))).rejects.toThrow();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+  it('rejects additional JWT segments and non-object payloads', async () => {
+    const valid = signJwt(pair.privateKey, payload(), 'test-key');
+    for (const token of [valid + '.trailing', valid.split('.')[0] + '.bnVsbA.' + valid.split('.')[2]]) {
+      await expect(new OidcJwtVerifier().verifyAccessToken(token)).rejects.toThrow('malformed');
+    }
+  });
+  it('never accepts an ID token with an access token audience', async () => {
+    await expect(new OidcJwtVerifier().verifyAccessToken(signJwt(pair.privateKey, { ...payload(), typ: 'ID' }, 'test-key'))).rejects.toThrow('claims');
+  });
+  it('checks key purpose and expires the key cache', async () => {
+    const verifier = new OidcJwtVerifier(); const token = signJwt(pair.privateKey, payload(), 'test-key');
+    await verifier.verifyAccessToken(token);
+    const later = Date.now() + 5 * 60_000 + 1; vi.spyOn(Date, 'now').mockReturnValue(later);
+    vi.mocked(globalThis.fetch).mockImplementation(async () => new Response(JSON.stringify({ keys: [{ ...pair.publicKey.export({ format: 'jwk' }), kid: 'test-key', use: 'enc' }] })));
+    await expect(verifier.verifyAccessToken(token)).rejects.toThrow('signing key');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+});
