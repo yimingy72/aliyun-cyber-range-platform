@@ -74,5 +74,6 @@ export function expectedRangeChangeSummary(instance: RangeInstanceRecord, snapsh
  }).map(node => ({ nodeId: node.id, name: node.label ?? node.id, nodeKind: node.kind }));
  for (const host of deletedHosts) (host as any).diskIds = [...(host.systemDiskId ? [host.systemDiskId] : []), ...host.dataDiskIds];
  return { allowDnatRemoval: approval.allowDnatRemoval, allowSnatRemoval: approval.allowSnatRemoval, id: instance.id, rangeInstanceId: instance.id, kind: 'expected-topology-diff' as const, expectedDraftRevision: snapshot.draftRevision,
+  addedNetworks: after.filter(node => node.kind === 'switch' && !before.some(old => old.id === node.id)).map(node => ({ nodeId: node.id as string, name: (node.label ?? node.id) as string, zoneKey: node.zoneKey as string, cidr: node.cidr as string })),
   addedHosts: approval.addedHostKeys.map(key => ({ ...describe(key, after), expiresAt: instance.expiresAt?.toISOString() ?? null })), deletedHosts, ruleChanges, resourceChanges };
 }

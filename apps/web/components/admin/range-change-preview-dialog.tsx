@@ -9,16 +9,17 @@ const resourceLabels: Record<string, string> = { natGateways: 'NAT 网关', eips
 export function RangeChangePreviewDialog({ preview, pending, onClose, onConfirm }: {
   preview: RangeInstanceChangePreview | null; pending: boolean; onClose: () => void; onConfirm: () => void;
 }) {
-  const hasChanges = Boolean(preview && (preview.addedHosts.length || preview.deletedHosts.length || preview.ruleChanges.length || preview.resourceChanges.length));
+  const hasChanges = Boolean(preview && (preview.addedNetworks?.length || preview.addedHosts.length || preview.deletedHosts.length || preview.ruleChanges.length || preview.resourceChanges.length));
   return <AdminDialog open={Boolean(preview)} title="确认应用变更" size="wide" pending={pending}
     description="以下为预计配置变化。新增主机沿用本编排到期时间；删除将回收云主机及随实例删除的磁盘，数据无法恢复。"
     onOpenChange={open => { if (!open && !pending) onClose(); }}
     footer={<><Button disabled={pending} variant="outline" onClick={onClose}>取消</Button><Button disabled={pending || !hasChanges} onClick={onConfirm}>{pending ? '正在提交…' : '确认应用变更'}</Button></>}>
     {preview ? <div className="grid gap-4 text-sm">
       <div className="flex flex-wrap gap-3 border-b border-border pb-3">
-        <span>新增主机 <strong>{preview.addedHosts.length}</strong></span><span>回收主机 <strong>{preview.deletedHosts.length}</strong></span><span>修改规则 <strong>{preview.ruleChanges.length}</strong></span>
+        <span>新增网络 <strong>{preview.addedNetworks?.length ?? 0}</strong></span><span>新增主机 <strong>{preview.addedHosts.length}</strong></span><span>回收主机 <strong>{preview.deletedHosts.length}</strong></span><span>修改规则 <strong>{preview.ruleChanges.length}</strong></span>
       </div>
       {!hasChanges ? <p role="status">没有需要应用的配置变化。</p> : null}
+      {preview.addedNetworks?.length ? <section><h3 className="mb-2 font-medium">新增网络</h3><ul className="grid gap-2">{preview.addedNetworks.map(network => <li key={network.nodeId}>{network.name} <span className="text-xs text-muted-foreground">{network.cidr}</span></li>)}</ul></section> : null}
       {preview.addedHosts.length ? <section><h3 className="mb-2 font-medium">新增主机</h3><ul className="grid gap-2">{preview.addedHosts.map(host => <li key={host.id}>{host.name} <span className="text-xs text-muted-foreground">({host.nodeId})</span></li>)}</ul><p className="mt-2 text-xs text-muted-foreground">新增资源会产生费用，结束时间与本编排一致。</p></section> : null}
       {preview.deletedHosts.length ? <section><h3 className="mb-2 font-medium text-destructive">回收主机</h3><ul className="grid gap-3">{preview.deletedHosts.map(host => <li key={host.id}>
         <div>{host.name} <span className="break-all text-xs text-muted-foreground">{host.instanceId || host.nodeId}</span></div>

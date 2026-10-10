@@ -110,3 +110,17 @@ describe('runtime immutable identity policy', () => {
   expect(() => buildRangeChangeApproval({ ...original, expiresAt: new Date(0) }, snapshot)).toThrow('到期');
  });
 });
+
+
+describe('expected topology inventory preview', () => {
+ it('includes added switches with their subnet instead of hiding network creation', async () => {
+  const { expectedRangeChangeSummary } = await import('../src/admin/range-draft-change-policy');
+  const f = await fixture();
+  const newSwitch = { id: 'switch-new', kind: 'switch', label: '新增交换机', zoneKey: 'network-new', cidr: '10.0.20.0/24' };
+  const graph = { ...f.instance.runtimeTopologyGraph, nodes: [...(f.instance.runtimeTopologyGraph!.nodes as any[]), newSwitch] };
+  const preview = expectedRangeChangeSummary(f.instance, { topologyGraph: graph, draftRevision: 2 } as any, {
+   version: 1, addedHostKeys: [], deletedHostKeys: [], runtimeIdentityDigest: 'runtime', topologyDigest: 'draft', allowDnatRemoval: false, allowSnatRemoval: false,
+  });
+  expect(preview.addedNetworks).toEqual([{ nodeId: 'switch-new', name: '新增交换机', zoneKey: 'network-new', cidr: '10.0.20.0/24' }]);
+ });
+});

@@ -651,6 +651,7 @@ export type RangeInstanceChangePreview = {
   previewToken: string;
   expiresAt: string;
   sourceDigest: string;
+  addedNetworks?: Array<{ nodeId: string; name: string; zoneKey: string; cidr: string }>;
   addedHosts: Array<{ id: string; nodeId: string; name: string; expiresAt: string }>;
   deletedHosts: Array<{ id: string; nodeId: string; name: string; instanceId: string; systemDiskId?: string; dataDiskIds: string[]; networkInterfaceIds: string[]; diskIds: string[] }>;
   ruleChanges: Array<{ nodeId: string; name: string; nodeKind: string }>;
