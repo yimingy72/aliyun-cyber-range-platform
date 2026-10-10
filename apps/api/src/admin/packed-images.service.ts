@@ -11,7 +11,7 @@ import { describeTencentImages, describeTencentSnapshot, tagTencentImageResource
 import { describeTencentResourceInventory, describeTencentInstances, assertTencentOwnedInstance, type TencentResourceEvidence } from './tencent-cloud-resources';
 import { randomUUID } from 'node:crypto';
 import { TencentCloudRequestError } from './tencent-cloud-client';
-import { PackedImageCloudError, safePackedCloudCode, packedImageDiagnostic, readPackedImageDiagnostic } from './packed-image-diagnostic';
+import { PackedImageCloudError, PackedImageVerificationError, safePackedCloudCode, packedImageDiagnostic, readPackedImageDiagnostic, encodePackedImageDiagnostic, type PackedImagePhase } from './packed-image-diagnostic';
 import { TENCENT_PACK_BASELINE_KIND, readTencentPackBaseline, validTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 
 type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; ImageName?: string; Status: string; Progress?: string; Tags?: unknown; DiskDeviceMappings?: { DiskDeviceMapping?: Array<{ SnapshotId?: string }> } };
@@ -184,12 +184,16 @@ export class PackedImagesService {
 
   private async refreshClaimed(id: string, token: string) {
     let artifact = await this.require(id);
+    let phase: PackedImagePhase = 'account_context';
+    let diagnosticContext: LeasedContext | undefined;
     try {
       const context = await this.boundContext(artifact, token);
+      diagnosticContext = context;
       artifact = await this.updateClaimed(id, token, { lastPolledAt: new Date() });
-      if (artifact.status === 'deleting') return await this.processCleanup(artifact, context);
+      if (artifact.status === 'deleting') { phase = 'cleanup'; return await this.processCleanup(artifact, context); }
       if (!ACTIVE.includes(artifact.status)) return artifact;
       let images: Image[];
+      phase = 'describe_image';
       if (artifact.imageId) {
         images = await this.describeImages(context, { ImageId: artifact.imageId });
       } else {
@@ -198,25 +202,29 @@ export class PackedImagesService {
       if (!images.length) return artifact;
       if (images.length !== 1) throw new ConflictException('打包来源标记匹配多个镜像，拒绝自动关联。');
       const image = images[0];
+      phase = 'verify_image';
       this.assertImage(artifact, image);
       if (!artifact.imageId) artifact = await this.updateClaimed(id, token, { imageId: image.ImageId, status: 'creating' });
       await this.upsertLedger(artifact, image.ImageId, 'image', token);
       const snapshotIds = this.snapshotIds(image);
       if (image.Status === 'Available' && !snapshotIds.length) throw new ConflictException('打包镜像已可用，但快照绑定信息尚未完整，等待恢复。');
       if (snapshotIds.length) {
+        phase = 'snapshot_verify';
         await this.captureSnapshots(artifact, context, snapshotIds);
         artifact = await this.require(id);
       }
       const status = image.Status === 'Available' ? 'available' : /Failed|UnAvailable/i.test(image.Status) ? 'failed' : 'creating';
+      phase = 'persist_catalog';
       return this.repository.withPackedImageArtifactClaim(id, token, async repo => {
         await repo.upsertImageSnapshots({ provider: context.provider, accountUid: artifact.cloudAccountUid, regionId: artifact.regionId, scope: 'custom', snapshots: [{ imageId: image.ImageId, sourceImageName: image.ImageName || image.ImageId, minimumSystemDiskSize: image.ImageSize, status: image.Progress && image.Status !== 'Available' ? `${image.Status} ${image.Progress}` : image.Status, isAvailable: image.Status === 'Available', lastSyncedAt: new Date() }] });
         const [source] = await repo.listImageSnapshots({ provider: context.provider, accountUid: artifact.cloudAccountUid, regionId: artifact.regionId, scope: 'custom', imageId: image.ImageId });
         if (artifact.platformImageAssetId && await repo.getPlatformImageAssetById(artifact.platformImageAssetId)) await repo.setPlatformImageAssetEnabled(artifact.platformImageAssetId, image.Status === 'Available');
         return repo.updatePackedImageArtifact(id, { sourceSnapshotId: source.id, status, errorMessage: status === 'failed' ? `云镜像打包失败：${image.Status}` : null });
       });
-    } catch {
+    } catch (error) {
       // A later failed observation must not erase the original bounded submission rejection receipt.
       if (artifact.cloudProvider === 'tencent_cloud' && !artifact.imageId && readPackedImageDiagnostic(artifact.errorMessage).phase === 'create_image') return artifact;
+      if (artifact.cloudProvider === 'tencent_cloud') return this.updateClaimed(id, token, { errorMessage: encodePackedImageDiagnostic(packedImageDiagnostic(error, phase, diagnosticContext ? [diagnosticContext.accessKeyId, diagnosticContext.accessKeySecret] : [])) });
       return this.updateClaimed(id, token, { errorMessage: '打包或清理状态验证失败，清理材料已保留，可修复后重试。' });
     }
   }
@@ -297,30 +305,46 @@ export class PackedImagesService {
   }
 
   private async captureSnapshots(artifact: PackedImageArtifactRecord, context: LeasedContext, ids: string[]) {
-    if (ids.length !== artifact.sourceDiskIds.length) throw new ConflictException('打包镜像快照清单未覆盖全部源磁盘，等待完整结果。');
+    if (ids.length !== artifact.sourceDiskIds.length) {
+      if (context.provider === 'tencent_cloud') throw new PackedImageVerificationError('snapshot_coverage', undefined, 'snapshot_verify');
+      throw new ConflictException('打包镜像快照清单未覆盖全部源磁盘，等待完整结果。');
+    }
     if (artifact.backingSnapshotIds.length && artifact.backingSnapshotIds.sort().join(',') !== [...ids].sort().join(',')) throw new ConflictException('已记录的打包快照绑定发生变化。');
     // Save the binding before cloud tagging; a denied tag request must not lose billable identities.
     await this.updateClaimed(artifact.id, context.artifactLease!.token, { backingSnapshotIds: ids });
     const capturedDisks = new Set<string>();
     for (const sid of ids) {
       const snapshot = await this.describeSnapshot(context, sid);
-      if (!snapshot || !this.isFreshSourceSnapshot(artifact, snapshot)) throw new ConflictException('快照来源、地域或创建时间不匹配，拒绝标记外部快照。');
+      if (!snapshot || !this.isFreshSourceSnapshot(artifact, snapshot)) {
+        if (artifact.cloudProvider === 'tencent_cloud') {
+          const baseline = readTencentPackBaseline(artifact), tc = snapshot as TencentSnapshot | null;
+          throw new PackedImageVerificationError('snapshot_source', { snapshotChecks: { validBaseline: Boolean(baseline), newSnapshot: Boolean(snapshot && baseline && !baseline.preCreateSnapshotIds.includes(snapshot.SnapshotId)),
+            regionMatches: snapshot?.RegionId === artifact.regionId, sourceDiskMatches: Boolean(snapshot?.SourceDiskId && baseline?.sourceDiskIds.includes(snapshot.SourceDiskId)),
+            privateSnapshot: tc?.SnapshotType === 'PRIVATE_SNAPSHOT', notCopied: tc?.CopyFromRemote === false && !tc?.SourceSnapshotId, notShared: tc?.ShareReference === 0 } }, 'snapshot_verify');
+        }
+        throw new ConflictException('快照来源、地域或创建时间不匹配，拒绝标记外部快照。');
+      }
       if (capturedDisks.has(snapshot.SourceDiskId!)) throw new ConflictException('打包快照重复引用同一源磁盘，拒绝不完整清单。');
       capturedDisks.add(snapshot.SourceDiskId!);
-      if (context.provider === 'tencent_cloud' && ((snapshot as TencentSnapshot).ImageIds.length !== 1 || (snapshot as TencentSnapshot).ImageIds[0] !== artifact.imageId)) throw new ConflictException('腾讯云快照必须且只能关联原平台镜像，拒绝接管。');
+      if (context.provider === 'tencent_cloud' && ((snapshot as TencentSnapshot).ImageIds.length !== 1 || (snapshot as TencentSnapshot).ImageIds[0] !== artifact.imageId)) throw new PackedImageVerificationError('snapshot_image_binding', undefined, 'snapshot_verify');
       const existingTags = cloudTags(snapshot.Tags);
-      if (context.provider === 'tencent_cloud' && Object.entries({ CloudProvider: 'tencent_cloud', CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).some(([key,value]) => existingTags[key] !== undefined && existingTags[key] !== value)) throw new ConflictException('腾讯云快照已有其它账号来源。');
+      if (context.provider === 'tencent_cloud' && Object.entries({ CloudProvider: 'tencent_cloud', CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).some(([key,value]) => existingTags[key] !== undefined && existingTags[key] !== value)) throw new PackedImageVerificationError('snapshot_namespace_tags', undefined, 'snapshot_verify');
       if ((existingTags.PlatformPackedImageArtifactId && existingTags.PlatformPackedImageArtifactId !== artifact.id)
         || (existingTags.PlatformUserId && existingTags.PlatformUserId !== artifact.ownerUserId)
-        || (existingTags.CreatedBy && existingTags.CreatedBy !== 'cyber-range-platform')) throw new ConflictException('快照已有其它来源或 owner 标记，拒绝覆盖。');
+        || (existingTags.CreatedBy && existingTags.CreatedBy !== 'cyber-range-platform')) {
+        if (context.provider === 'tencent_cloud') throw new PackedImageVerificationError('snapshot_owner_tags', undefined, 'snapshot_verify');
+        throw new ConflictException('快照已有其它来源或 owner 标记，拒绝覆盖。');
+      }
     }
     for (const sid of ids) {
-      await this.upsertLedger(artifact, sid, 'snapshot', context.artifactLease!.token);
+      try { await this.upsertLedger(artifact, sid, 'snapshot', context.artifactLease!.token); }
+      catch (error) { if (context.provider === 'tencent_cloud') throw new PackedImageCloudError('snapshot_ledger', 'UNKNOWN'); throw error; }
     }
     for (const sid of ids) {
       if (context.provider === 'tencent_cloud') {
         await this.repository.withPackedImageArtifactClaim(artifact.id, context.artifactLease!.token, repo => repo.renewPackedImageArtifactClaim(artifact.id, context.artifactLease!.token, new Date(Date.now() + 300_000)));
-        await tagTencentImageResources(context, 'snapshot', [sid], { ...this.tags(artifact), PlatformResourceType: 'snapshot', CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId, CloudProvider: 'tencent_cloud' });
+        try { await tagTencentImageResources(context, 'snapshot', [sid], { ...this.tags(artifact), PlatformResourceType: 'snapshot', CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId, CloudProvider: 'tencent_cloud' }); }
+        catch (error) { if (error instanceof TencentCloudRequestError) throw new PackedImageCloudError('snapshot_tagging', safePackedCloudCode(error, [context.accessKeyId, context.accessKeySecret]), packedImageDiagnostic(error, 'snapshot_tagging', [context.accessKeyId, context.accessKeySecret])); throw error; }
       } else await this.rpc(context, 'TagResources', { ResourceType: 'snapshot', 'ResourceId.1': sid, ...buildAliyunTagParameters({ ...this.tags(artifact), PlatformResourceType: 'snapshot' }) });
     }
     await this.updateClaimed(artifact.id, context.artifactLease!.token, { backingSnapshotIds: ids });

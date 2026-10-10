@@ -1,6 +1,7 @@
 import { BadGatewayException } from '@nestjs/common';
 import type { CloudAccountContextCredentials } from './cloud-account-contexts.service';
 import { requestTencentCloud } from './tencent-cloud-client';
+import { PackedImageVerificationError, packedSnapshotFieldShapes } from './packed-image-diagnostic';
 
 export type TencentImageCredentials = Pick<CloudAccountContextCredentials, 'provider' | 'accountUid' | 'regionId' | 'accessKeyId' | 'accessKeySecret'> & { id?: string };
 export type TencentImage = { CloudProvider: 'tencent_cloud'; ImageSize: number | null; ImageId: string; ImageName: string; Status: string; OSType: string; Platform: string; Architecture: string; Progress: string;
@@ -77,7 +78,8 @@ export async function describeTencentSnapshot(context: TencentImageCredentials, 
   if (!rows.length) return null;
   const row = rows[0];
   if (!Array.isArray(row.Images) || !Number.isSafeInteger(row.ShareReference) || Number(row.ShareReference) < 0 || typeof row.CopyFromRemote !== 'boolean'
-    || typeof row.SnapshotType !== 'string' || typeof row.SnapshotState !== 'string' || !text(row.CreateTime)) throw new BadGatewayException('腾讯云快照来源或共享信息不完整。');
+    || typeof row.SnapshotType !== 'string' || typeof row.SnapshotState !== 'string' || !text(row.CreateTime))
+    throw new PackedImageVerificationError('snapshot_response_shape', { snapshotFieldShapes: packedSnapshotFieldShapes(row) }, 'snapshot_verify');
   const imageIds = row.Images.map(value => identity(obj(value).ImageId, 'img'));
   return { SnapshotId: snapshotId, SourceDiskId: text(row.DiskId), RegionId: context.regionId, CreationTime: text(row.CreateTime),
     SourceSnapshotId: row.CopyFromRemote ? 'copied' : undefined, Usage: imageIds.length ? 'image' : '', SnapshotType: row.SnapshotType,
@@ -89,9 +91,20 @@ export async function tagTencentImageResources(context: TencentImageCredentials,
   for (let offset = 0; offset < ids.length; offset += 10) {
     for (let tagOffset = 0; tagOffset < entries.length; tagOffset += 10) {
     const result = obj(await tencentImageRequest(context, 'tag', 'TagResources', {
-      ResourceList: ids.slice(offset, offset + 10).map(id => `qcs::${type === 'image' ? 'cvm' : 'cbs'}:${context.regionId}:uin/${context.accountUid}:${type}/${identity(id, type === 'image' ? 'img' : 'snap')}`),
+      // CBS RPC endpoint and CAM resource namespace differ; snapshots use the documented cvm namespace.
+      // https://cloud.tencent.com/document/product/598/69910
+      ResourceList: ids.slice(offset, offset + 10).map(id => `qcs::cvm:${context.regionId}:uin/${context.accountUid}:${type}/${identity(id, type === 'image' ? 'img' : 'snap')}`),
       Tags: entries.slice(tagOffset, tagOffset + 10).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) }));
-    if (!Array.isArray(result.FailedResources) || result.FailedResources.length) throw new BadGatewayException('腾讯云资源标签操作存在失败或不完整结果；费用身份已保留。');
+    if (!Array.isArray(result.FailedResources) || result.FailedResources.length) {
+      const codes = Array.isArray(result.FailedResources) ? result.FailedResources.slice(0, 10).map(value => {
+        const code = value && typeof value === 'object' && !Array.isArray(value) ? (value as { Code?: unknown }).Code : null;
+        return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(code) && ![context.accessKeyId, context.accessKeySecret].some(secret => code.includes(secret)) ? code : 'UNKNOWN';
+      }) : [];
+      const rawReceipt = result.RequestId;
+      const receipt = typeof rawReceipt === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(rawReceipt)
+        && ![context.accessKeyId, context.accessKeySecret].some(secret => rawReceipt.includes(secret)) ? rawReceipt : undefined;
+      throw new PackedImageVerificationError('snapshot_tag_response', { failedResourceCodes: codes, cloudRequestId: receipt }, 'snapshot_tagging');
+    }
     }
   }
 }

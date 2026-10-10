@@ -1,5 +1,5 @@
 import type { PackedImageArtifactRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
-import { encodePackedImageDiagnostic, packedImageArtifactSummaries, packedImageDiagnostic, PackedImageCloudError } from '../src/admin/packed-image-diagnostic';
+import { encodePackedImageDiagnostic, packedImageArtifactSummaries, packedImageDiagnostic, PackedImageCloudError, PackedImageVerificationError } from '../src/admin/packed-image-diagnostic';
 import { TencentCloudRequestError } from '../src/admin/tencent-cloud-client';
 
 const instance = { id: 'source', ownerUserId: 'owner', createdBy: 'owner', cloudProvider: 'tencent_cloud', cloudWorkspaceId: 'space',
@@ -33,5 +33,12 @@ describe('safe packed image diagnostics', () => {
       .toMatchObject({ cloudParameterName: 'TagSpecification', cloudErrorHint: 'invalid_type', cloudRequestId: 'create-request' });
     const malformed = 'packed-image-diagnostic:' + JSON.stringify({ phase: 'create_image', cloudErrorCode: 'InvalidParameterValue', cloudParameterName: 'private-value', cloudErrorHint: 'private-value', vendorMessage: 'private-value' });
     expect(JSON.stringify(packedImageArtifactSummaries(instance, [{ ...artifact, errorMessage: malformed }]))).not.toContain('private-value');
+  });
+  it('exposes only allowlisted capture checks and field shapes through the existing artifact summary',()=>{
+    const diagnostic=packedImageDiagnostic(new PackedImageVerificationError('snapshot_response_shape',{snapshotFieldShapes:{CopyFromRemote:'null',ShareReference:'string',privateKey:'synthetic-secret'},
+      snapshotChecks:{privateSnapshot:false,privateKey:true}},'snapshot_verify'),'describe_image');
+    const summary=packedImageArtifactSummaries(instance,[{...artifact,errorMessage:encodePackedImageDiagnostic(diagnostic)}]);
+    expect(summary[0]).toMatchObject({phase:'snapshot_verify',verificationCheck:'snapshot_response_shape',snapshotFieldShapes:{CopyFromRemote:'null',ShareReference:'string'},snapshotChecks:{privateSnapshot:false}});
+    expect(JSON.stringify(summary)).not.toContain('privateKey');expect(JSON.stringify(summary)).not.toContain('synthetic-secret');
   });
 });

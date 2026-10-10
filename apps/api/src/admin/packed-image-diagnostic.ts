@@ -3,9 +3,23 @@ import { tencentInventoryMatches } from './billing-platform-scope';
 import { readTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 import { CREATE_IMAGE_PARAMETERS, CREATE_IMAGE_HINTS, TencentCloudRequestError, type TencentCreateImageParameter, type TencentCreateImageHint } from './tencent-cloud-client';
 
-const PHASES = ['unknown', 'source_disk_inventory', 'create_image', 'create_response', 'persist_image', 'persist_asset'] as const;
+const PHASES = ['unknown', 'source_disk_inventory', 'create_image', 'create_response', 'persist_image', 'persist_asset', 'account_context', 'describe_image', 'verify_image', 'snapshot_verify', 'snapshot_ledger', 'snapshot_tagging', 'persist_catalog', 'cleanup'] as const;
 export type PackedImagePhase = typeof PHASES[number];
+const CHECKS = ['snapshot_response_shape', 'snapshot_source', 'snapshot_coverage', 'snapshot_image_binding', 'snapshot_namespace_tags', 'snapshot_owner_tags', 'snapshot_tag_response'] as const;
+type PackedImageCheck = typeof CHECKS[number];
+const SHAPE_FIELDS = ['Images', 'ShareReference', 'CopyFromRemote', 'SnapshotType', 'SnapshotState', 'CreateTime', 'DiskId'] as const;
+const SHAPES = ['missing', 'null', 'array', 'object', 'string', 'number', 'boolean', 'other'] as const;
+const PROOF_CHECKS = ['validBaseline', 'newSnapshot', 'regionMatches', 'sourceDiskMatches', 'privateSnapshot', 'notCopied', 'notShared'] as const;
 const PREFIX = 'packed-image-diagnostic:';
+export class PackedImageVerificationError extends Error {
+  constructor(readonly verificationCheck: PackedImageCheck, readonly details?: { snapshotFieldShapes?: Record<string, string>; snapshotChecks?: Record<string, boolean>; failedResourceCodes?: string[]; cloudRequestId?: string }, readonly phase?: PackedImagePhase) {
+    super(`镜像验证不完整或标签失败（check=${verificationCheck}）。`);
+  }
+}
+export function packedSnapshotFieldShapes(row: Record<string, unknown>) {
+  return Object.fromEntries(SHAPE_FIELDS.map(key => [key, row[key] === undefined ? 'missing' : row[key] === null ? 'null' : Array.isArray(row[key]) ? 'array'
+    : ['object', 'string', 'number', 'boolean'].includes(typeof row[key]) ? typeof row[key] : 'other']));
+}
 export class PackedImageCloudError extends Error {
   constructor(readonly phase: PackedImagePhase, readonly cloudErrorCode: string,
     readonly evidence?: { cloudParameterName?: TencentCreateImageParameter; cloudErrorHint?: TencentCreateImageHint; cloudRequestId?: string }) { super(`镜像云操作未完成（phase=${phase}; code=${cloudErrorCode}）。`); }
@@ -19,8 +33,21 @@ export function safePackedCloudCode(error: unknown, secrets: string[] = []) {
 export function packedImageDiagnostic(error: unknown, phase: PackedImagePhase, secrets: string[] = []) {
   const evidence = error instanceof PackedImageCloudError ? error.evidence : error instanceof TencentCloudRequestError
     ? { cloudParameterName: error.parameterName, cloudErrorHint: error.hint, cloudRequestId: error.requestId } : undefined;
-  return { phase: error instanceof PackedImageCloudError ? error.phase : phase,
-    cloudErrorCode: error instanceof PackedImageCloudError ? safeCode(error.cloudErrorCode, secrets) : safePackedCloudCode(error, secrets), ...safeEvidence(evidence, secrets) };
+  return { phase: error instanceof PackedImageCloudError ? error.phase : error instanceof PackedImageVerificationError && error.phase ? error.phase : phase,
+    cloudErrorCode: error instanceof PackedImageCloudError ? safeCode(error.cloudErrorCode, secrets) : safePackedCloudCode(error, secrets), ...safeEvidence(evidence, secrets),
+    ...safeVerification(error instanceof PackedImageVerificationError ? { verificationCheck: error.verificationCheck, ...error.details } : undefined, secrets) };
+}
+function safeVerification(value: unknown, secrets: string[] = []) {
+  if (!value || typeof value !== 'object') return {};
+  const v = value as Record<string, unknown>;
+  const shapes = v.snapshotFieldShapes && typeof v.snapshotFieldShapes === 'object' ? v.snapshotFieldShapes as Record<string, unknown> : {};
+  const checks = v.snapshotChecks && typeof v.snapshotChecks === 'object' ? v.snapshotChecks as Record<string, unknown> : {};
+  const snapshotFieldShapes = Object.fromEntries(SHAPE_FIELDS.filter(key => SHAPES.includes(shapes[key] as typeof SHAPES[number])).map(key => [key, shapes[key]]));
+  const snapshotChecks = Object.fromEntries(PROOF_CHECKS.filter(key => typeof checks[key] === 'boolean').map(key => [key, checks[key]]));
+  const failedResourceCodes = Array.isArray(v.failedResourceCodes) ? [...new Set(v.failedResourceCodes.slice(0, 10).map(code => safeCode(code, secrets)))] : [];
+  return { ...(CHECKS.includes(v.verificationCheck as PackedImageCheck) ? { verificationCheck: v.verificationCheck as PackedImageCheck } : {}),
+    ...(Object.keys(snapshotFieldShapes).length ? { snapshotFieldShapes } : {}), ...(Object.keys(snapshotChecks).length ? { snapshotChecks } : {}),
+    ...(failedResourceCodes.length ? { failedResourceCodes } : {}), ...safeEvidence({ cloudRequestId: v.cloudRequestId }, secrets) };
 }
 function safeEvidence(value: unknown, secrets: string[] = []) {
   if (!value || typeof value !== 'object') return {};
@@ -36,7 +63,7 @@ export function readPackedImageDiagnostic(message: string | null) {
     try {
       const value = JSON.parse(message.slice(PREFIX.length));
       if (value && typeof value === 'object' && PHASES.includes(value.phase) && typeof value.cloudErrorCode === 'string' && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(value.cloudErrorCode))
-        return { phase: value.phase as PackedImagePhase, cloudErrorCode: value.cloudErrorCode, ...safeEvidence(value) };
+        return { phase: value.phase as PackedImagePhase, cloudErrorCode: value.cloudErrorCode, ...safeEvidence(value), ...safeVerification(value) };
     } catch { /* Legacy or malformed messages never enter the read-only summary. */ }
   }
   return { phase: 'unknown' as const, cloudErrorCode: 'UNKNOWN' };

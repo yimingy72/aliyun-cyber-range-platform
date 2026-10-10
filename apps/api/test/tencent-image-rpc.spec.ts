@@ -26,7 +26,7 @@ describe('Tencent image RPC normalization and complete recovery', () => {
     rpc.mockResolvedValue({ RequestId: 'fixture', FailedResources: [] });
     await tagTencentImageResources(context, 'snapshot', Array.from({ length: 11 }, (_, n) => `snap-owned${n}`), { CreatedBy: 'cyber-range-platform' });
     expect(rpc.mock.calls.map(([call]) => call.parameters.ResourceList.length)).toEqual([10, 1]);
-    expect(rpc.mock.calls[0][0].parameters.ResourceList[0]).toBe('qcs::cbs:ap-guangzhou:uin/123456:snapshot/snap-owned0');
+    expect(rpc.mock.calls[0][0].parameters.ResourceList[0]).toBe('qcs::cvm:ap-guangzhou:uin/123456:snapshot/snap-owned0');
     rpc.mockResolvedValue({ RequestId: 'fixture', FailedResources: [{ Resource: 'snap-owned' }] });
     await expect(tagTencentImageResources(context, 'snapshot', ['snap-owned'], { CreatedBy: 'cyber-range-platform' })).rejects.toThrow('失败');
   });
@@ -48,5 +48,16 @@ describe('Tencent image RPC normalization and complete recovery', () => {
     rpc.mockResolvedValue(response('SnapshotSet', [{ SnapshotId: 'snap-owned' }]));
     await expect(describeTencentSnapshot(context, 'snap-owned')).rejects.toThrow('不完整');
   });
+  it('reports bounded snapshot field shapes without copying vendor values or guessing null defaults', async () => {
+    rpc.mockResolvedValue(response('SnapshotSet', [snapshot({ CopyFromRemote: null, ShareReference: 'private-value' })]));
+    await expect(describeTencentSnapshot(context, 'snap-owned')).rejects.toMatchObject({ phase:'snapshot_verify',verificationCheck:'snapshot_response_shape',
+      details:{snapshotFieldShapes:{CopyFromRemote:'null',ShareReference:'string',SnapshotType:'string'}} });
+  });
+  it('retains only FailedResource.Code and a scrubbed request receipt, never Message/Resource', async () => {
+    rpc.mockResolvedValue({RequestId:'tag-request',FailedResources:[{Resource:'private-resource',Code:'InvalidParameterValue.ResourceDescriptionError',Message:'private-message'},
+      {Code:context.accessKeySecret,Message:'private-message'}]});
+    try { await tagTencentImageResources(context,'snapshot',['snap-owned'],{CreatedBy:'cyber-range-platform'});throw new Error('unexpected success'); }
+    catch(error){expect(error).toMatchObject({phase:'snapshot_tagging',verificationCheck:'snapshot_tag_response',details:{failedResourceCodes:['InvalidParameterValue.ResourceDescriptionError','UNKNOWN'],cloudRequestId:'tag-request'}});
+      expect(JSON.stringify(error)).not.toContain('private-message');expect(JSON.stringify(error)).not.toContain('private-resource');expect(JSON.stringify(error)).not.toContain(context.accessKeySecret);}
+  });
 });
-
