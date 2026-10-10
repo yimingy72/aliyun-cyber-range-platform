@@ -2,6 +2,7 @@ import { BillingService } from '../src/admin/billing.service';
 import { loadPlatformBillingProof } from '../src/admin/billing-platform-scope';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { ownedCosFixture } from './support/owned-cos-proof-fixture';
+import { tencentPackBaselineFixture } from './support/tencent-pack-baseline-fixture';
 import { createTencentBillingProof, signedTencentBillingResponse, tencentBill, tencentBillingSync, TENCENT_BILLING_WINDOW as WINDOW } from './support/create-tencent-billing-fixture';
 const start = new Date('2026-09-01T00:00:02Z');
 afterEach(() => jest.restoreAllMocks());
@@ -59,8 +60,9 @@ describe('Tencent platform storage creation proof', () => {
   });
   it('proves a packed snapshot only from the same Tencent source instance and physical disk inventory', async () => {
     const repository = createMemoryAdminRepository(); const source = await createTencentBillingProof(repository, { ownerUserId: 'owner-1' });
-    const artifact = await repository.createPackedImageArtifact({ cloudProvider: 'tencent_cloud', cloudAccountContextId: 'fixture-context', cloudAccountUid: '100001', regionId: 'ap-shanghai',
-      ownerUserId: 'owner-1', sourceRangeInstanceId: source.instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-owned', sourceDiskIds: ['disk-system'] });
+    const input = { id: 'packed-storage-artifact', cloudProvider: 'tencent_cloud' as const, cloudAccountContextId: 'fixture-context', cloudAccountUid: '100001', regionId: 'ap-shanghai',
+      ownerUserId: 'owner-1', sourceRangeInstanceId: source.instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-owned', sourceDiskIds: ['disk-system'] };
+    const artifact = await repository.createPackedImageArtifact({ ...input, sourceSnapshotBaseline: tencentPackBaselineFixture(input) });
     await repository.updatePackedImageArtifact(artifact.id, { imageId: 'img-packed', backingSnapshotIds: ['snap-packed'] });
     const ledger = await repository.createBillingLedgerResource({ cloudProvider: 'tencent_cloud', cloudAccountUid: '100001', regionId: 'ap-shanghai', cloudResourceId: 'snap-packed', cloudResourceType: 'snapshot', billingScope: 'user', ownerUserId: 'owner-1', rangeInstanceId: source.instance.id, billingStartAt: start, tagsSnapshot: { PlatformPackedImageArtifactId: artifact.id } });
     expect((await loadPlatformBillingProof(repository)).createdLedgerIds.has(ledger.id)).toBe(true);

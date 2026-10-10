@@ -2092,7 +2092,7 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async createPackedImageArtifact(input: CreatePackedImageArtifactInput): Promise<PackedImageArtifactRecord> {
-    return this.prisma.packedImageArtifact.create({ data: input }) as unknown as Promise<PackedImageArtifactRecord>;
+    return this.prisma.packedImageArtifact.create({ data: { ...input, sourceSnapshotBaseline: input.sourceSnapshotBaseline as Prisma.InputJsonValue | undefined } }) as unknown as Promise<PackedImageArtifactRecord>;
   }
 
   async getPackedImageArtifact(id: string): Promise<PackedImageArtifactRecord | null> {

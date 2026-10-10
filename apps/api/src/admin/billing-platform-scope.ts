@@ -2,6 +2,7 @@ import type { AdminRepository, BillingImageImportResourceRecord, BillingManagedC
 import { classifyBillLine } from './billing-classifier';
 import { ownedCosBucketProof } from './tencent-cos-proof';
 import { billingDayText } from './billing-window';
+import { readTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 
 const REGION_ID = /^(cn|ap|eu|us|na|me|af|sa)-[a-z0-9-]+$/;
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
@@ -94,7 +95,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
           const hasResource = (id: string, type: BillingLedgerResourceRecord['cloudResourceType']) => Boolean(source && sourceLedger
             && tencentInventoryMatches({ ...sourceLedger, cloudResourceId: id, cloudResourceType: type }, source,
               inventoryLogs.get(sourceLedger.sourceProvisionJobId ?? '') ?? [], artifact.cloudAccountContextId));
-          return artifact.cloudProvider === 'tencent_cloud' && artifact.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound')
+          return artifact.cloudProvider === 'tencent_cloud' && readTencentPackBaseline(artifact) && artifact.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound')
             && artifact.cloudAccountUid === ledger.cloudAccountUid && artifact.regionId === ledger.regionId && ledger.billingScope === 'user'
             && artifact.ownerUserId === ledger.ownerUserId && artifact.sourceRangeInstanceId === ledger.rangeInstanceId
             && ledger.tagsSnapshot.PlatformPackedImageArtifactId === artifact.id && source?.cloudProvider === 'tencent_cloud'

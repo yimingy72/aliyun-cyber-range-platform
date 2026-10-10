@@ -1577,7 +1577,7 @@ export function createMemoryAdminRepository(): AdminRepository {
     async markSingleInstanceNetworkDestroying(id) {const profile=singleInstanceNetworkProfiles.find(value=>value.id===id);if(profile)profile.status='destroying';},
     async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
     async createPackedImageArtifact(input) {
-      const record: PackedImageArtifactRecord = { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', ...input, id: nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
+      const record: PackedImageArtifactRecord = { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', sourceSnapshotBaseline: null, ...input, id: input.id ?? nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
       packedImageArtifacts.push(record); return clone(record);
     },
     async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },
@@ -1600,6 +1600,8 @@ export function createMemoryAdminRepository(): AdminRepository {
     async updatePackedImageArtifact(id, input) {
       const record = packedImageArtifacts.find(item => item.id === id);
       if (!record) throw new Error('Packed image artifact not found');
+      if ('sourceSnapshotBaseline' in input || record.sourceSnapshotBaseline && ['cloudProvider','cloudWorkspaceId','cloudAccountContextId','cloudAccountUid','regionId','ownerUserId','sourceRangeInstanceId','sourceHostKey','sourceInstanceId','sourceDiskIds']
+        .some(key => key in input && JSON.stringify((input as any)[key]) !== JSON.stringify((record as any)[key]))) throw new Error('Packed snapshot baseline and creation source are immutable');
       Object.assign(record, clone(input), { updatedAt: now() }); return clone(record);
     },
     async getSingleInstanceNetworkProfile(input) {

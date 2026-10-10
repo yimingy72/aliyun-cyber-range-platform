@@ -417,6 +417,7 @@ model PackedImageArtifact {
   sourceHostKey            String
   sourceInstanceId         String
   sourceDiskIds            Json
+  sourceSnapshotBaseline   Json?
   imageId                  String?
   sourceSnapshotId         String?
   platformImageAssetId     String?

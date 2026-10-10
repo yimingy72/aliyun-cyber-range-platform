@@ -3,6 +3,7 @@ import { loadPlatformBillingProof } from '../src/admin/billing-platform-scope';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../src/admin/billing-ledger-sync';
 import { BillingService } from '../src/admin/billing.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { tencentPackBaselineFixture } from './support/tencent-pack-baseline-fixture';
 import { createTencentBillingProof, signedTencentBillingResponse, tencentBill, tencentBillingSync, TENCENT_BILLING_WINDOW as WINDOW } from './support/create-tencent-billing-fixture';
 
 async function fixture(single = false) {
@@ -61,8 +62,9 @@ describe('Tencent durable creation inventory and delayed bill attribution', () =
 
   it('keeps packed image and backing snapshot provenance after its original source instance was cleaned', async () => {
     const { repository, instance, ledgers } = await fixture(true);
-    const artifact = await repository.createPackedImageArtifact({ cloudProvider: 'tencent_cloud', cloudAccountContextId: 'fixture-context', cloudAccountUid: '100001', regionId: 'ap-shanghai',
-      ownerUserId: 'owner-1', sourceRangeInstanceId: instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-owned', sourceDiskIds: ['disk-system'] });
+    const input = { id: 'packed-history-artifact', cloudProvider: 'tencent_cloud' as const, cloudAccountContextId: 'fixture-context', cloudAccountUid: '100001', regionId: 'ap-shanghai',
+      ownerUserId: 'owner-1', sourceRangeInstanceId: instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-owned', sourceDiskIds: ['disk-system'] };
+    const artifact = await repository.createPackedImageArtifact({ ...input, sourceSnapshotBaseline: tencentPackBaselineFixture(input) });
     await repository.updatePackedImageArtifact(artifact.id, { imageId: 'img-packed', backingSnapshotIds: ['snap-packed'] });
     const snapshot = await repository.createBillingLedgerResource({ cloudProvider: 'tencent_cloud', cloudAccountUid: '100001', regionId: 'ap-shanghai', cloudResourceId: 'snap-packed', cloudResourceType: 'snapshot',
       billingScope: 'user', ownerUserId: 'owner-1', rangeInstanceId: instance.id, billingStartAt: new Date('2026-09-01'), tagsSnapshot: { PlatformPackedImageArtifactId: artifact.id } });

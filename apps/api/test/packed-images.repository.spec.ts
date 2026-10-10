@@ -1,5 +1,6 @@
 import { PrismaService } from '../src/database/prisma.service';
 import { PrismaAdminRepository } from '../src/database/prisma-admin.repository';
+import { tencentPackBaselineFixture } from './support/tencent-pack-baseline-fixture';
 import { ImageImportsService } from '../src/admin/image-imports.service';
 import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 const url = process.env.PACKED_IMAGE_TEST_DATABASE_URL;
@@ -20,6 +21,20 @@ describeDb('Packed-image repository in isolated PostgreSQL', () => {
     await prisma.platformImageAsset.deleteMany(); await prisma.cloudImageSnapshot.deleteMany(); await prisma.packedImageArtifact.deleteMany(); await prisma.platformUser.deleteMany();
   });
   const newArtifact = () => repository.createPackedImageArtifact({ cloudAccountContextId: 'ctx', cloudAccountUid: '100001', regionId: 'cn-hangzhou', ownerUserId: 'owner', sourceRangeInstanceId: 'range', sourceHostKey: 'ecs', sourceInstanceId: 'i-owned', sourceDiskIds: ['d-owned'] });
+  it('keeps new baseline JSON and source identity immutable while leaving old NULL artifacts unupgraded', async () => {
+    const source = { id: 'baseline-pg', cloudProvider: 'tencent_cloud' as const, cloudWorkspaceId: 'legacy-unbound', cloudAccountContextId: 'ctx', cloudAccountUid: '100001', regionId: 'ap-shanghai',
+      ownerUserId: 'owner', sourceRangeInstanceId: 'range', sourceHostKey: 'host', sourceInstanceId: 'ins-source', sourceDiskIds: ['disk-source'] };
+    const baseline = tencentPackBaselineFixture(source);
+    const created = await repository.createPackedImageArtifact({ ...source, sourceSnapshotBaseline: baseline });
+    expect(created.sourceSnapshotBaseline).toEqual(baseline);
+    await repository.updatePackedImageArtifact(created.id, { status: 'creating', imageId: 'img-owned' });
+    await expect(prisma.packedImageArtifact.update({ where: { id: created.id }, data: { sourceSnapshotBaseline: { ...baseline, preCreateSnapshotIds: ['snap-replaced'] } } })).rejects.toThrow();
+    await expect(prisma.packedImageArtifact.update({ where: { id: created.id }, data: { ownerUserId: 'foreign' } })).rejects.toThrow();
+    expect((await repository.getPackedImageArtifact(created.id))?.sourceSnapshotBaseline).toEqual(baseline);
+    const legacy = await newArtifact(); expect(legacy.sourceSnapshotBaseline).toBeNull();
+    await expect(prisma.packedImageArtifact.update({ where: { id: legacy.id }, data: { sourceSnapshotBaseline: baseline } })).rejects.toThrow();
+    expect((await repository.getPackedImageArtifact(legacy.id))?.sourceSnapshotBaseline).toBeNull();
+  });
   it('serializes claim acquisition, fences stale writers, and preserves progress across a new holder', async () => {
     const artifact = await newArtifact();
     const results = await Promise.all(['A', 'B'].map(token => repository.claimPackedImageArtifact(artifact.id, token, new Date(Date.now() + 60_000))));

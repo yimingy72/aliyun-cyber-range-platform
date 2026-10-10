@@ -6,7 +6,7 @@ const instance = { id: 'source', ownerUserId: 'owner', createdBy: 'owner', cloud
   singleInstanceConfig: { cloudAccountContextId: 'context', cloudAccountUid: '123456', regionId: 'ap-shanghai', hostKey: 'host' } } as RangeInstanceRecord;
 const artifact = { id: 'artifact', cloudProvider: 'tencent_cloud', cloudWorkspaceId: 'space', ownerUserId: 'owner', cloudAccountContextId: 'context', cloudAccountUid: '123456', regionId: 'ap-shanghai',
   sourceRangeInstanceId: 'source', sourceInstanceId: 'ins-source', sourceHostKey: 'host', sourceDiskIds: ['disk-source'], imageId: null, status: 'creating', backingSnapshotIds: [],
-  sourceSnapshotId: null, platformImageAssetId: null, deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null,
+  sourceSnapshotBaseline: null, sourceSnapshotId: null, platformImageAssetId: null, deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null,
   errorMessage: 'legacy raw private message synthetic-secret', createdAt: new Date(), updatedAt: new Date(), lastPolledAt: null } as PackedImageArtifactRecord;
 
 describe('safe packed image diagnostics', () => {
