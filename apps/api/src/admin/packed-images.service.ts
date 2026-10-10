@@ -11,7 +11,7 @@ import { describeTencentImages, describeTencentSnapshot, tagTencentImageResource
 import { describeTencentResourceInventory, describeTencentInstances, assertTencentOwnedInstance, type TencentResourceEvidence } from './tencent-cloud-resources';
 import { randomUUID } from 'node:crypto';
 import { TencentCloudRequestError } from './tencent-cloud-client';
-import { PackedImageCloudError, safePackedCloudCode } from './packed-image-diagnostic';
+import { PackedImageCloudError, safePackedCloudCode, packedImageDiagnostic, readPackedImageDiagnostic } from './packed-image-diagnostic';
 import { TENCENT_PACK_BASELINE_KIND, readTencentPackBaseline, validTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 
 type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; ImageName?: string; Status: string; Progress?: string; Tags?: unknown; DiskDeviceMappings?: { DiskDeviceMapping?: Array<{ SnapshotId?: string }> } };
@@ -75,6 +75,8 @@ export class PackedImagesService {
   async submitTencentImage(artifact: PackedImageArtifactRecord & { submissionToken: string }, context: CloudAccountContextCredentials, input: { name: string; description?: string | null }) {
     this.assertContext(artifact, context);
     if (context.provider !== 'tencent_cloud') throw new ConflictException('腾讯云镜像提交需要已绑定腾讯云账号。');
+    if (!input.name || [...input.name].length > 60 || input.description && [...input.description].length > 256)
+      throw new ConflictException('腾讯云镜像名称须为 1–60 字符，描述最多 256 字符；未提交创建。');
     if (!await this.repository.renewPackedImageArtifactClaim(artifact.id, artifact.submissionToken, new Date(Date.now() + 300_000))) throw new ConflictException('打包提交租约失效。');
     const fresh = await this.repository.getPackedImageArtifact(artifact.id);
     if (!fresh || fresh.status !== 'pending' || fresh.imageId) throw new ConflictException('原打包已提交或结果未知，禁止再次创建。');
@@ -90,11 +92,11 @@ export class PackedImagesService {
       // https://cloud.tencent.com/document/api/213/16726
       return await tencentImageRequest<{ ImageId?: string }>(context, 'cvm', 'CreateImage', { InstanceId: artifact.sourceInstanceId,
         ImageName: input.name, ...(input.description ? { ImageDescription: input.description } : {}), ForcePoweroff: 'false',
-        DataDiskIds: disks.filter(disk => disk.diskUsage === 'DATA_DISK').map(disk => disk.id),
+        ...(disks.some(disk => disk.diskUsage === 'DATA_DISK') ? { DataDiskIds: disks.filter(disk => disk.diskUsage === 'DATA_DISK').map(disk => disk.id) } : {}),
         TagSpecification: [{ ResourceType: 'image', Tags: Object.entries({ ...this.tags(artifact), CloudProvider: 'tencent_cloud',
           CloudAccountUid: artifact.cloudAccountUid, CloudAccountContextId: artifact.cloudAccountContextId }).map(([Key, Value]) => ({ Key, Value })) }] });
     } catch (error) {
-      if (error instanceof TencentCloudRequestError) throw new PackedImageCloudError(phase, safePackedCloudCode(error, [context.accessKeyId, context.accessKeySecret]));
+      if (error instanceof TencentCloudRequestError) throw new PackedImageCloudError(phase, safePackedCloudCode(error, [context.accessKeyId, context.accessKeySecret]), packedImageDiagnostic(error, phase, [context.accessKeyId, context.accessKeySecret]));
       throw error;
     }
   }
@@ -182,6 +184,8 @@ export class PackedImagesService {
         return repo.updatePackedImageArtifact(id, { sourceSnapshotId: source.id, status, errorMessage: status === 'failed' ? `云镜像打包失败：${image.Status}` : null });
       });
     } catch {
+      // A later failed observation must not erase the original bounded submission rejection receipt.
+      if (artifact.cloudProvider === 'tencent_cloud' && !artifact.imageId && readPackedImageDiagnostic(artifact.errorMessage).phase === 'create_image') return artifact;
       return this.updateClaimed(id, token, { errorMessage: '打包或清理状态验证失败，清理材料已保留，可修复后重试。' });
     }
   }

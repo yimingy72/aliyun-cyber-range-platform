@@ -27,4 +27,11 @@ describe('safe packed image diagnostics', () => {
     expect(packedImageDiagnostic(new TencentCloudRequestError('synthetic_secret'), 'create_image', ['synthetic_secret']).cloudErrorCode).toBe('UNKNOWN');
     expect(packedImageDiagnostic(new PackedImageCloudError('create_image', 'synthetic_secret'), 'create_image', ['synthetic_secret']).cloudErrorCode).toBe('UNKNOWN');
   });
+  it('persists safe parameter categories and a request receipt while dropping arbitrary fields', () => {
+    const diagnostic = packedImageDiagnostic(new TencentCloudRequestError('InvalidParameterValue', 'create-request', { parameterName: 'TagSpecification', hint: 'invalid_type' }), 'create_image');
+    expect(packedImageArtifactSummaries(instance, [{ ...artifact, errorMessage: encodePackedImageDiagnostic(diagnostic) }])[0])
+      .toMatchObject({ cloudParameterName: 'TagSpecification', cloudErrorHint: 'invalid_type', cloudRequestId: 'create-request' });
+    const malformed = 'packed-image-diagnostic:' + JSON.stringify({ phase: 'create_image', cloudErrorCode: 'InvalidParameterValue', cloudParameterName: 'private-value', cloudErrorHint: 'private-value', vendorMessage: 'private-value' });
+    expect(JSON.stringify(packedImageArtifactSummaries(instance, [{ ...artifact, errorMessage: malformed }]))).not.toContain('private-value');
+  });
 });

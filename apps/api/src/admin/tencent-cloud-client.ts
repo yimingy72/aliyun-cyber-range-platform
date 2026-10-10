@@ -13,14 +13,39 @@ export type TencentCloudRequest = {
 export class TencentCloudRequestError extends Error {
   readonly service?: string;
   readonly action?: string;
-  constructor(readonly code: string, readonly requestId?: string, metadata?: { service?: string; action?: string }) {
+  readonly parameterName?: TencentCreateImageParameter;
+  readonly hint?: TencentCreateImageHint;
+  constructor(readonly code: string, readonly requestId?: string, metadata?: { service?: string; action?: string; parameterName?: TencentCreateImageParameter; hint?: TencentCreateImageHint }) {
     const service = metadata?.service && /^[a-z][a-z0-9]{1,31}$/.test(metadata.service) ? metadata.service : undefined;
     const action = metadata?.action && /^[A-Z][A-Za-z0-9]{1,99}$/.test(metadata.action) ? metadata.action : undefined;
     super(`腾讯云请求失败（${code}${service && action ? `；service=${service}；action=${action}` : ''}）。`);
     this.name = 'TencentCloudRequestError';
     this.service = service;
     this.action = action;
+    this.parameterName = CREATE_IMAGE_PARAMETERS.includes(metadata?.parameterName as TencentCreateImageParameter) ? metadata?.parameterName : undefined;
+    this.hint = CREATE_IMAGE_HINTS.includes(metadata?.hint as TencentCreateImageHint) ? metadata?.hint : undefined;
   }
+}
+
+export const CREATE_IMAGE_PARAMETERS = ['ImageName', 'ImageDescription', 'InstanceId', 'ForcePoweroff', 'DataDiskIds', 'SnapshotIds', 'DryRun', 'Sysprep', 'ImageFamily', 'TagSpecification'] as const;
+export type TencentCreateImageParameter = typeof CREATE_IMAGE_PARAMETERS[number];
+export const CREATE_IMAGE_HINTS = ['invalid_type', 'invalid_length', 'invalid_format', 'missing_parameter', 'duplicate', 'quota_limit', 'unsupported', 'invalid_value'] as const;
+export type TencentCreateImageHint = typeof CREATE_IMAGE_HINTS[number];
+
+// Emit fixed vocabulary only. The vendor message and any parameter values never leave this boundary.
+function createImageErrorHint(input: TencentCloudRequest, code: string, error: unknown) {
+  if (input.service !== 'cvm' || input.action !== 'CreateImage' || !/^(Invalid|Missing|UnknownParameter|LimitExceeded|UnsupportedOperation)/.test(code)) return {};
+  const message = error && typeof error === 'object' && !Array.isArray(error) ? (error as { Message?: unknown }).Message : null;
+  if (typeof message !== 'string' || message.length > 4096 || [input.accessKeyId, input.accessKeySecret].some(secret => message.includes(secret))) return {};
+  const parameters = CREATE_IMAGE_PARAMETERS.filter(name => new RegExp(`\\b${name}\\b`, 'i').test(message));
+  const hint: TencentCreateImageHint = /type|boolean|string|integer|类型/i.test(message) ? 'invalid_type'
+    : /length|too long|too large|字符|长度/i.test(message) ? 'invalid_length'
+    : /format|pattern|格式/i.test(message) ? 'invalid_format'
+    : /missing|required|缺少|必填/i.test(message) ? 'missing_parameter'
+    : /duplicate|重复/i.test(message) ? 'duplicate'
+    : /quota|limit exceeded|配额/i.test(message) ? 'quota_limit'
+    : /not support|unsupported|不支持/i.test(message) ? 'unsupported' : 'invalid_value';
+  return { ...(parameters.length === 1 ? { parameterName: parameters[0] } : {}), hint };
 }
 
 function sha256(value: string) {
@@ -90,7 +115,7 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
     const rawRequestId = (result as { RequestId?: unknown }).RequestId;
     const requestId = typeof rawRequestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(rawRequestId)
       && !rawRequestId.includes(input.accessKeyId) && !rawRequestId.includes(input.accessKeySecret) ? rawRequestId : undefined;
-    throw new TencentCloudRequestError(code, requestId, requestMetadata);
+    throw new TencentCloudRequestError(code, requestId, { ...requestMetadata, ...createImageErrorHint(input, code, error) });
   }
   if (!response.ok) throw new TencentCloudRequestError(`HTTP_${response.status}`, undefined, requestMetadata);
   if (!result || typeof result !== 'object' || Array.isArray(result)

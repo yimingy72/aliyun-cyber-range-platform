@@ -50,6 +50,26 @@ describe('Tencent Cloud TC3 request boundary', () => {
     await expect(requestTencentCloud({ ...input, action: 'RunInstances' })).rejects.toMatchObject({ code: 'NETWORK_OR_TIMEOUT', service: 'cvm', action: 'RunInstances' });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it('keeps only a fixed CreateImage parameter and hint, never the vendor message or values', async () => {
+    const fetch = jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ RequestId: 'create-request', Error: {
+      Code: 'InvalidParameterValue', Message: 'Parameter ImageName length invalid: private-business-name' } }));
+    try { await requestTencentCloud({ ...input, action: 'CreateImage' }); throw new Error('unexpected success'); }
+    catch (error) {
+      expect(error).toMatchObject({ code: 'InvalidParameterValue', requestId: 'create-request', parameterName: 'ImageName', hint: 'invalid_length' });
+      expect(JSON.stringify(error)).not.toContain('private-business-name');
+      expect(error).not.toHaveProperty('vendorMessage');
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each([input.accessKeySecret, 'unrecognizedPrivateParameter=private-value', null, 1])('does not retain arbitrary or credential-bearing diagnostic strings', async value => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ RequestId: 'create-request', Error: { Code: 'InvalidParameterValue', Message: value } }));
+    try { await requestTencentCloud({ ...input, action: 'CreateImage' }); throw new Error('unexpected success'); }
+    catch (error) { expect(error).not.toHaveProperty('parameterName', value); expect(JSON.stringify(error)).not.toContain('private-value'); }
+  });
+  it('does not classify arbitrary messages from other actions', async () => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ RequestId: 'request-1', Error: { Code: 'InvalidParameterValue', Message: 'ImageName type invalid' } }));
+    await expect(requestTencentCloud(input)).rejects.toMatchObject({ parameterName: undefined, hint: undefined });
+  });
   it('does not retain credential-bearing or malformed service/action diagnostics', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ RequestId: 'safe-request', Error: { Code: 'ResourceNotFound' } }));
     const error = await requestTencentCloud({ ...input, service: 'vpc', action: 'DescribeAddresses', accessKeyId: 'vpc', accessKeySecret: 'DescribeAddresses' }).catch(value => value);

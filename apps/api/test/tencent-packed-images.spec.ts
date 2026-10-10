@@ -3,18 +3,19 @@ import { TencentCloudRequestError } from '../src/admin/tencent-cloud-client';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { requestTencentCloud } from '../src/admin/tencent-cloud-client';
 import type { CloudAccountContextCredentials } from '../src/admin/cloud-account-contexts.service';
+import { encodePackedImageDiagnostic, packedImageDiagnostic } from '../src/admin/packed-image-diagnostic';
 jest.mock('../src/admin/tencent-cloud-client', () => ({ ...jest.requireActual('../src/admin/tencent-cloud-client'), requestTencentCloud: jest.fn() }));
 const rpc = requestTencentCloud as jest.Mock;
 const context: CloudAccountContextCredentials = { id: 'context-fixture', provider: 'tencent_cloud', accountUid: '123456', regionId: 'ap-guangzhou', zoneId: 'ap-guangzhou-3', accessKeyId: 'synthetic-id', accessKeySecret: 'synthetic-secret', imageImportBucket: '', status: 'ready' };
 const response = (set: string, rows: any[], total = rows.length) => ({ RequestId: 'fixture-request', TotalCount: total, [set]: rows });
 beforeEach(() => rpc.mockReset());
 describe('Tencent packing submission fences', () => {
-  async function fixture(priorSnapshotIds: string[] = []) {
+  async function fixture(priorSnapshotIds: string[] = [], systemOnly = false) {
     const repository = createMemoryAdminRepository();
     const range = await repository.createRangeInstance({ cloudProvider: 'tencent_cloud', name: 'fixture', instanceMode: 'range', ownerUserId: 'owner', createdBy: 'owner', status: 'running',
       resourceSummary: { mode: 'opentofu', executionContext: { cloudAccountContextId: context.id, cloudAccountUid: context.accountUid, regionId: context.regionId, zoneId: context.zoneId }, hostIds: { host: 'ins-owned' }, systemDiskIds: { host: 'disk-system' }, dataDiskIds: { host: 'disk-data' } } });
     const service = new PackedImagesService(repository, { getCredentials: async () => context } as never);
-    const disks = [{ DiskId: 'disk-system', DiskUsage: 'SYSTEM_DISK', InstanceId: 'ins-owned', Tags: [] }, { DiskId: 'disk-data', DiskUsage: 'DATA_DISK', InstanceId: 'ins-owned', Tags: [] }];
+    const disks = [{ DiskId: 'disk-system', DiskUsage: 'SYSTEM_DISK', InstanceId: 'ins-owned', Tags: [] }, ...systemOnly ? [] : [{ DiskId: 'disk-data', DiskUsage: 'DATA_DISK', InstanceId: 'ins-owned', Tags: [] }]];
     const cloudTags = { CreatedBy: 'cyber-range-platform', PlatformManaged: 'true', ExecutionBackend: 'opentofu', RangeInstanceId: range.id, PlatformScope: 'user', PlatformUserId: 'owner', PlatformHostKey: 'host', PlatformResourceType: 'ecs', CloudAccountUid: context.accountUid, CloudAccountContextId: context.id };
     rpc.mockImplementation(async call => call.action === 'DescribeInstances' ? response('InstanceSet', [{ InstanceId: 'ins-owned', InstanceState: 'RUNNING', Tags: Object.entries(cloudTags).map(([Key,Value]) => ({Key,Value})) }]) : call.action === 'DescribeDisks' ? response('DiskSet', disks)
       : call.action === 'DescribeSnapshots' ? response('SnapshotSet', priorSnapshotIds.map(SnapshotId => ({ SnapshotId, DiskId: call.parameters!.Filters[0].Values[0] })))
@@ -30,6 +31,19 @@ describe('Tencent packing submission fences', () => {
       TagSpecification: [{ ResourceType: 'image', Tags: expect.arrayContaining([{ Key: 'PlatformPackedImageArtifactId', Value: f.artifact.id }, { Key: 'CloudAccountContextId', Value: context.id }]) }] });
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('禁止再次');
   });
+  it('omits the optional data disk list for a system-only source, following the official instance example', async () => {
+    const f = await fixture([], true); await f.service.submitTencentImage(f.artifact, context, { name: 'TC-R2-PACK-20261010' });
+    const parameters = rpc.mock.calls.find(([call]) => call.action === 'CreateImage')![0].parameters;
+    expect(parameters).not.toHaveProperty('DataDiskIds'); expect(parameters).not.toHaveProperty('SnapshotIds');
+    expect(parameters.ForcePoweroff).toBe('false');
+    expect(parameters.TagSpecification[0].ResourceType).toBe('image');
+    expect(parameters.TagSpecification[0].Tags.length).toBeLessThanOrEqual(50);
+  });
+  it.each([{name:'n'.repeat(61)}, {name:'valid',description:'d'.repeat(257)}])('rejects overlong official metadata before cloud mutation', async input => {
+    const f = await fixture(); await expect(f.service.submitTencentImage(f.artifact, context, input)).rejects.toThrow('未提交');
+    expect(rpc.mock.calls.filter(([call])=>call.action==='CreateImage')).toHaveLength(0);
+    expect((await f.repository.getPackedImageArtifact(f.artifact.id))?.status).toBe('pending');
+  });
   it('keeps unknown submission evidence and never issues a second CreateImage', async () => {
     const f = await fixture(); rpc.mockImplementation(async call => call.action === 'DescribeDisks' ? response('DiskSet', [{ DiskId: 'disk-system', DiskUsage: 'SYSTEM_DISK', InstanceId: 'ins-owned', Tags: [] }, { DiskId: 'disk-data', DiskUsage: 'DATA_DISK', InstanceId: 'ins-owned', Tags: [] }]) : Promise.reject(new Error('unknown-submit')));
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('unknown-submit');
@@ -44,6 +58,15 @@ describe('Tencent packing submission fences', () => {
     expect((await f.repository.getPackedImageArtifact(f.artifact.id))?.status).toBe('creating');
     await expect(f.service.submitTencentImage(f.artifact, context, { name: 'fixture' })).rejects.toThrow('禁止再次');
     expect(rpc.mock.calls.filter(([call]) => call.action === 'CreateImage')).toHaveLength(1);
+  });
+  it('keeps the bounded original create receipt after a later worker observation fails', async () => {
+    const f=await fixture();const message=encodePackedImageDiagnostic(packedImageDiagnostic(new TencentCloudRequestError('InvalidParameterValue','original-request',{parameterName:'TagSpecification',hint:'invalid_value'}),'create_image'));
+    await f.service.updateClaimed(f.artifact.id,f.artifact.submissionToken,{status:'creating',errorMessage:message});
+    await f.service.endSubmission(f.artifact.id,f.artifact.submissionToken);
+    rpc.mockRejectedValue(new TencentCloudRequestError('NETWORK_OR_TIMEOUT'));
+    await f.service.refresh(f.artifact.id);
+    expect((await f.repository.getPackedImageArtifact(f.artifact.id))!.errorMessage).toBe(message);
+    expect(rpc.mock.calls.filter(([call])=>call.action==='CreateImage')).toHaveLength(0);
   });
   it('never adds a baseline to an existing legacy pending artifact or submits it', async () => {
     const f = await fixture();
