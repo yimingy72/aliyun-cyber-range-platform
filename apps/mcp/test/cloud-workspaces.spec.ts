@@ -8,13 +8,13 @@ const payload = { provider: 'alibaba_cloud', cloudWorkspaceId: 'space-a', region
 describe('cloud workspace MCP contract', () => {
   it('separates read, selection, and manager binding scopes and marks selection as an idempotent write', async () => {
     const registry = createToolRegistry({} as never);
-    const read = registry.listTools(['settings:read'], 'user');
+    const read = registry.listTools(['settings:read', 'settings:write'], 'user');
     expect(read.map(tool => tool.name)).toEqual(expect.arrayContaining(['cloud_workspace_list', 'cloud_workspace_switch']));
     expect(read.map(tool => tool.name)).not.toContain('cloud_account_bind');
     expect(read.find(tool => tool.name === 'cloud_workspace_switch')!.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true, destructiveHint: false });
     await expect(registry.callTool('cloud_account_bind', ['settings:write'], payload, 'user')).rejects.toThrow('Forbidden tool');
     await expect(registry.callTool('cloud_workspace_switch', ['images:read'], { cloudWorkspaceId: 'space-a' })).rejects.toThrow('Forbidden tool');
-    await expect(registry.callTool('cloud_workspace_switch', ['settings:read'], { cloudWorkspaceId: 'space-a', confirmationId: 'unneeded' })).rejects.toThrow('Invalid input');
+    await expect(registry.callTool('cloud_workspace_switch', ['settings:write'], { cloudWorkspaceId: 'space-a', confirmationId: 'unneeded' })).rejects.toThrow('Invalid input');
   });
   it('strips nested credentials from workspace and binding output and forwards the exact edit target', async () => {
     const secretContext = { ...account, accessKeyId: payload.accessKeyId, accessKeySecret: payload.accessKeySecret, credentials: { secret: 'nested-secret' } };
@@ -22,7 +22,7 @@ describe('cloud workspace MCP contract', () => {
     const select = vi.fn(async () => ({ ...space, contexts: [secretContext], apiToken: 'private-token' }));
     const registry = createToolRegistry({ listCloudWorkspaces: async () => [{ ...space, contexts: [secretContext] }], saveCloudAccountBinding: save, switchCloudWorkspace: select } as never);
     const listed = await registry.callTool('cloud_workspace_list', ['settings:read'], {});
-    const switched = await registry.callTool('cloud_workspace_switch', ['settings:read'], { cloudWorkspaceId: 'space-a' });
+    const switched = await registry.callTool('cloud_workspace_switch', ['settings:write'], { cloudWorkspaceId: 'space-a' });
     expect(select).toHaveBeenCalledWith('space-a');
     const bound = await registry.callTool('cloud_account_bind', ['settings:write'], { ...payload, idempotencyKey: 'same-key', confirmationId: 'confirmed' }, 'admin');
     expect(save).toHaveBeenCalledWith(payload, { idempotencyKey: 'same-key', confirmationId: 'confirmed' });

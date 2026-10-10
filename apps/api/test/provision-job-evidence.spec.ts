@@ -1,6 +1,7 @@
 import { ProvisionJobsController } from '../src/admin/provision-jobs.controller';
 import { ProvisionJobsService } from '../src/admin/provision-jobs.service';
 import { buildProvisionJobEvidence } from '../src/admin/provision-job-evidence';
+import { retiredResourceInventory } from '../src/provisioning/retired-resource-inventory';
 
 const now = new Date('2026-10-10T00:00:00Z');
 const job: any = { id: 'job-1', cloudWorkspaceId: 'workspace-1', rangeInstanceId: 'range-1', jobType: 'destroy', status: 'succeeded', createdAt: now, startedAt: now, finishedAt: now,
@@ -72,6 +73,37 @@ describe('controlled provisioning evidence', () => {
       'observed:module.range.alicloud_instance.hosts["win"]#2': 'i-old' }, securityGroupIds: { 'module.range.alicloud_security_group.default': 'sg-owned' } } };
     const evidence = buildProvisionJobEvidence(job, [step('range_resource_inventory', JSON.stringify(value))], [], []);
     expect(evidence.invalidInventoryCount).toBe(0); expect(evidence.inventories[0].resources).toEqual(value.resources);
+  });
+  it('recovers historical birth inventories containing native-keyed retired Tencent NAT relations through the job evidence service', async () => {
+    const snat = 'nat-owned#subnet-main', dnat = 'TCP://vpc-owned:nat-owned@203.0.113.10:3389';
+    const retired = retiredResourceInventory({ mode: 'opentofu', snatEntryIds: { main: snat }, dnatEntryIds: { rdp: dnat } }, { mode: 'opentofu' })!;
+    expect(retired.snatEntryIds).toEqual({ [snat]: snat }); expect(retired.dnatEntryIds).toEqual({ [dnat]: dnat });
+    const value = { ...inventory, executionContext: { ...context, provider: 'tencent_cloud', regionId: 'ap-nanjing', zoneId: 'ap-nanjing-1' },
+      resources: { hostIds: { win: 'ins-current' }, systemDiskIds: { win: 'disk-current' }, retiredResources: retired, userData: 'private script' } };
+    const repo = repository();
+    repo.getProvisionJobById.mockResolvedValue({ ...job, jobType: 'update' });
+    repo.listProvisionJobStepLogs.mockResolvedValue([step('range_resource_inventory', JSON.stringify(value))]);
+    repo.listBillingLedgerResources.mockResolvedValue([{ ...ledger, cloudProvider: 'tencent_cloud', regionId: 'ap-nanjing', cloudResourceId: 'ins-current', sourceProvisionJobId: job.id }]);
+    const result = await new ProvisionJobsService(repo as any).getById('job-1', { id: 'alice', role: 'user' } as any, true);
+    expect(result).toMatchObject({ evidence: { invalidInventoryCount: 0, inventories: [{ resources: {
+      hostIds: { win: 'ins-current' }, systemDiskIds: { win: 'disk-current' }, retiredResources: { snatEntryIds: { [snat]: snat }, dnatEntryIds: { [dnat]: dnat } },
+    } }], billingResources: [{ cloudResourceId: 'ins-current', sourceProvisionJobId: job.id }] } });
+    expect(JSON.stringify(result)).not.toMatch(/private|secret|password|userData/);
+  });
+  it.each([
+    { provider: 'alibaba_cloud', field: 'dnatEntryIds', key: 'TCP://vpc-owned:nat-owned@203.0.113.10:3389' },
+    { provider: 'alibaba_cloud', field: 'snatEntryIds', key: 'nat-owned#subnet-main' },
+    ...['hostIds', 'systemDiskIds', 'dataDiskIds', 'eipAllocationIds', 'securityGroupIds'].map(field => ({ provider: 'tencent_cloud', field, key: 'TCP://vpc-owned:nat-owned@203.0.113.10:3389' })),
+    { provider: 'tencent_cloud', field: 'dnatEntryIds', key: 'TCP://vpc-owned:nat-owned@203.0.113.10:3389', id: 'TCP://vpc-owned:nat-owned@203.0.113.10:3390' },
+    { provider: 'tencent_cloud', field: 'dnatEntryIds', key: 'TCP://vpc-owned:nat-owned@999.0.0.1:3389' },
+    { provider: 'tencent_cloud', field: 'dnatEntryIds', key: 'TCP://vpc-owned:nat-owned@203.0.113.10:65536' },
+    { provider: 'tencent_cloud', field: 'dnatEntryIds', key: 'https://private.example/?token=private' },
+    { provider: 'tencent_cloud', field: 'dnatEntryIds', key: 'TCP://vpc-owned:nat-owned@203.0.113.10:3389?token=private' },
+    { provider: 'tencent_cloud', field: 'snatEntryIds', key: 'nat-owned#subnet-main\nprivate secret' },
+  ])('keeps native key exceptions bounded to the exact Tencent NAT relation field and value: %j', ({ provider, field, key, id }: { provider: string; field: string; key: string; id?: string }) => {
+    const value = { ...inventory, executionContext: { ...context, provider }, resources: { retiredResources: { [field]: { [key]: id ?? key } } } };
+    const evidence = buildProvisionJobEvidence(job, [step('range_resource_inventory', JSON.stringify(value))], [], []);
+    expect(evidence.invalidInventoryCount).toBe(1); expect(evidence.inventories).toEqual([]); expect(JSON.stringify(evidence)).not.toContain('private');
   });
   it.each([
     { provider: 'alibaba_cloud', field: 'dnatEntryIds', id: 'TCP://vpc-owned:nat-owned@203.0.113.10:3389' },

@@ -33,7 +33,9 @@ function fixture() {
       case 'DescribeInstances': return list('InstanceSet', [{ InstanceId: 'ins-owned', InstanceState: 'RUNNING', InstanceType: 'S5.MEDIUM4', Placement: { Zone: account.defaultZoneId }, PrivateIpAddresses: ['10.0.1.10'], SecurityGroupIds: ['sg-entry'], VirtualPrivateCloud: { VpcId: 'vpc-owned', SubnetId: 'subnet-entry' }, Tags: tagSet({ PlatformHostKey: 'entry', PlatformResourceType: 'ecs' }) }]);
       case 'DescribeNetworkInterfaces': return list('NetworkInterfaceSet', enis);
       case 'DescribeSubnets': return list('SubnetSet', subnets);
-      case 'DescribeRouteTables': return list('RouteTableSet', [{ RouteTableId: 'rtb-owned', VpcId: 'vpc-owned', Main: false, AssociationSet: subnets.map(row => ({ SubnetId: row.SubnetId, RouteTableId: 'rtb-owned' })), TagSet: tagSet() }]);
+      case 'DescribeRouteTables': return list('RouteTableSet', [{ RouteTableId: 'rtb-owned', VpcId: 'vpc-owned', Main: false,
+        RouteSet: [{RouteTableId:'rtb-owned',RouteItemId:'rti-default',DestinationCidrBlock:'0.0.0.0/0',GatewayType:'NAT',GatewayId:'nat-owned',Enabled:true}],
+        AssociationSet: subnets.map(row => ({ SubnetId: row.SubnetId, RouteTableId: 'rtb-owned' })), TagSet: tagSet() }]);
       case 'DescribeRoutes': return list('RouteSet', [{ RouteTableId: 'rtb-owned', RouteItemId: 'rti-default', DestinationCidrBlock: '0.0.0.0/0', GatewayType: 'NAT', GatewayId: 'nat-owned', Enabled: true }]);
       case 'DescribeSecurityGroups': return list('SecurityGroupSet', ['sg-entry','sg-inner'].map(SecurityGroupId => ({ SecurityGroupId, TagSet: tagSet() })));
       case 'DescribeSecurityGroupPolicies': return { SecurityGroupPolicySet: { Version: '3', Ingress: [{ PolicyIndex: 0, Protocol: 'TCP', Port: '22', CidrBlock: '0.0.0.0/0', Action: 'ACCEPT' }], Egress: [{ PolicyIndex: 0, Protocol: 'ALL', Port: 'all', CidrBlock: '0.0.0.0/0', Action: 'DROP' }] } };
@@ -125,6 +127,7 @@ it('dispatches only Tencent read APIs and projects bound cloud facts with actual
   expect(result.forwardEntries[0]).toMatchObject({ forwardEntryId: range.resourceSummary.dnatEntryIds.ssh });
   expect(result.snatEntries[0]).toMatchObject({ snatEntryId: range.resourceSummary.snatEntryIds.inner, providerRuleId: 'snat-rule' });
   expect(result.routeTables[0].routeEntries[0].nextHops[0]).toMatchObject({ nextHopId: 'nat-owned', knownTarget: true });
+  expect(result.routeTables[0].routeEntries[0]).toMatchObject({routeEntryId:'rti-default'});
   expect(JSON.stringify(result)).not.toMatch(/synthetic|AccessKey|Password|must-not-return|not-returned/);
   expect(s.config.getExecutionAccountContext).toHaveBeenCalledWith({ cloudAccountContextId: 'context-a' });
   for (const call of s.calls) { expect(call.action).toMatch(/^(Describe|GetCallerIdentity)/); expect(call.url).toMatch(/\.tencentcloudapi\.com/); expect(call.headers['X-TC-Region']).toBe(account.defaultRegion); }
@@ -168,6 +171,52 @@ it('follows complete documented route pagination with exact frozen filters', asy
   const result = await s.service.get(range as never, user); expect(result.routeTables[0].routeEntries).toHaveLength(2);
   expect(s.calls.filter(call => call.action === 'DescribeRoutes').map(call => call.body)).toEqual([0,1].map(Offset => ({ Offset, Limit: 100, Filters: [{ Name: 'route-table-id', Values: ['rtb-owned'] }, { Name: 'vpc-id', Values: ['vpc-owned'] }] })));
 });
+it.each([0,14915,Number.MAX_SAFE_INTEGER,'rti-hj3he929'])('normalizes only valid numeric route IDs while preserving documented strings: %s', async id => {
+  const s=fixture(); s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].RouteItemId=id;return value;});
+  const result=await s.service.get(range as never,user);
+  expect(result.routeTables[0].routeEntries[0]).toMatchObject({routeEntryId:String(id)});
+  expect(s.calls.filter(call=>call.action==='DescribeRoutes')[0].body.Filters).toEqual([{Name:'route-table-id',Values:['rtb-owned']},{Name:'vpc-id',Values:['vpc-owned']}]);
+});
+it.each([-1,1.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,null,{},[],true,''])('fails closed for malformed RouteItemId %s', async id => {
+  const s=fixture(); s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].RouteItemId=id;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow('DescribeRoutes');
+});
+it('rejects duplicate route identities across numeric and string representations',async()=>{
+  const s=fixture();s.changes.set('DescribeRoutes',(value,body)=>({...value,TotalCount:2,RouteSet:[{...value.RouteSet[0],RouteItemId:body.Offset?'14915':14915}]}));
+  await expect(s.service.get(range as never,user)).rejects.toThrow('duplicate identity across pages');
+});
+it.each(['RouteItemId','GatewayType'])('reports the fixed %s field and type without returning raw cloud values',async field=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0][field]=null;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow(`DescribeRoutes.${field}: malformed field;present=false;type=null`);
+});
+it('does not leak malformed cloud text in its field diagnostics',async()=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType='PRIVATE-DO-NOT-EMIT\n';return value;});
+  try { await s.service.get(range as never,user);throw new Error('expected failure'); }
+  catch(error){expect(String(error)).toContain('DescribeRoutes.GatewayType: malformed field;present=true;type=string');expect(String(error)).not.toContain('PRIVATE-DO-NOT-EMIT');}
+});
+it('uses a uniquely matching independent owned-table string enum for numeric GatewayType without guessing a global map',async()=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType=913;return value;});
+  const result=await s.service.get(range as never,user);
+  expect(result.routeTables[0].routeEntries[0].nextHops[0]).toMatchObject({nextHopType:'NAT',providerNumericType:913,nextHopId:'nat-owned'});
+  expect(s.calls.filter(call=>call.action==='DescribeRouteTables')[0].body.RouteTableIds).toEqual(['rtb-owned']);
+});
+it.each(['RouteItemId','RouteTableId','DestinationCidrBlock','DestinationIpv6CidrBlock','GatewayId','Enabled','duplicate','missing','both-numeric','unknown-enum'])('rejects numeric gateway when independent native proof differs: %s',async fault=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType=913;return value;});
+  s.changes.set('DescribeRouteTables',value=>{
+    const table=value.RouteTableSet[0];const row=table.RouteSet[0];
+    if(fault==='duplicate')table.RouteSet.push({...row});
+    else if(fault==='missing')delete table.RouteSet;
+    else if(fault==='both-numeric')row.GatewayType=913;
+    else if(fault==='unknown-enum')row.GatewayType='UNKNOWN_ENUM';
+    else row[fault]=fault==='Enabled'?false:fault==='DestinationCidrBlock'?'10.0.99.0/24':fault==='DestinationIpv6CidrBlock'?'fd00::/64':'foreign';
+    return value;
+  });
+  await expect(s.service.get(range as never,user)).rejects.toThrow(/GatewayType|DescribeRouteTables.RouteSet/);
+});
+it.each([-1,1.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,'UNKNOWN_ENUM'])('rejects unsupported gateway input %s without a text cast',async invalid=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType=invalid;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow('DescribeRoutes.GatewayType');
+});
 it.each(['duplicate','changing','empty','missing'])('rejects %s route pages without returning a successful partial diagnosis', async fault => {
   const s = fixture(); s.changes.set('DescribeRoutes', (value, body) => {
     if (fault === 'missing') return { TotalCount: 1 };
@@ -189,4 +238,37 @@ it('accepts empty SDK template structs and refuses to infer missing ACL priority
   s.changes.set('DescribeNetworkAcls', value => { delete value.NetworkAclSet[0].IngressEntries[0].Priority; return value; });
   const result = await s.service.get(range as never, user);
   expect(result.networkAcls[0].inboundRules[0]).toMatchObject({ evaluationOrder: null, responsePosition: 1 });
+});
+it.each(['association-vpc','acl-vpc','both-vpc'])('accepts partial ACL %s only through separately verified native subnet binding',async missing=>{
+  const s=fixture();s.changes.set('DescribeNetworkAcls',value=>{
+    const acl=value.NetworkAclSet[0];
+    if(missing!=='acl-vpc')acl.SubnetSet=[{SubnetId:'subnet-inner',SubnetName:'Inner'}];
+    if(missing!=='association-vpc')delete acl.VpcId;
+    return value;
+  });
+  const result=await s.service.get(range as never,user);
+  expect(result.networkAcls[0]).toMatchObject({networkAclId:'acl-inner',vswitchIds:['subnet-inner']});
+  expect(s.calls.some(call=>call.action==='DescribeSubnets'&&call.body.SubnetIds.includes('subnet-inner'))).toBe(true);
+});
+it.each(['foreign-acl-vpc','foreign-association-vpc','foreign-native-subnet-vpc','different-native-acl','unknown-subnet','duplicate-subnet','missing-associations','missing-vpc-without-associations'])('keeps ACL scope proof failed for %s',async fault=>{
+  const s=fixture();s.changes.set('DescribeNetworkAcls',value=>{
+    const acl=value.NetworkAclSet[0];
+    if(fault==='foreign-acl-vpc')acl.VpcId='vpc-foreign';
+    if(fault==='foreign-association-vpc')acl.SubnetSet[0].VpcId='vpc-foreign';
+    if(fault==='unknown-subnet')acl.SubnetSet=[{SubnetId:'subnet-foreign'}];
+    if(fault==='duplicate-subnet')acl.SubnetSet.push({...acl.SubnetSet[0]});
+    if(fault==='missing-associations')delete acl.SubnetSet;
+    if(fault==='missing-vpc-without-associations'){delete acl.VpcId;acl.SubnetSet=[];}
+    return value;
+  });
+  if(fault==='foreign-native-subnet-vpc')s.changes.set('DescribeSubnets',value=>{value.SubnetSet[1].VpcId='vpc-foreign';return value;});
+  if(fault==='different-native-acl'||fault==='missing-vpc-without-associations')s.changes.set('DescribeSubnets',value=>{value.SubnetSet[1].NetworkAclId='';return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow(/DescribeNetworkAcls|DescribeSubnets/);
+});
+it('represents explicit empty ACL arrays but never defaults missing rule collections to empty',async()=>{
+  const s=fixture();s.changes.set('DescribeNetworkAcls',value=>{value.NetworkAclSet[0].IngressEntries=[];value.NetworkAclSet[0].EgressEntries=[];return value;});
+  const result=await s.service.get(range as never,user);
+  expect(result.networkAcls[0]).toMatchObject({inboundRules:[],outboundRules:[]});
+  s.changes.set('DescribeNetworkAcls',value=>{delete value.NetworkAclSet[0].IngressEntries;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow('DescribeNetworkAcls.IngressEntries');
 });

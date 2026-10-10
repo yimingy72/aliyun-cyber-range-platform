@@ -96,7 +96,7 @@ export const imageImportJobSchema = resourceSchema
   .extend({
     status: z.enum(['awaiting_upload', 'importing', 'available', 'failed', 'cancelled']).describe('导入任务状态。'),
     displayName: nonEmptyString.describe('目标平台镜像显示名称。'),
-    imageId: z.string().nullable().optional().describe('阿里云镜像 ID；导入受理后可能返回。'),
+    imageId: z.string().nullable().optional().describe('当前云厂商的镜像 ID；导入受理后可能返回。'),
     errorMessage: z.string().nullable().optional().describe('失败原因；只用于诊断，不含凭据。'),
   })
   .passthrough();
@@ -112,6 +112,26 @@ const billingWindowFields = {
   endAt: z.string().describe('统计结束日期，YYYY-MM-DD。'),
 };
 
+export const billingReconciliationResourceSchema = z.object({
+  resourceKey: nonEmptyString,
+  ledgerId: nonEmptyString.nullable(),
+  cloudWorkspaceId: nonEmptyString.nullable(),
+  cloudProvider: z.enum(['alibaba_cloud', 'tencent_cloud']),
+  cloudResourceId: nonEmptyString.nullable(),
+  cloudResourceType: z.enum(['ecs', 'disk', 'eip', 'nat_gateway', 'snat_entry', 'dnat_entry', 'image', 'snapshot', 'snapshot_region', 'oss_bucket', 'unknown']),
+  rangeInstanceId: nonEmptyString.nullable(),
+  sourceProvisionJobId: nonEmptyString.nullable(),
+  ownerUserId: nonEmptyString.nullable(),
+  cloudAccountUid: nonEmptyString.nullable(),
+  regionId: z.string(),
+  billingStartAt: z.iso.datetime(),
+  releasedAt: z.iso.datetime().nullable(),
+  proofFailureReason: z.enum(['BILL_SYNC_DEFERRED', 'BILL_DETAILS_PENDING', 'ACCOUNT_UID_MISSING', 'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE',
+    'SOURCE_RANGE_MISSING', 'SOURCE_JOB_MISSING', 'SOURCE_PROOF_UNVERIFIED', 'SOURCE_JOB_NOT_FOUND', 'SOURCE_JOB_WORKSPACE_MISMATCH',
+    'SOURCE_JOB_RANGE_MISMATCH', 'SOURCE_JOB_NOT_CREATION', 'SOURCE_JOB_CREATION_INVENTORY_MISSING', 'SOURCE_CREATION_PROOF_CONFLICT',
+    'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY', 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE']),
+}).strict();
+
 export const billingSummaryOutputSchema = resultOutputSchema(
   z.object({
     ...billingWindowFields,
@@ -122,7 +142,8 @@ export const billingSummaryOutputSchema = resultOutputSchema(
       resourceType: z.enum(['snapshot', 'oss', 'unknown']),
       resourceCount: z.number().int().nonnegative(),
       reason: nonEmptyString,
-    })).optional().describe('已知平台快照/OSS仍需细分账单，或unknown表示平台创建链已知但历史账号/归属来源待核验；提示不含账号聚合金额，缺失表示状态未知。'),
+      resources: z.array(billingReconciliationResourceSchema).optional().describe('同工作空间内已脱敏的来源和释放时间诊断，不包含凭据或估算金额。'),
+    }).strict()).optional().describe('已知平台快照/OSS仍需细分账单，或unknown表示平台创建链已知但历史账号/归属来源待核验；提示不含账号聚合金额，缺失表示状态未知。'),
     totalPretaxAmount: z.number().nullable().describe('已同步并已归属的平台创建资源 BSS 应付金额（PretaxAmount），不包含待分配费用。'),
     platformPretaxAmount: z.number().nullable().describe('已归属平台公共资源的 BSS 应付金额。'),
     billingStatus: z.literal('provisional').optional().describe('账单可能因延迟出账、退款和调账变化；缺失表示接口未提供状态。'),

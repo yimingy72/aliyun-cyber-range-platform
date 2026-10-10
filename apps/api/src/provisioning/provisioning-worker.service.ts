@@ -697,10 +697,13 @@ export class ProvisioningWorkerService {
     const cleanupInput: RangeProvisionDestroyInput = {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
       allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
+      ...this.rangeRecoveryAssertions(job, instance, signal),
       requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
       billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, PlatformScope: instance.ownerUserId ? 'user' : 'platform', ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}) } : undefined,
     };
     const evidence = await this.captureRangeResources(job, instance, cleanupInput, accountContext);
+    cleanupInput.knownResourceSummary = evidence.resourceSummary ?? undefined;
+    cleanupInput.verifyUnresolvedApplyAbsence = intent => this.verifyAlibabaUnknownApplyAbsent(evidence, job, accountContext, intent, signal);
     await this.rangeProvisioner.destroy(cleanupInput);
     await this.runWorkerStep(reportStep, 'verify_destroy', async () => { await this.verifyDestroyCompletion(evidence, accountContext); });
     if (!(await this.ownsProvisionJobClaim(job))) return;
@@ -1019,21 +1022,17 @@ export class ProvisioningWorkerService {
         (summary as any)[field] = value;
       }
     }
+    let recoverySourceJobId: string | undefined;
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
-      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext),
-        assertRecoverySourceJob: async sourceJobId => {
-          const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
-          if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
-            || (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
-            || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt
-            || sourceJob.jobType === 'update' && sourceJob.topologySnapshot?.operation !== 'update')
-            throw new Error('Tencent recovery has no original submitted platform job in its frozen workspace');
-        } },async () => {
-        input.signal?.throwIfAborted();
-        if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
-      },async (recovered,sourceJobId) => {
+      const assertions = this.rangeRecoveryAssertions(job, instance, input.signal);
+      // A failed first apply can have owned resources in its fenced state before
+      // the initial output was persisted. Recovery must include those inspected
+      // identities, while retaining the original account and ledger fences.
+      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory({ ...current, resourceSummary: summary },context as SystemCloudAccountContext),
+        ...assertions },assertions.assertRecoveryClaim!,async (recovered,sourceJobId) => {
         const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
         if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt) throw new Error('Tencent recovery has no original submitted platform job');
+        recoverySourceJobId = sourceJobId;
         for (const field of ['natGatewayIds','eipAllocationIds'] as const) summary[field] = { ...summary[field], ...recovered[field] };
         const saved = await this.updateRangeForClaim(job,{ resourceSummary: summary });
         await this.recordRangeResourceInventory(job,summary);
@@ -1045,8 +1044,26 @@ export class ProvisioningWorkerService {
     await this.recordRangeResourceInventory(job, summary);
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted,
       resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid,
-      sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });
+      sourceProvisionJobId: recoverySourceJobId ?? job.id, billingStartAt: instance.createdAt });
     return persisted;
+  }
+
+  private rangeRecoveryAssertions(job: ProvisionJobRecord, instance: RangeInstanceRecord, signal?: AbortSignal):
+    Pick<RangeProvisionDestroyInput, 'assertRecoveryClaim' | 'assertRecoverySourceJob'> {
+    return {
+      assertRecoveryClaim: async () => {
+        signal?.throwIfAborted();
+        if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
+      },
+      assertRecoverySourceJob: async sourceJobId => {
+        const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
+        if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
+          || (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
+          || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt
+          || sourceJob.jobType === 'update' && sourceJob.topologySnapshot?.operation !== 'update')
+          throw new Error('Tencent recovery has no original submitted platform job in its frozen workspace');
+      },
+    };
   }
 
   private async captureRangeDisks(job: ProvisionJobRecord, instance: RangeInstanceRecord, summary: RangeResourceSummary,
@@ -1716,6 +1733,84 @@ export class ProvisioningWorkerService {
     return residualResources;
   }
 
+  private async verifyAlibabaUnknownApplyAbsent(instance: RangeInstanceRecord, job: ProvisionJobRecord,
+    account: ResolvedProvisioningRuntimeConfig,
+    intent: { sourceProvisionJobId: string; submittedAt: string; hostKeys: string[]; eipNames: string[] }, signal?: AbortSignal) {
+    const summary = instance.resourceSummary;
+    const source = await this.adminRepository.getProvisionJobById(intent.sourceProvisionJobId);
+    if (!summary || !this.isFrozenAliyunInventory(summary, account) || !summary.vpcId
+      || !instance.cloudWorkspaceId || !source || source.rangeInstanceId !== instance.id || source.cloudWorkspaceId !== instance.cloudWorkspaceId
+      || !['create','retry','update'].includes(source.jobType) || !source.startedAt
+      || !Number.isFinite(Date.parse(intent.submittedAt)) || source.startedAt.getTime() > Date.parse(intent.submittedAt)
+      || source.jobType === 'update' && source.topologySnapshot?.operation !== 'update'
+      || !intent.hostKeys.length || new Set(intent.hostKeys).size !== intent.hostKeys.length
+      || intent.hostKeys.some(key => !summary.hostIds?.[key] || summary.diskInventoryHostIds?.[key] !== summary.hostIds[key] || !summary.systemDiskIds?.[key]))
+      throw new Error('Alibaba unknown apply absence requires the original job, frozen account and complete host/disk inventory');
+    if (Object.values(summary.unverifiedDiskIds ?? {}).length
+      || inventoryDiskIds(summary).some(id => !summary.diskOwnershipProofs?.[id]))
+      throw new Error('Alibaba unknown apply disk ownership evidence is incomplete');
+    const ledger = await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+    const billableIds = [...Object.values(summary.hostIds ?? {}),...inventoryDiskIds(summary),...Object.values(summary.natGatewayIds ?? {}),
+      ...(summary.eipAllocationId ? [summary.eipAllocationId] : []),...Object.values(summary.eipAllocationIds ?? {})];
+    if (billableIds.some(id => !ledger.some(row => row.cloudResourceId === id && row.cloudProvider === account.provider
+      && row.cloudAccountUid === account.accountUid && row.regionId === account.defaultRegion && row.ownerUserId === instance.ownerUserId)))
+      throw new Error('Alibaba unknown apply billing inventory is incomplete');
+    const eipIds = new Set([summary.eipAllocationId,...Object.values(summary.eipAllocationIds ?? {})].filter(Boolean));
+    for (const row of ledger.filter(row => !row.releasedAt && !['image','snapshot'].includes(row.cloudResourceType))) {
+      if (row.rangeInstanceId !== instance.id || row.cloudProvider !== account.provider || row.cloudAccountUid !== account.accountUid
+        || row.regionId !== account.defaultRegion || row.ownerUserId !== instance.ownerUserId)
+        throw new Error('Alibaba unknown apply ledger differs from its original owner or account');
+      if (!['ecs','disk','eip','nat_gateway','snat_entry','dnat_entry'].includes(row.cloudResourceType))
+        throw new Error('Alibaba unknown apply ledger has an unsupported resource type');
+      if (row.cloudResourceType === 'eip') eipIds.add(row.cloudResourceId);
+      if (row.cloudResourceType === 'disk' && !inventoryDiskIds(summary).includes(row.cloudResourceId)
+        || row.cloudResourceType === 'ecs' && !Object.values(summary.hostIds ?? {}).includes(row.cloudResourceId)
+        || row.cloudResourceType === 'nat_gateway' && !Object.values(summary.natGatewayIds ?? {}).includes(row.cloudResourceId))
+        throw new Error('Alibaba unknown apply ledger has resources outside its recorded inventory');
+    }
+    const current = async () => {
+      signal?.throwIfAborted();
+      if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range absence recovery claim is no longer active');
+    };
+    for (let round = 0; round < 2; round++) {
+      await current();
+      if ((await this.findResidualCloudResources(summary, account)).length)
+        throw new Error('Alibaba original tracked resources remain; preserve unknown apply evidence');
+      let total: number | null = null;
+      const seen = new Set<string>();
+      for (let page = 1; ; page++) {
+        if (page > 50) throw new Error('Alibaba regional EIP inventory exceeds complete recovery bound');
+        await current();
+        const payload = await this.performAliyunRpcRequest<Record<string, unknown>>({ endpoint: `vpc.${account.defaultRegion}.aliyuncs.com`,
+          version: ALICLOUD_VPC_API_VERSION, action: 'DescribeEipAddresses', accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret,
+          parameters: { RegionId: account.defaultRegion, PageSize: '50', PageNumber: String(page) } });
+        const rows = this.readJsonObject(payload.EipAddresses)?.EipAddress;
+        if (!payload.RequestId || typeof payload.RequestId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId)
+          || !Number.isSafeInteger(payload.TotalCount) || Number(payload.TotalCount) < 0 || Number(payload.TotalCount) > 2500
+          || payload.PageNumber !== page || payload.PageSize !== 50 || !Array.isArray(rows)
+          || payload.NextToken !== undefined && payload.NextToken !== '' || total !== null && payload.TotalCount !== total)
+          throw new Error('Alibaba regional EIP recovery receipt is incomplete or changed');
+        total = Number(payload.TotalCount);
+        if (rows.length !== Math.min(50, Math.max(0,total - (page-1)*50))) throw new Error('Alibaba regional EIP recovery pagination is incomplete');
+        for (const raw of rows) {
+          const row = this.readJsonObject(raw);
+          if (!row || typeof row.AllocationId !== 'string' || !/^eip-[a-zA-Z0-9]+$/.test(row.AllocationId) || seen.has(row.AllocationId)
+            || typeof row.Name !== 'string' || row.RegionId !== undefined && row.RegionId !== account.defaultRegion)
+            throw new Error('Alibaba regional EIP recovery returned malformed or foreign identities');
+          seen.add(row.AllocationId);
+          const tags = this.readJsonObject(row.Tags)?.Tag;
+          if (tags !== undefined && !Array.isArray(tags)) throw new Error('Alibaba regional EIP recovery tags are malformed');
+          // Names also catch an EIP whose create succeeded but tagging/state persistence failed.
+          if (eipIds.has(row.AllocationId) || intent.eipNames.includes(row.Name)
+            || Array.isArray(tags) && tags.some(tag => this.readJsonObject(tag)?.Key === 'RangeInstanceId' && this.readJsonObject(tag)?.Value === instance.id))
+            throw new Error('Alibaba original EIP candidate remains; preserve unknown apply evidence');
+        }
+        if (seen.size === total) break;
+      }
+    }
+    await current();
+  }
+
   private async findExistingInstanceIds(
     instanceIds: string[],
     runtimeConfig: {
@@ -2085,14 +2180,16 @@ export class ProvisioningWorkerService {
     reportStep: RangeProvisionStepReporter;
   }) {
     try {
+      const cleanupInput = { ...input.cleanupInput, ...this.rangeRecoveryAssertions(input.job, input.instance, input.cleanupInput.signal) };
       const current = await this.adminRepository.getRangeInstanceById(input.instance.id) ?? input.instance;
-      const evidence = await this.captureRangeResources(input.job, current, input.cleanupInput, {
-        ...input.cleanupInput.runtimeConfig!, accountUid: input.cloudContext?.accountUid ?? null,
+      const evidence = await this.captureRangeResources(input.job, current, cleanupInput, {
+        ...cleanupInput.runtimeConfig!, accountUid: input.cloudContext?.accountUid ?? null,
       });
       await this.runWorkerStep(input.reportStep, 'cleanup_failed_create_resources', async () => {
         if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
-        await this.rangeProvisioner.destroy({ ...input.cleanupInput, reportStep: undefined });
-        await this.verifyDestroyCompletion(evidence, input.cleanupInput.runtimeConfig!);
+        await this.rangeProvisioner.destroy({ ...cleanupInput, reportStep: undefined, knownResourceSummary: evidence.resourceSummary ?? undefined,
+          verifyUnresolvedApplyAbsence: intent => this.verifyAlibabaUnknownApplyAbsent(evidence, input.job, cleanupInput.runtimeConfig!, intent, cleanupInput.signal) });
+        await this.verifyDestroyCompletion(evidence, cleanupInput.runtimeConfig!);
       });
       if (!(await this.ownsProvisionJobClaim(input.job))) throw new Error('Range operation claim is no longer active');
       await releaseRangeInstanceBillingLedger(this.adminRepository, input.instance.id, new Date());

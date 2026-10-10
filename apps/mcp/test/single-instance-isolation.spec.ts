@@ -35,7 +35,7 @@ describe('single instance MCP isolation', () => {
     expect(tool.inputSchema.safeParse({ singleInstanceId: 'single', diskIds: ['disk-arbitrary'] }).success).toBe(false);
   });
   it('removes credentials from ordinary read tools, while explicit sensitive CSV merges active and history', async () => {
-    const registry = createToolRegistry({ listSingleInstances: async (view: string) => ({ batches: [{ batch: { id: 'batch', name: 'batch' }, instances: [member(view)] }], standaloneInstances: [] }), getSingleInstance: async () => member('single') } as any);
+    const registry = createToolRegistry({ listSingleInstances: async (view: string) => ({ batches: [{ batch: { id: 'batch', name: 'batch' }, instances: [member(view)] }], standaloneInstances: [] }), getSingleInstance: async () => member('single'), getSingleInstanceAccess: async (id: string) => member(id) } as any);
     const scopes = ['instances:read'];
     for (const [name, args] of [['single_instance_list', {}], ['single_instance_get', { singleInstanceId: 'single' }]] as const) {
       const output = await registry.callTool(name, scopes, args);
@@ -48,7 +48,7 @@ describe('single instance MCP isolation', () => {
   });
   it('requires settings write and destroy scopes for explicit network cleanup', async () => {
     const registry = createToolRegistry({ destroySingleInstanceNetwork: async (id: string) => ({ networkProfileId: id, status: 'destroyed' }) } as any);
-    await expect(registry.callTool('single_instance_network_destroy', ['instances:destroy'], { networkProfileId: 'profile',cleanupRunId:'synthetic-run' })).rejects.toThrow('Forbidden');
-    expect((await registry.callTool('single_instance_network_destroy', ['instances:destroy', 'settings:write'], { networkProfileId: 'profile',cleanupRunId:'synthetic-run' })).structuredContent.result).toMatchObject({ networkProfileId: 'profile', status: 'destroyed' });
+    await expect(registry.callTool('single_instance_network_destroy', ['instances:destroy'], { networkProfileId: 'profile',cleanupRunId:'synthetic-run' }, 'admin')).rejects.toThrow('Forbidden');
+    expect((await registry.callTool('single_instance_network_destroy', ['instances:destroy', 'settings:write'], { networkProfileId: 'profile',cleanupRunId:'synthetic-run' }, 'admin')).structuredContent.result).toMatchObject({ networkProfileId: 'profile', status: 'destroyed' });
   });
 });

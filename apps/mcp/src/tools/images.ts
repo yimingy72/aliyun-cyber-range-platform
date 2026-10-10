@@ -173,7 +173,7 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'image_catalog_sync',
     title: '同步云镜像目录',
-    description: '对应镜像中心的“同步镜像”。从阿里云刷新公共或自定义镜像目录缓存，不上传、不创建或删除云镜像。',
+    description: '对应镜像中心的“同步镜像”。从当前已验证云账号刷新公共或自定义镜像目录缓存，不上传、不创建或删除云镜像。',
     requiredScopes: ['images:read'],
     annotations: { idempotentHint: true },
     inputSchema: imageCatalogSyncInputSchema,

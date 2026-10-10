@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { OpenTofuRunner } from '@aliyun-cyber-range/iac-runner';
-import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from '../src/provisioning/opentofu-state-evidence';
+import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from '../src/provisioning/opentofu-state-evidence';
 import { fixturePlan, fixtureState } from './opentofu-state-fixture';
 
 describe('persisted apply evidence', () => {
@@ -10,6 +10,19 @@ describe('persisted apply evidence', () => {
   beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tofu-evidence-')); });
   afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
   const write = (dir: string, state: unknown) => fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify(state));
+  it('records the existing ancestor serial and refuses to apply from a restored older state',async()=>{
+    await write(dir,{...fixtureState,serial:7});
+    await recordApplyPlan(dir,fixturePlan,'source-job');
+    expect(JSON.parse(await fs.readFile(path.join(dir,APPLY_PENDING_FILE),'utf8'))).toMatchObject({priorLineage:'test-lineage',priorSerial:7});
+    await write(dir,{...fixtureState,serial:6});
+    await expect(assertWorkspaceCanApply(dir,true)).rejects.toThrow('recovery');
+  });
+  it.each([-1,1.5,'7',Number.MAX_SAFE_INTEGER+1])('rejects malformed ancestor serial metadata %s',async invalid=>{
+    await write(dir,{...fixtureState,serial:7});await recordApplyPlan(dir,fixturePlan,'source-job');
+    const file=path.join(dir,APPLY_PENDING_FILE);const pending=JSON.parse(await fs.readFile(file,'utf8'));
+    pending.priorSerial=invalid;await fs.writeFile(file,JSON.stringify(pending));
+    await expect(readPendingApplyEvidence(dir)).rejects.toThrow('pending creation evidence is malformed');
+  });
 
   it('ends completed apply evidence after verified destruction and permits a new generation', async () => {
     await recordApplyPlan(dir, fixturePlan);

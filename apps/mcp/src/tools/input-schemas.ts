@@ -5,7 +5,7 @@ import { topologyGraphSchema } from './template-schemas';
 export const identifier = z.string().trim().min(1).describe('由对应查询工具返回的平台唯一标识。');
 export const isoDateTime = z.iso.datetime({ offset: true }).describe('带时区的 ISO-8601 时间，例如 2026-07-23T08:00:00.000Z。');
 export const isoDate = z.iso.date().describe('ISO-8601 日期，格式为 YYYY-MM-DD。');
-export const operationSchema = z.object({
+export const operationSchema = z.strictObject({
   idempotencyKey: identifier.optional().describe('仅在服务端要求时传入；相同写请求需复用同一幂等键。'),
   confirmationId: identifier.optional().describe('仅当平台返回 CONFIRMATION_REQUIRED 后传入对应确认 ID。'),
 });
@@ -19,10 +19,10 @@ const singleInstanceActionFields = {
   description: z.string().optional(),
 };
 
-export const imageListInputSchema = z.object({
+export const imageListInputSchema = z.strictObject({
   view: z.enum(['platform', 'mine']).optional().describe('platform 查询平台可用镜像；mine 查询当前用户可管理的镜像。'),
 });
-export const imageTagListInputSchema = z.object({}).strict();
+export const imageTagListInputSchema = z.strictObject({});
 export const imageTagCreateInputSchema = operationSchema.extend({
   name: z.string().trim().min(1).max(32).describe('全局镜像标签名称，最多32字符；仅管理员可创建。'),
 }).strict();
@@ -41,18 +41,18 @@ export const imageRenameInputSchema = operationSchema.extend({
 export const imageAssetOperationInputSchema = operationSchema.extend({
   platformImageAssetId: identifier.describe('平台镜像资产 ID。'),
 });
-export const imageCatalogListInputSchema = z.object({
+export const imageCatalogListInputSchema = z.strictObject({
   scope: z.enum(['public', 'custom']).describe('public 为公共镜像目录；custom 为当前云账号的自定义镜像目录。'),
 });
-export const imageCatalogSyncInputSchema = z.object({
+export const imageCatalogSyncInputSchema = z.strictObject({
   scope: z.enum(['public', 'custom']).describe('要同步的镜像目录范围。'),
 });
 export const imageCatalogCustomDeleteInputSchema = operationSchema.extend({
   snapshotId: identifier.describe('自定义镜像目录中要永久删除的快照 ID。'),
   deleteOwnedSnapshots: z.boolean().optional().describe('仅对当前平台新打包且有完整owner/UID/地域证明的镜像，显式回收其确切backing snapshots；旧镜像或未知来源会拒绝。'),
 });
-export const imageImportJobListInputSchema = z.object({});
-export const imageImportJobRetryInputSchema = z.object({
+export const imageImportJobListInputSchema = z.strictObject({});
+export const imageImportJobRetryInputSchema = z.strictObject({
   imageImportJobId: identifier.describe('状态为 failed 的镜像导入任务 ID。'),
 });
 
@@ -61,41 +61,33 @@ const billingWindowFields = {
   endAt: isoDate.optional().describe('统计结束日期；与 startAt 必须同时提供。省略两者时使用平台默认窗口。'),
 };
 
-const billingWindowSchema = z.object(billingWindowFields).refine(
-  (input) => (input.startAt === undefined) === (input.endAt === undefined),
-  'startAt 和 endAt 必须同时提供或同时省略',
-);
+function billingWindowValid(input: { startAt?: string; endAt?: string }) {
+  return (input.startAt === undefined) === (input.endAt === undefined)
+    && (input.startAt === undefined || input.endAt === undefined || input.startAt <= input.endAt);
+}
+const billingWindowSchema = z.strictObject(billingWindowFields);
+const billingWindowError = 'startAt 和 endAt 必须同时提供或同时省略，且起始日期不得晚于结束日期';
 
 const billingPageFields = {
   page: z.number().int().min(1).optional().describe('页码，省略时为第 1 页。'),
   pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional().describe('每页条数，默认 20。'),
 };
-
 const billingListWindowSchema = billingWindowSchema.extend(billingPageFields);
+export const billingSummaryInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingUsersInputSchema = billingListWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingUserSummaryInputSchema = billingWindowSchema.extend({ userId: identifier.describe('要查看费用汇总的平台用户 ID。') }).refine(billingWindowValid, billingWindowError);
+export const billingUserGroupsInputSchema = billingListWindowSchema.extend({ userId: identifier.optional().describe('仅查看指定平台用户的启动费用分组。') }).refine(billingWindowValid, billingWindowError);
+export const billingPlatformGroupsInputSchema = billingListWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingUserItemsInputSchema = billingWindowSchema.extend({ userId: identifier.describe('要查看明细的平台用户 ID。') }).refine(billingWindowValid, billingWindowError);
+export const billingPlatformItemsInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingAnomaliesInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingSyncInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingExportPlatformCsvInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingExportUsersCsvInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingExportUserCsvInputSchema = billingWindowSchema.extend({ userId: identifier.describe('要导出费用明细的平台用户 ID。') }).refine(billingWindowValid, billingWindowError);
 
-export const billingSummaryInputSchema = billingWindowSchema.pick({ startAt: true, endAt: true });
-export const billingUsersInputSchema = billingListWindowSchema;
-export const billingUserSummaryInputSchema = billingWindowSchema.extend({
-  userId: identifier.describe('要查看费用汇总的平台用户 ID。'),
-});
-export const billingUserGroupsInputSchema = billingListWindowSchema.extend({
-  userId: identifier.optional().describe('可选。仅查看指定平台用户的启动费用分组。'),
-});
-export const billingPlatformGroupsInputSchema = billingListWindowSchema;
-export const billingUserItemsInputSchema = billingWindowSchema.extend({
-  userId: identifier.describe('要查看明细的平台用户 ID。'),
-});
-export const billingPlatformItemsInputSchema = billingWindowSchema;
-export const billingAnomaliesInputSchema = billingWindowSchema;
-export const billingSyncInputSchema = billingSummaryInputSchema;
-export const billingExportPlatformCsvInputSchema = billingSummaryInputSchema;
-export const billingExportUsersCsvInputSchema = billingSummaryInputSchema;
-export const billingExportUserCsvInputSchema = billingSummaryInputSchema.extend({
-  userId: identifier.describe('要导出费用明细的平台用户 ID。'),
-});
-
-export const rangeListInputSchema = z.object({ view: viewSchema });
-export const rangeInstanceIdInputSchema = z.object({ rangeInstanceId: identifier });
+export const rangeListInputSchema = z.strictObject({ view: viewSchema });
+export const rangeInstanceIdInputSchema = z.strictObject({ rangeInstanceId: identifier });
 export const rangeInstanceGetInputSchema = rangeInstanceIdInputSchema.extend({
   includeNetworkDiagnostics: z.boolean().optional().describe('仅在需要核验网络时设为 true；只读查询该实例绑定账号和地域中的 ECS、网卡、安全组、ACL、NAT 与路由白名单事实，不接受云资源 ID。'),
 }).strict();
@@ -111,9 +103,9 @@ export const rangeLaunchInputSchema = operationSchema.extend({
 });
 export const rangeDestroyInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
 export const rangeRetryInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
-export const rangeTopologyPreviewInputSchema = z.object({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1) }).strict();
+export const rangeTopologyPreviewInputSchema = z.strictObject({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1) }).strict();
 export const rangeTopologyApplyInputSchema = operationSchema.extend({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1), previewToken: identifier.max(192) }).strict();
-export const rangeSaveAsTemplateInputSchema = z.object({
+export const rangeSaveAsTemplateInputSchema = z.strictObject({
   rangeInstanceId: identifier,
   name: z.string().trim().min(1).max(128),
   description: z.string().max(2000).optional(),
@@ -121,10 +113,16 @@ export const rangeSaveAsTemplateInputSchema = z.object({
   idempotencyKey: identifier.max(128).describe('本次另存操作的稳定幂等键；超时后复用同一键避免重复创建。'),
 }).strict();
 
-export const rangeTopologyChangeInputSchema = operationSchema.extend({
+export const rangeTopologyChangeInputSchema = z.strictObject({
   rangeInstanceId: identifier,
+  expectedDraftRevision: z.number().int().min(0).describe('调用者编辑时读取的草稿版本；首次草稿可为 0。版本已变化时拒绝覆盖。'),
   topologyGraph: topologyGraphSchema.describe('完整的实例拓扑图。由实例编排转换 Skill 生成；MCP 会自行编译运行规格，不能传派生字段。'),
-  publicEntryProtocols: z.array(z.object({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
+  publicEntryProtocols: z.array(z.strictObject({ protocol: identifier, port: z.number().int().min(1).max(65535) })).min(1).optional(),
+});
+export const rangeSyncTemplateInputSchema = operationSchema.extend({
+  rangeInstanceId: identifier,
+  expectedDraftRevision: z.number().int().min(1),
+  expectedTemplateRevision: z.number().int().min(1).describe('来源模板详情或实例 sourceTemplateRevision 的准确版本。'),
 });
 const rangeNodeActionFields = {
   rangeInstanceId: identifier,
@@ -134,18 +132,19 @@ const rangeNodeActionFields = {
   defaultPassword: z.string().min(1).optional().describe('敏感字段，仅在用户明确指定打包镜像默认密码时提供。'),
   description: z.string().optional(),
 };
-export const rangeNodeActionInputSchema = operationSchema.extend(rangeNodeActionFields);
+export const rangeNodeActionInputSchema = operationSchema.extend({ rangeInstanceId: identifier, nodeId: identifier });
+export const rangeNodePackImageInputSchema = operationSchema.extend(rangeNodeActionFields);
 export const rangeNodeVerifyDnsInputSchema = operationSchema.extend({
   rangeInstanceId: identifier,
   nodeId: identifier.describe('编排实例详情中配置了自定义 DNS 的 ECS 节点 ID。'),
 }).strict();
-export const rangeNodeOpenVncInputSchema = z.object({
+export const rangeNodeOpenVncInputSchema = z.strictObject({
   rangeInstanceId: identifier,
   nodeId: identifier.describe('编排实例详情中 ECS 节点的 ID。'),
 });
 
-export const singleInstanceListInputSchema = z.object({ view: viewSchema });
-export const singleInstanceIdInputSchema = z.object({ singleInstanceId: identifier });
+export const singleInstanceListInputSchema = z.strictObject({ view: viewSchema });
+export const singleInstanceIdInputSchema = z.strictObject({ singleInstanceId: identifier });
 export const singleInstanceLaunchInputSchema = operationSchema.extend({
   name: identifier,
   hostName: z.string().trim().min(1).optional(),
@@ -161,12 +160,12 @@ export const singleInstanceLaunchInputSchema = operationSchema.extend({
 export const singleInstanceDestroyInputSchema = operationSchema.extend({ singleInstanceId: identifier });
 export const singleInstanceBatchDestroyInputSchema = operationSchema.extend({ batchId: identifier });
 export const singleInstanceRetryInputSchema = operationSchema.extend({ singleInstanceId: identifier });
-export const singleInstanceRebootInputSchema = operationSchema.extend(singleInstanceActionFields);
-export const singleInstanceOpenVncInputSchema = z.object(singleInstanceActionFields);
+export const singleInstanceRebootInputSchema = operationSchema.extend({ singleInstanceId: identifier });
+export const singleInstanceOpenVncInputSchema = z.strictObject({ singleInstanceId: identifier });
 export const singleInstancePackImageInputSchema = operationSchema.extend(singleInstanceActionFields);
-export const singleInstanceBatchExportCsvInputSchema = z.object({ batchId: identifier, view: viewSchema });
+export const singleInstanceBatchExportCsvInputSchema = z.strictObject({ batchId: identifier, view: viewSchema });
 
-export const adminUserListInputSchema = z.object({});
+export const adminUserListInputSchema = z.strictObject({});
 export const adminUserCreateInputSchema = operationSchema.extend({
   username: identifier,
   password: z.string().min(1).describe('Sensitive. Never echo it in a summary.'),
@@ -179,7 +178,7 @@ export const adminUserResetPasswordInputSchema = operationSchema.extend({
   password: z.string().min(1).describe('Sensitive. Never echo it in a summary.'),
 });
 
-export const cloudConfigGetInputSchema = z.object({});
+export const cloudConfigGetInputSchema = z.strictObject({});
 export const cloudConfigUpdateInputSchema = operationSchema.extend({
   defaultRegion: identifier.optional().describe('默认地域；跨地域变更时必须同时指定该地域的 defaultZoneId。'),
   defaultZoneId: identifier.optional(),
@@ -190,4 +189,4 @@ export const cloudConfigUpdateInputSchema = operationSchema.extend({
   'at least one cloud configuration field is required',
 );
 
-export const provisionJobGetInputSchema = z.object({ provisionJobId: identifier, includeEvidence: z.boolean().optional() });
+export const provisionJobGetInputSchema = z.strictObject({ provisionJobId: identifier, includeEvidence: z.boolean().optional() });

@@ -149,7 +149,12 @@ export type AlibabaCloudOpenTofuRendererInput = {
 export class AlibabaCloudOpenTofuRenderer {
   render(input: AlibabaCloudOpenTofuRendererInput): AlibabaCloudOpenTofuRenderedVariables {
     const { plan } = input;
+    const backends = new Set<string>();
     for (const entry of plan.dnatEntries) {
+      const primary = plan.hostDefinitions.find(host => host.key === entry.backendHostKey)?.privateIp;
+      const backend = `${entry.natGatewayKey}:${entry.protocol}:${entry.backendPrivateIp ?? primary}:${entry.internalPort}`;
+      if (backends.has(backend)) throw new Error('Alibaba DNAT backend protocol, IP and internal port must be unique per NAT gateway');
+      backends.add(backend);
       if (!entry.backendPrivateIp) continue;
       const host = plan.hostDefinitions.find((host) => host.key === entry.backendHostKey);
       const interfaces = plan.hostNetworkInterfaces.find((item) => item.hostKey === entry.backendHostKey)?.interfaces ?? (host ? [{ privateIp: host.privateIp, zoneKey: host.zoneKey }] : []);

@@ -140,8 +140,10 @@ function paginate<T>(items: T[], input: BillingWindowInput): PaginatedResult<T> 
 
 function escapeCsvCell(value: string | number | null | undefined) {
   const text = value == null ? '' : String(value);
-  const escaped = text.replaceAll('"', '""');
-  return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
+  // Prefix only string metadata; real numeric charges and refunds remain numbers.
+  const safeText = typeof value === 'string' && /^[\s\u0000-\u001f]*[=+@-]/.test(text) ? `'${text}` : text;
+  const escaped = safeText.replaceAll('"', '""');
+  return /[",\r\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
 function toCsv(rows: Array<Array<string | number | null | undefined>>) {

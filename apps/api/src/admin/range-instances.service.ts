@@ -354,7 +354,7 @@ export class RangeInstancesService {
     }
 
     const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(input.draftTopologySpec));
-    const compiled = validateRangeInstanceDraftPayload(input, metadata);
+    const compiled = validateRangeInstanceDraftPayload(input, metadata, instance.draftTopologyGraph ?? instance.runtimeTopologyGraph);
     await this.assertNewDraftHostImages(instance, compiled.topologyGraph, currentUser);
     const viewport = this.readDraftViewport(input.draftTopologyGraph);
     const updated = await this.adminRepository.saveRangeInstanceDraft(id, input.expectedDraftRevision, {
@@ -382,7 +382,7 @@ export class RangeInstancesService {
     return this.withCreatorUsername(await this.withSourceTemplateRevision(hydrated));
   }
 
-  async discardDraft(id: string, currentUser?: AuthenticatedUser) {
+  async discardDraft(id: string, currentUser?: AuthenticatedUser, expectedDraftRevision?: number) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -397,7 +397,11 @@ export class RangeInstancesService {
       throw new ConflictException('Only running instances can discard draft changes');
     }
 
-    const updated = await this.adminRepository.discardRangeInstanceDraft(id, instance.draftRevision ?? 0);
+    if (expectedDraftRevision !== undefined && expectedDraftRevision !== (instance.draftRevision ?? 0)) {
+      throw new ConflictException('Range instance draft has changed; refresh before discarding it');
+    }
+
+    const updated = await this.adminRepository.discardRangeInstanceDraft(id, expectedDraftRevision ?? instance.draftRevision ?? 0);
 
     if (!updated) {
       throw new ConflictException('Range instance draft has changed; refresh before discarding it');

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ADMIN_SCOPES, END_USER_SCOPES } from '../src/auth';
+import { ADMIN_SCOPES, END_USER_SCOPES, scopesForRole } from '../src/auth';
 
 describe('MCP auth scopes', () => {
   it('keeps end-user scopes as an explicit subset of admin scopes', () => {
@@ -14,5 +14,20 @@ describe('MCP auth scopes', () => {
     expect(END_USER_SCOPES).not.toContain('billing:read');
     expect(END_USER_SCOPES).not.toContain('billing:sync');
     expect(ADMIN_SCOPES).toEqual(expect.arrayContaining(['billing:read', 'billing:sync']));
+  });
+});
+
+describe('explicit OAuth business scope intersection', () => {
+  it('retains the existing identity-only client contract', () => {
+    expect(scopesForRole('admin', ['openid', 'profile'])).toEqual(ADMIN_SCOPES);
+  });
+  it('does not treat unknown unnamespaced scopes as identity scopes', () => {
+    expect(scopesForRole('admin', ['some-unknown-scope'])).toEqual([]);
+    expect(scopesForRole('admin', ['openid', 'some-unknown-scope'])).toEqual([]);
+    expect(scopesForRole('admin', ['openid', 'some-unknown-scope', 'images:read'])).toEqual(['images:read']);
+  });
+  it('honors read-only scope and never elevates an ordinary user', () => {
+    expect(scopesForRole('admin', ['images:read'])).toEqual(['images:read']);
+    expect(scopesForRole('user', ['settings:write'])).toEqual([]);
   });
 });

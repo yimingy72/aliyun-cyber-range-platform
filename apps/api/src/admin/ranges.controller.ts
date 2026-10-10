@@ -65,8 +65,14 @@ export class RangesController {
   }
 
   @Delete(':id/draft')
-  discardDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeInstancesService.discardDraft(id, request.adminUser);
+  discardDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Query('expectedDraftRevision') expectedDraftRevision?: string) {
+    if (expectedDraftRevision === undefined && request.authContext.source === 'mcp') {
+      throw new BadRequestException('MCP 放弃草稿必须指定 expectedDraftRevision。');
+    }
+    if (expectedDraftRevision !== undefined && (!/^[1-9]\d*$/.test(expectedDraftRevision) || !Number.isSafeInteger(Number(expectedDraftRevision)))) {
+      throw new BadRequestException('expectedDraftRevision 必须为正整数。');
+    }
+    return this.rangeInstancesService.discardDraft(id, request.adminUser, expectedDraftRevision === undefined ? undefined : Number(expectedDraftRevision));
   }
 
   @Post()

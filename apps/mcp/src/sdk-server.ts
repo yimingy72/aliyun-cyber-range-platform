@@ -4,33 +4,7 @@ import type { PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-cli
 
 import { createToolRegistry } from './server';
 
-const allScopes = [
-  'templates:read',
-  'templates:write',
-  'templates:publish',
-  'templates:delete',
-  'images:read',
-  'images:write',
-  'ranges:read',
-  'ranges:create',
-  'ranges:write',
-  'ranges:control',
-  'ranges:destroy',
-  'instances:read',
-  'instances:create',
-  'instances:destroy',
-  'instances:control',
-  'instances:credentials:read',
-  'jobs:read',
-  'users:read',
-  'users:write',
-  'billing:read',
-  'billing:sync',
-  'settings:read',
-  'settings:write',
-] as const;
-
-export function createSdkServer(client: PlatformApiClientLike, scopes: string[] = [...allScopes], role?: 'admin' | 'user') {
+export function createSdkServer(client: PlatformApiClientLike, scopes: string[], role?: 'admin' | 'user') {
   const registry = createToolRegistry(client);
   const server = new McpServer({
     name: 'aliyun-cyber-range-platform',
@@ -48,8 +22,9 @@ export function createSdkServer(client: PlatformApiClientLike, scopes: string[] 
         annotations: tool.annotations,
       },
       async (args, extra) => {
-        const authScopes = pickScopes(extra.authInfo);
-        return registry.callTool(tool.name, authScopes.length > 0 ? authScopes : scopes, args as Record<string, unknown>, pickRole(extra.authInfo) ?? role);
+        const authScopes = extra.authInfo ? pickScopes(extra.authInfo).filter(scope => scopes.includes(scope)) : scopes;
+        const requestRole = extra.authInfo ? pickRole(extra.authInfo) : role;
+        return registry.callTool(tool.name, authScopes, args as Record<string, unknown>, role === 'user' ? 'user' : requestRole);
       },
     );
   }

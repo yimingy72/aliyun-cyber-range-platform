@@ -21,17 +21,23 @@ async function main() {
     await client.connect(transport);
 
     const tools = await client.listTools();
+    const tool = tools.tools.find(candidate => candidate.name === toolName);
+    if (!tool || tool.annotations?.readOnlyHint !== true || /(?:credentials?|_get_access$|_open_vnc$|_batch_export_csv$)/.test(toolName)) {
+      throw new Error('MCP smoke only permits an exposed read-only tool');
+    }
     const result = await client.callTool({
       name: toolName,
       arguments: args,
     });
+
+    if (result.isError) throw new Error('MCP smoke read operation was rejected');
 
     process.stdout.write(
       `${JSON.stringify({
         toolCount: tools.tools.length,
         toolNames: tools.tools.map((tool) => tool.name).sort(),
         toolName,
-        result: result.structuredContent ?? null,
+        ok: true,
       }, null, 2)}\n`,
     );
   } finally {
@@ -50,4 +56,7 @@ function requireEnv(name: string) {
   return value;
 }
 
-void main();
+void main().catch(() => {
+  process.stderr.write('MCP read-only smoke failed; check token, gateway availability and tool permissions.\n');
+  process.exitCode = 1;
+});

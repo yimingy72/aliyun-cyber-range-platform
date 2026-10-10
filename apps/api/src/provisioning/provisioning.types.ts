@@ -76,7 +76,9 @@ export type RangeProvisionCreateResult = {
 };
 
 export type RangeProvisionDestroyInput = {
+  verifyUnresolvedApplyAbsence?: (intent: { sourceProvisionJobId: string; submittedAt: string; hostKeys: string[]; eipNames: string[] }) => Promise<void>;
   assertRecoverySourceJob?: (sourceProvisionJobId: string) => Promise<void>;
+  assertRecoveryClaim?: () => Promise<void>;
   knownResourceSummary?: RangeResourceSummary;
   signal?: AbortSignal;
   requirePersistedState?: boolean;

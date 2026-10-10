@@ -91,6 +91,12 @@ resource "tencentcloud_instance" "hosts" {
   disable_security_service   = true
   tags                       = merge(var.tags, { PlatformHostKey = each.key, PlatformResourceType = "ecs", CreationIntentId = each.value.creation_intent_id })
   depends_on                 = [tencentcloud_security_group_rule_set.nics]
+
+  lifecycle {
+    # Private CVMs have no direct public IP or bandwidth. Tencent reads this
+    # unused billing field back as empty; preserve that value during updates.
+    ignore_changes = [internet_charge_type]
+  }
 }
 resource "tencentcloud_eni" "secondary" {
   for_each                = local.secondary_nics

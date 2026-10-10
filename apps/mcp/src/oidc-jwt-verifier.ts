@@ -11,6 +11,8 @@ type OidcJwtPayload = {
   sub?: string;
   aud?: string | string[];
   azp?: string;
+  scope?: string;
+  typ?: string;
   exp?: number;
   iat?: number;
   nbf?: number;
@@ -31,33 +33,37 @@ export type VerifiedOidcJwtClaims = {
   subject: string;
   audience: string[];
   authorizedParty: string | null;
+  scopes?: string[];
 };
 
 export class OidcJwtVerifier {
   private readonly issuer = this.requireEnv('OIDC_ISSUER');
   private readonly jwksUrl = this.requireEnv('OIDC_JWKS_URL');
-  private readonly expectedAudience = process.env.MCP_OIDC_AUDIENCE?.trim() || process.env.KEYCLOAK_ADMIN_CLIENT_ID?.trim() || 'mcp';
+  constructor(private readonly expectedAudience = process.env.MCP_OIDC_AUDIENCE?.trim() || 'mcp-gateway') {}
   private cachedKeys: OidcJwk[] | null = null;
   private jwksRequest: Promise<OidcJwk[]> | null = null;
   private refreshAfter = 0;
+  private cacheExpiresAt = 0;
 
   async verifyAccessToken(token: string): Promise<VerifiedOidcJwtClaims> {
-    const [encodedHeader, encodedPayload, encodedSignature] = token.split('.');
+    const parts = token.split('.');
+    const [encodedHeader, encodedPayload, encodedSignature] = parts;
 
-    if (!encodedHeader || !encodedPayload || !encodedSignature) {
+    if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) {
       throw new Error('OIDC token is malformed');
     }
 
     const header = this.decodeSegment<OidcJwtHeader>(encodedHeader);
     const payload = this.decodeSegment<OidcJwtPayload>(encodedPayload);
 
-    if (header.alg !== 'RS256' || !header.kid) {
+    if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid || header.kid.length > 256) {
       throw new Error('OIDC token algorithm is invalid');
     }
 
-    const audience = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
+    const audience = Array.isArray(payload.aud) && payload.aud.every(value => typeof value === 'string')
+      ? payload.aud : typeof payload.aud === 'string' ? [payload.aud] : [];
 
-    if (payload.iss !== this.issuer || !payload.sub) {
+    if (payload.iss !== this.issuer || typeof payload.sub !== 'string' || !payload.sub.trim()) {
       throw new Error('OIDC token issuer or subject is invalid');
     }
 
@@ -65,13 +71,20 @@ export class OidcJwtVerifier {
       throw new Error('OIDC token audience is invalid');
     }
 
+    if (payload.typ !== undefined && payload.typ !== 'Bearer'
+      || payload.azp !== undefined && (typeof payload.azp !== 'string' || !payload.azp.trim())
+      || payload.scope !== undefined && typeof payload.scope !== 'string') {
+      throw new Error('OIDC access token claims are invalid');
+    }
+
     const now = Math.floor(Date.now() / 1000);
 
-    if (typeof payload.exp !== 'number' || payload.exp <= now) {
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp) || payload.exp <= now) {
       throw new Error('OIDC token is expired');
     }
 
-    if (typeof payload.nbf === 'number' && payload.nbf > now) {
+    if (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || !Number.isFinite(payload.nbf) || payload.nbf > now)
+      || payload.iat !== undefined && (typeof payload.iat !== 'number' || !Number.isFinite(payload.iat) || payload.iat > now + 60)) {
       throw new Error('OIDC token is not active yet');
     }
 
@@ -103,6 +116,7 @@ export class OidcJwtVerifier {
       issuer: payload.iss,
       subject: payload.sub,
       audience,
+      ...(payload.scope === undefined ? {} : { scopes: payload.scope.split(/\s+/).filter(Boolean) }),
       authorizedParty: typeof payload.azp === 'string' ? payload.azp : null,
     };
   }
@@ -114,7 +128,7 @@ export class OidcJwtVerifier {
       key = (await this.getJwks(true)).find((item) => item.kid === kid);
     }
 
-    if (!key) {
+    if (!key || key.kty !== 'RSA' || key.use !== undefined && key.use !== 'sig' || key.alg !== undefined && key.alg !== 'RS256') {
       throw new Error('OIDC signing key was not found');
     }
 
@@ -122,7 +136,7 @@ export class OidcJwtVerifier {
   }
 
   private async getJwks(refresh = false): Promise<OidcJwk[]> {
-    if (this.cachedKeys && !refresh) {
+    if (this.cachedKeys && !refresh && Date.now() < this.cacheExpiresAt) {
       return this.cachedKeys;
     }
     if (this.jwksRequest) {
@@ -145,7 +159,7 @@ export class OidcJwtVerifier {
   }
 
   private async fetchJwks(): Promise<OidcJwk[]> {
-    const response = await fetch(this.jwksUrl, { signal: AbortSignal.timeout(5_000) });
+    const response = await fetch(this.jwksUrl, { signal: AbortSignal.timeout(5_000), redirect: 'error' });
 
     if (response.status !== 200) {
       throw new Error('OIDC JWKS fetch failed');
@@ -153,17 +167,20 @@ export class OidcJwtVerifier {
 
     const payload = (await response.json()) as JwksResponse;
 
-    if (!payload.keys?.length) {
+    if (!Array.isArray(payload.keys) || !payload.keys.length || payload.keys.some(key => !key || typeof key !== 'object')) {
       throw new Error('OIDC JWKS response is empty');
     }
 
     this.cachedKeys = payload.keys;
+    this.cacheExpiresAt = Date.now() + 5 * 60_000;
     return this.cachedKeys;
   }
 
   private decodeSegment<T>(segment: string) {
     try {
-      return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8')) as T;
+      const value: unknown = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+      return value as T;
     } catch {
       throw new Error('OIDC token is malformed');
     }

@@ -109,6 +109,26 @@ export type PaginatedResult<T> = {
   total: number;
 };
 
+export type BillingReconciliationResource = {
+  resourceKey: string;
+  ledgerId: string | null;
+  cloudWorkspaceId: string | null;
+  cloudProvider: 'alibaba_cloud' | 'tencent_cloud';
+  cloudResourceId: string | null;
+  cloudResourceType: 'ecs' | 'disk' | 'eip' | 'nat_gateway' | 'snat_entry' | 'dnat_entry' | 'image' | 'snapshot' | 'snapshot_region' | 'oss_bucket' | 'unknown';
+  rangeInstanceId: string | null;
+  sourceProvisionJobId: string | null;
+  ownerUserId: string | null;
+  cloudAccountUid: string | null;
+  regionId: string;
+  billingStartAt: string;
+  releasedAt: string | null;
+  proofFailureReason: 'BILL_SYNC_DEFERRED' | 'BILL_DETAILS_PENDING' | 'ACCOUNT_UID_MISSING' | 'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE'
+    | 'SOURCE_RANGE_MISSING' | 'SOURCE_JOB_MISSING' | 'SOURCE_PROOF_UNVERIFIED' | 'SOURCE_JOB_NOT_FOUND' | 'SOURCE_JOB_WORKSPACE_MISMATCH'
+    | 'SOURCE_JOB_RANGE_MISMATCH' | 'SOURCE_JOB_NOT_CREATION' | 'SOURCE_JOB_CREATION_INVENTORY_MISSING' | 'SOURCE_CREATION_PROOF_CONFLICT'
+    | 'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY' | 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE';
+};
+
 export type BillingSummary = Record<string, unknown> & {
   startAt: string;
   endAt: string;
@@ -116,7 +136,7 @@ export type BillingSummary = Record<string, unknown> & {
   currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
   billingStatus?: 'provisional';
   billingScope?: 'platform_resources';
-  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown'; resourceCount: number; reason: string }>;
+  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown'; resourceCount: number; reason: string; resources?: BillingReconciliationResource[] }>;
   unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
   resourcesWithoutBillCount?: number;
   totalPretaxAmount: number | null;
@@ -418,6 +438,7 @@ export type PlatformApiClientLike = {
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceAsTemplate(id: string, payload: SaveRangeInstanceAsTemplateInput, operation: OperationRequest & { idempotencyKey: string }): Promise<SaveRangeInstanceAsTemplateResult>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
+  discardRangeInstanceDraft?(id: string, expectedDraftRevision: number): Promise<RangeInstance>;
   previewRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceChangePreview>;
   applyRangeInstanceDraft(
     id: string,

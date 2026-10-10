@@ -10,12 +10,29 @@ const PAGE_SIZE = 100;
 const PAGE_LIMIT = 20;
 function fail(phase: string, reason: string): never { throw new BadGatewayException(`Tencent network diagnostics failed at ${phase}: ${reason}`); }
 function object(value: unknown, phase: string): Row { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(phase, 'malformed object'); return value as Row; }
-function text(value: unknown, phase: string): string { if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\r\n]/.test(value)) fail(phase, 'malformed field'); return value; }
+function text(value: unknown, phase: string): string { if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\r\n]/.test(value)) fail(phase, `malformed field;${flags(value)}`); return value; }
 function list(value: unknown, phase: string): Row[] { if (!Array.isArray(value)) fail(phase, 'missing complete array'); return value.map(row => object(row, phase)); }
 function strings(value: unknown, phase: string): string[] { if (!Array.isArray(value)) fail(phase, 'missing identity array'); const result = value.map(item => text(item, phase)); if (new Set(result).size !== result.length) fail(phase, 'duplicate identity'); return result; }
 type FrozenCheck = 'frozen_scope' | 'subnet_zone' | 'eni_vpc' | 'attachment_owner_uid' | 'eni_zone' | 'attachment_host_snapshot' | 'attachment_device_index_snapshot' | 'attachment_device_index_type' | 'primary_subnet' | 'primary_private_ip';
 function flags(value: unknown) { return `present=${value !== undefined && value !== null && value !== ''};type=${Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value}`; }
 function numeric(value: unknown, phase: string, check: FrozenCheck = 'frozen_scope'): number { if (!Number.isSafeInteger(value) || Number(value) < 0) fail(phase, `malformed numeric field;check=${check};${flags(value)};integer=false`); return Number(value); }
+// Normalize both representations before pagination deduplication and projection.
+function routeIdentity(value: unknown, phase = 'DescribeRoutes.RouteItemId'): string { return typeof value === 'number' ? String(numeric(value, phase)) : text(value, phase); }
+const ROUTE_GATEWAY_TYPES = new Set(['LOCAL','CVM','VPN','DIRECTCONNECT','PEERCONNECTION','HAVIP','NAT','NORMAL_CVM','EIP','CCN','LOCAL_GATEWAY','INTRANAT','USER_CCN','GWLB_ENDPOINT','SSLVPN','PVGW']);
+function gatewayType(value: unknown, phase: string): string { const type = text(value,phase); if (!ROUTE_GATEWAY_TYPES.has(type)) fail(phase,'unsupported gateway enum'); return type; }
+function verifiedGatewayType(route: Row, table: Row): string {
+  if (typeof route.GatewayType !== 'number') return gatewayType(route.GatewayType,'DescribeRoutes.GatewayType');
+  numeric(route.GatewayType,'DescribeRoutes.GatewayType');
+  // No published numeric enum exists: require the other owned-table API to identify this exact route.
+  const matching = list(table.RouteSet,'DescribeRouteTables.RouteSet').filter(candidate =>
+    candidate.RouteTableId === table.RouteTableId && candidate.RouteTableId === route.RouteTableId
+    && routeIdentity(candidate.RouteItemId,'DescribeRouteTables.RouteSet.RouteItemId') === routeIdentity(route.RouteItemId)
+    && cidr(candidate.DestinationCidrBlock,'DescribeRouteTables.RouteSet.DestinationCidrBlock') === cidr(route.DestinationCidrBlock,'DescribeRoutes.DestinationCidrBlock')
+    && cidr(candidate.DestinationIpv6CidrBlock,'DescribeRouteTables.RouteSet.DestinationIpv6CidrBlock') === cidr(route.DestinationIpv6CidrBlock,'DescribeRoutes.DestinationIpv6CidrBlock')
+    && candidate.GatewayId === route.GatewayId && bool(candidate.Enabled,'DescribeRouteTables.RouteSet.Enabled') === bool(route.Enabled,'DescribeRoutes.Enabled'));
+  if (matching.length !== 1) fail('DescribeRoutes.GatewayType','numeric enum has no unique independently matching owned-table route');
+  return gatewayType(matching[0].GatewayType,'DescribeRouteTables.RouteSet.GatewayType');
+}
 function bool(value: unknown, phase: string): boolean { if (typeof value !== 'boolean') fail(phase, 'missing boolean field'); return value; }
 function same(actual: unknown, expected: unknown, phase: string, check: FrozenCheck = 'frozen_scope') { if (actual !== expected) fail(phase, `frozen scope or attachment mismatch;check=${check};${flags(actual)};matches=false`); }
 function within(id: unknown, expected: string[], phase: string): string { const result = text(id, phase); if (!expected.includes(result)) fail(phase, 'resource outside persisted scope'); return result; }
@@ -135,11 +152,11 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
     const phase = 'DescribeRouteTables'; same(row.VpcId, vpcId, phase); ownership(row, phase);
     const associations = list(row.AssociationSet, phase).map(item => { same(item.RouteTableId, row.RouteTableId, phase); return within(item.SubnetId, subnetIds, phase); });
     exact(associations, subnets.filter(subnet => subnet.RouteTableId === row.RouteTableId).map(subnet => subnet.SubnetId), phase);
-    const routes = await pages('DescribeRoutes', 'RouteSet', { Filters: [{ Name: 'route-table-id', Values: [row.RouteTableId] }, { Name: 'vpc-id', Values: [vpcId] }] }, route => text(route.RouteItemId, 'DescribeRoutes'));
+    const routes = await pages('DescribeRoutes', 'RouteSet', { Filters: [{ Name: 'route-table-id', Values: [row.RouteTableId] }, { Name: 'vpc-id', Values: [vpcId] }] }, route => routeIdentity(route.RouteItemId));
     routeTables.push({ routeTableId: row.RouteTableId as string, vpcId, type: bool(row.Main, phase) ? 'System' : 'Custom', vswitchIds: associations, routeEntries: routes.map(route => {
-      same(route.RouteTableId, row.RouteTableId, 'DescribeRoutes'); const enabled = bool(route.Enabled, 'DescribeRoutes'), type = text(route.GatewayType, 'DescribeRoutes');
-      const gatewayId = typeof route.GatewayId === 'string' && route.GatewayId ? text(route.GatewayId, 'DescribeRoutes') : null;
-      return { routeEntryId: text(route.RouteItemId, 'DescribeRoutes'), destinationCidrBlock: cidr(route.DestinationCidrBlock, 'DescribeRoutes'), destinationIpv6CidrBlock: cidr(route.DestinationIpv6CidrBlock, 'DescribeRoutes'), status: enabled ? 'Available' : 'Disabled', enabled, nextHops: [{ nextHopType: type, nextHopId: gatewayId, knownTarget: gatewayId !== null && [...natIds, ...hostIds, ...instances.map(host => host.privateIp)].includes(gatewayId) }] };
+      same(route.RouteTableId, row.RouteTableId, 'DescribeRoutes.RouteTableId'); const enabled = bool(route.Enabled, 'DescribeRoutes.Enabled'), type = verifiedGatewayType(route,row);
+      const gatewayId = typeof route.GatewayId === 'string' && route.GatewayId ? text(route.GatewayId, 'DescribeRoutes.GatewayId') : null;
+      return { routeEntryId: routeIdentity(route.RouteItemId), destinationCidrBlock: cidr(route.DestinationCidrBlock, 'DescribeRoutes.DestinationCidrBlock'), destinationIpv6CidrBlock: cidr(route.DestinationIpv6CidrBlock, 'DescribeRoutes.DestinationIpv6CidrBlock'), status: enabled ? 'Available' : 'Disabled', enabled, nextHops: [{ nextHopType: type, ...(typeof route.GatewayType === 'number' ? {providerNumericType:route.GatewayType} : {}), nextHopId: gatewayId, knownTarget: gatewayId !== null && [...natIds, ...hostIds, ...instances.map(host => host.privateIp)].includes(gatewayId) }] };
     }) });
   }
   const groups = await known('DescribeSecurityGroups', 'SecurityGroupSet', 'SecurityGroupIds', 'SecurityGroupId', sgIds, true);
@@ -167,15 +184,27 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
   }
   const acls = await known('DescribeNetworkAcls', 'NetworkAclSet', 'NetworkAclIds', 'NetworkAclId', aclIds);
   const networkAcls = acls.map(row => {
-    const phase = 'DescribeNetworkAcls'; same(row.VpcId, vpcId, phase); ownership(row, phase);
-    if (row.NetworkAclType !== 'TRIPLE') fail(phase, 'unsupported ACL tuple type');
-    const associations = list(row.SubnetSet, phase).map(subnet => { same(subnet.VpcId, vpcId, phase); return within(subnet.SubnetId, subnetIds, phase); });
-    exact(associations, subnets.filter(subnet => subnet.NetworkAclId === row.NetworkAclId).map(subnet => subnet.SubnetId), phase);
-    const rules = (value: unknown) => list(value, phase).map((entry, index) => {
-      const action = text(entry.Action, phase).toUpperCase(); if (!['ACCEPT','DROP'].includes(action)) fail(phase, 'invalid ACL action');
-      return { name: null, entryType: 'TRIPLE', evaluationOrder: entry.Priority == null ? null : numeric(entry.Priority, phase), responsePosition: index + 1, policy: action, protocol: text(entry.Protocol, phase), portRange: entry.Port ? text(entry.Port, phase) : 'all', cidr: cidr(entry.CidrBlock, phase), ipv6Cidr: cidr(entry.Ipv6CidrBlock, phase) };
+    const phase = 'DescribeNetworkAcls'; ownership(row, phase);
+    const hasVpc = row.VpcId !== undefined && row.VpcId !== null && row.VpcId !== '';
+    if (hasVpc) same(row.VpcId, vpcId, `${phase}.VpcId`);
+    if (row.NetworkAclType !== 'TRIPLE') fail(`${phase}.NetworkAclType`, 'unsupported ACL tuple type');
+    const associations = list(row.SubnetSet, `${phase}.SubnetSet`).map(subnet => {
+      const id = within(subnet.SubnetId, subnetIds, `${phase}.SubnetSet.SubnetId`);
+      // ACL association structs can omit VpcId; use the independently proven full subnet.
+      const proven = subnets.find(candidate => candidate.SubnetId === id)!;
+      same(proven.VpcId, vpcId, `${phase}.SubnetSet.verifiedVpcId`);
+      same(proven.NetworkAclId, row.NetworkAclId, `${phase}.SubnetSet.verifiedNetworkAclId`);
+      if (subnet.VpcId !== undefined && subnet.VpcId !== null && subnet.VpcId !== '') same(subnet.VpcId, vpcId, `${phase}.SubnetSet.VpcId`);
+      return id;
     });
-    return { networkAclId: row.NetworkAclId as string, status: 'Observed', vswitchIds: associations, inboundRules: rules(row.IngressEntries), outboundRules: rules(row.EgressEntries) };
+    exact(associations, subnets.filter(subnet => subnet.NetworkAclId === row.NetworkAclId).map(subnet => subnet.SubnetId), `${phase}.SubnetSet`);
+    if (!hasVpc && !associations.length) fail(`${phase}.VpcId`, 'missing VPC identity has no independently verified subnet association');
+    const rules = (value: unknown, direction: string) => list(value, `${phase}.${direction}`).map((entry, index) => {
+      const path = `${phase}.${direction}`;
+      const action = text(entry.Action, `${path}.Action`).toUpperCase(); if (!['ACCEPT','DROP'].includes(action)) fail(`${path}.Action`, 'invalid ACL action');
+      return { name: null, entryType: 'TRIPLE', evaluationOrder: entry.Priority == null ? null : numeric(entry.Priority, `${path}.Priority`), responsePosition: index + 1, policy: action, protocol: text(entry.Protocol, `${path}.Protocol`), portRange: entry.Port ? text(entry.Port, `${path}.Port`) : 'all', cidr: cidr(entry.CidrBlock, `${path}.CidrBlock`), ipv6Cidr: cidr(entry.Ipv6CidrBlock, `${path}.Ipv6CidrBlock`) };
+    });
+    return { networkAclId: row.NetworkAclId as string, status: 'Observed', vswitchIds: associations, inboundRules: rules(row.IngressEntries,'IngressEntries'), outboundRules: rules(row.EgressEntries,'EgressEntries') };
   });
   const addresses = await known('DescribeAddresses', 'AddressSet', 'AddressIds', 'AddressId', eipIds);
   for (const row of addresses) { ownership(row, 'DescribeAddresses'); if (row.InstanceId) within(row.InstanceId, [...hostIds, ...natIds], 'DescribeAddresses'); if (row.NetworkInterfaceId) within(row.NetworkInterfaceId, attachedIds, 'DescribeAddresses'); }

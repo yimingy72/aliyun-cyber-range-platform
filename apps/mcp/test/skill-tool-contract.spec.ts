@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import * as z from 'zod/v4';
@@ -55,6 +55,7 @@ type DocumentedParameters = {
   required: Set<string>;
   optional: Set<string>;
   conditional: Set<string>;
+  scopes: Set<string>;
 };
 
 describe('Skill MCP parameter contract', () => {
@@ -65,12 +66,14 @@ describe('Skill MCP parameter contract', () => {
       collectDocumentedTools(readFileSync(filePath, 'utf8'), documented);
     }
 
-    const tools = createToolRegistry({} as never).listTools(allScopes);
-    expect(documented.size).toBe(tools.length);
+    const tools = createToolRegistry({} as never).listTools(allScopes, 'admin');
+    expect([...documented.keys()].sort()).toEqual(tools.map((tool) => tool.name).sort());
 
     for (const tool of tools) {
       const parameters = documented.get(tool.name);
       expect(parameters, `${tool.name} is missing from the Skill tables`).toBeDefined();
+
+      expect([...parameters!.scopes].sort(), `${tool.name} scopes`).toEqual([...tool.requiredScopes].sort());
 
       const schema = z.toJSONSchema(tool.inputSchema) as {
         properties?: Record<string, unknown>;
@@ -87,8 +90,23 @@ describe('Skill MCP parameter contract', () => {
     }
   });
 
+  it('keeps product references reachable and local links resolvable', () => {
+    const entry = readFileSync(resolve(skillRoot, 'SKILL.md'), 'utf8');
+    for (const product of parameterTableFiles.slice(1)) {
+      expect(entry, `${product} must be discoverable from the entrypoint`).toContain(
+        `./references/products/${product.split('/').at(-1)}`,
+      );
+    }
+    for (const filePath of skillFiles) {
+      for (const match of readFileSync(filePath, 'utf8').matchAll(/\[[^\]]*\]\((\.[^\s)]+)\)/g)) {
+        const target = match[1]!.split('#')[0]!;
+        expect(existsSync(resolve(dirname(filePath), target)), `${filePath} links to missing ${target}`).toBe(true);
+      }
+    }
+  });
+
   it('mentions only registered MCP tools throughout the Skill documentation', () => {
-    const tools = createToolRegistry({} as never).listTools(allScopes);
+    const tools = createToolRegistry({} as never).listTools(allScopes, 'admin');
     const registeredToolNames = new Set(tools.map((tool) => tool.name));
 
     for (const filePath of skillFiles) {
@@ -136,10 +154,15 @@ function collectDocumentedTools(content: string, documented: Map<string, Documen
       continue;
     }
 
+    if (documented.has(toolName)) {
+      throw new Error(`Duplicate parameter table for ${toolName}`);
+    }
+
     documented.set(toolName, {
       required: parameterNames(requiredCell, false),
       optional: parameterNames(optionalCell, false),
       conditional: parameterNames(requiredCell, true),
+      scopes: new Set([...(cells[table === 'product' ? 4 : 2] ?? '').matchAll(/`([^`]+:[^`]+)`/g)].map((match) => match[1]!)),
     });
   }
 }

@@ -17,6 +17,10 @@
     }
   }
 
+  handle /.well-known/oauth-protected-resource/mcp {
+    reverse_proxy mcp:8787
+  }
+
   handle /mcp {
     reverse_proxy mcp:8787
   }

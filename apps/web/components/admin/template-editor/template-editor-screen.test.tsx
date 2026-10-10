@@ -4344,3 +4344,34 @@ it.each(['missing host', 'unattached NIC'])('checks every DNAT mapping and rejec
   await waitFor(() => expect(screen.getByRole('status').textContent).toContain(error));
   expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
 });
+
+it.each([80, 8081])('surfaces the Alibaba compiler DNAT backend constraint before saving when the second internal port is %s', async (internalPort) => {
+  const nodes = [
+    { id: 'router', kind: 'router', label: 'Router', routeRole: 'egress', egressType: 'internet', bindEip: false },
+    { id: 'switch-a', kind: 'switch', label: 'A', zoneKey: 'a', cidr: '10.0.0.0/24', purpose: 'internal', aclRules: [], nat: { snatEnabled: false, dnatMappings: [
+      { key: 'first-entry', targetHostId: 'host', externalPort: 8080, internalPort: 80, protocol: 'tcp' },
+      { key: 'second-entry', targetHostId: 'host', externalPort: 8081, internalPort, protocol: 'tcp' },
+    ] } },
+    { id: 'host', kind: 'ecs', label: 'Host', zoneKey: 'a', role: 'host', privateIp: '10.0.0.10', exposePublic: false,
+      platformImageAssetId: 'platform-image-1', image: 'Ubuntu 24.04 LTS', imageName: 'Ubuntu 24.04 LTS', imageId: 'ubuntu_24_04_x64_20G_alibase', cpu: 1, memory: 2,
+      dnatMappings: [], networkInterfaces: [], portGroups: [], nics: [{ id: 'primary', switchId: 'switch-a', privateIp: '10.0.0.10', secondaryIps: [], securityGroupRules: [] }],
+      initScript: '', imageStrategy: { mode: 'fixed', imageId: 'ubuntu_24_04_x64_20G_alibase' }, instanceTypeStrategy: { mode: 'auto' } },
+  ];
+  render(<TemplateEditorScreen template={{ id: 'backend-uniqueness', name: 'Backend uniqueness', slug: 'backend-uniqueness', revision: 1, status: 'private', topologyGraph: {
+    schemaVersion: '2.0.0', nodes, edges: [
+      { id: 'router-a', fromNodeId: 'router', toNodeId: 'switch-a', relationType: 'manual' },
+      { id: 'a-host', fromNodeId: 'switch-a', toNodeId: 'host', relationType: 'manual' },
+    ],
+  } }} />);
+  fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+  if (internalPort === 80) {
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('阿里云 DNAT 后端协议、IP 和端口重复：tcp:10.0.0.10:80（first-entry、second-entry）'));
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+  } else {
+    await waitFor(() => expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1));
+    const payload = validateAndSaveRangeTemplateMock.mock.calls[0]![3];
+    expect(payload.compiledProvisionSpec.dnatEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ externalPort: 8080, internalPort: 80 }), expect.objectContaining({ externalPort: 8081, internalPort: 8081 }),
+    ]));
+  }
+});

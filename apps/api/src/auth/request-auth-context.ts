@@ -5,6 +5,7 @@ export type RequestAuthContext = {
   source: 'web' | 'mcp';
   oauthClientId: string | null;
   cloudWorkspaceId?: string | null;
+  delegatedScopes?: string[];
 };
 
 export type AuthenticatedPlatformRequest = {

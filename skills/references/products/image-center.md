@@ -28,7 +28,7 @@
 
 ## 意图与规则
 
-- “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须同时写入资产 `id`（`platformImageAssetId`）和其云镜像 `imageId`。
+- “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。默认 `view: platform` 只包含平台可见资产，使用自有私有镜像时显式 `view: mine`；两个视图按资产 ID 去重，名称重复时不能猜选。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须同时写入资产 `id`（`platformImageAssetId`）和其云镜像 `imageId`。
 - 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
 - “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。
 - 收录只建立平台目录，不代表该云镜像或快照由平台创建，不写入平台创建标签、不接管其费用。平台打包/导入已有的费用账本保留原来源、owner 和回收时间，重新收录只更新目录关联。

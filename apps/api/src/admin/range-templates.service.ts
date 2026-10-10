@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { preserveOmittedHostPasswords } from './topology-secret-preservation';
 import { portableRangeTemplateGraph } from './range-template-portable-graph';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { isDeepStrictEqual } from 'node:util';
@@ -505,6 +506,7 @@ export class RangeTemplatesService {
     input: TemplateTopologyPayload,
     identity: { name: string; slug: string; version: string },
     currentUser?: AuthenticatedUser,
+    sourceGraph?: Record<string, unknown> | null,
   ): Promise<TemplateTopologyPayload> {
     const systemDefaults = this.systemConfigService ? await this.getTemplatePlacementDefaults() : null;
     const workspaceScope = getCurrentCloudWorkspaceScope();
@@ -580,8 +582,7 @@ export class RangeTemplatesService {
     this.validateTopologySpec(normalized.topologySpec);
     await this.assertTemplateEcsImageSelections(normalized, currentUser);
     let compiled: ReturnType<typeof compileTemplateTopology>;
-    try {
-      compiled = compileTemplateTopology(input.topologyGraph as ScenarioGraphDraft, {
+    const compilationMetadata: Parameters<typeof compileTemplateTopology>[1] = {
         name: identity.name,
         slug: identity.slug,
         version: identity.version,
@@ -593,7 +594,9 @@ export class RangeTemplatesService {
         ...(Array.isArray(scenarioTopology.secondaryVpcCidrs) ? { secondaryVpcCidrs: scenarioTopology.secondaryVpcCidrs as string[] } : {}),
         ...placementDefaults,
         publicEntryProtocols: input.topologySpec.publicEntry.protocols,
-      });
+      };
+    try {
+      compiled = compileTemplateTopology(input.topologyGraph as ScenarioGraphDraft, compilationMetadata);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : 'Invalid template topology graph');
     }
@@ -606,6 +609,11 @@ export class RangeTemplatesService {
       if (!isDeepStrictEqual(JSON.parse(JSON.stringify(normalized[key])), canonical[key])) {
         throw new BadRequestException(`${key} does not match topologyGraph`);
       }
+    }
+    const preserved = preserveOmittedHostPasswords(sourceGraph, input.topologyGraph);
+    if (preserved !== input.topologyGraph) {
+      Object.assign(canonical, JSON.parse(JSON.stringify(compileTemplateTopology(preserved as ScenarioGraphDraft, compilationMetadata))));
+      canonical.compiledProvisionSpec.topology = { ...(canonical.compiledProvisionSpec.topology as Record<string, unknown>), ...placementDefaults };
     }
     return {
       ...canonical,
@@ -625,7 +633,7 @@ export class RangeTemplatesService {
       name: template.name,
       slug: template.slug,
       version: template.version,
-    }, currentUser);
+    }, currentUser, template.currentDraftVersion?.topologyGraph ?? template.topologyGraph);
 
     await this.validateTopologyPayload(topology, currentUser);
     return topology;
