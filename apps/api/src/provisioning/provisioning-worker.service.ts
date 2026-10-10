@@ -914,7 +914,7 @@ export class ProvisioningWorkerService {
       }
     }
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
-      await this.rangeProvisioner.recoverUntrackedResources(inspectedInput,async () => {
+      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext) },async () => {
         input.signal?.throwIfAborted();
         if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
       },async (recovered,sourceJobId) => {

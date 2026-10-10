@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from './opentofu-state-evidence';
+import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, fileExists } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { requestTencentCloud } from '../admin/tencent-cloud-client';
 
 import {
   OpenTofuRunner,
@@ -510,7 +511,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         varsFilePath: workspace.varsFilePath,
       });
 
-      await assertDestroyComplete(workspace.workspaceDir, priorState, unresolvedApply);
+      const absenceProof = input.runtimeConfig?.provider === 'tencent_cloud'
+        ? await this.readTencentAbsenceProof(workspace.workspaceDir,input,priorState) : false;
+      await assertDestroyComplete(workspace.workspaceDir, priorState, unresolvedApply && !absenceProof);
+      await fs.rm(path.join(workspace.workspaceDir,'.tencent-apply-absence-proved.json'),{force:true});
       return {
         result: command,
         message: 'OpenTofu destroy completed.',
@@ -533,8 +537,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const tags = variables.tags as Record<string,string>;
     if (!tags || tags.PlatformCreateJobId !== pending.sourceProvisionJobId || tags.CloudAccountContextId !== account.cloudAccountContextId || tags.CloudAccountUid !== account.accountUid || tags.RangeInstanceId !== input.rangeInstanceId) throw new Error('Tencent recovery intent differs from its original source job');
     const vpc = state.instances.find(resource => resource.type === 'tencentcloud_vpc');
+    const originalVpcId = vpc ? String(vpc.attributes.id) : input.knownResourceSummary?.vpcId;
+    if (!originalVpcId) throw new Error('Tencent recovery cannot adopt a network without its original persisted VPC identity');
+    const ownedVpcs = await describeTencentResourceInventory(account,'vpc',{ ids: [originalVpcId] });
+    if (!ownedVpcs.length) {
+      await this.proveTencentUnknownApplyAbsent(input,dir,pending,state,tags,originalVpcId,assertCurrent);
+      return;
+    }
     if (!vpc) throw new Error('Tencent recovery cannot adopt a network without its original persisted VPC identity');
-    const ownedVpcs = await describeTencentResourceInventory(account,'vpc',{ ids: [String(vpc.attributes.id)] });
     const tagKeys = ['CloudProvider','PlatformManaged','CreatedBy','PlatformScope','PlatformUserId','CloudAccountUid','CloudAccountContextId','RangeInstanceId','PlatformCreateJobId'];
     const owns = (actual: Record<string,string>) => tagKeys.every(key => tags[key] === undefined ? actual[key] === undefined : actual[key] === tags[key]);
     if (ownedVpcs.length !== 1 || !owns(ownedVpcs[0].tags)) throw new Error('Tencent recovery VPC ownership cannot be independently verified');
@@ -581,6 +591,75 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       if (imported?.lineage !== state.lineage || imported.instances.find(resource => resource.address === entry.address)?.attributes.id !== entry.id) throw new Error('Tencent recovery import did not persist its exact original identity');
     }
     await assertCurrent();
+  }
+
+  private async proveTencentUnknownApplyAbsent(input: RangeProvisionDestroyInput, dir: string,
+    pending: NonNullable<Awaited<ReturnType<typeof readPendingApplyEvidence>>>, state: NonNullable<Awaited<ReturnType<typeof readWorkspaceState>>>,
+    tags: Record<string,string>, vpcId: string, assertCurrent: () => Promise<void>) {
+    const account = input.runtimeConfig as SystemCloudAccountContext;
+    const bound = input.knownResourceSummary?.executionContext;
+    if (!bound || bound.provider !== 'tencent_cloud' || bound.cloudAccountUid !== account.accountUid || bound.cloudAccountContextId !== account.cloudAccountContextId
+      || bound.regionId !== account.defaultRegion || bound.zoneId !== account.defaultZoneId || input.knownResourceSummary?.vpcId !== vpcId
+      || tags.CloudProvider !== 'tencent_cloud' || tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformManaged !== 'true'
+      || !['user','platform'].includes(tags.PlatformScope) || tags.PlatformScope === 'user' && !tags.PlatformUserId
+      || tags.PlatformScope === 'platform' && Boolean(tags.PlatformUserId)
+      || ['PlatformScope','PlatformUserId'].some(key => input.billingTags?.[key] !== undefined && input.billingTags[key] !== tags[key]))
+      throw new Error('Tencent absence recovery requires its original frozen resource inventory and owner');
+    const fields = { ecs:'hostIds',disk:'systemDiskIds',vpc:'vpcId',vswitch:'subnetIds',security_group:'securityGroupIds',network_acl:'networkAclIds',eni:'secondaryNetworkInterfaceIds',nat:'natGatewayIds',eip:'eipAllocationIds' } as const;
+    const stateKinds = { ecs:'tencentcloud_instance',vpc:'tencentcloud_vpc',vswitch:'tencentcloud_subnet',security_group:'tencentcloud_security_group',network_acl:'tencentcloud_vpc_acl',eni:'tencentcloud_eni',nat:'tencentcloud_nat_gateway',eip:'tencentcloud_eip' };
+    const ids = (kind: keyof typeof fields): string[] => {
+      const collect = (summary: RangeResourceSummary): string[] => {
+        if (summary.executionContext && ['provider','cloudAccountUid','cloudAccountContextId','regionId','zoneId'].some(key => (summary.executionContext as any)[key] !== (bound as any)[key]))
+          throw new Error('Tencent absence recovery inventory has conflicting frozen identities');
+        const value = summary[fields[kind]];
+        return [...(typeof value === 'string' ? [value] : Object.values(value ?? {})),
+          ...(kind === 'disk' ? Object.values(summary.dataDiskIds ?? {}) : []), ...(kind === 'eip' && summary.eipAllocationId ? [summary.eipAllocationId] : []),
+          ...(summary.retiredResources ? collect(summary.retiredResources) : [])];
+      };
+      const stateIds = kind === 'disk' ? state.instances.filter(entry => entry.type === 'tencentcloud_instance').map(entry => entry.attributes.system_disk_id)
+        : state.instances.filter(entry => entry.type === stateKinds[kind]).map(entry => entry.attributes.id);
+      return [...new Set([...collect(input.knownResourceSummary!), ...stateIds.filter((value): value is string => typeof value === 'string' && Boolean(value))])];
+    };
+    const scopeTags = Object.fromEntries(['CloudProvider','PlatformManaged','CreatedBy','PlatformScope','PlatformUserId','CloudAccountUid','CloudAccountContextId','RangeInstanceId']
+      .filter(key => tags[key] !== undefined).map(key => [key,tags[key]]));
+    for (let round = 0; round < 2; round++) {
+      await assertCurrent(); input.signal?.throwIfAborted();
+      for (const kind of Object.keys(fields) as Array<keyof typeof fields>) {
+        const known = ids(kind);
+        if (known.length && (await describeTencentResourceInventory(account,kind,{ids:known})).length)
+          throw new Error('Tencent original tracked resources remain; preserve unknown apply recovery material');
+        const observed = await describeTencentResourceInventory(account,kind,kind === 'network_acl' ? {vpcId} : {tags:scopeTags});
+        if (observed.length) throw new Error('Tencent original range resources remain; preserve unknown apply recovery material');
+      }
+      const routeIds = [...new Set([...Object.values(input.knownResourceSummary!.routeTableIds ?? {}), ...state.instances.filter(entry => entry.type === 'tencentcloud_route_table').map(entry => String(entry.attributes.id))])];
+      const routeQueries = [
+        ...Array.from({length:Math.ceil(routeIds.length/100)},(_,index) => ({RouteTableIds:routeIds.slice(index*100,index*100+100)})),
+        {Filters:[{Name:'vpc-id',Values:[vpcId]}]},
+      ];
+      for (const query of routeQueries) {
+        const response = await requestTencentCloud<{RequestId?:string;TotalCount?:number;RouteTableSet?:unknown[]}>({service:'vpc',version:'2017-03-12',action:'DescribeRouteTables',regionId:account.defaultRegion,
+          accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,parameters:{...query,Offset:'0',Limit:'100'}});
+        if (typeof response.RequestId !== 'string' || !response.RequestId.trim() || response.TotalCount !== 0 || !Array.isArray(response.RouteTableSet) || response.RouteTableSet.length)
+          throw new Error('Tencent original route-table absence is not independently proven');
+      }
+    }
+    await assertCurrent();
+    const proof = { version:1, identity:this.tencentWorkspaceIdentity(input), pendingHash:createHash('sha256').update(JSON.stringify(pending)).digest('hex'),
+      lineage:state.lineage, serial:state.serial, observedAt:new Date().toISOString() };
+    const file = path.join(dir,'.tencent-apply-absence-proved.json');
+    await fs.writeFile(`${file}.tmp`,JSON.stringify(proof),{mode:0o600});
+    await assertCurrent(); await fs.rename(`${file}.tmp`,file);
+  }
+
+  private async readTencentAbsenceProof(dir: string,input: RangeProvisionDestroyInput,state: NonNullable<Awaited<ReturnType<typeof readWorkspaceState>>>) {
+    const file = path.join(dir,'.tencent-apply-absence-proved.json');
+    if (!await fileExists(file)) return false;
+    const proof = JSON.parse(await fs.readFile(file,'utf8'));
+    const pending = await readPendingApplyEvidence(dir);
+    return Boolean(pending && proof.version === 1 && proof.lineage === state.lineage && proof.serial === state.serial
+      && JSON.stringify(proof.identity) === JSON.stringify(this.tencentWorkspaceIdentity(input))
+      && proof.pendingHash === createHash('sha256').update(JSON.stringify(pending)).digest('hex')
+      && Number.isFinite(Date.parse(proof.observedAt)) && Date.now()-Date.parse(proof.observedAt) >= 0 && Date.now()-Date.parse(proof.observedAt) < 5*60_000);
   }
 
   async inspectResources(input: RangeProvisionDestroyInput): Promise<RangeResourceSummary | null> {

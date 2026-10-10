@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { OpenTofuRangeProvisioner } from '../src/provisioning/open-tofu-range-provisioner';
 import * as cloud from '../src/admin/tencent-cloud-resources';
+import * as rpc from '../src/admin/tencent-cloud-client';
 import { retiredResourceInventory } from '../src/provisioning/retired-resource-inventory';
 
 const account = { provider: 'tencent_cloud' as const, accountUid: '100000000001', accountUidResolved: true, cloudAccountContextId: 'context-a', defaultRegion: 'ap-shanghai', defaultZoneId: 'ap-shanghai-2', accessKeyId: 'fake', accessKeySecret: 'fake', imageImportBucket: '' };
@@ -81,4 +82,43 @@ it('rejects default-disabled real NAT execution before cloud reads or resource c
   await expect((test.provisioner as any).buildTencentVariables(test.input,{ natGateways: [{ key:'shared' }] },account,{requireRuntimePasswords:true})).rejects.toThrow('NAT execution is disabled');
   expect(test.runner.apply).not.toHaveBeenCalled();
   expect(rpc).not.toHaveBeenCalled();
+});
+
+async function absentFixture() {
+  const test = await fixture();
+  await fs.writeFile(path.join(test.dir,'terraform.tfstate'),JSON.stringify({version:4,lineage:'source-lineage',serial:2,resources:[]}));
+  for (const file of ['main.tf','variables.tf','outputs.tf','versions.tf']) await fs.writeFile(path.join(test.dir,file),'fixture');
+  test.query.mockResolvedValue([]);
+  jest.spyOn(rpc,'requestTencentCloud').mockResolvedValue({RequestId:'fixture-route-request',TotalCount:0,RouteTableSet:[]} as any);
+  const input = { ...test.input, billingTags:{PlatformScope:'user',PlatformUserId:'owner-a'}, knownResourceSummary:{mode:'opentofu' as const,
+    executionContext:{provider:'tencent_cloud' as const,cloudAccountUid:account.accountUid,cloudAccountContextId:account.cloudAccountContextId,regionId:account.defaultRegion,zoneId:account.defaultZoneId},
+    vpcId:'vpc-fixture',hostIds:{entry:'ins-known'},systemDiskIds:{entry:'disk-known'},subnetIds:{dmz:'subnet-known'},securityGroupIds:{entry:'sg-known'},
+    networkAclIds:{dmz:'acl-known'},secondaryNetworkInterfaceIds:{entry:'eni-known'},natGatewayIds:{shared:'nat-known'},eipAllocationIds:{entry:'eip-fixture'},routeTableIds:{dmz:'rtb-known'} } };
+  const destroy = jest.fn(async () => { await fs.writeFile(path.join(test.dir,'terraform.tfstate'),JSON.stringify({version:4,lineage:'source-lineage',serial:3,resources:[]})); return {}; });
+  Object.assign(test.runner,{destroy});
+  return {...test,input,destroy};
+}
+it('closes an already cleaned unknown apply only after both complete native scans and matching durable absence proof', async () => {
+  const test = await absentFixture();
+  await test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist);
+  expect(test.runner.importResource).not.toHaveBeenCalled(); expect(test.runner.apply).not.toHaveBeenCalled();
+  expect(new Set(test.query.mock.calls.map(call => call[1]))).toEqual(new Set(['ecs','disk','vpc','vswitch','security_group','network_acl','eni','nat','eip']));
+  expect(test.query.mock.calls.filter(call => call[1] === 'disk')).toHaveLength(4);
+  await test.provisioner.destroy(test.input);
+  expect(test.destroy).toHaveBeenCalledTimes(1);
+  await expect(fs.stat(path.join(test.dir,'.range-apply-started'))).rejects.toMatchObject({code:'ENOENT'});
+});
+it.each(['known-paid','tagged-residual','changed-context','changed-pending','incomplete-route'])('retains unknown apply recovery for %s evidence', async reason => {
+  const test = await absentFixture();
+  if (reason === 'known-paid') test.query.mockImplementation(async (_account,kind,query) => kind === 'eip' && query.ids ? [{id:'eip-fixture'}] as any : []);
+  if (reason === 'tagged-residual') test.query.mockImplementation(async (_account,kind,query) => kind === 'ecs' && query.tags ? [{id:'ins-unknown'}] as any : []);
+  if (reason === 'changed-context') test.input.knownResourceSummary.executionContext.cloudAccountUid = 'foreign';
+  if (reason === 'incomplete-route') jest.spyOn(rpc,'requestTencentCloud').mockResolvedValue({TotalCount:0,RouteTableSet:[]} as any);
+  if (reason === 'changed-pending') {
+    await test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist);
+    const file=path.join(test.dir,'.range-apply-started');const pending=JSON.parse(await fs.readFile(file,'utf8'));pending.submittedAt=new Date(0).toISOString();await fs.writeFile(file,JSON.stringify(pending));
+    await expect(test.provisioner.destroy(test.input)).rejects.toThrow('previous apply outcome is unknown');
+  } else await expect(test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist)).rejects.toThrow();
+  await expect(fs.stat(path.join(test.dir,'.range-apply-started'))).resolves.toBeDefined();
+  expect(test.runner.apply).not.toHaveBeenCalled();expect(test.runner.importResource).not.toHaveBeenCalled();
 });

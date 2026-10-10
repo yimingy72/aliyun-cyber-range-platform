@@ -18,7 +18,7 @@ it('retains frozen range identity, deterministic intent, NIC rules and atomic ex
   const request = input(); const vars = renderTencentRangeVariables(request);
   expect(vars.hosts[0]).toMatchObject({ terminate_at: '2100-01-01T00:00:00Z', private_ip: '10.0.1.10', creation_intent_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
   expect(vars.network_interfaces[1]).toMatchObject({ device_index: 1, secondary_ips: ['10.0.1.21'] });
-  expect(vars.security_group_rules[0]).toMatchObject({ action: 'ACCEPT', protocol: 'TCP', port: '80-80', host_key: 'entry' });
+  expect(vars.security_group_rules[0]).toMatchObject({ action: 'ACCEPT', protocol: 'TCP', port: '80', host_key: 'entry' });
   expect(vars.tags).toMatchObject({ CloudProvider: 'tencent_cloud', CloudAccountUid: '100000000001', CloudAccountContextId: 'context-a' });
   expect(renderTencentRangeVariables(request)).toEqual(vars);
   expect(JSON.stringify(vars.hosts)).not.toContain('FixturePassword');
@@ -26,6 +26,22 @@ it('retains frozen range identity, deterministic intent, NIC rules and atomic ex
   expect(renderTencentRangeVariables(changed).hosts[0].creation_intent_id).not.toBe(vars.hosts[0].creation_intent_id);
 });
 it.each([1,2,4,6,8,12,14,64])('uses documented ENI capacity for %d vCPUs', cpu => expect(tencentNicCapacity(cpu).nics).toBeGreaterThanOrEqual(2));
+it.each(['tcp', 'udp', 'TcP'])('renders a single numeric %s port without a same-endpoint interval for SG and ACL', protocol => {
+  const request = input();
+  request.plan.securityGroupRules[0].protocol = protocol;
+  request.plan.securityGroupRules[0].portRange = '8080/8080';
+  const { targetHostKey: _host, targetDeviceIndex: _device, ...rule } = request.plan.securityGroupRules[0];
+  request.plan.aclDefinitions = [{ ...rule, zoneKey: 'dmz', direction: 'inbound' }];
+  const vars = renderTencentRangeVariables(request);
+  expect(vars.security_group_rules[0]).toMatchObject({ protocol: protocol.toUpperCase(), port: '8080' });
+  expect(vars.acls[0]).toMatchObject({ protocol: protocol.toUpperCase(), port: '8080' });
+  request.plan.securityGroupRules[0].portRange = '8080/8090';
+  expect(renderTencentRangeVariables(request).security_group_rules[0].port).toBe('8080-8090');
+});
+it.each(['0/0', '65536/65536', '8081/8080'])('rejects invalid port interval %s before rendering network resources', portRange => {
+  const request = input(); request.plan.securityGroupRules[0].portRange = portRange;
+  expect(() => renderTencentRangeVariables(request)).toThrow('invalid port range');
+});
 it.each(['all', 'icmp', 'tcp'])('renders provider-compatible ACL all ports and stable descriptions for %s', protocol => {
   const request = input();
   const rule = { key: 'all-out', name: 'allow all egress', direction: 'egress' as const, policy: 'accept' as const, protocol, portRange: '-1/-1', sourceCidr: '0.0.0.0/0', priority: 10 };

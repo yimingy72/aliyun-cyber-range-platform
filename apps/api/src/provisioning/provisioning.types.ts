@@ -73,6 +73,7 @@ export type RangeProvisionCreateResult = {
 };
 
 export type RangeProvisionDestroyInput = {
+  knownResourceSummary?: RangeResourceSummary;
   signal?: AbortSignal;
   requirePersistedState?: boolean;
   rangeInstanceId: string;

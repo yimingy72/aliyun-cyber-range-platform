@@ -55,6 +55,18 @@ run "keeps_atomic_nat_and_eip_recovery_identity" {
   }
 }
 
+run "preserves_numeric_service_port_protocol_contract" {
+  command = plan
+  variables {
+    security_group_rules = [{ key = "health", host_key = "entry", device_index = 0, direction = "ingress", action = "ACCEPT", protocol = "TCP", port = "8080", cidr_block = "0.0.0.0/0", priority = 1, description = "HEALTH" }]
+    acls                 = [{ key = "health", zone_key = "dmz", direction = "inbound", action = "ACCEPT", protocol = "TCP", port = "8080", cidr_block = "0.0.0.0/0", priority = 1, description = "HEALTH" }]
+  }
+  assert {
+    condition     = tencentcloud_security_group_rule_set.nics["entry-0"].ingress[0].protocol == "TCP" && tencentcloud_security_group_rule_set.nics["entry-0"].ingress[0].port == "8080" && tencentcloud_vpc_acl.zones["dmz"].ingress[0] == "ACCEPT#0.0.0.0/0#8080#TCP#HEALTH"
+    error_message = "Single service ports must remain canonical numeric strings with TCP before provider serialization."
+  }
+}
+
 run "scopes_reused_acl_keys_to_zone_and_direction" {
   command = plan
   variables {
