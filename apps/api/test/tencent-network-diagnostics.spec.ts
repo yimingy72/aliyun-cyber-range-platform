@@ -23,8 +23,8 @@ function fixture() {
     { NetworkInterfaceId: 'eni-secondary', Primary: false, VpcId: 'vpc-owned', SubnetId: 'subnet-inner', GroupSet: ['sg-inner'],
       MacAddress: '20:90:6F:FC:9F:70', Zone: account.defaultZoneId, State: 'AVAILABLE', Attachment: { InstanceId: 'ins-owned', InstanceAccountId: account.accountUid, DeviceIndex: 3 }, PrivateIpAddressSet: [{ PrivateIpAddress: '10.0.2.10', Primary: true }, { PrivateIpAddress: '10.0.2.11', Primary: false }], TagSet: tagSet() },
   ];
-  const subnets = [{ SubnetId: 'subnet-entry', VpcId: 'vpc-owned', CidrBlock: '10.0.1.0/24', RouteTableId: 'rtb-owned', NetworkAclId: '', TagSet: tagSet() },
-    { SubnetId: 'subnet-inner', VpcId: 'vpc-owned', CidrBlock: '10.0.2.0/24', RouteTableId: 'rtb-owned', NetworkAclId: 'acl-inner', TagSet: tagSet() }];
+  const subnets = [{ SubnetId: 'subnet-entry', VpcId: 'vpc-owned', Zone: account.defaultZoneId, CidrBlock: '10.0.1.0/24', RouteTableId: 'rtb-owned', NetworkAclId: '', TagSet: tagSet() },
+    { SubnetId: 'subnet-inner', VpcId: 'vpc-owned', Zone: account.defaultZoneId, CidrBlock: '10.0.2.0/24', RouteTableId: 'rtb-owned', NetworkAclId: 'acl-inner', TagSet: tagSet() }];
   const list = (key: string, rows: any[]) => ({ [key]: rows, TotalCount: rows.length });
   const payload = (action: string, body: any) => {
     switch (action) {
@@ -55,6 +55,43 @@ function fixture() {
   return { db, config, enis, subnets, calls, changes, service: new RangeNetworkDiagnosticsService(db as never, config as never) };
 }
 afterEach(() => jest.restoreAllMocks());
+it.each(['missing', 'null', 'empty'])('accepts a tagless automatic primary NIC with %s optional zone only through its proven CVM and subnet', async zone => {
+  const s = fixture();
+  s.changes.set('DescribeNetworkInterfaces', value => {
+    for (const row of value.NetworkInterfaceSet) {
+      if (zone === 'missing') delete row.Zone; else row.Zone = zone === 'null' ? null : '';
+      if (row.Primary) delete row.TagSet;
+    }
+    return value;
+  });
+  const result = await s.service.get(range as never, user);
+  expect(result.networkInterfaces[0]).toMatchObject({ type: 'Primary', instanceId: 'ins-owned', deviceIndex: 0, vswitchId: 'subnet-entry', vpcId: 'vpc-owned' });
+  expect(s.calls.findIndex(call => call.action === 'DescribeSubnets')).toBeLessThan(s.calls.findIndex(call => call.action === 'DescribeNetworkInterfaces'));
+});
+it.each(['subnet-zone','eni-zone','account','host','subnet','private-ip','device-type','secondary-owner'])('rejects %s mismatches despite a valid automatic primary NIC', async mismatch => {
+  const s = fixture();
+  if (mismatch === 'subnet-zone') s.changes.set('DescribeSubnets', value => { value.SubnetSet[0].Zone = 'ap-shanghai-3'; return value; });
+  else s.changes.set('DescribeNetworkInterfaces', value => {
+    const primary = value.NetworkInterfaceSet[0]; delete primary.TagSet;
+    if (mismatch === 'eni-zone') primary.Zone = 'ap-shanghai-3'; else delete primary.Zone;
+    if (mismatch === 'account') primary.Attachment.InstanceAccountId = 'foreign';
+    if (mismatch === 'host') primary.Attachment.InstanceId = 'ins-foreign';
+    if (mismatch === 'subnet') primary.SubnetId = 'subnet-inner';
+    if (mismatch === 'private-ip') primary.PrivateIpAddressSet[0].PrivateIpAddress = '10.0.1.99';
+    if (mismatch === 'device-type') primary.Attachment.DeviceIndex = '0';
+    if (mismatch === 'secondary-owner') value.NetworkInterfaceSet[1].TagSet = [];
+    return value;
+  });
+  await expect(s.service.get(range as never, user)).rejects.toThrow('diagnostics');
+});
+it('returns only safe check flags when the attachment owner does not match the frozen UID', async () => {
+  const s = fixture(); s.changes.set('DescribeNetworkInterfaces', value => { delete value.NetworkInterfaceSet[0].Zone; value.NetworkInterfaceSet[0].Attachment.InstanceAccountId = 'private-owner-must-not-return'; return value; });
+  const error = await s.service.get(range as never, user).catch(value => value);
+  expect(String(error)).toContain('check=attachment_owner_uid;present=true;type=string;matches=false');
+  expect(String(error)).not.toContain('private-owner-must-not-return');
+  expect(String(error)).not.toContain(account.accountUid);
+  expect(String(error)).not.toContain(account.accessKeySecret);
+});
 it('dispatches only Tencent read APIs and projects bound cloud facts with actual NIC index and request evidence', async () => {
   const s = fixture(), result = await s.service.get(range as never, user);
   expect(result).toMatchObject({ status: 'succeeded', provider: 'tencent_cloud', cloudAccountContextId: 'context-a', guestConfigurationVerified: false });

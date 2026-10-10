@@ -13,9 +13,11 @@ function object(value: unknown, phase: string): Row { if (!value || typeof value
 function text(value: unknown, phase: string): string { if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\r\n]/.test(value)) fail(phase, 'malformed field'); return value; }
 function list(value: unknown, phase: string): Row[] { if (!Array.isArray(value)) fail(phase, 'missing complete array'); return value.map(row => object(row, phase)); }
 function strings(value: unknown, phase: string): string[] { if (!Array.isArray(value)) fail(phase, 'missing identity array'); const result = value.map(item => text(item, phase)); if (new Set(result).size !== result.length) fail(phase, 'duplicate identity'); return result; }
-function numeric(value: unknown, phase: string): number { if (!Number.isSafeInteger(value) || Number(value) < 0) fail(phase, 'malformed numeric field'); return Number(value); }
+type FrozenCheck = 'frozen_scope' | 'subnet_zone' | 'eni_vpc' | 'attachment_owner_uid' | 'eni_zone' | 'attachment_host_snapshot' | 'attachment_device_index_snapshot' | 'attachment_device_index_type' | 'primary_subnet' | 'primary_private_ip';
+function flags(value: unknown) { return `present=${value !== undefined && value !== null && value !== ''};type=${Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value}`; }
+function numeric(value: unknown, phase: string, check: FrozenCheck = 'frozen_scope'): number { if (!Number.isSafeInteger(value) || Number(value) < 0) fail(phase, `malformed numeric field;check=${check};${flags(value)};integer=false`); return Number(value); }
 function bool(value: unknown, phase: string): boolean { if (typeof value !== 'boolean') fail(phase, 'missing boolean field'); return value; }
-function same(actual: unknown, expected: unknown, phase: string) { if (actual !== expected) fail(phase, 'frozen scope or attachment mismatch'); }
+function same(actual: unknown, expected: unknown, phase: string, check: FrozenCheck = 'frozen_scope') { if (actual !== expected) fail(phase, `frozen scope or attachment mismatch;check=${check};${flags(actual)};matches=false`); }
 function within(id: unknown, expected: string[], phase: string): string { const result = text(id, phase); if (!expected.includes(result)) fail(phase, 'resource outside persisted scope'); return result; }
 function exact(actual: string[], expected: string[], phase: string) { if (new Set(actual).size !== actual.length || actual.length !== expected.length || actual.some(id => !expected.includes(id))) fail(phase, 'incomplete or unrequested identities'); }
 function identity(id: unknown, prefix: string, phase: string): string { const result = text(id, phase); if (!new RegExp(`^${prefix}-[a-zA-Z0-9]+$`).test(result)) fail(phase, 'invalid provider identity'); return result; }
@@ -87,6 +89,8 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
       instanceType: text(row.InstanceType, phase), privateIp: ip(strings(row.PrivateIpAddresses, phase)[0], phase), vswitchId: placement.SubnetId as string,
       securityGroupIds: groups, networkInterfaceIds: [] as string[] };
   });
+  const subnets = await known('DescribeSubnets', 'SubnetSet', 'SubnetIds', 'SubnetId', subnetIds, true);
+  for (const row of subnets) { same(row.VpcId, vpcId, 'DescribeSubnets'); same(row.Zone, frozen.zoneId, 'DescribeSubnets','subnet_zone'); ownership(row, 'DescribeSubnets'); within(row.RouteTableId, routeIds, 'DescribeSubnets'); if (row.NetworkAclId) within(row.NetworkAclId, aclIds, 'DescribeSubnets'); }
   // CVM-created primary ENIs have no OpenTofu resource ID. Discover only through each proven host attachment;
   // every auxiliary ENI must already have a persisted identity. Then re-read the complete exact-ID set.
   const attached: Row[] = [];
@@ -96,23 +100,26 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
   const enis = await known('DescribeNetworkInterfaces', 'NetworkInterfaceSet', 'NetworkInterfaceIds', 'NetworkInterfaceId', attachedIds);
   const networkInterfaces = enis.map(row => {
     const phase = 'DescribeNetworkInterfaces', attachment = object(row.Attachment, phase), primary = bool(row.Primary, phase);
-    same(row.VpcId, vpcId, phase); same(attachment.InstanceAccountId, frozen.cloudAccountUid, phase); same(row.Zone, frozen.zoneId, phase);
+    same(row.VpcId, vpcId, phase,'eni_vpc'); same(attachment.InstanceAccountId, frozen.cloudAccountUid, phase,'attachment_owner_uid');
+    if (row.Zone !== undefined && row.Zone !== null && row.Zone !== '') same(row.Zone, frozen.zoneId, phase,'eni_zone');
     const instanceId = within(attachment.InstanceId, hostIds, phase), vswitchId = within(row.SubnetId, subnetIds, phase);
+    const subnet = subnets.find(value => value.SubnetId === vswitchId)!;
+    same(subnet.Zone, frozen.zoneId, phase,'subnet_zone');
     const initial = attached.find(value => value.NetworkInterfaceId === row.NetworkInterfaceId)!;
     for (const key of ['VpcId','SubnetId','Primary','MacAddress']) same(row[key], initial[key], phase);
-    same(attachment.InstanceId, object(initial.Attachment, phase).InstanceId, phase);
-    same(attachment.DeviceIndex, initial.Attachment.DeviceIndex, phase);
+    same(attachment.InstanceId, object(initial.Attachment, phase).InstanceId, phase,'attachment_host_snapshot');
+    same(attachment.DeviceIndex, initial.Attachment.DeviceIndex, phase,'attachment_device_index_snapshot');
     if (!primary) { within(row.NetworkInterfaceId, secondaryIds, phase); ownership(row, phase); }
     else if (secondaryIds.includes(row.NetworkInterfaceId)) fail(phase, 'persisted auxiliary became primary');
     const privateIps = list(row.PrivateIpAddressSet, phase).map(item => ({ privateIp: ip(item.PrivateIpAddress, phase), primary: bool(item.Primary, phase) }));
     if (!privateIps.length || privateIps.filter(item => item.primary).length !== 1 || new Set(privateIps.map(item => item.privateIp)).size !== privateIps.length) fail(phase, 'invalid private IP set');
     const host = instances.find(item => item.instanceId === instanceId)!;
-    if (primary) { same(vswitchId, host.vswitchId, phase); same(privateIps.find(item => item.primary)!.privateIp, host.privateIp, phase); }
+    if (primary) { same(vswitchId, host.vswitchId, phase,'primary_subnet'); same(privateIps.find(item => item.primary)!.privateIp, host.privateIp, phase,'primary_private_ip'); }
     const securityGroupIds = strings(row.GroupSet, phase); for (const id of securityGroupIds) within(id, sgIds, phase);
     if (primary) exact(securityGroupIds, host.securityGroupIds, phase);
     const macAddress = text(row.MacAddress, phase); if (!/^(?:[a-fA-F0-9]{2}:){5}[a-fA-F0-9]{2}$/.test(macAddress)) fail(phase, 'invalid MAC');
     host.networkInterfaceIds.push(row.NetworkInterfaceId);
-    return { networkInterfaceId: row.NetworkInterfaceId as string, type: primary ? 'Primary' : 'Secondary', instanceId, deviceIndex: numeric(attachment.DeviceIndex, phase),
+    return { networkInterfaceId: row.NetworkInterfaceId as string, type: primary ? 'Primary' : 'Secondary', instanceId, deviceIndex: numeric(attachment.DeviceIndex, phase,'attachment_device_index_type'),
       privateIp: privateIps.find(item => item.primary)!.privateIp, privateIps, vswitchId, vpcId, securityGroupIds, macAddress, sourceDestCheck: null,
       status: text(row.NetworkInterfaceState ?? row.State, phase), guestConfigurationVerified: false };
   });
@@ -121,8 +128,6 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
     if (nics.filter(nic => nic.type === 'Primary').length !== 1 || new Set(nics.map(nic => nic.deviceIndex)).size !== nics.length) fail('DescribeNetworkInterfaces', 'ambiguous primary or actual device index');
   }
   exact([...new Set(networkInterfaces.flatMap(nic => nic.securityGroupIds))], sgIds, 'security groups');
-  const subnets = await known('DescribeSubnets', 'SubnetSet', 'SubnetIds', 'SubnetId', subnetIds, true);
-  for (const row of subnets) { same(row.VpcId, vpcId, 'DescribeSubnets'); ownership(row, 'DescribeSubnets'); within(row.RouteTableId, routeIds, 'DescribeSubnets'); if (row.NetworkAclId) within(row.NetworkAclId, aclIds, 'DescribeSubnets'); }
   const routeRows = await known('DescribeRouteTables', 'RouteTableSet', 'RouteTableIds', 'RouteTableId', routeIds, true);
   const routeTables = [];
   for (const row of routeRows) {
