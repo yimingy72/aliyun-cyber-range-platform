@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -174,10 +174,20 @@ export class ProvisioningWorkerService {
 
   private logReconciliationFailure(space: { id: string; provider: string }, contextId: string | null, error: unknown) {
     // The TC3 client already strips credentials and vendor messages from its typed code.
-    const code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
+    let code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
       ? error.code : 'UNCLASSIFIED_RECONCILIATION_ERROR';
-    const request = error instanceof TencentCloudRequestError
+    let request: { service?: string; action?: string; httpStatus?: number } = error instanceof TencentCloudRequestError
       ? { ...(error.service ? { service: error.service } : {}), ...(error.action ? { action: error.action } : {}) } : {};
+    const http = space.provider === 'alibaba_cloud' && error instanceof Error
+      ? /^Aliyun (DescribeInstances|DescribeDisks|TagResources) request failed with status ([1-5][0-9]{2})$/.exec(error.message) : null;
+    if (http && http[0] === (error as Error).message) {
+      code = `ALIYUN_HTTP_${http[2]}`;
+      request = { action: http[1], httpStatus: Number(http[2]) };
+    } else if (error instanceof Error) {
+      if (error.constructor === TypeError) code = 'TypeError';
+      else if (error.constructor === SyntaxError) code = 'SyntaxError';
+      else if (error instanceof BadRequestException) code = 'BadRequestException';
+    }
     this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code, ...request } }));
   }
 
