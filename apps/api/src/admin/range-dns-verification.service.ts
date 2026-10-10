@@ -1,7 +1,7 @@
 import { isIPv4 } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
-import { validateHostDnsConfig } from '@aliyun-cyber-range/scenario-runtime';
+import { validateHostDnsConfig } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import { ADMIN_REPOSITORY, type AdminRepository, type RangeInstanceRecord } from './admin.repository';
 import { runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 import { SystemConfigService } from './system-config.service';
