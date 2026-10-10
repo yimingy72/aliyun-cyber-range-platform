@@ -10,7 +10,7 @@ function graph(): ScenarioGraphDraft {
     { id: 'switch-secondary', kind: 'switch', label: 'Internal', zoneKey: 'internal', cidr: '10.0.2.0/24', purpose: 'internal', aclRules: [], nat: { snatEnabled: false, dnatMappings: [] } },
     { id: 'host', kind: 'ecs', label: 'Windows', zoneKey: 'dmz', role: 'entry', privateIp: '10.0.1.20', image: 'Windows', imageId: 'test-image', exposePublic: true, initScript: '', dnatMappings: [], networkInterfaces: [], portGroups: [], imageStrategy: { mode: 'fixed', imageId: 'test-image' }, instanceTypeStrategy: { mode: 'auto' }, nics: [
       { id: 'nic-primary', switchId: 'switch', privateIp: '10.0.1.20', secondaryIps: [], securityGroupRules: [] },
-      { id: 'nic-secondary', switchId: 'switch-secondary', privateIp: '10.0.2.20', secondaryIps: [], securityGroupRules: [] },
+      { id: 'nic-secondary', switchId: 'switch-secondary', privateIp: '10.0.2.20', secondaryIps: ['10.0.2.21'], securityGroupRules: [] },
     ], dns },
   ], edges: [
     { id: 'r-s', fromNodeId: 'router', toNodeId: 'switch', relationType: 'manual' },
@@ -33,13 +33,13 @@ describe('per-host DNS model boundaries', () => {
     expect(payload.compiledSpec.resources.find((resource: any) => resource.id === 'host').config.dns).toEqual(dns);
     const result = plan(payload);
     expect(result.hostDefinitions[0].dns).toEqual(dns);
-    expect(result.hostNetworkInterfaces[0].interfaces[1]).toMatchObject({ nicId: 'nic-secondary', deviceIndex: 1, zoneKey: 'internal', privateIp: '10.0.2.20' });
+    expect(result.hostNetworkInterfaces[0].interfaces[1]).toMatchObject({ nicId: 'nic-secondary', deviceIndex: 1, zoneKey: 'internal', privateIp: '10.0.2.20', secondaryIps: ['10.0.2.21'] });
   });
   it('retains DNS and NIC placement when only a compiled resource snapshot is available', () => {
     const payload: any = compileTemplateTopology(graph(), metadata);
     const result = plan({ compiledSpec: payload.compiledSpec });
     expect(result.hostDefinitions[0].dns).toEqual(dns);
-    expect(result.hostNetworkInterfaces[0].interfaces[1]).toMatchObject({ nicId: 'nic-secondary', deviceIndex: 1, zoneKey: 'internal', privateIp: '10.0.2.20' });
+    expect(result.hostNetworkInterfaces[0].interfaces[1]).toMatchObject({ nicId: 'nic-secondary', deviceIndex: 1, zoneKey: 'internal', privateIp: '10.0.2.20', secondaryIps: ['10.0.2.21'] });
   });
   it('leaves legacy graphs without a DNS override unchanged', () => {
     const value = graph(); delete (value.nodes[3] as any).dns;

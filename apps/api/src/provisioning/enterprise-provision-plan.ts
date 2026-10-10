@@ -891,13 +891,16 @@ function buildHostDnsConfigs(
     // Legacy resource snapshots still carry the original NIC attachment identities.
     const resourceNics = readArray(resource?.config.nics).map(readRecord);
     const nicIds = interfaces.flatMap((nic) => nic.nicId ? [nic.nicId] : []);
+    const switchZoneKeys = new Map(input.compiledSpec?.resources.filter((entry) => entry.type === 'switch').map((entry) => [entry.id, typeof entry.config.zoneKey === 'string' ? entry.config.zoneKey : undefined]));
     const config = validateHostDnsConfig(dns, nicIds.length > 0 ? nicIds : resourceNics.flatMap((nic) => typeof nic?.id === 'string' ? [nic.id] : []), `hosts.${host.key}.dns`);
     if (interfaces.length === 0 && resourceNics.length > 0) {
       hostNetworkInterfaces.push({ hostKey: host.key, interfaces: resourceNics.map((nic, deviceIndex) => ({
         nicId: requireValue(typeof nic?.id === 'string' ? nic.id : undefined, `hosts.${host.key}.nics.id`),
         deviceIndex,
-        zoneKey: requireValue(typeof nic?.zoneKey === 'string' ? nic.zoneKey : input.compiledSpec?.resources.find((entry) => entry.type === 'switch' && entry.id === nic?.switchId)?.config.zoneKey as string | undefined ?? (deviceIndex === 0 ? host.zoneKey : undefined), `hosts.${host.key}.nics.zoneKey`),
+        zoneKey: requireValue(typeof nic?.zoneKey === 'string' ? nic.zoneKey : switchZoneKeys.get(typeof nic?.switchId === 'string' ? nic.switchId : '') ?? (deviceIndex === 0 ? host.zoneKey : undefined), `hosts.${host.key}.nics.zoneKey`),
         privateIp: requireValue(typeof nic?.privateIp === 'string' ? nic.privateIp : undefined, `hosts.${host.key}.nics.privateIp`),
+        ...(Array.isArray(nic?.secondaryIps) ? { secondaryIps: nic.secondaryIps.filter((ip): ip is string => typeof ip === 'string') } : {}),
+        ...(typeof nic?.description === 'string' ? { description: nic.description } : {}),
       })) });
     }
     result.set(host.key, config);
