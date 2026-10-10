@@ -9,6 +9,7 @@
 | 查询可选工作空间 | `cloud_workspace_list` | — | — | `settings:read` |
 | 显式切换默认工作空间 | `cloud_workspace_switch` | `cloudWorkspaceId` | — | `settings:read` |
 | 绑定或更新厂商账号 | `cloud_account_bind` | `provider`、`regionId`、`zoneId`、敏感 `accessKeyId`、敏感 `accessKeySecret` | `cloudWorkspaceId`、`displayName`、`imageImportBucket`、操作元数据 | `settings:write`，仅平台超管 |
+| 删除云账号绑定 | `cloud_account_remove` | `cloudWorkspaceId` | 操作元数据 | `settings:write`，仅平台超管 |
 | 查询配置 | `cloud_config_get` | — | — | `settings:read` |
 | 更新配置 | `cloud_config_update` | 至少一个 `defaultRegion`、`defaultZoneId`、`accessKeyId`、敏感 `accessKeySecret` | 操作元数据 | `settings:write` |
 | 查询云账号 | `cloud_account_context_list` | — | `includeInactive` | `settings:read` |
@@ -29,3 +30,4 @@
 5. 腾讯云账号查询使用 `cloud_account_context_list({ includeInactive: true })`；核对 `provider=tencent_cloud`、账号 UID、工作空间与地域后使用准确 ID。镜像查询属于镜像中心，配置页面只处理账号与默认地域。`cloud_config_get` 可显示当前厂商；兼容的 `cloud_config_update` 仅维护阿里云当前空间，腾讯云凭据必须使用 `cloud_account_bind` 或兼容的 `tencent_cloud_account_save`。
 6. 地域查询只接受明确指定的 1 至 3 个不同 `regionIds`；不会保存凭据或默认选择地域。镜像查询 `scope` 为 `public/custom`，`offset` 为 0 至 100000、`limit` 为 1 至 100；机型查询使用已保存账号可用区，`cpu` 为 1 至 1024、`memory` 为 1 至 4096。
 7. 腾讯云账号保存具有操作确认与幂等参数，首次受理可能返回 `CONFIRMATION_REQUIRED`。保留原业务参数，用户确认后传服务端实际 `confirmationId` 与相同 `idempotencyKey`；脱敏密钥不能回写或复用。账号列表及保存结果只返回非敏感状态，禁止回显 SecretId/SecretKey。
+8. 删除账号仅清除平台保存的凭据与绑定，不调用云端删除，也不删除镜像、用户、靶场、实例、账单或审计历史。当前账号必须先切换到其他账号或历史空间；历史空间本身不能删除。有未回收资源、未释放台账、失败实例或待清理的导入、打包、托管网络和 COS 桶时拒绝删除。删除须核对准确空间 ID 并取得授权，MCP 使用二阶段确认。删除会停止该账号后续账单同步；未出账费用须重新绑定后同步。重新绑定同厂商同主账号恢复原数据空间与台账归属。

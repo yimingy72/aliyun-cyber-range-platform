@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('immutable workspace transport', () => {
+  it('deletes the exact encoded binding while preserving caller scope and confirmation', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ id: 'space-b', retainedData: true })));
+    const client = new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'actor-a', cloudWorkspaceId: 'space-a', fetch });
+    expect(await client.deleteCloudWorkspace('space/b', { idempotencyKey: 'remove-once', confirmationId: 'confirmed-b' })).toMatchObject({ retainedData: true });
+    expect(fetch).toHaveBeenCalledWith('https://fixture.invalid/admin/cloud-workspaces/space%2Fb', expect.objectContaining({ method: 'DELETE',
+      headers: expect.objectContaining({ 'x-cloud-workspace-id': 'space-a', 'x-idempotency-key': 'remove-once', 'x-confirmation-id': 'confirmed-b' }) }));
+  });
   it.each(['', ' ', 'x'.repeat(193)])('rejects an invalid explicit scope without falling back to another account', cloudWorkspaceId => {
     const fetch = vi.fn();
     expect(() => new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture', cloudWorkspaceId, fetch })).toThrow('Invalid cloud workspace selection');
