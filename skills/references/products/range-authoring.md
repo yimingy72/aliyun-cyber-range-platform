@@ -154,7 +154,7 @@ connections:
 
 1. 交换机 CIDR、ECS 主/辅助 IP 必须属于对应 VPC 或交换机；IP 不可重复，不能使用网络或广播地址。
 2. 开启 `snatEnabled` 的交换机共用 `vpc.sharedNat.natGatewayKey` 和 `snatEipKey`。DNAT 使用 `dnatEipKey`，绝不能与 SNAT EIP 相同。
-3. `externalPort + protocol` 在同一 VPC 内全局唯一；共享 DNAT EIP 可按不同公网端口映射到多台 ECS，每个目标必须有连接映射所属交换机的网卡。
+3. `externalPort + protocol` 在同一 VPC 内全局唯一；共享 DNAT EIP 可按不同公网端口映射到多台 ECS，每个目标必须有连接映射所属交换机的网卡。阿里云同一 NAT 的后端 `protocol + 网卡私网 IP + internalPort` 也必须唯一，不能将两个公网端口映射到同一后端协议/IP/端口。
 4. ACL 必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `allow` 或 `drop`。全端口统一填写 `1/65535`，MCP 和后端会将其归一化为阿里云所需的 `-1/-1`，与协议无关；指定 TCP/UDP 端口仍写为如 `80/80`。
 5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。其端口范围也遵循 `1/65535 -> -1/-1` 的规则。
 6. 公网入口仅由实际 `switch.nat.dnatMappings` 派生，可有多个目标 ECS，也可完全没有公网映射；不要求设置 `exposePublic`。没有 SNAT 和 DNAT 时不创建 NAT 或 EIP；只有 SNAT 时仅创建出口网络，不生成公网入口。每份拓扑仍至少有一个交换机和一台 ECS。

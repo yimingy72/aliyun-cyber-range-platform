@@ -1020,6 +1020,26 @@ describe('tool registry', () => {
     expect(created.compiledProvisionSpec.dnatEntries).toEqual(expect.arrayContaining([expect.objectContaining({ hostKey: 'ecs-nginx' }), expect.objectContaining({ hostKey: 'ecs-api' })]));
   });
 
+  it.each([80, 8081])('checks Alibaba DNAT backend uniqueness before an API mutation when the second internal port is %s', async (internalPort) => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const graph = structuredClone(authoringGraph);
+    const switchNode = graph.nodes.find((node) => node.kind === 'switch');
+    if (switchNode?.kind !== 'switch' || !switchNode.nat) throw new Error('Expected a switch node');
+    switchNode.nat.dnatMappings.push({ key: 'second-entry', targetHostId: 'ecs-nginx', externalPort: 8081, internalPort, protocol: 'tcp' });
+    const request = registry.callTool('range_template_create', ['templates:write'], { name: 'Multiple services', topologyGraph: graph });
+    if (internalPort === 80) {
+      await expect(request).rejects.toThrow('阿里云 DNAT 后端协议、IP 和端口重复：tcp:10.0.0.10:80（nginx-80、second-entry）');
+      expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    } else {
+      await request;
+      const created = vi.mocked(client.createRangeTemplate).mock.calls[0]![0];
+      expect(created.compiledProvisionSpec.dnatEntries).toEqual(expect.arrayContaining([
+        expect.objectContaining({ externalPort: 80, internalPort: 80 }), expect.objectContaining({ externalPort: 8081, internalPort: 8081 }),
+      ]));
+    }
+  });
+
   it('rejects a DNAT mapping whose target ECS does not exist', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
