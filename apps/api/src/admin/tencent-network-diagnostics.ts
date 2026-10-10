@@ -10,12 +10,14 @@ const PAGE_SIZE = 100;
 const PAGE_LIMIT = 20;
 function fail(phase: string, reason: string): never { throw new BadGatewayException(`Tencent network diagnostics failed at ${phase}: ${reason}`); }
 function object(value: unknown, phase: string): Row { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(phase, 'malformed object'); return value as Row; }
-function text(value: unknown, phase: string): string { if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\r\n]/.test(value)) fail(phase, 'malformed field'); return value; }
+function text(value: unknown, phase: string): string { if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\r\n]/.test(value)) fail(phase, `malformed field;${flags(value)}`); return value; }
 function list(value: unknown, phase: string): Row[] { if (!Array.isArray(value)) fail(phase, 'missing complete array'); return value.map(row => object(row, phase)); }
 function strings(value: unknown, phase: string): string[] { if (!Array.isArray(value)) fail(phase, 'missing identity array'); const result = value.map(item => text(item, phase)); if (new Set(result).size !== result.length) fail(phase, 'duplicate identity'); return result; }
 type FrozenCheck = 'frozen_scope' | 'subnet_zone' | 'eni_vpc' | 'attachment_owner_uid' | 'eni_zone' | 'attachment_host_snapshot' | 'attachment_device_index_snapshot' | 'attachment_device_index_type' | 'primary_subnet' | 'primary_private_ip';
 function flags(value: unknown) { return `present=${value !== undefined && value !== null && value !== ''};type=${Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value}`; }
 function numeric(value: unknown, phase: string, check: FrozenCheck = 'frozen_scope'): number { if (!Number.isSafeInteger(value) || Number(value) < 0) fail(phase, `malformed numeric field;check=${check};${flags(value)};integer=false`); return Number(value); }
+// Normalize both representations before pagination deduplication and projection.
+function routeIdentity(value: unknown): string { return typeof value === 'number' ? String(numeric(value, 'DescribeRoutes.RouteItemId')) : text(value, 'DescribeRoutes.RouteItemId'); }
 function bool(value: unknown, phase: string): boolean { if (typeof value !== 'boolean') fail(phase, 'missing boolean field'); return value; }
 function same(actual: unknown, expected: unknown, phase: string, check: FrozenCheck = 'frozen_scope') { if (actual !== expected) fail(phase, `frozen scope or attachment mismatch;check=${check};${flags(actual)};matches=false`); }
 function within(id: unknown, expected: string[], phase: string): string { const result = text(id, phase); if (!expected.includes(result)) fail(phase, 'resource outside persisted scope'); return result; }
@@ -135,11 +137,11 @@ export async function readTencentRangeNetworkDiagnostics(instance: RangeInstance
     const phase = 'DescribeRouteTables'; same(row.VpcId, vpcId, phase); ownership(row, phase);
     const associations = list(row.AssociationSet, phase).map(item => { same(item.RouteTableId, row.RouteTableId, phase); return within(item.SubnetId, subnetIds, phase); });
     exact(associations, subnets.filter(subnet => subnet.RouteTableId === row.RouteTableId).map(subnet => subnet.SubnetId), phase);
-    const routes = await pages('DescribeRoutes', 'RouteSet', { Filters: [{ Name: 'route-table-id', Values: [row.RouteTableId] }, { Name: 'vpc-id', Values: [vpcId] }] }, route => text(route.RouteItemId, 'DescribeRoutes'));
+    const routes = await pages('DescribeRoutes', 'RouteSet', { Filters: [{ Name: 'route-table-id', Values: [row.RouteTableId] }, { Name: 'vpc-id', Values: [vpcId] }] }, route => routeIdentity(route.RouteItemId));
     routeTables.push({ routeTableId: row.RouteTableId as string, vpcId, type: bool(row.Main, phase) ? 'System' : 'Custom', vswitchIds: associations, routeEntries: routes.map(route => {
-      same(route.RouteTableId, row.RouteTableId, 'DescribeRoutes'); const enabled = bool(route.Enabled, 'DescribeRoutes'), type = text(route.GatewayType, 'DescribeRoutes');
-      const gatewayId = typeof route.GatewayId === 'string' && route.GatewayId ? text(route.GatewayId, 'DescribeRoutes') : null;
-      return { routeEntryId: text(route.RouteItemId, 'DescribeRoutes'), destinationCidrBlock: cidr(route.DestinationCidrBlock, 'DescribeRoutes'), destinationIpv6CidrBlock: cidr(route.DestinationIpv6CidrBlock, 'DescribeRoutes'), status: enabled ? 'Available' : 'Disabled', enabled, nextHops: [{ nextHopType: type, nextHopId: gatewayId, knownTarget: gatewayId !== null && [...natIds, ...hostIds, ...instances.map(host => host.privateIp)].includes(gatewayId) }] };
+      same(route.RouteTableId, row.RouteTableId, 'DescribeRoutes.RouteTableId'); const enabled = bool(route.Enabled, 'DescribeRoutes.Enabled'), type = text(route.GatewayType, 'DescribeRoutes.GatewayType');
+      const gatewayId = typeof route.GatewayId === 'string' && route.GatewayId ? text(route.GatewayId, 'DescribeRoutes.GatewayId') : null;
+      return { routeEntryId: routeIdentity(route.RouteItemId), destinationCidrBlock: cidr(route.DestinationCidrBlock, 'DescribeRoutes.DestinationCidrBlock'), destinationIpv6CidrBlock: cidr(route.DestinationIpv6CidrBlock, 'DescribeRoutes.DestinationIpv6CidrBlock'), status: enabled ? 'Available' : 'Disabled', enabled, nextHops: [{ nextHopType: type, nextHopId: gatewayId, knownTarget: gatewayId !== null && [...natIds, ...hostIds, ...instances.map(host => host.privateIp)].includes(gatewayId) }] };
     }) });
   }
   const groups = await known('DescribeSecurityGroups', 'SecurityGroupSet', 'SecurityGroupIds', 'SecurityGroupId', sgIds, true);

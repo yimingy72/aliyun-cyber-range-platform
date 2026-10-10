@@ -125,6 +125,7 @@ it('dispatches only Tencent read APIs and projects bound cloud facts with actual
   expect(result.forwardEntries[0]).toMatchObject({ forwardEntryId: range.resourceSummary.dnatEntryIds.ssh });
   expect(result.snatEntries[0]).toMatchObject({ snatEntryId: range.resourceSummary.snatEntryIds.inner, providerRuleId: 'snat-rule' });
   expect(result.routeTables[0].routeEntries[0].nextHops[0]).toMatchObject({ nextHopId: 'nat-owned', knownTarget: true });
+  expect(result.routeTables[0].routeEntries[0]).toMatchObject({routeEntryId:'rti-default'});
   expect(JSON.stringify(result)).not.toMatch(/synthetic|AccessKey|Password|must-not-return|not-returned/);
   expect(s.config.getExecutionAccountContext).toHaveBeenCalledWith({ cloudAccountContextId: 'context-a' });
   for (const call of s.calls) { expect(call.action).toMatch(/^(Describe|GetCallerIdentity)/); expect(call.url).toMatch(/\.tencentcloudapi\.com/); expect(call.headers['X-TC-Region']).toBe(account.defaultRegion); }
@@ -167,6 +168,29 @@ it('follows complete documented route pagination with exact frozen filters', asy
   const s = fixture(); s.changes.set('DescribeRoutes', (value, body) => ({ ...value, TotalCount: 2, RouteSet: [{ ...value.RouteSet[0], RouteItemId: `rti-${body.Offset}` }] }));
   const result = await s.service.get(range as never, user); expect(result.routeTables[0].routeEntries).toHaveLength(2);
   expect(s.calls.filter(call => call.action === 'DescribeRoutes').map(call => call.body)).toEqual([0,1].map(Offset => ({ Offset, Limit: 100, Filters: [{ Name: 'route-table-id', Values: ['rtb-owned'] }, { Name: 'vpc-id', Values: ['vpc-owned'] }] })));
+});
+it.each([0,14915,Number.MAX_SAFE_INTEGER,'rti-hj3he929'])('normalizes only valid numeric route IDs while preserving documented strings: %s', async id => {
+  const s=fixture(); s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].RouteItemId=id;return value;});
+  const result=await s.service.get(range as never,user);
+  expect(result.routeTables[0].routeEntries[0]).toMatchObject({routeEntryId:String(id)});
+  expect(s.calls.filter(call=>call.action==='DescribeRoutes')[0].body.Filters).toEqual([{Name:'route-table-id',Values:['rtb-owned']},{Name:'vpc-id',Values:['vpc-owned']}]);
+});
+it.each([-1,1.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,null,{},[],true,''])('fails closed for malformed RouteItemId %s', async id => {
+  const s=fixture(); s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].RouteItemId=id;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow('DescribeRoutes');
+});
+it('rejects duplicate route identities across numeric and string representations',async()=>{
+  const s=fixture();s.changes.set('DescribeRoutes',(value,body)=>({...value,TotalCount:2,RouteSet:[{...value.RouteSet[0],RouteItemId:body.Offset?'14915':14915}]}));
+  await expect(s.service.get(range as never,user)).rejects.toThrow('duplicate identity across pages');
+});
+it.each(['RouteItemId','GatewayType'])('reports the fixed %s field and type without returning raw cloud values',async field=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0][field]=null;return value;});
+  await expect(s.service.get(range as never,user)).rejects.toThrow(`DescribeRoutes.${field}: malformed field;present=false;type=null`);
+});
+it('does not leak malformed cloud text in its field diagnostics',async()=>{
+  const s=fixture();s.changes.set('DescribeRoutes',value=>{value.RouteSet[0].GatewayType='PRIVATE-DO-NOT-EMIT\n';return value;});
+  try { await s.service.get(range as never,user);throw new Error('expected failure'); }
+  catch(error){expect(String(error)).toContain('DescribeRoutes.GatewayType: malformed field;present=true;type=string');expect(String(error)).not.toContain('PRIVATE-DO-NOT-EMIT');}
 });
 it.each(['duplicate','changing','empty','missing'])('rejects %s route pages without returning a successful partial diagnosis', async fault => {
   const s = fixture(); s.changes.set('DescribeRoutes', (value, body) => {
