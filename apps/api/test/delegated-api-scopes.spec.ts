@@ -9,6 +9,7 @@ describe('delegated API permission boundary', () => {
     ['POST', '/admin/ranges/r1/destroy', ['ranges:read']],
     ['POST', '/admin/billing/sync', ['billing:read']],
     ['POST', '/admin/cloud-workspaces/ws1/switch', ['settings:read']],
+    ['GET', '/admin/cloud-workspaces', ['ranges:create']],
     ['POST', '/admin/instances/s1/actions/pack-image', ['instances:control']],
     ['POST', '/admin/ranges/r1/nodes/n1/actions/pack-image', ['ranges:control']],
     ['GET', '/admin/instances/s1/access', ['instances:read']],
@@ -33,6 +34,8 @@ describe('delegated API permission boundary', () => {
     expect(() => check('POST', '/admin/instances/s1/actions/pack-image', ['instances:control', 'images:write'])).not.toThrow();
   });
   it('allows safe metadata needed by a composite write without granting its credential endpoint', () => {
+    expect(() => check('GET', '/admin/cloud-workspaces/current', ['ranges:create'])).not.toThrow();
+    expect(() => check('GET', '/admin/cloud-workspaces', ['settings:read'])).not.toThrow();
     expect(() => check('GET', '/admin/scenarios/t1', ['templates:write'])).not.toThrow();
     expect(() => check('GET', '/admin/ranges/r1', ['ranges:write'])).not.toThrow();
     expect(() => check('GET', '/admin/ranges/r1/access', ['ranges:write'])).toThrow();

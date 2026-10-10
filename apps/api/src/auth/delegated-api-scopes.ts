@@ -25,7 +25,8 @@ type ScopeRule = { method: string; path: RegExp; all?: string[]; any?: string[] 
 const metadataScopes = (namespace: string) => [...userScopes, ...adminScopes].filter(scope => scope.startsWith(`${namespace}:`));
 const rules: ScopeRule[] = [
   // Own session/workspace metadata is required to resolve the target before a composite tool operates.
-  { method: 'GET', path: /^\/admin\/(?:session|cloud-workspaces(?:\/current)?)$/ },
+  { method: 'GET', path: /^\/admin\/(?:session|cloud-workspaces\/current)$/ },
+  { method: 'GET', path: /^\/admin\/cloud-workspaces$/, all: ['settings:read'] },
   { method: 'POST', path: /^\/admin\/cloud-workspaces\/[^/]+\/switch$/, all: ['settings:write'] },
   { method: 'DELETE', path: /^\/admin\/cloud-workspaces\/[^/]+$/, all: ['settings:write'] },
   { method: 'GET', path: /^\/admin\/cloud-contexts(?:\/[^/]+\/instance-type-availability)?$/, all: ['settings:read'] },
