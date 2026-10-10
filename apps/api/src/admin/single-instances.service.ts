@@ -25,7 +25,8 @@ import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 import { readTencentSingleRecordedResourceStatus } from './single-instance-recorded-resource-status';
-import { packedImageArtifactSummaries } from './packed-image-diagnostic';
+import { packedImageArtifactSummaries, safePackedCloudCode } from './packed-image-diagnostic';
+import { describeTencentResourceInventory } from './tencent-cloud-resources';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
@@ -109,7 +110,26 @@ export class SingleInstancesService {
     const [detail] = await attachCreatedByUsernames(this.adminRepository, [toSingleInstanceListItem(instance)]);
     const packedImageArtifacts = packedImageArtifactSummaries(instance, await this.adminRepository.listPackedImageArtifacts({ cloudAccountUid: instance.singleInstanceConfig?.cloudAccountUid ?? undefined,
       regionId: instance.singleInstanceConfig?.regionId }));
-    return { ...detail, packedImageArtifacts };
+    const packSourceSnapshots = [];
+    for (const artifact of packedImageArtifacts.filter(item => item.cloudProvider === 'tencent_cloud' && ['pending','creating','deleting'].includes(item.status))) {
+      let account: SystemCloudAccountContext | undefined;
+      try {
+        account = await this.systemConfigService.getAccountContextById(artifact.cloudAccountContextId);
+        if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || account.cloudAccountContextId !== artifact.cloudAccountContextId
+          || account.accountUid !== artifact.cloudAccountUid || account.defaultRegion !== artifact.regionId || !artifact.sourceDiskIds.length)
+          throw new Error('Packed source snapshot inventory is not bound to its original account and disks');
+        const ids = new Set<string>();
+        for (let offset = 0; offset < artifact.sourceDiskIds.length; offset += 10) {
+          for (const snapshot of await describeTencentResourceInventory(account, 'snapshot', { diskIds: artifact.sourceDiskIds.slice(offset, offset + 10) })) ids.add(snapshot.id);
+        }
+        packSourceSnapshots.push({ artifactId: artifact.id, status: ids.size ? 'observed' : 'absent', snapshotIds: [...ids],
+          scope: 'original_source_disks', ownership: 'unconfirmed', checkedAt: new Date().toISOString() });
+      } catch (error) {
+        packSourceSnapshots.push({ artifactId: artifact.id, status: 'unverified', snapshotIds: [], scope: 'original_source_disks', ownership: 'unconfirmed',
+          cloudErrorCode: safePackedCloudCode(error, account ? [account.accessKeyId, account.accessKeySecret] : []), checkedAt: new Date().toISOString() });
+      }
+    }
+    return { ...detail, packedImageArtifacts, packSourceSnapshots };
   }
 
   async getCloudResourceStatus(id: string, currentUser: SessionUserProfile) {

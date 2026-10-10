@@ -6,6 +6,7 @@ import { SingleInstancesService } from '../src/admin/single-instances.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import * as tencentResources from '../src/admin/tencent-cloud-resources';
 
 function createLaunchFixture() {
   const repository = createMemoryAdminRepository();
@@ -55,6 +56,23 @@ describe('SingleInstancesService', () => {
     expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packedImageArtifacts: [expect.objectContaining({ id: artifact.id, phase: 'unknown', cloudErrorCode: 'UNKNOWN' })] });
     await expect(fixture.service.getById(instance.id, { ...fixture.actor, id: 'foreign' } as never)).rejects.toThrow();
     expect(fixture.config.getExecutionAccountContext).not.toHaveBeenCalled();
+  });
+  it('checks the original pack source disk snapshot inventory by frozen context without creating or reclassifying resources', async () => {
+    const fixture = createLaunchFixture();
+    const instance = await fixture.repository.createRangeInstance({ name: 'pending-source', cloudProvider: 'tencent_cloud', instanceMode: 'single', ownerUserId: fixture.actor.id,
+      singleInstanceConfig: { cloudAccountContextId: 'context-packed', cloudAccountUid: '123456', regionId: 'ap-shanghai', hostKey: 'host' } as never });
+    const artifact = await fixture.repository.createPackedImageArtifact({ cloudProvider: 'tencent_cloud', cloudAccountContextId: 'context-packed', cloudAccountUid: '123456', regionId: 'ap-shanghai',
+      ownerUserId: fixture.actor.id, sourceRangeInstanceId: instance.id, sourceHostKey: 'host', sourceInstanceId: 'ins-source', sourceDiskIds: ['disk-source'] });
+    (fixture.config as any).getAccountContextById = jest.fn().mockResolvedValue({ provider: 'tencent_cloud', cloudAccountContextId: 'context-packed', accountUid: '123456', accountUidResolved: true,
+      defaultRegion: 'ap-shanghai', accessKeyId: 'synthetic-id', accessKeySecret: 'synthetic-secret' });
+    const inventory = jest.spyOn(tencentResources, 'describeTencentResourceInventory').mockResolvedValue([]);
+    try {
+      expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ artifactId: artifact.id, status: 'absent', scope: 'original_source_disks', ownership: 'unconfirmed', snapshotIds: [] }] });
+      expect(inventory).toHaveBeenCalledWith(expect.objectContaining({ cloudAccountContextId: 'context-packed' }), 'snapshot', { diskIds: ['disk-source'] });
+      inventory.mockRejectedValueOnce(new Error('private raw request failure'));
+      expect(await fixture.service.getById(instance.id, fixture.actor as never)).toMatchObject({ packSourceSnapshots: [{ status: 'unverified', cloudErrorCode: 'UNKNOWN' }] });
+      expect((await fixture.repository.getPackedImageArtifact(artifact.id))?.status).toBe('pending');
+    } finally { inventory.mockRestore(); }
   });
   it('rejects a launch whose expiration time is already in the past before preparing cloud resources', async () => {
     const ensureDefaultProfile = jest.fn();
