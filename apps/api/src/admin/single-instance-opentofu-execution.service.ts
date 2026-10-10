@@ -345,10 +345,11 @@ export class SingleInstanceOpenTofuExecutionService {
     await this.atomicJson(context, APPLY_MARKER, context.manifest.pending);
     if (!destroy) for (const item of context.items.filter(item => ids.includes(item.instance.id))) {
       await this.assertLease(context.lease);
-      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: { ...item.instance.singleInstanceConfig!,
-        opentofuCreateJobId: context.manifest.members[item.instance.id].sourceJobId } })) {
+      const config = { ...item.instance.singleInstanceConfig!, opentofuCreateJobId: context.manifest.members[item.instance.id].sourceJobId };
+      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: config })) {
         throw new SingleInstanceOpenTofuLeaseLostError('Creation claim was lost before applying its cloud request');
       }
+      item.instance.singleInstanceConfig = config;
     }
     const progress = destroy ? null : this.observeCreateProgress(context, ids);
     try {

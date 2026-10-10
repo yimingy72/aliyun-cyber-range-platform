@@ -89,8 +89,8 @@ describe('single-instance OpenTofu batch execution', () => {
       const input = JSON.parse(await fs.readFile(path.join(workspace, 'terraform.tfvars.json'), 'utf8'));
       const definition = input.members[id];
       const cloudId = tencent ? `ins-${id.replace(/-/g,'')}` : `i-${id}`;
-      stateMembers.set(id, { ...(options.tainted ? { status: 'tainted' } : {}), attributes: { id: cloudId, ...(tencent ? { client_token: definition.client_token, action_timer_terminate_at: definition.action_timer_terminate_at } : {}), system_disk_id: options.disk === false ? '' : `d-${id}`, tags: definition.tags,
-        private_ip: '172.16.1.20', public_ip: '203.0.113.1', status: options.status ?? 'Running' } });
+      stateMembers.set(id, { ...(options.tainted ? { status: 'tainted' } : {}), attributes: { id: cloudId, ...(tencent ? { client_token: definition.client_token, action_timer_terminate_at: definition.action_timer_terminate_at, instance_status: (options.status ?? 'Running').toUpperCase() } : { status: options.status ?? 'Running' }), system_disk_id: options.disk === false ? '' : tencent ? `disk-${id.replace(/-/g,'')}` : `d-${id}`, tags: definition.tags,
+        private_ip: '172.16.1.20', public_ip: '203.0.113.1' } });
       cloud.set(cloudId, { instanceId: cloudId, privateIp: '172.16.1.20', publicIp: '203.0.113.1', status: options.status ?? 'Running', tags: definition.tags });
       await saveState();
     }
@@ -150,6 +150,30 @@ describe('single-instance OpenTofu batch execution', () => {
     await test.service.executeDestroyBatch([test.queueDestroy(0)],test.lease);
     expect(test.instances[0].status).toBe('destroyed');
     expect(test.stepLogs).toContainEqual(inventory);
+    expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
+  });
+
+  it('completes Tencent creation from detached database snapshots and retains released creation inventory after destruction', async () => {
+    const test = fixture(2, true);
+    const detached = test.items.map(item => ({ ...item, instance: structuredClone(item.instance) }));
+    expect(detached[0].instance.singleInstanceConfig!.opentofuCreateJobId).toBeUndefined();
+    await test.service.executeCreateBatch(detached, test.lease);
+    expect(test.jobs.get('job-1')?.status).toBe('succeeded');
+    expect(test.jobs.get('job-2')?.status).toBe('succeeded');
+    expect(test.instances.every(instance => instance.status === 'running')).toBe(true);
+    expect(detached[0].instance.singleInstanceConfig!.opentofuCreateJobId).toBe('job-1');
+    expect(test.stateMembers.get('member-1').attributes).toMatchObject({ instance_status: 'RUNNING', system_disk_id: 'disk-member1' });
+    const inventory = test.stepLogs.filter(log => log.stepName === 'platform_billing_creation_inventory');
+    expect(inventory).toHaveLength(2);
+    const ledgerIds = test.ledger.map(row => row.id);
+    expect(test.ledger).toHaveLength(4);
+    const destroying = [test.queueDestroy(0), test.queueDestroy(1)].map(item => ({ ...item, instance: structuredClone(item.instance) }));
+    await test.service.executeDestroyBatch(destroying, test.lease);
+    expect(test.instances.every(instance => instance.status === 'destroyed' && instance.resourceSummary === null)).toBe(true);
+    expect(test.cloud.size).toBe(0);
+    expect(test.ledger.map(row => row.id)).toEqual(ledgerIds);
+    expect(test.ledger.every(row => row.releasedAt)).toBe(true);
+    expect(test.stepLogs).toEqual(expect.arrayContaining(inventory));
     expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
   });
 
