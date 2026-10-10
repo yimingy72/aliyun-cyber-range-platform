@@ -89,7 +89,8 @@ async function absentFixture() {
   await fs.writeFile(path.join(test.dir,'terraform.tfstate'),JSON.stringify({version:4,lineage:'source-lineage',serial:2,resources:[]}));
   for (const file of ['main.tf','variables.tf','outputs.tf','versions.tf']) await fs.writeFile(path.join(test.dir,file),'fixture');
   test.query.mockResolvedValue([]);
-  jest.spyOn(rpc,'requestTencentCloud').mockResolvedValue({RequestId:'fixture-route-request',TotalCount:0,RouteTableSet:[]} as any);
+  jest.spyOn(rpc,'requestTencentCloud').mockImplementation(async input => ({RequestId:'fixture-network-request',TotalCount:0,
+    [input.action === 'DescribeNetworkAcls' ? 'NetworkAclSet' : 'RouteTableSet']:[]} as any));
   const input = { ...test.input, billingTags:{PlatformScope:'user',PlatformUserId:'owner-a'}, knownResourceSummary:{mode:'opentofu' as const,
     executionContext:{provider:'tencent_cloud' as const,cloudAccountUid:account.accountUid,cloudAccountContextId:account.cloudAccountContextId,regionId:account.defaultRegion,zoneId:account.defaultZoneId},
     vpcId:'vpc-fixture',hostIds:{entry:'ins-known'},systemDiskIds:{entry:'disk-known'},subnetIds:{dmz:'subnet-known'},securityGroupIds:{entry:'sg-known'},
@@ -107,6 +108,35 @@ it('closes an already cleaned unknown apply only after both complete native scan
   await test.provisioner.destroy(test.input);
   expect(test.destroy).toHaveBeenCalledTimes(1);
   await expect(fs.stat(path.join(test.dir,'.range-apply-started'))).rejects.toMatchObject({code:'ENOENT'});
+});
+
+it.each(['none','known-acl','known-route','owned-tags','original-vpc','duplicate','changed-total','truncated','api-error'])('uses complete account network inventory after VPC deletion: %s', async reason => {
+  const test=await absentFixture();
+  const requests=jest.spyOn(rpc,'requestTencentCloud').mockImplementation(async input => {
+    expect(input.parameters).not.toHaveProperty('Filters');
+    expect(input.parameters).not.toHaveProperty('RouteTableIds');
+    const acl=input.action === 'DescribeNetworkAcls'; const offset=Number((input.parameters as any).Offset);
+    if (reason === 'api-error') throw new Error('ResourceNotFound');
+    const rows=Array.from({length:offset === 0 ? 100 : 1},(_,index) => ({[acl?'NetworkAclId':'RouteTableId']:`${acl?'acl':'rtb'}-external${offset+index}`,VpcId:'vpc-external',TagSet:[]}));
+    if (offset === 100) {
+      if (reason === 'known-acl' && acl) rows[0].NetworkAclId='acl-known';
+      if (reason === 'known-route' && !acl) rows[0].RouteTableId='rtb-known';
+      if (reason === 'owned-tags') rows[0].TagSet=Object.entries(tags).map(([Key,Value])=>({Key,Value})) as any;
+      if (reason === 'original-vpc') rows[0].VpcId='vpc-fixture';
+      if (reason === 'duplicate') rows[0][acl?'NetworkAclId':'RouteTableId']=`${acl?'acl':'rtb'}-external0`;
+      if (reason === 'truncated') rows.length=0;
+    }
+    return {RequestId:'fixture-page-request',TotalCount:reason === 'changed-total' && offset ? 102 : 101,[acl?'NetworkAclSet':'RouteTableSet']:rows} as any;
+  });
+  if (reason === 'none') {
+    await test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist);
+    expect(requests.mock.calls.filter(([input])=>input.action === 'DescribeRouteTables')).toHaveLength(4);
+    await test.provisioner.destroy(test.input);
+  } else {
+    await expect(test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist)).rejects.toThrow();
+    await expect(fs.stat(path.join(test.dir,'.range-apply-started'))).resolves.toBeDefined();
+  }
+  expect(test.runner.apply).not.toHaveBeenCalled();expect(test.runner.importResource).not.toHaveBeenCalled();
 });
 it.each(['known-paid','tagged-residual','changed-context','changed-pending','incomplete-route'])('retains unknown apply recovery for %s evidence', async reason => {
   const test = await absentFixture();

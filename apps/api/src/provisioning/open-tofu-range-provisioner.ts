@@ -622,26 +622,52 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     };
     const scopeTags = Object.fromEntries(['CloudProvider','PlatformManaged','CreatedBy','PlatformScope','PlatformUserId','CloudAccountUid','CloudAccountContextId','RangeInstanceId']
       .filter(key => tags[key] !== undefined).map(key => [key,tags[key]]));
+    const verifyAccountInventory = async (action:'DescribeNetworkAcls'|'DescribeRouteTables', setKey:'NetworkAclSet'|'RouteTableSet', idKey:'NetworkAclId'|'RouteTableId', known:string[]) => {
+      const seen = new Set<string>(); let total: number | undefined;
+      for (let page=0;page<100;page++) {
+        await assertCurrent(); input.signal?.throwIfAborted();
+        const response = await requestTencentCloud<Record<string,unknown>>({service:'vpc',version:'2017-03-12',action,regionId:account.defaultRegion,
+          accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,parameters: action === 'DescribeRouteTables' ? {Offset:String(seen.size),Limit:'100'} : {Offset:seen.size,Limit:100}});
+        const rows = response[setKey];
+        if (typeof response.RequestId !== 'string' || !response.RequestId.trim() || response.Error || response.NextToken
+          || !Number.isSafeInteger(response.TotalCount) || Number(response.TotalCount)<0 || !Array.isArray(rows) || rows.length>100
+          || total !== undefined && total !== response.TotalCount) throw new Error('Tencent account inventory is incomplete during absence recovery');
+        total=Number(response.TotalCount);
+        for (const raw of rows) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Tencent account inventory contains malformed resources');
+          const row=raw as Record<string,unknown>; const id=row[idKey];
+          if (typeof id !== 'string' || !(action === 'DescribeNetworkAcls' ? /^acl-[A-Za-z0-9]+$/ : /^rtb-[A-Za-z0-9]+$/).test(id) || seen.has(id)
+            || typeof row.VpcId !== 'string' || !/^vpc-[A-Za-z0-9]+$/.test(row.VpcId)) throw new Error('Tencent account inventory identities are incomplete or duplicated');
+          seen.add(id);
+          const actualTags:Record<string,string>=Object.create(null);
+          if (row.TagSet !== undefined && row.TagSet !== null) {
+            if (!Array.isArray(row.TagSet)) throw new Error('Tencent account inventory tags are malformed');
+            for (const tag of row.TagSet) {
+              if (!tag || typeof tag !== 'object' || typeof tag.Key !== 'string' || !tag.Key || typeof tag.Value !== 'string' || Object.hasOwn(actualTags,tag.Key))
+                throw new Error('Tencent account inventory tags are malformed');
+              actualTags[tag.Key]=tag.Value;
+            }
+          }
+          if (known.includes(id) || row.VpcId === vpcId || Object.entries(scopeTags).every(([key,value]) => actualTags[key] === value))
+            throw new Error('Tencent original network resources remain in complete account inventory');
+        }
+        if (seen.size>total || seen.size<total && !rows.length) throw new Error('Tencent account inventory pagination is incomplete');
+        if (seen.size === total) return;
+      }
+      throw new Error('Tencent account inventory pagination exceeded its recovery bound');
+    };
     for (let round = 0; round < 2; round++) {
       await assertCurrent(); input.signal?.throwIfAborted();
       for (const kind of Object.keys(fields) as Array<keyof typeof fields>) {
         const known = ids(kind);
         if (known.length && (await describeTencentResourceInventory(account,kind,{ids:known})).length)
           throw new Error('Tencent original tracked resources remain; preserve unknown apply recovery material');
-        const observed = await describeTencentResourceInventory(account,kind,kind === 'network_acl' ? {vpcId} : {tags:scopeTags});
-        if (observed.length) throw new Error('Tencent original range resources remain; preserve unknown apply recovery material');
+        if (kind === 'network_acl') await verifyAccountInventory('DescribeNetworkAcls','NetworkAclSet','NetworkAclId',known);
+        else if ((await describeTencentResourceInventory(account,kind,{tags:scopeTags})).length) throw new Error('Tencent original range resources remain; preserve unknown apply recovery material');
       }
-      const routeIds = [...new Set([...Object.values(input.knownResourceSummary!.routeTableIds ?? {}), ...state.instances.filter(entry => entry.type === 'tencentcloud_route_table').map(entry => String(entry.attributes.id))])];
-      const routeQueries = [
-        ...Array.from({length:Math.ceil(routeIds.length/100)},(_,index) => ({RouteTableIds:routeIds.slice(index*100,index*100+100)})),
-        {Filters:[{Name:'vpc-id',Values:[vpcId]}]},
-      ];
-      for (const query of routeQueries) {
-        const response = await requestTencentCloud<{RequestId?:string;TotalCount?:number;RouteTableSet?:unknown[]}>({service:'vpc',version:'2017-03-12',action:'DescribeRouteTables',regionId:account.defaultRegion,
-          accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,parameters:{...query,Offset:'0',Limit:'100'}});
-        if (typeof response.RequestId !== 'string' || !response.RequestId.trim() || response.TotalCount !== 0 || !Array.isArray(response.RouteTableSet) || response.RouteTableSet.length)
-          throw new Error('Tencent original route-table absence is not independently proven');
-      }
+      const recordedRoutes = (summary: RangeResourceSummary): string[] => [...Object.values(summary.routeTableIds ?? {}), ...(summary.retiredResources ? recordedRoutes(summary.retiredResources) : [])];
+      const routeIds = [...new Set([...recordedRoutes(input.knownResourceSummary!), ...state.instances.filter(entry => entry.type === 'tencentcloud_route_table').map(entry => String(entry.attributes.id))])];
+      await verifyAccountInventory('DescribeRouteTables','RouteTableSet','RouteTableId',routeIds);
     }
     await assertCurrent();
     const proof = { version:1, identity:this.tencentWorkspaceIdentity(input), pendingHash:createHash('sha256').update(JSON.stringify(pending)).digest('hex'),
