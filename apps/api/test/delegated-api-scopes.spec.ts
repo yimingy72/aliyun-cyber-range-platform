@@ -13,12 +13,20 @@ describe('delegated API permission boundary', () => {
     ['POST', '/admin/ranges/r1/nodes/n1/actions/pack-image', ['ranges:control']],
     ['GET', '/admin/instances/s1/access', ['instances:read']],
     ['POST', '/admin/ranges/r1/nodes/n1/actions/open-vnc', ['ranges:read']],
+    ['GET', '/admin/provision-jobs/j1/steps', ['jobs:read']],
+    ['POST', '/admin/image-imports', ['images:write']],
+    ['POST', '/admin/image-imports/import1/complete', ['images:write']],
+    ['POST', '/admin/image-catalog/collect', ['images:write']],
     ['POST', '/admin/ranges', ['ranges:create']],
     ['POST', '/admin/ranges/r1/create', ['ranges:create']],
     ['POST', '/admin/ranges/r1/actions/anything', ['ranges:control']],
     ['GET', '/admin/scenarios-unsafe', ['templates:read']],
   ])('rejects %s %s without the operation permissions', (method, path, scopes) => {
     expect(() => check(method as string, path as string, scopes as string[])).toThrow('Delegated token lacks permission');
+  });
+  it('preserves safe job evidence and the supported image retry route', () => {
+    expect(() => check('GET', '/admin/provision-jobs/j1', ['jobs:read'])).not.toThrow();
+    expect(() => check('POST', '/admin/image-imports/import1/retry', ['images:write'])).not.toThrow();
   });
   it('allows the exact credential endpoint only with both scopes', () => {
     expect(() => check('GET', '/admin/instances/s1/access', ['instances:read', 'instances:credentials:read'])).not.toThrow();

@@ -21,10 +21,21 @@ class ScopedRangeFixtureController {
   @Post(':id/destroy') destroy() { sideEffects++; return { accepted: true }; }
 }
 
+@Controller('admin')
+@UseGuards(AdminAuthGuard)
+class LegacyWriteFixtureController {
+  @Get('provision-jobs/:id/steps') steps() {
+    sideEffects++; return { stdoutExcerpt: 'fixture-canary-secret' };
+  }
+  @Post('image-imports') upload() { sideEffects++; return { uploadUrl: 'fixture-canary-secret' }; }
+  @Post('image-imports/:id/complete') complete() { sideEffects++; return { accepted: true }; }
+  @Post('image-catalog/collect') collect() { sideEffects++; return { accepted: true }; }
+}
+
 describe('verified delegated scopes at the actual HTTP boundary', () => {
   let app: INestApplication;
   beforeAll(async () => {
-    const module = await Test.createTestingModule({ controllers: [ScopedRangeFixtureController], providers: [AdminAuthGuard,
+    const module = await Test.createTestingModule({ controllers: [ScopedRangeFixtureController, LegacyWriteFixtureController], providers: [AdminAuthGuard,
       { provide: OidcJwtVerifier, useValue: { verifyAccessToken: async () => ({ issuer: 'https://fixture-issuer', subject: 'sub-1', audience: ['platform-api'], authorizedParty: azp, scopes: scope }) } },
       { provide: OidcPrincipalResolver, useValue: { resolve: async () => ({ id: 'user-1', username: 'fixture', role: 'admin', isPlatformManager: true }) } },
     ] }).compile();
@@ -57,6 +68,17 @@ describe('verified delegated scopes at the actual HTTP boundary', () => {
     scope = ['ranges:destroy'];
     await request(app.getHttpServer()).post('/admin/ranges/range-1/destroy').set('Authorization', 'Bearer a.b.c').send({}).expect(201);
     expect(sideEffects).toBe(1);
+  });
+  it('blocks raw job logs before their controller runs', async () => {
+    scope = ['jobs:read'];
+    const response = await request(app.getHttpServer()).get('/admin/provision-jobs/j1/steps').set('Authorization', 'Bearer a.b.c').expect(403);
+    expect(JSON.stringify(response.body)).not.toContain('fixture-canary-secret');
+    expect(sideEffects).toBe(0);
+  });
+  it.each(['/admin/image-imports', '/admin/image-imports/i1/complete', '/admin/image-catalog/collect'])('blocks unexposed legacy write route %s before side effects', async path => {
+    scope = ['images:write'];
+    await request(app.getHttpServer()).post(path).set('Authorization', 'Bearer a.b.c').send({}).expect(403);
+    expect(sideEffects).toBe(0);
   });
   it('rejects ambiguous authentication before resolving or invoking a controller', async () => {
     await request(app.getHttpServer()).post('/admin/ranges/range-1/destroy').set('Authorization', 'Bearer a.b.c extra').send({}).expect(401);
