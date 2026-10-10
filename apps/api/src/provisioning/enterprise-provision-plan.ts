@@ -1004,7 +1004,7 @@ function readArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function createResourceNamePrefix(rangeInstanceId: string) {
+export function createResourceNamePrefix(rangeInstanceId: string) {
   const normalized = rangeInstanceId.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase();
 
   return `range-${normalized.slice(0, 9) || 'instance'}`;

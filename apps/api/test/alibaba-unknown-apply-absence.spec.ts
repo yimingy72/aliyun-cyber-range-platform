@@ -65,8 +65,8 @@ describe('unresolved Alibaba apply marker lifecycle', () => {
     await fs.writeFile(path.join(dir,APPLY_PENDING_FILE),JSON.stringify(pending));
     await fs.writeFile(path.join(dir,'terraform.tfstate'),JSON.stringify({ version: 4, lineage: 'original-lineage', serial: 7, resources: [] }));
     const vars = path.join(dir,'range.auto.tfvars.json');
-    await fs.writeFile(vars,JSON.stringify({ resource_name_prefix: instance.id, zone_id: account.defaultZoneId, hosts: [{ key: 'host-a' }], eips: [{ name: 'Range EIP' }],
-      tags: { CloudProvider: account.provider, CreatedBy: 'cyber-range-platform', PlatformManaged: 'true', RangeInstanceId: instance.id,
+    await fs.writeFile(vars,JSON.stringify({ resource_name_prefix: 'range-range-a', zone_id: account.defaultZoneId, hosts: [{ key: 'host-a' }], eips: [{ name: 'Range EIP' }],
+      tags: { CloudProvider: account.provider, CreatedBy: 'cyber-range-platform', PlatformManaged: 'true', RangeInstanceId: instance.id, range_instance_id: instance.id,
         CloudAccountUid: account.accountUid, CloudAccountContextId: account.cloudAccountContextId, PlatformCreateJobId: intent.sourceProvisionJobId, PlatformScope: 'user', PlatformUserId: instance.ownerUserId } }));
     const runner = { init: jest.fn().mockResolvedValue({ stdout: '', stderr: '' }), destroy: jest.fn().mockResolvedValue({ stdout: '', stderr: '' }),
       validate: jest.fn(), plan: jest.fn(), apply: jest.fn(), output: jest.fn(), showPlan: jest.fn() };
@@ -74,7 +74,7 @@ describe('unresolved Alibaba apply marker lifecycle', () => {
     jest.spyOn(provisioner,'prepareDestroyWorkspace').mockResolvedValue({ workspaceDir: dir, varsFilePath: vars, runnerEnv: {} });
     const input = { rangeInstanceId: instance.id, templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range', allocatedCidr: null,
       runtimeConfig: account, billingTags: { PlatformScope: 'user', PlatformUserId: instance.ownerUserId } };
-    return { dir, pending, runner, provisioner, input };
+    return { dir, vars, pending, runner, provisioner, input };
   }
   it('keeps the marker if independent proof is missing or fails; clears only after proof and verified empty state', async () => {
     const f = await setup();
@@ -96,5 +96,33 @@ describe('unresolved Alibaba apply marker lifecycle', () => {
       await expect(f.provisioner.destroy({ ...f.input, verifyUnresolvedApplyAbsence: proof })).rejects.toThrow('generation changed');
       expect(JSON.parse(await fs.readFile(path.join(f.dir,APPLY_PENDING_FILE),'utf8')).sourceProvisionJobId).toBe('later-job');
     } finally { await fs.rm(f.dir,{ recursive:true,force:true }); }
+  });
+  it('accepts the actual Alibaba shortened prefix while still binding the full range ID tags', async () => {
+    const f = await setup();
+    try {
+      const rangeId = 'cmv2hfnqo002hog2uwyo4kn8f';
+      const variables = JSON.parse(await fs.readFile(f.vars,'utf8'));
+      variables.resource_name_prefix = 'range-cmv2hfnqo';
+      variables.tags.RangeInstanceId = rangeId;
+      variables.tags.range_instance_id = rangeId;
+      await fs.writeFile(f.vars,JSON.stringify(variables));
+      const proof = jest.fn().mockResolvedValue(undefined);
+      await f.provisioner.destroy({ ...f.input, rangeInstanceId: rangeId, verifyUnresolvedApplyAbsence: proof });
+      expect(proof).toHaveBeenCalledWith(intent);
+      await expect(fs.stat(path.join(f.dir,APPLY_PENDING_FILE))).rejects.toMatchObject({ code:'ENOENT' });
+    } finally { await fs.rm(f.dir,{recursive:true,force:true}); }
+  });
+  it.each(['range-a','range-other','wrong-full-id-tag'])('rejects foreign or non-rendered Alibaba identity %s before independent proof', async mismatch => {
+    const f = await setup();
+    try {
+      const variables = JSON.parse(await fs.readFile(f.vars,'utf8'));
+      if (mismatch === 'wrong-full-id-tag') variables.tags.range_instance_id = 'range-other';
+      else variables.resource_name_prefix = mismatch;
+      await fs.writeFile(f.vars,JSON.stringify(variables));
+      const proof = jest.fn().mockResolvedValue(undefined);
+      await expect(f.provisioner.destroy({ ...f.input, verifyUnresolvedApplyAbsence: proof })).rejects.toThrow('intent differs');
+      expect(proof).not.toHaveBeenCalled();
+      expect(await fs.stat(path.join(f.dir,APPLY_PENDING_FILE))).toBeTruthy();
+    } finally { await fs.rm(f.dir,{recursive:true,force:true}); }
   });
 });

@@ -32,7 +32,7 @@ import { describeTencentResourceInventory } from '../admin/tencent-cloud-resourc
 import type { SystemCloudAccountContext } from '../admin/system-config.service';
 import { renderTencentRangeVariables } from './renderers/tencent-cloud-range-renderer';
 import { selectTencentHostInstanceTypes, assertTencentImagesAvailable } from './tencent-cloud-zone-instance-scheduler';
-import { buildEnterpriseProvisionPlan } from './enterprise-provision-plan';
+import { buildEnterpriseProvisionPlan, createResourceNamePrefix } from './enterprise-provision-plan';
 import { resolvePreferredInstanceTypes } from './instance-type-catalog';
 import { AlibabaCloudOpenTofuRenderer } from './renderers/alibaba-cloud-opentofu-renderer';
 import { buildRootWrapperFiles } from './root-wrapper-template';
@@ -530,9 +530,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         const tags = variables.tags;
         if (input.instanceMode === 'single' || input.templateModulePath !== 'infra/opentofu/modules/alicloud-enterprise-range'
           || !pending?.sourceProvisionJobId || !pending.submittedAt || !Number.isFinite(Date.parse(pending.submittedAt))
-          || variables.resource_name_prefix !== input.rangeInstanceId || variables.zone_id !== input.runtimeConfig.defaultZoneId
+          || variables.resource_name_prefix !== createResourceNamePrefix(input.rangeInstanceId) || variables.zone_id !== input.runtimeConfig.defaultZoneId
           || !tags || tags.CloudProvider !== 'alibaba_cloud' || tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformManaged !== 'true'
-          || tags.RangeInstanceId !== input.rangeInstanceId || tags.CloudAccountUid !== input.runtimeConfig.accountUid
+          || tags.RangeInstanceId !== input.rangeInstanceId || tags.range_instance_id !== input.rangeInstanceId || tags.CloudAccountUid !== input.runtimeConfig.accountUid
           || tags.CloudAccountContextId !== input.runtimeConfig.cloudAccountContextId || tags.PlatformCreateJobId !== pending.sourceProvisionJobId
           || ['PlatformScope','PlatformUserId'].some(key => input.billingTags?.[key] !== undefined && tags[key] !== input.billingTags[key])
           || !Array.isArray(variables.hosts) || !variables.hosts.length || variables.hosts.some((host: any) => typeof host?.key !== 'string' || !host.key)
