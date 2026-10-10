@@ -168,7 +168,8 @@ connections:
 6. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
 7. 每个 ECS 图节点写入 `image: displayName`（展示字段）、`imageName: displayName`、`imageId`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`nics`、`portGroups` 与用户 `initScript`。镜像身份由 `platformImageAssetId`、`imageId` 和 `imageStrategy.imageId` 表达；不得把资产 ID 填入 `image`。ECS 的遗留 `dnatMappings` 不创建 NAT 规则，转换结果应省略或保持为空数组。
 8. 每个 Switch 节点必须写入完整 `aclRules` 与 `nat: { snatEnabled, dnatMappings }`；**公网 DNAT 仅以 `switch.nat.dnatMappings` 为准**，每条映射必须含 `key`、`targetHostId`、`externalPort`、`internalPort`、`protocol`。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
-9. 设计显式要求 Windows 自定义 DNS 时，在对应 ECS 图节点保留 `dns: { servers: [...], nicIds: [...], domain?: ... }`，例如 `dns: { servers: ['10.0.50.10'], nicIds: ['nic-member-1'], domain: 'lab.example' }`。根据真实镜像操作系统元数据判断 Windows，不能靠显示名猜测。省略 `dns` 的节点不生成 DNS 配置；域成员的所有 DNS 服务器应能解析 AD 域。
+9. ECS 规格显式映射 `ecs.cpu` 到图节点 `cpu`、`ecs.memoryGiB` 到图节点 `memory`（GiB）；不能把 `memoryGiB` 原样写入图，也不能丢弃用户指定规格。
+10. 设计显式要求 Windows 自定义 DNS 时，在对应 ECS 图节点保留 `dns: { servers: [...], nicIds: [...], domain?: ... }`，例如 `dns: { servers: ['10.0.50.10'], nicIds: ['nic-member-1'], domain: 'lab.example' }`。根据真实镜像操作系统元数据判断 Windows，不能靠显示名猜测。省略 `dns` 的节点不生成 DNS 配置；域成员的所有 DNS 服务器应能解析 AD 域。
 
 转换回执和完整图均通过后，调用 `range_template_create`，只传 `name`、可选 `description`、可选 `publicEntryProtocols` 和完整 `topologyGraph`。不要传 VPC CIDR、地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或盲目重试。
 
