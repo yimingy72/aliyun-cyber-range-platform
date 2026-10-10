@@ -989,7 +989,7 @@ describe('tool registry', () => {
     await registry.callTool('range_template_create', ['templates:write'], { name: '纯内网', topologyGraph: invalidGraph });
     const created = vi.mocked(client.createRangeTemplate).mock.calls[0]![0];
     expect(created.compiledProvisionSpec).toMatchObject({ natGateways: [], eips: [], dnatEntries: [] });
-    expect(created.topologyGraph.nodes.filter((node: any) => node.kind === 'ecs').every((node: any) => !node.exposePublic)).toBe(true);
+    expect((created.topologyGraph as ScenarioGraphDraft).nodes.filter((node) => node.kind === 'ecs').every((node) => !node.exposePublic)).toBe(true);
   });
 
   it('accepts multiple host DNAT mappings sharing one public entry', async () => {
