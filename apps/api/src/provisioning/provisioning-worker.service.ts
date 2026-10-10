@@ -392,6 +392,13 @@ export class ProvisioningWorkerService {
       }
 
       if (effectiveJobType === 'update') {
+        // A restarted worker cannot infer that an earlier submitted apply made no changes.
+        // Recover its native inventory and billing instead of running the saved plan again.
+        if (job.retryCount > 0 && (await this.adminRepository.listProvisionJobStepLogs(job.id))
+          .some(log => log.stepName === 'tofu_apply' && log.startedAt && !log.message?.startsWith('Dry-run'))) {
+          rangeApplyStarted = true;
+          throw new Error('Interrupted runtime topology update requires resource inventory recovery before another apply');
+        }
         await this.processRangeInstanceUpdateJob({
           job,
           instance,
@@ -957,7 +964,15 @@ export class ProvisioningWorkerService {
       }
     }
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
-      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext) },async () => {
+      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext),
+        assertRecoverySourceJob: async sourceJobId => {
+          const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
+          if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
+            || (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
+            || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt
+            || sourceJob.jobType === 'update' && sourceJob.topologySnapshot?.operation !== 'update')
+            throw new Error('Tencent recovery has no original submitted platform job in its frozen workspace');
+        } },async () => {
         input.signal?.throwIfAborted();
         if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
       },async (recovered,sourceJobId) => {

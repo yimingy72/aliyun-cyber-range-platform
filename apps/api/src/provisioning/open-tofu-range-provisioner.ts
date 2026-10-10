@@ -541,6 +541,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await this.assertTencentWorkspaceIdentity(dir,input);
     const state = await readWorkspaceState(dir,true);
     if (!state || !pending.sourceProvisionJobId || !pending.submittedAt || !Number.isFinite(Date.parse(pending.submittedAt))) throw new Error('Tencent recovery requires the original durable submission and state lineage');
+    if (!input.assertRecoverySourceJob) throw new Error('Tencent recovery requires the original submitted platform source job proof');
+    const verifiedSourceJobs = new Set<string>();
+    const verifySourceJob = async (id: unknown) => {
+      if (typeof id !== 'string' || !id) throw new Error('Tencent recovery resource has no original submitted platform source job');
+      if (!verifiedSourceJobs.has(id)) { await input.assertRecoverySourceJob!(id); verifiedSourceJobs.add(id); }
+    };
+    await verifySourceJob(pending.sourceProvisionJobId);
     const variables = JSON.parse(await fs.readFile(path.join(dir,'range.auto.tfvars.json'),'utf8'));
     const tags = variables.tags as Record<string,string>;
     if (!tags || tags.PlatformCreateJobId !== pending.sourceProvisionJobId || tags.CloudAccountContextId !== account.cloudAccountContextId || tags.CloudAccountUid !== account.accountUid || tags.RangeInstanceId !== input.rangeInstanceId) throw new Error('Tencent recovery intent differs from its original source job');
@@ -555,7 +562,23 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     if (!vpc) throw new Error('Tencent recovery cannot adopt a network without its original persisted VPC identity');
     const tagKeys = ['CloudProvider','PlatformManaged','CreatedBy','PlatformScope','PlatformUserId','CloudAccountUid','CloudAccountContextId','RangeInstanceId','PlatformCreateJobId'];
     const owns = (actual: Record<string,string>) => tagKeys.every(key => tags[key] === undefined ? actual[key] === undefined : actual[key] === tags[key]);
-    if (ownedVpcs.length !== 1 || !owns(ownedVpcs[0].tags)) throw new Error('Tencent recovery VPC ownership cannot be independently verified');
+    const ownsExisting = async (resource: { id: string; tags: Record<string,string> }, original: WorkspaceState['instances'][number], recordedIds: string[]) => {
+      const originalTags = original.attributes.tags as Record<string,string> | undefined;
+      const identityKeys = tagKeys.filter(key => key !== 'PlatformCreateJobId');
+      if (!originalTags || original.module !== 'module.range' || original.attributes.id !== resource.id || !recordedIds.includes(resource.id)
+        || identityKeys.some(key => originalTags[key] !== tags[key] || resource.tags[key] !== tags[key])
+        || ![originalTags.PlatformCreateJobId,pending.sourceProvisionJobId].includes(resource.tags.PlatformCreateJobId))
+        throw new Error('Tencent existing recovery resource differs from its frozen state and platform ownership inventory');
+      await verifySourceJob(originalTags.PlatformCreateJobId); await verifySourceJob(resource.tags.PlatformCreateJobId);
+    };
+    if (ownedVpcs.length !== 1 || input.knownResourceSummary?.mode !== 'opentofu' || !input.knownResourceSummary.executionContext
+      || input.knownResourceSummary.executionContext.provider !== 'tencent_cloud'
+      || input.knownResourceSummary.executionContext.cloudAccountUid !== account.accountUid
+      || input.knownResourceSummary.executionContext.cloudAccountContextId !== account.cloudAccountContextId
+      || input.knownResourceSummary.executionContext.regionId !== account.defaultRegion
+      || input.knownResourceSummary.executionContext.zoneId !== account.defaultZoneId)
+      throw new Error('Tencent recovery VPC ownership cannot be independently verified');
+    await ownsExisting(ownedVpcs[0],vpc,input.knownResourceSummary.vpcId ? [input.knownResourceSummary.vpcId] : []);
     const expected = [
       ...variables.eips.map((value: any) => ({ kind: 'eip' as const, type: 'tencentcloud_eip', name: 'range', value })),
       ...variables.nat_gateways.map((value: any) => ({ kind: 'nat' as const, type: 'tencentcloud_nat_gateway', name: 'shared', value })),
@@ -566,8 +589,23 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     });
     if (!missing.length) return;
     if (!this.runner.importResource) throw new Error('Tencent recovery requires fenced OpenTofu state import support');
-    const allEipIds = state.instances.filter(resource => resource.type === 'tencentcloud_eip').map(resource => String(resource.attributes.id));
+    // EIPs being removed can remain in partial state. They are cleanup evidence, not inputs of the new NAT.
+    const allEipIds = state.instances.filter(resource => resource.type === 'tencentcloud_eip'
+      && variables.eips.some((value: any) => value.key === resourceInstanceKey(resource.address))).map(resource => String(resource.attributes.id));
     const eips = allEipIds.length ? await describeTencentResourceInventory(account,'eip',{ ids: allEipIds }) : [];
+    if (eips.length !== allEipIds.length || new Set(eips.map(eip => eip.id)).size !== eips.length
+      || eips.some(eip => !allEipIds.includes(eip.id))) throw new Error('Tencent existing recovery EIP inventory is incomplete');
+    for (const eip of eips) {
+      const original = state.instances.find(resource => resource.type === 'tencentcloud_eip' && resource.attributes.id === eip.id)!;
+      const allocation = variables.eips.filter((value: any) => value.key === resourceInstanceKey(original.address));
+      const intent = allocation[0]?.creation_intent_id;
+      await ownsExisting(eip,original,Object.values(input.knownResourceSummary.eipAllocationIds ?? {}));
+      if (allocation.length !== 1 || typeof intent !== 'string' || !/^[a-f0-9]{32}$/.test(intent)
+        || original.attributes.client_token !== intent || (original.attributes.tags as Record<string,string>).CreationIntentId !== intent
+        || eip.tags.CreationIntentId !== intent || original.attributes.name !== `${variables.resource_name_prefix}-${intent.slice(0,16)}`
+        || eip.name !== original.attributes.name || eip.bandwidth !== allocation[0].bandwidth || !eip.publicIp)
+        throw new Error('Tencent existing recovery EIP differs from its frozen allocation intent');
+    }
     const recovered: Array<{ address: string; id: string; field: 'eipAllocationIds'|'natGatewayIds'; key: string }> = [];
     for (const entry of missing) {
       await assertCurrent(); input.signal?.throwIfAborted();
@@ -581,7 +619,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         if (!candidate.publicIp || candidate.bandwidth !== entry.value.bandwidth) throw new Error('Tencent EIP recovery does not match its frozen allocation');
         eips.push(candidate);
       } else {
-        const expectedAddresses = eips.filter(eip => owns(eip.tags)).map(eip => eip.publicIp).filter(Boolean);
+        const expectedAddresses = eips.map(eip => eip.publicIp).filter(Boolean);
         if (candidate.vpcId !== ownedVpcs[0].id || candidate.natProductVersion !== 2 || candidate.bandwidth !== 5000 || candidate.maxConcurrent !== 2000000 || !Array.isArray(candidate.publicIpAddresses) || !expectedAddresses.length || candidate.publicIpAddresses.length !== expectedAddresses.length || candidate.publicIpAddresses.some(ip => !expectedAddresses.includes(ip))) throw new Error('Tencent NAT recovery does not match its original VPC, EIPs and specifications');
       }
       recovered.push({ address: `module.range.${entry.type}.${entry.name}[${JSON.stringify(entry.value.key)}]`, id: candidate.id, key: entry.value.key, field: entry.kind === 'nat' ? 'natGatewayIds' : 'eipAllocationIds' });

@@ -76,6 +76,7 @@ export type RangeProvisionCreateResult = {
 };
 
 export type RangeProvisionDestroyInput = {
+  assertRecoverySourceJob?: (sourceProvisionJobId: string) => Promise<void>;
   knownResourceSummary?: RangeResourceSummary;
   signal?: AbortSignal;
   requirePersistedState?: boolean;
