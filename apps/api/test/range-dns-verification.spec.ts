@@ -50,3 +50,60 @@ describe('all deployed NIC evidence and startup baseline preservation',()=>{
  it('rejects selected actual values inconsistent with the same fresh NIC observation',()=>expect(()=>parse({observedInterfaces:[observed[0],{...observed[1],actualServers:['8.8.8.8']}]})).toThrow('MISMATCH'));
  it('does not leak policy fingerprints or raw startup data',async()=>{const t=setup();const p=deployedDnsPolicy(t.range,'win');t.client.read.mockImplementation(async()=>({status:'success',exitCode:0,output:report(t.range.resourceSummary.dnsVerification.win.claimId,{observedInterfaces:observed,baseline:{schemaVersion:1,policyHash:p.policyHash,interfaces:observed,secret:'should-not-escape'}})}));const result=await t.service.verify('r','win',{id:'u',role:'user'});expect(result.dnsVerification.preservationStatus).toBe('verified');expect(JSON.stringify(result)).not.toContain('should-not-escape');expect(result.dnsVerification).not.toHaveProperty('policyHash');});
 });
+
+describe('controlled reapply of the deployed DNS policy', () => {
+ function setupApply() {
+  const t = setup(); let submitted = 0;
+  const output = (nonce: string, configuration = false, patch: any = {}) => report(nonce, { method: configuration ? 'readback' : 'ad_srv', observedInterfaces: observed,
+   baseline: { schemaVersion: 1, policyHash: deployedDnsPolicy(t.range, 'win').policyHash, interfaces: observed }, ...patch });
+  t.client.submit.mockImplementation(async () => ({ invocationId: ++submitted === 1 ? 'inv-config' : 'inv-reader', requestId: `req-${submitted}` }));
+  t.client.read.mockImplementation(async (_account: unknown, invocation: string) => ({ status: 'success', exitCode: 0, output: output(t.range.resourceSummary.dnsVerification.win.claimId, invocation === 'inv-config') }));
+  return { ...t, output };
+ }
+ it('sets the fixed deployed secondary NIC, then independently reads DNS and AD SRV on the same native instance', async () => {
+  const t = setupApply(); t.range.draftTopologyGraph = { nodes: [{ ...host, dns: { servers: ['8.8.8.8'], nicIds: ['nic-1'] } }] };
+  const result = await t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true);
+  expect(result).toMatchObject({ action: 'apply-dns', status: 'verified', dnsVerification: { preservationStatus: 'verified', resolutionStatus: 'verified' } });
+  expect(t.client.submit).toHaveBeenCalledTimes(2); expect(t.client.read.mock.calls.map((call: any[]) => call[1])).toEqual(['inv-config', 'inv-reader']);
+  const calls = t.client.submit.mock.calls; expect(calls.every((call: any[]) => call[1] === 'i-owned')).toBe(true); expect(calls[0][3]).toBe(calls[1][3]);
+  expect(calls[0][2]).toContain('Set-DnsClientServerAddress'); expect(calls[1][2]).not.toContain('Set-DnsClientServerAddress');
+  expect(t.range.status).toBe('running'); expect(Object.keys(t.repo)).not.toContain('createProvisionJob');
+  expect(t.range.resourceSummary.dnsVerification.win).toMatchObject({ configurationInvocationId: 'inv-config', configurationRequestId: 'req-1', invocationId: 'inv-reader', cloudRequestId: 'req-2' });
+  expect(JSON.stringify(result)).not.toContain('inv-config'); expect(JSON.stringify(result)).not.toContain('claimId');
+  await t.service.verify('r', 'win', { id: 'u', role: 'user' });
+  expect(t.range.resourceSummary.dnsVerification.win.configurationInvocationId).toBe('inv-config');
+ });
+ it('setter failure stops before another command and cannot enqueue a cloud retry', async () => {
+  const t = setupApply(); t.client.read.mockImplementation(async () => ({ status: 'failed', exitCode: 1,
+   output: t.output(t.range.resourceSummary.dnsVerification.win.claimId, true, { status: 'failed' }) }));
+  expect(await t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true)).toMatchObject({ action: 'apply-dns', status: 'failed' });
+  expect(t.client.submit).toHaveBeenCalledTimes(1); expect(t.range.status).toBe('running'); expect(t.range.resourceSummary.hostIds.win).toBe('i-owned');
+ });
+ it.each(['changed', 'missing'])('does not accept unverifiable preservation of unselected NICs: %s', async kind => {
+  const t = setupApply(); t.client.read.mockImplementation(async () => ({ status: 'success', exitCode: 0,
+   output: t.output(t.range.resourceSummary.dnsVerification.win.claimId, true, kind === 'changed' ? { observedInterfaces: [{ ...observed[0], actualServers: ['8.8.8.8'] }, observed[1]] } : { baseline: undefined }) }));
+  const result = await t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true);
+  expect(result).toMatchObject({ status: 'failed', dnsVerification: { errorCode: 'DNS_CONFIGURATION_PRESERVATION_FAILED' } }); expect(t.client.submit).toHaveBeenCalledTimes(1);
+ });
+ it('reports a later AD failure without reapplying DNS or rebuilding the machine', async () => {
+  const t = setupApply(); t.client.read.mockImplementation(async (_account: unknown, invocation: string) => ({ status: 'success', exitCode: 0,
+   output: t.output(t.range.resourceSummary.dnsVerification.win.claimId, invocation === 'inv-config', invocation === 'inv-reader' ? { probes: [{ server: dns.servers[0], status: 'failed', recordCount: 0 }], status: 'failed' } : {}) }));
+  expect(await t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true)).toMatchObject({ status: 'failed', dnsVerification: { errorCode: 'DNS_AD_SRV_FAILED' } });
+  expect(t.client.submit).toHaveBeenCalledTimes(2); expect(t.range.status).toBe('running'); expect(t.range.resourceSummary.hostIds.win).toBe('i-owned');
+ });
+ it('fails preservation if an unselected NIC drifts between setter and independent reader', async () => {
+  const t = setupApply(); t.client.read.mockImplementation(async (_account: unknown, invocation: string) => ({ status: 'success', exitCode: 0,
+   output: t.output(t.range.resourceSummary.dnsVerification.win.claimId, invocation === 'inv-config', invocation === 'inv-reader' ? { observedInterfaces: [{ ...observed[0], actualServers: ['8.8.8.8'] }, observed[1]] } : {}) }));
+  expect(await t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true)).toMatchObject({ status: 'failed', dnsVerification: { errorCode: 'DNS_CONFIGURATION_PRESERVATION_FAILED', preservationStatus: 'changed' } });
+  expect(t.client.submit).toHaveBeenCalledTimes(2); expect(t.range.status).toBe('running');
+ });
+ it('stops after an ambiguous setter receipt without retrying configuration', async () => {
+  const t = setupApply(); t.client.submit.mockRejectedValue(new Error('unknown receipt private secret'));
+  expect(await t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true)).toMatchObject({ status: 'unverified', dnsVerification: { errorCode: 'DNS_AGENT_UNAVAILABLE' } });
+  expect(t.client.submit).toHaveBeenCalledTimes(1); expect(t.client.read).not.toHaveBeenCalled(); expect(t.range.status).toBe('running');
+ });
+ it('does not submit the reader after destruction starts', async () => {
+  const t = setupApply(); t.client.read.mockImplementation(async () => { t.range.status = 'destroying'; return { status: 'success', exitCode: 0, output: t.output(t.range.resourceSummary.dnsVerification.win.claimId, true) }; });
+  await expect(t.service.verify('r', 'win', { id: 'u', role: 'user' }, undefined, true)).rejects.toThrow('变化'); expect(t.client.submit).toHaveBeenCalledTimes(1); expect(t.range.status).toBe('destroying');
+ });
+});

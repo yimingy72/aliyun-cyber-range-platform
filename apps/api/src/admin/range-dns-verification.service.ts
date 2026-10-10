@@ -6,7 +6,7 @@ import { ADMIN_REPOSITORY, type AdminRepository, type RangeInstanceRecord } from
 import { runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 import { SystemConfigService } from './system-config.service';
 import { DnsGuestCommandClient } from './dns-guest-command-client';
-import { buildWindowsDnsVerificationScript, windowsDnsPolicyHash, type WindowsDnsTarget } from '../provisioning/renderers/guest-dns-scripts';
+import { buildWindowsDnsConfigurationScript, buildWindowsDnsVerificationScript, windowsDnsPolicyHash, type WindowsDnsTarget } from '../provisioning/renderers/guest-dns-scripts';
 import { publicDnsVerification, type RangeDnsVerification, type DnsInterfaceView } from './range-dns-types';
 
 type Actor = { id: string; role: string };
@@ -104,7 +104,7 @@ export class RangeDnsVerificationService {
     }));
   }
 
-  async verify(id: string, hostKey: string, actor: Actor, ownJobId?: string) {
+  async verify(id: string, hostKey: string, actor: Actor, ownJobId?: string, configure = false) {
     const range = await this.repository.getRangeInstanceById(id);
     if (!range) throw new NotFoundException('Range instance not found');
     if (!actor || actor.role !== 'admin' && range.ownerUserId !== actor.id) throw new ForbiddenException('Range instance access denied');
@@ -115,34 +115,52 @@ export class RangeDnsVerificationService {
     const policy = deployedDnsPolicy(range, hostKey), previous = range.resourceSummary.dnsVerification?.[hostKey];
     if (previous?.status === 'checking' && new Date(previous.expiresAt).getTime() > Date.now()) throw new ConflictException('该主机正在核验 DNS。');
     const claimId = randomUUID();
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + (configure ? 180_000 : 120_000);
     let state: RangeDnsVerification = { status: 'checking', method: policy.dns.domain ? 'ad_srv' : 'readback', expected: policy.expected,
       actual: [], observedInterfaces: [], untouchedInterfaces: [], preservationStatus: 'unverified', resolutionStatus: 'not_requested', instanceId, policyHash: policy.policyHash, claimId,
-      expiresAt: new Date(Date.now() + 180_000).toISOString() };
+      expiresAt: new Date(Date.now() + (configure ? 240_000 : 180_000)).toISOString(),
+      ...(!configure && previous?.instanceId === instanceId && previous.policyHash === policy.policyHash
+        ? { configurationInvocationId: previous.configurationInvocationId, configurationRequestId: previous.configurationRequestId } : {}) };
     if (!await this.repository.updateRangeInstanceDnsState(id, hostKey, instanceId, previous?.claimId ?? null, state)) throw new ConflictException('实例已变化，请刷新后核验。');
     try {
       const contextId = range.resourceSummary.executionContext?.cloudAccountContextId;
       if (!contextId) throw new Error('DNS_FROZEN_ACCOUNT_MISSING');
       const account = await this.config.getAccountContextById(contextId);
       await this.client.assertOwned(range, hostKey, instanceId, account);
-      const current = await this.repository.getRangeInstanceById(id);
-      if (!current || current.status !== 'running' || current.resourceSummary?.hostIds?.[hostKey] !== instanceId || current.resourceSummary?.dnsVerification?.[hostKey]?.claimId !== claimId || deployedDnsPolicy(current, hostKey).policyHash !== policy.policyHash) throw new Error('DNS_INSTANCE_CHANGED');
-      const submission = await this.client.submit(account, instanceId, buildWindowsDnsVerificationScript({ dns: policy.dns, interfaces: policy.interfaces, verificationNonce: claimId }), claimId);
-      state = { ...state, invocationId: submission.invocationId, cloudRequestId: submission.requestId };
-      if (!await this.repository.updateRangeInstanceDnsState(id, hostKey, instanceId, claimId, state)) throw new Error('DNS_INSTANCE_CHANGED');
-      let result;
-      for (let attempt = 0; attempt < 22 && Date.now() < deadline; attempt++) {
-        const snapshot = await this.repository.getRangeInstanceById(id);
-        if (!snapshot || snapshot.status !== 'running' || snapshot.resourceSummary?.hostIds?.[hostKey] !== instanceId || snapshot.resourceSummary?.dnsVerification?.[hostKey]?.claimId !== claimId || deployedDnsPolicy(snapshot, hostKey).policyHash !== policy.policyHash) throw new Error('DNS_INSTANCE_CHANGED');
-        result = await this.client.read(account, submission.invocationId, instanceId);
-        if (result.status !== 'pending') break;
-        await this.pause(3000);
+      const assertCurrent = async () => {
+        const current = await this.repository.getRangeInstanceById(id);
+        if (!current || current.status !== 'running' || current.resourceSummary?.hostIds?.[hostKey] !== instanceId || current.resourceSummary?.dnsVerification?.[hostKey]?.claimId !== claimId || deployedDnsPolicy(current, hostKey).policyHash !== policy.policyHash) throw new Error('DNS_INSTANCE_CHANGED');
+      };
+      const execute = async (script: string, domain: string | undefined, configuration = false) => {
+        await assertCurrent();
+        if (Date.now() >= deadline) throw new Error('DNS_COMMAND_TIMEOUT');
+        const submission = await this.client.submit(account, instanceId, script, claimId);
+        state = { ...state, status: 'checking', method: domain ? 'ad_srv' : 'readback', errorCode: undefined,
+          ...(configuration ? { configurationInvocationId: submission.invocationId, configurationRequestId: submission.requestId }
+            : { invocationId: submission.invocationId, cloudRequestId: submission.requestId }) };
+        if (!await this.repository.updateRangeInstanceDnsState(id, hostKey, instanceId, claimId, state)) throw new Error('DNS_INSTANCE_CHANGED');
+        let result;
+        for (let attempt = 0; attempt < (configure ? 30 : 22) && Date.now() < deadline; attempt++) {
+          await assertCurrent();
+          result = await this.client.read(account, submission.invocationId, instanceId);
+          if (result.status !== 'pending') break;
+          await this.pause(3000);
+        }
+        if (!result || result.status === 'pending') throw new Error('DNS_COMMAND_TIMEOUT');
+        if (result.status !== 'success' || result.exitCode !== 0) {
+          if (result.output) { try { state = { ...state, ...parseDnsReadback(result.output, claimId, policy.expected, domain, policy.interfaces, policy.policyHash), status: 'failed' }; } catch { /* retain safe fixed failure */ } }
+          state = { ...state, status: 'failed', errorCode: state.errorCode ?? 'DNS_COMMAND_FAILED' };
+        } else state = { ...state, ...parseDnsReadback(result.output ?? '', claimId, policy.expected, domain, policy.interfaces, policy.policyHash) };
+      };
+      const scriptInput = { dns: policy.dns, interfaces: policy.interfaces, verificationNonce: claimId };
+      if (configure) {
+        await execute(buildWindowsDnsConfigurationScript(scriptInput), undefined, true);
+        if (state.status === 'verified' && !['verified', 'not_requested'].includes(state.preservationStatus ?? 'unverified'))
+          state = { ...state, status: 'failed', errorCode: 'DNS_CONFIGURATION_PRESERVATION_FAILED' };
       }
-      if (!result || result.status === 'pending') throw new Error('DNS_COMMAND_TIMEOUT');
-      if (result.status !== 'success' || result.exitCode !== 0) {
-        if (result.output) { try { state = { ...state, ...parseDnsReadback(result.output, claimId, policy.expected, policy.dns.domain, policy.interfaces, policy.policyHash), status: 'failed' }; } catch { /* retain safe fixed failure */ } }
-        state = { ...state, status: 'failed', errorCode: state.errorCode ?? 'DNS_COMMAND_FAILED' };
-      } else state = { ...state, ...parseDnsReadback(result.output ?? '', claimId, policy.expected, policy.dns.domain, policy.interfaces, policy.policyHash) };
+      if (!configure || state.status === 'verified') await execute(buildWindowsDnsVerificationScript(scriptInput), policy.dns.domain);
+      if (configure && state.status === 'verified' && !['verified', 'not_requested'].includes(state.preservationStatus ?? 'unverified'))
+        state = { ...state, status: 'failed', errorCode: 'DNS_CONFIGURATION_PRESERVATION_FAILED' };
     } catch (error) {
       const code = error instanceof Error && /^DNS_[A-Z_]+$/.test(error.message) ? error.message : 'DNS_AGENT_UNAVAILABLE';
       state = { ...state, status: 'unverified', errorCode: code };
@@ -151,7 +169,7 @@ export class RangeDnsVerificationService {
     if (!final || final.status !== 'running' || final.resourceSummary?.hostIds?.[hostKey] !== instanceId || deployedDnsPolicy(final, hostKey).policyHash !== policy.policyHash) throw new ConflictException('核验过程中实例或 DNS 策略发生变化，请刷新。');
     state.checkedAt = new Date().toISOString();
     if (!await this.repository.updateRangeInstanceDnsState(id, hostKey, instanceId, claimId, state)) throw new ConflictException('核验过程中实例发生变化，结果未覆盖当前状态。');
-    return { status: state.status, action: 'verify-dns', dnsVerification: publicDnsVerification({ [hostKey]: state })![hostKey] };
+    return { status: state.status, action: configure ? 'apply-dns' : 'verify-dns', dnsVerification: publicDnsVerification({ [hostKey]: state })![hostKey] };
   }
   protected pause(milliseconds: number) { return new Promise<void>(resolve => setTimeout(resolve, milliseconds)); }
 }

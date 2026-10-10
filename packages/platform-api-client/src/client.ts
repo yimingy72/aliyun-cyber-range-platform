@@ -298,7 +298,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,
-    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns',
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns',
     payload: RangeInstanceNodeActionPayload = {},
     operation?: OperationRequest,
   ) {
@@ -309,6 +309,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
         body: JSON.stringify(payload),
         operation,
         ...(action === 'verify-dns' ? { signal: AbortSignal.timeout(180_000) } : {}),
+        ...(action === 'apply-dns' ? { signal: AbortSignal.timeout(240_000) } : {}),
       },
     );
   }

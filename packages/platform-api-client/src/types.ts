@@ -405,7 +405,7 @@ export type PlatformApiClientLike = {
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,
-    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns',
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns',
     payload?: RangeInstanceNodeActionPayload,
     operation?: OperationRequest,
   ): Promise<Record<string, unknown>>;

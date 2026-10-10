@@ -24,6 +24,7 @@
 | ECS 关机 | `range_instance_node_stop` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
 | ECS 重启 | `range_instance_node_reboot` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
 | ECS DNS 核验 | `range_instance_node_verify_dns` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
+| ECS DNS 重新下发 | `range_instance_node_apply_dns` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
 | ECS VNC | `range_instance_node_open_vnc` | `rangeInstanceId`、`nodeId` | — | `ranges:read`、`instances:credentials:read` |
 | ECS 打包镜像 | `range_instance_node_pack_image` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control`、`images:write` |
 | 腾讯镜像参数只读核验 | `range_instance_node_pack_image_validate` | `rangeInstanceId`、`nodeId`、`displayName` | `description` | `ranges:read`、`images:read` |
@@ -69,6 +70,7 @@
 
 - Windows 节点配置 `dns` 时，`range_instance_get` 的 `dnsVerification[nodeId]` 独立报告客体 DNS：`pending`、`checking`、`verified`、`failed`、`unverified`，以及按 NIC ID/私网 IP 的 `expected`、`actual` 和 `resolutionStatus`。云端 `Running` 不能作为 DNS 生效证明；未核验不能解释为成功。
 - 用 `range_instance_node_verify_dns` 对准确实例/节点重新核验，只调用平台固定只读脚本，不接受任意脚本、云资源 ID 或 DNS 配置参数。它不改变 DNS，不创建或重建云实例；`failed`/`unverified` 时应检查网卡、初始化工具、DNS 服务及域控 SRV 记录，不调用创建重试来修复 DNS。该动作需 `ranges:control`，并沿用平台二阶段确认。
+- 需要修复客体 DNS 漂移时，明确确认准确实例/节点后调用 `range_instance_node_apply_dns`。平台只向原实例选定网卡下发已部署拓扑的 DNS，再独立读取 DNS 和已配置的域控 SRV；不接受任意脚本、新 DNS、云 ID 或草稿参数，不调用 OpenTofu 或重建资源。未选网卡保持证明不足、客体设置失败或请求结果未知时仅记录 DNS 失败/未核验，不自动重复下发。该动作需 `ranges:control` 和二阶段确认，客户端等待至少 240 秒；超时先读取当前 DNS 状态。
 - 实测前可用 `provision_job_get({ provisionJobId, includeEvidence: true })` 保存同来源资源 ID 库存。证据只投影固定阶段状态、同实例/工作空间相关作业、计费台账及释放时间，不返回原始日志、命令、状态文件或凭据。DNS 核验失败前后对比 `range_instance_get` 的物理资源 ID、`lastJobId` 与证据中的相关作业；不能把一个核验失败解释为需要重新创建。销毁后的 `verify_destroy=succeeded` 是平台核验步骤记录，不是独立云 API 回执或所有资源均不存在的公开证明；`releasedAt` 也不表示官方账单已最终结清。
 - 核验包含云 API 与客体执行等待，客户端应为该工具保留至少 180 秒的调用等待时间。客户端超时或断线后先读取当前 `dnsVerification`，不要重复提交，更不能重试创建实例。
 - 排查网络时，可用 `range_instance_get({ rangeInstanceId, includeNetworkDiagnostics: true })` 在原详情中读取 `networkDiagnostics`。默认查询不发起云网络诊断；诊断只读取该实例启动时绑定账号/地域的 ECS、网卡主辅 IP、安全组、ACL、NAT 和路由白名单事实，由服务端校验 owner/admin 权限，不接受任意云资源 ID，不返回凭据或原始 provider 响应，也不会创建、改变或销毁云资源。诊断状态与业务实例状态分别读取，不能将缺失/失败的诊断当作网络通过。

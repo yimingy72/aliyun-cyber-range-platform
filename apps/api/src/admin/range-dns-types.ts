@@ -16,6 +16,8 @@ export type RangeDnsVerification = {
   expiresAt: string;
   invocationId?: string;
   cloudRequestId?: string;
+  configurationInvocationId?: string;
+  configurationRequestId?: string;
 };
 
 export function publicDnsVerification(entries: Record<string, RangeDnsVerification> | undefined) {

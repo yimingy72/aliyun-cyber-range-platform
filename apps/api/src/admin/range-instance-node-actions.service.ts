@@ -23,7 +23,7 @@ import { encodePackedImageDiagnostic, packedImageDiagnostic, type PackedImagePha
 
 const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
-type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns';
+type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns';
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
 
 @Injectable()
@@ -93,9 +93,9 @@ export class RangeInstanceNodeActionsService {
     if (source?.cloudAccountContextId && (source.cloudAccountContextId !== accountContext.cloudAccountContextId
       || source.cloudAccountUid !== accountContext.accountUid || source.regionId !== accountContext.defaultRegion || !accountContext.accountUidResolved))
       throw new ConflictException('实例云账号与创建时绑定不符。');
-    if (action === 'verify-dns') {
+    if (action === 'verify-dns' || action === 'apply-dns') {
       if (!currentUser || !this.dnsVerification || Object.keys(payload).length) throw new ConflictException('DNS 核验需要认证用户且不接受自定义命令。');
-      return this.dnsVerification.verify(rangeInstanceId, nodeId, currentUser);
+      return this.dnsVerification.verify(rangeInstanceId, nodeId, currentUser, undefined, action === 'apply-dns');
     }
     if (accountContext.provider === 'tencent_cloud' && action !== 'pack-image') return this.runTencentNodeAction(instance, nodeId, hostInstanceId, action, accountContext);
 
@@ -295,7 +295,7 @@ export class RangeInstanceNodeActionsService {
     }
   }
 
-  private async runTencentNodeAction(instance: RangeInstanceRecord, nodeId: string, instanceId: string, action: Exclude<NodeActionName, 'verify-dns'>, account: SystemCloudAccountContext) {
+  private async runTencentNodeAction(instance: RangeInstanceRecord, nodeId: string, instanceId: string, action: Exclude<NodeActionName, 'verify-dns' | 'apply-dns'>, account: SystemCloudAccountContext) {
     if (action === 'pack-image') throw new ConflictException('腾讯云镜像打包需由已绑定来源的镜像服务执行。');
     const [detail] = await describeTencentInstances(account, { instanceIds: [instanceId] });
     if (!detail) throw new NotFoundException('Tencent CVM node was not found');
@@ -437,7 +437,7 @@ export class RangeInstanceNodeActionsService {
 }
 
 function isNodeActionName(value: string): value is NodeActionName {
-  return value === 'verify-dns' || value === 'start' || value === 'stop' || value === 'reboot' || value === 'open-vnc' || value === 'pack-image';
+  return value === 'verify-dns' || value === 'apply-dns' || value === 'start' || value === 'stop' || value === 'reboot' || value === 'open-vnc' || value === 'pack-image';
 }
 
 function buildAliyunWebTerminalUrl(input: {

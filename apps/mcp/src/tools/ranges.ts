@@ -188,6 +188,19 @@ export const rangeTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'range_instance_node_apply_dns',
+    title: '重新下发编排节点 DNS',
+    description: '将已部署拓扑中的 DNS 重新设置到指定 Windows 节点选定网卡，然后读取实际 DNS 并核验已配置的域控 SRV。只接受准确平台实例和节点，不接受任意命令、DNS 参数或云资源 ID；不创建、销毁或重建实例，失败仅记录 DNS 状态。调用前取得准确节点的用户确认。',
+    requiredScopes: ['ranges:control'],
+    annotations: { destructiveHint: false, idempotentHint: false },
+    inputSchema: rangeNodeVerifyDnsInputSchema,
+    outputSchema: actionOutputSchema,
+    call(context, args) {
+      const input = args as RangeOperationInput & { nodeId: string };
+      return context.client.runRangeInstanceNodeAction(input.rangeInstanceId, input.nodeId, 'apply-dns', {}, operation(input));
+    },
+  },
+  {
     name: 'range_instance_node_open_vnc',
     title: '打开编排节点 VNC',
     description: '对应实例详情中 ECS 节点“VNC”。返回临时 VNC 访问地址，属于敏感访问数据；仅在用户明确请求时调用。',

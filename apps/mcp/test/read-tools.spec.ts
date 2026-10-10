@@ -1375,7 +1375,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(85);
+    expect(tools).toHaveLength(86);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(
