@@ -55,8 +55,19 @@ describe('Tencent Cloud TC3 request boundary', () => {
     const error = await requestTencentCloud({ ...input, service: 'vpc', action: 'DescribeAddresses', accessKeyId: 'vpc', accessKeySecret: 'DescribeAddresses' }).catch(value => value);
     if (!(error instanceof TencentCloudRequestError)) throw new Error('Expected typed synthetic cloud failure');
     expect(error.service).toBeUndefined(); expect(error.action).toBeUndefined();
+    expect(error.message).toBe('腾讯云请求失败（ResourceNotFound）。');
     const invalid = new TencentCloudRequestError('SYNTHETIC', undefined, { service: 'private-host\nkey', action: 'private-message' });
     expect(invalid.service).toBeUndefined(); expect(invalid.action).toBeUndefined();
+  });
+  it('keeps service/action/code in safe job summary messages without vendor body or parameters', async () => {
+    jest.spyOn(globalThis,'fetch').mockResolvedValue(json({ RequestId: 'cloud-acl-request', Error: { Code: 'ResourceNotFound', Message: `vendor-private:${input.accessKeySecret}` } }));
+    const error = await requestTencentCloud({ ...input, service: 'vpc', action: 'DescribeNetworkAcls', parameters: { Filters: [{ Name: 'vpc-id', Values: ['private-params-must-not-return'] }] } }).catch(value => value);
+    if (!(error instanceof TencentCloudRequestError)) throw new Error('Expected typed synthetic cloud failure');
+    expect(error.message).toBe('腾讯云请求失败（ResourceNotFound；service=vpc；action=DescribeNetworkAcls）。');
+    expect(JSON.stringify({ errorSummary: error.message })).not.toMatch(/vendor-private|private-params-must-not-return|synthetic-access/);
+  });
+  it.each([undefined, { service: 'vpc' }, { action: 'DescribeNetworkAcls' }, { service: '../invalid', action: 'DescribeNetworkAcls' }, { service: 'vpc', action: 'raw\nprivate' }])('preserves the legacy message when request metadata is incomplete or invalid %#', metadata => {
+    expect(new TencentCloudRequestError('ResourceNotFound', undefined, metadata).message).toBe('腾讯云请求失败（ResourceNotFound）。');
   });
   it.each([{ service: '../bad' }, { service: 'cvm.evil' }, { action: 'DescribeZones\r\n' }, { regionId: 'https://evil' }, { accessKeyId: 'bad\nkey' }])('rejects invalid transport input before fetch: %j', async (patch) => {
     const fetch = jest.spyOn(globalThis, 'fetch');

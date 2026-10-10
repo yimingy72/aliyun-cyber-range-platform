@@ -14,12 +14,13 @@ export class TencentCloudRequestError extends Error {
   readonly service?: string;
   readonly action?: string;
   constructor(readonly code: string, readonly requestId?: string, metadata?: { service?: string; action?: string }) {
-    super(`腾讯云请求失败（${code}）。`);
+    const service = metadata?.service && /^[a-z][a-z0-9]{1,31}$/.test(metadata.service) ? metadata.service : undefined;
+    const action = metadata?.action && /^[A-Z][A-Za-z0-9]{1,99}$/.test(metadata.action) ? metadata.action : undefined;
+    super(`腾讯云请求失败（${code}${service && action ? `；service=${service}；action=${action}` : ''}）。`);
     this.name = 'TencentCloudRequestError';
-    if (metadata?.service && /^[a-z][a-z0-9]{1,31}$/.test(metadata.service)) this.service = metadata.service;
-    if (metadata?.action && /^[A-Z][A-Za-z0-9]{1,99}$/.test(metadata.action)) this.action = metadata.action;
+    this.service = service;
+    this.action = action;
   }
-
 }
 
 function sha256(value: string) {
