@@ -963,6 +963,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostImageIds?.[plan.entryHostKey] ??
       Object.values(hostImageIds ?? {})[0] ??
       (await this.resolveImageId(runtimeConfig));
+    const hostWindows = options.requireRuntimePasswords
+      ? await resolveAliyunWindowsDnsHostImages({ hosts: plan.hostDefinitions, hostImageIds: hostImageIds ?? {}, fallbackImageId: imageId, runtimeConfig })
+      : undefined;
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
         host.key,
@@ -983,6 +986,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostInstanceTypes,
       imageId,
       hostImageIds,
+      ...(hostWindows ? { hostWindows } : {}),
       hostPasswords,
       instancePassword,
       tags: {
@@ -1321,9 +1325,12 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     }));
     const images = Object.fromEntries(plan.hostDefinitions.map(host => [host.key,hints.get(host.key)?.finalImageId ?? '']));
     const imageMetadata = await assertTencentImagesAvailable(account,Object.values(images));
+    for (const host of plan.hostDefinitions) {
+      if (host.dns && options.requireRuntimePasswords && (imageMetadata[images[host.key]]?.isWindows !== true || imageMetadata[images[host.key]]?.windowsUserDataSupported !== true)) throw new Error('Tencent host DNS requires an officially identified Windows Server 2012 R2 or newer image');
+    }
     const rendered = renderTencentRangeVariables({ plan, rangeInstanceId: input.rangeInstanceId, account, hostInstanceTypes: types, hostImageIds: images,
       hostPasswords: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,options.requireRuntimePasswords ? requireRuntimePassword(input.runtimeCredentials,host.key) : DESTROY_PLACEHOLDER_PASSWORD])),
-      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,input.runtimeCredentials?.[host.key]?.username === 'Administrator'])),
+      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,imageMetadata[images[host.key]]?.isWindows === true])),
       expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
       systemDiskSize: Math.max(50,...Object.values(imageMetadata).map(image => image.minimumSystemDiskSize)) });
     const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
@@ -1340,6 +1347,29 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private readSystemDiskCategory() {
     return normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
   }
+}
+
+export async function resolveAliyunWindowsDnsHostImages(input: {
+  hosts: Array<{ key: string; dns?: unknown }>;
+  hostImageIds: Record<string, string>;
+  fallbackImageId: string;
+  runtimeConfig: ResolvedProvisioningRuntimeConfig;
+}): Promise<Record<string, boolean> | undefined> {
+  const hosts = input.hosts.filter(host => host.dns);
+  if (!hosts.length) return undefined;
+  const windowsByImage = new Map<string, boolean>();
+  const result: Record<string, boolean> = {};
+  for (const host of hosts) {
+    const imageId = input.hostImageIds[host.key] ?? input.fallbackImageId;
+    if (!windowsByImage.has(imageId)) {
+      const payload = await performAliyunRpcRequest({ accessKeyId: input.runtimeConfig.accessKeyId, accessKeySecret: input.runtimeConfig.accessKeySecret, regionId: input.runtimeConfig.defaultRegion, action: 'DescribeImages', parameters: { ImageId: imageId, PageSize: '100', PageNumber: '1' } }) as { TotalCount?: unknown; Images?: { Image?: Array<{ ImageId?: unknown; Status?: unknown; OSType?: unknown; Platform?: unknown }> } };
+      const images = payload?.Images?.Image;
+      if (payload?.TotalCount !== 1 || !Array.isArray(images) || images.length !== 1 || images[0]?.ImageId !== imageId || images[0]?.Status !== 'Available' || images[0]?.OSType !== 'windows' || (images[0].Platform !== undefined && (typeof images[0].Platform !== 'string' || !/^(?:Microsoft\s+)?Windows\b/i.test(images[0].Platform)))) throw new Error('Alibaba host DNS requires an available officially identified Windows image');
+      windowsByImage.set(imageId, true);
+    }
+    result[host.key] = true;
+  }
+  return result;
 }
 
 async function assertDirectoryExists(targetPath: string, message: string) {

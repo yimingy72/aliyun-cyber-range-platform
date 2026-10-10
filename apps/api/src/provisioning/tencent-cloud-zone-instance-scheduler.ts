@@ -19,10 +19,10 @@ export async function selectTencentHostInstanceTypes(account: ResolvedProvisioni
 export async function assertTencentImagesAvailable(account: ResolvedProvisioningRuntimeConfig, imageIds: string[]) {
   const ids = [...new Set(imageIds)];
   if (!ids.length || ids.some(id => !/^img-[a-z0-9]+$/.test(id))) throw new Error('Tencent hosts require exact image IDs');
-  const metadata: Record<string,{ minimumSystemDiskSize: number; architecture: string }> = {};
+  const metadata: Record<string,{ minimumSystemDiskSize: number; architecture: string; isWindows?: boolean; windowsUserDataSupported?: boolean }> = {};
   for (let offset = 0; offset < ids.length; offset += 100) {
     const requested = ids.slice(offset,offset+100);
-    const result = await requestTencentCloud<{ TotalCount: number; ImageSet: Array<{ ImageId: string; ImageState: string; SnapshotSet?: unknown; ImageType?: string; Architecture?: string; ImageSize?: number }> }>({ service: 'cvm', version: '2017-03-12', action: 'DescribeImages', regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, parameters: { ImageIds: requested, Limit: 100, Offset: 0 } });
+    const result = await requestTencentCloud<{ TotalCount: number; ImageSet: Array<{ ImageId: string; ImageState: string; SnapshotSet?: unknown; ImageType?: string; Architecture?: string; ImageSize?: number; OsName?: unknown }> }>({ service: 'cvm', version: '2017-03-12', action: 'DescribeImages', regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, parameters: { ImageIds: requested, Limit: 100, Offset: 0 } });
     const reject = (reason: string): never => { throw new ConflictException(`Tencent host images must be available system-only images with complete disk metadata [${reason}]`); };
     if (!Array.isArray(result.ImageSet)) reject('ImageSet:shape');
     if (result.TotalCount !== requested.length || result.ImageSet.length !== requested.length) reject('ImageSet:count');
@@ -42,7 +42,12 @@ export async function assertTencentImagesAvailable(account: ResolvedProvisioning
         if ((snapshot as { DiskUsage?: unknown }).DiskUsage !== 'SYSTEM_DISK') reject('SnapshotSet:unknown-disk-usage');
       }
     }
-    for (const image of result.ImageSet) metadata[image.ImageId] = { minimumSystemDiskSize: Math.max(20,image.ImageSize!), architecture: image.Architecture! };
+    for (const image of result.ImageSet) {
+      const osName = typeof image.OsName === 'string' ? image.OsName.trim() : '';
+      const isWindows = /^(?:Microsoft\s+)?Windows\b/i.test(osName);
+      const supportedServer = /\bWindows\s+Server\s+(?:2012\s+R2|2016|2019|2022|2025)\b/i.test(osName);
+      metadata[image.ImageId] = { minimumSystemDiskSize: Math.max(20,image.ImageSize!), architecture: image.Architecture!, ...(osName ? { isWindows, windowsUserDataSupported: isWindows && supportedServer } : {}) };
+    }
   }
   return metadata;
 }
