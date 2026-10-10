@@ -71,6 +71,8 @@ function Read-DnsServers($adapter) {
   if ($current.Count -ne 1) { throw 'NIC_NOT_READY' }; return @($current[0].DNSServerSearchOrder)
 }
 function Write-DnsBaseline($interfaces) {
+  $existing = Read-DnsBaseline
+  if ($null -ne $existing -and $existing.schemaVersion -eq 1 -and $existing.policyHash -eq $dnsPolicyHash) { return }
   $folder = New-Item -ItemType Directory -Path 'C:\\ProgramData\\cyber-range' -Force
   $path = Join-Path $folder.FullName 'dns-baseline.json'
   [IO.File]::WriteAllText($path,(Convert-DnsJson @{schemaVersion=1;policyHash=$dnsPolicyHash;interfaces=@($interfaces)}),(New-Object Text.UTF8Encoding($false)))
@@ -153,6 +155,7 @@ try {
     $dnsResult.observedInterfaces += @{nicId=$target.nicId;privateIp=$target.privateIp;interfaceIndex=$adapter.index;actualServers=@(Read-DnsServers $adapter)}
   }
 ${configure ? `  Write-DnsBaseline $dnsResult.observedInterfaces
+  $dnsResult.baseline = Read-DnsBaseline
   foreach ($target in $dnsTargets) {
     $adapter = $dnsAdapters[$target.nicId]
     if ($adapter.modern) { Set-DnsClientServerAddress -InterfaceIndex $adapter.index -ServerAddresses $dnsExpected -ErrorAction Stop }
@@ -202,7 +205,17 @@ function powershellBody(script: { type: string; content: string }) {
 }
 
 export function buildWindowsDnsUserData(input: DnsScriptInput & { provider: 'alicloud' | 'tencent_cloud'; scripts: Array<{ type: string; content: string }> }) {
-  const body = dnsScript(input, true) + input.scripts.map(powershellBody).filter(Boolean).join('\n\n');
+  const userScripts = input.scripts.map(powershellBody).filter(Boolean).join('\n\n');
+  // A Windows role installer may reset the selected adapter's DNS; restore the declared policy after initialization.
+  const finalizer = `foreach ($target in $dnsTargets) {
+  $adapter = Find-DnsAdapter $target.privateIp
+  if ($null -eq $adapter) { throw 'NIC_NOT_READY' }
+  if ($adapter.modern) { Set-DnsClientServerAddress -InterfaceIndex $adapter.index -ServerAddresses $dnsExpected -ErrorAction Stop }
+  else { $set = $adapter.config.SetDNSServerSearchOrder([string[]]$dnsExpected); if ($set.ReturnValue -ne 0) { throw 'DNS_SET_FAILED' } }
+  $actual = @(Read-DnsServers $adapter)
+  if (($actual -join ',') -ne ($dnsExpected -join ',')) { throw 'DNS_READBACK_MISMATCH' }
+}`;
+  const body = dnsScript(input, true) + (userScripts ? `\ntry { & {\n${userScripts}\n} } finally {\n${finalizer}\n}\n` : '');
   const content = input.provider === 'alicloud' ? `[powershell]\n${body}` : `<powershell>\n${body}\n</powershell>`;
   const limit = (input.provider === 'alicloud' ? 32 : 16) * 1024;
   if (Buffer.byteLength(content, 'utf8') > limit) throw new Error(`Windows DNS user data exceeds ${limit / 1024} KiB`);
@@ -210,3 +223,6 @@ export function buildWindowsDnsUserData(input: DnsScriptInput & { provider: 'ali
 }
 
 export function buildWindowsDnsVerificationScript(input: DnsScriptInput) { return dnsScript(input, false); }
+
+// Fixed platform action: apply only the deployed DNS policy; never execute caller/user initialization scripts.
+export function buildWindowsDnsConfigurationScript(input: DnsScriptInput) { return dnsScript(input, true); }
