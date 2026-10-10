@@ -808,7 +808,7 @@ export class ProvisioningWorkerService {
       templateModulePath,
       ...(snapshot.runtimeCredentials ? { runtimeCredentials: snapshot.runtimeCredentials as ProvisionJobTopologySnapshot['runtimeCredentials'] } : {}),
       ...(snapshot.operation === 'update' ? { operation: 'update' as const } : {}),
-      ...(snapshot.changeApproval ? { changeApproval: snapshot.changeApproval } : {}),
+      ...(snapshot.changeApproval ? { changeApproval: snapshot.changeApproval as RangeChangeApproval } : {}),
     };
   }
 

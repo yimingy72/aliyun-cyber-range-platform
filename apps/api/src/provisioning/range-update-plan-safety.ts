@@ -25,9 +25,9 @@ function ownedTags(value: unknown, account: ResolvedProvisioningRuntimeConfig, r
 }
 
 export function assertRangeStateOwnership(state: WorkspaceState, prior: Variables, account: ResolvedProvisioningRuntimeConfig, rangeId: string, tags?: Record<string, string>) {
-  if (!account.accountUid || !account.cloudAccountContextId || !['alibaba_cloud', 'tencent_cloud'].includes(account.provider ?? '') || !Array.isArray(prior.hosts) || typeof prior.zone_id !== 'string' || !prior.zone_id.startsWith(`${account.defaultRegion}-`)) rejected('frozen cloud identity is incomplete');
+  if (!account?.accountUid || !account.cloudAccountContextId || !['alibaba_cloud', 'tencent_cloud'].includes(account.provider ?? '') || !object(prior) || !Array.isArray(prior.hosts) || typeof prior.zone_id !== 'string' || !prior.zone_id.startsWith(`${account.defaultRegion}-`)) rejected('frozen cloud identity is incomplete');
   const owns = (value: unknown) => ownedTags(value, account, rangeId, tags);
-  if (!owns(prior.tags) || account.provider === 'tencent_cloud' && prior.region !== account.defaultRegion) rejected('Existing host startup data or frozen ownership cannot be verified');
+  if (!owns(prior.tags) || account.provider === 'tencent_cloud' && (prior.region !== account.defaultRegion || prior.zone_id !== account.defaultZoneId)) rejected('Existing host startup data or frozen ownership cannot be verified');
   const seen = new Set<string>();
   for (const resource of state.instances) {
     if (resource.module !== 'module.range' || !resource.address.startsWith('module.range.') || resource.tainted || seen.has(resource.address)) rejected('state has foreign, duplicate or tainted resources');
