@@ -39,15 +39,16 @@ variable "network_zones" {
 
 variable "hosts" {
   type = list(object({
-    key           = string
-    name          = string
-    host_name     = optional(string)
-    zone_key      = string
-    private_ip    = string
-    role          = string
-    expose_public = bool
-    instance_type = optional(string)
-    image_id      = optional(string)
+    key              = string
+    name             = string
+    host_name        = optional(string)
+    zone_key         = string
+    private_ip       = string
+    role             = string
+    expose_public    = bool
+    instance_type    = optional(string)
+    image_id         = optional(string)
+    system_disk_size = optional(number)
   }))
   description = "Structured host definitions compiled from the published template."
   default     = []
@@ -139,14 +140,15 @@ variable "snat_entries" {
 
 variable "dnat_entries" {
   type = list(object({
-    key              = string
-    name             = string
-    nat_gateway_key  = string
-    eip_key          = string
-    backend_host_key = string
-    external_port    = number
-    internal_port    = number
-    protocol         = string
+    key                = string
+    name               = string
+    nat_gateway_key    = string
+    eip_key            = string
+    backend_host_key   = string
+    backend_private_ip = optional(string)
+    external_port      = number
+    internal_port      = number
+    protocol           = string
   }))
   description = "Structured DNAT entry definitions compiled from the published template."
   default     = []

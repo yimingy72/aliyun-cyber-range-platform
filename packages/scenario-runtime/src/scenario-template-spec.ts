@@ -46,6 +46,8 @@ export type ScenarioTemplateHostNic = {
 };
 
 export type ScenarioTemplateDnatMapping = {
+  backendPrivateIp?: string;
+  backendZoneKey?: string;
   name: string;
   protocol: 'tcp' | 'udp';
   externalPort: number;

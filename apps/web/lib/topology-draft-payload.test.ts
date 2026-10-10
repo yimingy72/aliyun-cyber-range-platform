@@ -126,51 +126,42 @@ describe('buildTopologyDraftPayload', () => {
     );
   });
 
-  it('rejects a graph without a DNAT entry mapping', () => {
+  it.each(['alibaba_cloud', 'tencent_cloud'] as const)('supports a pure private %s topology without NAT or public exposure', (provider) => {
     const graph = createValidGraph();
-    const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz')!;
-
-    if (switchNode.kind !== 'switch') {
-      throw new Error('测试图缺少 DMZ 交换机');
-    }
-
-    switchNode.nat = {
-      snatEnabled: false,
-      dnatMappings: [],
-    };
-
-    expect(() =>
-      buildTopologyDraftPayload({
-        graph,
-        metadata: validMetadata,
-        viewport: null,
-      }),
-    ).toThrowError('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
+    const switchNode = graph.nodes.find((node) => node.kind === 'switch')!;
+    if (switchNode.kind !== 'switch') throw new Error('missing switch');
+    switchNode.nat = { snatEnabled: false, dnatMappings: [] };
+    const payload = buildTopologyDraftPayload({ graph, metadata: { ...validMetadata, cloudProvider: provider }, viewport: null });
+    expect(payload.scenarioTemplateSpec.topology.entryHostKey).toBe('ecs-entry');
+    expect(payload.compiledProvisionSpec.hosts[0]!.exposePublic).toBe(false);
+    expect(payload.compiledProvisionSpec.networkZones[0]!.isPublicEntry).toBe(false);
+    expect(payload.compiledProvisionSpec.natGateways).toEqual([]);
+    expect(payload.compiledProvisionSpec.eips).toEqual([]);
+    expect(payload.compiledProvisionSpec.dnatEntries).toEqual([]);
+    expect(payload.compiledSpec.resources.filter((resource) => ['nat_gateway','eip','dnat_entry','snat_entry'].includes(resource.type))).toEqual([]);
+    expect(payload.compiledSpec.resources.find((resource) => resource.type === 'host')!.config.exposePublic).toBe(false);
   });
 
-  it('rejects DNAT mappings that target more than one ECS', () => {
+  it.each(['alibaba_cloud', 'tencent_cloud'] as const)('supports multiple %s DNAT targets with the mapped secondary NIC', (provider) => {
     const graph = createValidGraph();
-    const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz')!;
-
-    if (switchNode.kind !== 'switch') {
-      throw new Error('测试图缺少 DMZ 交换机');
-    }
-
-    switchNode.nat!.dnatMappings.push({
-      key: 'dnat-other',
-      targetHostId: 'ecs-other',
-      externalPort: 80,
-      internalPort: 80,
-      protocol: 'tcp',
-    });
-
-    expect(() =>
-      buildTopologyDraftPayload({
-        graph,
-        metadata: validMetadata,
-        viewport: null,
-      }),
-    ).toThrowError('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
+    const switchNode = graph.nodes.find((node) => node.kind === 'switch')!;
+    const original = graph.nodes.find((node) => node.kind === 'ecs')!;
+    if (switchNode.kind !== 'switch' || original.kind !== 'ecs') throw new Error('missing topology');
+    const other = { ...structuredClone(original), id: 'ecs-other', label: 'Other', privateIp: '10.77.20.10', zoneKey: 'private',
+      nics: [{ id: 'other-primary', switchId: 'switch-private', privateIp: '10.77.20.10', secondaryIps: [], securityGroupRules: [] },
+             { id: 'other-secondary', switchId: 'switch-dmz', privateIp: '10.77.10.20', secondaryIps: [], securityGroupRules: [] }] };
+    graph.nodes.push(other, { ...structuredClone(switchNode), id: 'switch-private', label: 'Private', zoneKey: 'private', cidr: '10.77.20.0/24', nat: { snatEnabled: false, dnatMappings: [] } });
+    graph.edges.push({ id: 'router-private', fromNodeId: 'router-main', toNodeId: 'switch-private', relationType: 'manual' },
+      { id: 'private-other', fromNodeId: 'switch-private', toNodeId: 'ecs-other', relationType: 'manual' },
+      { id: 'dmz-other', fromNodeId: 'switch-dmz', toNodeId: 'ecs-other', relationType: 'manual' });
+    switchNode.nat!.snatEnabled = provider === 'tencent_cloud';
+    switchNode.nat!.dnatMappings.push({ key: 'dnat-other', targetHostId: 'ecs-other', externalPort: 80, internalPort: 80, protocol: 'tcp' });
+    const payload = buildTopologyDraftPayload({ graph, metadata: { ...validMetadata, cloudProvider: provider }, viewport: null });
+    expect(payload.compiledProvisionSpec.hosts.map((host) => host.exposePublic)).toEqual([true, true]);
+    expect(payload.compiledProvisionSpec.dnatEntries).toContainEqual(expect.objectContaining({ hostKey: 'ecs-other', backendPrivateIp: '10.77.10.20', backendZoneKey: 'dmz', externalPort: 80 }));
+    expect(payload.compiledSpec.resources.find((resource) => resource.type === 'dnat_entry' && resource.config.backendHostKey === 'ecs-other')!.config).toMatchObject({ backendPrivateIp: '10.77.10.20', backendZoneKey: 'dmz' });
+    expect(payload.compiledProvisionSpec.eips.filter((eip) => eip.key === 'eip-dnat-shared')).toHaveLength(1);
+    expect(payload.compiledProvisionSpec.eips.filter((eip) => eip.key === 'eip-snat-shared')).toHaveLength(provider === 'tencent_cloud' ? 1 : 0);
   });
 
   it('rejects duplicate DNAT protocol and external port pairs', () => {

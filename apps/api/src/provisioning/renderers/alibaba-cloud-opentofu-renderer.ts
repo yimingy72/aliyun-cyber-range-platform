@@ -24,6 +24,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
     role: string;
     expose_public: boolean;
     instance_type: string;
+    system_disk_size?: number;
     image_id?: string;
   }>;
   host_network_interfaces: Array<{
@@ -86,6 +87,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
     nat_gateway_key: string;
     eip_key: string;
     backend_host_key: string;
+    backend_private_ip?: string;
     external_port: number;
     internal_port: number;
     protocol: string;
@@ -140,12 +142,19 @@ export type AlibabaCloudOpenTofuRendererInput = {
   internetMaxBandwidthOut?: number;
   systemDiskCategory?: string;
   systemDiskSize?: number;
+  hostSystemDiskSizes?: Record<string, number>;
   tags: Record<string, string>;
 };
 
 export class AlibabaCloudOpenTofuRenderer {
   render(input: AlibabaCloudOpenTofuRendererInput): AlibabaCloudOpenTofuRenderedVariables {
     const { plan } = input;
+    for (const entry of plan.dnatEntries) {
+      if (!entry.backendPrivateIp) continue;
+      const host = plan.hostDefinitions.find((host) => host.key === entry.backendHostKey);
+      const interfaces = plan.hostNetworkInterfaces.find((item) => item.hostKey === entry.backendHostKey)?.interfaces ?? (host ? [{ privateIp: host.privateIp, zoneKey: host.zoneKey }] : []);
+      if (!interfaces.some((nic) => nic.privateIp === entry.backendPrivateIp && (!entry.backendZoneKey || nic.zoneKey === entry.backendZoneKey))) throw new Error('DNAT must target an owned host NIC in the mapped zone');
+    }
     const dnsHosts = plan.hostDefinitions.filter(host => host.dns);
     const dnsHostKeys = new Set(dnsHosts.map(host => host.key));
     const bootstrapScripts: AlibabaCloudOpenTofuRenderedVariables['bootstrap_scripts'] = plan.bootstrapScripts.flatMap(script => {
@@ -191,6 +200,7 @@ export class AlibabaCloudOpenTofuRenderer {
           role: host.role,
           expose_public: host.exposePublic,
           instance_type: hostInstanceType,
+          ...(input.hostSystemDiskSizes?.[host.key] !== undefined ? { system_disk_size: input.hostSystemDiskSizes[host.key] } : {}),
           ...(hostImageId ? { image_id: hostImageId } : {}),
         };
       }),
@@ -254,6 +264,7 @@ export class AlibabaCloudOpenTofuRenderer {
         nat_gateway_key: entry.natGatewayKey,
         eip_key: entry.eipKey,
         backend_host_key: entry.backendHostKey,
+        ...(entry.backendPrivateIp ? { backend_private_ip: entry.backendPrivateIp } : {}),
         external_port: entry.externalPort,
         internal_port: entry.internalPort,
         protocol: entry.protocol,

@@ -4,7 +4,7 @@
 
 ## MCP 工具与参数
 
-保存、应用或同步实例拓扑时，必须先经过本文件的“实例拓扑转换 Skill”。转换 Skill 只能提交完整 `topologyGraph` 与下表允许的访问摘要元数据，不能提交 VPC CIDR 或内部派生字段。
+保存或同步实例拓扑时，必须先经过本文件的“实例拓扑转换 Skill”。应用时只接收已保存草稿版本和预览令牌，不接收新图。转换 Skill 只能提交完整 `topologyGraph` 与下表允许的访问摘要元数据，不能提交 VPC CIDR 或内部派生字段。
 
 实例拓扑沿用平台固定网络：`10.0.0.0/16` 主 VPC 和 `172.16.0.0/16`、`192.168.0.0/16` 两个附加 CIDR。交换机 CIDR 必须完整落在这三段之一。
 
@@ -17,7 +17,9 @@
 | 获取访问入口 | `range_instance_get_access` | `rangeInstanceId` | — | `ranges:read`、`instances:credentials:read` |
 | 生成实例 | `range_instance_launch` | `templateId`、`name`、带时区 ISO-8601 `expiresAt` | 操作元数据 | `ranges:create` |
 | 保存变更 | `range_instance_topology_save` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write` |
-| 应用变更 | `range_instance_topology_apply` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write`、`ranges:control` |
+| 预览变更 | `range_instance_topology_preview` | `rangeInstanceId`、`expectedDraftRevision` | — | `ranges:read` |
+| 应用变更 | `range_instance_topology_apply` | `rangeInstanceId`、`expectedDraftRevision`、`previewToken` | 操作元数据 | `ranges:write`、`ranges:control` |
+| 另存为新编排拓扑 | `range_instance_save_as_template` | `rangeInstanceId`、`name`、`expectedDraftRevision`、`idempotencyKey` | `description` | `ranges:read`、`templates:write` |
 | 更新编排拓扑 | `range_instance_sync_template` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write`、`templates:write` |
 | 失败重试 | `range_instance_retry` | `rangeInstanceId` | 操作元数据 | `ranges:control` |
 | ECS 开机 | `range_instance_node_start` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
@@ -59,12 +61,13 @@
 ### 保存、应用与同步
 
 - 用户只想保留实例配置调整：调用 `range_instance_topology_save`。
-- 用户要将调整下发到运行实例：调用 `range_instance_topology_apply`，它先保存完整图，再提交更新作业。
+- 用户要将调整下发到运行实例：先保存草稿，读取准确 `draftRevision`，调用 `range_instance_topology_preview` 查看预期增删主机、新增交换机网段、网络规则和关联资源变化，再确认并调用 `range_instance_topology_apply`，传原 `expectedDraftRevision` 与 `previewToken`。预览为平台配置差异摘要，不是实际 OpenTofu plan；令牌五分钟有效并绑定用户、账号空间、草稿、当前物理资源、来源配置和到期时间。任一事实变化或令牌过期必须重新预览；不可在应用时顺带保存新图。既有主机镜像、规格、网卡身份、DNS/启动配置和现有交换机网段不可改变；新增主机继承原到期时间。明确删除主机将回收其云主机及相应可随主机删除的关联资源，worker 仍须核验原生所有权、实际 plan 和回收状态。
+- 用户要求保留原模板并另存新拓扑：先保存草稿，读取准确 `draftRevision`，调用 `range_instance_save_as_template`。它只按已保存草稿新建当前云账号空间的私有模板，不应用云资源，也不修改来源模板、实例来源关联或已有版本；不复制运行密码、云资源 ID 和状态文件。必须提供稳定 `idempotencyKey`，超时或丢失响应后使用原参数和同一键重放，避免生成重复模板。草稿缺失或版本变化时拒绝，不猜测版本。新模板不会自动发布。当前默认执行账号、地域或可用区与实例原部署不一致时拒绝另存，须恢复原配置，不会搬运或猜测镜像。
 - 用户要把实例当前配置回写到模板：调用 `range_instance_sync_template`，它先保存实例配置，再更新来源模板；不会自动改动已运行资源。
 
 应用、同步需要入口规定的危险操作确认；同步会影响后续由该模板生成的实例。
 
-收到 `CONFIRMATION_REQUIRED` 后，使用相同的 `topologyGraph`、访问摘要元数据和服务端返回的操作元数据重试；MCP 会校验并复用已保存的草稿版本。确认期间草稿或请求参数发生变化时，重新取得确认。
+收到应用 `CONFIRMATION_REQUIRED` 后，使用相同 `expectedDraftRevision`、`previewToken` 和服务端操作元数据重试。同步来源模板仍传相同完整图。确认期间草稿、物理资源或请求参数变化时重新预览并取得确认。
 
 ### 节点操作、访问与镜像
 
@@ -83,6 +86,8 @@
 ### 失败与回收
 
 - 编排创建进入 OpenTofu 后发生失败时，平台会立即在同一 workspace 执行销毁，回收已部分创建的 VPC、交换机、ACL、EIP、NAT 和 ECS。未创建资源或自动回收成功的记录会归档为 `create_failed`；自动回收失败则标记为 `destroy_failed`，保留在实例列表中并同时记录创建失败和回收失败原因。
+- 更新失败若在实际云变更前被拒绝，运行环境保持原状态；若已开始云变更，保留当前和待回收资源库存、状态及账单，不自动重建或宣称全量回滚。`destroy_failed` 的重试执行明确回收，不重新创建。先读取详情和作业，确认剩余资源后再回收。
+- 草稿至少保留一台 ECS；回收全部主机和付费网络时使用整套销毁。
 - 创建或销毁失败：先读取详情确认状态，再用 `range_instance_retry`。
 - 创建失败记录会保留在实例历史中，用于审计、排障和账单归属，不能物理删除。
 - 释放运行环境：使用 `range_instance_destroy`。它回收整套资源，不是节点关机的替代。

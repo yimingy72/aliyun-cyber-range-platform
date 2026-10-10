@@ -3,9 +3,11 @@ import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post,
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
+import { SaveRangeInstanceAsTemplateDto } from './dto/range-instance-template-copy.dto';
 import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
 import {
   ApplyRangeInstanceDraftDto,
+  PreviewRangeInstanceDraftDto,
   CreateRangeInstanceDto,
   LaunchRangeInstanceDto,
   TriggerProvisionJobDto,
@@ -129,6 +131,11 @@ export class RangesController {
     return this.rangeInstancesService.triggerRetry(id, request.adminUser);
   }
 
+  @Post(':id/preview')
+  previewDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: PreviewRangeInstanceDraftDto) {
+    return this.rangeInstancesService.previewDraft(id, body, request.adminUser);
+  }
+
   @Post(':id/apply')
   applyDraft(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: ApplyRangeInstanceDraftDto) {
     if (request.authContext.source === 'mcp') {
@@ -136,8 +143,8 @@ export class RangesController {
         request,
         'range_instance_topology_apply',
         id,
-        { rangeInstanceId: id, expectedDraftRevision: body.expectedDraftRevision },
-        false,
+        { rangeInstanceId: id, expectedDraftRevision: body.expectedDraftRevision, previewToken: body.previewToken },
+        true,
         async () => {
           const job = await this.rangeInstancesService.applyDraft(id, body, request.adminUser);
           return { rangeInstanceId: id, jobId: job.id };
@@ -145,6 +152,13 @@ export class RangesController {
       );
     }
     return this.rangeInstancesService.applyDraft(id, body, request.adminUser);
+  }
+
+  @Post(':id/templates')
+  saveAsNewTemplate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: SaveRangeInstanceAsTemplateDto) {
+    const metadata = readOperationRequestMetadata(request);
+    if (!metadata.idempotencyKey) throw new BadRequestException('A stable x-idempotency-key is required');
+    return this.rangeInstancesService.saveAsNewTemplate(id, body, request.adminUser, metadata.idempotencyKey);
   }
 
   @Post(':id/sync-template')

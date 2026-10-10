@@ -154,10 +154,10 @@ connections:
 
 1. 交换机 CIDR、ECS 主/辅助 IP 必须属于对应 VPC 或交换机；IP 不可重复，不能使用网络或广播地址。
 2. 开启 `snatEnabled` 的交换机共用 `vpc.sharedNat.natGatewayKey` 和 `snatEipKey`。DNAT 使用 `dnatEipKey`，绝不能与 SNAT EIP 相同。
-3. `externalPort + protocol` 在同一 VPC 内全局唯一；DNAT 目标必须是唯一的公网入口 ECS。
+3. `externalPort + protocol` 在同一 VPC 内全局唯一；共享 DNAT EIP 可按不同公网端口映射到多台 ECS，每个目标必须有连接映射所属交换机的网卡。
 4. ACL 必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `allow` 或 `drop`。全端口统一填写 `1/65535`，MCP 和后端会将其归一化为阿里云所需的 `-1/-1`，与协议无关；指定 TCP/UDP 端口仍写为如 `80/80`。
 5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。其端口范围也遵循 `1/65535 -> -1/-1` 的规则。
-6. 设计中必须有且仅有一个公网入口 ECS：该 ECS 必须设置 `exposePublic: true`，并且必须是至少一条 DNAT 的目标。它是共享 DNAT EIP 的唯一外部访问落点，不直接绑定公网 IP；没有公网入口时模板不能保存。
+6. 公网入口仅由实际 `switch.nat.dnatMappings` 派生，可有多个目标 ECS，也可完全没有公网映射；不要求设置 `exposePublic`。没有 SNAT 和 DNAT 时不创建 NAT 或 EIP；只有 SNAT 时仅创建出口网络，不生成公网入口。每份拓扑仍至少有一个交换机和一台 ECS。
 7. 不输出 `customPassword`，除非用户明确要求设置该 ECS 的初始密码。
 8. 自定义 DNS 仅作用于显式选中的 NIC，转换时将设计中的 NIC `key` 原样映射到图 NIC `id` 和 `dns.nicIds`；删除已选 NIC 必须报告错误，不能自动选其它网卡。Windows 初始化在用户脚本之前设置 DNS，IP 和网关仍使用原网络配置。若还有用户启动脚本，使用 PowerShell 内容并以 `[powershell]` 开头（也接受完整 `<powershell>...</powershell>` 包装）；不能混入 shell、bat 或 cloud-config。腾讯云要求支持 Cloudbase-init 的 Windows Server 2012 R2 及以上镜像。后续客体核验失败不会自动重建云实例。
 
@@ -169,7 +169,7 @@ connections:
 2. 不调用 `cloud_config_get`。默认地域与可用区由后端从基础配置写入模板快照，转换结果不得包含它们。
 3. 调用 `platform_image_list`，将每个 `imageSelector.displayName` 精确解析为唯一、已启用的 `platformImageAssetId` 和阿里云 `imageId`；无匹配、重名或停用时停止。
 4. 先输出转换回执：每个 ECS 的 `key -> platformImageAssetId + imageId`，以及每个 Switch 的唯一逻辑 `zoneKey`；回执存在未解析或重复项时不得调用写工具。
-5. 校验 VPC、CIDR、IP、NAT、ACL、安全组、连线和公网入口；必须有且仅有一个 `exposePublic: true` ECS，且所有 DNAT 都指向它；每台 ECS 与第一张 NIC 必须使用所连 Switch 的 `zoneKey`；缺项或歧义返回给设计 Skill。
+5. 校验 VPC、CIDR、IP、NAT、ACL、安全组和连线；逐条校验 DNAT 目标存在且确实连接映射所属交换机，不要求公网映射或唯一公网目标；每台 ECS 与第一张 NIC 必须使用所连 Switch 的 `zoneKey`；缺项或歧义返回给设计 Skill。
 6. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
 7. 每个 ECS 节点写入 `image: displayName`（展示字段）、`imageName: displayName`、`imageId`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`portGroups` 与 `initScript`。镜像身份只由后三个 ID 字段表达；不得把资产 ID 填入 `image`。ECS 的遗留 `dnatMappings` 不创建 NAT 规则，转换结果应省略或保持为空数组。
 8. 每个 Switch 节点必须写入完整 `aclRules` 与 `nat: { snatEnabled, dnatMappings }`；**公网 DNAT 仅以 `switch.nat.dnatMappings` 为准**，每条映射必须含 `key`、`targetHostId`、`externalPort`、`internalPort`、`protocol`。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。

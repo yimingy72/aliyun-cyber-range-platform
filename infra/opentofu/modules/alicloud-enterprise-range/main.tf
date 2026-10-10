@@ -507,7 +507,7 @@ resource "alicloud_instance" "hosts" {
   secondary_private_ips = lookup(local.primary_secondary_ips_by_host, each.key, null)
   user_data             = try(local.host_user_data_map[each.key], null)
   system_disk_category  = var.system_disk_category
-  system_disk_size      = var.system_disk_size
+  system_disk_size      = coalesce(try(each.value.system_disk_size, null), var.system_disk_size)
 
   dynamic "network_interfaces" {
     for_each = (
@@ -631,8 +631,18 @@ resource "alicloud_forward_entry" "entries" {
   external_ip        = alicloud_eip_address.addresses[each.value.eip_key].ip_address
   external_port      = tostring(each.value.external_port)
   ip_protocol        = each.value.protocol
-  internal_ip        = alicloud_instance.hosts[each.value.backend_host_key].private_ip
+  internal_ip        = coalesce(each.value.backend_private_ip, alicloud_instance.hosts[each.value.backend_host_key].private_ip)
   internal_port      = tostring(each.value.internal_port)
 
-  depends_on = [alicloud_eip_association.nat_targets]
+  depends_on = [alicloud_eip_association.nat_targets, alicloud_network_interface_attachment.secondary]
+}
+
+check "dnat_owned_nic_targets" {
+  assert {
+    condition = alltrue([for entry in var.dnat_entries : entry.backend_private_ip == null || contains(concat(
+      [for host in local.normalized_hosts : host.private_ip if host.key == entry.backend_host_key],
+      flatten([for attachment in var.host_network_interfaces : [for nic in attachment.interfaces : nic.private_ip] if attachment.host_key == entry.backend_host_key])
+    ), entry.backend_private_ip)])
+    error_message = "DNAT backend_private_ip must be a primary address of the referenced host's declared NICs."
+  }
 }

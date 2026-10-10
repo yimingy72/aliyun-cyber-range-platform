@@ -2495,7 +2495,7 @@ describe('TemplateEditorScreen', () => {
     expect(container.querySelector('.template-editor-screen > p[role="status"]')).toBeNull();
   });
 
-  it('explains that an ECS needs a DNAT mapping instead of accepting a legacy public-entry flag', async () => {
+  it('saves a pure private topology without DNAT or unintended NAT resources', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -2523,6 +2523,7 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(await screen.findByLabelText('镜像名'), {
       target: { value: 'Ubuntu 24.04 LTS' },
@@ -2533,15 +2534,12 @@ describe('TemplateEditorScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
-    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText(
-        '拓扑检测未通过：请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。',
-      ),
-    ).toBeTruthy();
+    await waitFor(() => expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1));
+    const payload = validateAndSaveRangeTemplateMock.mock.calls[0]![3];
+    expect(payload.compiledProvisionSpec).toMatchObject({ natGateways: [], eips: [], snatEntries: [], dnatEntries: [], hosts: [expect.objectContaining({ exposePublic: false })] });
   });
 
-  it('explains that all DNAT mappings must use the same public-entry ECS', async () => {
+  it('saves mappings to multiple hosts through one shared DNAT EIP', async () => {
     render(
       <TemplateEditorScreen
         template={{
@@ -2570,6 +2568,7 @@ describe('TemplateEditorScreen', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
+    addRouterConnection();
 
     fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
     fireEvent.change(await screen.findByLabelText('镜像名'), {
@@ -2589,14 +2588,16 @@ describe('TemplateEditorScreen', () => {
 
     addDnatEntry('ECS 1', 1);
     addDnatEntry('ECS 2', 2);
+    fireEvent.change(screen.getByLabelText('DNAT 公网端口 2'), { target: { value: '8081' } });
     fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
 
-    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText(
-        /请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。/,
-      ),
-    ).toBeTruthy();
+    await waitFor(() => expect(validateAndSaveRangeTemplateMock).toHaveBeenCalledTimes(1));
+    const payload = validateAndSaveRangeTemplateMock.mock.calls[0]![3];
+    expect(payload.compiledProvisionSpec.dnatEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hostKey: 'ecs-1', backendPrivateIp: '10.0.0.13', externalPort: 8080 }),
+      expect.objectContaining({ hostKey: 'ecs-2', backendPrivateIp: '10.0.0.14', externalPort: 8081 }),
+    ]));
+    expect(payload.compiledProvisionSpec.eips).toEqual([expect.objectContaining({ key: 'eip-dnat-shared' })]);
   });
 
   it('allows topology detection when an ecs hostName is left blank', async () => {
@@ -4322,4 +4323,24 @@ describe('final authoring coverage: recreated nodes', () => {
     expect(ids).toEqual(['router-1', 'switch-3', 'switch-4', 'switch-5']);
     expect(switches.find((node: { id: string }) => node.id === 'switch-5').cidr).toBe('10.0.0.0/24');
   });
+});
+
+it.each(['missing host', 'unattached NIC'])('checks every DNAT mapping and rejects a later mapping with %s', async (invalidTarget) => {
+  const mapped = { key: 'valid-first', targetHostId: 'host', externalPort: 8080, internalPort: 80, protocol: 'tcp' };
+  const invalid = { key: 'invalid-later', targetHostId: invalidTarget === 'missing host' ? 'missing-host' : 'host', externalPort: 8081, internalPort: 80, protocol: 'tcp' };
+  const nodes = [
+    { id: 'router', kind: 'router', label: 'Router', routeRole: 'egress', egressType: 'internet', bindEip: false },
+    { id: 'switch-a', kind: 'switch', label: 'A', zoneKey: 'a', cidr: '10.0.0.0/24', purpose: 'internal', aclRules: [], nat: { snatEnabled: false, dnatMappings: invalidTarget === 'missing host' ? [mapped, invalid] : [mapped] } },
+    { id: 'switch-b', kind: 'switch', label: 'B', zoneKey: 'b', cidr: '10.0.1.0/24', purpose: 'internal', aclRules: [], nat: { snatEnabled: false, dnatMappings: invalidTarget === 'unattached NIC' ? [invalid] : [] } },
+    { id: 'host', kind: 'ecs', label: 'Host', zoneKey: 'a', role: 'host', privateIp: '10.0.0.10', exposePublic: false, platformImageAssetId: 'platform-image-1', image: 'Ubuntu 24.04 LTS', imageName: 'Ubuntu 24.04 LTS', imageId: 'ubuntu_24_04_x64_20G_alibase', cpu: 1, memory: 2, dnatMappings: [], networkInterfaces: [], portGroups: [], nics: [{ id: 'primary', switchId: 'switch-a', privateIp: '10.0.0.10', secondaryIps: [], securityGroupRules: [] }], initScript: '', imageStrategy: { mode: 'fixed', imageId: 'ubuntu_24_04_x64_20G_alibase' }, instanceTypeStrategy: { mode: 'auto' } },
+  ];
+  render(<TemplateEditorScreen template={{ id: 'target-validation', name: 'Targets', slug: 'targets', revision: 1, status: 'private', topologyGraph: { schemaVersion: '2.0.0', nodes, edges: [
+    { id: 'router-a', fromNodeId: 'router', toNodeId: 'switch-a', relationType: 'manual' },
+    { id: 'router-b', fromNodeId: 'router', toNodeId: 'switch-b', relationType: 'manual' },
+    { id: 'a-host', fromNodeId: 'switch-a', toNodeId: 'host', relationType: 'manual' },
+  ] } }} />);
+  fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+  const error = invalidTarget === 'missing host' ? 'DNAT 目标 ECS 不存在：missing-host' : 'DNAT 目标 ECS 未连接到交换机：invalid-later';
+  await waitFor(() => expect(screen.getByRole('status').textContent).toContain(error));
+  expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
 });

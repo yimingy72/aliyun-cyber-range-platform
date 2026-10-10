@@ -26,7 +26,7 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
     return node as GraphNode;
   });
   const entryResolution = resolveUniqueDnatEntryHost(graphNodes);
-  const publicEntryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : '';
+  const publicEntryHostId = entryResolution.kind === 'single' ? entryResolution.targetHostId : entryResolution.kind === 'multiple' ? entryResolution.targetHostIds[0]! : graphNodes.find((node) => node.kind === 'ecs')?.id ?? '';
 
   return {
     schemaVersion: '1.0.0',
@@ -35,7 +35,7 @@ export function compileTopologyGraph(input: CompileTopologyGraphInput): RangeTem
         id: node.id,
         type: node.kind === 'ecs' ? 'host' : node.kind,
         provider: input.cloudProvider ?? 'alibaba_cloud',
-        config: compileNodeConfig(node, graphNodes, publicEntryHostId),
+        config: compileNodeConfig(node, graphNodes),
       })),
       ...buildDerivedNatResources(graphNodes, input.cloudProvider ?? 'alibaba_cloud'),
     ],
@@ -70,7 +70,6 @@ function resolveHostPlacement(node: EcsTemplateNode, graphNodes: GraphNode[]) {
 function compileNodeConfig(
   node: GraphNode,
   graphNodes: GraphNode[],
-  publicEntryHostId: string,
 ): Record<string, unknown> {
   switch (node.kind) {
     case 'ecs': {
@@ -81,7 +80,7 @@ function compileNodeConfig(
         zoneKey: placement.zoneKey,
         role: node.role,
         privateIp: placement.privateIp,
-        exposePublic: node.id === publicEntryHostId,
+        exposePublic: graphNodes.some((candidate) => candidate.kind === 'switch' && candidate.nat?.dnatMappings?.some((mapping) => mapping.targetHostId === node.id)),
         image: node.image,
         platformImageAssetId: node.platformImageAssetId,
         instanceName: node.instanceName,
@@ -219,6 +218,8 @@ function buildDerivedNatResources(nodes: GraphNode[], provider: 'alibaba_cloud' 
         natGatewayKey: sharedNatGatewayKey,
         eipKey: sharedDnatEipKey,
         backendHostKey: mapping.targetHostId,
+        backendPrivateIp: nodes.find((host): host is EcsTemplateNode => host.id === mapping.targetHostId && host.kind === 'ecs')?.nics?.find((nic) => nic.switchId === node.id)?.privateIp,
+        backendZoneKey: node.zoneKey,
         externalPort: mapping.externalPort,
         internalPort: mapping.internalPort,
         protocol: mapping.protocol,

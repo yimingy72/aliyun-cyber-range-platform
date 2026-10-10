@@ -17,7 +17,7 @@ async function fixture() {
   const natAddress = 'module.range.tencentcloud_nat_gateway.shared["shared"]';
   const state: any = { version: 4, lineage: 'source-lineage', serial: 1, resources: [
     { mode: 'managed', module: 'module.range', type: 'tencentcloud_vpc', name: 'range', instances: [{ attributes: { id: 'vpc-fixture', tags } }] },
-    { mode: 'managed', module: 'module.range', type: 'tencentcloud_eip', name: 'range', instances: [{ index_key: 'snat', attributes: { id: 'eip-fixture', tags } }] },
+    { mode: 'managed', module: 'module.range', type: 'tencentcloud_eip', name: 'range', instances: [{ index_key: 'snat', attributes: { id: 'eip-fixture', client_token: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'range-fixture-bbbbbbbbbbbbbbbb', tags: { ...tags, CreationIntentId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } } }] },
   ] };
   await fs.writeFile(path.join(dir,'terraform.tfstate'),JSON.stringify(state));
   await fs.writeFile(path.join(dir,'tencent-range-identity.json'),JSON.stringify({ provider: account.provider, cloudAccountContextId: account.cloudAccountContextId, cloudAccountUid: account.accountUid, regionId: account.defaultRegion, zoneId: account.defaultZoneId, rangeInstanceId: 'range-a' }));
@@ -31,11 +31,14 @@ async function fixture() {
   }), apply: jest.fn() };
   const provisioner = new OpenTofuRangeProvisioner({ projectRootDir:'/app', workspacesRootDir: root, runner: runner as any, env: { TENCENTCLOUD_PROVIDER_ZIP_PATH:'', TENCENTCLOUD_PROVIDER_UNPACKED_MIRROR_ROOT:'' } });
   const candidate: any = { id: 'nat-fixture', kind: 'nat', tags: { ...tags, CreationIntentId: intent }, name: `range-fixture-${intent.slice(0,16)}`, vpcId:'vpc-fixture', natProductVersion: 2, bandwidth: 5000, maxConcurrent: 2000000, publicIpAddresses:['203.0.113.1'] };
-  const query = jest.spyOn(cloud,'describeTencentResourceInventory').mockImplementation(async (_account,kind) => kind === 'vpc' ? [{ id:'vpc-fixture',tags }] as any : kind === 'eip' ? [{id:'eip-fixture',tags,publicIp:'203.0.113.1'}] as any : [candidate]);
+  const originalEip = {id:'eip-fixture',tags:{...tags,CreationIntentId:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'},name:'range-fixture-bbbbbbbbbbbbbbbb',bandwidth:10,publicIp:'203.0.113.1'};
+  const query = jest.spyOn(cloud,'describeTencentResourceInventory').mockImplementation(async (_account,kind) => kind === 'vpc' ? [{ id:'vpc-fixture',tags }] as any : kind === 'eip' ? [originalEip] as any : [candidate]);
   const persist = jest.fn(async () => { order.push('persist'); });
   const assertCurrent = jest.fn(async () => {});
-  const input = { rangeInstanceId:'range-a', templateModulePath:'infra/opentofu/modules/tencentcloud-enterprise-range', allocatedCidr:null, runtimeConfig: account };
-  return { provisioner,runner,candidate,query,persist,assertCurrent,input,dir,order };
+  const assertRecoverySourceJob = jest.fn(async (id: string) => { if (!['source-job','update-job'].includes(id)) throw new Error('unproven source job'); });
+  const input = { rangeInstanceId:'range-a', templateModulePath:'infra/opentofu/modules/tencentcloud-enterprise-range', allocatedCidr:null, runtimeConfig: account, assertRecoverySourceJob,
+    knownResourceSummary: { mode:'opentofu' as const,vpcId:'vpc-fixture',eipAllocationIds:{snat:'eip-fixture'},executionContext:{provider:'tencent_cloud' as const,cloudAccountUid:account.accountUid,cloudAccountContextId:account.cloudAccountContextId,regionId:account.defaultRegion,zoneId:account.defaultZoneId} } };
+  return { provisioner,runner,candidate,query,persist,assertCurrent,input,dir,order,originalEip };
 }
 it('discovers the exact atomically tagged submitted NAT and persists fee evidence before original-workspace import', async () => {
   const test = await fixture();
@@ -45,6 +48,63 @@ it('discovers the exact atomically tagged submitted NAT and persists fee evidenc
   expect(test.runner.importResource).toHaveBeenCalledWith(expect.objectContaining({ address:'module.range.tencentcloud_nat_gateway.shared["shared"]',resourceId:'nat-fixture' }));
   expect(test.runner.apply).not.toHaveBeenCalled();
   expect(await fs.stat(path.join(test.dir,'.range-apply-started'))).toBeDefined();
+});
+async function updateFixture() {
+  const test = await fixture();
+  const pendingPath = path.join(test.dir,'.range-apply-started');
+  const pending = JSON.parse(await fs.readFile(pendingPath,'utf8')); pending.sourceProvisionJobId = 'update-job';
+  await fs.writeFile(pendingPath,JSON.stringify(pending));
+  const varsPath = path.join(test.dir,'range.auto.tfvars.json');
+  const variables = JSON.parse(await fs.readFile(varsPath,'utf8')); variables.tags.PlatformCreateJobId = 'update-job';
+  await fs.writeFile(varsPath,JSON.stringify(variables));
+  test.candidate.tags.PlatformCreateJobId = 'update-job';
+  return test;
+}
+it.each([false,true])('recovers update NAT with separately proven old VPC and EIP birth jobs: vpcTagsUpdated=%s', async updated => {
+  const test = await updateFixture();
+  if (updated) test.query.mockImplementation(async (_account,kind) => kind === 'vpc' ? [{id:'vpc-fixture',tags:{...tags,PlatformCreateJobId:'update-job'}}] as any : kind === 'eip' ? [test.originalEip] as any : [test.candidate]);
+  await test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist);
+  expect(test.persist).toHaveBeenCalledWith(expect.objectContaining({natGatewayIds:{shared:'nat-fixture'}}),'update-job');
+  expect(test.input.assertRecoverySourceJob).toHaveBeenCalledWith('source-job');
+  expect(test.input.assertRecoverySourceJob).toHaveBeenCalledWith('update-job');
+  expect(test.runner.importResource).toHaveBeenCalledTimes(1); expect(test.runner.apply).not.toHaveBeenCalled();
+});
+it('recovers a newly submitted EIP while a removed old EIP is still awaiting cleanup in partial state', async () => {
+  const test = await updateFixture();
+  const varsPath = path.join(test.dir,'range.auto.tfvars.json'), variables = JSON.parse(await fs.readFile(varsPath,'utf8'));
+  variables.eips = [{key:'replacement',creation_intent_id:'c'.repeat(32),bandwidth:10}]; variables.nat_gateways = [];
+  await fs.writeFile(varsPath,JSON.stringify(variables));
+  const address = 'module.range.tencentcloud_eip.range["replacement"]';
+  const pendingPath = path.join(test.dir,'.range-apply-started'), pending = JSON.parse(await fs.readFile(pendingPath,'utf8'));
+  pending.addresses = [address]; pending.createAddresses = [address]; await fs.writeFile(pendingPath,JSON.stringify(pending));
+  test.query.mockImplementation(async (_account,kind,query) => kind === 'vpc' ? [{id:'vpc-fixture',tags}] as any : kind === 'eip' && query.tags
+    ? [{id:'eip-replacement',tags:{...tags,PlatformCreateJobId:'update-job',CreationIntentId:'c'.repeat(32)},name:'range-fixture-cccccccccccccccc',bandwidth:10,publicIp:'203.0.113.2'}] as any : []);
+  test.runner.importResource.mockImplementation(async input => {
+    const statePath = path.join(test.dir,'terraform.tfstate'), state = JSON.parse(await fs.readFile(statePath,'utf8')); state.serial++;
+    state.resources.push({mode:'managed',module:'module.range',type:'tencentcloud_eip',name:'range',instances:[{index_key:'replacement',attributes:{id:input.resourceId}}]});
+    await fs.writeFile(statePath,JSON.stringify(state)); return {};
+  });
+  await test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist);
+  expect(test.persist).toHaveBeenCalledWith(expect.objectContaining({eipAllocationIds:{replacement:'eip-replacement'}}),'update-job');
+  expect(test.query).not.toHaveBeenCalledWith(expect.anything(),'eip',{ids:['eip-fixture']});
+  expect(test.runner.apply).not.toHaveBeenCalled();
+});
+it.each(['missing-proof','unproven-old-job','foreign-vpc-inventory','foreign-context','foreign-owner','changed-eip-intent','changed-eip-token','missing-eip-inventory','incomplete-eip-read'] as const)('rejects %s during partial runtime update recovery without import or fee adoption', async reason => {
+  const test = await updateFixture();
+  if (reason === 'missing-proof') delete (test.input as any).assertRecoverySourceJob;
+  if (reason === 'unproven-old-job') test.input.assertRecoverySourceJob.mockImplementation(async id => { if(id==='source-job') throw new Error('foreign or unsubmitted source job'); });
+  if (reason === 'foreign-vpc-inventory') test.input.knownResourceSummary.vpcId = 'vpc-foreign';
+  if (reason === 'foreign-context') test.input.knownResourceSummary.executionContext.cloudAccountUid = 'foreign';
+  if (reason === 'foreign-owner') test.originalEip.tags.PlatformUserId = 'foreign';
+  if (reason === 'changed-eip-intent') test.originalEip.tags.CreationIntentId = 'c'.repeat(32);
+  if (reason === 'changed-eip-token') {
+    const statePath = path.join(test.dir,'terraform.tfstate'), state = JSON.parse(await fs.readFile(statePath,'utf8'));
+    state.resources[1].instances[0].attributes.client_token = 'c'.repeat(32); await fs.writeFile(statePath,JSON.stringify(state));
+  }
+  if (reason === 'missing-eip-inventory') test.input.knownResourceSummary.eipAllocationIds = {} as any;
+  if (reason === 'incomplete-eip-read') test.query.mockImplementation(async (_account,kind) => kind === 'vpc' ? [{id:'vpc-fixture',tags}] as any : kind === 'eip' ? [] : [test.candidate]);
+  await expect(test.provisioner.recoverUntrackedResources(test.input,test.assertCurrent,test.persist)).rejects.toThrow();
+  expect(test.persist).not.toHaveBeenCalled(); expect(test.runner.importResource).not.toHaveBeenCalled(); expect(test.runner.apply).not.toHaveBeenCalled();
 });
 it('persists owned route identities from partial state and retains replacements for later diagnostics', async () => {
   const test = await fixture();

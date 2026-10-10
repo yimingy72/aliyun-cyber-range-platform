@@ -888,3 +888,76 @@ describe('TemplatePropertyPanel', () => {
     );
   });
 });
+
+function runtimeSwitch(): Extract<TemplateNode, { kind: 'switch' }> {
+  return { id: 'switch-1', kind: 'switch', label: 'Core', zoneKey: 'core', cidr: '10.0.0.0/24', purpose: 'internal', aclRules: [], nat: { snatEnabled: false, dnatMappings: [] } };
+}
+
+it('locks existing ECS identity and bootstrap while allowing NIC security rules', () => {
+  const host = { ...createEcsNodeWithPlatformDefaults(), customPassword: 'FixturePassword123!', dns: { servers: ['10.0.0.1'], nicIds: ['ecs-1-nic-1'] }, initScript: 'Write-Output fixture' } as Extract<TemplateNode, { kind: 'ecs' }>;
+  const onUpdateNode = vi.fn();
+  render(<TemplatePropertyPanel selectedNode={host} allNodes={[runtimeSwitch(), host]} runtimeExistingNode onUpdateNode={onUpdateNode} />);
+  for (const label of ['名称', '主机名', '镜像名', 'CPU', '内存', '自定义密码', '私网 IP 1', '辅助 IP 1', 'DNS 服务器', 'DNS 验证域名', '初始化脚本']) {
+    expect(screen.getByLabelText(label).matches(':disabled')).toBe(true);
+  }
+  expect((screen.getByRole('combobox', { name: '交换机标识 1' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('combobox', { name: 'DNS 配置方式' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole('button', { name: '添加网卡' }).matches(':disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: '删除网卡 1' }).matches(':disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '8' } });
+  fireEvent.change(screen.getByLabelText('初始化脚本'), { target: { value: 'wrong' } });
+  expect(onUpdateNode).not.toHaveBeenCalled();
+  const protocol = screen.getByRole('combobox', { name: '安全协议 1-1' });
+  expect(protocol.matches(':disabled')).toBe(false);
+  fireEvent.click(protocol);
+  fireEvent.click(screen.getByRole('option', { name: 'udp' }));
+  const next = onUpdateNode.mock.calls.at(-1)![1];
+  expect(next).toMatchObject({ imageId: host.imageId, cpu: host.cpu, memory: host.memory, customPassword: host.customPassword, dns: host.dns, initScript: host.initScript });
+  expect(next.nics[0]).toMatchObject({ id: host.nics![0].id, privateIp: host.privateIp, switchId: 'switch-1' });
+  expect(next.nics[0].securityGroupRules[0].protocol).toBe('udp');
+  expect(next.nics[0].securityGroupRulesMode).toBe('custom');
+});
+
+it('locks deployed switch identity and CIDR while allowing ACL and NAT changes', () => {
+  const switchNode = runtimeSwitch();
+  const onUpdateNode = vi.fn();
+  render(<TemplatePropertyPanel selectedNode={switchNode} allNodes={[switchNode]} runtimeExistingNode onUpdateNode={onUpdateNode} />);
+  expect(screen.getByLabelText('名称').matches(':disabled')).toBe(true);
+  expect(screen.getByLabelText('CIDR 第三段').matches(':disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('CIDR 第三段'), { target: { value: '20' } });
+  expect(onUpdateNode).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '添加 ACL 规则' }));
+  expect(onUpdateNode.mock.calls.at(-1)![1]).toMatchObject({ id: switchNode.id, cidr: switchNode.cidr, label: switchNode.label, aclRules: [expect.objectContaining({ direction: 'inbound' })] });
+  onUpdateNode.mockClear();
+  fireEvent.click(screen.getByRole('checkbox', { name: '允许访问互联网（SNAT）' }));
+  expect(onUpdateNode.mock.calls.at(-1)![1]).toMatchObject({ cidr: switchNode.cidr, nat: { snatEnabled: true } });
+});
+
+it('filters DNAT targets by actual NIC attachment, including secondary NIC and legacy host placement', () => {
+  const switchNode = runtimeSwitch();
+  switchNode.nat!.dnatMappings = [{ key: 'http', targetHostId: '', externalPort: 8080, internalPort: 80, protocol: 'tcp' }];
+  const host = createEcsNodeWithPlatformDefaults() as Extract<TemplateNode, { kind: 'ecs' }>;
+  const secondary = { ...structuredClone(host), id: 'secondary', label: 'Secondary connected', zoneKey: 'other', nics: [{ ...host.nics![0], id: 'secondary-primary', switchId: 'elsewhere' }, { ...host.nics![0], id: 'secondary-second', switchId: switchNode.id }] };
+  const wrongNic = { ...structuredClone(host), id: 'wrong-nic', label: 'Wrong NIC', zoneKey: 'core', nics: [{ ...host.nics![0], switchId: 'elsewhere' }] };
+  const legacy = { ...structuredClone(host), id: 'legacy', label: 'Legacy connected', nics: undefined };
+  const wrongLegacy = { ...legacy, id: 'legacy-other', label: 'Legacy elsewhere', zoneKey: 'elsewhere' };
+  render(<TemplatePropertyPanel selectedNode={switchNode} allNodes={[switchNode, host, secondary, wrongNic, legacy, wrongLegacy]} onUpdateNode={vi.fn()} />);
+  fireEvent.click(screen.getByRole('combobox', { name: 'DNAT 目标主机 1' }));
+  expect(screen.getByRole('option', { name: host.label })).toBeTruthy();
+  expect(screen.getByRole('option', { name: secondary.label })).toBeTruthy();
+  expect(screen.getByRole('option', { name: legacy.label })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: wrongNic.label })).toBeNull();
+  expect(screen.queryByRole('option', { name: wrongLegacy.label })).toBeNull();
+});
+
+it('keeps new ECS fully editable and prevents all readonly custom selects from opening', () => {
+  const host = createEcsNodeWithPlatformDefaults();
+  const { rerender } = render(<TemplatePropertyPanel selectedNode={host} allNodes={[runtimeSwitch(), host]} onUpdateNode={vi.fn()} />);
+  expect(screen.getByLabelText('CPU').matches(':disabled')).toBe(false);
+  expect(screen.getByRole('button', { name: '添加网卡' }).matches(':disabled')).toBe(false);
+  rerender(<TemplatePropertyPanel selectedNode={host} allNodes={[runtimeSwitch(), host]} readOnly onUpdateNode={vi.fn()} />);
+  const protocol = screen.getByRole('combobox', { name: '安全协议 1-1' });
+  expect((protocol as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(protocol);
+  expect(screen.queryByRole('option', { name: 'udp' })).toBeNull();
+});

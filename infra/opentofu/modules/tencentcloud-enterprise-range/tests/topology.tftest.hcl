@@ -118,3 +118,53 @@ run "rejects_cross_region_zone" {
   variables { zone_id = "ap-guangzhou-2" }
   expect_failures = [var.zone_id]
 }
+
+run "multiple_targets_and_secondary_nic_mapping" {
+  command = plan
+  variables {
+    hosts = [
+      { key = "entry", name = "Entry", host_name = "entry", image_id = "img-fixture", instance_type = "S5.MEDIUM4", private_ip = "10.0.1.10", zone_key = "dmz", system_disk_type = "CLOUD_PREMIUM", system_disk_size = 50, terminate_at = "2100-01-01T00:00:00Z", creation_intent_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", user_data = "" },
+      { key = "other", name = "Other", host_name = "other", image_id = "img-fixture", instance_type = "S5.MEDIUM4", private_ip = "172.16.1.20", zone_key = "internal", system_disk_type = "CLOUD_PREMIUM", system_disk_size = 80, terminate_at = "2100-01-01T00:00:00Z", creation_intent_id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", user_data = "" }
+    ]
+    host_passwords = { entry = "FixturePassword123!", other = "FixturePassword123!" }
+    network_interfaces = [
+      { key = "entry-0", host_key = "entry", device_index = 0, zone_key = "dmz", private_ip = "10.0.1.10", secondary_ips = [] },
+      { key = "entry-1", host_key = "entry", device_index = 1, zone_key = "internal", private_ip = "172.16.1.10", secondary_ips = [] },
+      { key = "other-0", host_key = "other", device_index = 0, zone_key = "internal", private_ip = "172.16.1.20", secondary_ips = [] }
+    ]
+    dnat_entries = [
+      { key = "http", nat_key = "shared", eip_key = "dnat", host_key = "entry", private_ip = "172.16.1.10", external_port = 80, internal_port = 80, protocol = "TCP" },
+      { key = "other-http", nat_key = "shared", eip_key = "dnat", host_key = "other", private_ip = "172.16.1.20", external_port = 8080, internal_port = 80, protocol = "TCP" }
+    ]
+  }
+  assert {
+    condition     = tencentcloud_dnat.entry["http"].private_ip == "172.16.1.10" && tencentcloud_dnat.entry["other-http"].private_ip == "172.16.1.20" && length(tencentcloud_eip.range) == 2
+    error_message = "Shared DNAT must preserve selected NIC addresses with separate SNAT EIP."
+  }
+  assert {
+    condition     = tencentcloud_instance.hosts["entry"].system_disk_size == 50 && tencentcloud_instance.hosts["other"].system_disk_size == 80
+    error_message = "Host system disk sizes must remain independent."
+  }
+}
+
+run "pure_private_without_nat_or_eips" {
+  command = plan
+  variables {
+    nat_gateways = []
+    eips         = []
+    snat_entries = []
+    dnat_entries = []
+  }
+  assert {
+    condition     = length(tencentcloud_nat_gateway.shared) == 0 && length(tencentcloud_eip.range) == 0 && length(tencentcloud_dnat.entry) == 0 && output.public_entry.public_ip == null && output.public_entry.ssh == null
+    error_message = "Private topology must not allocate NAT or EIP and must report a null public entry."
+  }
+}
+
+run "rejects_unowned_dnat_address" {
+  command = plan
+  variables {
+    dnat_entries = [{ key = "http", nat_key = "shared", eip_key = "dnat", host_key = "entry", private_ip = "172.16.1.99", external_port = 80, internal_port = 80, protocol = "TCP" }]
+  }
+  expect_failures = [check.dnat_owned_nic_targets]
+}

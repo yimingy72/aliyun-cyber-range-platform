@@ -6,6 +6,7 @@ import { ImageImportsService } from '../src/admin/image-imports.service';
 import { PackedImagesService } from '../src/admin/packed-images.service';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { BadRequestException } from '@nestjs/common';
 
 const spaces = [
   { id: 'account-a', provider: 'alibaba_cloud' as const, accountUid: 'uid-a', isReadOnly: false },
@@ -132,6 +133,32 @@ describe('Frozen source workspaces for background tasks', () => {
       { provider: 'tencent_cloud', workspaceId: 'account-tencent', contextId: 'context-account-tencent', error: { code: 'InvalidParameter.FilterInvalidKey', service: 'vpc', action: 'DescribeNatGateways' } },
     ]);
     expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-private|safe-request-id|accessKeySecret|params/);
+  });
+
+  it.each([['DescribeInstances',403],['DescribeDisks',500],['TagResources',429]] as const)('classifies only native Alibaba %s HTTP %s metadata', (action,status) => {
+    const worker=new ProvisioningWorkerService(createMemoryAdminRepository(),{} as any,runner() as any);
+    const log=jest.spyOn((worker as any).logger,'error').mockImplementation(()=>{});
+    (worker as any).logReconciliationFailure({id:'account-a',provider:'alibaba_cloud'},'context-a',Object.assign(new Error(`Aliyun ${action} request failed with status ${status}`),{accessKeySecret:'synthetic-private-key',url:'https://vendor.invalid/?Signature=synthetic-private-signature'}));
+    expect(JSON.parse(String(log.mock.calls[0][0]))).toEqual({provider:'alibaba_cloud',workspaceId:'account-a',contextId:'context-a',error:{code:`ALIYUN_HTTP_${status}`,action,httpStatus:status}});
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-private|accessKeySecret|Signature|vendor/);
+  });
+
+  it('does not log arbitrary credential-bearing messages, spoofed names or near-matching HTTP messages',()=>{
+    const worker=new ProvisioningWorkerService(createMemoryAdminRepository(),{} as any,runner() as any),log=jest.spyOn((worker as any).logger,'error').mockImplementation(()=>{});
+    for(const message of ['synthetic-private-password AKID-test LTAI-test', 'Aliyun DescribeInstances request failed with status 403 synthetic-private-key', 'Aliyun DescribeInstances request failed with status 403\n', 'Aliyun DeleteInstance request failed with status 403', 'Aliyun DescribeVpcs request failed with status 403', 'Aliyun DescribeDisks request failed with status 600']) {
+      (worker as any).logReconciliationFailure({id:'account-a',provider:'alibaba_cloud'},null,Object.assign(new Error(message),{name:'TypeError',code:'synthetic-private-code',password:'synthetic-private-password'}));
+    }
+    const diagnostic={provider:'alibaba_cloud',workspaceId:'account-a',contextId:null,error:{code:'UNCLASSIFIED_RECONCILIATION_ERROR'}};
+    expect(log.mock.calls.map(([value])=>JSON.parse(String(value)))).toEqual(Array(6).fill(diagnostic));
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-private|AKID|LTAI|password|DeleteInstance|DescribeVpcs/);
+  });
+
+  it('classifies controlled local exceptions without printing their names, bodies or messages',()=>{
+    const worker=new ProvisioningWorkerService(createMemoryAdminRepository(),{} as any,runner() as any),log=jest.spyOn((worker as any).logger,'error').mockImplementation(()=>{});
+    const exceptions=[new TypeError('synthetic-private-key'),new SyntaxError('synthetic-private-body'),new BadRequestException({message:'synthetic-private-password',accessKeyId:'synthetic-private-ak'})];
+    for(const error of exceptions) { error.name='synthetic-private-name'; (worker as any).logReconciliationFailure({id:'account-a',provider:'alibaba_cloud'},null,error); }
+    expect(log.mock.calls.map(([value])=>JSON.parse(String(value)).error)).toEqual([{code:'TypeError'},{code:'SyntaxError'},{code:'BadRequestException'}]);
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-private|accessKeyId|password|body/);
   });
 
   it('reconciles every verified region of an account after its UI default region changes', async () => {

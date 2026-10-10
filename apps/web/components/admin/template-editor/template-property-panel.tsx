@@ -1,6 +1,6 @@
 'use client';
 
-import React, { type ReactNode, useEffect, useRef, useState } from 'react';
+import React, { type ReactNode, createContext, useContext, useEffect, useRef, useState } from 'react';
 import { PanelRightClose } from 'lucide-react';
 import { nextAvailableGraphId, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
@@ -32,6 +32,7 @@ type TemplatePropertyPanelProps = {
   linkedSwitchIdsByHostId?: Record<string, string[]>;
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void;
   readOnly?: boolean;
+  runtimeExistingNode?: boolean;
   runtimeNodeStatus?: string | null;
   onClose?: () => void;
 };
@@ -45,6 +46,7 @@ type PropertyFieldProps = {
 
 type PropertyGroupProps = {
   title: string;
+  disabled?: boolean;
   description?: string;
   action?: ReactNode;
   actionClassName?: string;
@@ -135,6 +137,20 @@ function isCompleteIpv4(value: string) {
   return parseIpv4ToNumber(value) !== null;
 }
 
+const PropertyDisabledContext = createContext(false);
+
+function PropertyFields({ disabled = false, className = '', children }: { disabled?: boolean; className?: string; children: ReactNode }) {
+  const inheritedDisabled = useContext(PropertyDisabledContext);
+  const isDisabled = disabled || inheritedDisabled;
+  return (
+    <PropertyDisabledContext.Provider value={isDisabled}>
+      <fieldset className={`min-w-0 border-0 p-0 ${className}`} disabled={isDisabled}>
+        {children}
+      </fieldset>
+    </PropertyDisabledContext.Provider>
+  );
+}
+
 function PropertyField({ label, hint, className, children }: PropertyFieldProps) {
   return (
     <label className={className ? `template-property-field ${className}` : 'template-property-field'}>
@@ -160,13 +176,15 @@ function PropertySelect({
   options: readonly { label: string; value: string; disabled?: boolean }[];
   value: string;
 }) {
+  const inheritedDisabled = useContext(PropertyDisabledContext);
+  const isDisabled = Boolean(disabled || inheritedDisabled);
   return (
     <AdminSelectField
       ariaLabel={ariaLabel}
       className="w-full"
-      disabled={disabled}
+      disabled={isDisabled}
       emptyOptionLabel={emptyOptionLabel}
-      onValueChange={onValueChange}
+      onValueChange={(value) => { if (!isDisabled) onValueChange(value); }}
       options={options}
       value={value}
     />
@@ -175,6 +193,7 @@ function PropertySelect({
 
 function PropertyGroup({
   title,
+  disabled,
   description,
   action,
   actionClassName,
@@ -183,7 +202,7 @@ function PropertyGroup({
   children,
 }: PropertyGroupProps) {
   return (
-    <section className="template-property-group">
+    <PropertyFields className="template-property-group" disabled={disabled}>
       <div className={headClassName ? `template-property-group-head ${headClassName}` : 'template-property-group-head'}>
         <div className="template-property-group-copy">
           <strong>{title}</strong>
@@ -196,7 +215,7 @@ function PropertyGroup({
         ) : null}
       </div>
       <div className={formClassName ? `template-property-form ${formClassName}` : 'template-property-form'}>{children}</div>
-    </section>
+    </PropertyFields>
   );
 }
 
@@ -211,6 +230,7 @@ function TemplateImageCombobox({
   imageOptions,
   onSelectImageAsset,
 }: TemplateImageComboboxProps) {
+  const disabled = useContext(PropertyDisabledContext);
   const [query, setQuery] = useState(selectedImageAsset?.displayName ?? '');
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -251,6 +271,7 @@ function TemplateImageCombobox({
         ) ?? null;
 
   function applySelection(asset: PlatformImageAsset | null) {
+    if (disabled) return;
     onSelectImageAsset(asset);
     setQuery(asset?.displayName ?? '');
     setIsOpen(false);
@@ -260,6 +281,7 @@ function TemplateImageCombobox({
     <div className="template-image-combobox" ref={rootRef}>
       <input
         aria-label="镜像名"
+        disabled={disabled}
         aria-autocomplete="list"
         aria-expanded={isOpen}
         autoComplete="off"
@@ -268,6 +290,7 @@ function TemplateImageCombobox({
         role="combobox"
         value={query}
         onChange={(event) => {
+          if (disabled) return;
           const nextValue = event.target.value;
           setQuery(nextValue);
           setIsOpen(nextValue.trim().length > 0);
@@ -292,7 +315,7 @@ function TemplateImageCombobox({
           }
         }}
         onFocus={() => {
-          if (query.trim().length > 0) {
+          if (!disabled && query.trim().length > 0) {
             setIsOpen(true);
           }
         }}
@@ -308,7 +331,7 @@ function TemplateImageCombobox({
         }}
       />
 
-      {isOpen && matchedOptions.length > 0 ? (
+      {!disabled && isOpen && matchedOptions.length > 0 ? (
         <div className="template-image-combobox-list" role="listbox" aria-label="平台镜像候选列表">
           {matchedOptions.slice(0, 8).map((item) => {
             const isSelected = selectedImageAsset?.id === item.id;
@@ -371,6 +394,7 @@ function renderHostFields(
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
   options?: {
     runtimeNodeStatus?: string | null;
+    runtimeExistingNode?: boolean;
   },
 ) {
   const nicItems = selectedNode.nics ?? [];
@@ -484,6 +508,7 @@ function renderHostFields(
     <>
       <PropertyGroup
         title="基础信息"
+        disabled={options?.runtimeExistingNode}
         action={<span className="template-property-group-badge">ECS</span>}
         actionClassName="template-property-group-action-badge"
         formClassName="template-property-form-grid"
@@ -564,7 +589,7 @@ function renderHostFields(
       <PropertyGroup
         title="网卡配置"
         action={
-          <button type="button" className="template-property-inline-button" onClick={handleAddNic}>
+          <button type="button" className="template-property-inline-button" disabled={options?.runtimeExistingNode} onClick={handleAddNic}>
             添加网卡
           </button>
         }
@@ -599,7 +624,7 @@ function renderHostFields(
                   <button
                     type="button"
                     className="template-property-inline-button is-danger"
-                    disabled={nicItems.length <= 1}
+                    disabled={Boolean(options?.runtimeExistingNode) || nicItems.length <= 1}
                     aria-label={`删除网卡 ${index + 1}`}
                     onClick={() => handleDeleteNic(nic.id)}
                   >
@@ -607,7 +632,7 @@ function renderHostFields(
                   </button>
                 </div>
               </div>
-              <div className="template-property-card-grid">
+              <PropertyFields className="template-property-card-grid" disabled={options?.runtimeExistingNode}>
                 <PropertyField label="交换机标识" className="template-property-field-full">
                   <PropertySelect
                     ariaLabel={`交换机标识 ${index + 1}`}
@@ -674,7 +699,7 @@ function renderHostFields(
                     }}
                   />
                 </PropertyField>
-              </div>
+              </PropertyFields>
               <div className="template-property-card-sub-list">
                 {securityGroupRules.map((rule, ruleIndex) => (
                   <div key={rule.key} className="template-property-card template-property-card-sub">
@@ -810,7 +835,7 @@ function renderHostFields(
         })}
       </PropertyGroup>
 
-      <PropertyGroup title="DNS 配置" description="Windows 主机可为指定网卡设置 DNS，在初始化脚本之前执行。">
+      <PropertyGroup title="DNS 配置" disabled={options?.runtimeExistingNode} description="Windows 启动时设置指定网卡 DNS，初始化脚本结束后再次确认。">
         <PropertyField label="配置方式">
           <PropertySelect
             ariaLabel="DNS 配置方式"
@@ -874,7 +899,7 @@ function renderHostFields(
         </> : <small className="template-property-field-hint">使用网络自动下发的 DNS，无需修改主机配置。</small>}
       </PropertyGroup>
 
-      <PropertyGroup title="初始化脚本">
+      <PropertyGroup title="初始化脚本" disabled={options?.runtimeExistingNode}>
         <div className="template-property-field">
           <textarea
             aria-label="初始化脚本"
@@ -897,10 +922,11 @@ function renderSwitchFields(
   selectedNode: SwitchTemplateNode,
   allNodes: TemplateNode[],
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
+  runtimeExistingNode = false,
 ) {
   const aclRules = selectedNode.aclRules ?? [];
   const dnatMappings = selectedNode.nat?.dnatMappings ?? [];
-  const hostOptions = allNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs');
+  const hostOptions = allNodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs' && (node.nics?.length ? node.nics.some((nic) => nic.switchId === selectedNode.id) : node.zoneKey === selectedNode.zoneKey));
   const cidrParts = parseCidrParts(selectedNode.cidr);
   const dnatPortConflictsByMappingKey = new Map<string, DnatExternalPortConflict>();
 
@@ -952,6 +978,7 @@ function renderSwitchFields(
     <>
       <PropertyGroup
         title="基础信息"
+        disabled={runtimeExistingNode}
         action={<span className="template-property-group-badge">交换机</span>}
         actionClassName="template-property-group-action-badge"
         formClassName="template-property-form-grid template-property-form-grid-switch"
@@ -985,7 +1012,7 @@ function renderSwitchFields(
         </PropertyField>
       </PropertyGroup>
 
-      <PropertyGroup title="网段配置" formClassName="template-property-form">
+      <PropertyGroup disabled={runtimeExistingNode} title="网段配置" formClassName="template-property-form">
         <div className="template-switch-cidr-field">
           <div className="template-switch-cidr-shell">
             <input
@@ -1362,11 +1389,13 @@ function renderSwitchFields(
 function renderRouterFields(
   selectedNode: RouterTemplateNode,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
+  runtimeExistingNode = false,
 ) {
   return (
     <>
       <PropertyGroup
         title="基础信息"
+        disabled={runtimeExistingNode}
         action={<span className="template-property-group-badge">路由器</span>}
         actionClassName="template-property-group-action-badge"
         formClassName="template-property-form-grid template-property-form-grid-switch"
@@ -1413,6 +1442,7 @@ function renderNodeGroups(
   options?: {
     instanceDetailMode?: boolean;
     runtimeNodeStatus?: string | null;
+    runtimeExistingNode?: boolean;
   },
 ) {
   switch (selectedNode.kind) {
@@ -1427,9 +1457,9 @@ function renderNodeGroups(
         options,
       );
     case 'switch':
-      return renderSwitchFields(selectedNode, allNodes, onUpdateNode);
+      return renderSwitchFields(selectedNode, allNodes, onUpdateNode, options?.runtimeExistingNode);
     case 'router':
-      return renderRouterFields(selectedNode, onUpdateNode);
+      return renderRouterFields(selectedNode, onUpdateNode, options?.runtimeExistingNode);
     default:
       return null;
   }
@@ -1443,6 +1473,7 @@ export function TemplatePropertyPanel({
   linkedSwitchIdsByHostId = {},
   onUpdateNode,
   readOnly = false,
+  runtimeExistingNode = false,
   runtimeNodeStatus = null,
   onClose,
 }: TemplatePropertyPanelProps) {
@@ -1453,6 +1484,21 @@ export function TemplatePropertyPanel({
       shellRef.current.scrollTop = 0;
     }
   }, [selectedNode?.id]);
+
+  function updateEditableNode(nodeId: string, nextNode: TemplateNode) {
+    if (readOnly || !selectedNode || nodeId !== selectedNode.id) return;
+    if (!runtimeExistingNode) { onUpdateNode(nodeId, nextNode); return; }
+    let allowedNode: TemplateNode = selectedNode;
+    if (selectedNode.kind === 'ecs' && nextNode.kind === 'ecs') {
+      allowedNode = { ...selectedNode, nics: selectedNode.nics?.map((nic) => ({ ...nic,
+        securityGroupRules: nextNode.nics?.find((item) => item.id === nic.id)?.securityGroupRules ?? nic.securityGroupRules,
+        securityGroupRulesMode: nextNode.nics?.find((item) => item.id === nic.id)?.securityGroupRulesMode ?? nic.securityGroupRulesMode,
+      })) };
+    } else if (selectedNode.kind === 'switch' && nextNode.kind === 'switch') {
+      allowedNode = { ...selectedNode, aclRules: nextNode.aclRules, nat: nextNode.nat };
+    }
+    if (JSON.stringify(allowedNode) !== JSON.stringify(selectedNode)) onUpdateNode(nodeId, allowedNode);
+  }
 
   return (
     <aside className="template-editor-panel template-property-panel">
@@ -1473,7 +1519,7 @@ export function TemplatePropertyPanel({
 
       <div ref={shellRef} className="template-property-shell">
         {selectedNode ? (
-          <fieldset className="template-property-readonly-shell" disabled={readOnly}>
+          <PropertyFields className="template-property-readonly-shell" disabled={readOnly}>
             <div className="template-property-stack">
               {renderNodeGroups(
                 selectedNode,
@@ -1481,13 +1527,14 @@ export function TemplatePropertyPanel({
               platformImageAssets,
               instanceTypeAvailability,
               linkedSwitchIdsByHostId,
-              onUpdateNode,
+              updateEditableNode,
               {
                 runtimeNodeStatus,
+                runtimeExistingNode,
               },
             )}
             </div>
-          </fieldset>
+          </PropertyFields>
         ) : (
           <div className="template-property-placeholder">
             <strong>选择节点后配置</strong>

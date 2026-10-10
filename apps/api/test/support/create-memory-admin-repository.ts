@@ -1,3 +1,4 @@
+import { rangeDraftSourceDigest } from '../../src/admin/range-draft-change-policy';
 import type { RangeDnsVerification } from '../../src/admin/range-dns-types';
 import {
   AdminRepository,
@@ -25,6 +26,8 @@ import {
   CreateProvisionJobStepLogInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
+  CreateRangeTemplateFromInstanceInput,
+  SaveRangeInstanceAsTemplateResult,
   ImageCatalogItemRecord,
   IdempotentOperationRecord,
   ListImageCatalogItemsFilter,
@@ -138,6 +141,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   const operationAuditEvents = workspaceRecords<OperationAuditEventRecord>();
 
   let idCounter = 1;
+  let templateCopyQueue: Promise<unknown> = Promise.resolve();
   let singleControlQueue: Promise<unknown> = Promise.resolve();
   const singleBatchProvisionLocks = new Set<string>();
 
@@ -514,6 +518,27 @@ export function createMemoryAdminRepository(): AdminRepository {
       rangeTemplates.unshift(record);
 
       return clone(record);
+    },
+    async createRangeTemplateFromInstance(input: CreateRangeTemplateFromInstanceInput) {
+      const run = async () => {
+      const toolName = 'range_instance_save_as_template';
+      const previous = idempotentOperations.find(value => value.actorUserId === input.actorUserId && value.toolName === toolName && value.idempotencyKey === input.idempotencyKey);
+      if (previous) {
+        if (previous.argumentsHash !== input.argumentsHash || previous.status !== 'succeeded' || !previous.result) throw new Error('Template copy idempotency key is bound to another request');
+        return clone(previous.result) as SaveRangeInstanceAsTemplateResult;
+      }
+      const source = rangeInstances.find(value => value.id === input.rangeInstanceId);
+      if (!source || source.status !== 'running' || source.instanceMode !== 'range' || source.draftRevision !== input.expectedDraftRevision || (!input.isAdmin && source.ownerUserId !== input.actorUserId)
+        || !source.draftTopologyGraph || !source.draftTopologySpec || !source.draftScenarioTemplateSpec || !source.draftCompiledProvisionSpec || source.cloudProvider !== input.template.cloudProvider) return null;
+      const template = await this.createRangeTemplate(input.template);
+      const result: SaveRangeInstanceAsTemplateResult = { id: template.id, templateId: template.id, name: template.name, visibility: 'private', rangeInstanceId: source.id, sourceDraftRevision: input.expectedDraftRevision };
+      idempotentOperations.unshift({id: nextId(), actorUserId: input.actorUserId, toolName, idempotencyKey: input.idempotencyKey, argumentsHash: input.argumentsHash,
+        operationId: input.operationId, status: 'succeeded', result: clone(result), errorCode: null, createdAt: now(), updatedAt: now() });
+      return clone(result);
+      };
+      const queued = templateCopyQueue.then(run, run);
+      templateCopyQueue = queued;
+      return queued;
     },
     async getRangeTemplateById(id: string) {
       const record = rangeTemplates.find((template) => template.id === id);
@@ -1002,6 +1027,11 @@ export function createMemoryAdminRepository(): AdminRepository {
         return null;
       }
 
+      if (rangeDraftSourceDigest(instance, input.triggeredBy, instance.cloudWorkspaceId ?? 'legacy-unbound') !== input.expectedSourceDigest) return null;
+      const preview = operationConfirmations.find(value => value.id === input.previewToken);
+      if (!preview || preview.cloudWorkspaceId !== instance.cloudWorkspaceId || preview.actorUserId !== input.triggeredBy || preview.toolName !== 'range_instance_topology_preview'
+        || preview.argumentsHash !== input.expectedSourceDigest || preview.consumedAt || preview.expiresAt.getTime() <= Date.now()) return null;
+      preview.consumedAt = now();
       const job: ProvisionJobRecord = {
         id: nextId(),
         rangeInstanceId: input.rangeInstanceId,

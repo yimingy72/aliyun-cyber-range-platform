@@ -141,6 +141,9 @@ docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE cyber_range_workspace_migration_test' >/dev/null
 
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE cyber_range_runtime_topology_test' >/dev/null
+
 docker run --rm --network "$CI_NETWORK" \
   "${CI_PROVIDER_MIRROR_ARGS[@]}" \
   -e DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range?schema=public' \
@@ -152,6 +155,8 @@ docker run --rm --network "$CI_NETWORK" \
   -e USER_AUTH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/user_auth_test?schema=public' \
   -e WORKSPACE_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public' \
   -e CLOUD_ACCOUNT_REMOVAL_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_account_removal_test?schema=public' \
+  -e RUNTIME_PREVIEW_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_runtime_topology_test?schema=public' \
+  -e TEMPLATE_COPY_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_runtime_topology_test?schema=public' \
   -e DNS_STATE_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_dns_state_test?schema=public' \
   -e CLOUD_WORKSPACE_MIGRATION_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_migration_test?schema=public' \
   -e PACKED_IMAGE_TEST_DATABASE_URL='postgresql://postgres:postgres@packed-image-test-postgres:5432/packed_image_test?schema=public' \
@@ -171,6 +176,7 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$USER_AUTH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$CLOUD_ACCOUNT_REMOVAL_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$RUNTIME_PREVIEW_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$DNS_STATE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$PACKED_IMAGE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$IMAGE_TAG_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy

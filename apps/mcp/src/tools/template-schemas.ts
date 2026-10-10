@@ -32,7 +32,7 @@ const securityRuleSchema = z.object({
 }).passthrough();
 const dnatMappingSchema = z.object({
   key: identifier,
-  targetHostId: identifier.describe('DNAT 目标 ECS ID。所有 DNAT 映射必须指向同一台、与所属交换机连接的 ECS；该 ECS 会自动成为公网入口。'),
+  targetHostId: identifier.describe('DNAT 目标 ECS ID。可映射多台 ECS；每个目标必须有连接所属交换机的网卡，映射作用于该网卡的私网 IP。'),
   externalPort: z.number().int().min(1).max(65535),
   internalPort: z.number().int().min(1).max(65535),
   protocol: z.enum(['tcp', 'udp']),
@@ -40,7 +40,7 @@ const dnatMappingSchema = z.object({
 }).strict();
 const switchNatSchema = z.object({
   snatEnabled: z.boolean().describe('所有开启 SNAT 的交换机共享由编译器派生的 SNAT EIP。'),
-  dnatMappings: z.array(dnatMappingSchema).describe('唯一权威的公网 DNAT 定义；不得把公网 NAT 映射写在 ECS 节点上。'),
+  dnatMappings: z.array(dnatMappingSchema).describe('公网 DNAT 的权威定义；可为空以构建无公网映射的拓扑，不得把公网 NAT 映射写在 ECS 节点上。'),
 }).strict();
 const nicSchema = z.object({
   id: identifier,

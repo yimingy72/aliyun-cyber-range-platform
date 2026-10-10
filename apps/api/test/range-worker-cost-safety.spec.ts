@@ -3,6 +3,7 @@ import { type RangeProvisionCreateInput, type RangeProvisionDestroyInput } from 
 import { type RangeResourceSummary } from '../src/admin/admin.repository';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP } from '../src/admin/failed-create-cleanup-evidence';
+import { buildRangeChangeApproval } from '../src/admin/range-draft-change-policy';
 
 const account = { provider: 'alibaba_cloud' as const, accessKeyId: 'fixture-source-key', accessKeySecret: 'fixture-source-secret',
   defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', imageImportBucket: '', cloudAccountContextId: 'context-source', accountUid: 'uid-source', accountUidResolved: true };
@@ -17,7 +18,7 @@ async function fixture(kind: 'create' | 'destroy' = 'create', dnsVerification?: 
   } });
   const instance = await repository.createRangeInstance({ name: 'Guard fixture', instanceMode: 'range', ownerUserId: 'alice', templateId: template.id,
     status: kind === 'create' ? 'pending_create' : 'pending_destroy', allocatedCidr: '10.0.0.0/16',
-    ...(kind === 'destroy' ? { resourceSummary: { ...resources, executionContext: binding, creationAttempted: true } } : {}) });
+    ...(kind === 'destroy' ? { resourceSummary: { ...resources, executionContext: binding, creationAttempted: true }, runtimeTopologyGraph: { nodes: [{ id: 'entry', kind: 'ecs', privateIp: '10.0.1.10' }], edges: [] } } : {}) });
   const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: kind, triggeredBy: 'alice' });
   await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
   const system = { getAccountContext: jest.fn(async () => account), getAccountContextById: jest.fn(async () => account), getSnapshot: jest.fn(async () => ({ ...account, accountUid: 'wrong-snapshot-uid', accessKeyId: 'wrong-key' })) };
@@ -166,7 +167,8 @@ describe('range worker durable cost safety', () => {
     const snapshot = { draftRevision:1,templateModulePath:'fixture/range',topologyGraph:{nodes:[],edges:[]},
       topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[],hosts:[],publicEntry:{}}, scenarioTemplateSpec:{metadata:{},topology:{},networkZones:[],hosts:[]},
       compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]}, compiledSpec:{resources:[],topology:{}} };
-    await expect((f.worker as any).processRangeInstanceUpdateJob({ instance:f.instance,job:{...claimed,topologySnapshot:snapshot},
+    const approved = { ...snapshot, changeApproval: buildRangeChangeApproval((await f.repository.getRangeInstanceById(f.instance.id))!, snapshot) };
+    await expect((f.worker as any).processRangeInstanceUpdateJob({ instance:f.instance,job:{...claimed,topologySnapshot:approved},
       runtimeConfig:account,accountContext:account,reportStep:async()=>{},onApplyStart:()=>{} })).rejects.toThrow('unverified');
     expect(f.provisioner.create).not.toHaveBeenCalled();
     expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({resourceSummary:{unverifiedDiskIds:{'entry:d-external':'d-external'}}});
@@ -192,7 +194,8 @@ describe('range worker durable cost safety', () => {
       topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[],hosts:[],publicEntry:{}},scenarioTemplateSpec:{metadata:{},topology:{},networkZones:[],hosts:[]},
       compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]},compiledSpec:{resources:[],topology:{}}};
     jest.spyOn(f.repository,'completeRangeInstanceDraftApply').mockImplementation(async (id, patch) => f.repository.updateRangeInstance(id,{resourceSummary:patch.resourceSummary}));
-    const operation = (f.worker as any).processRangeInstanceUpdateJob({instance:f.instance,job:{...claimed,topologySnapshot:snapshot},
+    const approved = { ...snapshot, changeApproval: buildRangeChangeApproval((await f.repository.getRangeInstanceById(f.instance.id))!, snapshot) };
+    const operation = (f.worker as any).processRangeInstanceUpdateJob({instance:f.instance,job:{...claimed,topologySnapshot:approved},
       runtimeConfig:account,accountContext:account,reportStep:async()=>{},onApplyStart:()=>{}});
     if (retained) {
       await expect(operation).rejects.toThrow('Replaced range resources remain');
@@ -214,6 +217,51 @@ describe('range worker durable cost safety', () => {
     await f.worker.process(f.job.id); await f.worker.process(f.job.id);
     expect(f.provisioner.create).toHaveBeenCalledTimes(1); expect(f.provisioner.destroy).not.toHaveBeenCalled();
     expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroy_failed', resourceSummary: { creationAttempted: true, executionContext: binding } });
+  });
+
+  it('captures partial update resources after apply cancellation without recreating or destroying the environment', async () => {
+    const f = await fixture('destroy'), controller = new AbortController();
+    const instance = await f.repository.updateRangeInstance(f.instance.id, {status:'running',expiresAt:new Date(Date.now()+900000),resourceSummary:{...f.instance.resourceSummary!,dataDiskIds:{}}});
+    await f.repository.updateProvisionJob(f.job.id,{status:'cancelled'});
+    const snapshot = {draftRevision:1,templateModulePath:'fixture/range',topologyGraph:{nodes:[...(instance.runtimeTopologyGraph!.nodes as any[]),{id:'added',kind:'ecs',privateIp:'10.0.1.20'}],edges:[]},
+      topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[],hosts:[],publicEntry:{}},scenarioTemplateSpec:{metadata:{},topology:{},networkZones:[],hosts:[]},
+      compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]},compiledSpec:{resources:[],topology:{}}};
+    const update = await f.repository.createProvisionJob({rangeInstanceId:instance.id,jobType:'update',triggeredBy:'alice',topologySnapshot:{...snapshot,changeApproval:buildRangeChangeApproval(instance,snapshot)}});
+    await f.repository.updateRangeInstance(instance.id,{lastJobId:update.id});
+    const claimed = await f.repository.claimProvisionJob(update.id,new Date());
+    f.provisioner.inspectResources.mockResolvedValue({...resources,hostIds:{entry:'i-owned',added:'i-added'},systemDiskIds:{entry:'d-owned',added:'d-added'}});
+    const query = f.query.getMockImplementation()!;
+    f.query.mockImplementation(async (input:any) => input.action==='DescribeDisks' && input.parameters.InstanceId==='i-added' ? {RequestId:'added-disk',TotalCount:1,PageNumber:1,PageSize:100,Disks:{Disk:[{DiskId:'d-added',InstanceId:'i-added',Type:'system',DeleteWithInstance:true}]}} : query(input));
+    f.provisioner.create.mockImplementation(async input => {await input.onApplyStart!(); controller.abort(new Error('Controlled apply cancellation')); input.signal!.throwIfAborted(); return output;});
+    await (f.worker as any).processClaimedJob(claimed,undefined,controller.signal);
+    expect(f.provisioner.create).toHaveBeenCalledTimes(1); expect(f.provisioner.destroy).not.toHaveBeenCalled();
+    expect(await f.repository.getProvisionJobById(update.id)).toMatchObject({status:'failed',errorSummary:'Controlled apply cancellation'});
+    expect(await f.repository.getRangeInstanceById(instance.id)).toMatchObject({status:'destroy_failed',resourceSummary:{hostIds:{entry:'i-owned',added:'i-added'},systemDiskIds:{entry:'d-owned',added:'d-added'}}});
+    expect(await f.repository.getProvisionJobById(update.id)).toMatchObject({status:'failed'});
+    const ledger=await f.repository.listBillingLedgerResources({rangeInstanceId:instance.id});
+    expect(ledger).toEqual(expect.arrayContaining([expect.objectContaining({cloudResourceId:'i-added',releasedAt:null}),expect.objectContaining({cloudResourceId:'d-added',releasedAt:null})]));
+  });
+
+  it('recovers inventory and fees after an interrupted update is requeued without submitting a second apply', async () => {
+    const f = await fixture('destroy');
+    const instance = await f.repository.updateRangeInstance(f.instance.id,{status:'running',expiresAt:new Date(Date.now()+900000),resourceSummary:{...f.instance.resourceSummary!,dataDiskIds:{}}});
+    await f.repository.updateProvisionJob(f.job.id,{status:'cancelled'});
+    const snapshot = {draftRevision:1,templateModulePath:'fixture/range',topologyGraph:{nodes:[...(instance.runtimeTopologyGraph!.nodes as any[]),{id:'added',kind:'ecs',privateIp:'10.0.1.20'}],edges:[]},
+      topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[],hosts:[],publicEntry:{}},scenarioTemplateSpec:{metadata:{},topology:{},networkZones:[],hosts:[]},
+      compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]},compiledSpec:{resources:[],topology:{}}};
+    const update = await f.repository.createProvisionJob({rangeInstanceId:instance.id,jobType:'update',triggeredBy:'alice',retryCount:1,topologySnapshot:{...snapshot,changeApproval:buildRangeChangeApproval(instance,snapshot)}});
+    await f.repository.updateRangeInstance(instance.id,{lastJobId:update.id});
+    await f.repository.createProvisionJobStepLog({jobId:update.id,stepName:'tofu_apply',status:'running',startedAt:new Date(Date.now()-60_000),finishedAt:null,message:null,stdoutExcerpt:null,stderrExcerpt:null});
+    f.provisioner.inspectResources.mockResolvedValue({...resources,hostIds:{entry:'i-owned',added:'i-added'},systemDiskIds:{entry:'d-owned',added:'d-added'}});
+    const query = f.query.getMockImplementation()!;
+    f.query.mockImplementation(async (input:any) => input.action==='DescribeDisks' && input.parameters.InstanceId==='i-added' ? {RequestId:'added-disk',TotalCount:1,PageNumber:1,PageSize:100,Disks:{Disk:[{DiskId:'d-added',InstanceId:'i-added',Type:'system',DeleteWithInstance:true}]}} : query(input));
+    f.provisioner.create.mockRejectedValue(new Error('Persisted pending state requires recovery'));
+    await f.worker.process(update.id);
+    expect(f.provisioner.create).not.toHaveBeenCalled(); expect(f.provisioner.destroy).not.toHaveBeenCalled();
+    expect(await f.repository.getRangeInstanceById(instance.id)).toMatchObject({status:'destroy_failed',resourceSummary:{hostIds:{entry:'i-owned',added:'i-added'}}});
+    expect(await f.repository.listBillingLedgerResources({rangeInstanceId:instance.id})).toEqual(expect.arrayContaining([
+      expect.objectContaining({cloudResourceId:'i-added',sourceProvisionJobId:update.id,releasedAt:null}),
+      expect.objectContaining({cloudResourceId:'d-added',sourceProvisionJobId:update.id,releasedAt:null})]));
   });
 
   it('soft-aborts the running CLI after claim loss and never lets the stale worker clean or overwrite the newer claim', async () => {

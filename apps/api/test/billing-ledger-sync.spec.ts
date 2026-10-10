@@ -142,6 +142,7 @@ describe('billing-ledger-sync', () => {
       billingStartAt: initialStartAt,
     });
 
+    await repository.updateProvisionJob(updateJob.id, { status: 'running', startedAt: updateStartAt });
     await syncRangeInstanceBillingLedger({
       repository,
       instance,
@@ -173,7 +174,7 @@ describe('billing-ledger-sync', () => {
         expect.objectContaining({
           cloudResourceId: 'eip-new',
           cloudResourceType: 'eip',
-          sourceProvisionJobId: createJob.id,
+          sourceProvisionJobId: updateJob.id,
           billingStartAt: updateStartAt,
         }),
       ]),
@@ -267,7 +268,7 @@ describe('billing-ledger-sync', () => {
     );
   });
 
-  it('replaces an unsuccessful creation job with the retry that recreates an existing resource', async () => {
+  it('preserves the original failed birth job when a retry observes the same native resource', async () => {
     const repository = createMemoryAdminRepository();
     const instance = await repository.createRangeInstance({
       name: 'retry-billing-ledger-range',
@@ -324,7 +325,7 @@ describe('billing-ledger-sync', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         id: existing.id,
-        sourceProvisionJobId: retryJob.id,
+        sourceProvisionJobId: failedJob.id,
       }),
     );
   });
@@ -409,4 +410,28 @@ describe('verified billing account backfill', () => {
       resourceSummary: { mode: 'opentofu', hostIds: { ecs: 'i-history' } }, billingStartAt: new Date('2026-10-09') })).rejects.toThrow();
     expect(await repository.listBillingLedgerResources()).toEqual([original]);
   });
+});
+
+it.each(['alibaba_cloud', 'tencent_cloud'] as const)('keeps %s update-created resource birth job/time through later cleanup observation', async cloudProvider => {
+ const repository = createMemoryAdminRepository();
+ const initialTime = new Date('2026-10-09T01:00:00Z'); const updateTime = new Date('2026-10-10T02:00:00Z'); const applyTime = new Date('2026-10-10T02:02:00Z');
+ const instance = await repository.createRangeInstance({ name: 'update billing fixture', cloudProvider, ownerUserId: 'owner', status: 'running' });
+ const context = { provider: cloudProvider, cloudAccountContextId: 'frozen-context', cloudAccountUid: 'account', regionId: 'region', zoneId: 'zone' };
+ const original = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'owner' });
+ await repository.updateProvisionJob(original.id, { status: 'succeeded', startedAt: initialTime });
+ const base = { repository, instance, regionId: 'region', cloudAccountUid: 'account', billingStartAt: initialTime };
+ const oldSummary = { mode: 'opentofu' as const, executionContext: context, hostIds: { old: 'i-old' }, systemDiskIds: { old: 'disk-old' } };
+ await syncRangeInstanceBillingLedger({ ...base, sourceProvisionJobId: original.id, resourceSummary: oldSummary });
+ const update = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'update', triggeredBy: 'owner' });
+ await repository.updateProvisionJob(update.id, { status: 'running', startedAt: updateTime });
+ await repository.createProvisionJobStepLog({ jobId: update.id, stepName: 'tofu_apply', status: 'running', startedAt: applyTime });
+ const newSummary = { ...oldSummary, hostIds: { old: 'i-old', added: 'i-added' }, systemDiskIds: { old: 'disk-old', added: 'disk-added' }, eipAllocationIds: { entry: 'eip-added' } };
+ // Worker historically supplies the original instance time: the helper must choose this apply's bound time.
+ await syncRangeInstanceBillingLedger({ ...base, sourceProvisionJobId: update.id, resourceSummary: newSummary });
+ await repository.updateProvisionJob(update.id, { status: 'failed', finishedAt: new Date('2026-10-10T02:03:00Z') });
+ const destroy = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'owner' });
+ await syncRangeInstanceBillingLedger({ ...base, sourceProvisionJobId: destroy.id, resourceSummary: newSummary });
+ const rows = await repository.listBillingLedgerResources();
+ for (const id of ['i-old', 'disk-old']) expect(rows.find(row => row.cloudResourceId === id)).toMatchObject({ sourceProvisionJobId: original.id, billingStartAt: initialTime });
+ for (const id of ['i-added', 'disk-added', 'eip-added']) expect(rows.find(row => row.cloudResourceId === id)).toMatchObject({ sourceProvisionJobId: update.id, billingStartAt: applyTime, ownerUserId: 'owner', rangeInstanceId: instance.id, cloudAccountUid: 'account', releasedAt: null });
 });

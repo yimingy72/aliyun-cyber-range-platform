@@ -225,7 +225,7 @@ describe('PlatformApiClient', () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/ranges/range-1/apply');
       expect(init?.method).toBe('POST');
-      expect(init?.body).toBe(JSON.stringify({ expectedDraftRevision: 8 }));
+      expect(init?.body).toBe(JSON.stringify({ expectedDraftRevision: 8, previewToken: 'preview-8' }));
       expect((init?.headers as Record<string, string>)['x-idempotency-key']).toBe('apply-range-1-revision-8');
       expect((init?.headers as Record<string, string>)['x-confirmation-id']).toBe('confirm-apply-1');
 
@@ -242,11 +242,13 @@ describe('PlatformApiClient', () => {
         applyRangeInstanceDraft: (
           id: string,
           expectedDraftRevision: number,
+          previewToken: string,
           operation: { idempotencyKey: string; confirmationId: string },
         ) => Promise<unknown>;
       }).applyRangeInstanceDraft(
         'range-1',
         8,
+        'preview-8',
         { idempotencyKey: 'apply-range-1-revision-8', confirmationId: 'confirm-apply-1' },
       ),
     ).resolves.toEqual({ id: 'job-1', jobType: 'update' });

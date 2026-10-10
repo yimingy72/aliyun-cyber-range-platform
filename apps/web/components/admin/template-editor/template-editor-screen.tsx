@@ -5,7 +5,6 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  resolveUniqueDnatEntryHost,
   nextAvailableGraphId,
   defaultSwitchCidr as readDefaultSwitchCidr,
   type TemplateAuthoringMetadata,
@@ -1300,32 +1299,13 @@ export function TemplateEditorScreen({
       );
     });
 
-    const entryResolution = resolveUniqueDnatEntryHost(normalizedNodes);
-
-    if (entryResolution.kind === 'missing') {
-      validationErrors.push('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
-    } else if (entryResolution.kind === 'multiple') {
-      validationErrors.push('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
-    } else {
-      const entryHost = hostNodes.find((hostNode) => hostNode.id === entryResolution.targetHostId);
-
-      if (!entryHost) {
-        validationErrors.push(`DNAT 目标 ECS 不存在：${entryResolution.targetHostId}`);
-      } else {
-        const entryMapping = switchNodes
-          .flatMap((switchNode) =>
-            (switchNode.nat?.dnatMappings ?? []).map((mapping) => ({
-              switchNode,
-              mapping,
-            })),
-          )
-          .find(({ mapping }) => mapping.targetHostId === entryHost.id);
-
-        if (
-          entryMapping
-          && !(entryHost.nics ?? []).some((nic) => nic.switchId === entryMapping.switchNode.id)
-        ) {
-          validationErrors.push(`DNAT 目标 ECS 未连接到交换机：${entryMapping.mapping.key}`);
+    for (const switchNode of switchNodes) {
+      for (const mapping of switchNode.nat?.dnatMappings ?? []) {
+        const targetHost = hostNodes.find((hostNode) => hostNode.id === mapping.targetHostId);
+        if (!targetHost) {
+          validationErrors.push(`DNAT 目标 ECS 不存在：${mapping.targetHostId}`);
+        } else if (!(targetHost.nics ?? []).some((nic) => nic.switchId === switchNode.id)) {
+          validationErrors.push(`DNAT 目标 ECS 未连接到交换机：${mapping.key}`);
         }
       }
     }

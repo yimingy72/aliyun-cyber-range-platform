@@ -42,7 +42,7 @@ import type {
   UpdateAdminUserStatusInput,
 } from './admin-types';
 import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from './admin-types';
-import type { CloudWorkspaceView, DeleteCloudAccountResult, SaveCloudAccountInput } from './admin-types';
+import type { CloudWorkspaceView, DeleteCloudAccountResult, RangeInstanceChangePreview, RangeInstanceTemplateCopy, SaveCloudAccountInput } from './admin-types';
 import { readCloudWorkspaceSelection } from './cloud-workspace-selection';
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
@@ -334,14 +334,28 @@ export async function applyRangeInstanceDraft(
   token: string,
   id: string,
   expectedDraftRevision: number,
+  previewToken: string,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/apply`, {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(id)}/apply`, {
     method: 'POST',
     headers: createAdminHeaders(token),
-    body: JSON.stringify({ expectedDraftRevision }),
+    body: JSON.stringify({ expectedDraftRevision, previewToken }),
   });
 
   return readJson<ProvisionJob>(response);
+}
+
+export async function previewRangeInstanceDraft(apiBaseUrl: string, token: string, id: string, expectedDraftRevision: number) {
+  return readJson<RangeInstanceChangePreview>(await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(id)}/preview`, {
+    method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify({ expectedDraftRevision }),
+  }));
+}
+
+export async function saveRangeInstanceAsTemplate(apiBaseUrl: string, token: string, id: string,
+  input: { name: string; description?: string; expectedDraftRevision: number }, idempotencyKey: string) {
+  return readJson<RangeInstanceTemplateCopy>(await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(id)}/templates`, {
+    method: 'POST', headers: { ...createAdminHeaders(token), 'x-idempotency-key': idempotencyKey }, body: JSON.stringify(input),
+  }));
 }
 
 export async function syncRangeInstanceTemplate(

@@ -1,6 +1,7 @@
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { rangeDraftSourceDigest } from '../admin/range-draft-change-policy';
 import type { RangeDnsVerification } from '../admin/range-dns-types';
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
@@ -30,6 +31,8 @@ import {
   CreateSingleInstanceBatchInput,
   CreateRangeInstanceInput,
   CreateRangeTemplateInput,
+  CreateRangeTemplateFromInstanceInput,
+  SaveRangeInstanceAsTemplateResult,
   ApplyRangeInstanceDraftInput,
   FindBillingLedgerResourceInput,
   ImageCatalogItemRecord,
@@ -467,79 +470,118 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord> {
-    return this.prisma.$transaction(async (tx) => {
-      const template = await tx.rangeTemplate.create({
-        data: {
-          name: input.name,
-          createdBy: input.createdBy ?? 'admin',
-          ownerUserId: input.ownerUserId ?? null,
-          description: input.description ?? null,
-          slug: input.slug,
-          version: input.version,
-          cloudProvider: input.cloudProvider ?? workspaceProvider(),
-          iacType: input.iacType ?? 'opentofu',
-          modulePathOrRef: input.modulePathOrRef,
-          topologySpec: input.topologySpec as Prisma.InputJsonValue,
-          topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
-          scenarioTemplateSpec: (input.scenarioTemplateSpec ?? null) as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledProvisionSpec: (input.compiledProvisionSpec ?? null) as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
-          variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
-          outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
-          visibility: input.visibility ?? 'private',
-          ...(input.defaultNetworkPolicy
-            ? {
-                defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
-              }
-            : {}),
-        },
-      });
+    return this.prisma.$transaction(tx => this.createRangeTemplateInTransaction(tx, input));
+  }
 
-      const draftVersion = await tx.rangeTemplateVersion.create({
-        data: {
-          templateId: template.id,
-          version: input.version,
-          status: 'draft',
-          modulePathOrRef: input.modulePathOrRef,
-          topologySpec: input.topologySpec as Prisma.InputJsonValue,
-          topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
-          scenarioTemplateSpec: (input.scenarioTemplateSpec ?? null) as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledProvisionSpec: (input.compiledProvisionSpec ?? null) as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
-          compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
-          variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
-          outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
-          ...(input.defaultNetworkPolicy
-            ? {
-                defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
-              }
-            : {}),
-        },
-      });
+  async createRangeTemplateFromInstance(input: CreateRangeTemplateFromInstanceInput): Promise<SaveRangeInstanceAsTemplateResult | null> {
+    const toolName = 'range_instance_save_as_template';
+    const replay = async () => {
+      const existing = await this.getIdempotentOperation(input.actorUserId, toolName, input.idempotencyKey);
+      if (!existing) return null;
+      if (existing.argumentsHash !== input.argumentsHash || existing.cloudWorkspaceId !== getCurrentCloudWorkspaceId() || existing.status !== 'succeeded' || !existing.result)
+        throw new ConflictException('Template copy idempotency key is bound to another request');
+      return existing.result as SaveRangeInstanceAsTemplateResult;
+    };
+    const prior = await replay();
+    if (prior) return prior;
+    try {
+      return await this.prisma.$transaction(async tx => {
+        // Lock the source revision; creation and replay receipt commit together.
+        const locked = await tx.rangeInstance.updateMany({ where: {
+          id: input.rangeInstanceId, instanceMode: 'range', status: 'running',
+          draftRevision: input.expectedDraftRevision,
+          ...(input.isAdmin ? {} : { ownerUserId: input.actorUserId }),
+        }, data: { draftRevision: { increment: 0 } } });
+        if (locked.count !== 1) return null;
+        const source = await tx.rangeInstance.findUnique({ where: { id: input.rangeInstanceId } });
+        if (!source?.draftTopologyGraph || !source.draftTopologySpec || !source.draftScenarioTemplateSpec || !source.draftCompiledProvisionSpec || source.cloudProvider !== input.template.cloudProvider) return null;
+        const template = await this.createRangeTemplateInTransaction(tx, input.template);
+        const result: SaveRangeInstanceAsTemplateResult = { id: template.id, templateId: template.id, name: template.name,
+          visibility: 'private', rangeInstanceId: input.rangeInstanceId, sourceDraftRevision: input.expectedDraftRevision };
+        await tx.idempotentOperation.create({ data: { actorUserId: input.actorUserId, toolName, idempotencyKey: input.idempotencyKey,
+          argumentsHash: input.argumentsHash, operationId: input.operationId, status: 'succeeded', result } });
+        return result;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      const completed = await replay();
+      if (completed) return completed;
+      if (isSerializableTransactionConflict(error)) throw new RangeInstanceDraftRevisionConflictError();
+      throw error;
+    }
+  }
 
-      await tx.rangeTemplate.update({
-        where: { id: template.id },
-        data: {
-          currentDraftVersionId: draftVersion.id,
-        },
-      });
-
-      return tx.rangeTemplate.findUnique({
-        where: { id: template.id },
-        include: {
-          currentDraftVersion: true,
-          currentPublishedVersion: true,
-          versions: true,
-        },
-      }) as Promise<RangeTemplateRecord>;
+  private async createRangeTemplateInTransaction(tx: Prisma.TransactionClient, input: CreateRangeTemplateInput): Promise<RangeTemplateRecord> {
+    const template = await tx.rangeTemplate.create({
+      data: {
+        name: input.name,
+        createdBy: input.createdBy ?? 'admin',
+        ownerUserId: input.ownerUserId ?? null,
+        description: input.description ?? null,
+        slug: input.slug,
+        version: input.version,
+        cloudProvider: input.cloudProvider ?? workspaceProvider(),
+        iacType: input.iacType ?? 'opentofu',
+        modulePathOrRef: input.modulePathOrRef,
+        topologySpec: input.topologySpec as Prisma.InputJsonValue,
+        topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+        scenarioTemplateSpec: (input.scenarioTemplateSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        compiledProvisionSpec: (input.compiledProvisionSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+        variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
+        outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
+        visibility: input.visibility ?? 'private',
+        ...(input.defaultNetworkPolicy
+          ? {
+              defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
+            }
+          : {}),
+      },
     });
+
+    const draftVersion = await tx.rangeTemplateVersion.create({
+      data: {
+        templateId: template.id,
+        version: input.version,
+        status: 'draft',
+        modulePathOrRef: input.modulePathOrRef,
+        topologySpec: input.topologySpec as Prisma.InputJsonValue,
+        topologyGraph: (input.topologyGraph ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+        scenarioTemplateSpec: (input.scenarioTemplateSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        compiledProvisionSpec: (input.compiledProvisionSpec ?? null) as
+          | Prisma.InputJsonValue
+          | Prisma.NullableJsonNullValueInput,
+        compiledSpec: (input.compiledSpec ?? null) as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+        variableSchema: (input.variableSchema ?? {}) as Prisma.InputJsonValue,
+        outputSchema: (input.outputSchema ?? {}) as Prisma.InputJsonValue,
+        ...(input.defaultNetworkPolicy
+          ? {
+              defaultNetworkPolicy: input.defaultNetworkPolicy as Prisma.InputJsonValue,
+            }
+          : {}),
+      },
+    });
+
+    await tx.rangeTemplate.update({
+      where: { id: template.id },
+      data: {
+        currentDraftVersionId: draftVersion.id,
+      },
+    });
+
+    return tx.rangeTemplate.findUnique({
+      where: { id: template.id },
+      include: {
+        currentDraftVersion: true,
+        currentPublishedVersion: true,
+        versions: true,
+      },
+    }) as Promise<RangeTemplateRecord>;
   }
 
   async updateRangeTemplateMetadata(
@@ -1295,6 +1337,14 @@ export class PrismaAdminRepository implements AdminRepository {
           return null;
         }
 
+        const workspaceId = instance.cloudWorkspaceId;
+        if (rangeDraftSourceDigest(instance as unknown as RangeInstanceRecord, input.triggeredBy, workspaceId) !== input.expectedSourceDigest) throw new RangeInstanceDraftRevisionConflictError();
+        const preview = await transaction.operationConfirmation.findUnique({ where: { id: input.previewToken } });
+        const now = new Date();
+        if (!preview || preview.cloudWorkspaceId !== workspaceId || preview.actorUserId !== input.triggeredBy || preview.toolName !== 'range_instance_topology_preview'
+          || preview.argumentsHash !== input.expectedSourceDigest || preview.consumedAt || preview.expiresAt <= now) throw new RangeInstanceDraftRevisionConflictError();
+        const consumed = await transaction.operationConfirmation.updateMany({ where: { id: preview.id, consumedAt: null, expiresAt: { gt: now } }, data: { consumedAt: now } });
+        if (consumed.count !== 1) throw new RangeInstanceDraftRevisionConflictError();
         const job = await transaction.provisionJob.create({
           data: {
             rangeInstanceId: input.rangeInstanceId,

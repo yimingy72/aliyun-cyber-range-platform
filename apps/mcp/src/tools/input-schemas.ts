@@ -111,6 +111,16 @@ export const rangeLaunchInputSchema = operationSchema.extend({
 });
 export const rangeDestroyInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
 export const rangeRetryInputSchema = operationSchema.extend({ rangeInstanceId: identifier });
+export const rangeTopologyPreviewInputSchema = z.object({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1) }).strict();
+export const rangeTopologyApplyInputSchema = operationSchema.extend({ rangeInstanceId: identifier, expectedDraftRevision: z.number().int().min(1), previewToken: identifier.max(192) }).strict();
+export const rangeSaveAsTemplateInputSchema = z.object({
+  rangeInstanceId: identifier,
+  name: z.string().trim().min(1).max(128),
+  description: z.string().max(2000).optional(),
+  expectedDraftRevision: z.number().int().min(1).describe('已保存草稿的准确版本，不接受未保存拓扑。'),
+  idempotencyKey: identifier.max(128).describe('本次另存操作的稳定幂等键；超时后复用同一键避免重复创建。'),
+}).strict();
+
 export const rangeTopologyChangeInputSchema = operationSchema.extend({
   rangeInstanceId: identifier,
   topologyGraph: topologyGraphSchema.describe('完整的实例拓扑图。由实例编排转换 Skill 生成；MCP 会自行编译运行规格，不能传派生字段。'),

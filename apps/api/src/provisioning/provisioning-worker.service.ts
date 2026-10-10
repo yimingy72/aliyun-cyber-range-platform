@@ -1,10 +1,11 @@
 import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootstrap-policy';
+import { buildRangeChangeApproval, rangeChangeDigest, type RangeChangeApproval } from '../admin/range-draft-change-policy';
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -30,6 +31,7 @@ import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatc
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
 import {
   AliyunEcsResourceClient,
+  AliyunResourceRequestError,
   PlatformResourceReconciliationService,
 } from './platform-resource-reconciliation.service';
 import {
@@ -173,10 +175,23 @@ export class ProvisioningWorkerService {
 
   private logReconciliationFailure(space: { id: string; provider: string }, contextId: string | null, error: unknown) {
     // The TC3 client already strips credentials and vendor messages from its typed code.
-    const code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
+    let code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
       ? error.code : 'UNCLASSIFIED_RECONCILIATION_ERROR';
-    const request = error instanceof TencentCloudRequestError
+    let request: { service?: string; action?: string; httpStatus?: number; regionId?: string } = error instanceof TencentCloudRequestError
       ? { ...(error.service ? { service: error.service } : {}), ...(error.action ? { action: error.action } : {}) } : {};
+    const http = space.provider === 'alibaba_cloud' && error instanceof Error
+      ? /^Aliyun (DescribeInstances|DescribeDisks|TagResources) request failed with status ([1-5][0-9]{2})$/.exec(error.message) : null;
+    if (space.provider === 'alibaba_cloud' && error instanceof AliyunResourceRequestError) {
+      code = error.code;
+      request = { service: 'ecs', action: error.action, httpStatus: error.httpStatus, ...(error.regionId ? { regionId: error.regionId } : {}) };
+    } else if (http && http[0] === (error as Error).message) {
+      code = `ALIYUN_HTTP_${http[2]}`;
+      request = { action: http[1], httpStatus: Number(http[2]) };
+    } else if (error instanceof Error) {
+      if (error.constructor === TypeError) code = 'TypeError';
+      else if (error.constructor === SyntaxError) code = 'SyntaxError';
+      else if (error instanceof BadRequestException) code = 'BadRequestException';
+    }
     this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code, ...request } }));
   }
 
@@ -423,6 +438,13 @@ export class ProvisioningWorkerService {
       }
 
       if (effectiveJobType === 'update') {
+        // A restarted worker cannot infer that an earlier submitted apply made no changes.
+        // Recover its native inventory and billing instead of running the saved plan again.
+        if (job.retryCount > 0 && (await this.adminRepository.listProvisionJobStepLogs(job.id))
+          .some(log => log.stepName === 'tofu_apply' && log.startedAt && !log.message?.startsWith('Dry-run'))) {
+          rangeApplyStarted = true;
+          throw new Error('Interrupted runtime topology update requires resource inventory recovery before another apply');
+        }
         await this.processRangeInstanceUpdateJob({
           job,
           instance,
@@ -626,7 +648,8 @@ export class ProvisioningWorkerService {
           const context = await this.resolveRangeAccountContext(current, job);
           await this.captureRangeResources(job, current, { rangeInstanceId: current.id,
             templateModulePath: current.templateModulePathSnapshot ?? '', allocatedCidr: current.allocatedCidr,
-            runtimeConfig: context, requirePersistedState: true, signal }, context);
+            // A cancelled apply must not suppress the inventory of its already allocated resources.
+            runtimeConfig: context, requirePersistedState: true }, context);
         } catch (captureError) {
           this.logger.error(`Range update inventory needs recovery: ${captureError instanceof Error ? captureError.message : 'unknown error'}`);
         }
@@ -655,9 +678,14 @@ export class ProvisioningWorkerService {
     return updated;
   }
 
-  private async assertRangeSnapshotImages(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot) {
+  private async assertRangeSnapshotImages(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot, onlyHostKeys?: string[]) {
     const owner = instance.ownerUserId ? await this.adminRepository.getPlatformUserById(instance.ownerUserId) : undefined;
-    await new RangeTemplatesService(this.adminRepository, this.systemConfigService).assertTemplateEcsImageSelections({
+    const templates = new RangeTemplatesService(this.adminRepository, this.systemConfigService);
+    if (onlyHostKeys) {
+      await templates.assertTopologyGraphEcsImageSelections({ nodes: (snapshot.topologyGraph.nodes as any[]).filter(node => node.kind === 'ecs' && onlyHostKeys.includes(node.id)) }, owner ?? undefined);
+      return;
+    }
+    await templates.assertTemplateEcsImageSelections({
       ...snapshot, topologySpec: snapshot.topologySpec as RangeTemplateTopologySpec,
     }, owner ?? undefined);
   }
@@ -711,19 +739,29 @@ export class ProvisioningWorkerService {
     }
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
     if (!beforeUpdate) throw new Error('Range instance disappeared before topology update');
+    if (beforeUpdate.expiresAt && beforeUpdate.expiresAt <= new Date()) throw new Error('Range expired before runtime topology update');
+    const approval = (topologySnapshot as ProvisionJobTopologySnapshot & { changeApproval?: RangeChangeApproval }).changeApproval;
     assertExistingHostBootstrapUnchanged(beforeUpdate, topologySnapshot.topologyGraph);
-    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(beforeUpdate, topologySnapshot);
+    if (this.rangeProvisioner.mode === 'opentofu' && !approval) throw new Error('Runtime topology update requires its confirmed preview');
+    if (approval && rangeChangeDigest(approval) !== rangeChangeDigest(buildRangeChangeApproval(beforeUpdate, topologySnapshot))) throw new Error('Runtime topology update no longer matches its confirmed preview');
+    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(beforeUpdate, topologySnapshot, approval?.addedHostKeys);
     const beforeResources = beforeUpdate?.resourceSummary
       ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
+      ...(beforeResources ? { knownResourceSummary: beforeResources } : {}),
       expiresAt: input.instance.expiresAt?.toISOString(),
+      ...(approval ? { changeApproval: approval } : {}),
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
       requirePersistedState: true,
       signal: input.signal,
-      onApplyStart: async () => { await this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal); input.onApplyStart(); },
+      onApplyStart: async () => {
+        const current = await this.adminRepository.getRangeInstanceById(input.instance.id);
+        if (!current || current.expiresAt && current.expiresAt <= new Date() || approval && rangeChangeDigest(approval) !== rangeChangeDigest(buildRangeChangeApproval(current, topologySnapshot))) throw new Error('Runtime topology identity or expiry changed before cloud apply');
+        await this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal); input.onApplyStart();
+      },
       runtimeConfig: input.runtimeConfig,
       runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? undefined,
       topologyGraph: topologySnapshot.topologyGraph,
@@ -837,6 +875,7 @@ export class ProvisioningWorkerService {
       templateModulePath,
       ...(snapshot.runtimeCredentials ? { runtimeCredentials: snapshot.runtimeCredentials as ProvisionJobTopologySnapshot['runtimeCredentials'] } : {}),
       ...(snapshot.operation === 'update' ? { operation: 'update' as const } : {}),
+      ...(snapshot.changeApproval ? { changeApproval: snapshot.changeApproval as RangeChangeApproval } : {}),
     };
   }
 
@@ -981,7 +1020,15 @@ export class ProvisioningWorkerService {
       }
     }
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
-      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext) },async () => {
+      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext),
+        assertRecoverySourceJob: async sourceJobId => {
+          const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
+          if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
+            || (sourceJob.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
+            || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt
+            || sourceJob.jobType === 'update' && sourceJob.topologySnapshot?.operation !== 'update')
+            throw new Error('Tencent recovery has no original submitted platform job in its frozen workspace');
+        } },async () => {
         input.signal?.throwIfAborted();
         if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
       },async (recovered,sourceJobId) => {

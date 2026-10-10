@@ -99,3 +99,51 @@ run "legacy_host_groups" {
     error_message = "Legacy snapshots must not clear unmanaged auxiliary IPs."
   }
 }
+
+run "multiple_targets_mapped_nic_and_per_host_disks" {
+  command = plan
+  variables {
+    hosts = [
+      { key = "entry", name = "Entry", host_name = "entry-host", zone_key = "dmz", private_ip = "10.0.1.10", role = "entry", expose_public = true, system_disk_size = 50 },
+      { key = "internal", name = "Internal", host_name = "internal-host", zone_key = "private", private_ip = "10.0.2.20", role = "internal", expose_public = true, system_disk_size = 80 }
+    ]
+    dnat_entries = [
+      { key = "dnat-entry-tcp-80", name = "Secondary NIC", nat_gateway_key = "nat", eip_key = "dnat", backend_host_key = "entry", backend_private_ip = "10.0.2.10", external_port = 80, internal_port = 80, protocol = "tcp" },
+      { key = "dnat-internal-tcp-8080", name = "Other Host", nat_gateway_key = "nat", eip_key = "dnat", backend_host_key = "internal", backend_private_ip = "10.0.2.20", external_port = 8080, internal_port = 80, protocol = "tcp" }
+    ]
+  }
+  assert {
+    condition     = alicloud_forward_entry.entries["dnat-entry-tcp-80"].internal_ip == "10.0.2.10" && alicloud_forward_entry.entries["dnat-internal-tcp-8080"].internal_ip == "10.0.2.20" && length(alicloud_eip_address.addresses) == 1
+    error_message = "Shared DNAT must target each host's mapped NIC without adding per-host EIPs."
+  }
+  assert {
+    condition     = alicloud_instance.hosts["entry"].system_disk_size == 50 && alicloud_instance.hosts["internal"].system_disk_size == 80
+    error_message = "Each host must retain its own system disk size."
+  }
+}
+
+run "pure_private_without_nat_or_eips" {
+  command = plan
+  variables {
+    hosts = [
+      { key = "entry", name = "Entry", zone_key = "dmz", private_ip = "10.0.1.10", role = "host", expose_public = false },
+      { key = "internal", name = "Internal", zone_key = "private", private_ip = "10.0.2.20", role = "host", expose_public = false }
+    ]
+    nat_gateways = []
+    eips         = []
+    snat_entries = []
+    dnat_entries = []
+  }
+  assert {
+    condition     = length(alicloud_nat_gateway.gateways) == 0 && length(alicloud_eip_address.addresses) == 0 && length(alicloud_forward_entry.entries) == 0 && output.public_entry.public_ip == null
+    error_message = "A private topology must not create NAT, EIP or a public entry."
+  }
+}
+
+run "rejects_unowned_dnat_address" {
+  command = plan
+  variables {
+    dnat_entries = [{ key = "http", name = "Unowned", nat_gateway_key = "nat", eip_key = "dnat", backend_host_key = "entry", backend_private_ip = "10.0.2.99", external_port = 80, internal_port = 80, protocol = "tcp" }]
+  }
+  expect_failures = [check.dnat_owned_nic_targets]
+}

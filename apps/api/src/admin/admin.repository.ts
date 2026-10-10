@@ -327,6 +327,7 @@ export type ProvisionJobTopologySnapshot = {
   templateModulePath: string;
   runtimeCredentials?: RangeRuntimeCredentials | null;
   operation?: 'create' | 'update' | 'destroy';
+  changeApproval?: import('./range-draft-change-policy').RangeChangeApproval;
 };
 
 export type ProvisionJobRecord = {
@@ -1063,6 +1064,8 @@ export type ApplyRangeInstanceDraftInput = {
   rangeInstanceId: string;
   expectedDraftRevision: number;
   triggeredBy: string;
+  previewToken: string;
+  expectedSourceDigest: string;
   topologySnapshot: ProvisionJobTopologySnapshot;
 };
 
@@ -1097,6 +1100,26 @@ export type CompleteRangeInstanceDraftApplyInput = Pick<
   expectedDraftRevision: number;
   provisionJobId?: string;
   claimStartedAt?: Date;
+};
+
+export type CreateRangeTemplateFromInstanceInput = {
+  rangeInstanceId: string;
+  expectedDraftRevision: number;
+  actorUserId: string;
+  isAdmin: boolean;
+  idempotencyKey: string;
+  argumentsHash: string;
+  operationId: string;
+  template: CreateRangeTemplateInput;
+};
+
+export type SaveRangeInstanceAsTemplateResult = {
+  id: string;
+  templateId: string;
+  name: string;
+  visibility: 'private';
+  rangeInstanceId: string;
+  sourceDraftRevision: number;
 };
 
 export class RangeInstanceDraftRevisionConflictError extends Error {
@@ -1167,6 +1190,7 @@ export interface AdminRepository {
   getDispatchedOperationByJobId(jobId: string): Promise<OperationAuditEventRecord | null>;
   listRangeTemplates(): Promise<RangeTemplateRecord[]>;
   createRangeTemplate(input: CreateRangeTemplateInput): Promise<RangeTemplateRecord>;
+  createRangeTemplateFromInstance(input: CreateRangeTemplateFromInstanceInput): Promise<SaveRangeInstanceAsTemplateResult | null>;
   getRangeTemplateById(id: string): Promise<RangeTemplateRecord | null>;
   getRangeTemplateVersionById(id: string): Promise<RangeTemplateVersionRecord | null>;
   updateRangeTemplateMetadata(id: string, input: UpdateRangeTemplateMetadataInput): Promise<RangeTemplateRecord>;

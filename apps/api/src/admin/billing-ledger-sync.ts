@@ -110,6 +110,14 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
   const sourceJobs = await Promise.all(
     instanceSourceJobIds.map(async (jobId) => [jobId, await input.repository.getProvisionJobById(jobId)] as const),
   );
+  const incomingJob = input.sourceProvisionJobId ? await input.repository.getProvisionJobById(input.sourceProvisionJobId) : null;
+  if (incomingJob?.jobType === 'update' && (incomingJob.rangeInstanceId !== input.instance.id
+    || (incomingJob.cloudWorkspaceId ?? 'legacy-unbound') !== (input.instance.cloudWorkspaceId ?? 'legacy-unbound'))) {
+    throw new Error('Update billing inventory requires its original range and workspace job');
+  }
+  const incomingUpdate = incomingJob?.jobType === 'update' && incomingJob.startedAt ? incomingJob : null;
+  const applyStartedAt = incomingUpdate ? (await input.repository.listProvisionJobStepLogs(incomingUpdate.id))
+    .find(log => log.stepName === 'tofu_apply' && log.startedAt)?.startedAt ?? incomingUpdate.startedAt : null;
   const sourceProvisionJobId =
     sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? input.sourceProvisionJobId ?? null;
   if (input.instance.cloudProvider === 'tencent_cloud' && input.sourceProvisionJobId && ledgerSpecs.length) {
@@ -173,8 +181,9 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
           ownerUserId: input.instance.ownerUserId ?? null,
           rangeInstanceId: input.instance.id,
           singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-          sourceProvisionJobId: input.instance.cloudProvider === 'tencent_cloud' ? input.sourceProvisionJobId ?? sourceProvisionJobId : sourceProvisionJobId,
-          billingStartAt: input.billingStartAt,
+          sourceProvisionJobId: incomingUpdate?.id ?? (input.instance.cloudProvider === 'tencent_cloud' ? input.sourceProvisionJobId ?? sourceProvisionJobId : sourceProvisionJobId),
+          // Newly observed update resources cannot predate the submitted cloud apply.
+          billingStartAt: applyStartedAt ?? input.billingStartAt,
           tagsSnapshot: {},
         });
         continue;
@@ -193,10 +202,6 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
       || existing.billingScope !== billingScope)) {
       throw new Error('Billing ledger account backfill requires the same proven instance ownership');
     }
-    const existingSourceJob = existing.sourceProvisionJobId
-      ? sourceJobs.find(([jobId]) => jobId === existing.sourceProvisionJobId)?.[1] ??
-        (await input.repository.getProvisionJobById(existing.sourceProvisionJobId))
-      : null;
 
     await input.repository.updateBillingLedgerResource(existing.id, {
       ...(backfillUid ? { cloudAccountUid: backfillUid } : {}),
@@ -204,10 +209,10 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
       ownerUserId: input.instance.ownerUserId ?? null,
       rangeInstanceId: input.instance.id,
       singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-      // Tencent inventories record exact creation jobs, including update and failed partial creation.
-      // Later observation/cleanup cannot transfer that source to the first successful launch or a destroy job.
+      // Native IDs identify the same resource across update, reconciliation and cleanup.
+      // Preserve its birth job even if that submission failed or its source was an update.
       sourceProvisionJobId: input.instance.cloudProvider === 'tencent_cloud' ? existing.sourceProvisionJobId
-        : isSuccessfulLaunchJob(existingSourceJob) ? existingSourceJob.id : sourceProvisionJobId,
+        : existing.sourceProvisionJobId ?? sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? (isSuccessfulLaunchJob(incomingJob) ? incomingJob.id : null),
       releasedAt: null,
     });
   }

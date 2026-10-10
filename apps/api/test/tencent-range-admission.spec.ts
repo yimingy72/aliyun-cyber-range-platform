@@ -20,7 +20,7 @@ it('blocks Tencent launch before persisting an instance or queuing a job when th
 it.each(['apply','create','retry-create'])('blocks %s admission before job submission regardless of current account selection', async operation => {
   process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED='0';
   const test=fixture(operation==='apply'?'running':'create_failed');
-  const call=operation==='apply'?test.service.applyDraft(test.instance.id,{expectedDraftRevision:1},actor):operation==='create'?test.service.triggerCreate(test.instance.id,actor):test.service.triggerRetry(test.instance.id,actor);
+  const call=operation==='apply'?test.service.applyDraft(test.instance.id,{expectedDraftRevision:1,previewToken:'not-authorized'},actor):operation==='create'?test.service.triggerCreate(test.instance.id,actor):test.service.triggerRetry(test.instance.id,actor);
   await expect(call).rejects.toThrow('受控验证');
   expect(test.repository.applyRangeInstanceDraft).not.toHaveBeenCalled(); expect(test.repository.queueRangeInstanceJob).not.toHaveBeenCalled(); expect(test.worker.dispatch).not.toHaveBeenCalled();
 });

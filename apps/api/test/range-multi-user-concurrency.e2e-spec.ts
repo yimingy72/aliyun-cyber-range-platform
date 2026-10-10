@@ -233,7 +233,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     const { a } = await launchBoth();
     const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
     const results = await Promise.allSettled([
-      service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice), service.triggerDestroy(a.id, alice),
+      service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice)).previewToken }, alice), service.triggerDestroy(a.id, alice),
     ]);
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     expect((await repository.listProvisionJobs()).filter(job => job.rangeInstanceId === a.id && ['pending', 'running'].includes(job.status))).toHaveLength(1);
@@ -241,7 +241,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     await workers[0].process(active.id);
     if (active.jobType === 'destroy') return;
     const next = await service.saveDraft(a.id, draftInput(compile(graph()), (await repository.getRangeInstanceById(a.id))!.draftRevision!), alice);
-    const update = await service.applyDraft(a.id, { expectedDraftRevision: next.draftRevision! }, alice);
+    const update = await service.applyDraft(a.id, { expectedDraftRevision: next.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: next.draftRevision! }, alice)).previewToken }, alice);
     await repository.updateRangeInstance(a.id, { expiresAt: new Date(Date.now() - 1000) });
     await workers[0].processExpiredInstances(new Date());
     expect((await repository.listProvisionJobs()).filter(job => job.rangeInstanceId === a.id && ['pending', 'running'].includes(job.status))).toHaveLength(1);
@@ -282,7 +282,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
   it('does not enqueue expiry or control a node while an update is pending', async () => {
     const { a } = await launchBoth();
     const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
-    const update = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice);
+    const update = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice)).previewToken }, alice);
     await repository.updateRangeInstance(a.id, { expiresAt: new Date(Date.now() - 1000) });
     const actions = new RangeInstanceNodeActionsService(repository, config, {} as PackedImagesService);
     await expect(actions.run(a.id, 'dmz-entry', 'stop', {}, alice)).rejects.toMatchObject({ status: 409 });
@@ -293,30 +293,34 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect((await repository.listProvisionJobs()).filter(job => job.rangeInstanceId === a.id && ['pending', 'running'].includes(job.status))).toHaveLength(1);
   });
 
-  it('rejects foreign private and disabled images on save and rechecks images before apply', async () => {
+  it('rejects foreign private/disabled images for newly added hosts while preserving already deployed hosts', async () => {
     const { a } = await launchBoth();
+    const edited = graph(); const added = structuredClone(edited.nodes.find((node: any) => node.id === 'office-backend'));
+    added.id = 'new-backend'; added.privateIp = '10.0.20.30'; added.nics[0].id = 'new-backend-nic'; added.nics[0].privateIp = added.privateIp;
+    edited.nodes.push(added); edited.edges.push({ id: 'office-new', fromNodeId: 'switch-office', toNodeId: added.id, relationType: 'manual' });
     await prisma.platformImageAsset.update({ where: { id: asset.id }, data: { visibility: 'private', ownerUserId: bob.id } });
-    await expect(service.saveDraft(a.id, draftInput(compile(graph())), alice)).rejects.toMatchObject({ status: 403 });
+    await expect(service.saveDraft(a.id, draftInput(compile(edited)), alice)).rejects.toMatchObject({ status: 403 });
     await prisma.platformImageAsset.update({ where: { id: asset.id }, data: { visibility: 'platform', ownerUserId: alice.id } });
-    const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
+    const saved = await service.saveDraft(a.id, draftInput(compile(edited)), alice);
+    const preview = await service.previewDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice);
     await prisma.platformImageAsset.update({ where: { id: asset.id }, data: { enabled: false } });
-    await expect(service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice)).rejects.toMatchObject({ status: 400 });
+    await expect(service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision!, previewToken: preview.previewToken }, alice)).rejects.toMatchObject({ status: 400 });
     expect((await repository.listProvisionJobs()).filter(job => job.rangeInstanceId === a.id && job.jobType === 'update')).toHaveLength(0);
   });
 
-  it('applies newly added ECS credentials and an explicit password change without exposing them through jobs', async () => {
+  it('generates credentials for newly added ECS while preserving existing passwords and keeping them out of public jobs', async () => {
     const { a } = await launchBoth();
     const edited = graph();
-    const existing = edited.nodes.find((node: any) => node.id === 'dmz-entry'); existing.customPassword = 'ChangedFixture123!';
     const added = JSON.parse(JSON.stringify(edited.nodes.find((node: any) => node.id === 'office-backend')));
-    added.id = 'new-backend'; added.privateIp = '10.0.20.30'; added.nics[0].id = 'new-backend-nic'; added.nics[0].privateIp = added.privateIp; added.nics[0].securityGroupRules[0].key = 'new-backend-internal';
+    added.customPassword = 'ChangedFixture123!'; added.id = 'new-backend'; added.privateIp = '10.0.20.30'; added.nics[0].id = 'new-backend-nic'; added.nics[0].privateIp = added.privateIp; added.nics[0].securityGroupRules[0].key = 'new-backend-internal';
     edited.nodes.push(added); edited.edges.push({ id: 'office-new', fromNodeId: 'switch-office', toNodeId: added.id, relationType: 'manual' });
     const saved = await service.saveDraft(a.id, draftInput(compile(edited)), alice);
-    const job = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice); await workers[0].process(job.id);
+    const job = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice)).previewToken }, alice); await workers[0].process(job.id);
     expect((await repository.getProvisionJobById(job.id))!.status).toBe('succeeded');
     const instance = (await repository.getRangeInstanceById(a.id))!;
     expect(Object.keys(instance.runtimeCredentials!)).toEqual(expect.arrayContaining(['dmz-entry', 'office-backend', 'new-backend']));
-    expect(instance.runtimeCredentials!['dmz-entry'].password === 'ChangedFixture123!').toBe(true);
+    expect(instance.runtimeCredentials!['new-backend'].password === 'ChangedFixture123!').toBe(true);
+    expect(instance.runtimeCredentials!['dmz-entry'].password === a.runtimeCredentials!['dmz-entry'].password).toBe(true);
     expect(instance.runtimeCredentials!['office-backend'].password === a.runtimeCredentials!['office-backend'].password).toBe(true);
     const vars = JSON.parse(await fs.readFile(path.join(root, a.id, 'range.auto.tfvars.json'), 'utf8'));
     expect(Object.keys(vars.host_passwords)).toHaveLength(3);
@@ -328,7 +332,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
   it('rejects stale claim writes and cancels a superseded queued update before touching its workspace', async () => {
     const { a } = await launchBoth();
     const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
-    const update = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice);
+    const update = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice)).previewToken }, alice);
     const oldStart = new Date(Date.now() - 600000); await repository.claimRangeProvisionJob(update.id, oldStart);
     await repository.heartbeatRangeProvisionJob(update.id, oldStart, oldStart);
     await repository.requeueInterruptedProvisionJobs(new Date(Date.now() - 300000));
@@ -346,16 +350,16 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect(apply.mock.calls).toHaveLength(count);
   });
 
-  it('preserves custom entry protocols and uses the Windows asset OS for credentials and VNC', async () => {
+  it('preserves entry protocols and the deployed OS login when image metadata later changes', async () => {
     const { a } = await launchBoth();
     const saved = await service.saveDraft(a.id, draftInput(compile(graph(), { publicEntryProtocols: [{ protocol: 'http', port: 8080 }] })), alice);
-    const job = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice); await workers[0].process(job.id);
+    const job = await service.applyDraft(a.id, { expectedDraftRevision: saved.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: saved.draftRevision! }, alice)).previewToken }, alice); await workers[0].process(job.id);
     expect((await service.getById(a.id, alice)).runtimeTopologySpec).toMatchObject({ publicEntry: { protocols: [{ protocol: 'http', port: 8080 }] } });
     const snapshot = await repository.getImageSnapshotById(asset.sourceSnapshotId);
     await prisma.cloudImageSnapshot.update({ where: { id: snapshot!.id }, data: { osType: 'windows' } });
     const next = await service.saveDraft(a.id, draftInput(compile(graph()), (await repository.getRangeInstanceById(a.id))!.draftRevision!), alice);
-    const windowsJob = await service.applyDraft(a.id, { expectedDraftRevision: next.draftRevision! }, alice); await workers[0].process(windowsJob.id);
-    expect((await repository.getRangeInstanceById(a.id))!.runtimeCredentials!['dmz-entry'].username).toBe('Administrator');
+    const windowsJob = await service.applyDraft(a.id, { expectedDraftRevision: next.draftRevision!, previewToken: (await service.previewDraft(a.id, { expectedDraftRevision: next.draftRevision! }, alice)).previewToken }, alice); await workers[0].process(windowsJob.id);
+    expect((await repository.getRangeInstanceById(a.id))!.runtimeCredentials!['dmz-entry'].username).toBe(a.runtimeCredentials!['dmz-entry'].username);
     const vnc = await new RangeInstanceNodeActionsService(repository, config, {} as PackedImagesService).run(a.id, 'dmz-entry', 'open-vnc', {}, alice);
     expect((vnc as { webTerminalUrl: string }).webTerminalUrl).toContain('isWindows=true');
   });

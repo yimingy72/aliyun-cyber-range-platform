@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { PlatformApiClient, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
+import { PlatformApiClient, PlatformApiError, type PlatformApiClientLike } from '@aliyun-cyber-range/platform-api-client';
 
 import { createHttpApp } from '../src/http-app';
 
@@ -43,6 +43,8 @@ function createClientStub(): ClientStub {
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
     saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    previewRangeInstanceDraft: vi.fn(),
+    saveRangeInstanceAsTemplate: vi.fn(),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
@@ -171,6 +173,47 @@ describe('mcp http e2e', () => {
       for (const name of ['platform_image_tag_create', 'platform_image_collect', 'platform_image_publish', 'platform_image_unpublish']) expect(names).not.toContain(name);
       await expect(client.callTool({ name: 'platform_image_tag_create', arguments: { name: 'blocked' } })).resolves.toMatchObject({ isError: true });
       expect(platformClient.createPlatformImageTag).not.toHaveBeenCalled();
+    } finally { await client.close(); }
+  });
+
+  it('preserves platform query failures through the SDK output validator', async () => {
+    const platformClient = createClientStub();
+    const details = { statusCode: 400, error: 'Bad Request', message: '阿里云可售机型查询失败（HTTP 404，InvalidRegionId.NotFound）。' };
+    vi.mocked(platformClient.getCloudAccountInstanceTypeAvailability).mockRejectedValue(new PlatformApiError(400, details.message, details));
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', platformApiToken: 'fixture-downstream-token' }, {
+      authenticateRequest: async () => ({ token: 'fixture-inbound-token', clientId: 'fixture', scopes: ['settings:read'], extra: { role: 'admin' } }), client: platformClient,
+    });
+    await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Expected bound HTTP server');
+    const client = new Client({ name: 'platform-query-error', version: '1.0.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer fixture-inbound-token' } } }));
+      await client.listTools();
+      const result = await client.callTool({ name: 'cloud_account_instance_type_availability', arguments: { cloudAccountContextId: 'context-beijing', cpu: 2, memory: 4 } });
+      expect(result).toMatchObject({ isError: true, structuredContent: { result: { error: details } } });
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ result: { error: details } }, null, 2) }]);
+      expect(platformClient.getCloudAccountInstanceTypeAvailability).toHaveBeenCalledWith('context-beijing', 2, 4);
+    } finally { await client.close(); }
+  });
+
+  it('delivers a confirmation challenge and accepts only the explicitly confirmed retry', async () => {
+    const platformClient = createClientStub();
+    const challenge = { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirmation-platform', idempotencyKey: 'stable-idempotency', summary: { targetName: 'fixture-range', createsCloudResources: true } };
+    vi.mocked(platformClient.launchRange).mockRejectedValueOnce(new PlatformApiError(409, 'confirmation required', challenge)).mockResolvedValueOnce({ id: 'fixture-range' } as never);
+    server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://platform.example', platformApiToken: 'fixture-downstream-token' }, {
+      authenticateRequest: async () => ({ token: 'fixture-inbound-token', clientId: 'fixture', scopes: ['ranges:create'], extra: { role: 'admin' } }), client: platformClient,
+    });
+    await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Expected bound HTTP server');
+    const client = new Client({ name: 'platform-confirmation', version: '1.0.0' });
+    const args = { templateId: 'fixture-template', name: 'fixture-range', expiresAt: '2027-01-01T00:00:00.000Z', idempotencyKey: challenge.idempotencyKey };
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer fixture-inbound-token' } } }));
+      await client.listTools();
+      expect(await client.callTool({ name: 'range_instance_launch', arguments: args })).toMatchObject({ isError: true, structuredContent: { result: { error: challenge } } });
+      expect(platformClient.launchRange).toHaveBeenCalledTimes(1);
+      expect(await client.callTool({ name: 'range_instance_launch', arguments: { ...args, confirmationId: challenge.confirmationId } })).toMatchObject({ structuredContent: { result: { id: 'fixture-range' } } });
+      expect(platformClient.launchRange).toHaveBeenNthCalledWith(2, { templateId: args.templateId, name: args.name, expiresAt: args.expiresAt }, { idempotencyKey: challenge.idempotencyKey, confirmationId: challenge.confirmationId });
     } finally { await client.close(); }
   });
 

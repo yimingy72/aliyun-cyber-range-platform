@@ -53,6 +53,25 @@ export type SaveRangeTemplateTopologyInput = {
 };
 export type ApplyRangeInstanceDraftInput = {
   expectedDraftRevision: number;
+  previewToken: string;
+};
+export type SaveRangeInstanceAsTemplateInput = { name: string; description?: string; expectedDraftRevision: number };
+export type SaveRangeInstanceAsTemplateResult = { id: string; templateId: string; name: string; visibility: 'private'; rangeInstanceId: string; sourceDraftRevision: number };
+export type RangeInstanceChangePreview = {
+  id: string;
+  rangeInstanceId: string;
+  kind: 'expected-topology-diff';
+  expectedDraftRevision: number;
+  previewToken: string;
+  expiresAt: string;
+  sourceDigest: string;
+  allowDnatRemoval: boolean;
+  allowSnatRemoval: boolean;
+  addedNetworks?: Array<{ nodeId: string; name: string; zoneKey: string; cidr: string }>;
+  addedHosts: Array<{ id: string; nodeId: string; name: string; expiresAt: string | null }>;
+  deletedHosts: Array<{ id: string; nodeId: string; name: string; instanceId: string | null; systemDiskId: string | null; dataDiskIds: string[]; networkInterfaceIds: string[]; diskIds: string[] }>;
+  ruleChanges: Array<{ nodeId: string; name: string; nodeKind: string }>;
+  resourceChanges: Array<{ resourceType: 'natGateways' | 'eips' | 'snatEntries' | 'dnatEntries'; key: string; action: 'create' | 'delete'; resourceId?: string }>;
 };
 export type SyncRangeInstanceTemplateInput = {
   expectedDraftRevision: number;
@@ -397,10 +416,13 @@ export type PlatformApiClientLike = {
   getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
   validateRangeInstanceNodePackImage?(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>): Promise<Record<string, unknown>>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
+  saveRangeInstanceAsTemplate(id: string, payload: SaveRangeInstanceAsTemplateInput, operation: OperationRequest & { idempotencyKey: string }): Promise<SaveRangeInstanceAsTemplateResult>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
+  previewRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceChangePreview>;
   applyRangeInstanceDraft(
     id: string,
     expectedDraftRevision: number,
+    previewToken: string,
     operation?: OperationRequest,
   ): Promise<Record<string, unknown>>;
   syncRangeInstanceTemplate(

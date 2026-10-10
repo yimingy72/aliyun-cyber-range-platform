@@ -217,6 +217,8 @@ function createClientStub(): ClientStub {
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
     saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    previewRangeInstanceDraft: vi.fn(),
+    saveRangeInstanceAsTemplate: vi.fn(),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
@@ -518,45 +520,14 @@ describe('tool registry', () => {
     );
   });
 
-  it('applies the draft revision returned by save instead of the revision read before compilation', async () => {
-    const client = createClientStub();
-    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'range-1',
-      name: 'Web DMZ 练习环境',
-      draftRevision: 7,
-      runtimeScenarioTemplateSpec: {
-        metadata: {
-          name: 'Web DMZ',
-          slug: 'web-dmz',
-          version: '1.0.0',
-          cloudProvider: 'alibaba_cloud',
-          iacType: 'opentofu',
-        },
-        topology: {
-          vpcCidr: '10.0.0.0/16',
-        },
-      },
-    });
-    (client.saveRangeInstanceDraft as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'range-1',
-      draftRevision: 8,
-    });
-    const registry = createToolRegistry(client);
-
-    await registry.callTool('range_instance_topology_apply', ['ranges:write', 'ranges:control'], {
-      rangeInstanceId: 'range-1',
-      topologyGraph: authoringGraph,
-    });
-
-    expect(client.applyRangeInstanceDraft).toHaveBeenCalledWith(
-      'range-1',
-      8,
-      { idempotencyKey: undefined, confirmationId: undefined },
-    );
+  it('applies only the exact previewed saved revision without implicitly saving a graph', async () => {
+    const client = createClientStub(); const registry = createToolRegistry(client);
+    await registry.callTool('range_instance_topology_apply', ['ranges:write', 'ranges:control'], { rangeInstanceId: 'range-1', expectedDraftRevision: 8, previewToken: 'preview-8' });
+    expect(client.applyRangeInstanceDraft).toHaveBeenCalledWith('range-1', 8, 'preview-8', { idempotencyKey: undefined, confirmationId: undefined });
+    expect(client.saveRangeInstanceDraft).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['range_instance_topology_apply', ['ranges:write', 'ranges:control'], 'applyRangeInstanceDraft'],
     ['range_instance_sync_template', ['ranges:write', 'templates:write'], 'syncRangeInstanceTemplate'],
   ] as const)('replays %s confirmation without saving a new draft revision', async (toolName, scopes, method) => {
     const client = createClientStub();
@@ -1004,7 +975,7 @@ describe('tool registry', () => {
 
   });
 
-  it('requires a DNAT mapping even when an ECS has legacy public entry flags', async () => {
+  it('accepts a pure private topology without DNAT despite legacy public flags', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
     const invalidGraph = structuredClone(authoringGraph);
@@ -1014,18 +985,14 @@ describe('tool registry', () => {
       throw new Error('Expected a switch node');
     }
 
-    switchNode.nat = { snatEnabled: true, dnatMappings: [] };
-
-    await expect(
-      registry.callTool('range_template_create', ['templates:write'], {
-        name: '缺少入口 DNAT',
-        topologyGraph: invalidGraph,
-      }),
-    ).rejects.toThrow('请在交换机中为一台 ECS 配置至少一条 DNAT 端口映射，该 ECS 将作为公网入口。');
-    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    switchNode.nat = { snatEnabled: false, dnatMappings: [] };
+    await registry.callTool('range_template_create', ['templates:write'], { name: '纯内网', topologyGraph: invalidGraph });
+    const created = vi.mocked(client.createRangeTemplate).mock.calls[0]![0];
+    expect(created.compiledProvisionSpec).toMatchObject({ natGateways: [], eips: [], dnatEntries: [] });
+    expect((created.topologyGraph as ScenarioGraphDraft).nodes.filter((node) => node.kind === 'ecs').every((node) => !node.exposePublic)).toBe(true);
   });
 
-  it('rejects DNAT mappings that target multiple ECS nodes', async () => {
+  it('accepts multiple host DNAT mappings sharing one public entry', async () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
     const invalidGraph = structuredClone(authoringGraph);
@@ -1048,13 +1015,9 @@ describe('tool registry', () => {
       protocol: 'tcp',
     });
 
-    await expect(
-      registry.callTool('range_template_create', ['templates:write'], {
-        name: '多个 DNAT 目标',
-        topologyGraph: invalidGraph,
-      }),
-    ).rejects.toThrow('请将全部 DNAT 端口映射指向同一台 ECS，作为唯一公网入口。');
-    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+    await registry.callTool('range_template_create', ['templates:write'], { name: '多个 DNAT 目标', topologyGraph: invalidGraph });
+    const created = vi.mocked(client.createRangeTemplate).mock.calls[0]![0];
+    expect(created.compiledProvisionSpec.dnatEntries).toEqual(expect.arrayContaining([expect.objectContaining({ hostKey: 'ecs-nginx' }), expect.objectContaining({ hostKey: 'ecs-api' })]));
   });
 
   it('rejects a DNAT mapping whose target ECS does not exist', async () => {
@@ -1376,7 +1339,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(87);
+    expect(tools).toHaveLength(89);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(
