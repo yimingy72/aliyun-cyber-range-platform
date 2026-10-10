@@ -445,8 +445,9 @@ export class BillingService {
       loadPlatformBillingProof(this.adminRepository),
     ]);
 
+    const readable = this.readableProof(proof);
     return anomalies
-      .filter(item => pendingEvidence(item, proof)?.kind === 'resource_pending')
+      .filter(item => pendingEvidence(item, readable)?.kind === 'resource_pending')
       .slice()
       .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime());
   }

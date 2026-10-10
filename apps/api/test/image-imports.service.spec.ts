@@ -95,7 +95,22 @@ describe('Image import resource ownership and recovery', () => {
   });
 
   async function submitted() { const result = await service.completeUpload(job.id, USER); expect(result).toMatchObject({ status: 'importing', imageId: 'm-imported' }); return result; }
-  async function failAndClean() { image.Status = 'UnAvailable'; return service.refreshImport(job.id); }
+  async function failAndClean() { image.Status = 'UnAvailable'; job.uploadExpiresAt = new Date(0); return service.refreshImport(job.id); }
+
+  it('keeps completed imports pollable until their reusable upload grant and drain window expire', async () => {
+    await submitted(); image.Status = 'Available';
+    await service.refreshImport(job.id);
+    expect(job.status).toBe('available');
+    expect(job.temporaryObjectDeletedAt).toBeNull();
+    expect(actions()).not.toContain('OSS_DELETE');
+    job.uploadExpiresAt = new Date(Date.now() - 60_000);
+    await service.refreshPendingImports();
+    expect(job.temporaryObjectDeletedAt).toBeNull();
+    job.uploadExpiresAt = new Date(Date.now() - 6 * 60_000);
+    await service.refreshPendingImports();
+    expect(job.temporaryObjectDeletedAt).toBeInstanceOf(Date);
+    expect(actions().filter(action => action === 'OSS_DELETE')).toHaveLength(1);
+  });
 
   it('creates a scoped upload session without exposing passwords or persisting unbound cloud identities', async () => {
     const result = await service.createUpload({ cloudContextId: CONTEXT.id, displayName: job.displayName, defaultHostName: job.defaultHostName, defaultPassword: 'SecretPass123!', osType: 'linux', platform: 'Ubuntu', architecture: 'x86_64', bootMode: 'BIOS', imageFormat: 'qcow2', systemDiskSize: 40, sourceFileName: 'ubuntu.qcow2', sourceContentType: job.sourceContentType, sourceSizeBytes: 4096 }, USER);
@@ -111,7 +126,7 @@ describe('Image import resource ownership and recovery', () => {
     expect(result).not.toHaveProperty('leaseToken');
   });
   it('only enables Available images with a complete snapshot binding and removes their temporary OSS object', async () => {
-    await submitted(); image.Status = 'Available';
+    await submitted(); image.Status = 'Available'; job.uploadExpiresAt = new Date(0);
     expect(await service.refreshImport(job.id)).toMatchObject({ status: 'available', temporaryObjectDeletedAt: expect.any(Date) });
     expect(await repository.getPlatformImageAssetById(job.platformImageAssetId)).toMatchObject({ enabled: true });
     expect(actions()).not.toContain('DeleteSnapshot');
@@ -257,7 +272,7 @@ describe('Image import resource ownership and recovery', () => {
     expect((await repository.listBillingLedgerResources()).find(row => row.cloudResourceType === 'snapshot')?.releasedAt).toBeNull();
   });
   it('retries temporary object cleanup and clears resolved errors', async () => {
-    await submitted(); image.Status = 'Available'; fault = action => action === 'OSS_DELETE' ? response({}, 500) : undefined;
+    await submitted(); image.Status = 'Available'; job.uploadExpiresAt = new Date(0); fault = action => action === 'OSS_DELETE' ? response({}, 500) : undefined;
     await service.refreshImport(job.id); expect(job.status).toBe('available'); expect(job.temporaryObjectDeletedAt).toBeNull();
     fault = undefined; await service.refreshPendingImports(); expect(job.temporaryObjectDeletedAt).toBeInstanceOf(Date); expect(job.errorMessage).toBeNull();
   });

@@ -1327,6 +1327,21 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
       systemDiskSize: Math.max(50,...Object.values(imageMetadata).map(image => image.minimumSystemDiskSize)) });
     const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
+    if (oldState?.instances.some(resource => resource.type === 'tencentcloud_instance')) {
+      const previous = JSON.parse(await fs.readFile(path.join(this.workspacesRootDir, input.rangeInstanceId, 'range.auto.tfvars.json'), 'utf8'));
+      const frozenKeys = ['image_id', 'instance_type', 'private_ip', 'zone_key', 'system_disk_type', 'system_disk_size', 'terminate_at'] as const;
+      for (const host of rendered.hosts) {
+        const tracked = oldState.instances.find(resource => resource.type === 'tencentcloud_instance' && resourceInstanceKey(resource.address) === host.key);
+        const prior = previous.hosts?.find((value: { key: string }) => value.key === host.key);
+        // Keep the token for a still-existing, unchanged host. An empty verified
+        // state starts a new generation, so recreated hosts get a new job token.
+        if (tracked && prior && frozenKeys.every(key => prior[key] === host[key])) {
+          const token = tracked.attributes.client_token;
+          if (typeof token !== 'string' || token !== prior.creation_intent_id) throw new Error('Tencent host intent differs from persisted creation material');
+          host.creation_intent_id = token;
+        }
+      }
+    }
     for (const entry of [...rendered.eips,...rendered.nat_gateways]) {
       const kind = 'nat_key' in entry ? 'tencentcloud_eip' : 'tencentcloud_nat_gateway';
       const prior = oldState?.instances.find(resource => resource.type === kind && resourceInstanceKey(resource.address) === entry.key);

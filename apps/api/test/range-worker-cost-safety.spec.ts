@@ -63,7 +63,8 @@ describe('range worker durable cost safety', () => {
     expect(f.system.getAccountContextById).toHaveBeenCalledWith('context-source');
     expect(f.system.getAccountContext).not.toHaveBeenCalled();
     expect(f.provisioner.destroy).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: account, requirePersistedState: true, signal: expect.any(AbortSignal) }));
-    expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroyed', resourceSummary: null });
+    expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroyed',
+      resourceSummary: { mode: 'opentofu', creationAttempted: false, executionContext: binding } });
     expect((await f.repository.listBillingLedgerResources()).every(row => row.releasedAt)).toBe(true);
     expect(f.query.mock.calls.map(([input]: any[]) => input.action).sort()).toEqual(['DescribeDisks', 'DescribeDisks', 'DescribeEipAddresses', 'DescribeInstances']);
     const inventoryLog = (await f.repository.listProvisionJobStepLogs(f.job.id)).find(log => log.stepName === 'range_resource_inventory')!;

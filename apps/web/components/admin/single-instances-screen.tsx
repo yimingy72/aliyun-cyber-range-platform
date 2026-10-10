@@ -1077,8 +1077,18 @@ export function SingleInstancesScreen({
     try {
       await launchSingleInstances(apiBaseUrl, session.token, payload);
       screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
-      await refreshSingleInstanceRows(session.token, listMode, true);
       setIsCreateOpen(false);
+      // A failed read must never turn an accepted paid launch into a retryable write.
+      try {
+        await refreshSingleInstanceRows(session.token, listMode, true);
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+        } else {
+          setListErrorMessage('创建任务已受理，实例列表刷新失败。请刷新列表，不要重复创建。');
+        }
+      }
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();

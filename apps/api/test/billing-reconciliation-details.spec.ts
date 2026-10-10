@@ -17,6 +17,18 @@ function fixture() {
   return { ledgers,proof,repository,service:new BillingService(repository as never) };
 }
 afterEach(()=>jest.restoreAllMocks());
+it('applies actor visibility to anomaly rows as well as summary evidence', async () => {
+  const s = fixture();
+  s.proof.ledgers.push({ ...s.ledgers[0], id: 'other-ledger', ownerUserId: 'owner-b', cloudResourceId: 'ins-b' });
+  const anomaly = { id: 'anomaly-b', cloudProvider: 'tencent_cloud', cloudAccountUid: scope.accountUid,
+    billingDate: new Date(window.startAt), rawPayload: { ResourceId: 'ins-b', privateField: 'owner-b-only' } };
+  s.repository.listBillingAnomalies.mockResolvedValue([anomaly] as never);
+  jest.spyOn(platformProof, 'pendingTencentBillingEvidence').mockImplementation(({ proof }) =>
+    proof.ledgers.some(row => row.id === 'other-ledger')
+      ? { kind: 'resource_pending', resourceKeys: ['ledger:other-ledger'] } as never : null);
+  await expect(runInCloudWorkspace(scope, () => s.service.listAnomalies(window))).resolves.toEqual([]);
+  await expect(runInCloudWorkspace({ ...scope, isPlatformManager: true }, () => s.service.listAnomalies(window))).resolves.toEqual([anomaly]);
+});
 it('retains the aggregate and exposes every selected-workspace fee identity without raw tags or writes',async()=>{
   const s=fixture();
   const result=await runInCloudWorkspace(scope,()=>s.service.getSummary(window));
