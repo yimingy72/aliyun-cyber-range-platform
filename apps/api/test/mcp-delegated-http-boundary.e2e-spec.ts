@@ -47,6 +47,12 @@ describe('verified delegated scopes at the actual HTTP boundary', () => {
     expect(response.body).toEqual({ id: 'range-1', status: 'running', expiresAt: '2026-10-11T01:00:00.000Z', accessEntry: { publicIp: '203.0.113.10' } });
     expect(JSON.stringify(response.body)).not.toContain('fixture-canary-secret');
   });
+  it('does not let scoped browser-party tokens bypass the credential boundary', async () => {
+    azp = 'platform-web';
+    const response = await request(app.getHttpServer()).get('/admin/ranges/range-1').set('Authorization', 'Bearer a.b.c').expect(200);
+    expect(JSON.stringify(response.body)).not.toContain('fixture-canary-secret');
+    expect(response.body.expiresAt).toBe('2026-10-11T01:00:00.000Z');
+  });
   it('accepts the exact operation permission without widening the token', async () => {
     scope = ['ranges:destroy'];
     await request(app.getHttpServer()).post('/admin/ranges/range-1/destroy').set('Authorization', 'Bearer a.b.c').send({}).expect(201);

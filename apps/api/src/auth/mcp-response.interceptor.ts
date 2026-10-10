@@ -23,7 +23,7 @@ export class McpResponseInterceptor implements NestInterceptor {
     // Credential retrieval has its own scopes and owner checks. Ordinary metadata never carries guest secrets.
     const access = request.method === 'GET' && /^\/admin\/(?:instances|ranges)\/[^/]+\/access$/.test(path)
       || request.method === 'POST' && /^\/admin\/(?:instances\/[^/]+|ranges\/[^/]+\/nodes\/[^/]+)\/actions\/open-vnc$/.test(path);
-    if (request.authContext?.source !== 'mcp' || access) return next.handle();
+    if (request.authContext?.source !== 'mcp' && request.authContext?.delegatedScopes === undefined || access) return next.handle();
     return next.handle().pipe(map(redactMcpMetadata));
   }
 }
