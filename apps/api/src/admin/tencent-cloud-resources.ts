@@ -30,7 +30,7 @@ const RESOURCES = {
   eip: ['vpc', 'DescribeAddresses', 'AddressSet', 'AddressId', 'AddressIds', 'eip'],
 } as const;
 // These individual API contracts explicitly define literal ResourceNotFound as a missing resource.
-const DOCUMENTED_NOT_FOUND_KINDS = new Set<TencentResourceKind>(['security_group', 'nat']);
+const DOCUMENTED_NOT_FOUND_KINDS = new Set<TencentResourceKind>(['security_group', 'nat', 'network_acl']);
 
 export function assertTencentAccount(account: SystemCloudAccountContext) {
   if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || !account.accountUid

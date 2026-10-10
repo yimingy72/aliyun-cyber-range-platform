@@ -72,6 +72,34 @@ describe('Tencent frozen inventory and complete pagination', () => {
     request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-error', { service: 'vpc', action: 'DescribeAddresses' }));
     await expect(describeTencentResourceInventory(account,'nat',{ids:['nat-gone']})).rejects.toThrow();
   });
+  it('accepts documented singleton ACL ResourceNotFound with its exact source request receipt', async () => {
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-acl-gone', { service: 'vpc', action: 'DescribeNetworkAcls' }));
+    const result = await describeTencentKnownResourcesWithEvidence(account, 'network_acl', ['acl-gone']);
+    expect(result.resources).toEqual([]); expect(result.evidence).toMatchObject([{ action: 'DescribeNetworkAcls', requestIds: ['request-acl-gone'], errorCode: 'ResourceNotFound' }]);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it('checks each ACL after a mixed multi-ID missing result and keeps surviving ACLs', async () => {
+    request.mockRejectedValueOnce(new TencentCloudRequestError('ResourceNotFound', 'request-acl-batch'))
+      .mockRejectedValueOnce(new TencentCloudRequestError('ResourceNotFound', 'request-acl-gone'))
+      .mockResolvedValueOnce(body('NetworkAclSet', [{ NetworkAclId: 'acl-kept', VpcId: 'vpc-owned', TagSet: [] }]));
+    const result = await describeTencentKnownResourcesWithEvidence(account, 'network_acl', ['acl-gone','acl-kept']);
+    expect(result.resources.map(row => row.id)).toEqual(['acl-kept']); expect(result.evidence).toHaveLength(3);
+    expect(request.mock.calls.map(([input]) => input.parameters.NetworkAclIds)).toEqual([['acl-gone','acl-kept'],['acl-gone'],['acl-kept']]);
+  });
+  it.each(['UnauthorizedOperation','ResourceNotFound.NetworkAcl','InvalidParameterValue.Malformed','InternalError'])('never treats %s as ACL absence', async code => {
+    request.mockRejectedValue(new TencentCloudRequestError(code, 'request-error'));
+    await expect(describeTencentResourceInventory(account,'network_acl',{ids:['acl-gone']})).rejects.toMatchObject({ code });
+  });
+  it('rejects ACL VPC/filter or unbounded reads, missing receipts and mismatched API metadata', async () => {
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-error'));
+    await expect(describeTencentResourceInventory(account,'network_acl',{vpcId:'vpc-owned'})).rejects.toThrow();
+    await expect(describeTencentResourceInventory(account,'network_acl',{})).rejects.toThrow();
+    await expect(describeTencentResourceInventory(account,'network_acl',{tags:{CreatedBy:'cyber-range-platform'}})).rejects.toThrow();
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound'));
+    await expect(describeTencentResourceInventory(account,'network_acl',{ids:['acl-gone']})).rejects.toThrow();
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound','request-error',{service:'vpc',action:'DescribeNatGateways'}));
+    await expect(describeTencentResourceInventory(account,'network_acl',{ids:['acl-gone']})).rejects.toThrow();
+  });
   it.each(['UnauthorizedOperation','ResourceNotFound.SecurityGroup','InvalidParameterValue.Malformed','InternalError'])('never turns undocumented %s into security-group absence', async code => {
     request.mockRejectedValue(new TencentCloudRequestError(code, 'request-error'));
     await expect(describeTencentResourceInventory(account,'security_group',{ids:['sg-gone']})).rejects.toMatchObject({ code });
