@@ -20,6 +20,8 @@ import type {
   TencentCloudImagesPayload,
   CollectPlatformImageInput,
   CreateRangeTemplateInput,
+  SaveRangeInstanceAsTemplateInput,
+  SaveRangeInstanceAsTemplateResult,
   CreateAdminUserInput,
   GetRangeInstanceOptions,
   InstanceMode,
@@ -257,6 +259,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   async getRangeInstanceAccess(id: string): Promise<RangeAccessPayload> {
     return this.request<RangeAccessPayload>(`/admin/ranges/${encodeURIComponent(id)}/access`);
+  }
+
+  saveRangeInstanceAsTemplate(id: string, payload: SaveRangeInstanceAsTemplateInput, operation: OperationRequest & { idempotencyKey: string }) {
+    return this.request<SaveRangeInstanceAsTemplateResult>(`/admin/ranges/${encodeURIComponent(id)}/templates`, {
+      method: 'POST', body: JSON.stringify(payload), operation,
+    });
   }
 
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest) {

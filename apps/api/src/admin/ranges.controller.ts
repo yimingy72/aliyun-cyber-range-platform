@@ -3,6 +3,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post,
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
+import { SaveRangeInstanceAsTemplateDto } from './dto/range-instance-template-copy.dto';
 import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
 import {
   ApplyRangeInstanceDraftDto,
@@ -145,6 +146,13 @@ export class RangesController {
       );
     }
     return this.rangeInstancesService.applyDraft(id, body, request.adminUser);
+  }
+
+  @Post(':id/templates')
+  saveAsNewTemplate(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Body() body: SaveRangeInstanceAsTemplateDto) {
+    const metadata = readOperationRequestMetadata(request);
+    if (!metadata.idempotencyKey) throw new BadRequestException('A stable x-idempotency-key is required');
+    return this.rangeInstancesService.saveAsNewTemplate(id, body, request.adminUser, metadata.idempotencyKey);
   }
 
   @Post(':id/sync-template')

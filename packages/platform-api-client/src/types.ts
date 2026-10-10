@@ -54,6 +54,8 @@ export type SaveRangeTemplateTopologyInput = {
 export type ApplyRangeInstanceDraftInput = {
   expectedDraftRevision: number;
 };
+export type SaveRangeInstanceAsTemplateInput = { name: string; description?: string; expectedDraftRevision: number };
+export type SaveRangeInstanceAsTemplateResult = { id: string; templateId: string; name: string; visibility: 'private'; rangeInstanceId: string; sourceDraftRevision: number };
 export type SyncRangeInstanceTemplateInput = {
   expectedDraftRevision: number;
   expectedTemplateRevision: number;
@@ -397,6 +399,7 @@ export type PlatformApiClientLike = {
   getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
   validateRangeInstanceNodePackImage?(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>): Promise<Record<string, unknown>>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
+  saveRangeInstanceAsTemplate(id: string, payload: SaveRangeInstanceAsTemplateInput, operation: OperationRequest & { idempotencyKey: string }): Promise<SaveRangeInstanceAsTemplateResult>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
   applyRangeInstanceDraft(
     id: string,

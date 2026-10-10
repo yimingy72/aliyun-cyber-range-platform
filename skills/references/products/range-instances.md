@@ -18,6 +18,7 @@
 | 生成实例 | `range_instance_launch` | `templateId`、`name`、带时区 ISO-8601 `expiresAt` | 操作元数据 | `ranges:create` |
 | 保存变更 | `range_instance_topology_save` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write` |
 | 应用变更 | `range_instance_topology_apply` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write`、`ranges:control` |
+| 另存为新编排拓扑 | `range_instance_save_as_template` | `rangeInstanceId`、`name`、`expectedDraftRevision`、`idempotencyKey` | `description` | `ranges:read`、`templates:write` |
 | 更新编排拓扑 | `range_instance_sync_template` | `rangeInstanceId`、完整 `topologyGraph` | `publicEntryProtocols`、操作元数据 | `ranges:write`、`templates:write` |
 | 失败重试 | `range_instance_retry` | `rangeInstanceId` | 操作元数据 | `ranges:control` |
 | ECS 开机 | `range_instance_node_start` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
@@ -60,6 +61,7 @@
 
 - 用户只想保留实例配置调整：调用 `range_instance_topology_save`。
 - 用户要将调整下发到运行实例：调用 `range_instance_topology_apply`，它先保存完整图，再提交更新作业。
+- 用户要求保留原模板并另存新拓扑：先保存草稿，读取准确 `draftRevision`，调用 `range_instance_save_as_template`。它只按已保存草稿新建当前云账号空间的私有模板，不应用云资源，也不修改来源模板、实例来源关联或已有版本；不复制运行密码、云资源 ID 和状态文件。必须提供稳定 `idempotencyKey`，超时或丢失响应后使用原参数和同一键重放，避免生成重复模板。草稿缺失或版本变化时拒绝，不猜测版本。新模板不会自动发布。当前默认执行账号、地域或可用区与实例原部署不一致时拒绝另存，须恢复原配置，不会搬运或猜测镜像。
 - 用户要把实例当前配置回写到模板：调用 `range_instance_sync_template`，它先保存实例配置，再更新来源模板；不会自动改动已运行资源。
 
 应用、同步需要入口规定的危险操作确认；同步会影响后续由该模板生成的实例。

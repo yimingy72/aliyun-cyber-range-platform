@@ -19,6 +19,7 @@ import {
   rangeNodePackImageValidateInputSchema,
   rangeRetryInputSchema,
   rangeTopologyChangeInputSchema,
+  rangeSaveAsTemplateInputSchema,
 } from './input-schemas';
 import {
   actionOutputSchema,
@@ -134,6 +135,19 @@ export const rangeTools: ToolDefinition[] = [
         expectedDraftRevision,
         operation(input),
       );
+    },
+  },
+  {
+    name: 'range_instance_save_as_template',
+    title: '另存实例草稿为新编排拓扑',
+    description: '将准确已保存草稿另存为当前账号空间的新私有模板。不会修改来源模板、实例配置或云资源，也不复制云资源 ID、状态文件和运行密码；超时重放必须复用同一幂等键。',
+    requiredScopes: ['ranges:read', 'templates:write'],
+    annotations: { destructiveHint: false, idempotentHint: true },
+    inputSchema: rangeSaveAsTemplateInputSchema,
+    outputSchema: resourceOutputSchema,
+    call(context, args) {
+      const { rangeInstanceId, idempotencyKey, ...payload } = args as { rangeInstanceId: string; name: string; description?: string; expectedDraftRevision: number; idempotencyKey: string };
+      return context.client.saveRangeInstanceAsTemplate(rangeInstanceId, payload, { idempotencyKey });
     },
   },
   {

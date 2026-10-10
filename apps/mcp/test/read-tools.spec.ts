@@ -217,6 +217,7 @@ function createClientStub(): ClientStub {
     getRangeInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' } }),
     saveRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'range-1' }),
     applyRangeInstanceDraft: vi.fn().mockResolvedValue({ id: 'job-1' }),
+    saveRangeInstanceAsTemplate: vi.fn(),
     syncRangeInstanceTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     retryRangeInstance: vi.fn().mockResolvedValue({ id: 'job-1' }),
     runRangeInstanceNodeAction: vi.fn().mockResolvedValue({ status: 'accepted' }),
@@ -1376,7 +1377,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(87);
+    expect(tools).toHaveLength(88);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

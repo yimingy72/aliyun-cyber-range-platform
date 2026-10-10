@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { portableRangeTemplateGraph } from './range-template-portable-graph';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { isDeepStrictEqual } from 'node:util';
 import { compileTemplateTopology, type ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
@@ -7,6 +8,7 @@ import { compileTemplateTopology, type ScenarioGraphDraft } from '@aliyun-cyber-
 import {
   ADMIN_REPOSITORY,
   AdminRepository,
+  CreateRangeTemplateInput,
   RangeTemplateCompiledSpec,
   SaveRangeTemplateTopologyInput,
   TemplateRevisionConflictError,
@@ -144,6 +146,35 @@ export class RangeTemplatesService {
     });
 
     return this.toPublicTemplateView(await this.withCreatorUsername(template), undefined, currentUser);
+  }
+
+  async preparePrivateTemplateFromInstance(
+    input: { name: string; description?: string; topologyGraph: Record<string, unknown> },
+    frozen: Parameters<typeof compileTemplateTopology>[1],
+    currentUser: AuthenticatedUser,
+  ): Promise<CreateRangeTemplateInput> {
+    const slug = this.buildServerTemplateSlug(input.name);
+    // Only portable graph configuration enters the compiler, never native resource state.
+    const graph = portableRangeTemplateGraph(input.topologyGraph);
+    let compiled: ReturnType<typeof compileTemplateTopology>;
+    try {
+      compiled = compileTemplateTopology(graph, { ...frozen, name: input.name, slug, version: INTERNAL_TEMPLATE_VERSION,
+        description: input.description ?? '', iacType: 'opentofu' });
+    } catch (error) { throw new BadRequestException(error instanceof Error ? error.message : 'Invalid instance draft'); }
+    const topology = JSON.parse(JSON.stringify(compiled));
+    await this.validateTopologyPayload(topology, currentUser);
+    await this.assertTemplateEcsImageSelections(topology, currentUser);
+    const scope = getCurrentCloudWorkspaceScope();
+    for (const node of graph.nodes) {
+      if (node.kind !== 'ecs') continue;
+      const asset = await this.adminRepository.getPlatformImageAssetById(node.platformImageAssetId!);
+      if (!asset || asset.provider !== frozen.cloudProvider || asset.regionId !== frozen.defaultRegion
+        || (asset.accountUid && (!scope || 'system' in scope || asset.accountUid !== scope.accountUid)))
+        throw new ConflictException('镜像账号或地域与实例原部署不一致，请重新选择原地域镜像。');
+    }
+    return { ...topology, name: input.name, description: input.description, slug, version: INTERNAL_TEMPLATE_VERSION,
+      cloudProvider: frozen.cloudProvider, iacType: 'opentofu', modulePathOrRef: frozen.modulePathOrRef,
+      createdBy: currentUser.id, ownerUserId: currentUser.id, visibility: 'private', variableSchema: {}, outputSchema: {} };
   }
 
   async clone(id: string, currentUser?: AuthenticatedUser) {
