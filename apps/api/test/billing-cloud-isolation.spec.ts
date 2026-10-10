@@ -3,6 +3,7 @@ import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence } from '../src/admin/billing-platform-scope';
 import { BillingService } from '../src/admin/billing.service';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
+import { syncRangeInstanceBillingLedger } from '../src/admin/billing-ledger-sync';
 import type { SystemCloudAccountContext, SystemConfigService } from '../src/admin/system-config.service';
 import { createProvenBillingLedger } from './support/create-billing-fixture';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
@@ -21,13 +22,13 @@ afterEach(() => { global.fetch = originalFetch; jest.restoreAllMocks(); });
 
 async function tencentLedger(repository: ReturnType<typeof createMemoryAdminRepository>) {
   const provider = 'tencent_cloud' as CloudProvider;
-  const instance = await repository.createRangeInstance({ name: 'Tencent source',
+  const instance = await repository.createRangeInstance({ name: 'Tencent source', cloudProvider: provider,
     resourceSummary: { mode: 'opentofu', executionContext: { provider, cloudAccountUid: UID, cloudAccountContextId: 'Tencent account', regionId: base.regionId, zoneId: 'ap-shanghai-1' }, hostIds: { host: base.cloudResourceId } } } as Parameters<typeof repository.createRangeInstance>[0]);
-  const list = repository.listRangeInstances.bind(repository);
-  jest.spyOn(repository, 'listRangeInstances').mockImplementation(async () => (await list())
-    .map(value => value.id === instance.id ? { ...value, cloudProvider: provider } : value));
   const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'admin' });
-  return repository.createBillingLedgerResource({ ...base, cloudProvider: provider, rangeInstanceId: instance.id, sourceProvisionJobId: job.id });
+  await syncRangeInstanceBillingLedger({ repository, instance, resourceSummary: instance.resourceSummary,
+    regionId: base.regionId, cloudAccountUid: UID, sourceProvisionJobId: job.id, billingStartAt: base.billingStartAt });
+  const [ledger] = await repository.listBillingLedgerResources({ rangeInstanceId: instance.id });
+  return ledger;
 }
 
 function item(ledger: BillingLedgerResourceRecord, marker?: unknown): CreateBillingLineItemInput {
