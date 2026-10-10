@@ -1,6 +1,7 @@
 import { runInCloudWorkspace, runInSystemCloudWorkspaceScope, getCurrentCloudWorkspaceScope, getCurrentCloudWorkspaceId } from '../src/auth/cloud-workspace-scope';
 import { runInExecutionCloudWorkspace, listExecutionCloudWorkspaces } from '../src/auth/background-cloud-workspace';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
+import { TencentCloudRequestError } from '../src/admin/tencent-cloud-client';
 import { ImageImportsService } from '../src/admin/image-imports.service';
 import { PackedImagesService } from '../src/admin/packed-images.service';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
@@ -109,6 +110,28 @@ describe('Frozen source workspaces for background tasks', () => {
     const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
     await expect(worker.reconcilePlatformResources(new Date())).rejects.toThrow('other source workspaces');
     expect(visited).toEqual(['account-a', 'account-b', 'account-tencent']);
+  });
+
+  it('logs only frozen source identifiers and sanitized typed SDK code while processing other contexts', async () => {
+    const config = { ...runner(),
+      listWorkspaceAccountContextIds: jest.fn(async () => [`context-${getCurrentCloudWorkspaceId()}`]),
+      runInAccountContext: jest.fn(async (_id: string, work: () => Promise<unknown>) => work()),
+    };
+    const visited: string[] = [], reconcile = jest.fn(async () => {
+      const id = getCurrentCloudWorkspaceId()!; visited.push(id);
+      if (id === 'account-a') throw Object.assign(new Error('synthetic-private-password-and-params'), { code: 'synthetic-private-code', accessKeySecret: 'synthetic-private-key' });
+      if (id === 'account-tencent') throw new TencentCloudRequestError('InvalidParameter.FilterInvalidKey', 'safe-request-id');
+      return {};
+    });
+    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
+    const log = jest.spyOn((worker as any).logger, 'error').mockImplementation(() => {});
+    await expect(worker.reconcilePlatformResources(new Date())).rejects.toThrow('other source workspaces');
+    expect(visited).toEqual(['account-a','account-b','account-tencent']);
+    expect(log.mock.calls.map(([value]) => JSON.parse(String(value)))).toEqual([
+      { provider: 'alibaba_cloud', workspaceId: 'account-a', contextId: 'context-account-a', error: { code: 'UNCLASSIFIED_RECONCILIATION_ERROR' } },
+      { provider: 'tencent_cloud', workspaceId: 'account-tencent', contextId: 'context-account-tencent', error: { code: 'InvalidParameter.FilterInvalidKey' } },
+    ]);
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-private|safe-request-id|accessKeySecret|params/);
   });
 
   it('reconciles every verified region of an account after its UI default region changes', async () => {

@@ -20,6 +20,7 @@ import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } fro
 import { retiredResourceInventory, retiredBillableIds } from './retired-resource-inventory';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
 import { describeTencentResourceInventory, readTencentAttachedDiskInventory } from '../admin/tencent-cloud-resources';
+import { TencentCloudRequestError } from '../admin/tencent-cloud-client';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
 import { SingleInstanceBatchExecutionService } from '../admin/single-instance-batch-execution.service';
 import { SystemConfigService, type SystemCloudAccountContext } from '../admin/system-config.service';
@@ -152,13 +153,20 @@ export class ProvisioningWorkerService {
           for (const contextId of new Set(contextIds)) {
             try {
               results.push(await contexts.runInAccountContext(contextId, () => this.platformResourceReconciliationService.reconcile(now)));
-            } catch { failed = true; }
+            } catch (error) { failed = true; this.logReconciliationFailure(space, contextId, error); }
           }
         }, { provider: space.provider, accountUid: space.accountUid });
-      } catch { failed = true; }
+      } catch (error) { failed = true; this.logReconciliationFailure(space, null, error); }
     }
     if (failed) throw new Error('Cloud reconciliation failed for a workspace; other source workspaces were still processed');
     return results;
+  }
+
+  private logReconciliationFailure(space: { id: string; provider: string }, contextId: string | null, error: unknown) {
+    // The TC3 client already strips credentials and vendor messages from its typed code.
+    const code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
+      ? error.code : 'UNCLASSIFIED_RECONCILIATION_ERROR';
+    this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code } }));
   }
 
   private async reconcilePlatformResourcesIfDue(now: Date) {
