@@ -45,7 +45,9 @@ function currencyShape(value: unknown) {
 }
 
 function assertDomesticCurrency(row: Record<string, unknown>, location: 'component' | 'row') {
-  if ('Currency' in row && row.Currency !== 'CNY') {
+  // The domestic model omits Currency; empty/nullish metadata retains its documented yuan basis.
+  // https://github.com/TencentCloud/tencentcloud-sdk-nodejs/blob/master/src/services/billing/v20180709/billing_models.ts
+  if ('Currency' in row && row.Currency != null && row.Currency !== 'CNY' && row.Currency !== '') {
     // Only fixed type/format categories enter logs; never interpolate the currency value, amount or response.
     throw new Error(`DescribeBillDetail returned an unsupported ${location} currency (shape=${currencyShape(row.Currency)}; expected=CNY; source=domestic); previous bills were retained`);
   }

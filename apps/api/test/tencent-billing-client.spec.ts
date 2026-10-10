@@ -95,8 +95,7 @@ describe('Tencent billing source client', () => {
   });
 
   it.each([
-    { value: null, shape: 'null' }, { value: undefined, shape: 'undefined' },
-    { value: '', shape: 'empty_string' }, { value: ' \t ', shape: 'blank_string' },
+    { value: ' \t ', shape: 'blank_string' },
     { value: 'USD', shape: 'iso_like_non_cny' }, { value: 'ZZZ', shape: 'iso_like_non_cny' },
     { value: 'cny', shape: 'cny_noncanonical' }, { value: 'usd', shape: 'iso_like_noncanonical' },
     { value: 'fixture-private-currency-url?secret=fixture-only', shape: 'non_iso_string' },
@@ -105,6 +104,12 @@ describe('Tencent billing source client', () => {
   ])('classifies component currency safely as $shape without accepting unknown financial evidence', async ({ value, shape }) => {
     request.mockResolvedValue(response([row({ ComponentSet: [{ RealCost: '1.123456789', Currency: value }] })]));
     await expect(query()).rejects.toThrow(`unsupported component currency (shape=${shape}; expected=CNY; source=domestic); previous bills were retained`);
+  });
+
+  it.each(['', null, undefined, 'CNY'])('keeps domestic yuan and signed exact RealCost amounts when row/component Currency is %j', async Currency => {
+    const bill = row();
+    request.mockResolvedValue(response([{ ...bill, Currency, ComponentSet: bill.ComponentSet.map(component => ({ ...component, Currency })) }]));
+    expect(await query()).toEqual([expect.objectContaining({ currency: 'CNY', discountedAmount: '0.1' })]);
   });
 
   it('uses the same bounded row diagnostic and never includes arbitrary values, amounts or resource IDs', async () => {

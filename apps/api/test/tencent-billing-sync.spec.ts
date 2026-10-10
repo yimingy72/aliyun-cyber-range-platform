@@ -12,6 +12,29 @@ beforeEach(() => { fetchMock = jest.spyOn(global, 'fetch'); });
 afterEach(() => { fetchMock.mockRestore(); });
 
 describe('Tencent signed official billing pipeline', () => {
+  it.each([
+    { label: 'foreign row', change: { Currency: 'USD' } },
+    { label: 'foreign component', change: { ComponentSet: [{ RealCost: '100', Currency: 'USD' }] } },
+    { label: 'noncanonical CNY component', change: { ComponentSet: [{ RealCost: '100', Currency: 'cny' }] } },
+    { label: 'blank row', change: { Currency: ' ' } },
+    { label: 'wrong component type', change: { ComponentSet: [{ RealCost: '100', Currency: 123 }] } },
+  ])('imports the observed domestic empty currency without payment inflation and retains old lines for $label', async ({ change }) => {
+    const repository = createMemoryAdminRepository();
+    await runInCloudWorkspace(scope, async () => {
+      await createTencentBillingProof(repository);
+      const bill = tencentBill();
+      fetchMock.mockImplementation(async () => signedTencentBillingResponse([{ ...bill, Currency: '', ComponentSet: bill.ComponentSet.map(component => ({ ...component, Currency: '' })) }]));
+      expect(await tencentBillingSync(repository).syncRange(WINDOW)).toMatchObject({ importedLineItems: 2 });
+      const before = await repository.listBillingLineItems();
+      expect(before.every(item => item.currency === 'CNY')).toBe(true);
+      expect((await new BillingService(repository).getSummary(WINDOW)).totalPretaxAmount).toBe(0.300000003);
+      fetchMock.mockImplementation(async () => signedTencentBillingResponse([tencentBill(change)]));
+      await expect(tencentBillingSync(repository).syncRange(WINDOW)).rejects.toThrow(/unsupported (row|component) currency/);
+      expect(await repository.listBillingLineItems()).toEqual(before);
+      expect((await new BillingService(repository).getSummary(WINDOW)).totalPretaxAmount).toBe(0.300000003);
+    });
+  });
+
   it('persists component yuan amounts once, retains signed refunds and allocates only exact platform resources', async () => {
     const repository = createMemoryAdminRepository();
     await runInCloudWorkspace(scope, async () => {
