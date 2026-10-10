@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { AdminRepository, ProvisionJobRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
+import type { AdminRepository, ProvisionJobRecord, ProvisionJobStepLogRecord, RangeInstanceRecord } from '../src/admin/admin.repository';
 import { SingleInstanceBatchExecutionService } from '../src/admin/single-instance-batch-execution.service';
 import { SingleInstanceOpenTofuExecutionService, SingleInstanceOpenTofuLeaseLostError } from '../src/admin/single-instance-opentofu-execution.service';
 import * as tencentRpc from '../src/admin/tencent-cloud-client';
@@ -17,6 +17,7 @@ describe('single-instance OpenTofu batch execution', () => {
   function fixture(count = 2, tencent = false) {
     const instances: RangeInstanceRecord[] = [];
     const jobs = new Map<string, ProvisionJobRecord>();
+    const stepLogs: ProvisionJobStepLogRecord[] = [];
     const ledger: any[] = [];
     const account = { provider: 'alibaba_cloud', accountUid: 'uid-a', cloudAccountContextId: 'ctx-a', accountUidResolved: true,
       defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'test-access-key', accessKeySecret: 'test-secret-key' };
@@ -36,6 +37,11 @@ describe('single-instance OpenTofu batch execution', () => {
       getSingleInstanceNetworkProfileById: jest.fn(async () => ({ id: 'profile-a', provider: 'alibaba_cloud', status: 'ready', cloudAccountUid: 'uid-a', cloudAccountContextId: 'ctx-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', securityGroupId: 'sg-a', vswitchIds: ['vsw-a'] })),
       getRangeInstanceById: jest.fn(async (id: string) => instances.find(instance => instance.id === id) ?? null),
       getProvisionJobById: jest.fn(async (id: string) => jobs.get(id) ?? null),
+      listProvisionJobStepLogs: jest.fn(async (jobId: string) => stepLogs.filter(log => log.jobId === jobId)),
+      createProvisionJobStepLog: jest.fn(async (input: Omit<ProvisionJobStepLogRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+        const now = new Date(), log = { id: `step-${stepLogs.length + 1}`, createdAt: now, updatedAt: now, ...input };
+        stepLogs.push(log); return log;
+      }),
       heartbeatProvisionJob: jest.fn(async (id: string) => jobs.get(id)?.status === 'running'),
       commitSingleInstanceClaim: jest.fn(async (job: ProvisionJobRecord, patch: object, jobPatch?: object) => {
         const instance = instances.find(value => value.id === job.rangeInstanceId)!;
@@ -112,7 +118,7 @@ describe('single-instance OpenTofu batch execution', () => {
       const job = { id: `destroy-${index}`, rangeInstanceId: instance.id, jobType: 'destroy', status: 'running', startedAt: new Date(), createdAt: new Date() } as ProvisionJobRecord;
       jobs.set(job.id, job); instance.lastJobId = job.id; instance.status = 'destroying'; return { instance, job };
     }
-    return { service, repository, native, runner, lease, controller, instances, items, jobs, ledger, cloud, stateMembers, account, createMember, saveState, queueDestroy,
+    return { service, repository, native, runner, lease, controller, instances, items, jobs, stepLogs, ledger, cloud, stateMembers, account, createMember, saveState, queueDestroy,
       get workspace() { return workspace; }, set onApply(value: ((options: any) => Promise<void>) | undefined) { onApply = value; }, set customPlan(value: (() => any) | undefined) { customPlan = value; }, get lastPlan() { return lastPlan; } };
   }
 
@@ -134,10 +140,16 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(vars.members['member-1'].tags).toMatchObject({ PlatformCreateJobId: 'job-1', CreationIntentId: vars.members['member-1'].client_token, PlatformScope: 'user', CloudProvider: 'tencent_cloud' });
     expect(vars.members['member-1'].action_timer_terminate_at).toBe(test.instances[0].singleInstanceConfig!.autoReleaseTime);
     expect(test.instances[0].resourceSummary).toMatchObject({ modulePath: 'infra/opentofu/modules/tencentcloud-single-instance-batch', executionContext: { provider: 'tencent_cloud', cloudAccountUid: '100000000001', regionId: 'ap-shanghai', zoneId: 'ap-shanghai-2' } });
+    const inventory = test.stepLogs.find(log => log.jobId === 'job-1' && log.stepName === 'platform_billing_creation_inventory');
+    expect(inventory?.status).toBe('succeeded');
+    expect(JSON.parse(inventory!.message!)).toMatchObject({ cloudProvider: 'tencent_cloud', rangeInstanceId: 'member-1', sourceJobId: 'job-1', ownerUserId: 'alice',
+      executionContext: { provider: 'tencent_cloud', cloudAccountContextId: 'ctx-a', cloudAccountUid: '100000000001', regionId: 'ap-shanghai', zoneId: 'ap-shanghai-2' },
+      resources: expect.arrayContaining([{ cloudResourceId: 'ins-member1', cloudResourceType: 'ecs' }]) });
     expect(test.runner.init.mock.calls[0][0].env).toMatchObject({ TENCENTCLOUD_SECRET_ID: 'test-access-key', TENCENTCLOUD_REGION: 'ap-shanghai' });
     expect(test.runner.init.mock.calls[0][0].env).not.toHaveProperty('ALICLOUD_ACCESS_KEY');
     await test.service.executeDestroyBatch([test.queueDestroy(0)],test.lease);
     expect(test.instances[0].status).toBe('destroyed');
+    expect(test.stepLogs).toContainEqual(inventory);
     expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
   });
 
