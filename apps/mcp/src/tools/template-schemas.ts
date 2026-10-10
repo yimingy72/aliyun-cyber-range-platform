@@ -1,3 +1,4 @@
+import { isHostDnsIpv4, isHostDnsDomain } from '@aliyun-cyber-range/scenario-runtime';
 import * as z from 'zod/v4';
 
 const identifier = z.string().trim().min(1);
@@ -73,6 +74,11 @@ const fixedImageStrategySchema = z.object({
 const autoInstanceTypeStrategySchema = z.object({
   mode: z.literal('auto'),
 }).strict();
+const hostDnsSchema = z.object({
+  servers: z.array(z.string().refine(isHostDnsIpv4, 'DNS server must be an IPv4 address.')).min(1).max(4),
+  nicIds: z.array(identifier).min(1),
+  domain: z.string().refine(isHostDnsDomain, 'Use an ASCII AD DNS domain.').optional(),
+}).strict();
 const ecsNodeSchema = z.object({
   id: identifier,
   kind: z.literal('ecs'),
@@ -87,9 +93,18 @@ const ecsNodeSchema = z.object({
   imageStrategy: fixedImageStrategySchema,
   instanceTypeStrategy: autoInstanceTypeStrategySchema,
   nics: z.array(nicSchema).min(1),
+  dns: hostDnsSchema.optional().describe('Per-host guest DNS; nicIds must name this host’s attached NICs. Optional domain enables AD SRV verification.'),
   position: positionSchema.optional(),
   customPassword: z.string().optional().describe('Sensitive. Only provide when explicitly requested; it is never returned by read tools.'),
 }).passthrough().superRefine((node, context) => {
+  if (node.dns) {
+    if (new Set(node.dns.servers).size !== node.dns.servers.length) {
+      context.addIssue({ code: 'custom', path: ['dns', 'servers'], message: 'DNS servers must be unique.' });
+    }
+    if (new Set(node.dns.nicIds).size !== node.dns.nicIds.length || node.dns.nicIds.some((id) => !node.nics.some((nic) => nic.id === id))) {
+      context.addIssue({ code: 'custom', path: ['dns', 'nicIds'], message: 'DNS NIC IDs must be unique and attached to this host.' });
+    }
+  }
   if (node.imageStrategy.imageId !== node.imageId) {
     context.addIssue({
       code: 'custom',

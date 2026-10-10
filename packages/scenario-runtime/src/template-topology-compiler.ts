@@ -16,6 +16,7 @@ import type {
 import { resolveUniqueDnatEntryHost } from './scenario-graph';
 import type { ScenarioTemplateMetadata } from './scenario-template-spec';
 import { validateAliyunEcsPassword } from './password-policy';
+import { validateHostDnsConfig } from './host-dns';
 
 export type TemplateAuthoringMetadata = ScenarioTemplateMetadata & {
   modulePathOrRef: string;
@@ -115,6 +116,7 @@ export function compileTemplateTopology(
       role: host.role,
       privateIp: host.primaryPrivateIp,
       exposePublic: host.exposePublic,
+      ...(host.dns !== undefined ? { dns: host.dns } : {}),
     })),
     publicEntry: {
       hostKey: entryHost.key,
@@ -196,6 +198,7 @@ function compileNodeConfig(
         networkInterfaces: node.networkInterfaces,
         portGroups: node.portGroups,
         nics: node.nics,
+        ...(node.dns !== undefined ? { dns: validateHostDnsConfig(node.dns, (node.nics ?? []).map((nic) => nic.id), `ECS ${node.id}.dns`) } : {}),
         initScript: node.initScript,
         imageStrategy: node.imageStrategy,
         instanceTypeStrategy: node.instanceTypeStrategy,
@@ -522,6 +525,9 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
       }
       if (node.privateIp !== nics[0]!.privateIp) {
         throw new Error(`ECS 主私网 IP 必须与第一张 NIC 一致：${node.id}`);
+      }
+      if (node.dns !== undefined) {
+        validateHostDnsConfig(node.dns, nics.map((nic) => nic.id), `ECS ${node.id}.dns`);
       }
       for (const [nicIndex, nic] of nics.entries()) {
         if (!nic.id?.trim() || nicIds.has(nic.id)) {

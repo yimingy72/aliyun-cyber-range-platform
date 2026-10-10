@@ -1,3 +1,5 @@
+import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime/compiled';
+
 export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 
 export type CloudProvider = 'alibaba_cloud' | 'tencent_cloud';
@@ -55,6 +57,7 @@ export type RangeTemplateHost = {
   role: string;
   privateIp: string;
   exposePublic?: boolean;
+  dns?: HostDnsConfig;
 };
 
 export type RangeTemplateEntryProtocol = {

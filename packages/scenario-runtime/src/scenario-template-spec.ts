@@ -1,3 +1,5 @@
+import type { HostDnsConfig } from './host-dns';
+
 export type ScenarioTemplateMetadata = {
   name: string;
   slug: string;
@@ -74,6 +76,7 @@ export type ScenarioTemplateHost = {
   image?: string;
   platformImageAssetId?: string;
   imageId?: string;
+  dns?: HostDnsConfig;
   networkInterfaces?: ScenarioTemplateHostNic[];
   portGroupRefs?: string[];
   dnat?: ScenarioTemplateDnatConfig;

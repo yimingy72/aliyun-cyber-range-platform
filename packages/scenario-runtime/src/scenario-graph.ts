@@ -1,3 +1,5 @@
+import type { HostDnsConfig } from './host-dns';
+
 export const PHASE_ONE_NODE_KINDS = ['router', 'switch', 'ecs'] as const;
 
 export function nextAvailableGraphId(prefix: string, existingIds: string[]) {
@@ -161,6 +163,7 @@ export type EcsTemplateNode = TemplateNodeBase & {
   dnatMappings: TemplateNodeDnatMapping[];
   networkInterfaces: TemplateNodeNetworkInterface[];
   portGroups: TemplateNodePortGroup[];
+  dns?: HostDnsConfig;
   nics?: ScenarioGraphNic[];
   initScript: string;
   imageStrategy: TemplateNodeImageStrategy;
