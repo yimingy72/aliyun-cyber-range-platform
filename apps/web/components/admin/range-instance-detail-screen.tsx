@@ -39,6 +39,7 @@ import {
   type TemplateNode,
 } from '../../lib/scenario-graph';
 import { nextAvailableSwitchCidr, reconcileHostNicConnections } from '../../lib/scenario-graph-linking';
+import { readHostDns } from '../../lib/host-dns';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
 import { RangeInstanceDetailBodySkeleton, RangeInstanceTopologyLoading } from './range-instance-detail-loading';
@@ -103,6 +104,7 @@ type WorkbenchNode = {
   kind: string;
   statusLabel: string;
   cloudStatus?: string;
+  dns?: EcsTemplateNode['dns'];
   ipAddresses?: string[];
   publicEntry?: { address: string; ports: string[] };
   subnetCidrs?: string[];
@@ -654,6 +656,7 @@ function normalizeTopologyNode(value: Record<string, unknown>): TemplateNode | n
     portGroups: Array.isArray(value.portGroups) ? ((value.portGroups as unknown[]) as any[]) : [],
     nics: normalizedNics,
     initScript: typeof value.initScript === 'string' ? value.initScript : '',
+    dns: readHostDns(value.dns),
     imageStrategy:
       value.imageStrategy && typeof value.imageStrategy === 'object'
         ? ((value.imageStrategy as Record<string, unknown>) as any)
@@ -804,6 +807,8 @@ function readWorkbenchNodesFromGraph(
           ? [node.cidr]
           : [];
     const cloudStatus = detail?.nodeStatuses?.[id] ?? undefined;
+    const deployedNodes = Array.isArray(detail?.runtimeTopologyGraph?.nodes) ? detail.runtimeTopologyGraph.nodes as Array<Record<string, unknown>> : [];
+    const deployedNode = deployedNodes.find((item) => item.id === id);
     const statusLabel = kind === 'ecs' ? getCloudStatusLabel(cloudStatus) ?? getStatusLabel(detail?.status ?? 'unknown') : getStatusLabel(detail?.status ?? 'unknown');
 
     if (!id) {
@@ -817,6 +822,7 @@ function readWorkbenchNodesFromGraph(
         kind,
         statusLabel,
         cloudStatus,
+        ...(kind === 'ecs' ? { dns: readHostDns(deployedNode?.dns) } : {}),
         ipAddresses,
         ...(kind === 'ecs' ? readDirectoryNetwork(id, graph, detail) : {}),
         specLabel:

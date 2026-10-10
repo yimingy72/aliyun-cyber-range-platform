@@ -1,3 +1,5 @@
+import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime';
+
 export const PHASE_ONE_NODE_KINDS = ['router', 'switch', 'ecs'] as const;
 
 export type TemplateNodeKind = (typeof PHASE_ONE_NODE_KINDS)[number];
@@ -162,6 +164,7 @@ export type EcsTemplateNode = TemplateNodeBase & {
   networkInterfaces: TemplateNodeNetworkInterface[];
   portGroups: TemplateNodePortGroup[];
   nics?: ScenarioGraphNic[];
+  dns?: HostDnsConfig;
   initScript: string;
   imageStrategy: TemplateNodeImageStrategy;
   instanceTypeStrategy: TemplateNodeInstanceTypeStrategy;

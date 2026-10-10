@@ -44,6 +44,51 @@ function createEcsNodeWithPlatformDefaults(): TemplateNode {
 }
 
 describe('TemplatePropertyPanel', () => {
+  it('starts custom DNS on the primary NIC and returns automatic DNS without changing NICs', () => {
+    const node = createEcsNodeWithPlatformDefaults();
+    const onUpdateNode = vi.fn();
+    const { rerender } = render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={onUpdateNode} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'DNS 配置方式' }));
+    fireEvent.click(screen.getByRole('option', { name: '自定义 DNS' }));
+    const customNode = onUpdateNode.mock.calls[0]![1];
+    expect(customNode.dns).toEqual({ servers: [], nicIds: ['ecs-1-nic-1'] });
+    rerender(<TemplatePropertyPanel selectedNode={customNode} allNodes={[customNode]} onUpdateNode={onUpdateNode} />);
+    expect((screen.getByLabelText('DNS 作用网卡 1') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('combobox', { name: 'DNS 配置方式' }));
+    fireEvent.click(screen.getByRole('option', { name: '自动获取 DNS' }));
+    expect(onUpdateNode.mock.calls.at(-1)?.[1]).toEqual(expect.objectContaining({ dns: undefined, nics: node.nics }));
+  });
+
+  it('edits an ordered DNS server list and a domain while allowing a secondary NIC', () => {
+    const node = { ...createEcsNodeWithPlatformDefaults(), dns: { servers: ['10.0.0.1'], nicIds: ['ecs-1-nic-1'] } } as Extract<TemplateNode, { kind: 'ecs' }>;
+    node.nics!.push({ ...node.nics![0]!, id: 'ecs-1-nic-2', privateIp: '172.16.0.20' });
+    const onUpdateNode = vi.fn();
+    const { rerender } = render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={onUpdateNode} />);
+    fireEvent.change(screen.getByLabelText('DNS 服务器'), { target: { value: '10.0.0.1\n' } });
+    const next = onUpdateNode.mock.calls.at(-1)?.[1];
+    rerender(<TemplatePropertyPanel selectedNode={next} allNodes={[next]} onUpdateNode={onUpdateNode} />);
+    expect((screen.getByLabelText('DNS 服务器') as HTMLTextAreaElement).value).toBe('10.0.0.1\n');
+    fireEvent.change(screen.getByLabelText('DNS 服务器'), { target: { value: '10.0.0.1\n10.0.0.2' } });
+    expect(onUpdateNode.mock.calls.at(-1)?.[1].dns.servers).toEqual(['10.0.0.1', '10.0.0.2']);
+    fireEvent.click(screen.getByLabelText('DNS 作用网卡 2'));
+    expect(onUpdateNode.mock.calls.at(-1)?.[1].dns.nicIds).toEqual(['ecs-1-nic-1', 'ecs-1-nic-2']);
+    fireEvent.change(screen.getByLabelText('DNS 验证域名'), { target: { value: 'lab.example' } });
+    expect(onUpdateNode.mock.calls.at(-1)?.[1].dns.domain).toBe('lab.example');
+  });
+
+  it('keeps a deleted DNS NIC as an explicit validation error instead of choosing another NIC', () => {
+    const node = { ...createEcsNodeWithPlatformDefaults(), dns: { servers: ['10.0.0.1'], nicIds: ['ecs-1-nic-2'] } } as Extract<TemplateNode, { kind: 'ecs' }>;
+    node.nics!.push({ ...node.nics![0]!, id: 'ecs-1-nic-2', privateIp: '172.16.0.20' });
+    const onUpdateNode = vi.fn();
+    const { rerender } = render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={onUpdateNode} />);
+    fireEvent.click(screen.getByRole('button', { name: '删除网卡 2' }));
+    const next = onUpdateNode.mock.calls.at(-1)?.[1];
+    expect(next.dns.nicIds).toEqual(['ecs-1-nic-2']);
+    rerender(<TemplatePropertyPanel selectedNode={next} allNodes={[next]} onUpdateNode={onUpdateNode} />);
+    expect(screen.getByRole('alert').textContent).toContain('DNS 作用网卡已不存在，请重新选择');
+    expect((screen.getByLabelText('DNS 作用网卡 1') as HTMLInputElement).checked).toBe(false);
+  });
+
   it('renders an accessible collapse action only when the editor provides one', () => {
     const onClose = vi.fn();
     const node = createEcsNodeWithPlatformDefaults();

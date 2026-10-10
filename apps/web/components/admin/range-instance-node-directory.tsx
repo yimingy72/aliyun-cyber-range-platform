@@ -13,6 +13,16 @@ import { TableLoadingState } from './shared/table-loading-state';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
 
+export type RangeNodeDnsVerification = {
+  status: 'pending' | 'checking' | 'verified' | 'failed' | 'unverified';
+  method: 'readback' | 'ad_srv';
+  expected: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  actual: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  resolutionStatus: 'not_requested' | 'verified' | 'failed';
+  errorCode?: string;
+  checkedAt?: string;
+};
+
 type RangeInstanceWorkbenchNode = {
   id: string;
   label: string;
@@ -26,6 +36,8 @@ type RangeInstanceWorkbenchNode = {
   imageName?: string;
   expiresAt?: string;
   createdAt?: string;
+  dns?: { servers: string[]; nicIds: string[]; domain?: string };
+  dnsVerification?: RangeNodeDnsVerification;
 };
 
 type RangeInstanceNodeDirectoryProps = {
@@ -39,7 +51,7 @@ type RangeInstanceNodeDirectoryProps = {
 
 const COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '实例名', priority: 'primary', width: '9rem' },
-  { id: 'status', label: '状态', priority: 'primary', width: '5rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: '7.5rem' },
   { id: 'image', label: '镜像信息', priority: 'primary', width: '11rem' },
   { id: 'address', label: 'IP 地址 / 网段', priority: 'primary', width: '12rem' },
   { id: 'account', label: '账号信息', priority: 'primary', width: '9rem' },
@@ -47,6 +59,33 @@ const COLUMNS: readonly AdminDataColumn[] = [
   { id: 'created', label: '创建时间', priority: 'primary', width: '10rem' },
   { id: 'actions', label: '操作', priority: 'primary', width: '9rem' },
 ];
+
+const DNS_STATUS = {
+  pending: { label: 'DNS 待验证', tone: 'warning' },
+  checking: { label: 'DNS 验证中', tone: 'warning' },
+  verified: { label: 'DNS 已生效', tone: 'success' },
+  failed: { label: 'DNS 验证失败', tone: 'danger' },
+  unverified: { label: 'DNS 未验证', tone: 'neutral' },
+} as const;
+
+function DnsVerificationStatus({ node }: { node: RangeInstanceWorkbenchNode }) {
+  if (!node.dns) return null;
+  const verification = node.dnsVerification;
+  const status = DNS_STATUS[verification?.status ?? 'unverified'];
+  return <Tooltip>
+    <TooltipTrigger asChild><span className={`admin-pill admin-pill-${status.tone} mt-1`} tabIndex={0}>{status.label}</span></TooltipTrigger>
+    <TooltipContent className="max-w-sm break-words text-xs">
+      <div className="grid gap-1">
+        {verification?.expected.length ? verification.expected.map((nic) => <span key={nic.nicId}>预期 · {nic.privateIp}：{nic.servers.join('、')}</span>)
+          : <span>预期 DNS：{node.dns.servers.join('、')}</span>}
+        {verification?.actual.map((nic) => <span key={nic.nicId}>实际 · {nic.privateIp}：{nic.servers.length ? nic.servers.join('、') : '暂无'}</span>)}
+        {node.dns.domain ? <span>域 {node.dns.domain}：{verification?.resolutionStatus === 'verified' ? 'SRV 记录验证通过' : verification?.resolutionStatus === 'failed' ? 'SRV 记录验证失败' : 'SRV 记录待验证'}</span> : null}
+        {verification?.status === 'failed' ? <span>请检查网卡、DNS 服务与初始化状态。失败不会自动重建实例。</span> : null}
+        {!verification || verification.status === 'unverified' ? <span>尚未确认主机内的实际 DNS，运行中不代表 DNS 已生效。</span> : null}
+      </div>
+    </TooltipContent>
+  </Tooltip>;
+}
 
 export function RangeInstanceNodeDirectory({
   nodes, onNodeAction, allowActions = true, pendingAction = null, isLoading = false, isRefreshing = false,
@@ -97,7 +136,7 @@ export function RangeInstanceNodeDirectory({
           return (
             <TableRow className="range-instance-directory-row" key={node.id}>
               <AdminDataTableCell column={columns[0]!}><strong className="block min-w-0 truncate">{node.label}</strong></AdminDataTableCell>
-              <AdminDataTableCell column={columns[1]!}>{node.statusLabel ?? '未知状态'}</AdminDataTableCell>
+              <AdminDataTableCell column={columns[1]!}><span className="block">{node.statusLabel ?? '未知状态'}</span><DnsVerificationStatus node={node} /></AdminDataTableCell>
               <AdminDataTableCell column={columns[2]!}>{node.imageName || '暂无'}</AdminDataTableCell>
               <AdminDataTableCell column={columns[3]!}>
                 <div className="range-instance-address-cell">

@@ -230,6 +230,15 @@ import { AdminPageCache } from './admin-page-cache';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 describe('RangeInstanceDetailScreen', () => {
+  it('shows a separate DNS proof state for a configured deployed host', async () => {
+    const graph = createValidTopologyGraph('域成员');
+    const host = graph.nodes.find((node) => node.kind === 'ecs')! as Record<string, unknown>;
+    host.dns = { servers: ['10.0.50.10'], nicIds: ['ecs-1-nic-1'] };
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', nodeStatuses: { [String(host.id)]: 'Running' }, runtimeTopologyGraph: graph });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    expect(await screen.findByText('DNS 未验证')).toBeTruthy();
+    expect(screen.getAllByText('运行中').length).toBeGreaterThan(0);
+  });
   beforeEach(() => {
     workspaceState.workspace = undefined;
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });

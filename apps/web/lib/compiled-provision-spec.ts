@@ -2,6 +2,7 @@ import type {
   ScenarioTemplateImagePolicy,
   ScenarioTemplateInstanceTypePolicy,
 } from './scenario-template-spec';
+import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime';
 
 export type CompiledProvisionSpec = {
   schemaVersion: '1.0.0';
@@ -58,6 +59,7 @@ export type CompiledHost = {
   imagePolicyKey?: string;
   instanceTypePolicyKey?: string;
   tags?: string[];
+  dns?: HostDnsConfig;
 };
 
 export type CompiledNatGateway = {
