@@ -8,6 +8,7 @@ import type {
   RangeResourceSummary,
   RangeTemplateTopologySpec,
 } from '../admin/admin.repository';
+import type { RangeChangeApproval } from './range-update-plan-safety';
 
 export const RANGE_PROVISIONER = Symbol('RANGE_PROVISIONER');
 
@@ -46,6 +47,7 @@ export type ProvisioningResourceSummary = RangeResourceSummary & {
 };
 
 export type RangeProvisionCreateInput = {
+  knownResourceSummary?: RangeResourceSummary;
   signal?: AbortSignal;
   rangeInstanceId: string;
   expiresAt?: string;
@@ -65,6 +67,7 @@ export type RangeProvisionCreateInput = {
   singleInstanceConfig?: SingleInstanceConfig | null;
   singleNetworkProfile?: SingleInstanceNetworkProfileRecord | null;
   billingTags?: Record<string, string>;
+  changeApproval?: RangeChangeApproval;
 };
 
 export type RangeProvisionCreateResult = {

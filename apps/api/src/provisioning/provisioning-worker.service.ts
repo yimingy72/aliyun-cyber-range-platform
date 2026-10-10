@@ -1,4 +1,5 @@
 import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootstrap-policy';
+import { buildRangeChangeApproval, rangeChangeDigest, type RangeChangeApproval } from '../admin/range-draft-change-policy';
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
@@ -612,9 +613,14 @@ export class ProvisioningWorkerService {
     return updated;
   }
 
-  private async assertRangeSnapshotImages(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot) {
+  private async assertRangeSnapshotImages(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot, onlyHostKeys?: string[]) {
     const owner = instance.ownerUserId ? await this.adminRepository.getPlatformUserById(instance.ownerUserId) : undefined;
-    await new RangeTemplatesService(this.adminRepository, this.systemConfigService).assertTemplateEcsImageSelections({
+    const templates = new RangeTemplatesService(this.adminRepository, this.systemConfigService);
+    if (onlyHostKeys) {
+      await templates.assertTopologyGraphEcsImageSelections({ nodes: (snapshot.topologyGraph.nodes as any[]).filter(node => node.kind === 'ecs' && onlyHostKeys.includes(node.id)) }, owner ?? undefined);
+      return;
+    }
+    await templates.assertTemplateEcsImageSelections({
       ...snapshot, topologySpec: snapshot.topologySpec as RangeTemplateTopologySpec,
     }, owner ?? undefined);
   }
@@ -666,19 +672,29 @@ export class ProvisioningWorkerService {
     }
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
     if (!beforeUpdate) throw new Error('Range instance disappeared before topology update');
+    if (beforeUpdate.expiresAt && beforeUpdate.expiresAt <= new Date()) throw new Error('Range expired before runtime topology update');
+    const approval = (topologySnapshot as ProvisionJobTopologySnapshot & { changeApproval?: RangeChangeApproval }).changeApproval;
     assertExistingHostBootstrapUnchanged(beforeUpdate, topologySnapshot.topologyGraph);
-    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(beforeUpdate, topologySnapshot);
+    if (this.rangeProvisioner.mode === 'opentofu' && !approval) throw new Error('Runtime topology update requires its confirmed preview');
+    if (approval && rangeChangeDigest(approval) !== rangeChangeDigest(buildRangeChangeApproval(beforeUpdate, topologySnapshot))) throw new Error('Runtime topology update no longer matches its confirmed preview');
+    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(beforeUpdate, topologySnapshot, approval?.addedHostKeys);
     const beforeResources = beforeUpdate?.resourceSummary
       ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
       rangeInstanceId: input.instance.id,
+      ...(beforeResources ? { knownResourceSummary: beforeResources } : {}),
       expiresAt: input.instance.expiresAt?.toISOString(),
+      ...(approval ? { changeApproval: approval } : {}),
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
       requirePersistedState: true,
       signal: input.signal,
-      onApplyStart: async () => { await this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal); input.onApplyStart(); },
+      onApplyStart: async () => {
+        const current = await this.adminRepository.getRangeInstanceById(input.instance.id);
+        if (!current || current.expiresAt && current.expiresAt <= new Date() || approval && rangeChangeDigest(approval) !== rangeChangeDigest(buildRangeChangeApproval(current, topologySnapshot))) throw new Error('Runtime topology identity or expiry changed before cloud apply');
+        await this.recordRangeApplyStart(input.instance, input.job, input.accountContext, input.signal); input.onApplyStart();
+      },
       runtimeConfig: input.runtimeConfig,
       runtimeCredentials: topologySnapshot.runtimeCredentials ?? input.instance.runtimeCredentials ?? undefined,
       topologyGraph: topologySnapshot.topologyGraph,
@@ -792,6 +808,7 @@ export class ProvisioningWorkerService {
       templateModulePath,
       ...(snapshot.runtimeCredentials ? { runtimeCredentials: snapshot.runtimeCredentials as ProvisionJobTopologySnapshot['runtimeCredentials'] } : {}),
       ...(snapshot.operation === 'update' ? { operation: 'update' as const } : {}),
+      ...(snapshot.changeApproval ? { changeApproval: snapshot.changeApproval } : {}),
     };
   }
 

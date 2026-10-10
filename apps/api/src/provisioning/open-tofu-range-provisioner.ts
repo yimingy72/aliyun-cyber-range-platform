@@ -4,6 +4,7 @@ import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPe
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
+import { assertApprovedRangeUpdatePlan, assertRangeStateOwnership, assertRangeStateMatchesInventory, preserveDeployedRangeHostFacts } from './range-update-plan-safety';
 
 import {
   OpenTofuRunner,
@@ -157,6 +158,9 @@ type PreparedWorkspace = {
   outputsFilePath: string;
   varsFilePath: string;
   runnerEnv: NodeJS.ProcessEnv;
+  priorState?: WorkspaceState;
+  priorVariables?: Record<string, any>;
+  renderedVariables?: Record<string, any>;
 };
 
 type AvailableInstanceTypeResolverInput = {
@@ -364,8 +368,12 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await runProvisionStep(input.reportStep, 'tofu_apply', async () => {
       const planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir,
         signal: input.signal, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
-      await recordApplyPlan(workspace.workspaceDir, planned,input.billingTags?.PlatformCreateJobId);
+      if (input.instanceMode !== 'single' && workspace.priorState?.instances.some(resource => ['alicloud_instance','tencentcloud_instance'].includes(resource.type))) {
+        assertApprovedRangeUpdatePlan({ plan: planned, state: workspace.priorState, priorVariables: workspace.priorVariables!,
+          nextVariables: workspace.renderedVariables!, approval: input.changeApproval!, account: input.runtimeConfig!, rangeInstanceId: input.rangeInstanceId, billingTags: input.billingTags, knownResourceSummary: input.knownResourceSummary });
+      }
       await input.onApplyStart?.();
+      await recordApplyPlan(workspace.workspaceDir, planned,input.billingTags?.PlatformCreateJobId);
       const command = await this.runner.apply({
         workspaceDir: workspace.workspaceDir,
         signal: input.signal,
@@ -803,14 +811,21 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       }),
     );
 
-    let variables = await this.buildVariables(input, {
-      requireRuntimePasswords: options.requireRuntimePasswords,
-    });
+    let priorVariables: Record<string, any> | undefined;
     if (priorState?.instances.some(resource => ['alicloud_instance', 'tencentcloud_instance'].includes(resource.type))) {
-      let priorVariables: unknown;
       try { priorVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8')); }
       catch { throw new Error('Existing host startup data cannot be verified; persisted variables were preserved'); }
+      assertRangeStateOwnership(priorState, priorVariables!, input.runtimeConfig!, input.rangeInstanceId, input.billingTags);
+      if (!('changeApproval' in input) || !input.changeApproval) throw new Error('Runtime topology update requires a confirmed preview; persisted variables were preserved');
+      assertRangeStateMatchesInventory(priorState, input.knownResourceSummary, input.runtimeConfig!);
+    }
+    let variables = await this.buildVariables(input, {
+      requireRuntimePasswords: options.requireRuntimePasswords,
+      ...(priorState && priorVariables ? { priorState, priorVariables } : {}),
+    });
+    if (priorState && priorVariables) {
       variables = preserveDeployedRangeUserData(input, priorState, priorVariables, variables);
+      variables = preserveDeployedRangeHostFacts(priorState, priorVariables, variables, input.runtimeConfig!);
     }
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
@@ -834,6 +849,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       outputsFilePath,
       varsFilePath,
       runnerEnv,
+      ...(priorState && priorVariables ? { priorState, priorVariables, renderedVariables: variables } : {}),
     };
   }
 
@@ -898,7 +914,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
   private async buildVariables(
     input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
-    options: { requireRuntimePasswords: boolean },
+    options: { requireRuntimePasswords: boolean; priorState?: WorkspaceState; priorVariables?: Record<string, any> },
   ) {
     const plan = buildEnterpriseProvisionPlan({
       rangeInstanceId: input.rangeInstanceId,
@@ -915,15 +931,17 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       input.compiledSpec,
       input.topologyGraph,
     );
-    let zoneId = runtimeConfig.defaultZoneId;
+    let zoneId = options.priorVariables?.zone_id ?? runtimeConfig.defaultZoneId;
     let attemptedZones: ProvisioningAttemptedZoneSummary[] = [];
     let hostInstanceTypes: Record<string, string>;
     const requestedInstanceType = normalizeOptionalEnvValue(
       this.env.OPENTOFU_INSTANCE_TYPE ?? this.env.ALICLOUD_INSTANCE_TYPE,
     );
     const systemDiskCategory = this.readSystemDiskCategory();
+    const deployedKeys = new Set(options.priorState?.instances.filter(resource => resource.type === 'alicloud_instance').map(resource => resourceInstanceKey(resource.address)) ?? []);
+    const newPlan = { ...plan, hostDefinitions: plan.hostDefinitions.filter(host => !deployedKeys.has(host.key)) };
     const hostInstanceTypeRequests = this.buildHostInstanceTypeRequests({
-      plan,
+      plan: newPlan,
       hostProvisioningHints,
     });
     const requiresMultiNicCapacityScheduling = hostInstanceTypeRequests.some(
@@ -931,13 +949,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     );
 
     if (
-      requiresMultiNicCapacityScheduling ||
+      hostInstanceTypeRequests.length > 0 && (requiresMultiNicCapacityScheduling ||
       (this.enableZoneScheduling &&
-        (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto'))
+        (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto')))
     ) {
       const zoneSelection = await selectZoneAndHostInstanceTypes({
         regionId: runtimeConfig.defaultRegion,
-        defaultZoneId: runtimeConfig.defaultZoneId,
+        defaultZoneId: zoneId,
         ...(systemDiskCategory ? { systemDiskCategory } : {}),
         hostRequests: hostInstanceTypeRequests,
         account: {
@@ -945,33 +963,36 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
           accessKeySecret: runtimeConfig.accessKeySecret,
         },
       });
+      if (options.priorState && zoneSelection.selectedZoneId !== zoneId) throw new Error('No compatible new-host instance type is available in the original deployed zone; existing hosts were preserved');
       zoneId = zoneSelection.selectedZoneId;
       attemptedZones = zoneSelection.attemptedZones;
       hostInstanceTypes = zoneSelection.hostInstanceTypes;
     } else {
       hostInstanceTypes = await this.resolveHostInstanceTypes({
-        plan,
+        plan: newPlan,
         hostProvisioningHints,
-        runtimeConfig,
+        runtimeConfig: { ...runtimeConfig, defaultZoneId: zoneId },
       });
     }
+    for (const host of options.priorVariables?.hosts ?? []) if (deployedKeys.has(host.key)) hostInstanceTypes[host.key] = host.instance_type ?? options.priorVariables!.instance_type;
 
     const preferredHostInstanceType =
       hostInstanceTypes[plan.entryHostKey] ?? hostInstanceTypes[plan.hostDefinitions[0]?.key ?? ''];
     const instanceType = preferredHostInstanceType
       ? preferredHostInstanceType
-      : await this.resolveInstanceType(runtimeConfig);
+      : options.priorVariables?.instance_type ?? await this.resolveInstanceType({ ...runtimeConfig, defaultZoneId: zoneId });
     const hostImageIds = resolveFinalHostImageIds({
       hostProvisioningHints,
       hostKeys: plan.hostDefinitions.map((host) => host.key),
       preferredHostKey: plan.entryHostKey,
     });
+    for (const host of options.priorVariables?.hosts ?? []) if (deployedKeys.has(host.key) && hostImageIds) hostImageIds[host.key] = host.image_id ?? options.priorVariables!.image_id;
     const imageId =
       hostImageIds?.[plan.entryHostKey] ??
       Object.values(hostImageIds ?? {})[0] ??
-      (await this.resolveImageId(runtimeConfig));
+      options.priorVariables?.image_id ?? (await this.resolveImageId(runtimeConfig));
     const hostWindows = options.requireRuntimePasswords
-      ? await resolveAliyunWindowsDnsHostImages({ hosts: plan.hostDefinitions, hostImageIds: hostImageIds ?? {}, fallbackImageId: imageId, runtimeConfig })
+      ? { ...Object.fromEntries(plan.hostDefinitions.filter(host => deployedKeys.has(host.key) && host.dns).map(host => [host.key, true])), ...await resolveAliyunWindowsDnsHostImages({ hosts: newPlan.hostDefinitions, hostImageIds: hostImageIds ?? {}, fallbackImageId: imageId, runtimeConfig }) }
       : undefined;
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
@@ -1322,25 +1343,34 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     if (JSON.stringify(actual) !== JSON.stringify(this.tencentWorkspaceIdentity(input))) throw new Error('Tencent workspace differs from frozen provider/account/region/zone identity');
   }
 
-  private async buildTencentVariables(input: RangeProvisionCreateInput | RangeProvisionDestroyInput, plan: ReturnType<typeof buildEnterpriseProvisionPlan>, account: ResolvedProvisioningRuntimeConfig, options: { requireRuntimePasswords: boolean }) {
+  private async buildTencentVariables(input: RangeProvisionCreateInput | RangeProvisionDestroyInput, plan: ReturnType<typeof buildEnterpriseProvisionPlan>, account: ResolvedProvisioningRuntimeConfig, options: { requireRuntimePasswords: boolean; priorState?: WorkspaceState; priorVariables?: Record<string, any> }) {
     if (plan.natGateways.length && this.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED !== '1') throw new Error('Tencent NAT execution is disabled until controlled recovery validation is complete');
     const hints = buildHostInstanceResolutionHints(input.compiledProvisionSpec,input.compiledSpec,input.topologyGraph);
-    const types = await selectTencentHostInstanceTypes(account,plan.hostDefinitions.map(host => {
+    const deployedKeys = new Set(options.priorState?.instances.filter(resource => resource.type === 'tencentcloud_instance').map(resource => resourceInstanceKey(resource.address)) ?? []);
+    const addedHosts = plan.hostDefinitions.filter(host => !deployedKeys.has(host.key));
+    const types = addedHosts.length ? await selectTencentHostInstanceTypes(account,addedHosts.map(host => {
       const hint = hints.get(host.key);
       const policy = resolveHostInstanceTypePolicy({ runtimeHint: hint, runtimeSelections: plan.runtimeSelections.instanceTypePolicies });
       return { key: host.key, cpu: hint?.requestedCpu, memory: hint?.requestedMemoryGiB, instanceType: policy.fixedInstanceType, preferredInstanceTypes: policy.preferredInstanceTypes, strictPreferredInstanceTypes: policy.strictPreferredInstanceTypes };
-    }));
+    })) : {};
     const images = Object.fromEntries(plan.hostDefinitions.map(host => [host.key,hints.get(host.key)?.finalImageId ?? '']));
-    const imageMetadata = await assertTencentImagesAvailable(account,Object.values(images));
-    for (const host of plan.hostDefinitions) {
+    const imageMetadata = addedHosts.length ? await assertTencentImagesAvailable(account,addedHosts.map(host => images[host.key])) : {};
+    for (const old of options.priorVariables?.hosts ?? []) if (deployedKeys.has(old.key) && plan.hostDefinitions.some(host => host.key === old.key)) {
+      images[old.key] = old.image_id;
+      const cpu = hints.get(old.key)?.requestedCpu;
+      if (typeof cpu !== 'number' || !Number.isSafeInteger(cpu) || cpu < 1) throw new Error('Original Tencent host CPU capacity cannot be verified');
+      types[old.key] = { instanceType: old.instance_type, cpu };
+    }
+    for (const host of addedHosts) {
       if (host.dns && options.requireRuntimePasswords && (imageMetadata[images[host.key]]?.isWindows !== true || imageMetadata[images[host.key]]?.windowsUserDataSupported !== true)) throw new Error('Tencent host DNS requires an officially identified Windows Server 2012 R2 or newer image');
     }
     const rendered = renderTencentRangeVariables({ plan, rangeInstanceId: input.rangeInstanceId, account, hostInstanceTypes: types, hostImageIds: images,
       hostPasswords: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,options.requireRuntimePasswords ? requireRuntimePassword(input.runtimeCredentials,host.key) : DESTROY_PLACEHOLDER_PASSWORD])),
       // Preserve the existing non-DNS login validation when legacy image metadata omits its OS.
-      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,imageMetadata[images[host.key]]?.isWindows ?? (!host.dns && input.runtimeCredentials?.[host.key]?.username === 'Administrator')])),
+      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,deployedKeys.has(host.key) ? Boolean(host.dns || input.runtimeCredentials?.[host.key]?.username === 'Administrator') : imageMetadata[images[host.key]]?.isWindows ?? (!host.dns && input.runtimeCredentials?.[host.key]?.username === 'Administrator')])),
       expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
-      systemDiskSize: Math.max(50,...Object.values(imageMetadata).map(image => image.minimumSystemDiskSize)) });
+      systemDiskSize: 50,
+      hostSystemDiskSizes: Object.fromEntries(plan.hostDefinitions.map(host => [host.key, deployedKeys.has(host.key) ? options.priorVariables!.hosts.find((old: any) => old.key === host.key)?.system_disk_size : Math.max(50, imageMetadata[images[host.key]]?.minimumSystemDiskSize ?? 50)])) });
     const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
     for (const entry of [...rendered.eips,...rendered.nat_gateways]) {
       const kind = 'nat_key' in entry ? 'tencentcloud_eip' : 'tencentcloud_nat_gateway';
