@@ -64,13 +64,26 @@ export async function rangePackedImageArtifactSummaries(instance: RangeInstanceR
     if (!readTencentPackBaseline(row)) continue;
     const parent = ledgers.find(ledger => ledger.cloudResourceType === 'ecs' && ledger.cloudResourceId === row.sourceInstanceId && ledger.cloudProvider === 'tencent_cloud'
       && ledger.cloudWorkspaceId === row.cloudWorkspaceId && ledger.cloudAccountUid === row.cloudAccountUid && ledger.regionId === row.regionId
-      && ledger.rangeInstanceId === instance.id && ledger.ownerUserId === row.ownerUserId && ledger.billingScope === 'user' && ledger.tagsSnapshot.PlatformHostKey === row.sourceHostKey);
+      && ledger.rangeInstanceId === instance.id && ledger.ownerUserId === row.ownerUserId && ledger.billingScope === 'user');
     if (!parent?.sourceProvisionJobId) continue;
     const job = await repository.getProvisionJobById(parent.sourceProvisionJobId);
     if (!job || job.rangeInstanceId !== instance.id || job.cloudWorkspaceId !== row.cloudWorkspaceId || !['create','retry','update'].includes(job.jobType)) continue;
     const logs = await repository.listProvisionJobStepLogs(job.id);
-    if (tencentInventoryMatches(parent, instance, logs, row.cloudAccountContextId)
-      && row.sourceDiskIds.every(id => tencentInventoryMatches({ ...parent, cloudResourceType: 'disk', cloudResourceId: id }, instance, logs, row.cloudAccountContextId))) proofs.add(row.id);
+    // The immutable pre-create baseline binds the logical host to its CVM and disk set; creation ledgers do not carry cloud tags.
+    // Require one original job receipt to prove both that CVM and every disk attachment, without borrowing the active summary.
+    const originalSource = { ...instance, resourceSummary: null };
+    if (logs.some(log => {
+      if (!tencentInventoryMatches(parent, originalSource, [log], row.cloudAccountContextId)) return false;
+      let inventory: unknown; try { inventory = JSON.parse(log.message!); } catch { return false; }
+      const attachments = (inventory as { diskAttachments?: unknown }).diskAttachments;
+      if (!attachments || typeof attachments !== 'object' || Array.isArray(attachments)) return false;
+      return row.sourceDiskIds.every(id => {
+        const proof = (attachments as Record<string, unknown>)[id];
+        return proof && typeof proof === 'object' && !Array.isArray(proof) && (proof as { instanceId?: unknown }).instanceId === row.sourceInstanceId
+          && (proof as { method?: unknown }).method === 'persisted'
+          && tencentInventoryMatches({ ...parent, cloudResourceType: 'disk', cloudResourceId: id }, originalSource, [log], row.cloudAccountContextId);
+      });
+    })) proofs.add(row.id);
   }
   return packedImageArtifactSummaries(instance, rows, proofs);
 }
