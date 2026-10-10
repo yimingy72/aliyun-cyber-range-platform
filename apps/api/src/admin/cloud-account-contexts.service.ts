@@ -184,7 +184,7 @@ export class CloudAccountContextsService {
       isActive: false, status: 'ready' as const, imageImportBucket: '',
       bucketStatus: 'unconfigured', lastError: null, lastVerifiedAt: new Date(),
     };
-    return this.commitVerifiedBinding(data, input);
+    return this.commitVerifiedBinding(data, input, cloudWorkspace.archivedAt ?? null);
   }
 
   async saveAccountBinding(input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
@@ -210,7 +210,7 @@ export class CloudAccountContextsService {
         provider: 'alibaba_cloud' as const, accountUid, cloudWorkspaceId: space.id,
         displayName: `阿里云 ${accountUid} · ${values.regionId}`, imageImportBucket, status: 'ready' as const,
         ...bucketVerification };
-      return this.commitVerifiedBinding({ ...data, isActive: false }, input);
+      return this.commitVerifiedBinding({ ...data, isActive: false }, input, space.archivedAt ?? null);
     });
   }
 
@@ -237,7 +237,7 @@ export class CloudAccountContextsService {
 
   private async commitVerifiedBinding(data: Prisma.CloudAccountContextUncheckedCreateInput & {
     cloudWorkspaceId: string; provider: 'alibaba_cloud' | 'tencent_cloud'; accountUid: string; regionId: string;
-  }, input: SaveCloudAccountContextDto): Promise<CloudAccountContextView> {
+  }, input: SaveCloudAccountContextDto, observedArchivedAt: Date | null): Promise<CloudAccountContextView> {
     try {
       return await this.prisma.$transaction(async tx => {
         // Identity and bucket network checks happened above. Serialize only the
@@ -245,6 +245,7 @@ export class CloudAccountContextsService {
         await tx.$executeRaw`LOCK TABLE "CloudWorkspace", "CloudAccountContext" IN SHARE ROW EXCLUSIVE MODE NOWAIT`;
         const workspace = await tx.cloudWorkspace.findUniqueOrThrow({ where: { id: data.cloudWorkspaceId } });
         if (workspace.isReadOnly || workspace.provider !== data.provider || workspace.accountUid !== data.accountUid
+          || (workspace.archivedAt?.getTime() ?? null) !== (observedArchivedAt?.getTime() ?? null)
           || input.cloudWorkspaceId && (workspace.archivedAt || input.cloudWorkspaceId !== workspace.id)) {
           throw new ConflictException('正在编辑的账号绑定已删除或变化，请刷新后重新绑定。');
         }

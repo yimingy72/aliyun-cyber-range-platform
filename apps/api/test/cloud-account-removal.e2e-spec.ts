@@ -99,8 +99,13 @@ isolated('cloud account removal (isolated PostgreSQL)', () => {
   it('blocks terminal imports with unclean temporary objects', async () => {
     await db.imageImportJob.create({ data: { cloudWorkspaceId: target, cloudProvider: 'tencent_cloud', cloudAccountContextId: 'removal-context-b', cloudAccountUid: '222', regionId: 'ap-nanjing', ownerUserId: 'removal-member', displayName: 'Failed import', osType: 'windows', architecture: 'x86_64', bootMode: 'BIOS', imageFormat: 'QCOW2', systemDiskSize: 50, sourceFileName: 'fixture.qcow2', sourceContentType: 'application/octet-stream', sourceSizeBytes: '100', objectKey: 'fixture-object', uploadExpiresAt: new Date(), status: 'failed' } });
     await expect(remove()).rejects.toThrow('未回收资源');
-    await db.imageImportJob.updateMany({ where: { cloudWorkspaceId: target }, data: { temporaryObjectDeletedAt: new Date(), snapshotCleanupCompletedAt: new Date() } });
+    await db.imageImportJob.updateMany({ where: { cloudWorkspaceId: target }, data: { temporaryObjectDeletedAt: new Date(), snapshotCleanupCompletedAt: new Date(), submissionRejected: true } });
     await expect(remove()).resolves.toMatchObject({ id: target, retainedData: true });
+  });
+  it.each([false, true])('blocks incomplete failed import cloud proof (image known: %s)', async imageKnown => {
+    await db.imageImportJob.create({ data: { cloudWorkspaceId: target, cloudProvider: 'tencent_cloud', cloudAccountContextId: 'removal-context-b', cloudAccountUid: '222', regionId: 'ap-nanjing', ownerUserId: 'removal-member', displayName: 'Unknown failed import', osType: 'windows', architecture: 'x86_64', bootMode: 'BIOS', imageFormat: 'QCOW2', systemDiskSize: 50, sourceFileName: 'fixture.qcow2', sourceContentType: 'application/octet-stream', sourceSizeBytes: '100', objectKey: 'unknown-fixture-object', uploadExpiresAt: new Date(), status: 'failed', temporaryObjectDeletedAt: new Date(),
+      imageId: imageKnown ? 'unknown-image' : null, cloudImageDeletedAt: imageKnown ? new Date() : null, backingSnapshotIds: [], submissionRejected: false } });
+    await expect(remove()).rejects.toThrow('未回收资源'); await assertKeysRetained();
   });
   it('rejects current explicit request scope and selected preference independently', async () => {
     await expect(runInCloudWorkspace({ ...scope, cloudWorkspaceId: target, provider: 'tencent_cloud', accountUid: '222' }, () => spaces.remove(manager, target))).rejects.toThrow('先切换');
@@ -145,7 +150,7 @@ isolated('cloud account removal (isolated PostgreSQL)', () => {
       expect(await db.cloudWorkspace.findUniqueOrThrow({ where: { id: target } })).toMatchObject({ archivedAt: null });
     } finally { cloud.mockRestore(); }
   });
-  it('rolls back a stale explicit edit after deletion instead of resurrecting a binding or retaining hidden credentials', async () => {
+  it.each([true, false])('rolls back stale binding after deletion (explicit edit: %s)', async explicitEdit => {
     const accounts = new CloudAccountContextsService(db);
     const original = (accounts as any).resolveBindingWorkspace.bind(accounts);
     const resolved = jest.spyOn(accounts as any, 'resolveBindingWorkspace');
@@ -156,7 +161,7 @@ isolated('cloud account removal (isolated PostgreSQL)', () => {
     });
     const cloud = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ Response: { RequestId: 'identity', AccountId: '222' } })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ Response: { RequestId: 'zones', TotalCount: 1, ZoneSet: [{ Zone: 'ap-nanjing-1', ZoneState: 'AVAILABLE' }] } })));
-    const save = accounts.saveAccountBinding({ cloudWorkspaceId: target, provider: 'tencent_cloud', regionId: 'ap-nanjing', zoneId: 'ap-nanjing-1', accessKeyId: 'stale-edit-id', accessKeySecret: 'stale-edit-secret' }).catch(error => error);
+    const save = accounts.saveAccountBinding({ ...(explicitEdit ? { cloudWorkspaceId: target } : {}), provider: 'tencent_cloud', regionId: 'ap-nanjing', zoneId: 'ap-nanjing-1', accessKeyId: 'stale-edit-id', accessKeySecret: 'stale-edit-secret' }).catch(error => error);
     try {
       await pause; await remove(); resume();
       expect(await save).toMatchObject({ message: expect.stringContaining('绑定已删除或变化') });

@@ -133,6 +133,7 @@ export class CloudWorkspacesService {
       db.provisionJob.count({ where: { cloudWorkspaceId, status: { in: ['pending', 'running'] } } }),
       db.billingLedgerResource.count({ where: { cloudWorkspaceId, releasedAt: null } }),
       db.imageImportJob.count({ where: { cloudWorkspaceId, OR: [{ status: { notIn: ['available', 'cancelled', 'failed'] } }, { temporaryObjectDeletedAt: null },
+        { status: 'failed', imageId: null, submissionRejected: false }, { status: 'failed', imageId: { not: null }, snapshotCleanupCompletedAt: null },
         { imageId: { not: null }, cloudImageDeletedAt: null }, { snapshotCleanupCompletedAt: null, backingSnapshotIds: { isEmpty: false } }] } }),
       db.packedImageArtifact.count({ where: { cloudWorkspaceId, OR: [{ status: { not: 'deleted' } }, { imageId: { not: null }, cloudImageDeletedAt: null }] } }),
       db.cloudImageImportBucket.count({ where: { cloudWorkspaceId, OR: [{ status: { not: 'deleted' } }, { deletedAt: null }] } }),
